@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>LamaPon Web Game</title>
+  <style>
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+    body { background: #0b1220; color: #e5eefc; }
+    #stage {
+      position: absolute; left: 50%; top: 50%; width: 1280px; height: 720px;
+      transform-origin: center; overflow: hidden; background: #b9a18a;
+    }
+    #canvas, #software-canvas, #software3d, #hud {
+      position: absolute; inset: 0; width: 1280px; height: 720px;
+    }
+    #canvas, #software-canvas { display: block; outline: none; }
+    #software-canvas, #software3d { display: none; }
+    #hud { pointer-events: none; overflow: hidden; }
+    #help {
+      position: fixed; left: 16px; top: 16px; margin: 0; padding: 8px 12px;
+      border-radius: 8px; background: rgba(4, 10, 20, .78);
+      font: 14px/1.4 system-ui, sans-serif; pointer-events: none;
+    }
+    body[data-lamapon-status="running"] #help { opacity: 0; }
+  </style>
+</head>
+<body data-lamapon-status="loading">
+  <main id="stage">
+    <canvas id="canvas" tabindex="0" oncontextmenu="event.preventDefault()"></canvas>
+    <canvas id="software-canvas" tabindex="0" aria-label="Software 3D fallback"></canvas>
+    <svg id="software3d" viewBox="0 0 1280 720" preserveAspectRatio="xMidYMid meet" tabindex="0" aria-label="Software 3D fallback"></svg>
+    <section id="hud" aria-label="Game HUD"></section>
+  </main>
+  <p id="help">Loading LamaPon Web game…</p>
+  <script>
+    (() => {
+      const resize = () => {
+        const viewport = window.visualViewport;
+        const width = viewport?.width || innerWidth;
+        const height = viewport?.height || innerHeight;
+        const scale = Math.min(width / 1280, height / 720);
+        const stage = document.getElementById("stage");
+        stage.style.transform =
+          "translate(-50%, -50%) scale(" + scale + ")";
+        document.body.dataset.lamaponStageScale = scale.toFixed(6);
+        document.body.dataset.lamaponStageViewport = "1280x720";
+      };
+      addEventListener("resize", resize, { passive: true });
+      window.visualViewport?.addEventListener("resize", resize, { passive: true });
+      resize();
+    })();
+  </script>
+  {{{ SCRIPT }}}
+</body>
+</html>

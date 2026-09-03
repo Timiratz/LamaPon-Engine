@@ -1,0 +1,7 @@
+{
+  "engineVersion": "@PROJECT_VERSION@",
+  "buildRevision": "@LAMAPON_BUILD_REVISION@",
+  "generator": "@CMAKE_GENERATOR@",
+  "compiler": "@CMAKE_CXX_COMPILER_ID@ @CMAKE_CXX_COMPILER_VERSION@",
+  "systemProcessor": "@CMAKE_SYSTEM_PROCESSOR@"
+}

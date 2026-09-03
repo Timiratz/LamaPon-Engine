@@ -1,0 +1,15 @@
+{
+  "type": "LamaPonLitMaterial",
+  "version": 1,
+  "baseColor": [
+    0.35,
+    0.78,
+    1.0,
+    1.0
+  ],
+  "albedoTexture": "textures/directxtk.jpg",
+  "albedoTextureGuid": "6b85ceddb749e9ff65f868d8de597ac1",
+  "normalTexture": "",
+  "roughness": 0.3,
+  "normalStrength": 1.0
+}

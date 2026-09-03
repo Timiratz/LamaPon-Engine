@@ -1,0 +1,27 @@
+{
+  "format": "LamaPonAnimationClip",
+  "version": 1,
+  "name": "アクセント浮遊",
+  "duration": 2.0,
+  "loop": true,
+  "keyframes": [
+    {
+      "time": 0.0,
+      "position": [0.0, 0.85, 0.0],
+      "rotation": [0.0, 0.0, 0.0],
+      "scale": [0.3, 0.3, 0.3]
+    },
+    {
+      "time": 1.0,
+      "position": [0.0, 1.15, 0.0],
+      "rotation": [0.0, 3.14159265, 0.0],
+      "scale": [0.36, 0.36, 0.36]
+    },
+    {
+      "time": 2.0,
+      "position": [0.0, 0.85, 0.0],
+      "rotation": [0.0, 6.28318531, 0.0],
+      "scale": [0.3, 0.3, 0.3]
+    }
+  ]
+}

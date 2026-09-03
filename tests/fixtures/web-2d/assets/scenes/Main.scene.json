@@ -1,0 +1,76 @@
+{
+  "format": "LamaPonScene",
+  "version": 2,
+  "objects": [
+    {
+      "id": 1,
+      "name": "2D Runtime Ready",
+      "enabled": true,
+      "parent": null,
+      "transform": {
+        "position": [320.0, 180.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "TransformAnimator",
+          "enabled": true,
+          "clip": "animations/TextPulse.animation.json",
+          "speed": 1.0,
+          "loop": true,
+          "playOnStart": true,
+          "controller": ""
+        },
+        {
+          "type": "TextRenderer",
+          "enabled": true,
+          "text": "LamaPon 2D WebGL Ready",
+          "fontFamily": "sans-serif",
+          "fontSize": 48.0,
+          "color": [0.2, 0.8, 1.0, 1.0],
+          "layoutSize": [640.0, 100.0],
+          "wordWrap": false,
+          "horizontalAlignment": "Center",
+          "verticalAlignment": "Center",
+          "sortOrder": 1
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Anchored Status",
+      "enabled": true,
+      "parent": null,
+      "transform": {
+        "position": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "UIRectTransform",
+          "enabled": true,
+          "anchorMin": [0.5, 1.0],
+          "anchorMax": [0.5, 1.0],
+          "pivot": [0.5, 1.0],
+          "anchoredPosition": [0.0, -24.0],
+          "sizeDelta": [420.0, 52.0]
+        },
+        {
+          "type": "TextRenderer",
+          "enabled": true,
+          "text": "UIRectTransform Ready",
+          "fontFamily": "sans-serif",
+          "fontSize": 28.0,
+          "color": [1.0, 1.0, 1.0, 1.0],
+          "layoutSize": [420.0, 52.0],
+          "wordWrap": false,
+          "horizontalAlignment": "Center",
+          "verticalAlignment": "Center",
+          "sortOrder": 2
+        }
+      ]
+    }
+  ]
+}

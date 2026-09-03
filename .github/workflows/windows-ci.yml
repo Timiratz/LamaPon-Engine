@@ -1,0 +1,109 @@
+name: Windows CI
+
+# ドキュメントだけの変更ではWindowsランナー（分数2倍消費）を
+# 回さず、Actionsの無料枠を節約します。release.ymlはこのCIでは
+# 検証できない（タグpush時にしか動かない）ため、同じく対象外です。
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - ".github/workflows/release.yml"
+  pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test-package:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Configure MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure
+        run: >
+          cmake
+          -S .
+          -B build-ci
+          -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTING=ON
+
+      - name: Build
+        run: cmake --build build-ci --parallel
+
+      - name: Test
+        run: ctest --test-dir build-ci --output-on-failure --parallel 4
+
+      - name: Upload render regression output
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: LamaPon-render-regression-output
+          path: build-ci/test-output/render-regression
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Build game package
+        run: cmake --build build-ci --target LamaPonGamePackage
+
+      - name: Build engine package
+        run: cmake --build build-ci --target package
+
+      - name: Upload game package
+        # PRではパッケージ生成までを検証し、成果物は保存しません。
+        # 通常pushと手動実行だけ保存してActionsの容量超過を避けます。
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: LamaPonGame-windows-x64
+          path: build-ci/export/LamaPonGame
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload engine package
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: LamaPon-windows-x64
+          path: build-ci/LamaPon-*-windows-x64.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload debug symbols
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: LamaPon-symbols-windows-x64
+          path: |
+            build-ci/LamaPonRuntime.pdb
+            build-ci/LamaPonEditor.pdb
+            build-ci/LamaPonHub.pdb
+            build-ci/LamaPonGame.pdb
+            build-ci/LamaPonGameModule.pdb
+            build-ci/generated/build-info.json
+          if-no-files-found: error
+          # シンボルだけでActionsの保存容量の8割（約1.1GB）を
+          # 占めており、果てはupload失敗でCIが落ちました。
+          # 見るのはクラッシュを追うときだけなので短くします。
+          retention-days: 7

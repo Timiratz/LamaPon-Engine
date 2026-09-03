@@ -1,0 +1,931 @@
+{
+  "format": "LamaPonScene",
+  "version": 1,
+  "mainCamera": 2,
+  "environment": {
+    "ambientColor": [0.65, 0.72, 0.85],
+    "ambientIntensity": 0.35,
+    "sky": {
+      "enabled": true,
+      "topColor": [0.025, 0.09, 0.26],
+      "horizonColor": [0.38, 0.62, 0.86],
+      "groundColor": [0.025, 0.035, 0.06],
+      "intensity": 1.15
+    },
+    "fog": {
+      "enabled": true,
+      "color": [0.38, 0.54, 0.7],
+      "startDistance": 8.0,
+      "endDistance": 32.0,
+      "density": 0.018
+    },
+    "bloom": {
+      "enabled": true,
+      "threshold": 0.62,
+      "intensity": 0.55,
+      "radius": 2.25
+    }
+  },
+  "physics": {
+    "broadPhaseCellSize": 4.0
+  },
+  "objects": [
+    {
+      "id": 1,
+      "name": "ワールド",
+      "enabled": true,
+      "parent": null,
+      "transform": {
+        "position": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": []
+    },
+    {
+      "id": 2,
+      "name": "メインカメラ",
+      "enabled": true,
+      "parent": 1,
+      "transform": {
+        "position": [0.0, 1.6, 7.0],
+        "rotation": [-0.12, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "Camera",
+          "enabled": true,
+          "verticalFieldOfView": 1.0471976,
+          "nearPlane": 0.1,
+          "farPlane": 100.0
+        },
+        {
+          "type": "AudioListener",
+          "enabled": true
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "立方体",
+      "enabled": true,
+      "parent": 1,
+      "transform": {
+        "position": [-1.4, 0.3, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "shape": "Cube",
+          "color": [1.0, 1.0, 1.0, 1.0],
+          "albedoTexture": "textures/directxtk.jpg",
+          "albedoTextureGuid": "6b85ceddb749e9ff65f868d8de597ac1",
+          "normalTexture": "",
+          "roughness": 0.38,
+          "normalStrength": 1.0
+        },
+        {
+          "type": "Rotator",
+          "enabled": true,
+          "angularVelocity": [0.35, 0.8, 0.15]
+        },
+        {
+          "type": "InputMover",
+          "enabled": true,
+          "horizontalAction": "MoveHorizontal",
+          "verticalAction": "MoveVertical",
+          "speed": 3.0
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "name": "球",
+      "enabled": true,
+      "parent": 1,
+      "transform": {
+        "position": [1.35, 0.35, -0.3],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "shape": "Sphere",
+          "color": [0.95, 0.36, 0.18, 1.0]
+        },
+        {
+          "type": "Rotator",
+          "enabled": true,
+          "angularVelocity": [0.15, -0.55, 0.0]
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "name": "地面",
+      "enabled": true,
+      "parent": 1,
+      "transform": {
+        "position": [0.0, -0.85, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [7.0, 1.0, 7.0]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "shape": "Plane",
+          "color": [0.16, 0.19, 0.24, 1.0]
+        },
+        {
+          "type": "BoxCollider3D",
+          "enabled": true,
+          "size": [1.0, 0.05, 1.0],
+          "offset": [0.0, 0.0, 0.0],
+          "trigger": false,
+          "layer": 1,
+          "mask": 4
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "name": "キャンバス",
+      "enabled": true,
+      "parent": null,
+      "transform": {
+        "position": [2.5, 1.5, 3.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": []
+    },
+    {
+      "id": 7,
+      "name": "情報パネル",
+      "enabled": true,
+      "parent": 6,
+      "transform": {
+        "position": [28.0, 28.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "SpriteRenderer",
+          "enabled": true,
+          "size": [330.0, 78.0],
+          "color": [0.03, 0.08, 0.14, 0.86],
+          "texture": ""
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "name": "パネルアクセント",
+      "enabled": true,
+      "parent": 7,
+      "transform": {
+        "position": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "SpriteRenderer",
+          "enabled": true,
+          "size": [8.0, 78.0],
+          "color": [0.1, 0.7, 1.0, 1.0],
+          "texture": ""
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "name": "DirectXTK画像",
+      "enabled": true,
+      "parent": 7,
+      "transform": {
+        "position": [248.0, 7.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "SpriteRenderer",
+          "enabled": true,
+          "size": [64.0, 64.0],
+          "color": [1.0, 1.0, 1.0, 1.0],
+          "texture": "textures/directxtk.jpg",
+          "textureGuid": "6b85ceddb749e9ff65f868d8de597ac1"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "name": "矢モデル",
+      "enabled": true,
+      "parent": 1,
+      "transform": {
+        "position": [0.0, 0.5, -2.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "ModelRenderer",
+          "enabled": true,
+          "model": "models/arrow.cmo",
+          "modelGuid": "4f96ded133d50ecf2b54a57e389df4e2",
+          "wireframe": false,
+          "materialOverride": true,
+          "color": [0.35, 0.78, 1.0, 1.0],
+          "albedoTexture": "textures/directxtk.jpg",
+          "albedoTextureGuid": "6b85ceddb749e9ff65f868d8de597ac1",
+          "normalTexture": "",
+          "roughness": 0.3,
+          "normalStrength": 1.0,
+          "materialAsset": "materials/arrow-blue.material.json",
+          "materialAssetGuid": "df52ff7e3172cb85d3c54102186b6c9c"
+        },
+        {
+          "type": "Rotator",
+          "enabled": true,
+          "angularVelocity": [0.0, 0.6, 0.0]
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "name": "物理ボックス",
+      "enabled": true,
+      "parent": 1,
+      "transform": {
+        "position": [0.0, 3.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "shape": "Cube",
+          "color": [0.3, 0.9, 0.45, 1.0]
+        },
+        {
+          "type": "BoxCollider3D",
+          "enabled": true,
+          "size": [1.0, 1.0, 1.0],
+          "offset": [0.0, 0.0, 0.0],
+          "trigger": false,
+          "layer": 2,
+          "mask": 2
+        },
+        {
+          "type": "Rigidbody",
+          "enabled": true,
+          "velocity": [0.0, 0.0, 0.0],
+          "useGravity": true,
+          "kinematic": false
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "name": "日本語タイトル",
+      "enabled": true,
+      "parent": 6,
+      "transform": {
+        "position": [130.0, 20.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "TextRenderer",
+          "enabled": true,
+          "text": "LamaPon",
+          "fontFamily": "Yu Gothic UI",
+          "fontSize": 32.0,
+          "color": [0.9, 0.96, 1.0, 1.0],
+          "layoutSize": [520.0, 120.0],
+          "wordWrap": true,
+          "horizontalAlignment": "Center",
+          "verticalAlignment": "Center"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "name": "太陽光",
+      "enabled": true,
+      "parent": 1,
+      "transform": {
+        "position": [0.0, 3.0, 0.0],
+        "rotation": [-0.7853982, -0.6108652, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "DirectionalLight",
+          "enabled": true,
+          "color": [1.0, 0.96, 0.88],
+          "intensity": 1.15,
+          "castsShadows": true,
+          "shadowDistance": 24.0,
+          "shadowBias": 0.0015,
+          "shadowNormalBias": 0.0025,
+          "shadowStrength": 0.85,
+          "shadowCascadeCount": 4,
+          "shadowSplitLambda": 0.65
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "name": "ポイントライト",
+      "enabled": true,
+      "parent": 1,
+      "transform": {
+        "position": [1.5, 1.8, 0.6],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "PointLight",
+          "enabled": true,
+          "color": [0.28, 0.58, 1.0],
+          "intensity": 4.0,
+          "range": 5.0
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "name": "スポットライト",
+      "enabled": true,
+      "parent": 1,
+      "transform": {
+        "position": [-1.8, 3.8, 1.5],
+        "rotation": [-1.15, -0.25, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "SpotLight",
+          "enabled": true,
+          "color": [1.0, 0.5, 0.2],
+          "intensity": 7.0,
+          "range": 8.0,
+          "innerConeAngle": 0.3141593,
+          "outerConeAngle": 0.6108652
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "name": "起動サウンド",
+      "enabled": true,
+      "parent": 1,
+      "transform": {
+        "position": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "AudioSource",
+          "enabled": true,
+          "audio": "audio/startup.wav",
+          "audioGuid": "3bdad4cd44d5d08ef2670954598d807b",
+          "volume": 0.18,
+          "pitch": 0.0,
+          "pan": 0.0,
+          "loop": false,
+          "playOnStart": true,
+          "spatial": true,
+          "minimumDistance": 1.0,
+          "maximumDistance": 12.0
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "name": "State Machineアクセント",
+      "enabled": true,
+      "parent": 1,
+      "transform": {
+        "position": [0.0, 0.85, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [0.3, 0.3, 0.3]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "shape": "Sphere",
+          "color": [0.15, 0.72, 1.0, 1.0],
+          "albedoTexture": "",
+          "normalTexture": "",
+          "roughness": 0.25,
+          "normalStrength": 1.0
+        },
+        {
+          "type": "TransformAnimator",
+          "enabled": true,
+          "clip": "animations/アクセント浮遊.animation.json",
+          "clipGuid": "3fb7a3f13ccc579f670fc0c20c46ae70",
+          "controller": "animations/アクセント.animator.json",
+          "controllerGuid": "4018a473afd0b230df8e7e36134766db",
+          "speed": 1.0,
+          "loop": true,
+          "playOnStart": true
+        }
+      ]
+    },
+    {
+      "id": 18,
+      "name": "C++ Game Moduleサンプル",
+      "enabled": true,
+      "parent": 1,
+      "transform": {
+        "position": [-1.8, 1.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [0.42, 0.42, 0.42]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "shape": "Cube",
+          "color": [1.0, 0.45, 0.14, 1.0],
+          "albedoTexture": "",
+          "normalTexture": "",
+          "roughness": 0.32,
+          "normalStrength": 1.0
+        },
+        {
+          "type": "NativeScript",
+          "enabled": true,
+          "script": "Sample.FloatingAccent",
+          "properties": {
+            "amplitude": 0.35,
+            "frequency": 0.65
+          }
+        }
+      ]
+    },
+    {
+      "id": 19,
+      "name": "glTFスケルタルアニメーション",
+      "enabled": true,
+      "parent": 1,
+      "transform": {
+        "position": [2.65, -0.82, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [0.72, 0.72, 0.72]
+      },
+      "components": [
+        {
+          "type": "ModelRenderer",
+          "enabled": true,
+          "model": "models/RiggedSimple.glb",
+          "modelGuid": "532c62a97d5dfab2da7fdf46f4fbf502",
+          "wireframe": false,
+          "materialOverride": false,
+          "color": [1.0, 1.0, 1.0, 1.0],
+          "albedoTexture": "",
+          "normalTexture": "",
+          "roughness": 0.5,
+          "normalStrength": 1.0,
+          "materialAsset": "",
+          "animationIndex": 0,
+          "animationSpeed": 1.0,
+          "animationLoop": true,
+          "animationPlayOnStart": true
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "name": "FBXスケルタルアニメーション",
+      "enabled": true,
+      "parent": 1,
+      "transform": {
+        "position": [-3.0, -0.82, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [0.45, 0.45, 0.45]
+      },
+      "components": [
+        {
+          "type": "ModelRenderer",
+          "enabled": true,
+          "model": "models/AnimatedSausage.fbx",
+          "modelGuid": "cc654aa14c40364cbe3afa244981afcd",
+          "wireframe": false,
+          "materialOverride": false,
+          "color": [1.0, 1.0, 1.0, 1.0],
+          "albedoTexture": "",
+          "normalTexture": "",
+          "roughness": 0.5,
+          "normalStrength": 1.0,
+          "materialAsset": "",
+          "animationIndex": 2,
+          "animationSpeed": 1.0,
+          "animationLoop": true,
+          "animationPlayOnStart": true,
+          "animationController": "animations/AnimatedSausage.animator.json",
+          "animationControllerGuid": "7df75e6d4d3444fab99218c78b429651"
+        }
+      ]
+    },
+    {
+      "id": 21,
+      "name": "2Dタイルマップサンプル",
+      "enabled": true,
+      "parent": 1,
+      "transform": {
+        "position": [24.0, 72.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "Tilemap",
+          "enabled": true,
+          "tileSize": [32.0, 32.0],
+          "atlasColumns": 1,
+          "atlasRows": 1,
+          "color": [0.08, 0.55, 0.88, 0.65],
+          "texture": "",
+          "cells": [
+            { "x": 0, "y": 0, "tile": 0 },
+            { "x": 1, "y": 0, "tile": 0 },
+            { "x": 2, "y": 0, "tile": 0 },
+            { "x": 3, "y": 0, "tile": 0 },
+            { "x": 4, "y": 0, "tile": 0 },
+            { "x": 0, "y": 1, "tile": 0 },
+            { "x": 4, "y": 1, "tile": 0 },
+            { "x": 0, "y": 2, "tile": 0 },
+            { "x": 1, "y": 2, "tile": 0 },
+            { "x": 2, "y": 2, "tile": 0 },
+            { "x": 3, "y": 2, "tile": 0 },
+            { "x": 4, "y": 2, "tile": 0 }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "name": "NavMesh Surfaceサンプル",
+      "enabled": true,
+      "parent": 1,
+      "transform": {
+        "position": [0.0, -0.82, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "NavMesh",
+          "enabled": true,
+          "surfaceSize": [10.0, 10.0],
+          "cellSize": 0.5,
+          "agentRadius": 0.35,
+          "agentHeight": 1.8,
+          "baked": true,
+          "blockedCells": [
+            [9, 9],
+            [10, 9],
+            [9, 10],
+            [10, 10]
+          ]
+        }
+      ]
+    },
+    {
+      "id": 23,
+      "name": "NavMesh Agentサンプル",
+      "enabled": true,
+      "parent": 1,
+      "transform": {
+        "position": [-3.0, -0.32, 2.5],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [0.32, 0.32, 0.32]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "shape": "Sphere",
+          "color": [1.0, 0.72, 0.08, 1.0],
+          "albedoTexture": "",
+          "normalTexture": "",
+          "roughness": 0.3,
+          "normalStrength": 1.0,
+          "materialAsset": ""
+        },
+        {
+          "type": "NavMeshAgent",
+          "enabled": true,
+          "speed": 1.6,
+          "stoppingDistance": 0.08,
+          "rotateToPath": true,
+          "destination": [3.0, -0.32, -2.5],
+          "path": [
+            [-3.0, -0.32, 2.5],
+            [-1.0, -0.32, 1.0],
+            [-1.0, -0.32, -1.0],
+            [3.0, -0.32, -2.5]
+          ]
+        }
+      ]
+    },
+    {
+      "id": 24,
+      "name": "発光パーティクルサンプル",
+      "enabled": true,
+      "parent": 1,
+      "transform": {
+        "position": [0.0, -0.45, -1.5],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "ParticleSystem",
+          "enabled": true,
+          "maxParticles": 700,
+          "emissionRate": 70.0,
+          "lifetime": [0.7, 1.5],
+          "startSpeed": [1.2, 3.4],
+          "startSize": [0.18, 0.42],
+          "endSizeMultiplier": 0.1,
+          "startColor": [0.45, 0.85, 1.0, 1.0],
+          "endColor": [0.1, 0.25, 1.0, 0.0],
+          "gravity": [0.0, -0.9, 0.0],
+          "shape": "Cone",
+          "emitterSize": [0.25, 0.1, 0.25],
+          "coneAngle": 0.6,
+          "duration": 5.0,
+          "looping": true,
+          "playOnStart": true,
+          "previewInEditor": true,
+          "additive": true,
+          "texture": "textures/particle-glow.png"
+        }
+      ]
+    },
+    {
+      "id": 25,
+      "name": "UI Canvasサンプル",
+      "enabled": true,
+      "parent": 1,
+      "transform": {
+        "position": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "UICanvas",
+          "enabled": true,
+          "referenceResolution": [1280.0, 720.0],
+          "matchWidthOrHeight": 0.5
+        }
+      ]
+    },
+    {
+      "id": 26,
+      "name": "右下アンカーボタン",
+      "enabled": true,
+      "parent": 25,
+      "transform": {
+        "position": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "UIRectTransform",
+          "enabled": true,
+          "anchorMin": [1.0, 1.0],
+          "anchorMax": [1.0, 1.0],
+          "pivot": [1.0, 1.0],
+          "anchoredPosition": [-32.0, -32.0],
+          "sizeDelta": [280.0, 64.0]
+        },
+        {
+          "type": "UIButton",
+          "enabled": true,
+          "label": "クリックできます",
+          "fontFamily": "Yu Gothic UI",
+          "fontSize": 24.0,
+          "fallbackSize": [280.0, 64.0],
+          "normalColor": [0.06, 0.3, 0.58, 0.96],
+          "hoveredColor": [0.1, 0.52, 0.95, 1.0],
+          "pressedColor": [0.03, 0.18, 0.38, 1.0],
+          "disabledColor": [0.18, 0.2, 0.24, 0.65],
+          "textColor": [1.0, 1.0, 1.0, 1.0],
+          "interactable": true,
+          "texture": "",
+          "reloadCurrentScene": false,
+          "targetScene": "scenes/ui-destination.scene.json"
+        }
+      ]
+    },
+    {
+      "id": 27,
+      "name": "Character Controllerサンプル",
+      "enabled": true,
+      "parent": 1,
+      "transform": {
+        "position": [-2.5, -0.82, -2.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "CharacterController",
+          "enabled": true,
+          "radius": 0.4,
+          "height": 1.8,
+          "moveSpeed": 4.0,
+          "gravity": 20.0,
+          "jumpSpeed": 7.0,
+          "stepOffset": 0.3,
+          "skinWidth": 0.03,
+          "layer": 2,
+          "collisionMask": 2,
+          "useInput": true,
+          "horizontalAction": "MoveHorizontal",
+          "verticalAction": "MoveVertical",
+          "jumpAction": "Jump"
+        }
+      ]
+    },
+    {
+      "id": 28,
+      "name": "プレイヤー表示",
+      "enabled": true,
+      "parent": 27,
+      "transform": {
+        "position": [0.0, 0.9, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [0.42, 0.9, 0.42]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "shape": "Sphere",
+          "color": [0.1, 0.75, 1.0, 1.0],
+          "albedoTexture": "",
+          "normalTexture": "",
+          "roughness": 0.28,
+          "normalStrength": 1.0,
+          "materialAsset": ""
+        }
+      ]
+    },
+    {
+      "id": 29,
+      "name": "Character Controller用の壁",
+      "enabled": true,
+      "parent": 1,
+      "transform": {
+        "position": [0.0, -0.22, -2.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [0.5, 1.2, 1.5]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "shape": "Cube",
+          "color": [0.2, 0.32, 0.48, 1.0],
+          "albedoTexture": "",
+          "normalTexture": "",
+          "roughness": 0.7,
+          "normalStrength": 1.0,
+          "materialAsset": ""
+        },
+        {
+          "type": "BoxCollider3D",
+          "enabled": true,
+          "size": [1.0, 1.0, 1.0],
+          "offset": [0.0, 0.0, 0.0],
+          "trigger": false,
+          "layer": 1,
+          "mask": 4
+        }
+      ]
+    },
+    {
+      "id": 30,
+      "name": "回転コライダーの坂",
+      "enabled": true,
+      "parent": 1,
+      "transform": {
+        "position": [3.0, -0.15, -2.0],
+        "rotation": [0.0, 0.0, 0.28],
+        "scale": [3.0, 0.3, 1.5]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "shape": "Cube",
+          "color": [0.18, 0.52, 0.72, 1.0],
+          "roughness": 0.58,
+          "normalStrength": 1.0
+        },
+        {
+          "type": "BoxCollider3D",
+          "enabled": true,
+          "size": [1.0, 1.0, 1.0],
+          "offset": [0.0, 0.0, 0.0],
+          "trigger": false,
+          "layer": 1,
+          "mask": 4,
+          "friction": 0.85,
+          "restitution": 0.05
+        }
+      ]
+    },
+    {
+      "id": 31,
+      "name": "跳ねるカプセル",
+      "enabled": true,
+      "parent": 1,
+      "transform": {
+        "position": [3.0, 3.2, -2.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "CapsuleCollider3D",
+          "enabled": true,
+          "radius": 0.42,
+          "height": 1.7,
+          "offset": [0.0, 0.0, 0.0],
+          "trigger": false,
+          "layer": 2,
+          "mask": 2,
+          "friction": 0.25,
+          "restitution": 0.72
+        },
+        {
+          "type": "Rigidbody",
+          "enabled": true,
+          "velocity": [0.0, 0.0, 0.0],
+          "useGravity": true,
+          "kinematic": false
+        }
+      ]
+    },
+    {
+      "id": 32,
+      "name": "カプセル表示",
+      "enabled": true,
+      "parent": 31,
+      "transform": {
+        "position": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [0.42, 0.85, 0.42]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "shape": "Sphere",
+          "color": [1.0, 0.38, 0.12, 1.0],
+          "roughness": 0.24,
+          "normalStrength": 1.0
+        }
+      ]
+    },
+    {
+      "id": 33,
+      "name": "ゲームセッション",
+      "enabled": true,
+      "persistent": true,
+      "persistenceKey": "SampleGameSession",
+      "parent": null,
+      "transform": {
+        "position": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": []
+    }
+  ]
+}

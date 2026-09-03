@@ -1,0 +1,81 @@
+{
+  "format": "LamaPonAnimatorController",
+  "version": 1,
+  "entry": "Locomotion",
+  "parameters": [
+    {
+      "name": "MoveX",
+      "type": "Float",
+      "default": 0.2
+    },
+    {
+      "name": "MoveY",
+      "type": "Float",
+      "default": 0.25
+    }
+  ],
+  "states": [
+    {
+      "name": "Locomotion",
+      "speed": 1.0,
+      "loop": true,
+      "blendTree": {
+        "type": "2D",
+        "parameterX": "MoveX",
+        "parameterY": "MoveY",
+        "children": [
+          {
+            "modelClip": "Skeleton|Base",
+            "position": [0.0, 0.0]
+          },
+          {
+            "modelClip": "Skeleton|Wiggle",
+            "position": [-1.0, 0.7]
+          },
+          {
+            "modelClip": "Skeleton|Spin",
+            "position": [1.0, 0.7]
+          }
+        ]
+      },
+      "events": [
+        {
+          "name": "WigglePulse",
+          "payload": "body",
+          "time": 0.5
+        }
+      ],
+      "editorPosition": [70.0, 130.0]
+    },
+    {
+      "name": "Spin",
+      "modelClip": "Skeleton|Spin",
+      "speed": 1.0,
+      "loop": false,
+      "events": [
+        {
+          "name": "SpinPeak",
+          "payload": "fx",
+          "time": 0.5
+        }
+      ],
+      "editorPosition": [390.0, 130.0]
+    }
+  ],
+  "transitions": [
+    {
+      "from": "Locomotion",
+      "to": "Spin",
+      "trigger": "Spin",
+      "exitTime": -1.0,
+      "duration": 0.2
+    },
+    {
+      "from": "Spin",
+      "to": "Locomotion",
+      "trigger": "",
+      "exitTime": 0.95,
+      "duration": 0.25
+    }
+  ]
+}

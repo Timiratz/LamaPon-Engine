@@ -1,0 +1,149 @@
+{
+  "format": "LamaPonScene",
+  "version": 1,
+  "mainCamera": null,
+  "environment": {
+    "ambientColor": [0.65, 0.72, 0.85],
+    "ambientIntensity": 0.35
+  },
+  "physics": {
+    "broadPhaseCellSize": 4.0
+  },
+  "objects": [
+    {
+      "id": 1,
+      "name": "遷移先UI Canvas",
+      "enabled": true,
+      "parent": null,
+      "transform": {
+        "position": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "UICanvas",
+          "enabled": true,
+          "referenceResolution": [1280.0, 720.0],
+          "matchWidthOrHeight": 0.5
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "背景",
+      "enabled": true,
+      "parent": 1,
+      "transform": {
+        "position": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "UIRectTransform",
+          "enabled": true,
+          "anchorMin": [0.0, 0.0],
+          "anchorMax": [1.0, 1.0],
+          "pivot": [0.5, 0.5],
+          "anchoredPosition": [0.0, 0.0],
+          "sizeDelta": [0.0, 0.0]
+        },
+        {
+          "type": "SpriteRenderer",
+          "enabled": true,
+          "size": [1280.0, 720.0],
+          "color": [0.025, 0.07, 0.14, 1.0],
+          "texture": ""
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "遷移成功テキスト",
+      "enabled": true,
+      "parent": 1,
+      "transform": {
+        "position": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "UIRectTransform",
+          "enabled": true,
+          "anchorMin": [0.5, 0.3],
+          "anchorMax": [0.5, 0.3],
+          "pivot": [0.5, 0.5],
+          "anchoredPosition": [0.0, 0.0],
+          "sizeDelta": [720.0, 120.0]
+        },
+        {
+          "type": "TextRenderer",
+          "enabled": true,
+          "text": "Scene Managerで遷移しました！",
+          "fontFamily": "Yu Gothic UI",
+          "fontSize": 42.0,
+          "color": [0.4, 0.85, 1.0, 1.0],
+          "layoutSize": [720.0, 120.0],
+          "wordWrap": false,
+          "horizontalAlignment": "Center",
+          "verticalAlignment": "Center"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "name": "元のSceneへ戻る",
+      "enabled": true,
+      "parent": 1,
+      "transform": {
+        "position": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "UIRectTransform",
+          "enabled": true,
+          "anchorMin": [0.5, 0.58],
+          "anchorMax": [0.5, 0.58],
+          "pivot": [0.5, 0.5],
+          "anchoredPosition": [0.0, 0.0],
+          "sizeDelta": [320.0, 72.0]
+        },
+        {
+          "type": "UIButton",
+          "enabled": true,
+          "label": "元のSceneへ戻る",
+          "fontFamily": "Yu Gothic UI",
+          "fontSize": 24.0,
+          "fallbackSize": [320.0, 72.0],
+          "normalColor": [0.08, 0.3, 0.55, 1.0],
+          "hoveredColor": [0.12, 0.55, 0.9, 1.0],
+          "pressedColor": [0.04, 0.2, 0.4, 1.0],
+          "disabledColor": [0.18, 0.2, 0.24, 0.65],
+          "textColor": [1.0, 1.0, 1.0, 1.0],
+          "interactable": true,
+          "texture": "",
+          "reloadCurrentScene": false,
+          "targetScene": "scenes/sandbox.scene.json"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "name": "ゲームセッション初期配置",
+      "enabled": true,
+      "persistent": true,
+      "persistenceKey": "SampleGameSession",
+      "parent": null,
+      "transform": {
+        "position": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": []
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+#pragma once
+
+#include <cstdint>
+#include <string_view>
+
+namespace LamaPon
+{
+    inline constexpr std::uint32_t VersionMajor =
+        @PROJECT_VERSION_MAJOR@;
+    inline constexpr std::uint32_t VersionMinor =
+        @PROJECT_VERSION_MINOR@;
+    inline constexpr std::uint32_t VersionPatch =
+        @PROJECT_VERSION_PATCH@;
+    inline constexpr std::string_view VersionString{
+        "@PROJECT_VERSION@"
+    };
+    inline constexpr std::string_view BuildRevision{
+        "@LAMAPON_BUILD_REVISION@"
+    };
+}

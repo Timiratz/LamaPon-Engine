@@ -1,0 +1,3 @@
+#include "WindowsResource.h"
+
+IDI_LAMAPON_ENGINE ICON "../../../assets/icons/LamaPonHub.ico"

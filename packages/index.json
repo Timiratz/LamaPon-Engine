@@ -1,0 +1,16 @@
+{
+  "format": "LamaPonPackageIndex",
+  "packages": [
+    {
+      "name": "easing-tween",
+      "displayName": "Easing & Tween",
+      "description": "動きに緩急をつけるイージング関数（27種＋Linear）と、位置・回転・拡縮を時間をかけて動かすTweenコンポーネント。Easing.hをincludeすれば自分のScriptからも使えます。",
+      "author": "LamaPon",
+      "version": "1.0.0",
+      "minimumEngineVersion": "0.1.0",
+      "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/easing-tween-1.0.0.zip",
+      "sizeBytes": 9148
+    }
+  ],
+  "version": 1
+}

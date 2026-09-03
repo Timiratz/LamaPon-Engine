@@ -1,0 +1,121 @@
+{
+  "engineVersion": "0.1.0",
+  "format": "LamaPonProject",
+  "gameName": "TARGET RANGE",
+  "graphics": {
+    "antiAliasingEnabled": true,
+    "bloomEnabled": true,
+    "fogEnabled": true,
+    "pointLightLimit": 8,
+    "preset": "High",
+    "renderScale": 1.0,
+    "shadowCascadeLimit": 3,
+    "shadowResolution": 2048,
+    "shadowsEnabled": true,
+    "spotLightLimit": 4,
+    "targetFrameRate": 0,
+    "vSyncEnabled": true
+  },
+  "inputActions": [
+    {
+      "bindings": [
+        {
+          "control": "KeyboardA",
+          "scale": -1.0
+        },
+        {
+          "control": "KeyboardD",
+          "scale": 1.0
+        },
+        {
+          "control": "GamePadLeftX",
+          "scale": 1.0
+        }
+      ],
+      "name": "MoveHorizontal"
+    },
+    {
+      "bindings": [
+        {
+          "control": "KeyboardS",
+          "scale": -1.0
+        },
+        {
+          "control": "KeyboardW",
+          "scale": 1.0
+        },
+        {
+          "control": "GamePadLeftY",
+          "scale": 1.0
+        }
+      ],
+      "name": "MoveVertical"
+    },
+    {
+      "bindings": [
+        {
+          "control": "GamePadRightX",
+          "scale": 1.0
+        }
+      ],
+      "name": "LookHorizontal"
+    },
+    {
+      "bindings": [
+        {
+          "control": "GamePadRightY",
+          "scale": 1.0
+        }
+      ],
+      "name": "LookVertical"
+    },
+    {
+      "bindings": [
+        {
+          "control": "KeyboardSpace",
+          "scale": 1.0
+        },
+        {
+          "control": "GamePadA",
+          "scale": 1.0
+        }
+      ],
+      "name": "Jump"
+    },
+    {
+      "bindings": [
+        {
+          "control": "KeyboardEnter",
+          "scale": 1.0
+        },
+        {
+          "control": "GamePadA",
+          "scale": 1.0
+        }
+      ],
+      "name": "Submit"
+    },
+    {
+      "bindings": [
+        {
+          "control": "KeyboardEscape",
+          "scale": 1.0
+        },
+        {
+          "control": "GamePadB",
+          "scale": 1.0
+        }
+      ],
+      "name": "Cancel"
+    }
+  ],
+  "startupScene": "scenes/target-range.scene.json",
+  "tags": [
+    "Target"
+  ],
+  "version": 1,
+  "window": {
+    "height": 720,
+    "width": 1280
+  }
+}

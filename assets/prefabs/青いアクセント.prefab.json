@@ -1,0 +1,42 @@
+{
+  "format": "LamaPonPrefab",
+  "version": 1,
+  "root": 1,
+  "name": "アクセント",
+  "objects": [
+    {
+      "id": 1,
+      "name": "アクセント",
+      "enabled": true,
+      "parent": null,
+      "transform": {
+        "position": [0.0, 0.85, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [0.3, 0.3, 0.3]
+      },
+      "components": [
+        {
+          "type": "MeshRenderer",
+          "enabled": true,
+          "shape": "Sphere",
+          "color": [0.15, 0.72, 1.0, 1.0],
+          "albedoTexture": "",
+          "normalTexture": "",
+          "roughness": 0.25,
+          "normalStrength": 1.0
+        },
+        {
+          "type": "TransformAnimator",
+          "enabled": true,
+          "clip": "animations/アクセント浮遊.animation.json",
+          "clipGuid": "3fb7a3f13ccc579f670fc0c20c46ae70",
+          "controller": "animations/アクセント.animator.json",
+          "controllerGuid": "4018a473afd0b230df8e7e36134766db",
+          "speed": 1.0,
+          "loop": true,
+          "playOnStart": true
+        }
+      ]
+    }
+  ]
+}

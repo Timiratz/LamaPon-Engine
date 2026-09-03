@@ -1,0 +1,61 @@
+{
+  "format": "LamaPonScene",
+  "version": 2,
+  "mainCamera": 1,
+  "environment": {
+    "ambientColor": [1.0, 1.0, 1.0],
+    "ambientIntensity": 0.65,
+    "sky": {
+      "enabled": true,
+      "topColor": [0.08, 0.13, 0.24],
+      "horizonColor": [0.22, 0.34, 0.52]
+    }
+  },
+  "objects": [
+    {
+      "id": 1,
+      "name": "Main Camera",
+      "enabled": true,
+      "parent": null,
+      "transform": {
+        "position": [0.0, 0.0, 3.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "Camera",
+          "enabled": true,
+          "verticalFieldOfView": 0.9,
+          "nearPlane": 0.1,
+          "farPlane": 100.0
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Imported OBJ Triangle",
+      "enabled": true,
+      "parent": null,
+      "transform": {
+        "position": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "ModelRenderer",
+          "enabled": true,
+          "model": "models/triangle.obj",
+          "wireframe": false,
+          "materialOverride": true,
+          "color": [0.1, 0.72, 1.0, 1.0],
+          "albedoTexture": "",
+          "normalTexture": "",
+          "roughness": 0.42,
+          "normalStrength": 1.0
+        }
+      ]
+    }
+  ]
+}

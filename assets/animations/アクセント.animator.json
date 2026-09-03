@@ -1,0 +1,37 @@
+{
+  "format": "LamaPonAnimatorController",
+  "version": 1,
+  "entry": "Idle",
+  "states": [
+    {
+      "name": "Idle",
+      "clip": "animations/アクセント待機.animation.json",
+      "clipGuid": "2cbff0fadf44634f6757a8017890a24d",
+      "speed": 1.0,
+      "loop": false
+    },
+    {
+      "name": "Float",
+      "clip": "animations/アクセント浮遊.animation.json",
+      "clipGuid": "3fb7a3f13ccc579f670fc0c20c46ae70",
+      "speed": 1.0,
+      "loop": false
+    }
+  ],
+  "transitions": [
+    {
+      "from": "Idle",
+      "to": "Float",
+      "trigger": "",
+      "exitTime": 0.7,
+      "duration": 0.3
+    },
+    {
+      "from": "Float",
+      "to": "Idle",
+      "trigger": "",
+      "exitTime": 1.0,
+      "duration": 0.4
+    }
+  ]
+}

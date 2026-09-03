@@ -1,0 +1,50 @@
+{
+  "format": "LamaPonScene",
+  "version": 1,
+  "mainCamera": 2,
+  "objects": [
+    {
+      "id": 1,
+      "name": "Game Director",
+      "enabled": true,
+      "parent": null,
+      "transform": {
+        "position": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "NativeScript",
+          "enabled": true,
+          "script": "TargetRange.Game",
+          "properties": {}
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Main Camera",
+      "enabled": true,
+      "parent": null,
+      "transform": {
+        "position": [0.0, 3.4, 9.0],
+        "rotation": [-0.16, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": [
+        {
+          "type": "Camera",
+          "enabled": true,
+          "verticalFieldOfView": 0.9,
+          "nearPlane": 0.1,
+          "farPlane": 120.0
+        },
+        {
+          "type": "AudioListener",
+          "enabled": true
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "format": "LamaPonWebTarget",
+  "projectName": "ModelFixture",
+  "gameName": "LamaPon Web Model Fixture",
+  "name": "LamaPonWebModelFixture",
+  "export": {
+    "targets": ["web"],
+    "modules": ["core", "renderer3d", "input"],
+    "web": {
+      "renderer": "webgl2",
+      "buildSystem": "lamapon",
+      "portableGame": true,
+      "sources": ["main.cpp"],
+      "cmakeTarget": "LamaPonWebModelFixture",
+      "singleFile": true,
+      "compatibilityProfile": "webgl2-basic-3d",
+      "assetDirectory": "assets",
+      "assetIncludePaths": ["models", "scenes"],
+      "scenePath": "/assets/scenes/Main.scene.json"
+    }
+  }
+}

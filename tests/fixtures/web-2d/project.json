@@ -1,0 +1,22 @@
+{
+  "format": "LamaPonWebTarget",
+  "projectName": "2DFixture",
+  "gameName": "LamaPon Web 2D Fixture",
+  "name": "LamaPonWeb2DFixture",
+  "export": {
+    "targets": ["web"],
+    "modules": ["core", "renderer2d", "input"],
+    "web": {
+      "renderer": "webgl2",
+      "buildSystem": "lamapon",
+      "portableGame": true,
+      "sources": ["main.cpp"],
+      "cmakeTarget": "LamaPonWeb2DFixture",
+      "singleFile": true,
+      "compatibilityProfile": "webgl2-basic-2d",
+      "assetDirectory": "assets",
+      "assetIncludePaths": ["animations", "scenes"],
+      "scenePath": "/assets/scenes/Main.scene.json"
+    }
+  }
+}
