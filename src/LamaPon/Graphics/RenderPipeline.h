@@ -36,22 +36,12 @@ namespace LamaPon
     using PostProcessHook =
         std::function<void(RenderTarget&, ScreenEffectPoint)>;
 
-    // 深度プリパスを走らせ、SSAOをライティングより前に解決します。
-    //
-    // 戻り値がtrueなら、target.AmbientOcclusionShaderResourceView()
-    // をLitEffectへ渡せます（Litシェーダーが環境光／IBL項にだけ
-    // 掛けます）。falseなら遮蔽なしとして扱ってください。
-    //
-    // SSAOが無効なときは何もせずfalseを返します。プリパスはジオメトリを
-    // もう1回描くコストがあるので、SSAOを使わない構成では走らせません
-    // （早期Zの効果だけを狙って常に走らせるのは今後の課題）。
-    //
-    // 呼んだ後は描画先とビューポートが変わっているので、呼ぶ側は
-    // メインパスの前にtarget.Bind()で描画先を戻してください。
-    // projectionはこれから描く絵の射影行列です。
-    // プリパスの結果。depthAvailableは「深度が使える状態になった」で、
-    // SSRが読むのはこちらです（SSAOを切っていてもSSRのために走る
-    // ことがあるため、2つを分けています）。
+    // SSAOまたはSSRが必要な場合に深度プリパスを実行します。
+    // ambientOcclusionResolvedがtrueならAOをLitEffectへ渡せます。
+    // depthAvailableはSSR用の深度が利用可能かを示し、SSAO無効時も
+    // trueになり得ます。どちらも不要な場合は両方falseです。
+    // 呼び出し後はtarget.Bind()でメインパスの描画先を戻してください。
+    // projectionにはこれから描く画面の射影行列を渡します。
     struct DepthPrepassResult final
     {
         bool ambientOcclusionResolved{};

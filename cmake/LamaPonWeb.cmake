@@ -71,6 +71,7 @@ function(lamapon_add_web_game target)
     if(TWG_PORTABLE_GAME)
         list(APPEND runtime_sources
             "${LAMAPON_WEB_ROOT}/src/LamaPon/Portable/PortableRuntime.cpp"
+            "${LAMAPON_WEB_ROOT}/src/LamaPon/Portable/PortableLog.cpp"
             "${LAMAPON_WEB_ROOT}/src/LamaPon/Portable/PortableWebGame.cpp"
         )
     endif()
@@ -119,9 +120,13 @@ function(lamapon_add_web_game target)
         -Wall
         -Wextra
         -Wpedantic
+        # Scene/Scriptの既存catchを有効にし、復旧可能な例外で
+        # ブラウザーRuntime全体がabortしないようにします。
+        -fexceptions
     )
 
     target_link_options(${target} PRIVATE
+        -fexceptions
         "-sALLOW_MEMORY_GROWTH=1"
         "-sNO_EXIT_RUNTIME=1"
         "-sASSERTIONS=1"

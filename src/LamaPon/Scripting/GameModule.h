@@ -53,7 +53,9 @@ namespace LamaPon
     // ため、古いDLLのディスクリプタを新しいレイアウトで読むと
     // 存在しない配列を辿ってしまいます。AssetManagerにも
     // データアセットのキャッシュが増えてsizeofが変わりました。
-    inline constexpr std::uint32_t GameModuleApiVersion = 14;
+    // 15はSceneの空間索引とGraphicsDeviceのサービス所有を専用クラスへ
+    // 移したためです。公開クラスのレイアウトを使う既存DLLは再ビルドします。
+    inline constexpr std::uint32_t GameModuleApiVersion = 15;
 
     using NativeScriptCreateFunction = void* (*)(
         GameObject* owner,

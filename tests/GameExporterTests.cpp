@@ -109,7 +109,9 @@ namespace
                 continue;
             }
             if (entry.path().parent_path().filename()
-                == L"shader-cache")
+                == L"shader-cache"
+                || entry.path().parent_path().filename() == L"licenses"
+                || entry.path().filename() == L"THIRD_PARTY_NOTICES.md")
             {
                 continue;
             }
@@ -340,6 +342,13 @@ int main()
         // （このテスト自身のコピー）を使います。
         std::filesystem::create_directories(
             runtimeDirectory);
+        std::filesystem::copy(
+            SelfExecutablePath().parent_path() / "licenses",
+            runtimeDirectory / "licenses",
+            std::filesystem::copy_options::recursive);
+        std::filesystem::copy_file(
+            SelfExecutablePath().parent_path() / "THIRD_PARTY_NOTICES.md",
+            runtimeDirectory / "THIRD_PARTY_NOTICES.md");
         std::filesystem::copy_file(
             SelfExecutablePath(),
             runtimeDirectory / "LamaPonGame.exe");

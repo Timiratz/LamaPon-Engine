@@ -3,6 +3,7 @@
 #include "LamaPon/Assets/AssetManager.h"
 #include "LamaPon/Audio/AudioSystem.h"
 #include "LamaPon/Core/Log.h"
+#include "LamaPon/Core/RuntimeServices.h"
 #include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Graphics/ClusteredLights.h"
 #include "LamaPon/Graphics/DebugRenderer.h"
@@ -197,7 +198,10 @@ namespace LamaPon
             ScreenEffectPoint::AfterToneMapping };
     };
 
-    GraphicsDevice::GraphicsDevice() = default;
+    GraphicsDevice::GraphicsDevice()
+        : m_services(std::make_unique<RuntimeServices>())
+    {
+    }
     GraphicsDevice::~GraphicsDevice()
     {
         Shutdown();
@@ -262,9 +266,7 @@ namespace LamaPon
         m_environmentRenderer.reset();
         m_clusteredLights.reset();
         m_debugRenderer.reset();
-        m_inputSystem.reset();
-        m_audioSystem.reset();
-        m_assets.reset();
+        m_services->Shutdown();
         m_commonStates.reset();
         m_spriteBatch.reset();
         m_whiteTexture.Reset();
@@ -473,10 +475,8 @@ namespace LamaPon
                         .ReleaseAndGetAddressOf()),
                 "ID3D11Device::CreateRasterizerState");
         }
-        m_assets = std::make_unique<AssetManager>(m_device.Get(), m_context.Get());
-        m_audioSystem = std::make_unique<AudioSystem>();
-        m_inputSystem =
-            std::make_unique<InputSystem>(window);
+        m_services->Initialize(m_device.Get(), m_context.Get(), window,
+            m_graphicsSettings.runtimeTextureCompression);
         m_debugRenderer = std::make_unique<DebugRenderer>(
             m_device.Get(),
             m_context.Get());
@@ -1770,7 +1770,7 @@ namespace LamaPon
     void GraphicsDevice::InvalidateComputeEffectShader(
         const std::filesystem::path& shaderPath) const
     {
-        if (shaderPath.empty() || !m_assets)
+        if (shaderPath.empty() || !TryAssets())
         {
             return;
         }
@@ -1789,7 +1789,7 @@ namespace LamaPon
     void GraphicsDevice::InvalidateScreenEffectShader(
         const std::filesystem::path& shaderPath) const
     {
-        if (shaderPath.empty() || !m_assets)
+        if (shaderPath.empty() || !TryAssets())
         {
             return;
         }
@@ -2125,9 +2125,9 @@ namespace LamaPon
         m_graphicsSettings = clamped;
         // 以降に読み込まれるテクスチャへ圧縮設定を反映します
         // （生成済みテクスチャはそのまま）。
-        if (m_assets)
+        if (auto* assets = TryAssets())
         {
-            m_assets->SetRuntimeTextureCompressionEnabled(
+            assets->SetRuntimeTextureCompressionEnabled(
                 clamped.runtimeTextureCompression);
         }
         if (IsInitialized() && recreateShadows)
@@ -2208,44 +2208,23 @@ namespace LamaPon
 
     AssetManager& GraphicsDevice::Assets() const
     {
-        if (!m_assets)
-        {
-            // Scene/prefab serialization routes every file read through
-            // AssetManager so it works transparently against an exported
-            // game's encrypted archive. Tests that exercise that logic
-            // without a real Direct3D device (no window to render into)
-            // still need a working AssetManager for loose-file reads, so
-            // fall back to a deviceless one instead of requiring a full
-            // GraphicsDevice::Initialize() call.
-            m_assets = std::make_unique<AssetManager>(
-                m_device.Get(),
-                m_context.Get());
-            m_assets->SetRuntimeTextureCompressionEnabled(
-                m_graphicsSettings
-                    .runtimeTextureCompression);
-        }
+        return m_services->EnsureAssets(m_device.Get(), m_context.Get(),
+            m_graphicsSettings.runtimeTextureCompression);
+    }
 
-        return *m_assets;
+    AssetManager* GraphicsDevice::TryAssets() const noexcept
+    {
+        return m_services->TryAssets();
     }
 
     AudioSystem& GraphicsDevice::Audio() const
     {
-        if (!m_audioSystem)
-        {
-            throw std::logic_error(
-                "Audio system is not initialized.");
-        }
-        return *m_audioSystem;
+        return m_services->Audio();
     }
 
     InputSystem& GraphicsDevice::Input() const
     {
-        if (!m_inputSystem)
-        {
-            throw std::logic_error(
-                "Input system is not initialized.");
-        }
-        return *m_inputSystem;
+        return m_services->Input();
     }
 
     DirectX::CommonStates& GraphicsDevice::States() const

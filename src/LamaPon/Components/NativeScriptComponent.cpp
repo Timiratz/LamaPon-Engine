@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 
 #include <stdexcept>
+#include <cstdio>
 #include <utility>
 
 namespace
@@ -52,6 +53,27 @@ namespace
         }
         LamaPon::Logger::Instance().Error(lastError);
         return false;
+    }
+
+    // 破棄・無効化はnoexcept境界です。通常の診断を残しつつ、
+    // 診断文字列やログの確保に失敗しても後続の解放を続けます。
+    template <typename Callback>
+    void InvokeCleanupCallback(
+        std::string& lastError,
+        const std::string_view scriptType,
+        const std::string_view callbackName,
+        Callback&& callback) noexcept
+    {
+        try
+        {
+            static_cast<void>(InvokeScriptCallback(
+                lastError, scriptType, callbackName,
+                std::forward<Callback>(callback)));
+        }
+        catch (...)
+        {
+            std::fputs("Native Script cleanup diagnostic failed.\n", stderr);
+        }
     }
 }
 
@@ -375,15 +397,10 @@ namespace LamaPon
         m_instanceActive = active;
         if (m_descriptor->setActive != nullptr)
         {
-            try
-            {
-                m_descriptor->setActive(
-                    m_instance,
-                    active);
-            }
-            catch (...)
-            {
-            }
+            InvokeCleanupCallback(
+                m_lastError, m_scriptType,
+                active ? "OnEnable" : "OnDisable",
+                [&] { m_descriptor->setActive(m_instance, active); });
         }
     }
 
@@ -483,13 +500,9 @@ namespace LamaPon
             && m_descriptor != nullptr
             && m_descriptor->destroy != nullptr)
         {
-            try
-            {
-                m_descriptor->destroy(m_instance);
-            }
-            catch (...)
-            {
-            }
+            InvokeCleanupCallback(
+                m_lastError, m_scriptType, "OnDestroy",
+                [&] { m_descriptor->destroy(m_instance); });
         }
         m_instance = nullptr;
         m_descriptor = nullptr;

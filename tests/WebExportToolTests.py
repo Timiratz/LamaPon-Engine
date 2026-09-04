@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import importlib.util
+import html
 import json
 import re
 import struct
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,6 +21,21 @@ SPEC.loader.exec_module(EXPORT_WEB)
 
 
 class WebExportToolTests(unittest.TestCase):
+    def setUp(self):
+        # テスト用変換器も実プロセスとして実行する。Windowsはshebangを
+        # 解釈しないため、このテストで作ったPythonスクリプトだけ補います。
+        run = subprocess.run
+
+        def run_converter(command, *args, **kwargs):
+            if (isinstance(command, list) and command
+                    and Path(command[0]).name in {"fake-magick", "fake-ffmpeg"}):
+                command = [sys.executable, *command]
+            return run(command, *args, **kwargs)
+
+        patcher = mock.patch.object(EXPORT_WEB.subprocess, "run", side_effect=run_converter)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     @staticmethod
     def _write_glb(path: Path, document: dict, binary: bytes = b"") -> None:
         encoded = json.dumps(document, separators=(",", ":")).encode("utf-8")
@@ -226,7 +244,7 @@ class WebExportToolTests(unittest.TestCase):
             cmake = (generated / "CMakeLists.txt").read_text(encoding="utf-8")
 
             self.assertIn("lamapon_add_web_game(GeneratedGame", cmake)
-            self.assertIn(str(root / "main.cpp"), cmake)
+            self.assertIn((root / "main.cpp").as_posix(), cmake)
             self.assertIn("        core", cmake)
             self.assertIn("        input", cmake)
             self.assertIn("SINGLE_FILE", cmake)
@@ -1156,6 +1174,10 @@ class WebExportToolTests(unittest.TestCase):
 
             self.assertFalse(old_html.exists())
             self.assertTrue((output / new_html.name).is_file())
+            packaged = (output / new_html.name).read_text(encoding="utf-8")
+            self.assertIn('<pre id="lamapon-licenses" hidden>', packaged)
+            # HTML単体でも各ライセンスの本文を復元できることを確認する。
+            self.assertIn(EXPORT_WEB.web_license_bundle(), html.unescape(packaged))
 
 
 if __name__ == "__main__":

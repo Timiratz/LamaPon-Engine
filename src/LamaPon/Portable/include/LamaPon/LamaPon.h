@@ -85,9 +85,9 @@ namespace LamaPon
             return logger;
         }
 
-        void Info(std::string_view) const noexcept {}
-        void Warning(std::string_view) const noexcept {}
-        void Error(std::string_view) const noexcept {}
+        void Info(std::string_view message) const noexcept;
+        void Warning(std::string_view message) const noexcept;
+        void Error(std::string_view message) const noexcept;
     };
 
     enum class AudioBus : std::uint8_t

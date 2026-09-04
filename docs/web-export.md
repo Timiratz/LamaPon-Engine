@@ -1,5 +1,13 @@
 # Web／Windows出力試作
 
+配布SDKにも `tools/export_web.py`、`cmake/LamaPonWeb.cmake`、Web／Portableの
+ソースと必要なヘッダーを同梱しています。ソースリポジトリの別途取得は不要です。
+Python 3.11以降、CMake、[Emscripten SDK](https://emscripten.org/docs/getting_started/downloads.html)
+を用意し、`emsdk_env.bat`（Windows）または `source emsdk_env.sh` で有効化してから、
+SDK内の `python tools/export_web.py <プロジェクトのproject.json> --generator Ninja`
+を実行します。Webの対応範囲は以下の契約に従います。
+Emscripten 6.0.9でコンパイルとChrome上の回帰テストを検証しています。
+
 この文書は、既存のWindows／DirectX 11 Runtimeを保ったまま、C++で書いた小さなゲームをWindowsとWebへ出力するための最初の設計判断を記録します。
 
 ## 現状の境界

@@ -45,6 +45,7 @@ int WINAPI wWinMain(
     LamaPon::CrashReporter::Install(
         LamaPon::ExecutableDirectory() / L"Crashes",
         "LamaPonGame");
+    const bool validateStartup = HasCommandLineFlag(L"--validate-startup");
     try
     {
         // --warp: GPUを使わずCPUラスタライザ（WARP）で描画します。
@@ -89,6 +90,31 @@ int WINAPI wWinMain(
             settings.inputActions);
         application.ActiveScene().SetRegisteredTags(
             settings.tags);
+        if (validateStartup)
+        {
+            // 配布物を別プロセスで検証するための無人実行です。
+            // DLL・暗号鍵・シーンを実際に読み、失敗は終了コードへ返します。
+            ShowWindow(application.WindowHandle(), SW_HIDE);
+            auto& scene = application.ActiveScene();
+            if (!scene.Scenes().RequestLoad(settings.startupScene)
+                || !scene.Scenes().ProcessPending())
+            {
+                throw std::runtime_error(scene.Scenes().LastError());
+            }
+            scene.Update(1.0f / 60.0f);
+            for (const auto& object : scene.GameObjects())
+            {
+                for (const auto& component : object->Components())
+                {
+                    if (const auto* script = dynamic_cast<const LamaPon::NativeScriptComponent*>(component.get());
+                        script != nullptr && !script->LastError().empty())
+                    {
+                        throw std::runtime_error(script->LastError());
+                    }
+                }
+            }
+            return 0;
+        }
         if (!application.ActiveScene().
             Scenes().RequestLoadAsync(
                 settings.startupScene))
@@ -108,11 +134,14 @@ int WINAPI wWinMain(
         std::ofstream log("LamaPonGame.log", std::ios::trunc);
         log << exception.what() << '\n';
 
-        MessageBoxA(
-            nullptr,
-            exception.what(),
-            "LamaPon Game error",
-            MB_OK | MB_ICONERROR);
+        if (!validateStartup)
+        {
+            MessageBoxA(
+                nullptr,
+                exception.what(),
+                "LamaPon Game error",
+                MB_OK | MB_ICONERROR);
+        }
         return 1;
     }
 }

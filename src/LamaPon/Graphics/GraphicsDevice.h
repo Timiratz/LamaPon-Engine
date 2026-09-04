@@ -74,6 +74,7 @@ namespace LamaPon
     };
 
     class Application;
+    class RuntimeServices;
     class AssetManager;
     class AudioSystem;
     class ClusteredLights;
@@ -366,10 +367,7 @@ namespace LamaPon
         [[nodiscard]] ID3D11DeviceContext* Context() const noexcept { return m_context.Get(); }
         [[nodiscard]] ID3D11ShaderResourceView* WhiteTexture() const noexcept { return m_whiteTexture.Get(); }
         [[nodiscard]] AssetManager& Assets() const;
-        [[nodiscard]] AssetManager* TryAssets() const noexcept
-        {
-            return m_assets.get();
-        }
+        [[nodiscard]] AssetManager* TryAssets() const noexcept;
         [[nodiscard]] AudioSystem& Audio() const;
         [[nodiscard]] InputSystem& Input() const;
         [[nodiscard]] DirectX::CommonStates& States() const;
@@ -621,9 +619,9 @@ namespace LamaPon
         void DrainDebugMessages();
         Microsoft::WRL::ComPtr<ID3D11InfoQueue> m_infoQueue;
         std::uint64_t m_debugMessagesLogged{};
-        mutable std::unique_ptr<AssetManager> m_assets;
-        std::unique_ptr<AudioSystem> m_audioSystem;
-        std::unique_ptr<InputSystem> m_inputSystem;
+        // 既存のAssets/Audio/Input APIを保ち、サービスの寿命管理は
+        // 専用の所有者へ委譲します。D3Dデバイスより先に終了します。
+        std::unique_ptr<RuntimeServices> m_services;
         std::unique_ptr<DebugRenderer> m_debugRenderer;
         mutable std::unique_ptr<EnvironmentRenderer>
             m_environmentRenderer;

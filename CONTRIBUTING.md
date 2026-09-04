@@ -1,5 +1,11 @@
 # Contributing to LamaPon
 
+クラスを分けるときは、ファイルだけでなく状態と責務の所有者を分けてください。
+EditorLayerの全体参照を渡す代わりに、必要なサービスと用途を限定した
+コールバックを渡します。BgmLoopPanelはカタログ・波形・試聴を所有し、
+EditorLayerは表示と保存後のコマンド実行を仲介する例です。
+コメントは処理の目的、寿命、例外時の後始末を説明し、戻り値や実装と揃えます。
+
 LamaPon currently targets Windows, MSVC, DirectX 11, and C++20.
 
 ## Development workflow
@@ -21,8 +27,8 @@ sufficient.
 - Treat `/W4` warnings in changed code as defects.
 - Prefer RAII, `std::filesystem::path`, and explicit ownership.
 - Keep platform-specific code behind a small interface.
-- Split editor panels and systems into separate translation units instead of
-  extending `EditorLayer.cpp`.
+- Give panels and systems their own state and narrow dependencies. Keep stateless
+  component inspectors independent of `EditorLayer` and share only required operations.
 - コードコメントは原則として日本語で記述します。API名や外部仕様など、
   英語の方が正確な場合は英語を使用して構いません。自明な各行ではなく、
   処理ブロック、互換処理、例外的な判断の意図が分かる単位で補足します。

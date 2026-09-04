@@ -3232,7 +3232,10 @@ namespace LamaPon
             auto& object = CreateGameObject(objectJson.value("name", "GameObject"));
             const std::int64_t sourceId = objectJson.value("id", 0ll);
             bySourceId[sourceId] = &object;
-            if (!objectJson["parent"].is_null())
+            // parentを省略したオブジェクトはルートとして扱います。
+            // const JSONへの[]は欠落時にassertで停止するため使いません。
+            const auto parent = objectJson.find("parent");
+            if (parent != objectJson.end() && !parent->is_null())
             {
                 pendingParents.push_back({ &object, objectJson.value("parent", 0ll) });
             }

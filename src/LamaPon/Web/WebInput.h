@@ -20,6 +20,9 @@ namespace LamaPon::Web
         WebInput(const WebInput&) = delete;
         WebInput& operator=(const WebInput&) = delete;
 
+        // windowイベントを占有するため、同時に初期化できるのは1つです。
+        // 失敗時は登録をすべて戻し、同じインスタンスで再試行できます。
+        // targetのDOM要素は、このインスタンスの破棄まで保持してください。
         [[nodiscard]] bool Initialize(const char* target = "#canvas");
         void BeginFrame() noexcept;
         void EndFrame() noexcept;
@@ -77,7 +80,7 @@ namespace LamaPon::Web
         [[nodiscard]] bool PointerButtonReleased(int button) const noexcept;
 
     private:
-        struct EventState;
+        void Shutdown() noexcept;
         static bool HandleKeyEvent(
             int eventType,
             const char* code,
@@ -95,7 +98,8 @@ namespace LamaPon::Web
             void* userData) noexcept;
         void SampleGamepads() noexcept;
 
-        EventState* m_state{};
+        std::array<bool, 10> m_registered{};
+        std::array<void*, 10> m_callbacks{};
         std::unordered_set<std::string> m_down;
         std::unordered_set<std::string> m_pressed;
         std::unordered_set<std::string> m_released;

@@ -8,6 +8,7 @@
 #include "LamaPon/Graphics/ReflectionProbeEnvironment.h"
 #include "LamaPon/Physics/PhysicsQuery.h"
 #include "LamaPon/Scene/EventBus.h"
+#include "LamaPon/Scene/RenderSpatialIndex.h"
 
 #include <DirectXMath.h>
 #include <wrl/client.h>
@@ -618,8 +619,9 @@ namespace LamaPon
                 const DirectX::XMFLOAT3& position)
                 const noexcept;
         // targetは描画先のレンダーターゲットです。渡すと深度プリパスと
-        // SSAOをライティングより前に走らせます（SSAO有効時のみ）。
-        // nullptrでも描画自体は成立しますが、SSAOはかかりません。
+        // SSAOをライティングより前に解決し、SSRにも深度を渡します。
+        // どちらも無効ならプリパスを省略します。nullptrでも描画自体は
+        // 成立しますが、この経路でSSAOやSSRの深度は生成しません。
         void RenderMainCamera(
             float aspectRatio,
             bool include2D = true,
@@ -653,21 +655,6 @@ namespace LamaPon
                 renderHidden;
             RenderVisibilityStats stats;
         };
-        struct RenderSpatialEntry final
-        {
-            GameObject* object{};
-            Bounds3D bounds{};
-            Bounds3D cullingBounds{};
-        };
-        struct RenderSpatialNode final
-        {
-            Bounds3D bounds{};
-            std::size_t first{};
-            std::size_t count{};
-            std::size_t left{};
-            std::size_t right{};
-        };
-
         void StepPhysics(float deltaTime);
         void SolveJoints(
             float deltaTime,
@@ -766,12 +753,8 @@ namespace LamaPon
         bool m_frustumCullingEnabled{ true };
         bool m_occlusionCullingEnabled{ true };
         RenderVisibilityStats m_visibilityStats;
-        mutable std::vector<RenderSpatialEntry>
-            m_renderSpatialEntries;
-        mutable std::vector<std::size_t>
-            m_renderSpatialOrder;
-        mutable std::vector<RenderSpatialNode>
-            m_renderSpatialNodes;
+        // BVHの構築・検索・破棄は索引の所有者へ委譲します。
+        mutable RenderSpatialIndex m_renderSpatialIndex;
         // クラスタライトカリングの初期化に失敗した（シェーダーが
         // 無い等）。従来経路で描き続け、毎フレーム再試行しません。
         bool m_clusteredLightingUnavailable{};

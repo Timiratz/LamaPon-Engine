@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import html
 import json
 import re
 import shlex
@@ -2969,6 +2970,24 @@ def write_export_manifest(
     return manifest_path
 
 
+def web_license_bundle() -> str:
+    """ソースツリーと配布SDKのどちらでも同じ著作権・許諾本文を読む。"""
+    sources = {
+        "LamaPon": "LICENSE",
+        "nlohmann-json": "third_party/nlohmann/LICENSE.MIT",
+        "cgltf": "third_party/cgltf/LICENSE.txt",
+    }
+    sections = []
+    for name, relative in sources.items():
+        path = ENGINE_ROOT / relative
+        if not path.is_file():
+            path = ENGINE_ROOT / "licenses" / f"{name}.txt"
+        if not path.is_file():
+            raise ExportError(f"Web runtime license text is missing: {name}")
+        sections.append(name + "\n\n" + path.read_text(encoding="utf-8").strip())
+    return "\n\n".join(sections)
+
+
 def copy_web_package(
     build_directory: Path,
     output_directory: Path,
@@ -2981,6 +3000,10 @@ def copy_web_package(
 ) -> tuple[list[Path], list[dict[str, str]]]:
     build_directory = build_directory.resolve()
     output_directory = output_directory.resolve()
+    # 単一HTMLを共有しても許諾本文が失われないよう、本体へ埋め込む。
+    # 文字列をHTMLとして解釈させず、ゲーム画面には表示しない。
+    license_notice = ('\n<pre id="lamapon-licenses" hidden>'
+                      + html.escape(web_license_bundle()) + '</pre>\n')
     output_directory.mkdir(parents=True, exist_ok=True)
     all_artifact_extensions = {
         ".html",
@@ -3057,6 +3080,14 @@ def copy_web_package(
         else:
             continue
         shutil.copy2(candidate, destination)
+        if destination.suffix == ".html":
+            content = destination.read_text(encoding="utf-8")
+            closing_body = content.lower().rfind("</body>")
+            if closing_body >= 0:
+                content = content[:closing_body] + license_notice + content[closing_body:]
+            else:
+                content += license_notice
+            destination.write_text(content, encoding="utf-8")
         copied.append(destination)
 
     assets = build_directory / "assets"

@@ -2324,21 +2324,21 @@ int RunTest(const std::string_view suite)
             // 階層検索API：GetComponentInChildren/InParent/FindChild
             {
                 LamaPon::Scene searchScene(graphics);
-                auto& root =
+                auto& nestedRoot =
                     searchScene.CreateGameObject("ルート");
                 auto& arm =
                     searchScene.CreateGameObject("腕");
-                arm.SetParent(&root);
+                arm.SetParent(&nestedRoot);
                 auto& weapon =
                     searchScene.CreateGameObject("武器");
                 weapon.SetParent(&arm);
-                auto& rootProbe = root.AddComponent<
+                auto& rootProbe = nestedRoot.AddComponent<
                     ActiveStateProbeComponent>();
                 auto& weaponProbe = weapon.AddComponent<
                     ActiveStateProbeComponent>();
 
                 Require(
-                    root.GetComponentInChildren<
+                    nestedRoot.GetComponentInChildren<
                             ActiveStateProbeComponent>()
                         == &rootProbe,
                     "GetComponentInChildren must include self.");
@@ -2348,7 +2348,7 @@ int RunTest(const std::string_view suite)
                         == &weaponProbe,
                     "GetComponentInChildren must search descendants.");
                 Require(
-                    root.GetComponentsInChildren<
+                    nestedRoot.GetComponentsInChildren<
                             ActiveStateProbeComponent>()
                         .size() == 2,
                     "GetComponentsInChildren must collect descendants.");
@@ -2382,24 +2382,24 @@ int RunTest(const std::string_view suite)
                         == &weaponProbe,
                     "includeInactive must reach inactive descendants.");
                 Require(
-                    root.GetComponentsInChildren<
+                    nestedRoot.GetComponentsInChildren<
                             ActiveStateProbeComponent>()
                         .size() == 1,
                     "GetComponentsInChildren must skip inactive by default.");
                 weapon.SetEnabled(true);
 
                 Require(
-                    root.FindChild("腕") == &arm,
+                    nestedRoot.FindChild("腕") == &arm,
                     "FindChild direct lookup failed.");
                 Require(
-                    root.FindChild("腕/武器") == &weapon,
+                    nestedRoot.FindChild("腕/武器") == &weapon,
                     "FindChild path lookup failed.");
                 Require(
-                    root.FindChild("武器") == nullptr,
+                    nestedRoot.FindChild("武器") == nullptr,
                     "FindChild must match direct children per segment.");
                 Require(
-                    root.FindChild("腕/") == nullptr
-                        && root.FindChild("") == nullptr,
+                    nestedRoot.FindChild("腕/") == nullptr
+                        && nestedRoot.FindChild("") == nullptr,
                     "FindChild must reject empty segments.");
             }
 
@@ -2603,7 +2603,7 @@ int RunTest(const std::string_view suite)
                     buttonScene.SerializeToJson();
                 LamaPon::Scene buttonLoaded(graphics);
                 buttonLoaded.LoadFromJson(buttonJson);
-                const auto* loadedButton =
+                const auto* eventButton =
                     buttonLoaded
                         .FindGameObjectByName(
                             "開始ボタン")
@@ -2611,8 +2611,8 @@ int RunTest(const std::string_view suite)
                             LamaPon::
                                 UIButtonComponent>();
                 Require(
-                    loadedButton != nullptr
-                        && loadedButton
+                    eventButton != nullptr
+                        && eventButton
                             ->ClickEventName()
                             == "StartGame",
                     "Button click event did not round-trip.");
@@ -2627,28 +2627,28 @@ int RunTest(const std::string_view suite)
                         "Player");
                 auto& renderer = player.AddComponent<
                     LamaPon::SpriteRendererComponent>();
-                auto& animator = player.AddComponent<
+                auto& overrideAnimator = player.AddComponent<
                     LamaPon::SpriteAnimatorComponent>(
                     4,
                     2);
-                animator.AddClip(
+                overrideAnimator.AddClip(
                     { "walk", 0, 4, 10.0f, true });
-                animator.AddClip(
+                overrideAnimator.AddClip(
                     { "jump", 4, 3, 10.0f, false });
-                animator.SetDefaultClip("walk");
+                overrideAnimator.SetDefaultClip("walk");
 
                 spriteScene.Update(0.0f);
                 Require(
-                    animator.IsPlaying()
-                        && animator.ActiveClipName()
+                    overrideAnimator.IsPlaying()
+                        && overrideAnimator.ActiveClipName()
                             == "walk",
                     "Default clip must auto-play.");
                 Require(
-                    animator.CurrentFrame() == 0,
+                    overrideAnimator.CurrentFrame() == 0,
                     "Playback must start at frame 0.");
                 spriteScene.Update(0.25f);
                 Require(
-                    animator.CurrentFrame() == 2,
+                    overrideAnimator.CurrentFrame() == 2,
                     "10fps x 0.25s must reach frame 2.");
                 Require(
                     renderer.SourceRect().x == 0.5f
@@ -2661,30 +2661,30 @@ int RunTest(const std::string_view suite)
                     "Frame 2 source rect is wrong.");
                 spriteScene.Update(0.2f);
                 Require(
-                    animator.CurrentFrame() == 0,
+                    overrideAnimator.CurrentFrame() == 0,
                     "Looping clip must wrap to frame 0.");
 
                 Require(
-                    animator.Play("jump"),
+                    overrideAnimator.Play("jump"),
                     "Play must find the jump clip.");
                 spriteScene.Update(1.0f);
                 Require(
-                    !animator.IsPlaying()
-                        && animator.CurrentFrame() == 6,
+                    !overrideAnimator.IsPlaying()
+                        && overrideAnimator.CurrentFrame() == 6,
                     "Non-loop clip must stop on the last frame.");
 
                 const auto spriteJson =
                     spriteScene.SerializeToJson();
                 LamaPon::Scene spriteLoaded(graphics);
                 spriteLoaded.LoadFromJson(spriteJson);
-                const auto* loadedPlayer =
+                const auto* overridePlayer =
                     spriteLoaded.FindGameObjectByName(
                         "Player");
                 Require(
-                    loadedPlayer != nullptr,
+                    overridePlayer != nullptr,
                     "Sprite scene did not round-trip.");
                 const auto* loadedAnimator =
-                    loadedPlayer->GetComponent<
+                    overridePlayer->GetComponent<
                         LamaPon::
                             SpriteAnimatorComponent>();
                 Require(
@@ -2699,7 +2699,7 @@ int RunTest(const std::string_view suite)
                             .loop,
                     "SpriteAnimator did not round-trip.");
                 const auto* loadedRenderer =
-                    loadedPlayer->GetComponent<
+                    overridePlayer->GetComponent<
                         LamaPon::
                             SpriteRendererComponent>();
                 Require(
@@ -2714,15 +2714,15 @@ int RunTest(const std::string_view suite)
                 auto& duplicated =
                     spriteScene.DuplicateGameObject(
                         player);
-                const auto* duplicatedAnimator =
+                const auto* duplicatedOverrideAnimator =
                     duplicated.GetComponent<
                         LamaPon::
                             SpriteAnimatorComponent>();
                 Require(
-                    duplicatedAnimator != nullptr
-                        && duplicatedAnimator->Clips()
+                    duplicatedOverrideAnimator != nullptr
+                        && duplicatedOverrideAnimator->Clips()
                             .size() == 2
-                        && duplicatedAnimator
+                        && duplicatedOverrideAnimator
                             ->DefaultClip() == "walk",
                     "SpriteAnimator did not duplicate.");
             }
@@ -3156,7 +3156,7 @@ int RunTest(const std::string_view suite)
 
             // カプセル×ボックスの2点マニフォールド
             {
-                const LamaPon::Capsule3D capsule{
+                const LamaPon::Capsule3D physicsCapsule{
                     { -1.0f, 0.4f, 0.0f },
                     { 1.0f, 0.4f, 0.0f },
                     0.5f };
@@ -3166,7 +3166,7 @@ int RunTest(const std::string_view suite)
                     { 5.0f, 0.5f, 5.0f };
                 const auto manifold =
                     LamaPon::IntersectManifold(
-                        capsule,
+                        physicsCapsule,
                         floorBox);
                 Require(
                     manifold.has_value()
@@ -3364,7 +3364,7 @@ int RunTest(const std::string_view suite)
                 LamaPon::Scene tilemapScene(graphics);
                 auto& tilemapObject =
                     tilemapScene.CreateGameObject("床タイル");
-                auto& tilemap =
+                auto& collisionTilemap =
                     tilemapObject.AddComponent<
                         LamaPon::TilemapComponent>(
                             DirectX::XMFLOAT2{
@@ -3374,14 +3374,14 @@ int RunTest(const std::string_view suite)
                 {
                     for (int x{}; x < 3; ++x)
                     {
-                        tilemap.SetCell(x, y, 0);
+                        collisionTilemap.SetCell(x, y, 0);
                     }
                 }
                 // 離れた1セル：別の矩形になるはずです。
-                tilemap.SetCell(10, 10, 0);
+                collisionTilemap.SetCell(10, 10, 0);
 
                 const auto rects =
-                    tilemap.ComputeCollisionRects();
+                    collisionTilemap.ComputeCollisionRects();
                 Require(
                     rects.size() == 2,
                     "Tilemap collider rects did not merge"
@@ -3426,7 +3426,7 @@ int RunTest(const std::string_view suite)
                         " unexpected size or center.");
 
                 // 描画順（背景／地形／前景の重ね順）の往復確認。
-                tilemap.SetSortOrder(-5);
+                collisionTilemap.SetSortOrder(-5);
                 const auto tilemapJson =
                     tilemapScene.SerializeToJson();
                 LamaPon::Scene tilemapLoaded(graphics);
@@ -3434,7 +3434,7 @@ int RunTest(const std::string_view suite)
                 const auto* loadedTilemapObject =
                     tilemapLoaded.FindGameObjectByName(
                         "床タイル");
-                const auto* loadedTilemap =
+                const auto* loadedCollisionTilemap =
                     loadedTilemapObject != nullptr
                         ? loadedTilemapObject
                             ->GetComponent<
@@ -3442,8 +3442,8 @@ int RunTest(const std::string_view suite)
                                     TilemapComponent>()
                         : nullptr;
                 Require(
-                    loadedTilemap != nullptr
-                        && loadedTilemap->SortOrder()
+                    loadedCollisionTilemap != nullptr
+                        && loadedCollisionTilemap->SortOrder()
                             == -5,
                     "Tilemap SortOrder did not"
                         " round-trip.");
@@ -3891,9 +3891,9 @@ int RunTest(const std::string_view suite)
                 reorderScene.CreateGameObject("Second");
             auto& third =
                 reorderScene.CreateGameObject("Third");
-            auto& child =
+            auto& persistentChild =
                 reorderScene.CreateGameObject("Child");
-            child.SetParent(&third);
+            persistentChild.SetParent(&third);
 
             const auto rootOrder =
                 [&reorderScene]
@@ -3943,7 +3943,7 @@ int RunTest(const std::string_view suite)
             Require(
                 !reorderScene.ReorderGameObject(
                     third,
-                    child,
+                    persistentChild,
                     false),
                 "Reordering relative to a descendant must"
                 " be rejected.");
@@ -4042,10 +4042,10 @@ int RunTest(const std::string_view suite)
                 loadedParent != nullptr,
                 "The parent object must survive loading.");
             std::string loadedChildNames;
-            for (const auto* child :
+            for (const auto* loadedHierarchyChild :
                 loadedParent->Children())
             {
-                loadedChildNames += child->Name();
+                loadedChildNames += loadedHierarchyChild->Name();
                 loadedChildNames += ',';
             }
             Require(

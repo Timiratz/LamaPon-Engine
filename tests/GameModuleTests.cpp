@@ -46,11 +46,9 @@ int main()
             "Network Game Modules must shadow-copy into the local cache.");
 
         LamaPon::GameModuleHost host;
-        Require(
-            host.Load(
-                std::filesystem::current_path()
-                / "LamaPonGameModule.dll"),
-            host.LastError().c_str());
+        const bool moduleLoaded = host.Load(
+            std::filesystem::current_path() / "LamaPonGameModule.dll");
+        Require(moduleLoaded, host.LastError().c_str());
         Require(
             host.IsLoaded(),
             "Game Module was not loaded.");
@@ -170,9 +168,8 @@ int main()
                 "Damage through the interface was not applied.");
         }
 
-        Require(
-            host.Reload(),
-            host.LastError().c_str());
+        const bool reloaded = host.Reload();
+        Require(reloaded, host.LastError().c_str());
         Require(
             host.FindComponent(
                 "Sample.FloatingAccent") != nullptr,

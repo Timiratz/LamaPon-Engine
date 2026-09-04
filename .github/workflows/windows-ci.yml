@@ -30,10 +30,19 @@ jobs:
   build-test-package:
     runs-on: windows-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Debug, Release]
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
       - name: Configure MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
@@ -46,7 +55,7 @@ jobs:
           -S .
           -B build-ci
           -G Ninja
-          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_BUILD_TYPE=${{ matrix.configuration }}
           -DBUILD_TESTING=ON
 
       - name: Build
@@ -59,21 +68,23 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: LamaPon-render-regression-output
+          name: LamaPon-render-regression-output-${{ matrix.configuration }}
           path: build-ci/test-output/render-regression
           if-no-files-found: ignore
           retention-days: 14
 
       - name: Build game package
+        if: matrix.configuration == 'Release'
         run: cmake --build build-ci --target LamaPonGamePackage
 
       - name: Build engine package
+        if: matrix.configuration == 'Release'
         run: cmake --build build-ci --target package
 
       - name: Upload game package
         # PRではパッケージ生成までを検証し、成果物は保存しません。
         # 通常pushと手動実行だけ保存してActionsの容量超過を避けます。
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && matrix.configuration == 'Release'
         uses: actions/upload-artifact@v4
         with:
           name: LamaPonGame-windows-x64
@@ -82,7 +93,7 @@ jobs:
           retention-days: 14
 
       - name: Upload engine package
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && matrix.configuration == 'Release'
         uses: actions/upload-artifact@v4
         with:
           name: LamaPon-windows-x64
@@ -91,7 +102,7 @@ jobs:
           retention-days: 14
 
       - name: Upload debug symbols
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && matrix.configuration == 'Release'
         uses: actions/upload-artifact@v4
         with:
           name: LamaPon-symbols-windows-x64

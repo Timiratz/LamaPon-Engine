@@ -1,5 +1,7 @@
 #pragma once
 
+#include "LamaPon/Editor/UIComponentInspectors.h"
+
 #include "LamaPon/Core/ApplicationLayer.h"
 #include "LamaPon/Core/ProjectSettings.h"
 #include "LamaPon/Editor/Editor.h"
@@ -34,7 +36,7 @@
 
 namespace LamaPon
 {
-    class AudioStreamVoice;
+    class BgmLoopPanel;
     class GraphicsDevice;
     class PlayerPrefs;
     class SaveDataStore;
@@ -183,13 +185,6 @@ namespace LamaPon
                 const DirectX::XMFLOAT4&)>& setter);
 
         // Sprite Renderer / UI Image 共通の「Render Texture」指定UI。
-        struct RenderTexturePickerResult final
-        {
-            // 変更があったときだけ新しい名前が入ります。
-            std::optional<std::string> value;
-            // Undo履歴へ記録すべきタイミングならtrue。
-            bool commit{};
-        };
         [[nodiscard]] RenderTexturePickerResult
             DrawRenderTexturePicker(
                 const char* id,
@@ -553,18 +548,6 @@ namespace LamaPon
         void DrawProjectBgmPanel(
             std::size_t panelIndex,
             ProjectPanelDefinition& panel);
-        bool LoadProjectBgmData(ProjectPanelDefinition& panel);
-        bool SaveProjectBgmData(ProjectPanelDefinition& panel);
-        // 選択中の曲の波形（表示用ピーク包絡）を作り直します。
-        void BuildProjectBgmWaveform();
-        // fromFrameから試聴を鳴らします。ループ範囲は編集中の値を使う
-        // ので、継ぎ目もその場で確かめられます。usePreviewRangeがtrueの
-        // ときは曲のループ範囲ではなく試聴範囲を繰り返すので、ゲームの
-        // 選曲画面とまったく同じ鳴り方になります。
-        void StartProjectBgmPreview(
-            std::uint64_t fromFrame,
-            bool usePreviewRange = false);
-        void StopProjectBgmPreview();
         void LaunchProjectMenuCommand(
             const ProjectMenuCommand& command);
 
@@ -660,32 +643,6 @@ namespace LamaPon
             std::shared_ptr<const ModelAsset> previewModel;
         };
         // BGMのループ範囲と試聴開始位置を波形の上で決めるパネル。
-        struct ProjectBgmEditorState final
-        {
-            std::size_t panelIndex{ static_cast<std::size_t>(-1) };
-            int selectedTrack{};
-            bool loaded{};
-            bool dirty{};
-            std::unique_ptr<nlohmann::json> document;
-            // 波形。曲を選び直したときだけ作り直します（全体を
-            // デコードするので数百ミリ秒かかります）。
-            int waveformTrack{ -1 };
-            std::vector<float> waveformPeaks;
-            std::uint64_t totalFrames{};
-            int sampleRate{ 44100 };
-            // 試聴。編集中のループ範囲をそのまま入れて鳴らします。
-            std::shared_ptr<AudioStreamVoice> preview;
-            int previewTrack{ -1 };
-            float previewVolume{ 0.6f };
-            // 波形を右クリックした位置。すぐ下のポップアップが読む。
-            std::uint64_t contextFrame{};
-            // 直前に鳴らし始めた位置と鳴らし方。停止したあと「▶ 再生」で
-            // 同じところから鳴らし直すために覚えておく。
-            std::uint64_t lastStartFrame{};
-            bool lastUsedPreviewRange{ true };
-            bool hasLastStart{};
-        };
-
         enum class ViewportMode
         {
             None,
@@ -968,7 +925,7 @@ namespace LamaPon
         std::vector<ProjectPanelDefinition> m_projectPanels;
         ProjectStageEditorState m_projectStageEditor;
         ProjectVehicleEditorState m_projectVehicleEditor;
-        ProjectBgmEditorState m_projectBgmEditor;
+        std::unique_ptr<BgmLoopPanel> m_bgmPanel;
         std::uint64_t m_projectMenuManifestHash{};
         bool m_projectMenuManifestSeen{};
         double m_lastProjectMenuScanAt{ -2.0 };

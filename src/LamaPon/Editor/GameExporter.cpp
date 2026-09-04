@@ -106,6 +106,10 @@ namespace
         const std::filesystem::path& runtimeLibrary,
         const LamaPon::Crypto::AesKey& key)
     {
+        // 鍵の差し替えはABIを変えません。モジュールの鮮度判定に使う
+        // ビルド時刻を保ち、正常なGame Moduleを古いと誤判定させません。
+        // 時刻の取得・復元に失敗した場合も、書き出し全体を中断します。
+        const auto buildTime = std::filesystem::last_write_time(runtimeLibrary);
         auto bytes = ReadAllBytes(runtimeLibrary);
         const auto marker =
             LamaPon::Crypto::ExpectedKeySlotMarker();
@@ -148,6 +152,7 @@ namespace
         }
         std::copy(slot.begin(), slot.end(), found);
         WriteAllBytes(runtimeLibrary, bytes);
+        std::filesystem::last_write_time(runtimeLibrary, buildTime);
     }
 
     // 配布物へ同梱する（アーカイブへ入らない）ファイルを、その場で
@@ -836,6 +841,20 @@ namespace LamaPon
             std::filesystem::copy_file(
                 audioRuntime,
                 stagingDirectory / audioRuntime.filename());
+            // 実行コードに伴う通知を配布先にも残します。欠けたSDKから
+            // 不完全な配布物を作らないよう、コピー失敗時は中断します。
+            const auto licenses = runtimeDirectory / "licenses";
+            if (!std::filesystem::is_directory(licenses)
+                || std::filesystem::is_empty(licenses))
+            {
+                throw std::runtime_error("Runtime license directory is missing.");
+            }
+            std::filesystem::copy(
+                licenses, stagingDirectory / "licenses",
+                std::filesystem::copy_options::recursive);
+            std::filesystem::copy_file(
+                runtimeDirectory / "THIRD_PARTY_NOTICES.md",
+                stagingDirectory / "THIRD_PARTY_NOTICES.md");
 
             // このゲームだけのアーカイブ鍵を作り、書き出した
             // LamaPonRuntime.dllへ焼き込みます。先に済ませるのは、

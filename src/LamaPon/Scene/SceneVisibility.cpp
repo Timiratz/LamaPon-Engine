@@ -389,7 +389,7 @@ namespace LamaPon
             }
         }
 
-        std::vector<RenderSpatialEntry> next(renderers.size());
+        std::vector<RenderSpatialIndex::Entry> next(renderers.size());
         JobSystem::Instance().ParallelFor(
             renderers.size(),
             64,
@@ -413,155 +413,7 @@ namespace LamaPon
                 }
             });
 
-        const auto boundsEqual = [](
-            const Bounds3D& left,
-            const Bounds3D& right) noexcept
-        {
-            return left.minimum.x == right.minimum.x
-                && left.minimum.y == right.minimum.y
-                && left.minimum.z == right.minimum.z
-                && left.maximum.x == right.maximum.x
-                && left.maximum.y == right.maximum.y
-                && left.maximum.z == right.maximum.z;
-        };
-        bool unchanged = next.size()
-            == m_renderSpatialEntries.size();
-        for (std::size_t index = 0;
-            unchanged && index < next.size();
-            ++index)
-        {
-            unchanged = next[index].object
-                    == m_renderSpatialEntries[index].object
-                && boundsEqual(
-                    next[index].bounds,
-                    m_renderSpatialEntries[index].bounds)
-                && boundsEqual(
-                    next[index].cullingBounds,
-                    m_renderSpatialEntries[index].cullingBounds);
-        }
-        if (unchanged)
-        {
-            return true;
-        }
-
-        m_renderSpatialEntries = std::move(next);
-        m_renderSpatialOrder.resize(
-            m_renderSpatialEntries.size());
-        std::iota(
-            m_renderSpatialOrder.begin(),
-            m_renderSpatialOrder.end(),
-            std::size_t{});
-        m_renderSpatialNodes.clear();
-        m_renderSpatialNodes.reserve(
-            m_renderSpatialEntries.size() * 2u);
-        if (m_renderSpatialEntries.empty())
-        {
-            return false;
-        }
-
-        const auto mergeBounds = [](
-            const Bounds3D& left,
-            const Bounds3D& right) noexcept
-        {
-            return Bounds3D{
-                {
-                    std::min(left.minimum.x, right.minimum.x),
-                    std::min(left.minimum.y, right.minimum.y),
-                    std::min(left.minimum.z, right.minimum.z)
-                },
-                {
-                    std::max(left.maximum.x, right.maximum.x),
-                    std::max(left.maximum.y, right.maximum.y),
-                    std::max(left.maximum.z, right.maximum.z)
-                }
-            };
-        };
-        const auto centerAt = [this](
-            const std::size_t entry,
-            const std::size_t axis) noexcept
-        {
-            const auto& bounds =
-                m_renderSpatialEntries[entry].cullingBounds;
-            switch (axis)
-            {
-            case 0:
-                return bounds.minimum.x + bounds.maximum.x;
-            case 1:
-                return bounds.minimum.y + bounds.maximum.y;
-            default:
-                return bounds.minimum.z + bounds.maximum.z;
-            }
-        };
-
-        const auto buildNode = [this,
-            &mergeBounds,
-            &centerAt](
-            auto&& self,
-            const std::size_t begin,
-            const std::size_t end) -> std::size_t
-        {
-            const std::size_t nodeIndex =
-                m_renderSpatialNodes.size();
-            m_renderSpatialNodes.emplace_back();
-            Bounds3D bounds = m_renderSpatialEntries[
-                m_renderSpatialOrder[begin]].cullingBounds;
-            for (std::size_t index = begin + 1;
-                index < end;
-                ++index)
-            {
-                bounds = mergeBounds(
-                    bounds,
-                    m_renderSpatialEntries[
-                        m_renderSpatialOrder[index]]
-                        .cullingBounds);
-            }
-            m_renderSpatialNodes[nodeIndex].bounds = bounds;
-
-            const std::size_t count = end - begin;
-            if (count <= 8u)
-            {
-                m_renderSpatialNodes[nodeIndex].first = begin;
-                m_renderSpatialNodes[nodeIndex].count = count;
-                return nodeIndex;
-            }
-
-            const std::array<float, 3> extents{
-                bounds.maximum.x - bounds.minimum.x,
-                bounds.maximum.y - bounds.minimum.y,
-                bounds.maximum.z - bounds.minimum.z
-            };
-            const std::size_t axis = static_cast<std::size_t>(
-                std::distance(
-                    extents.begin(),
-                    std::max_element(
-                        extents.begin(),
-                        extents.end())));
-            const std::size_t middle = begin + count / 2u;
-            std::nth_element(
-                m_renderSpatialOrder.begin()
-                    + static_cast<std::ptrdiff_t>(begin),
-                m_renderSpatialOrder.begin()
-                    + static_cast<std::ptrdiff_t>(middle),
-                m_renderSpatialOrder.begin()
-                    + static_cast<std::ptrdiff_t>(end),
-                [&centerAt, axis](
-                    const std::size_t left,
-                    const std::size_t right)
-                {
-                    return centerAt(left, axis)
-                        < centerAt(right, axis);
-                });
-            const auto left = self(self, begin, middle);
-            const auto right = self(self, middle, end);
-            m_renderSpatialNodes[nodeIndex].left = left;
-            m_renderSpatialNodes[nodeIndex].right = right;
-            return nodeIndex;
-        };
-        static_cast<void>(buildNode(
-            buildNode,
-            0,
-            m_renderSpatialOrder.size()));
-        return false;
+        return m_renderSpatialIndex.Update(std::move(next));
     }
 
     Scene::VisibilityResult
@@ -573,15 +425,15 @@ namespace LamaPon
         const bool spatialIndexReused =
             RefreshRenderSpatialIndex();
         std::vector<GameObject*> renderers;
-        renderers.reserve(m_renderSpatialEntries.size());
-        for (const auto& entry : m_renderSpatialEntries)
+        renderers.reserve(m_renderSpatialIndex.Entries().size());
+        for (const auto& entry : m_renderSpatialIndex.Entries())
         {
             renderers.push_back(entry.object);
         }
         result.stats.rendererCount =
             renderers.size();
         result.stats.spatialNodeCount =
-            m_renderSpatialNodes.size();
+            m_renderSpatialIndex.NodeCount();
         result.stats.spatialIndexReused =
             spatialIndexReused;
 
@@ -683,47 +535,21 @@ namespace LamaPon
                 inverseView);
         }
 
-        std::vector<unsigned char> spatialVisible(
-            m_renderSpatialEntries.size(),
-            m_frustumCullingEnabled ? 0u : 1u);
-        std::size_t spatialNodeTests{};
-        if (m_frustumCullingEnabled
-            && !m_renderSpatialNodes.empty())
+        std::vector<unsigned char> spatialVisible;
+        if (m_frustumCullingEnabled)
         {
-            const auto visit = [this,
-                &worldFrustum,
-                &spatialVisible,
-                &spatialNodeTests](
-                auto&& self,
-                const std::size_t nodeIndex) -> void
-            {
-                const auto& node =
-                    m_renderSpatialNodes[nodeIndex];
-                ++spatialNodeTests;
-                if (worldFrustum.Contains(
-                        ToBoundingBox(node.bounds))
-                    == DirectX::DISJOINT)
+            auto query = m_renderSpatialIndex.Query(
+                [&worldFrustum](const Bounds3D& bounds)
                 {
-                    return;
-                }
-                if (node.count > 0)
-                {
-                    for (std::size_t index = node.first;
-                        index < node.first + node.count;
-                        ++index)
-                    {
-                        spatialVisible[
-                            m_renderSpatialOrder[index]] = 1u;
-                    }
-                    return;
-                }
-                self(self, node.left);
-                self(self, node.right);
-            };
-            visit(visit, 0);
+                    return worldFrustum.Contains(ToBoundingBox(bounds)) != DirectX::DISJOINT;
+                });
+            spatialVisible = std::move(query.candidates);
+            result.stats.spatialNodeTestCount = query.nodeTests;
         }
-        result.stats.spatialNodeTestCount =
-            spatialNodeTests;
+        else
+        {
+            spatialVisible.assign(m_renderSpatialIndex.Entries().size(), 1u);
+        }
 
         struct Candidate final
         {
@@ -783,9 +609,9 @@ namespace LamaPon
                         continue;
                     }
                     const auto& bounds =
-                        m_renderSpatialEntries[index].bounds;
+                        m_renderSpatialIndex.Entries()[index].bounds;
                     const auto& cullingBounds =
-                        m_renderSpatialEntries[index].cullingBounds;
+                        m_renderSpatialIndex.Entries()[index].cullingBounds;
                     if (m_frustumCullingEnabled
                         && (spatialVisible[index] == 0u
                             || worldFrustum.Contains(
@@ -1012,46 +838,18 @@ namespace LamaPon
 
         static_cast<void>(RefreshRenderSpatialIndex());
         const auto viewProjection = view * projection;
-        std::vector<unsigned char> potentiallyVisible(
-            m_renderSpatialEntries.size());
-        if (!m_renderSpatialNodes.empty())
-        {
-            const auto visit = [this,
-                &viewProjection,
-                &potentiallyVisible](
-                auto&& self,
-                const std::size_t nodeIndex) -> void
+        const auto query = m_renderSpatialIndex.Query(
+            [&viewProjection](const Bounds3D& bounds)
             {
-                const auto& node =
-                    m_renderSpatialNodes[nodeIndex];
-                if (IsOutsideClipFrustum(
-                        node.bounds,
-                        viewProjection))
-                {
-                    return;
-                }
-                if (node.count > 0)
-                {
-                    for (std::size_t index = node.first;
-                        index < node.first + node.count;
-                        ++index)
-                    {
-                        potentiallyVisible[
-                            m_renderSpatialOrder[index]] = 1u;
-                    }
-                    return;
-                }
-                self(self, node.left);
-                self(self, node.right);
-            };
-            visit(visit, 0);
-        }
-        hidden.reserve(m_renderSpatialEntries.size());
+                return !IsOutsideClipFrustum(bounds, viewProjection);
+            });
+        const auto& potentiallyVisible = query.candidates;
+        hidden.reserve(m_renderSpatialIndex.Entries().size());
         for (std::size_t index = 0;
-            index < m_renderSpatialEntries.size();
+            index < m_renderSpatialIndex.Entries().size();
             ++index)
         {
-            const auto& entry = m_renderSpatialEntries[index];
+            const auto& entry = m_renderSpatialIndex.Entries()[index];
             if (alreadyHidden.contains(entry.object->Id())
                 || entry.object->IsAlwaysVisible())
             {

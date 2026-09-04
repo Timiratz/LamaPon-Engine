@@ -180,7 +180,7 @@ int main()
         Stage("first-failure");
         LamaPon::ResetShaderCompileStatistics();
         const auto first =
-            FailureOf([&] { graphics.Environment(); });
+            FailureOf([&] { static_cast<void>(graphics.Environment()); });
         Require(
             !first.empty(),
             "a broken built-in shader must still throw");
@@ -196,7 +196,7 @@ int main()
         for (int frame = 0; frame < 5; ++frame)
         {
             const auto repeated =
-                FailureOf([&] { graphics.Environment(); });
+                FailureOf([&] { static_cast<void>(graphics.Environment()); });
             Require(
                 repeated == first,
                 "the remembered failure must be returned as-is");
@@ -229,7 +229,7 @@ int main()
         {
             const auto once =
                 graphics.FrameStats().shaderFallbackDraws;
-            graphics.ShaderErrorPlaceholder(false);
+            static_cast<void>(graphics.ShaderErrorPlaceholder(false));
             Require(
                 graphics.FrameStats().shaderFallbackDraws
                     == once + 1,
@@ -257,7 +257,7 @@ int main()
         std::this_thread::sleep_for(
             std::chrono::milliseconds(2500));
         const auto recovered =
-            FailureOf([&] { graphics.Environment(); });
+            FailureOf([&] { static_cast<void>(graphics.Environment()); });
         Require(
             recovered.empty(),
             "fixing the shader must bring rendering back");

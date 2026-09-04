@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 3.25)
 
 project(LamaPon VERSION 0.1.0 LANGUAGES CXX)
 
+include(cmake/LamaPonMsvcDependencies.cmake)
+lamapon_configure_msvc_dependencies()
+
 set(LAMAPON_BUILD_REVISION "unknown")
 find_package(Git QUIET)
 if(Git_FOUND AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git")
@@ -224,6 +227,7 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Components/NativeScriptComponent.cpp
     src/LamaPon/Components/NativeScriptComponent.h
     src/LamaPon/Core/Application.cpp
+    src/LamaPon/Core/RuntimeServices.cpp
     src/LamaPon/Core/Application.h
     src/LamaPon/Core/CrashReporter.cpp
     src/LamaPon/Core/CrashReporter.h
@@ -346,6 +350,7 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Scene/SceneManager.cpp
     src/LamaPon/Scene/SceneManager.h
     src/LamaPon/Scene/SceneVisibility.cpp
+    src/LamaPon/Scene/RenderSpatialIndex.cpp
     src/LamaPon/Scene/RuntimeGameState.cpp
     src/LamaPon/Scene/RuntimeGameState.h
     src/LamaPon/Scene/Transform.h
@@ -426,6 +431,7 @@ set(LAMAPON_EDITOR_SOURCES
     src/LamaPon/Editor/EditorLayerAnimationTools.cpp
     src/LamaPon/Editor/EditorLayerAssets.cpp
     src/LamaPon/Editor/EditorLayerInspector.cpp
+    src/LamaPon/Editor/UIComponentInspectors.cpp
     src/LamaPon/Editor/DataAssetSchema.cpp
     src/LamaPon/Editor/DataAssetSchema.h
     src/LamaPon/Editor/EditorLayerProject.cpp
@@ -435,6 +441,8 @@ set(LAMAPON_EDITOR_SOURCES
     src/LamaPon/Editor/EditorLayerPackages.cpp
     src/LamaPon/Editor/ExeIconTool.cpp
     src/LamaPon/Editor/ExeIconTool.h
+    src/LamaPon/Editor/BgmLoopPanel.cpp
+    src/LamaPon/Editor/BgmLoopPanel.h
     src/LamaPon/Editor/GameExporter.cpp
     src/LamaPon/Editor/GameExporter.h
     src/LamaPon/Editor/GameModuleBuilder.cpp
@@ -654,6 +662,10 @@ add_library(LamaPonGameModule SHARED
     ${LAMAPON_GAME_SCRIPT_SOURCES}
 )
 target_link_libraries(LamaPonGameModule PRIVATE LamaPonRuntime)
+# ABIが同じでもRuntimeの実装更新後にはモジュールを再リンクし、
+# GameModuleHostのビルド時刻による互換性確認と足並みを揃えます。
+set_property(TARGET LamaPonGameModule APPEND PROPERTY LINK_DEPENDS
+    "$<TARGET_FILE:LamaPonRuntime>")
 target_include_directories(LamaPonGameModule PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/tools/ProjectGameModule
 )
@@ -710,6 +722,10 @@ lamapon_enable_release_symbols(LamaPonGame)
 # WIN32を付けない＝コンソールアプリです（stdoutへJSONを返すため）。
 add_executable(LamaPonCli
     tools/LamaPonCli/Main.cpp
+    tools/LamaPonCli/SceneCommands.cpp
+    tools/LamaPonCli/ComponentSchemas.cpp
+    tools/LamaPonCli/JsonFiles.cpp
+    tools/LamaPonCli/ProjectPaths.cpp
     tools/LamaPonCli/RuntimeTiming.h
 )
 target_link_libraries(LamaPonCli
@@ -787,6 +803,62 @@ set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT L
 include(CTest)
 
 if(BUILD_TESTING)
+    find_package(Python3 3.11 REQUIRED COMPONENTS Interpreter)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC" AND CMAKE_GENERATOR MATCHES "^Ninja")
+        add_test(NAME MsvcHeaderDependencies
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/MsvcDependencyTests.py"
+                --cmake "${CMAKE_COMMAND}"
+                --ninja "${CMAKE_MAKE_PROGRAM}"
+                --compiler "${CMAKE_CXX_COMPILER}"
+                --engine-root "${CMAKE_CURRENT_SOURCE_DIR}"
+                --work-dir "${CMAKE_CURRENT_BINARY_DIR}/test-output/msvc-dependencies")
+    endif()
+    add_test(NAME WebExportTool
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/WebExportToolTests.py")
+    add_test(NAME CliSceneCommands
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/CliSceneCommandTests.py"
+            --executable "$<TARGET_FILE:LamaPonCli>"
+            --work-dir "${CMAKE_CURRENT_BINARY_DIR}/test-output/cli-scene")
+    add_executable(LamaPonLifecycleTests tests/LifecycleTests.cpp)
+    target_link_libraries(LamaPonLifecycleTests PRIVATE LamaPonRuntime)
+    target_compile_options(LamaPonLifecycleTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
+    add_test(NAME LifecycleRecovery COMMAND LamaPonLifecycleTests)
+    add_executable(LamaPonExportedStartupTests tests/ExportedStartupTests.cpp)
+    target_link_libraries(LamaPonExportedStartupTests PRIVATE LamaPonEditor)
+    target_compile_options(LamaPonExportedStartupTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
+    add_dependencies(LamaPonExportedStartupTests LamaPonGame LamaPonGameModule)
+    add_test(NAME ExportedGameStartup COMMAND LamaPonExportedStartupTests)
+    set_tests_properties(ExportedGameStartup PROPERTIES TIMEOUT 90)
+    add_executable(LamaPonBgmLoopPanelTests tests/BgmLoopPanelTests.cpp)
+    target_link_libraries(LamaPonBgmLoopPanelTests PRIVATE LamaPonEditor DearImGui)
+    target_compile_options(LamaPonBgmLoopPanelTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
+    add_dependencies(LamaPonBgmLoopPanelTests LamaPonGame)
+    add_test(NAME BgmLoopPanelIsolation COMMAND LamaPonBgmLoopPanelTests)
+    add_executable(LamaPonUIComponentInspectorTests tests/UIComponentInspectorTests.cpp)
+    target_link_libraries(LamaPonUIComponentInspectorTests PRIVATE LamaPonEditor DearImGui)
+    target_compile_options(LamaPonUIComponentInspectorTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
+    add_test(NAME UIComponentInspectorIsolation COMMAND LamaPonUIComponentInspectorTests)
+    foreach(test_name IN ITEMS RuntimeServices RenderSpatialIndex)
+        add_executable(LamaPon${test_name}Tests tests/${test_name}Tests.cpp)
+        target_link_libraries(LamaPon${test_name}Tests PRIVATE LamaPonRuntime)
+        target_compile_options(LamaPon${test_name}Tests PRIVATE
+            $<$<CXX_COMPILER_ID:MSVC>:/W4>
+            $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+            $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
+        add_test(NAME ${test_name}Isolation COMMAND LamaPon${test_name}Tests)
+    endforeach()
     add_executable(LamaPonAudioOggProbe
         tests/AudioOggProbe.cpp
     )
@@ -1629,14 +1701,10 @@ install(
     DIRECTORY tools/ProjectGameModule
     DESTINATION tools
 )
-# 配布ZIPへ入れるのは、Game Moduleのビルドに要るヘッダだけです。
-# アーカイブの暗号化まわり（鍵スロットの並び、封筒の形式、MACの作り方）は
-# ゲーム側から呼ぶものではないので外します。**配布物を解く手掛かりを
-# 一緒に配らない**ためです。
-#
-# 外して大丈夫なことは確かめてあります: LamaPon.hからは辿れず、
-# AssetManager.hはAssetArchiveを前方宣言しているだけで、これらを
-# #includeしているのはエンジン内の.cppとテストだけです。
+install(FILES cmake/LamaPonMsvcDependencies.cmake DESTINATION cmake)
+# Native Game Moduleが使う公開ヘッダーを同梱します。アーカイブ作成と
+# 暗号処理の内部ヘッダーはゲーム側で不要なため対象外です。
+# ソース公開を前提とし、この除外をセキュリティ上の保護とは扱いません。
 install(
     DIRECTORY src/LamaPon
     DESTINATION src
@@ -1679,6 +1747,8 @@ install(
     DIRECTORY docs
     DESTINATION "."
 )
+
+include(cmake/LamaPonDistribution.cmake)
 
 set(CPACK_PACKAGE_NAME "LamaPon")
 set(CPACK_PACKAGE_VENDOR "LamaPon contributors")

@@ -67,7 +67,7 @@ namespace
     void VerifyTemplate(
         const std::filesystem::path& parent,
         const wchar_t* folder,
-        const std::string& name,
+        const std::string& projectName,
         const LamaPon::Hub::ProjectTemplate projectTemplate,
         const std::size_t expectedObjectCount,
         const bool expectsCamera)
@@ -75,14 +75,14 @@ namespace
         const auto root = parent / folder;
         LamaPon::Hub::CreateProject(
             root,
-            name,
+            projectName,
             projectTemplate);
 
         Require(
             LamaPon::Hub::IsProject(root),
             "Generated folder was not recognized as a LamaPon project.");
         Require(
-            LamaPon::Hub::ProjectName(root) == name,
+            LamaPon::Hub::ProjectName(root) == projectName,
             "Generated project name did not round-trip.");
         const auto settings = LamaPon::LoadProjectSettings(
             root / L".lamapon" / L"project.json");
@@ -200,7 +200,7 @@ namespace
         {
             LamaPon::Hub::CreateProject(
                 root,
-                name,
+                projectName,
                 projectTemplate);
         }
         catch (const std::runtime_error&)

@@ -8,14 +8,44 @@
 
 namespace LamaPon::Web
 {
-    struct WebInput::EventState final
+    namespace
     {
-        WebInput* owner{};
-    };
+        // キーボードの登録先はwindowで共通なので、同時に所有できる
+        // 入力インスタンスは1つです。別インスタンスの登録を奪いません。
+        WebInput* activeInput{};
+    }
 
     WebInput::~WebInput()
     {
-        delete m_state;
+        Shutdown();
+    }
+
+    void WebInput::Shutdown() noexcept
+    {
+        constexpr std::array eventTypes{
+            EMSCRIPTEN_EVENT_KEYDOWN, EMSCRIPTEN_EVENT_KEYUP,
+            EMSCRIPTEN_EVENT_TOUCHSTART, EMSCRIPTEN_EVENT_TOUCHMOVE,
+            EMSCRIPTEN_EVENT_TOUCHEND, EMSCRIPTEN_EVENT_TOUCHCANCEL,
+            EMSCRIPTEN_EVENT_MOUSEMOVE, EMSCRIPTEN_EVENT_MOUSEDOWN,
+            EMSCRIPTEN_EVENT_MOUSEUP, EMSCRIPTEN_EVENT_WHEEL };
+        // 成功した登録を、所有者とコールバックの組で解除します。
+        // 同じDOM要素を使う別機能のイベントまでは解除しません。
+        for (std::size_t index = 0; index < m_registered.size(); ++index)
+        {
+            if (m_registered[index])
+            {
+                emscripten_html5_remove_event_listener(
+                    index < 2 ? EMSCRIPTEN_EVENT_TARGET_WINDOW : m_target.c_str(),
+                    this, eventTypes[index], m_callbacks[index]);
+            }
+        }
+        m_registered.fill(false);
+        m_callbacks.fill(nullptr);
+        m_initialized = false;
+        if (activeInput == this)
+        {
+            activeInput = nullptr;
+        }
     }
 
     bool WebInput::Initialize(const char* target)
@@ -24,141 +54,61 @@ namespace LamaPon::Web
         {
             return true;
         }
-        if (target == nullptr || *target == '\0')
+        if (target == nullptr || *target == '\0'
+            || (activeInput != nullptr && activeInput != this))
         {
             return false;
         }
-        m_state = new EventState{ this };
         m_target = target;
-        // CanvasだけでなくBrowser WindowでEventを受け取ります。
-        // RendererがCanvasを差し替えたりFallback表示で隠した場合でも、
-        // Keyboard操作を継続できるようにします。
-        const char* eventTarget = EMSCRIPTEN_EVENT_TARGET_WINDOW;
-        const EMSCRIPTEN_RESULT keyDownResult =
-            emscripten_set_keydown_callback(
-                eventTarget,
-                m_state,
-                EM_TRUE,
-                [](int eventType,
-                   const EmscriptenKeyboardEvent* event,
-                   void* userData) -> EM_BOOL
-                {
-                    auto* state = static_cast<EventState*>(userData);
-                    return HandleKeyEvent(
-                        eventType,
-                        event != nullptr ? event->code : "",
-                        state != nullptr ? state->owner : nullptr)
-                        ? EM_TRUE
-                        : EM_FALSE;
-                });
-        const EMSCRIPTEN_RESULT keyUpResult =
-            emscripten_set_keyup_callback(
-                eventTarget,
-                m_state,
-                EM_TRUE,
-                [](int eventType,
-                   const EmscriptenKeyboardEvent* event,
-                   void* userData) -> EM_BOOL
-                {
-                    auto* state = static_cast<EventState*>(userData);
-                    return HandleKeyEvent(
-                        eventType,
-                        event != nullptr ? event->code : "",
-                        state != nullptr ? state->owner : nullptr)
-                        ? EM_TRUE
-                        : EM_FALSE;
-                });
-        const EMSCRIPTEN_RESULT touchStartResult =
-            emscripten_set_touchstart_callback(
-                target, m_state, EM_TRUE,
-                [](int eventType, const EmscriptenTouchEvent* event,
-                   void* userData) -> EM_BOOL
-                {
-                    auto* state = static_cast<EventState*>(userData);
-                    return HandleTouchEvent(
-                        eventType, event,
-                        state != nullptr ? state->owner : nullptr)
-                        ? EM_TRUE : EM_FALSE;
-                });
-        const EMSCRIPTEN_RESULT touchMoveResult =
-            emscripten_set_touchmove_callback(
-                target, m_state, EM_TRUE,
-                [](int eventType, const EmscriptenTouchEvent* event,
-                   void* userData) -> EM_BOOL
-                {
-                    auto* state = static_cast<EventState*>(userData);
-                    return HandleTouchEvent(
-                        eventType, event,
-                        state != nullptr ? state->owner : nullptr)
-                        ? EM_TRUE : EM_FALSE;
-                });
-        const EMSCRIPTEN_RESULT touchEndResult =
-            emscripten_set_touchend_callback(
-                target, m_state, EM_TRUE,
-                [](int eventType, const EmscriptenTouchEvent* event,
-                   void* userData) -> EM_BOOL
-                {
-                    auto* state = static_cast<EventState*>(userData);
-                    return HandleTouchEvent(
-                        eventType, event,
-                        state != nullptr ? state->owner : nullptr)
-                        ? EM_TRUE : EM_FALSE;
-                });
-        const EMSCRIPTEN_RESULT touchCancelResult =
-            emscripten_set_touchcancel_callback(
-                target, m_state, EM_TRUE,
-                [](int eventType, const EmscriptenTouchEvent* event,
-                   void* userData) -> EM_BOOL
-                {
-                    auto* state = static_cast<EventState*>(userData);
-                    return HandleTouchEvent(
-                        eventType, event,
-                        state != nullptr ? state->owner : nullptr)
-                        ? EM_TRUE : EM_FALSE;
-                });
-        const auto mouseCallback = [](int eventType,
-                                      const EmscriptenMouseEvent* event,
-                                      void* userData) -> EM_BOOL
+        activeInput = this;
+        const auto key = +[](int type, const EmscriptenKeyboardEvent* event,
+                            void* owner) -> EM_BOOL
         {
-            auto* state = static_cast<EventState*>(userData);
-            return HandleMouseEvent(
-                eventType, event,
-                state != nullptr ? state->owner : nullptr)
-                ? EM_TRUE : EM_FALSE;
+            return HandleKeyEvent(type, event ? event->code : "", owner);
         };
-        const EMSCRIPTEN_RESULT mouseMoveResult =
-            emscripten_set_mousemove_callback(
-                target, m_state, EM_TRUE, mouseCallback);
-        const EMSCRIPTEN_RESULT mouseDownResult =
-            emscripten_set_mousedown_callback(
-                target, m_state, EM_TRUE, mouseCallback);
-        const EMSCRIPTEN_RESULT mouseUpResult =
-            emscripten_set_mouseup_callback(
-                target, m_state, EM_TRUE, mouseCallback);
-        const EMSCRIPTEN_RESULT wheelResult =
-            emscripten_set_wheel_callback(
-                target, m_state, EM_TRUE,
-                [](int, const EmscriptenWheelEvent* event,
-                   void* userData) -> EM_BOOL
-                {
-                    auto* state = static_cast<EventState*>(userData);
-                    return HandleWheelEvent(
-                        event,
-                        state != nullptr ? state->owner : nullptr)
-                        ? EM_TRUE : EM_FALSE;
-                });
-        const bool touchAvailable =
-            touchStartResult == EMSCRIPTEN_RESULT_SUCCESS
-            && touchMoveResult == EMSCRIPTEN_RESULT_SUCCESS
-            && touchEndResult == EMSCRIPTEN_RESULT_SUCCESS
-            && touchCancelResult == EMSCRIPTEN_RESULT_SUCCESS;
-        m_initialized = keyDownResult == EMSCRIPTEN_RESULT_SUCCESS
-            && keyUpResult == EMSCRIPTEN_RESULT_SUCCESS
-            && touchAvailable
-            && mouseMoveResult == EMSCRIPTEN_RESULT_SUCCESS
-            && mouseDownResult == EMSCRIPTEN_RESULT_SUCCESS
-            && mouseUpResult == EMSCRIPTEN_RESULT_SUCCESS
-            && wheelResult == EMSCRIPTEN_RESULT_SUCCESS;
+        const auto touch = +[](int type, const EmscriptenTouchEvent* event,
+                              void* owner) -> EM_BOOL
+        {
+            return HandleTouchEvent(type, event, owner);
+        };
+        const auto mouse = +[](int type, const EmscriptenMouseEvent* event,
+                              void* owner) -> EM_BOOL
+        {
+            return HandleMouseEvent(type, event, owner);
+        };
+        const auto wheel = +[](int, const EmscriptenWheelEvent* event,
+                              void* owner) -> EM_BOOL
+        {
+            return HandleWheelEvent(event, owner);
+        };
+        // 解除APIはvoid*でコールバックを識別するため、登録時に控えます。
+        m_callbacks = {
+            reinterpret_cast<void*>(key), reinterpret_cast<void*>(key),
+            reinterpret_cast<void*>(touch), reinterpret_cast<void*>(touch),
+            reinterpret_cast<void*>(touch), reinterpret_cast<void*>(touch),
+            reinterpret_cast<void*>(mouse), reinterpret_cast<void*>(mouse),
+            reinterpret_cast<void*>(mouse), reinterpret_cast<void*>(wheel) };
+        // Canvasが非表示でもキーボード操作は継続できます。
+        const char* window = EMSCRIPTEN_EVENT_TARGET_WINDOW;
+        m_registered = {
+            emscripten_set_keydown_callback(window, this, EM_TRUE, key) == EMSCRIPTEN_RESULT_SUCCESS,
+            emscripten_set_keyup_callback(window, this, EM_TRUE, key) == EMSCRIPTEN_RESULT_SUCCESS,
+            emscripten_set_touchstart_callback(target, this, EM_TRUE, touch) == EMSCRIPTEN_RESULT_SUCCESS,
+            emscripten_set_touchmove_callback(target, this, EM_TRUE, touch) == EMSCRIPTEN_RESULT_SUCCESS,
+            emscripten_set_touchend_callback(target, this, EM_TRUE, touch) == EMSCRIPTEN_RESULT_SUCCESS,
+            emscripten_set_touchcancel_callback(target, this, EM_TRUE, touch) == EMSCRIPTEN_RESULT_SUCCESS,
+            emscripten_set_mousemove_callback(target, this, EM_TRUE, mouse) == EMSCRIPTEN_RESULT_SUCCESS,
+            emscripten_set_mousedown_callback(target, this, EM_TRUE, mouse) == EMSCRIPTEN_RESULT_SUCCESS,
+            emscripten_set_mouseup_callback(target, this, EM_TRUE, mouse) == EMSCRIPTEN_RESULT_SUCCESS,
+            emscripten_set_wheel_callback(target, this, EM_TRUE, wheel) == EMSCRIPTEN_RESULT_SUCCESS };
+        m_initialized = std::all_of(
+            m_registered.begin(), m_registered.end(),
+            [](bool registered) { return registered; });
+        if (!m_initialized)
+        {
+            // 初期化途中の成功分も戻し、同じインスタンスで再試行できます。
+            Shutdown();
+        }
         return m_initialized;
     }
 

@@ -19,6 +19,9 @@ cmake_path(ABSOLUTE_PATH LAMAPON_ENGINE_ROOT NORMALIZE)
 cmake_path(ABSOLUTE_PATH LAMAPON_PROJECT_ROOT NORMALIZE)
 cmake_path(ABSOLUTE_PATH LAMAPON_RUNTIME_DIR NORMALIZE)
 
+include("${LAMAPON_ENGINE_ROOT}/cmake/LamaPonMsvcDependencies.cmake")
+lamapon_configure_msvc_dependencies()
+
 if(NOT EXISTS "${LAMAPON_ENGINE_ROOT}/src/LamaPon/LamaPon.h")
     message(FATAL_ERROR "LAMAPON_ENGINE_ROOT does not contain LamaPon sources.")
 endif()

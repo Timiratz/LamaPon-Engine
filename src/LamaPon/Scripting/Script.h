@@ -856,9 +856,14 @@ namespace LamaPon
 
             static void Destroy(void* instance)
             {
-                auto* script = static_cast<TScript*>(instance);
-                script->OnDestroy();
-                delete script;
+                // ユーザーの終了処理が例外を送出しても、デストラクタで
+                // 購読やコルーチンを必ず解放してから呼び出し元へ戻します。
+                std::unique_ptr<TScript> script{
+                    static_cast<TScript*>(instance) };
+                if (script)
+                {
+                    script->OnDestroy();
+                }
             }
 
             // instanceをScript*へ上位変換します。ここでは具体型

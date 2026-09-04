@@ -1,5 +1,11 @@
 # Third-party notices
 
+Engine SDKs and exported Windows games include the complete license texts in
+`licenses/`: `LamaPon.txt`, `DirectXTK.txt`, `imgui.txt`, `ImGuizmo.txt`,
+`nlohmann-json.txt`, `XAudio2Redist.txt`, `cgltf.txt`, `ufbx.txt`, and
+`stb-vorbis.txt`. The source paths below identify the original copies in this
+repository. Keep this notice and the license directory with redistributions.
+
 ## DirectX Tool Kit for DirectX 11
 
 Copyright (c) Microsoft Corporation.
@@ -47,7 +53,7 @@ included at `third_party/XAudio2Redist/LICENSE.txt`.
 
 ## JSON for Modern C++
 
-Copyright (c) 2013-2026 Niels Lohmann.
+Copyright (c) 2013-2025 Niels Lohmann.
 
 Project: https://github.com/nlohmann/json
 

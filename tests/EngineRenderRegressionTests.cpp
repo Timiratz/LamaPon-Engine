@@ -2756,18 +2756,18 @@ int main(const int argumentCount, char** arguments)
                     lightIndex < 24;
                     ++lightIndex)
                 {
-                    auto& lightObject =
+                    auto& sharedLightObject =
                         scene.CreateGameObject(
                             "ClusterLight"
                             + std::to_string(lightIndex));
-                    lightObject.GetTransform().position = {
+                    sharedLightObject.GetTransform().position = {
                         -11.5f
                             + static_cast<float>(
                                 lightIndex),
                         -1.1f,
                         0.0f
                     };
-                    lightObject.AddComponent<
+                    sharedLightObject.AddComponent<
                         LamaPon::PointLightComponent>(
                         DirectX::XMFLOAT3{
                             lightIndex % 3 == 0
@@ -2779,7 +2779,7 @@ int main(const int argumentCount, char** arguments)
                         6.0f,
                         1.7f);
                     clusterLightObjects.push_back(
-                        &lightObject);
+                        &sharedLightObject);
                 }
 
                 Stage("frame-clustered-lights");
@@ -2880,12 +2880,12 @@ int main(const int argumentCount, char** arguments)
                     " change the picture when the scene"
                     " has more lights than the limit.");
 
-                for (auto* lightObject :
+                for (auto* instancedLightObject :
                     clusterLightObjects)
                 {
                     static_cast<void>(
                         scene.DestroyGameObject(
-                            *lightObject));
+                            *instancedLightObject));
                 }
                 subject.GetTransform().position =
                     savedSubjectPosition;
@@ -7054,10 +7054,10 @@ int main(const int argumentCount, char** arguments)
             // 対照。落とす側を消して同じ絵を撮ります。
             static_cast<void>(
                 scene.DestroyGameObject(caster));
-            const auto litFrame = renderComposedFrame();
+            const auto particleLitFrame = renderComposedFrame();
             DumpFrame(
                 "tessellation-shadow-none",
-                litFrame);
+                particleLitFrame);
 
             // 影＝「落とす側が無いときは明るく、あるときは
             // 暗い」画素。板そのものが写っている場所は緑に
@@ -7066,7 +7066,7 @@ int main(const int argumentCount, char** arguments)
             // 板の写る場所は明るさがほぼ変わりません。つまり
             // 対照側で数えられるのは影だけです。
             const auto countShadowed =
-                [&litFrame](
+                [&particleLitFrame](
                     const std::vector<std::uint8_t>&
                         frame)
             {
@@ -7082,7 +7082,7 @@ int main(const int argumentCount, char** arguments)
                         const auto with =
                             At(frame, x, y);
                         const auto without =
-                            At(litFrame, x, y);
+                            At(particleLitFrame, x, y);
                         const bool greenish =
                             with.green > with.red + 20
                             && with.green

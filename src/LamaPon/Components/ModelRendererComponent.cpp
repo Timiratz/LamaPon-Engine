@@ -2527,7 +2527,6 @@ namespace LamaPon
 
         auto* const context = m_graphics->Context();
         constexpr UINT vertexStride = sizeof(Vertex);
-        constexpr UINT vertexOffset = 0;
         effect.SetMatrices(
             DirectX::XMMatrixIdentity(),
             view,

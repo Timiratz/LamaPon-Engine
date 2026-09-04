@@ -89,22 +89,37 @@ namespace LamaPon
         const std::size_t count =
             m_subscriptions.size();
         ++m_publishDepth;
-        for (std::size_t index = 0;
-            index < count;
-            ++index)
+        try
         {
-            auto& subscription = m_subscriptions[index];
-            if (subscription.id == 0
-                || subscription.eventName != eventName
-                || subscription.handler == nullptr)
+            for (std::size_t index = 0;
+                index < count;
+                ++index)
             {
-                continue;
+                auto& subscription = m_subscriptions[index];
+                if (subscription.id == 0
+                    || subscription.eventName != eventName
+                    || subscription.handler == nullptr)
+                {
+                    continue;
+                }
+                // ハンドラーが自分自身をUnsubscribeしても安全な
+                // ようにコピーしてから呼びます。
+                const auto handler = subscription.handler;
+                handler(eventArgs);
             }
-            // ハンドラーが自分自身をUnsubscribeしても安全な
-            // ようにコピーしてから呼びます。
-            const auto handler = subscription.handler;
-            handler(eventArgs);
         }
+        catch (...)
+        {
+            // 入れ子の発行でも深さを巻き戻し、最外周で無効な購読を
+            // 回収します。ユーザーの例外自体は握りつぶしません。
+            FinishPublish();
+            throw;
+        }
+        FinishPublish();
+    }
+
+    void EventBus::FinishPublish() noexcept
+    {
         --m_publishDepth;
         if (m_publishDepth == 0 && m_needsCompaction)
         {

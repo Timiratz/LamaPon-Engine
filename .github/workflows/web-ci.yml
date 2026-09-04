@@ -1,0 +1,33 @@
+name: Web CI
+on:
+  push:
+    branches: [main, master]
+    paths: ["src/LamaPon/Web/**", "src/LamaPon/Portable/**", "cmake/LamaPonWeb.cmake", "tools/export_web.py", "tests/**", ".github/workflows/web-ci.yml"]
+  pull_request:
+    paths: ["src/LamaPon/Web/**", "src/LamaPon/Portable/**", "cmake/LamaPonWeb.cmake", "tools/export_web.py", "tests/**", ".github/workflows/web-ci.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  browser-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Emscripten
+        run: |
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
+          "$RUNNER_TEMP/emsdk/emsdk" install 6.0.9
+          "$RUNNER_TEMP/emsdk/emsdk" activate 6.0.9
+      - name: Build and run browser regressions
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
+          emcmake cmake -S tests/web -B build-web-tests -G Ninja
+          cmake --build build-web-tests --parallel 2
+          python tests/RunBrowserTests.py --browser "$(command -v google-chrome)" --html build-web-tests/WebLifecycleTests.html
+          python tests/RunBrowserTests.py --browser "$(command -v google-chrome)" --html build-web-tests/PortableSmoke.html --runtime
+          python tests/WebExportToolTests.py

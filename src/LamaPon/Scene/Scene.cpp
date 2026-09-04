@@ -3832,6 +3832,14 @@ namespace LamaPon
         m_motionBlurFrame = {};
         m_autoExposure = {};
         m_ambientOcclusion = {};
+        // 通常ロードでは省略された設定も既定値に戻します。
+        // 前シーンの行列・ジッター・描画対象への参照は引き継ぎません。
+        m_screenSpaceReflection = {};
+        m_temporalAntiAliasing = {};
+        m_temporalFrame = {};
+        m_temporalFrameIndex = 0;
+        m_volumetricLight = {};
+        m_volumetricFrame = {};
         m_colorGrading = {};
         m_bakedGiSettings = {};
         m_bakedGiBakedShape = {};
@@ -3850,6 +3858,10 @@ namespace LamaPon
         m_frustumCullingEnabled = true;
         m_occlusionCullingEnabled = true;
         m_visibilityStats = {};
+        m_renderSpatialIndex.Clear();
+        m_frameReflectionProbes.clear();
+        m_skyPrefilterKeyPath.clear();
+        m_skyPrefilterKey = 0;
     }
 
     void Scene::Update(const float deltaTime)

@@ -25,7 +25,9 @@ namespace LamaPon
     // 「ボタンが押された」「敵が倒された」のような出来事を
     // 名前で購読・発行でき、コンポーネント同士が直接参照せずに
     // 連携できます。Sceneが1つ保持し、Scene切り替えでは
-    // 消えません（購読はScript破棄時に自動解除されます）。
+    // 消えません。Script::Onの購読はScript破棄時に解除されます。
+    // SubscribeのハンドルはUnsubscribeで、Observeの購読は返された
+    // Subscriptionの破棄で解除します。操作は同じスレッドで行います。
     class EventBus final
     {
     public:
@@ -46,7 +48,8 @@ namespace LamaPon
         void Unsubscribe(std::uint64_t handle) noexcept;
         // 同名イベントの全ハンドラーを呼びます。Publish中の
         // Subscribe（今回は呼ばれない）とUnsubscribeにも
-        // 耐えます。
+        // 耐えます。例外時は内部状態を復元して例外を呼び出し元へ返し、
+        // 残りのハンドラーは呼びません。
         void Publish(
             std::string_view eventName,
             const EventArgs& eventArgs = {});
@@ -58,6 +61,8 @@ namespace LamaPon
             SubscriptionCount() const noexcept;
 
     private:
+        void FinishPublish() noexcept;
+
         struct Subscription final
         {
             std::uint64_t id{};
