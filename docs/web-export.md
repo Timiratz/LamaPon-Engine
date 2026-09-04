@@ -1,5 +1,27 @@
 # Web／Windows出力試作
 
+## エディターから出力する
+
+「ゲームをエクスポート」で **Windows（EXE）** または **Web（HTML）** を選び、
+出力先を指定して「エクスポート」を押します。既定の出力先は形式ごとに
+`dist/LamaPonGame`、`dist/LamaPonWeb`へ切り替わります。手入力した出力先は保持します。
+
+Webを初めて使う場合は「Webビルド環境」で、インストール・activate済みの
+Emscripten SDKフォルダーを指定してください。SDK同梱Pythonを自動検出します。
+別のPythonを使う場合は3.11以降の実行ファイルを指定します。CMakeもPATH上に必要です。
+これらのPC固有の設定は`%LOCALAPPDATA%/LamaPon/web-export-tools.json`へ保存し、
+プロジェクトには含めません。
+
+Web出力中はダイアログを閉じて編集を続けられます。エディター自体を終了すると
+ビルドも終了するため、完成するまではエディターを起動しておいてください。
+結果はステータスとダイアログへ表示され、「ビルドログを開く」で詳細を確認できます。
+未対応APIなどがあるプロジェクトは理由を表示して停止し、従来の出力を保持します。
+成功後は「出力フォルダーを開く」から`LamaPonWebGL-プロジェクト名.html`を確認できます。
+複数ファイル出力を指定した高度なプロジェクトではフォルダー全体を配布してください。
+
+この選択肢は以下のWeb／Portable機能を利用します。Windows専用の機能を含むゲームの
+完全な互換性を保証するものではなく、CarGameを含め出力時の互換性検査が必要です。
+
 配布SDKにも `tools/export_web.py`、`cmake/LamaPonWeb.cmake`、Web／Portableの
 ソースと必要なヘッダーを同梱しています。ソースリポジトリの別途取得は不要です。
 Python 3.11以降、CMake、[Emscripten SDK](https://emscripten.org/docs/getting_started/downloads.html)

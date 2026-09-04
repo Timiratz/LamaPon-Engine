@@ -55,7 +55,9 @@ namespace LamaPon
     // データアセットのキャッシュが増えてsizeofが変わりました。
     // 15はSceneの空間索引とGraphicsDeviceのサービス所有を専用クラスへ
     // 移したためです。公開クラスのレイアウトを使う既存DLLは再ビルドします。
-    inline constexpr std::uint32_t GameModuleApiVersion = 15;
+    // 16はSceneの物理時計を専用クラスへ移したためです。補間時刻を
+    // 公開するSceneのレイアウトが変わるので、ゲーム用DLLを再ビルドします。
+    inline constexpr std::uint32_t GameModuleApiVersion = 16;
 
     using NativeScriptCreateFunction = void* (*)(
         GameObject* owner,

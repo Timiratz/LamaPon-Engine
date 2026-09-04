@@ -34,6 +34,31 @@ namespace LamaPon::EditorDetail
     constexpr const char* AssetFolderPayload =
         "LAMAPON_ASSET_FOLDER";
 
+    // 表示名と保存名は分けます。日本語などを含む表示名には英語の既定名を
+    // 提案し、メニュー保存とドラッグ作成で同じファイル命名規則を使います。
+    inline std::wstring SuggestedPrefabFileStem(const std::string_view displayName)
+    {
+        std::wstring stem = PathFromUtf8(displayName).filename().wstring();
+        for (auto& character : stem)
+        {
+            if (character > 0x7f)
+            {
+                return L"NewPrefab";
+            }
+            if (character < L' '
+                || std::wstring_view{ L"<>:\"/\\|?*" }.find(character)
+                    != std::wstring_view::npos)
+            {
+                character = L'_';
+            }
+        }
+        while (!stem.empty() && (stem.back() == L' ' || stem.back() == L'.'))
+        {
+            stem.pop_back();
+        }
+        return stem.empty() ? L"NewPrefab" : stem;
+    }
+
     inline std::string Lowercase(std::string value)
     {
         std::ranges::transform(

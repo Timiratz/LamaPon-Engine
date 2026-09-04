@@ -37,6 +37,7 @@
 namespace LamaPon
 {
     class BgmLoopPanel;
+    class GameExportDialog;
     class GraphicsDevice;
     class PlayerPrefs;
     class SaveDataStore;
@@ -797,7 +798,7 @@ namespace LamaPon
         std::vector<GameObjectId> m_additionalSelection;
         std::array<char, 128> m_assetFolderNameBuffer{};
         std::array<char, 256> m_assetFileNameBuffer{};
-        std::array<char, 1024> m_gameExportPathBuffer{};
+        std::unique_ptr<GameExportDialog> m_gameExportDialog;
         std::array<char, 256> m_projectGameNameBuffer{};
         std::array<char, 512> m_projectStartupSceneBuffer{};
         std::array<char, 512> m_projectGameIconBuffer{};
@@ -849,8 +850,6 @@ namespace LamaPon
         std::array<char, 32> m_packageBuildVersionBuffer{};
         std::string m_packageBuildError;
         std::string m_packageBuildIndexEntry;
-        // エクスポート時に配布用ZIPも作成するか。
-        bool m_gameExportCreateZip{ false };
         std::array<char, 96> m_editorPresetNameBuffer{};
         std::array<char, 128> m_playerPrefKeyBuffer{};
         std::array<char, 512> m_playerPrefValueBuffer{};
@@ -864,7 +863,6 @@ namespace LamaPon
         std::string m_assetFolderDialogError;
         std::string m_assetFileDialogError;
         std::string m_assetDeleteScanError;
-        std::string m_gameExportError;
         std::string m_projectSettingsError;
         std::string m_materialInspectorError;
         std::string m_dataAssetInspectorError;
@@ -1171,7 +1169,6 @@ namespace LamaPon
         inline static bool s_normalModeRestartRequested{};
         bool m_win32Initialized{};
         bool m_dx11Initialized{};
-        bool m_gameExportDialogRequested{};
         bool m_projectSettingsDialogRequested{};
         std::string m_imguiIniPath;
         bool m_resetDockLayout{};

@@ -22,6 +22,8 @@ namespace LamaPon::Time
     void SetTimeScale(float scale) noexcept;
     [[nodiscard]] bool IsPaused() noexcept;
 
+    // 互換用の既定値です。現在の刻み幅はFixedUpdate引数、描画時刻は
+    // LateUpdateからScene::PhysicsTiming()を参照してください。
     [[nodiscard]] constexpr float FixedDeltaTime() noexcept
     {
         return 1.0f / 60.0f;

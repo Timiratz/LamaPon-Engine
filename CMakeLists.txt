@@ -330,6 +330,8 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Physics/PhysicsMaterial.h
     src/LamaPon/Physics/PhysicsQuery.h
     src/LamaPon/Physics/PhysicsSettings.cpp
+    src/LamaPon/Physics/PhysicsFrameClock.cpp
+    src/LamaPon/Physics/PhysicsFrameClock.h
     src/LamaPon/Physics/PhysicsSettings.h
     src/LamaPon/Physics/Raycast.cpp
     src/LamaPon/Physics/Raycast.h
@@ -445,6 +447,8 @@ set(LAMAPON_EDITOR_SOURCES
     src/LamaPon/Editor/BgmLoopPanel.h
     src/LamaPon/Editor/GameExporter.cpp
     src/LamaPon/Editor/GameExporter.h
+    src/LamaPon/Editor/GameExportDialog.cpp
+    src/LamaPon/Editor/WebExportJob.cpp
     src/LamaPon/Editor/GameModuleBuilder.cpp
     src/LamaPon/Editor/GameModuleBuilder.h
     src/LamaPon/Editor/PackageManager.cpp
@@ -815,6 +819,15 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME WebExportTool
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/WebExportToolTests.py")
+    add_test(NAME EditorWebExport
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/EditorWebExportTests.py")
+    add_executable(LamaPonGameExportDialogTests tests/GameExportDialogTests.cpp)
+    target_link_libraries(LamaPonGameExportDialogTests PRIVATE LamaPonEditor DearImGui)
+    target_compile_options(LamaPonGameExportDialogTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
+    add_test(NAME GameExportDialog COMMAND LamaPonGameExportDialogTests "${Python3_EXECUTABLE}")
     add_test(NAME CliSceneCommands
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/CliSceneCommandTests.py"
             --executable "$<TARGET_FILE:LamaPonCli>"
@@ -888,6 +901,15 @@ if(BUILD_TESTING)
     add_executable(LamaPonSceneTests
         tests/SceneSerializationTests.cpp
     )
+    add_executable(LamaPonPhysicsTimingTests tests/PhysicsTimingTests.cpp)
+    target_link_libraries(LamaPonPhysicsTimingTests PRIVATE LamaPonRuntime)
+    target_compile_options(LamaPonPhysicsTimingTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_test(NAME PhysicsPresentationTiming COMMAND LamaPonPhysicsTimingTests)
+    set_tests_properties(PhysicsPresentationTiming PROPERTIES LABELS "scene;physics;timing")
     target_link_libraries(LamaPonSceneTests PRIVATE LamaPonRuntime)
     target_compile_options(LamaPonSceneTests PRIVATE
         $<$<CXX_COMPILER_ID:MSVC>:/W4>

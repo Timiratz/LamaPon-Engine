@@ -8,7 +8,7 @@
 #include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Physics/PhysicsSettings.h"
 #include "LamaPon/Core/Time.h"
-#include "LamaPon/Editor/GameExporter.h"
+#include "LamaPon/Editor/GameExportDialog.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Scene/Scene.h"
 #include "LamaPon/Scene/SceneManager.h"
@@ -1803,192 +1803,34 @@ namespace LamaPon
 
     void EditorLayer::OpenGameExportDialog()
     {
-        const auto defaultDirectory =
-            m_graphics.Assets().AssetRoot().parent_path()
-            / L"dist"
-            / L"LamaPonGame";
-        const std::string defaultPath =
-            PathToUtf8(defaultDirectory);
-        strncpy_s(
-            m_gameExportPathBuffer.data(),
-            m_gameExportPathBuffer.size(),
-            defaultPath.c_str(),
-            _TRUNCATE);
-        m_gameExportError.clear();
-        m_gameExportDialogRequested = true;
+        if (!m_gameExportDialog)
+            m_gameExportDialog = std::make_unique<GameExportDialog>();
+        m_gameExportDialog->Open(m_graphics.Assets().AssetRoot().parent_path());
     }
 
     void EditorLayer::DrawGameExportDialog()
     {
-        constexpr const char* popupName =
-            "ゲームをエクスポート##GameExport";
-        if (m_gameExportDialogRequested)
-        {
-            ImGui::OpenPopup(popupName);
-            m_gameExportDialogRequested = false;
-        }
-
-        ImGui::SetNextWindowSize(
-            ImVec2{ 620.0f, 0.0f },
-            ImGuiCond_Appearing);
-        if (!ImGui::BeginPopupModal(
-            popupName,
-            nullptr,
-            ImGuiWindowFlags_AlwaysAutoResize))
-        {
-            return;
-        }
-
-        ImGui::TextUnformatted(
-            "ゲーム実行に必要なファイルだけを配布フォルダーへ出力します。");
-        ImGui::Spacing();
-        ImGui::SetNextItemWidth(500.0f);
-        ImGui::InputText(
-            "出力先",
-            m_gameExportPathBuffer.data(),
-            m_gameExportPathBuffer.size());
-        ImGui::SameLine();
-        if (ImGui::Button("参照..."))
-        {
-            try
-            {
-                auto initialDirectory = PathFromUtf8(
-                    m_gameExportPathBuffer.data());
-                if (!std::filesystem::is_directory(initialDirectory))
-                {
-                    initialDirectory =
-                        initialDirectory.parent_path();
-                }
-                if (const auto selected =
-                    BrowseForExportDirectory(
-                        m_window,
-                        initialDirectory))
-                {
-                    const std::string selectedPath =
-                        PathToUtf8(*selected);
-                    strncpy_s(
-                        m_gameExportPathBuffer.data(),
-                        m_gameExportPathBuffer.size(),
-                        selectedPath.c_str(),
-                        _TRUNCATE);
-                }
-            }
-            catch (const std::exception& exception)
-            {
-                m_gameExportError = exception.what();
-            }
-        }
-
-        const auto assetDirectory =
-            m_graphics.Assets().AssetRoot();
-        const std::string exportedExeName =
-            PathToUtf8(
-                SanitizeGameFileName(
-                    m_projectSettings.gameName)
-                + L".exe");
-        ImGui::Text(
-            "ゲーム名: %s",
-            m_projectSettings.gameName.c_str());
-        ImGui::Text(
-            "初期解像度: %u x %u",
-            m_projectSettings.windowWidth,
-            m_projectSettings.windowHeight);
-        ImGui::Text(
-            "起動シーン: %s",
-            PathToUtf8(
-                m_projectSettings.startupScene).c_str());
-        ImGui::Text(
-            "ゲームアイコン: %s",
-            m_projectSettings.gameIcon.empty()
-                ? "（LamaPon標準）"
-                : PathToUtf8(
-                    m_projectSettings.gameIcon).c_str());
-        ImGui::Text(
-            "グラフィック品質: %s / 描画スケール %.2f",
-            GraphicsQualityPresetName(
-                m_projectSettings.graphics.preset).data(),
-            m_projectSettings.graphics.renderScale);
-        ImGui::TextDisabled(
-            "出力物: %s / LamaPonRuntime.dll / xaudio2_9redist.dll / assets.tpak / LamaPonGame.json",
-            exportedExeName.c_str());
-        ImGui::TextDisabled(
-            "既存の出力先は、パッケージ完成後に安全に置き換えられます。");
-        ImGui::Checkbox(
-            "配布用ZIPも作成（出力フォルダーの隣に置きます）",
-            &m_gameExportCreateZip);
-
-        if (!m_gameExportError.empty())
-        {
-            ImGui::PushStyleColor(
-                ImGuiCol_Text,
-                ImVec4{ 1.0f, 0.35f, 0.30f, 1.0f });
-            ImGui::TextWrapped(
-                "%s",
-                m_gameExportError.c_str());
-            ImGui::PopStyleColor();
-        }
-
-        ImGui::Spacing();
-        if (ImGui::Button("エクスポート", ImVec2{ 120.0f, 0.0f }))
-        {
-            try
+        if (!m_gameExportDialog) return;
+        // UIとワーカーは専用担当へ渡し、Sceneの保存はUIスレッドで完了します。
+        m_gameExportDialog->Draw(GameExportDialogContext{
+            m_engineRoot, ExecutableDirectory(), m_graphics.Assets().AssetRoot(),
+            ProjectSettingsPath(), m_projectSettings,
+            [this]
             {
                 if (m_scenePath.empty())
-                {
-                    throw std::runtime_error(
-                        "先にシーンを保存してください");
-                }
-
+                    throw std::runtime_error("先にシーンを保存してください");
                 m_scene.SaveToFile(m_scenePath);
                 MarkSceneSaved();
-                GameExportOptions exportOptions{
-                    ExecutableDirectory(),
-                    assetDirectory,
-                    PathFromUtf8(
-                        m_gameExportPathBuffer.data()),
-                    m_projectSettings,
-                    m_graphics.Assets().AssetRoot().parent_path()
-                        / L".lamapon"
-                        / L"bin"
-                        / L"LamaPonGameModule.dll"
-                };
-                exportOptions.createZipArchive =
-                    m_gameExportCreateZip;
-                const GameExportResult result =
-                    ExportGamePackage(exportOptions);
-                RefreshAssets();
-                std::string status =
-                    "ゲームをエクスポートしました: "
-                    + PathToUtf8(result.outputDirectory)
-                    + " ("
-                    + std::to_string(result.fileCount)
-                    + "ファイル)";
-                if (!result.zipPath.empty())
-                {
-                    status += " / ZIP: "
-                        + PathToUtf8(result.zipPath);
-                }
-                SetStatus(status);
-                m_gameExportError.clear();
-                ImGui::CloseCurrentPopup();
-            }
-            catch (const std::exception& exception)
+            },
+            [this](std::string message, bool failed)
             {
-                m_gameExportError = exception.what();
-                SetStatus(
-                    "ゲームのエクスポートに失敗しました: "
-                    + m_gameExportError,
-                    true);
+                SetStatus(std::move(message), failed);
+            },
+            [this](const std::filesystem::path& initial)
+            {
+                return BrowseForExportDirectory(m_window, initial);
             }
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("キャンセル"))
-        {
-            m_gameExportError.clear();
-            ImGui::CloseCurrentPopup();
-        }
-
-        ImGui::EndPopup();
+        });
     }
 
     void EditorLayer::StartPlaying()

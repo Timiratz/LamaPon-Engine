@@ -131,6 +131,12 @@ LamaPonCli.exe runtime stop --project "C:\path\to\MyProject" --id <sessionId>
 固定60 FPSと誤表示しません。命令は1件ずつ処理されるため、手動の`send`で
 前の命令が未完了なら上書きせず明示的なエラーを返します。
 
+Windows Runtimeの`runtime.physics`には`fixedDeltaTime`、`interpolationAlpha`、
+`simulatedTime`、`presentationTime`、`discardedDeltaTime`、`discardedTime`も入ります。
+物理と表示の時刻差、およびScene内の追いつき制限で使わなかった時間を確認できます。
+捨てた時間はフレーム単位と累計の両方を保持し、`Scene::Clear()`で累計を初期化します。
+上流で制限された時間やGPU・配信の処理時間は含まないため、FPSなどと併せて判断します。
+
 `runtime.screen`には実行中の画面サイズ（`width`／`height`）が入ります。
 **2Dは1ワールド単位＝1画素**なので、位置のアサーションはこれを見て
 書いてください。解像度を決め打ちすると、ゲームが正しくてもテストだけが

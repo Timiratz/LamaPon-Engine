@@ -1,5 +1,6 @@
 #include "LamaPon/Editor/BgmLoopPanel.h"
 #include "LamaPon/Editor/EditorLayer.h"
+#include "LamaPon/Editor/GameExportDialog.h"
 
 #include "LamaPon/Editor/EditorLayerShared.h"
 
@@ -1502,6 +1503,13 @@ namespace LamaPon
     void EditorLayer::ApplyScreenshotIntent()
     {
         std::string show = m_screenshotRequest.show;
+        if (show == "export-windows" || show == "export-web")
+        {
+            OpenGameExportDialog();
+            m_gameExportDialog->SelectTarget(show == "export-web"
+                ? GameExportTarget::Web : GameExportTarget::Windows);
+            return;
+        }
         if (show.empty())
         {
             return;
@@ -8325,7 +8333,7 @@ namespace LamaPon
 
         std::array<wchar_t, 32768> filename{};
         const std::wstring suggestedName = m_scenePath.empty()
-            ? L"新しいシーン.scene.json"
+            ? L"NewScene.scene.json"
             : m_scenePath.filename().wstring();
         wcscpy_s(filename.data(), filename.size(), suggestedName.c_str());
 
@@ -8397,26 +8405,7 @@ namespace LamaPon
             return;
         }
 
-        std::wstring baseName =
-            PathFromUtf8(selected->Name()).filename().wstring();
-        for (auto& character : baseName)
-        {
-            if (character < L' '
-                || std::wstring_view{ L"<>:\"/\\|?*" }.find(character)
-                    != std::wstring_view::npos)
-            {
-                character = L'_';
-            }
-        }
-        while (!baseName.empty()
-            && (baseName.back() == L' ' || baseName.back() == L'.'))
-        {
-            baseName.pop_back();
-        }
-        if (baseName.empty())
-        {
-            baseName = L"NewPrefab";
-        }
+        const std::wstring baseName = SuggestedPrefabFileStem(selected->Name());
 
         std::array<wchar_t, 32768> filename{};
         const std::wstring suggestedName =

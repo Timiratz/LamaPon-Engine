@@ -23,6 +23,9 @@ sufficient.
 
 ## Code style
 
+- リポジトリのファイル名・フォルダー名は英語またはローマ字のASCII文字にします。
+  コード内の表示名・文章・コメントは日本語で構いません。アセット改名時は
+  `.meta`を一緒に移し、GUIDを保ったまま参照パスを更新してください。
 - Use C++20 and four-space indentation.
 - Treat `/W4` warnings in changed code as defects.
 - Prefer RAII, `std::filesystem::path`, and explicit ownership.

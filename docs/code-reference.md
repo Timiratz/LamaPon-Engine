@@ -249,15 +249,16 @@ void OnTriggerExit(const LamaPon::CollisionEvent& event);
 | 引数 | 説明 |
 |---|---|
 | `deltaTime` | 前のフレームからの経過秒数。`Time::SetTimeScale`の影響を受けます |
-| `fixedDeltaTime` | 固定更新の間隔。常に1/60秒（0.0166…）です |
+| `fixedDeltaTime` | プロジェクトの物理設定で指定した間隔。既定値は1/60秒です |
 | `event` | 衝突相手のGameObjectや接触点の情報が入っています |
 
 **解説**
 
-呼ばれる順番は`Awake`→`OnEnable`→`Start`→（毎フレーム`FixedUpdate`→`Update`→`LateUpdate`）→`OnDisable`→`OnDestroy`です。
+Windows Runtimeでは、生成・有効化時の`Awake`→`OnEnable`→`Start`の後、毎フレーム`Update`→（`FixedUpdate`→物理計算を0回以上）→`LateUpdate`の順に呼びます。無効化・破棄時には`OnDisable`／`OnDestroy`を呼びます。
 
 物理に力を加える処理は`FixedUpdate`へ書くと、フレームレートが変わっても挙動が同じになります。
 カメラの追従など「他が動いた後に処理したい」ものは`LateUpdate`が向いています。
+物理に同期するゴーストやリプレイも`LateUpdate`で`GetScene().PhysicsTiming().InterpolateTime(固定更新で積算した時刻)`を使います。`Update`ではそのフレームの物理更新がまだ終わっていません。記録データの補間方法と利用例は[物理・当たり判定](physics.md#physics-presentation-time)を参照してください。
 
 Colliderの「トリガー」がONの相手との接触は`OnTrigger〜`、押し合う衝突は`OnCollision〜`へ届きます。
 
@@ -982,7 +983,7 @@ constexpr float LamaPon::Time::FixedDeltaTime() noexcept;   // 1/60
 | `TimeScale` | なし | 現在の時間倍率。1.0が通常 |
 | `SetTimeScale` | `scale` : 倍率 | 0で停止、0.5でスロー、2.0で倍速。**0〜100に丸められます** |
 | `IsPaused` | なし | `TimeScale`が0ならtrue |
-| `FixedDeltaTime` | なし | 固定更新の間隔。常に1/60秒 |
+| `FixedDeltaTime` | なし | 互換用の既定値1/60秒。実際の刻みは`FixedUpdate`引数を使用 |
 
 **解説**
 

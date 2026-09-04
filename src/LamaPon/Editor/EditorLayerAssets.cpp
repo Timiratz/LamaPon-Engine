@@ -879,7 +879,7 @@ namespace LamaPon
             strncpy_s(
                 m_assetFolderNameBuffer.data(),
                 m_assetFolderNameBuffer.size(),
-                "新しいフォルダー",
+                "NewFolder",
                 _TRUNCATE);
             m_assetFolderDialogError.clear();
             ImGui::OpenPopup("フォルダーを作成");
@@ -890,7 +890,7 @@ namespace LamaPon
             strncpy_s(
                 m_assetFileNameBuffer.data(),
                 m_assetFileNameBuffer.size(),
-                "新しいシーン.scene.json",
+                "NewScene.scene.json",
                 _TRUNCATE);
             m_assetFileDialogError.clear();
             ImGui::OpenPopup("シーンを作成");
@@ -901,7 +901,7 @@ namespace LamaPon
             strncpy_s(
                 m_assetFileNameBuffer.data(),
                 m_assetFileNameBuffer.size(),
-                "新しいMaterial.material.json",
+                "NewMaterial.material.json",
                 _TRUNCATE);
             m_assetFileDialogError.clear();
             ImGui::OpenPopup("Lit Materialを作成");
@@ -913,7 +913,7 @@ namespace LamaPon
             strncpy_s(
                 m_assetFileNameBuffer.data(),
                 m_assetFileNameBuffer.size(),
-                "新しいデータ.asset.json",
+                "NewData.asset.json",
                 _TRUNCATE);
             m_assetFileDialogError.clear();
             // 型が1つだけならそれを選んだ状態で開きます。
@@ -4628,21 +4628,16 @@ namespace LamaPon
             const auto root =
                 m_graphics.Assets().AssetRoot();
             // 同名があれば連番を付けて衝突を避けます。
-            auto fileName =
-                PathFromUtf8(gameObject->Name());
-            if (fileName.empty())
-            {
-                fileName = L"GameObject";
-            }
+            const auto fileName = SuggestedPrefabFileStem(gameObject->Name());
             auto relative = targetDirectory
-                / (fileName.wstring() + L".prefab.json");
+                / (fileName + L".prefab.json");
             for (int suffix = 2;
                 std::filesystem::exists(root / relative)
                     && suffix < 1000;
                 ++suffix)
             {
                 relative = targetDirectory
-                    / (fileName.wstring()
+                    / (fileName
                         + L" ("
                         + std::to_wstring(suffix)
                         + L").prefab.json");

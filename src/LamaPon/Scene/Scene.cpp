@@ -3851,9 +3851,7 @@ namespace LamaPon
         m_bakedGiWorking.clear();
         m_physicsBroadPhaseCellSize = 4.0f;
         m_physicsStats = {};
-        m_physicsAccumulator = 0.0;
-        m_physicsInterpolationAlpha = 0.0f;
-        m_physicsFixedStepsLastFrame = 0;
+        m_physicsClock = {};
         m_renderingInterpolatedTransforms = false;
         m_frustumCullingEnabled = true;
         m_occlusionCullingEnabled = true;
@@ -3899,20 +3897,22 @@ namespace LamaPon
                 SynchronizePhysicsInterpolation();
         }
 
-        m_physicsFixedStepsLastFrame = 0;
+        const auto& physicsSettings = ActivePhysicsSettings();
+        m_physicsClock.BeginFrame(deltaTime, physicsSettings.fixedTimeStep,
+            static_cast<std::size_t>(physicsSettings.maximumCatchUpSteps));
         const float safeDeltaTime =
-            std::clamp(deltaTime, 0.0f, 0.1f);
+            std::isfinite(deltaTime) ? std::clamp(deltaTime, 0.0f, 0.1f) : 0.0f;
         if (safeDeltaTime <= 0.0f)
         {
-            // Preserve zero-time overlap refreshes used by editor tools.
+            // エディターのゼロ時間での重なり更新を維持します。物理姿勢が
+            // 変わった物体だけ履歴を同期し、停止中の表示位置は保持します。
             StepPhysics(0.0f);
             for (const auto& gameObject :
                 m_gameObjects)
             {
                 gameObject->
-                    ResetPhysicsInterpolation();
+                    SynchronizePhysicsInterpolation();
             }
-            m_physicsInterpolationAlpha = 0.0f;
             for (std::size_t index = 0;
                 index < m_gameObjects.size();
                 ++index)
@@ -3924,26 +3924,10 @@ namespace LamaPon
             return;
         }
 
-        // 刻み幅と追いつき上限はプロジェクト設定から
-        // （以前は60Hz・8回で固定でした）。
-        const auto& physicsSettings = ActivePhysicsSettings();
-        const double fixedDeltaTime =
-            static_cast<double>(
-                physicsSettings.fixedTimeStep);
-        const std::size_t maximumCatchUpSteps =
-            static_cast<std::size_t>(
-                physicsSettings.maximumCatchUpSteps);
-        m_physicsAccumulator = std::min(
-            m_physicsAccumulator
-                + static_cast<double>(safeDeltaTime),
-            fixedDeltaTime
-                * static_cast<double>(
-                    maximumCatchUpSteps));
-        while (m_physicsAccumulator
-                + fixedDeltaTime * 0.00001
-                >= fixedDeltaTime
-            && m_physicsFixedStepsLastFrame
-                < maximumCatchUpSteps)
+        // コールバック中に設定が変更されても、このフレームの刻み幅は
+        // 時計・FixedUpdate・物理計算で同じ値を使います。
+        const float fixedDeltaTime = PhysicsTiming().fixedDeltaTime;
+        while (m_physicsClock.PendingStep())
         {
             for (const auto& gameObject : m_gameObjects)
             {
@@ -3956,30 +3940,17 @@ namespace LamaPon
             {
                 m_gameObjects[index]->FixedUpdate(
                     m_graphics,
-                    physicsSettings.fixedTimeStep);
+                    fixedDeltaTime);
             }
-            StepPhysics(
-                physicsSettings.fixedTimeStep);
+            StepPhysics(fixedDeltaTime);
             for (const auto& gameObject : m_gameObjects)
             {
                 gameObject->
                     EndPhysicsInterpolationStep();
             }
-            m_physicsAccumulator -=
-                fixedDeltaTime;
-            m_physicsAccumulator =
-                std::max(
-                    m_physicsAccumulator,
-                    0.0);
-            ++m_physicsFixedStepsLastFrame;
+            m_physicsClock.CompleteStep();
         }
-        m_physicsInterpolationAlpha =
-            std::clamp(
-                static_cast<float>(
-                    m_physicsAccumulator
-                    / fixedDeltaTime),
-                0.0f,
-                1.0f);
+        m_physicsClock.FinishFrame();
 
         for (std::size_t index = 0;
             index < m_gameObjects.size();

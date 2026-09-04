@@ -3113,6 +3113,10 @@ def copy_web_package(
 
 
 def run_command(command: list[str], cwd: Path, dry_run: bool) -> None:
+    # EditorはSDKのPythonエントリーを直接指定します。Windowsのbatを
+    # 経由せず、空白・日本語・シェルの特殊文字を引数のまま渡します。
+    if Path(command[0]).name in {"emcmake", "emcmake.py"} and Path(command[0]).is_file():
+        command = [sys.executable, *command]
     print(f"$ {shlex.join(command)}")
     if not dry_run:
         subprocess.run(command, cwd=cwd, check=True)

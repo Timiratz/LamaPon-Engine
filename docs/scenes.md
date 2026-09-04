@@ -165,7 +165,7 @@ Asset BrowserでPrefabを右クリックして「Prefabを配置」を選ぶか�
 GameObjectが未選択の場合はシーンルートへ配置します。
 配置後はHierarchyに`[Prefab]`と表示され、元の`.prefab.json`へのリンクはシーン保存、コピー、複製、Undo／Redoでも維持されます。
 
-`assets/prefabs/操作できる立方体.prefab.json`には、`MeshRenderer`、`Rotator`、`InputMover`とNested Prefabの`青いアクセント.prefab.json`を含むサンプルがあります。
+`assets/prefabs/ControllableCube.prefab.json`には、`MeshRenderer`、`Rotator`、`InputMover`とNested Prefabの`BlueAccent.prefab.json`を含むサンプルがあります。
 Prefabインスタンスまたはその子を選択すると、Inspectorの「Prefab」に元アセットとOverride状態が表示されます。
 `Apply`は現在の階層全体を元Prefabへ反映し、`Revert`はインスタンスの変更を破棄して元Prefabから再構築します。
 壊れた、または存在しないPrefabに対するRevertは失敗し、現在のインスタンスを保持します。

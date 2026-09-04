@@ -28,7 +28,7 @@ install(DIRECTORY "${LAMAPON_DISTRIBUTION_DIR}/" DESTINATION ".")
 
 # Webビルドは配布SDKだけで生成できるよう、C++ソースも同梱します。
 # Emscripten自体は利用者のSDKを使います。
-install(FILES tools/export_web.py DESTINATION tools)
+install(FILES tools/export_web.py tools/editor_web_export.py DESTINATION tools)
 install(FILES cmake/LamaPonWeb.cmake DESTINATION cmake)
 install(DIRECTORY src/LamaPon/Web src/LamaPon/Portable
     DESTINATION src/LamaPon)

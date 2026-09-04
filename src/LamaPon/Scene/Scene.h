@@ -7,6 +7,7 @@
 // ReflectionProbeEnvironmentを値で返すため。
 #include "LamaPon/Graphics/ReflectionProbeEnvironment.h"
 #include "LamaPon/Physics/PhysicsQuery.h"
+#include "LamaPon/Physics/PhysicsFrameClock.h"
 #include "LamaPon/Scene/EventBus.h"
 #include "LamaPon/Scene/RenderSpatialIndex.h"
 
@@ -403,6 +404,7 @@ namespace LamaPon
         {
             return m_physicsStats;
         }
+        // 互換用の既定値です。現在の設定値はPhysicsTiming().fixedDeltaTime。
         [[nodiscard]] static constexpr float
             FixedPhysicsDeltaTime() noexcept
         {
@@ -411,12 +413,18 @@ namespace LamaPon
         [[nodiscard]] float
             PhysicsInterpolationAlpha() const noexcept
         {
-            return m_physicsInterpolationAlpha;
+            return PhysicsTiming().interpolationAlpha;
         }
         [[nodiscard]] std::size_t
             PhysicsFixedStepsLastFrame() const noexcept
         {
-            return m_physicsFixedStepsLastFrame;
+            return PhysicsTiming().fixedSteps;
+        }
+        // LateUpdateで確定する物理・描画時刻。Updateからは前フレームを参照します。
+        // ゴーストや物理追従の表示にはInterpolateTimeを使い、時刻の二重積算を避けます。
+        [[nodiscard]] const PhysicsFrameTiming& PhysicsTiming() const noexcept
+        {
+            return m_physicsClock.Timing();
         }
         [[nodiscard]] bool
             RenderingInterpolatedTransforms()
@@ -744,9 +752,7 @@ namespace LamaPon
         ColorGradingSettings m_colorGrading;
         float m_physicsBroadPhaseCellSize{ 4.0f };
         PhysicsBroadPhaseStats m_physicsStats;
-        double m_physicsAccumulator{};
-        float m_physicsInterpolationAlpha{};
-        std::size_t m_physicsFixedStepsLastFrame{};
+        Detail::PhysicsFrameClock m_physicsClock;
         bool m_renderingInterpolatedTransforms{};
         // レンダーテクスチャ描画中の再入を防ぎます。
         bool m_renderingTargetTextures{};

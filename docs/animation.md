@@ -107,13 +107,13 @@ if (auto* animator =
 }
 ```
 
-`assets/animations/アクセント.animator.json`は`Idle`と`Float`をExit Timeで往復し、0.3～0.4秒でクロスフェードします。
+`assets/animations/Accent.animator.json`は`Idle`と`Float`をExit Timeで往復し、0.3～0.4秒でクロスフェードします。
 サンプルシーンと青いアクセントPrefabに設定済みです。
 `assets/animations/AnimatedSausage.animator.json`はFBX内の`Base`、`Wiggle`、`Spin`を`MoveX`／`MoveY` Parameterで混ぜる2D Blend Treeと、Trigger遷移用の`Spin` Stateを使用します。
 サンプルシーンのInspectorで2つの値と`Spin` Triggerを操作して確認できます。
 
-サンプルの`assets/animations/アクセント浮遊.animation.json`は3キーフレームで上下移動、回転、拡縮を行います。
-Nested Prefabの`青いアクセント.prefab.json`へ設定済みなので、「操作できる立方体」Prefabを配置してPlayすると確認できます。
+サンプルの`assets/animations/AccentFloat.animation.json`は3キーフレームで上下移動、回転、拡縮を行います。
+Nested Prefabの`BlueAccent.prefab.json`へ設定済みなので、「操作できる立方体」Prefabを配置してPlayすると確認できます。
 
 ## よくあるつまずき
 

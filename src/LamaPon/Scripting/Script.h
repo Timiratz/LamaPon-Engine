@@ -74,15 +74,19 @@ namespace LamaPon
         {
         }
 
+        // フレーム入力やUIを更新します。この後に固定更新が0回以上走ります。
         virtual void Update(float)
         {
         }
 
-        // 毎フレーム、全ComponentのUpdate後に呼ばれます。
+        // 全ComponentのUpdateと、そのフレームの全固定更新・物理計算の後。
+        // カメラやゴーストの追従はここでScene::PhysicsTiming()と
+        // InterpolatedWorldMatrixを使い、同じ描画時刻に合わせます。
         virtual void LateUpdate(float)
         {
         }
 
+        // プロジェクト設定の固定間隔（既定60Hz）。力やゲーム内時計を更新します。
         virtual void FixedUpdate(float)
         {
         }

@@ -28,9 +28,9 @@
         {
           "type": "TransformAnimator",
           "enabled": true,
-          "clip": "animations/アクセント浮遊.animation.json",
+          "clip": "animations/AccentFloat.animation.json",
           "clipGuid": "3fb7a3f13ccc579f670fc0c20c46ae70",
-          "controller": "animations/アクセント.animator.json",
+          "controller": "animations/Accent.animator.json",
           "controllerGuid": "4018a473afd0b230df8e7e36134766db",
           "speed": 1.0,
           "loop": true,

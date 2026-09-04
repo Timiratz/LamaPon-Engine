@@ -1201,6 +1201,12 @@ namespace
                     physics.activeContactCount },
                 { "fixedStepsLastFrame",
                     scene.PhysicsFixedStepsLastFrame() },
+                { "fixedDeltaTime", scene.PhysicsTiming().fixedDeltaTime },
+                { "interpolationAlpha", scene.PhysicsTiming().interpolationAlpha },
+                { "simulatedTime", scene.PhysicsTiming().simulatedTime },
+                { "presentationTime", scene.PhysicsTiming().PresentationTime() },
+                { "discardedDeltaTime", scene.PhysicsTiming().discardedDeltaTime },
+                { "discardedTime", scene.PhysicsTiming().discardedTime },
             } },
             { "visibility", {
                 { "rendererCount", visibility.rendererCount },

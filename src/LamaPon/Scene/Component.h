@@ -69,10 +69,9 @@ namespace LamaPon
 
         virtual void OnInitialize(GraphicsDevice&) {}
         virtual void OnUpdate(float) {}
-        // 毎フレーム、全ComponentのOnUpdate後に呼ばれます。
+        // 全OnUpdateと全固定更新・物理計算の後。描画の追従に使います。
         virtual void OnLateUpdate(float) {}
-        // Called at the scene's fixed 60 Hz physics rate.
-        // Apply continuous Rigidbody forces here.
+        // プロジェクト設定の固定間隔（既定60Hz）。継続的な力を加えます。
         virtual void OnFixedUpdate(float) {}
         // 通常の3D描画より前に、同種の連続した対象をまとめて描画するための事前パスです。
         // 遮蔽シルエットなど、複数パーツ間で深度を共有したくない描画に使用します。

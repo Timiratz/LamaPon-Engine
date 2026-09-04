@@ -45,7 +45,7 @@
       "name": "アクセント",
       "enabled": true,
       "parent": 1,
-      "prefabAsset": "prefabs/青いアクセント.prefab.json",
+      "prefabAsset": "prefabs/BlueAccent.prefab.json",
       "prefabAssetGuid": "01e516d87ab41285cd174375c2a7c184",
       "transform": {
         "position": [0.0, 0.85, 0.0],

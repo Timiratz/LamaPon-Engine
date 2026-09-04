@@ -91,9 +91,9 @@ Manifold内の法線Impulseを8回、同じBroad Phase候補に含まれる全�
 十分低速で下から支持されたRigidbodyは自動的にSleepし、力、トルク、速度変更、別の物体からの衝突でWakeします。
 C++の`Sleep()`／`WakeUp()`とInspectorの「休止させる」／「起こす」から手動操作もできます。
 
-物理演算は描画FPSと分離した固定60 Hzで実行されます。
+Windows Runtimeの物理演算は描画FPSと分離した固定間隔（既定60 Hz）で実行され、プロジェクトの`fixedTimeStep`で変更できます。
 通常のアニメーションやUIは`OnUpdate(deltaTime)`で経過時間を使い、Rigidbodyへ継続的な力を加える処理は`OnFixedUpdate(fixedDeltaTime)`へ記述します。
-30／60／144 FPSのどの場合も1秒間に60回の物理更新となるため、端末のフレームレートで速度や衝突結果が変化しにくい構成です。
+既定設定では、追いつき上限に達しない限り30／60／144 FPSのどの場合も1秒間に60回の物理更新となり、描画FPSによる挙動の変化を抑えます。重いフレームは入力時間を最大0.1秒、固定更新を`maximumCatchUpSteps`回に制限します。捨てた時間は物理時計へ加算しません。
 
 Rigidbodyの「描画を補間」は既定で有効です。
 物理Transformは最新の確定状態を保持したまま、描画時だけ直前と現在の位置を線形補間し、回転をQuaternion Slerpで補間します。
@@ -101,6 +101,7 @@ Mesh、Sprite、Light、Cameraと子GameObjectへ自動適用されるため、C
 Teleportなど物理外でTransformを直接変更した場合は履歴を同期し、古い位置から意図しない補間をしません。
 不要な物体はInspectorまたは`RigidbodyComponent::SetInterpolate(false)`で無効化できます。
 `Scene::PhysicsInterpolationAlpha()`と`GameObject::InterpolatedWorldMatrix()`から描画補間率／補間済み行列を独自Rendererでも利用できます。
+これらは`LateUpdate`で参照します。一時停止のゼロ時間更新では表示済みの補間位置を保持し、停止中のTransform編集は履歴へ同期します。
 
 ```cpp
 void OnFixedUpdate(float fixedDeltaTime) override
@@ -111,6 +112,46 @@ void OnFixedUpdate(float fixedDeltaTime) override
         LamaPon::ForceMode::Acceleration);
 }
 ```
+
+<a id="physics-presentation-time"></a>
+
+### ゴースト・リプレイと描画時刻（Windows Runtime）
+
+1フレームの順序は`Update`→（`FixedUpdate`→物理計算を0回以上）→`LateUpdate`→描画です。物理に同期するタイマーは`FixedUpdate`の引数を積算し、表示は`LateUpdate`で更新します。固定時刻をそのままゴーストの表示へ渡すと階段状に進み、補間された自車やカメラとずれます。`Update`の`deltaTime`を別途足す方法も、物理の追いつき上限に達すると先行するため使いません。
+
+`Scene::PhysicsTiming()`は物理の刻み幅、補間率、実行済み時間、描画時刻をまとめて返します。当該フレームの値は`LateUpdate`で確定し、`Update`では前フレームの値です。進行中のゲーム固有タイマーは`InterpolateTime()`へ渡すと、Rigidbodyの描画遅延を考慮した非負の時刻になります。タイマーの開始位置をScene時計に合わせる必要はありません。
+
+```cpp
+// Script内の例。SampleGhostはゲーム側で実装する記録データの補間処理です。
+double m_raceTime{};
+
+void FixedUpdate(const float dt) override
+{
+    if (m_racing)
+    {
+        m_raceTime += static_cast<double>(dt);
+    }
+}
+
+void LateUpdate(float) override
+{
+    if (m_racing)
+    {
+        const auto& timing = GetScene().PhysicsTiming();
+        SampleGhost(timing.InterpolateTime(m_raceTime));
+    }
+}
+```
+
+`SampleGhost`は時刻を挟む2サンプルを選び、位置を線形補間、回転をQuaternion Slerpなどで補間します。タイマーを停止・リセットした際の表示、記録の先頭・末尾の扱いはゲーム側で決めます。既存ゴーストがこのAPIへ自動的に切り替わることはありません。補間済みのゴースト表示はRigidbodyによる二重補間を避けてください。
+
+- `fixedDeltaTime`：当該フレームで採用した刻み幅。固定更新中の設定変更は次フレームから採用します。
+- `simulatedTime`／`PresentationTime()`：`Scene::Clear()`以降に実行した物理時間／対応する描画時刻。実時間の時計ではありません。
+- `discardedDeltaTime`／`discardedTime`：Sceneへ渡された時間のうち、上限で実行しなかった秒数の当該フレーム分／累計。CLIの実行状態の`physics`にも出力します。上流での時間制限、GPU負荷、配信負荷を直接測る値ではありません。
+
+`Time::FixedDeltaTime()`と`Scene::FixedPhysicsDeltaTime()`は互換用の既定値です。実行中の刻みには固定更新の引数を使ってください。このAPIはWindows Runtime向けで、WebのPortable APIにはまだ提供していません。Sceneのレイアウト変更によりGame Module APIは16となり、SDK反映後はゲーム用DLLの再ビルドが必要です。
+
+### 3D形状と接触
 
 3Dボックスは回転を含むOBBとして15軸SATで判定します。
 Capsule ColliderとSphere ColliderはBox／Capsule／Sphere間のすべての組み合わせに対応し、キャラクター、縦長の物体、ボール状の物体へ軽い当たり判定を設定できます。
@@ -329,5 +370,5 @@ const float step = physics.fixedTimeStep;
   `OnTriggerEnter`側へ届きます。
   両方すり抜けたい場合はTrigger、ぶつけたい場合は通常Colliderです。
 - **ジャンプや加速をUpdateに書いたらフレームレートで変わる** — 継続的に力を
-  加える処理は固定60Hzの`FixedUpdate`へ。
+  加える処理は固定間隔（既定60Hz）の`FixedUpdate`へ。
   押した瞬間の`Impulse`は`Update`でも問題ありません。
