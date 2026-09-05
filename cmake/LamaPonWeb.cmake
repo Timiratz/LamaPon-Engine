@@ -107,7 +107,7 @@ function(lamapon_add_web_game target)
         message(FATAL_ERROR
             "The Web particles3d module currently requires PORTABLE_GAME")
     endif()
-    target_compile_features(${target} PRIVATE cxx_std_20)
+    target_compile_features(${target} PRIVATE cxx_std_23)
     if("audio" IN_LIST TWG_MODULES)
         target_compile_definitions(${target} PRIVATE
             LAMAPON_WEB_AUDIO_ENABLED=1
