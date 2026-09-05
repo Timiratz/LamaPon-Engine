@@ -90,7 +90,7 @@ class EditorWebExportTests(unittest.TestCase):
     def test_success_replaces_package_and_keeps_literal_paths(self):
         self.previous_output()
         def build(command, **kwargs):
-            self.assertIn(str(self.project), command)
+            self.assertIn(str(self.project.resolve()), command)
             self.assertNotIn("shell", kwargs)
             stage = Path(command[command.index("--output") + 1])
             (stage / "LamaPonWebGL-Game.html").write_text("<canvas></canvas>", encoding="utf-8")
