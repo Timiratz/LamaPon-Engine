@@ -244,7 +244,7 @@ class WebExportToolTests(unittest.TestCase):
             cmake = (generated / "CMakeLists.txt").read_text(encoding="utf-8")
 
             self.assertIn("lamapon_add_web_game(GeneratedGame", cmake)
-            self.assertIn((root / "main.cpp").as_posix(), cmake)
+            self.assertIn((root / "main.cpp").resolve().as_posix(), cmake)
             self.assertIn("        core", cmake)
             self.assertIn("        input", cmake)
             self.assertIn("SINGLE_FILE", cmake)

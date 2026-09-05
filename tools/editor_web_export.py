@@ -13,6 +13,24 @@ import tempfile
 import uuid
 
 
+def print_status(message: str) -> None:
+    """ローカルのコードページにない文字もUTF-8で確実に出力します。"""
+    try:
+        print(message, flush=True)
+    except UnicodeEncodeError:
+        # Windowsの英語環境などでは標準出力がcp1252になる場合があります。
+        # エディターとCIはいずれもUTF-8を扱うため、再設定して再送します。
+        reconfigure = getattr(sys.stdout, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+            print(message, flush=True)
+            return
+        encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+        escaped = message.encode(
+            encoding, errors="backslashreplace").decode(encoding)
+        print(escaped, flush=True)
+
+
 def validate_output(project: Path, output: Path, engine: Path) -> Path:
     """プロジェクトやSDK、その親フォルダーを上書きする出力先を拒否します。"""
     output = output.resolve()
@@ -88,7 +106,7 @@ def publish_package(stage: Path, output: Path) -> None:
         try:
             shutil.rmtree(backup)
         except OSError as error:
-            print(f"以前の出力を保持しました: {backup}: {error}", flush=True)
+            print_status(f"以前の出力を保持しました: {backup}: {error}")
 
 
 def export(project: Path, output: Path, result_path: Path, emsdk: Path | None) -> dict:
@@ -105,7 +123,7 @@ def export(project: Path, output: Path, result_path: Path, emsdk: Path | None) -
                    str(project), "--output", str(stage), "--emcmake", str(emcmake)]
         if shutil.which("ninja", path=env.get("PATH")):
             command.extend(["--generator", "Ninja"])
-        print("Web互換性の検査とHTMLビルドを実行しています。", flush=True)
+        print_status("Web互換性の検査とHTMLビルドを実行しています。")
         completed = subprocess.run(command, env=env, check=False)
         report = stage / "web-compatibility-report.json"
         document = {}
@@ -155,7 +173,7 @@ def main() -> int:
     temporary = args.result.with_suffix(".tmp")
     temporary.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     temporary.replace(args.result)
-    print(result["message"], flush=True)
+    print_status(result["message"])
     return 0 if result["ok"] else 1
 
 
