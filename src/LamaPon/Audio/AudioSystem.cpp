@@ -300,12 +300,11 @@ namespace LamaPon
             const bool wasReset = m_engine->Reset();
             if (wasReset)
             {
-                // The underlying XAudio2 voices of every
-                // existing SoundEffectInstance are invalidated
-                // by a device reset (e.g. switching the default
-                // playback device). Bump the generation so that
-                // AudioSourceComponent instances know to recreate
-                // their voices instead of calling into stale ones.
+                // 既定の再生デバイスを切り替えた場合など、デバイスが
+                // リセットされると、既存のSoundEffectInstanceが持つ
+                // XAudio2ボイスはすべて無効になります。世代番号を進め、
+                // AudioSourceComponentが古いボイスを呼び出さずに
+                // 作り直せるようにします。
                 ++m_deviceGeneration;
             }
             return wasReset;

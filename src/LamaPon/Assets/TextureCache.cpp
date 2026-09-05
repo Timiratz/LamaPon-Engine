@@ -12,31 +12,22 @@
 
 namespace
 {
-    // ファイル形式の版。エンコーダー（ミップの平均方法やBCの
-    // 端点選び）を変えたら上げます。鍵にも混ぜるので、上げれば
-    // 古いエントリは自然に無視されます（消す処理は要りません）。
+    // エンコード方式を変えた場合に更新するキャッシュ形式の版です。
     constexpr std::uint32_t FormatVersion = 1;
 
     constexpr char Magic[4] = { 'T', 'T', 'E', 'X' };
 
-    // ありえないミップ数（16384x16384でも15段）。これを超える値が
-    // 読めたらファイルが壊れています。
+    // 読み込み時に破損を検出するためのミップ数上限です。
     constexpr std::uint32_t MaximumLevels = 16;
 
-    // これより小さい結果は保存しません。小さいテクスチャは
-    // 作り直すほうがファイルを開くより速く、キャッシュが
-    // 逆に遅くします（実測: 1024x1024のprepareは16ms級ですが、
-    // 8x8なら数µsで、ファイルopen1回のほうが高い）。64KBは
-    // ミップ込みでBC1なら512x512、BC3/非圧縮なら256x256から
-    // 上が対象になる値です。
+    // ファイルI/Oより再生成の方が軽い小さな結果は保存しません。
     constexpr std::size_t MinimumStoredBytes = 64 * 1024;
 
     std::mutex g_directoryMutex;
     std::filesystem::path g_directoryOverride;
 
-    // 出力はshader-cacheと同じ%LOCALAPPDATA%配下。プロジェクトの
-    // フォルダーへ書かないのは、アセットと違って成果物では
-    // ないため（gitに拾わせない）です。
+    // 生成物をプロジェクトへ混在させないよう、%LOCALAPPDATA%へ
+    // 保存します。
     [[nodiscard]] std::filesystem::path DefaultDirectory()
     {
         std::wstring localAppData(32768, L'\0');
@@ -267,9 +258,7 @@ namespace LamaPon::TextureCache
         {
             return std::nullopt;
         }
-        // 一括で読みます。istreambuf_iteratorで書くと1バイトずつ
-        // 仮想呼び出しになり、数MBのファイルで25ms掛かって
-        // **作り直すより遅く**なりました（実測。一括なら数ms）。
+        // 1バイトごとの仮想関数呼び出しを避けるため、一括で読み込みます。
         input.seekg(0, std::ios::end);
         const std::streamoff size = input.tellg();
         if (size <= 0)
@@ -337,7 +326,7 @@ namespace LamaPon::TextureCache
                 return std::nullopt;
             }
             // ミップは必ず縮んでいくはず。並びが崩れていたら
-            // ファイルが壊れています。幅ではなく**面積**で見るのは、
+            // ファイルが壊れています。幅ではなく面積で見るのは、
             // 1xNのような細長いテクスチャでは幅が1のまま並ぶためです
             // （幅の単調減少を要求すると正当なキャッシュを弾きます）。
             const std::uint64_t area =
@@ -383,9 +372,9 @@ namespace LamaPon::TextureCache
             {
                 return;
             }
-            // 小さい結果は保存しない（読むより作るほうが速い）。
-            // 呼ぶ側のTryLoadは1回のopen失敗で済むので、
-            // 判定はここ（サイズが分かる場所）だけで足ります。
+            // 小さい結果は、キャッシュを読むより生成するほうが速いため保存しません。
+            // 呼び出し側のTryLoadはopen失敗を処理するため、サイズを取得できる
+            // ここで保存対象か判定します。
             if (value.data.TotalBytes() < MinimumStoredBytes)
             {
                 return;

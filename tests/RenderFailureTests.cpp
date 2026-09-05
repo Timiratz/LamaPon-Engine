@@ -1,17 +1,16 @@
 // 組み込みシェーダーが組み立てられないときの振る舞いの検査です。
 //
-// ユーザーの書いたShaderが壊れていれば、マゼンタの代役を描いて
+// ユーザーのシェーダーが壊れていれば、マゼンタの代替表示を描いて
 // エディターは動き続けます（GraphicsDevice::ShaderErrorPlaceholder）。
-// ところがエンジン自身のShader（LamaPonLit・LamaPonEnvironment・
+// エンジン自身のシェーダー（LamaPonLit・LamaPonEnvironment・
 // LamaPonLightCulling）には代役を差し込む先が無く、例外がmainまで
-// 飛んで**エディターごと終了**していました。プロジェクトが開けない
-// ということは、直す手段も無いということです。
+// 到達するとエディターごと終了し、プロジェクトを修復できません。
 //
 // 投げること自体は変えられないので、ここで確かめるのは
 //
-//   1. 同じ失敗のために**毎フレームコンパイルし直さない**こと
+//   1. 同じ失敗のために毎フレームコンパイルし直さないこと
 //      （大きなHLSLだと、壊れている間エディターが事実上止まります）
-//   2. 直したら**そのまま戻ってくる**こと
+//   2. 直したらそのまま戻ってくること
 //
 // の2つです。「落ちない」側はApplicationの描画ループがtry/catchで
 // 受けています（UIが生きていれば、開いたまま直せます）。
@@ -154,8 +153,8 @@ int main()
         TemporaryDirectory root;
         const auto shader =
             root.Path() / L"shaders" / L"LamaPonEnvironment.hlsl";
-        // 壊れた組み込みシェーダー。**構文エラーなので失敗は
-        // キャッシュへ残りません**（許可リストは「入口が無い」だけ）。
+        // 壊れた組み込みシェーダー。構文エラーなので失敗は
+        // キャッシュへ残りません（許可リストは「入口が無い」だけ）。
         // つまり毎回コンパイルし直せてしまう＝覚えていなければ
         // 毎フレーム走る、という状況を作れます。
         WriteFile(
@@ -206,9 +205,8 @@ int main()
                 == afterFirst,
             "a remembered failure must not recompile");
 
-        // 代役シェーダーの計数。撮った絵の色から推測せずに
-        // 「壊れたものが描かれたか」を言い切るための事実なので、
-        // 「渡したときだけ増える」ことをここで固定します。
+        // 代替シェーダーの使用を画素色に依存せず検証するため、
+        // ShaderErrorPlaceholderが返された回数を確認します。
         Stage("fallback-count");
         graphics.ResetShaderFallbackDraws();
         Require(
@@ -240,7 +238,7 @@ int main()
 
         // 直したら戻ってくること。組み込みシェーダーは手で書ける
         // 大きさではないので、本物を置きます（#includeする.hlsliも
-        // 一緒に——これを忘れると2026-08-07と同じ状況になります）。
+        // 一緒に配置し、実際の組み込み構成と同じ条件で確認します）。
         Stage("recover");
         const std::filesystem::path engineShaders{
             LAMAPON_TEST_ASSET_DIR

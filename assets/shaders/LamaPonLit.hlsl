@@ -14,7 +14,7 @@ cbuffer ObjectBuffer : register(b0)
     // そのまま動きます。
     float4 MaterialTextureParameters;
     // 発光。rgb=発光色（強度を掛け込んだ値）、w=発光マップの有無。
-    // こちらも末尾に足しているだけなので、既存Shaderに影響しません。
+    // 末尾に配置し、この項目を持たない自作Shaderとの互換性を保ちます。
     float4 EmissiveParameters;
     // 経過時間。x=秒（1時間で巻き戻る）、y=前フレームからの秒数、
     // z=フレーム数、w=予約。エンジンが毎描画入れるので、揺れや流れは
@@ -47,7 +47,7 @@ Texture2D EmissiveTexture : register(t14);
 // （SV_Position）から作ります。半解像度ですが線形補間で読みます。
 Texture2D ScreenAmbientOcclusionTexture : register(t15);
 
-// ---- クラスタライトカリング（Forward+） ----
+// クラスタライトカリング（Forward+）
 // LamaPonLightCulling.hlslのCompute Shaderが作った、クラスタごとの
 // ライト番号表です。有効なとき、ポイント／スポットはこの表の分だけ
 // 計算します（定数バッファの16灯上限に縛られません）。
@@ -124,8 +124,7 @@ cbuffer LightingBuffer : register(b1)
     // PCF用テクセルサイズ（x=カスケード, y=スポット, z=ポイント）。
     float4 ShadowTexelSizes;
     // 画面空間AO。x=1/画面幅, y=1/画面高さ, z=有効, w=予約。
-    // 末尾に足しているので、この行を持たない既存の自作Shaderも
-    // そのまま動きます。
+    // 末尾に配置し、この項目を持たない自作Shaderとの互換性を保ちます。
     float4 ScreenAmbientOcclusionParameters;
     // クラスタライトカリング。x=横分割, y=縦分割, z=奥行き分割,
     // w=有効。こちらも末尾追加なので既存Shaderに影響しません。
@@ -439,14 +438,8 @@ float3 EvaluateLightPbrSized(
         normalDotHalf * normalDotHalf
             * (alphaSquared - 1.0f)
         + 1.0f;
-    // 0除算よけの下限は「絶対に効かない」ほど小さくすること。
-    // ここを0.0001にしていたときは、鋭いハイライトほど分母が小さく
-    // なるため常に下限へ張り付き、ピークが alphaSquared/0.0001 に
-    // 頭打ちになっていました。粗さ0.04の鏡で本来124338になる山が
-    // 0.026まで潰れ、磨いた金属が真っ黒に描かれます（滑らかにする
-    // ほど暗くなる、という逆向きの壊れ方をします）。
-    // 粗さの下限0.04では分母の2乗は2e-11程度までしか下がらないので、
-    // 1e-12なら実際には一度も効きません。
+    // 0除算を防ぎながら鋭いハイライトを保つため、粗さの下限0.04で
+    // 生じる分母より十分に小さい値を使用します。
     const float distribution =
         alphaSquared
         / max(LamaPonPi * denominator * denominator,
@@ -569,12 +562,10 @@ float3 SampleProbeSpecular(
         roughness * maximumMip).rgb;
 }
 
-// フラットな環境光（Ambient）の、場所ごとに違う版。
+// 場所ごとに変化する環境光（Ambient）。
 //
-// ボリュームの中では焼き込んだ間接光を返し、外や無効時は従来の
-// Ambientをそのまま返します（オフのときの絵は1ビットも変わり
-// ません）。縁では滑らかに従来へ戻します——切り替え線が見えると、
-// ボリュームの箱の形が壁に出てしまうためです。
+// ボリューム内ではベイクした間接光を返し、範囲外や無効時は通常の
+// 環境光を返します。範囲の縁では滑らかに混ぜ、境界線を隠します。
 float3 EvaluateBakedAmbient(
     float3 worldPosition,
     float3 normal)
@@ -587,7 +578,7 @@ float3 EvaluateBakedAmbient(
         (worldPosition - BakedGiVolumeMinimum.xyz)
         * BakedGiInverseSize.xyz;
 
-    // プローブは格子の**角**にあるので、テクスチャ座標へは
+    // プローブは格子の角にあるので、テクスチャ座標へは
     // 「テクセル中心」へ寄せて変換します（寄せないと端の
     // プローブが半セルぶん内側にあるように見えます）。
     const float3 resolution = BakedGiResolution.xyz;
@@ -626,7 +617,7 @@ float3 EvaluateBakedAmbient(
 // 読むだけです。ミップNは「そのミップの区画で最も手前の距離」
 // （2x2の最小値）を持っています。
 //
-// **点**（Load）で読みます。バイリニアで読むと、輪郭をまたいだ
+// 点（Load）で読みます。バイリニアで読むと、輪郭をまたいだ
 // ところで「手前と奥の中間」という存在しない距離が出て、そこに
 // 偽の当たりが生まれます。
 float ScreenReflectionSceneDistance(float2 uv)
@@ -644,7 +635,7 @@ float ScreenReflectionSceneDistance(float2 uv)
 
 // SSR（画面空間反射）。
 //
-// 反射レイを**画面空間のHi-Zトラバーサル**で進めます。深度ピラミッド
+// 反射レイを画面空間のHi-Zトラバーサルで進めます。深度ピラミッド
 // （t22。各ミップが「その区画で最も手前の距離」＝2x2の最小値）を
 // 使い、
 //   ・「区画の最も手前より、レイの区間全体が手前」なら、その区画に
@@ -653,7 +644,7 @@ float ScreenReflectionSceneDistance(float2 uv)
 //   ・またぐかもしれないなら、進まずに1段細かいミップへ下りる
 //   ・最細ミップ（＝1画素）でまたいだら、その区間を二分で詰める
 // これで歩数は「画面の距離ぶん」ではなく「およそlog2(距離)」で済み、
-// **同じ反復の上限で画面の端から端まで届きます**（1画素ずつのDDAは
+// 同じ反復上限で画面の端から端まで到達します（1画素ずつのDDAは
 // 上限128歩＝128画素で頭打ちでした）。
 //
 // 画面空間で進めること自体の利点は従来と同じです。ワールド等間隔
@@ -666,13 +657,12 @@ float ScreenReflectionSceneDistance(float2 uv)
 // 画面に写っていないものは映せないので、0へ滑らかに落とすことが
 // 品質の要点になります（急に切れると縁が目立ちます）。
 //
-// 信頼度を落とす条件は4つあります。どれも「画面空間には情報が無い」
-// 場所を環境反射へ譲るためのもので、設定ではなく固定の値です
-// （正解が1つに決まる補正なので、作る人が毎回考える意味がありません）。
-//   ①画面の縁に近い（今のフレームと前フレームの両方で見ます）
-//   ②レイが最大距離の近くまで進んだ
-//   ③反射がカメラへ向かっている
-//   ④粗さが上限に近い
+// 信頼度を落とす4条件は、画面空間に情報がない領域を
+// 環境反射へ渡すための固定値です。
+//   (1)画面の縁に近い（今のフレームと前フレームの両方で見ます）
+//   (2)レイが最大距離の近くまで進んだ
+//   (3)反射がカメラへ向かっている
+//   (4)粗さが上限に近い
 float4 EvaluateScreenSpaceReflection(
     float3 worldPosition,
     float3 reflection,
@@ -698,7 +688,7 @@ float4 EvaluateScreenSpaceReflection(
     const float thickness = max(
         ScreenReflectionQuality.x,
         0.001f);
-    // 設定の「サンプル数」は、Hi-Zでは**反復の上限**として働きます。
+    // 設定の「サンプル数」は、Hi-Zでは反復の上限として働きます。
     // 1反復は「区画を1つ飛ぶ／ミップを1段動く」で、何も無い空間は
     // 大股で越えるため、既定の24でも画面の端から端まで届きます。
     const int maximumSteps = clamp(
@@ -715,7 +705,7 @@ float4 EvaluateScreenSpaceReflection(
         ViewProjection);
     float4 clipEnd = mul(float4(rayEnd, 1.0f), ViewProjection);
 
-    // カメラより手前へ回った側は射影が破綻するので、**世界空間で**
+    // カメラより手前へ回った側は射影が破綻するので、世界空間で
     // 詰めます。画面座標にしてから直そうとしても、符号が反転した
     // 座標からは戻せません。
     const float nearW = 0.05f;
@@ -740,9 +730,7 @@ float4 EvaluateScreenSpaceReflection(
         0.5f - clipEnd.y / clipEnd.w * 0.5f);
     const float2 deltaUv = endUv - startUv;
 
-    // 画面の外へ出るところで打ち切ります。出た先には情報が無いので、
-    // 歩数を全部画面の中へ使えます（以前は画面外の区間も律儀に
-    // 歩いていて、そのぶんが丸ごと無駄でした）。
+    // 画面外には参照できる情報がないため、レイを画面端で打ち切ります。
     float limitAlpha = 1.0f;
     [unroll]
     for (int axis = 0; axis < 2; ++axis)
@@ -778,7 +766,7 @@ float4 EvaluateScreenSpaceReflection(
         1.0f);
 
     // 1/wは画面空間で線形なので、行列を掛け直さずに補間で距離が出ます。
-    // これで歩ごとの`mul`が消え、詰めるところも補間だけで済みます。
+    // これで歩ごとのmulが消え、詰めるところも補間だけで済みます。
     const float inverseStartW = 1.0f / clipStart.w;
     const float inverseEndW = 1.0f / clipEnd.w;
 
@@ -860,14 +848,8 @@ float4 EvaluateScreenSpaceReflection(
             // 区間全体が最も手前の面よりさらに手前 → この区画に
             // 当たりは無い。出口まで飛びます。
             alpha = exitAlpha;
-            // 1段粗くするのは、面から2%以上の余裕があるときだけ
-            // です。床すれすれを這うレイで毎回上がると、次の反復で
-            // すぐ戻されて「進む・上がる・戻る」の3拍子になり、
-            // 1画素に2〜3反復を食います（実測で、鏡の床の反射が
-            // 反復36では届かず128が要りました）。余裕を条件に
-            // すると、すれすれの間は1画素1反復で進み、面を離れた
-            // 瞬間から大股になります。2%は相対なので、近くでも
-            // 遠くでも同じ感覚で効きます。
+            // 面から2%以上離れた場合だけ粗いミップへ移り、面の近くで
+            // ミップを往復して反復回数を消費することを防ぎます。
             if (rayFar * 1.02f <= sceneDistance)
             {
                 level = min(level + 1, maximumLevel);
@@ -949,10 +931,10 @@ float4 EvaluateScreenSpaceReflection(
                 return 0.0f;
             }
 
-            // ①画面の縁へ近いほど弱めます。縁で急に消えると、
+            // (1)画面の縁へ近いほど弱めます。縁で急に消えると、
             // 反射が四角く切り取られて見えるためです。
             //
-            // 今のフレームと前フレームの**両方**の位置で見ます。前
+            // 現在と前のフレームの両方の位置で確認します。前
             // フレームだけだと、カメラが大きく動いたときに「今は画面の
             // 端ぎりぎりだが前フレームでは中央だった」当たりが全強度で
             // 返り、次のフレームで画面の外に出て消えます。
@@ -965,7 +947,7 @@ float4 EvaluateScreenSpaceReflection(
             const float edgeFade = saturate(
                 edgeDistance / 0.08f);
 
-            // ②レイが進んだ距離で弱めます。最大距離のところで急に
+            // (2)レイが進んだ距離で弱めます。最大距離のところで急に
             // 途切れると、カメラが少し動くだけで反射が現れたり消えたり
             // します（12mで切っているとき、11.9mで当たれば全強度、
             // 12.1mになった瞬間に0）。最後の1/4で滑らかに落とします。
@@ -980,11 +962,11 @@ float4 EvaluateScreenSpaceReflection(
             const float distanceFade = saturate(
                 (1.0f - travelledFraction) / 0.25f);
 
-            // ③反射がカメラへ向かっているほど弱めます。
+            // (3)反射がカメラへ向かっているほど弱めます。
             //
             // 画面空間には「物の裏側」の情報がありません。反射が
             // カメラの方へ戻ってくる向きのとき、当たった先で読める色は
-            // その物の**手前の面**で、本来映るべき裏の面ではありません。
+            // その物の手前の面で、本来映るべき裏の面ではありません。
             // ここは原理的に正しくできないので、素直に環境反射へ
             // 譲ります。viewDirectionは面からカメラへ向かう向きなので、
             // 内積が1に近いほどまっすぐカメラへ戻っています。
@@ -993,7 +975,7 @@ float4 EvaluateScreenSpaceReflection(
             const float directionFade = saturate(
                 (1.0f - towardCamera) / 0.5f);
 
-            // ④粗さが上限に近いほど弱めます。
+            // (4)粗さが上限に近いほど弱めます。
             const float roughnessFade = saturate(
                 1.0f - roughness / roughnessCutoff);
             const float3 color =
@@ -1012,9 +994,8 @@ float4 EvaluateScreenSpaceReflection(
         }
 
         // 面の裏を（厚みの外で）通り過ぎた。次の区画へ進みます。
-        // ここはミップを上げません——裏に回っている間は「手前の
-        // 面より奥」なのでどのミップでも飛ばせず、上げても次の
-        // 反復ですぐ0へ戻るだけだからです。
+        // 面の裏側では粗いミップでも区間を省略できないため、現在の
+        // ミップを維持します。
         alpha = exitAlpha;
     }
     return 0.0f;
@@ -1511,8 +1492,8 @@ float4 PSMain(PixelInput input) : SV_Target
             input.WorldPosition,
             normal,
             index);
-        // Color.wは太陽の角半径（ラジアン）です。cbufferの並びを
-        // 変えずに運ぶため、以前1.0固定だった空き枠を使っています。
+        // Color.wに太陽の角半径（ラジアン）を格納し、
+        // cbufferのレイアウトを維持します。
         const float3 toLight =
             normalize(-light.DirectionIntensity.xyz);
         const float angularRadius = light.Color.w;

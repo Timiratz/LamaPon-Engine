@@ -1,4 +1,4 @@
-// LamaPon 2D shader error placeholder.
+// LamaPonの2Dシェーダーでエラーを表示するための代替シェーダーです。
 // 自作の2DShader（スプライト／UI／パーティクル）がコンパイルできな
 // かったときの代役です。3D側のLamaPonShaderError.hlslと同じ役割で、
 // こちらはピクセルシェーダーだけを差し替えます。

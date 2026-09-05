@@ -56,12 +56,10 @@ int main()
             host.ModuleName()
                 == "LamaPon Sample Game",
             "Unexpected Game Module name.");
-        // 登録数と並び順を固定すると、assets配下へ公式パッケージや
-        // ユーザーのスクリプトを1つ足すだけでこのテストが壊れます
-        // （CMakeがassets/*.cppをGame Moduleへ含めるため、実際に
-        // Easing & Tweenパッケージの追加で壊れました）。
-        // サンプルが持つ1種と、ScriptRegistry経由で足される
-        // TargetRange.Gameが引けることだけを確認します。
+        // 登録数と並び順は、assets配下へ公式パッケージや
+        // ユーザーのスクリプトを追加すると変わるため固定しません。
+        // サンプルが持つ1種と、ScriptRegistry経由で追加される
+        // TargetRange.Gameを取得できることだけを確認します。
         for (const char* expected : {
             "Sample.FloatingAccent",
             "TargetRange.Game" })

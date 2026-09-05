@@ -156,7 +156,7 @@ Sceneファイルの名前変更・移動・削除時にはButtonの参照も追
 
 ## Prefab
 
-**HierarchyのGameObjectをAsset Browserへドラッグ＆ドロップすると、その場でPrefabになります**（落としたフォルダーへ`<名前>.prefab.json`が作られ、同名があれば連番が付きます）。
+**HierarchyのGameObjectをAsset Browserへドラッグ＆ドロップすると、その場でPrefabになります**（落としたフォルダーへ保存名が提案され、同名があれば連番が付きます）。GameObject名がASCIIだけならその名前を使い、日本語などASCII以外の文字を含む場合は`NewPrefab.prefab.json`を提案します。
 Hierarchyの右クリック「Prefabとして保存...」や、「ファイル」→「選択をPrefabとして保存...」でも保存できます。
 いずれも選択したGameObjectと子階層が対象です。
 PrefabにはローカルID、親子関係、Transform、対応する全コンポーネントが含まれます。
@@ -189,7 +189,7 @@ auto& prefs = application.Preferences();
 prefs.SetInteger("highScore", 4200);
 prefs.SetNumber("masterVolume", 0.75);
 prefs.SetBoolean("subtitles", true);
-prefs.SetString("playerName", "トライデント");
+prefs.SetString("playerName", "らまぽん");
 prefs.Save();
 
 const auto score = prefs.GetInteger("highScore", 0);
@@ -222,6 +222,10 @@ Scene、Prefab、Project設定、PlayerPrefs、SaveDataは読み込み前に共�
 
 エディター下部の「セーブデータ」タブでは、PlayerPrefsの追加・更新・削除・保存、JSONスロットの編集・保存・読込・削除、保存フォルダーを開く操作ができます。
 
+## ログとScene Viewのデバッグ表示
+
+ゲーム内の出来事は`Logger`へ記録できます。
+
 ```cpp
 LamaPon::Logger::Instance().Info("ステージを開始しました");
 LamaPon::Logger::Instance().Warning("敵の生成位置が見つかりません");
@@ -229,6 +233,8 @@ LamaPon::Logger::Instance().Error(
     "Playerの初期化に失敗しました",
     player.Id());
 ```
+
+### Scene Viewのデバッグ表示
 
 `RayIntersectsBounds`と`TransformBounds`は、エディター選択以外の射撃判定や簡易Raycastにも再利用できます。
 

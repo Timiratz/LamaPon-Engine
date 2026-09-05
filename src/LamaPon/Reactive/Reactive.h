@@ -13,7 +13,7 @@
 
 namespace LamaPon
 {
-    // Observableの購読寿命を所有します。破棄時に自動で購読を解除します。
+    // Observableの購読解除処理を保持し、破棄時にその処理を実行します。
     class Subscription final
     {
     public:
@@ -76,7 +76,8 @@ namespace LamaPon
         std::function<void()> m_unsubscribe;
     };
 
-    // Scriptなどが複数の購読をまとめて所有するための入れ物です。
+    // Scriptなどが複数の購読をまとめて管理し、一括解除するための
+    // コンテナーです。
     class CompositeSubscription final
     {
     public:

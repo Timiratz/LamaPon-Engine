@@ -62,9 +62,8 @@ namespace LamaPon
         [[nodiscard]] bool IsEnabled() const noexcept { return m_enabled; }
         void SetEnabled(bool enabled);
         // true の GameObject は、カメラ外判定と遮蔽判定で非表示にしません。
-        // 描画カリングの個別設定はRenderCullingComponentが持ちます
-        // （2026-08-04にコンポーネント化。全オブジェクトが持つ設定
-        // ではなくなりました）。ここは描画側が毎フレーム呼ぶ読み口で、
+        // 描画カリングの個別設定はRenderCullingComponentが持ちます。
+        // ここは描画側が毎フレーム呼ぶ読み口で、
         // コンポーネントが無ければ既定（通常どおりカリング）です。
         [[nodiscard]] bool IsAlwaysVisible() const noexcept;
         [[nodiscard]] float CullingMargin() const noexcept;
@@ -349,9 +348,9 @@ namespace LamaPon
             GraphicsDevice& graphics,
             DirectX::SpriteBatch& spriteBatch,
             ID3D11ShaderResourceView* whiteTexture);
-        // The highest RenderSortOrder() among this object's
-        // enabled components; used to order the 2D/UI sprite
-        // pass so higher values draw later (on top).
+        // このオブジェクトで有効なコンポーネントのRenderSortOrder()の
+        // 最大値です。2D/UIスプライトパスでは、この値が大きいものほど
+        // 後から手前に描画します。
         [[nodiscard]] int Render2DSortOrder() const noexcept;
 
     private:

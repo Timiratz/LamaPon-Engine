@@ -40,9 +40,9 @@ namespace LamaPon::Web
         float distance{};
     };
 
-    // Browser Game向けの決定論的で小規模な3D Simulationです。
-    // Native Physics DLLをWasmへ持ち込まず、Car Gameで一般的な機能を提供します。
-    // 高度なProjectでは別のWeb Moduleへ切り替えられます。
+    // Web向けの決定論的で小規模な3D物理機能を提供します。
+    // ネイティブの物理DLLには依存しません。高度な物理機能が必要な
+    // プロジェクトでは、別のWebモジュールへ置き換えられます。
     class Physics3D final
     {
     public:

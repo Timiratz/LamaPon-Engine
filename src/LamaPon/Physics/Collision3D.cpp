@@ -287,9 +287,9 @@ namespace
         return Dot(a, b) > 0.0f;
     }
 
-    // Minkowski-difference support point; onA/onB are the witness
-    // points on each source shape that produced it, kept so EPA can
-    // reconstruct a contact point once the closest face is known.
+    // ミンコフスキー差のサポート点です。onAとonBには、各形状でこの点を
+    // 作った対応点を保存します。EPAで最近接面が求まった後、接触点を
+    // 復元するために使います。
     struct MinkowskiPoint final
     {
         XMFLOAT3 point{};
@@ -624,11 +624,9 @@ namespace
             Add(Mul(mp0.onB, u), Mul(mp1.onB, v)),
             Mul(mp2.onB, w));
 
-        // bestFace.normal points from the first support shape
-        // toward the second (Minkowski A-B convention); flip it so
-        // the returned contact matches every other Intersect() in
-        // this file, where the normal points toward the first
-        // argument's shape.
+        // ミンコフスキー差をA-Bとする規約では、bestFace.normalは最初の
+        // サポート形状から2番目の形状へ向きます。このファイルのほかの
+        // Intersect()と同じく、法線を第1引数の形状へ向けるため反転します。
         return LamaPon::Contact3D{
             Mul(bestFace.normal, -1.0f),
             std::max(bestFace.distance, 0.0f),

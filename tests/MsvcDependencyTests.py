@@ -52,8 +52,8 @@ target_compile_options(DependencyRegression PRIVATE /utf-8)
     if len(objects) != 1:
         raise AssertionError(f"Expected one object: {objects}")
     obj = objects[0]
-    # 依存を採取できなかった既存ビルドにも、修正が適用されることを検査。
-    # ヘッダー・ソースを変更せず再構成し、修正済みの依存を採取させます。
+    # ヘッダーとソースを変更せずに再構成し、依存情報を
+    # 採取し直せることを検証します。
     run(args.cmake, "-S", str(source), "-B", str(build), "-DREPAIR_DEPENDENCIES=ON")
     run(args.cmake, "--build", str(build))
     before_hash = hashlib.sha256(obj.read_bytes()).digest()

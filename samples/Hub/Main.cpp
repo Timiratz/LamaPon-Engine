@@ -429,12 +429,12 @@ namespace
                 m_projectTemplate,
                 CB_ADDSTRING,
                 0,
-                reinterpret_cast<LPARAM>(L"３D学習"));
+                reinterpret_cast<LPARAM>(L"3D学習"));
             SendMessageW(
                 m_projectTemplate,
                 CB_ADDSTRING,
                 0,
-                reinterpret_cast<LPARAM>(L"２D学習"));
+                reinterpret_cast<LPARAM>(L"2D学習"));
             SendMessageW(m_projectTemplate, CB_SETCURSEL, 0, 0);
             m_createProject = AddControl(
                 WC_BUTTONW,

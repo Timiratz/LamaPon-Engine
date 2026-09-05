@@ -114,8 +114,8 @@ namespace LamaPon::Web
 
     void WebInput::BeginFrame() noexcept
     {
-        // Browser EventはAnimation Frame直前に届く場合があります。
-        // Edge Trigger集合はFrame側が消費した後にClearします。
+        // ブラウザーイベントは描画フレームの直前に届く場合があります。
+        // 押下状態はフレーム側で消費した後に消去します。
         SampleGamepads();
     }
 

@@ -18,19 +18,14 @@ namespace LamaPon
     struct ScreenSpaceReflectionSettings;
     struct ColorGradingSettings;
 
-    // 深度プリパスで描く中身（不透明ジオメトリ）を呼ぶ側から渡します。
-    // GraphicsDeviceが深度専用パスへ切り替えた状態で呼ばれるので、
-    // 中では通常の3D描画をそのまま行ってください。
+    // 深度専用パスへ切り替えた状態で呼ばれ、不透明ジオメトリを描画します。
     using DepthPrepassHook = std::function<void()>;
 
-    // ポスト処理の途中へ差し込む追加パスです。ゲーム実行時の
-    // 画面エフェクト（ScreenEffect）がここへ入ります。
+    // ポスト処理の途中へScreenEffectを適用する追加パスです。
     //
-    // **決められた4地点すべてで呼ばれます。** どこで何をするかは
-    // 受け取った側が地点を見て決めてください（GraphicsDeviceは
-    // その地点に指定されたエフェクトだけをかけます）。
-    // 定義は GraphicsDevice.h。重いヘッダを引き込まないよう、
-    // ここでは前方宣言だけにしています。
+    // 決められた4地点すべてで呼ばれ、指定地点に対応するエフェクトだけを
+    // GraphicsDeviceが適用します。
+    // 定義はGraphicsDevice.hにあり、依存を減らすため前方宣言します。
     enum class ScreenEffectPoint : std::uint8_t;
 
     using PostProcessHook =
@@ -40,7 +35,7 @@ namespace LamaPon
     // ambientOcclusionResolvedがtrueならAOをLitEffectへ渡せます。
     // depthAvailableはSSR用の深度が利用可能かを示し、SSAO無効時も
     // trueになり得ます。どちらも不要な場合は両方falseです。
-    // 呼び出し後はtarget.Bind()でメインパスの描画先を戻してください。
+    // 呼び出し後はtarget.Bind()でメインパスの描画先を復元します。
     // projectionにはこれから描く画面の射影行列を渡します。
     struct DepthPrepassResult final
     {
@@ -91,12 +86,12 @@ namespace LamaPon
     //
     // 前フレームの行列そのものはRenderTargetが持ちます（ビューごとに
     // 別なので、シーンで1つ持つとエディターの2ビューが踏み合います）。
-    // ここへ入れるのは今のフレームの2本だけです。
+    // 現在フレームの逆ビュー射影と次回用ビュー射影だけを保持します。
     struct MotionBlurFrame final
     {
         MotionBlurSettings settings{};
         // 深度からワールド位置へ戻す逆ビュー射影。TAAと同じく
-        // **ずらしを含まない**もの。
+        // ずらしを含まないもの。
         DirectX::XMFLOAT4X4 inverseViewProjection{};
         // 次フレームの「前フレーム」として控えるビュー射影
         // （ずらし無し）。
@@ -107,18 +102,15 @@ namespace LamaPon
     struct AutoExposureFrame final
     {
         AutoExposureSettings settings{};
-        // 順応に使う経過時間（秒）。**timeScaleの影響を受けない実時間**
-        // を渡してください。停止中のScene Viewでも露出が落ち着いて
-        // ほしいので、ポーズで止めない方を選んでいます。
+        // 順応に使う経過時間（秒）。停止中のScene Viewでも露出が収束するよう、
+        // timeScaleの影響を受けない実時間を渡します。
         float deltaSeconds{};
     };
 
     // ポスト処理へ渡すものを1つにまとめた入れ物。
     //
-    // まとめた理由は、パスを足すたびにRunPostProcessの引数が増えて
-    // 5経路すべての呼び出しを直す必要があったからです（並びを1箇所へ
-    // 集約したのと同じ動機で、引数も1箇所へ集めました）。
-    // **フィールドを足すときは必ず末尾へ。**
+    // すべての描画経路へ同じポスト処理情報を渡せるよう、引数を集約します。
+    // フィールドを足すときは必ず末尾へ。
     struct PostProcessFrame final
     {
         BloomSettings bloom{};
@@ -138,14 +130,11 @@ namespace LamaPon
 
     // シーンを描き終えた1枚へ、ポスト処理を順番にかけます。
     //
-    // 並びの定義はこの関数だけにあります。Scene View、Game View、
-    // カメラプレビュー、名前付きレンダーテクスチャ、ゲーム実行時の
-    // 5経路すべてがここを通るので、パスを足すときはここだけを
-    // 直してください。以前は同じ並びが5箇所へ複製されていて、
-    // 新しいパスを足すと1箇所だけ抜ける事故が起きやすい形でした。
+    // Scene View、Game View、カメラプレビュー、名前付きレンダー
+    // テクスチャ、ゲーム実行時で共通の描画順を定義します。描画パスを
+    // 追加するときは、この関数を更新します。
     //
-    // Sceneの設定と品質設定の突き合わせもここで行うので、呼ぶ側は
-    // Sceneが持っている値をそのまま渡してください。
+    // Scene設定と品質設定の照合を行うため、Sceneの値を変更せずに渡します。
     void RunPostProcess(
         GraphicsDevice& graphics,
         RenderTarget& target,
@@ -165,9 +154,8 @@ namespace LamaPon
         const TemporalAntiAliasingFrame& temporal = {},
         const PostProcessHook& afterToneMapping = {});
 
-    // 本来の入口。上の2つは足りないぶんを既定値で埋めてここへ流します。
-    // Sceneが組み立てたPostProcessFrameをそのまま渡してください
-    // （Scene::PostProcessFrameData()）。
+    // すべてのポスト処理情報を受け取る共通の入口です。
+    // Scene::PostProcessFrameData()が返すPostProcessFrameを受け取ります。
     void RunPostProcess(
         GraphicsDevice& graphics,
         RenderTarget& target,

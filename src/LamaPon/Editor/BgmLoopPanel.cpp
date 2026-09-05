@@ -88,7 +88,7 @@ namespace LamaPon
         {
             m_state.loaded = false;
             SetStatus(
-                std::string{ "BGMループエディタを読み込めません: " }
+                std::string{ "BGMループエディターを読み込めません: " }
                 + exception.what(),
                 true);
             return false;
@@ -165,8 +165,7 @@ namespace LamaPon
             const auto asset = root / PathFromUtf8(
                 tracks.at(static_cast<std::size_t>(state.selectedTrack))
                     .value("asset", std::string{}));
-            // 波形専用のstreamで読みます。試聴中のstreamで読むと
-            // その場の再生が途切れます。
+            // 試聴を中断しないよう、波形専用のストリームで読みます。
             auto probe = m_audio.CreateStream(
                 m_assets, asset);
             constexpr std::size_t buckets = 1200;
@@ -215,12 +214,11 @@ namespace LamaPon
             }
             auto& track =
                 tracks.at(static_cast<std::size_t>(state.selectedTrack));
-            // 編集中の値をそのまま入れるので、保存しなくても継ぎ目を
-            // 聞いて確かめられます。
+            // 編集中の値を適用し、保存前でも継ぎ目を確認できます。
             state.preview->SetLoop(true);
             if (usePreviewRange)
             {
-                // ゲームの選曲画面と同じ鳴り方（試聴範囲を繰り返す）。
+                // 指定した試聴範囲を繰り返します。
                 state.preview->SetLoopRegionFrames(
                     track.value(
                         "preview_start_frame", std::uint64_t{ 0 }),
@@ -301,7 +299,7 @@ namespace LamaPon
         if (state.selectedTrack != previousTrack)
         {
             StopPreview();
-            // 別の曲の位置を引きずらない。
+            // 曲を変更したときは再生位置を初期化します。
             state.hasLastStart = false;
         }
         ImGui::SameLine();
@@ -315,8 +313,8 @@ namespace LamaPon
         ImGui::SameLine();
         if (ImGui::Button("再読み込み"))
         {
-            // documentごと差し替わるので、この後のtracks参照は無効に
-            // なります。この行より先はこのフレームでは描きません。
+            // documentの差し替え後はtracksの参照が無効になるため、
+            // このフレームの描画を終了します。
             Load();
             ImGui::End();
             return;
@@ -357,8 +355,7 @@ namespace LamaPon
         auto writeFrame = [&](const char* key, const std::uint64_t frame)
         {
             track[key] = clampFrame(frame);
-            // 秒はカタログの読み物であると同時に検証にも使うので、
-            // frameを変えたら必ず一緒に書き換えます。
+            // フレーム値を変更したときは、表示と検証に使う秒数も更新します。
             const std::string_view name{ key };
             if (name == "preview_start_frame"
                 || name == "preview_end_frame"
@@ -373,7 +370,7 @@ namespace LamaPon
             state.dirty = true;
         };
 
-        // ---- 波形 ----
+        // 波形
         const ImVec2 origin = ImGui::GetCursorScreenPos();
         const ImVec2 area{
             std::max(ImGui::GetContentRegionAvail().x, 240.0f), 170.0f };
@@ -410,8 +407,8 @@ namespace LamaPon
         }
         if (introStart > 0)
         {
-            // 序盤より前はレースでは鳴りません。暗く落として
-            // 「ここは飛ばす」と一目で分かるようにします。
+            // イントロ開始より前は通常再生で使わないため、暗く表示して
+            // 再生対象外であることを示します。
             draw->AddRectFilled(
                 origin,
                 ImVec2{ frameToX(introStart), origin.y + area.y },
@@ -463,9 +460,9 @@ namespace LamaPon
                 color, 2.0f);
             draw->AddText(ImVec2{ x + 4.0f, origin.y + 3.0f }, color, label);
         };
-        drawMarker(introStart, IM_COL32(120, 200, 255, 255), "序盤");
-        drawMarker(previewStart, IM_COL32(255, 214, 80, 255), "試聴始");
-        drawMarker(previewEnd, IM_COL32(255, 180, 60, 255), "試聴終");
+        drawMarker(introStart, IM_COL32(120, 200, 255, 255), "イントロ");
+        drawMarker(previewStart, IM_COL32(255, 214, 80, 255), "試聴開始");
+        drawMarker(previewEnd, IM_COL32(255, 180, 60, 255), "試聴終了");
         drawMarker(loopStart, IM_COL32(120, 255, 140, 255), "LOOP IN");
         drawMarker(loopEnd, IM_COL32(255, 120, 120, 255), "LOOP OUT");
         const bool playing = state.preview
@@ -496,33 +493,33 @@ namespace LamaPon
                 "%.3f 秒",
                 static_cast<double>(state.contextFrame) / rate);
             ImGui::Separator();
-            if (ImGui::MenuItem("ここを序盤の開始にする"))
+            if (ImGui::MenuItem("ここをイントロ開始位置に設定"))
             {
                 writeFrame("intro_start_frame", state.contextFrame);
             }
-            if (ImGui::MenuItem("ここをLOOP INにする"))
+            if (ImGui::MenuItem("ここをLOOP INに設定"))
             {
                 writeFrame("loop_start_frame", state.contextFrame);
             }
-            if (ImGui::MenuItem("ここをLOOP OUTにする"))
+            if (ImGui::MenuItem("ここをLOOP OUTに設定"))
             {
                 writeFrame("loop_end_frame", state.contextFrame);
             }
-            if (ImGui::MenuItem("ここを試聴の開始にする"))
+            if (ImGui::MenuItem("ここを試聴開始位置に設定"))
             {
                 writeFrame("preview_start_frame", state.contextFrame);
             }
-            if (ImGui::MenuItem("ここを試聴の終わりにする"))
+            if (ImGui::MenuItem("ここを試聴終了位置に設定"))
             {
                 writeFrame("preview_end_frame", state.contextFrame);
             }
             ImGui::EndPopup();
         }
         ImGui::TextDisabled(
-            "左クリック: その位置から試聴 / 右クリック: この位置を"
-            "序盤・LOOP IN・LOOP OUT・試聴の開始/終わりに設定");
+            "左クリック: その位置から試聴／右クリック: この位置を"
+            "イントロ・LOOP IN・LOOP OUT・試聴開始・試聴終了に設定");
 
-        // ---- 数値 ----
+        // 数値入力
         auto secondsField = [&](const char* label,
                                 const char* key,
                                 const std::uint64_t frame)
@@ -541,14 +538,14 @@ namespace LamaPon
                 static_cast<unsigned long long>(frame));
         };
         secondsField(
-            "序盤の開始（レースで鳴り始める位置）",
+            "イントロ開始（通常再生の開始位置）",
             "intro_start_frame", introStart);
         secondsField("ループ開始 (LOOP IN)", "loop_start_frame", loopStart);
         secondsField("ループ終了 (LOOP OUT)", "loop_end_frame", loopEnd);
         secondsField(
-            "試聴の開始（セレクト画面）", "preview_start_frame", previewStart);
+            "試聴開始", "preview_start_frame", previewStart);
         secondsField(
-            "試聴の終わり（ここで頭へ戻る）", "preview_end_frame", previewEnd);
+            "試聴終了（開始位置へ戻る）", "preview_end_frame", previewEnd);
         {
             double milliseconds =
                 static_cast<double>(crossfade) / rate * 1000.0;
@@ -570,7 +567,7 @@ namespace LamaPon
         {
             ImGui::TextColored(
                 ImVec4{ 1.0f, 0.5f, 0.4f, 1.0f },
-                "試聴の終わりは開始より後ろにしてください。");
+                "試聴終了位置は開始位置より後にしてください。");
         }
         else
         {
@@ -582,13 +579,13 @@ namespace LamaPon
         {
             ImGui::TextColored(
                 ImVec4{ 1.0f, 0.5f, 0.4f, 1.0f },
-                "序盤の開始は LOOP OUT より前にしてください。");
+                "イントロ開始位置はLOOP OUTより前にしてください。");
         }
         if (loopEnd <= loopStart)
         {
             ImGui::TextColored(
                 ImVec4{ 1.0f, 0.5f, 0.4f, 1.0f },
-                "LOOP OUT は LOOP IN より後ろにしてください。");
+                "LOOP OUTはLOOP INより後にしてください。");
         }
         else if (crossfade * 2 >= loopEnd - loopStart)
         {
@@ -597,9 +594,8 @@ namespace LamaPon
                 "クロスフェードがループ区間の半分を超えています。");
         }
 
-        // ---- 音量補正 ----
-        // 曲ごとのマスタリング差をならす値。音源は作り直さず、
-        // 再生音量へ掛ける方式なので、ここは何度でも変えられる。
+        // 音量補正
+        // 音源を変更せず、再生音量で曲ごとの差を補正します。
         if (track.contains("gain_db"))
         {
             auto gain = static_cast<float>(
@@ -613,7 +609,7 @@ namespace LamaPon
                 state.dirty = true;
                 if (state.preview)
                 {
-                    // 鳴らしながら動かせるように、その場で反映する。
+                    // 試聴中の音量へ直ちに反映します。
                     state.preview->SetVolume(std::clamp(
                         state.previewVolume * std::pow(10.0f, gain / 20.0f),
                         0.0f, 1.0f));
@@ -624,32 +620,48 @@ namespace LamaPon
                 "曲ごとの音量差をならす（音源は書き換えません）");
         }
 
-        // ---- 「おまかせ」で流すコース ----
-        // カタログJSONに courses（id と表示名の一覧）があるときだけ
-        // 出します。曲ごとに「このコースで流していい」印を付ける欄です。
-        if (state.document->contains("courses")
-            && state.document->at("courses").is_array()
-            && ImGui::CollapsingHeader("おまかせで流すコース"))
+        // 自動選曲グループ。既存カタログとの互換性を保つため、旧形式の
+        // coursesも読み込みます。新しいカタログはgroupsを使用します。
+        const nlohmann::json* groupList = nullptr;
+        const char* assignmentKey = "groups";
+        if (state.document->contains("groups")
+            && state.document->at("groups").is_array())
+        {
+            groupList = &state.document->at("groups");
+            if (!track.contains("groups")
+                && track.contains("courses")
+                && track.at("courses").is_array())
+            {
+                assignmentKey = "courses";
+            }
+        }
+        else if (state.document->contains("courses")
+            && state.document->at("courses").is_array())
+        {
+            groupList = &state.document->at("courses");
+            assignmentKey = "courses";
+        }
+        if (groupList != nullptr
+            && ImGui::CollapsingHeader("自動選曲グループ"))
         {
             ImGui::TextDisabled(
-                "選曲の「おまかせ」でこの曲が候補になるコースです。"
-                "1曲も指定が無いコースは全曲から選ばれます。");
-            if (!track.contains("courses")
-                || !track.at("courses").is_array())
+                "この曲を自動選曲の候補に含めるグループです。"
+                "曲が未指定のグループでは、全曲が候補になります。");
+            if (!track.contains(assignmentKey)
+                || !track.at(assignmentKey).is_array())
             {
-                track["courses"] = nlohmann::json::array();
+                track[assignmentKey] = nlohmann::json::array();
             }
-            auto& assigned = track.at("courses");
-            const auto& courses = state.document->at("courses");
+            auto& assigned = track.at(assignmentKey);
             int column = 0;
-            for (const auto& course : courses)
+            for (const auto& group : *groupList)
             {
-                const auto id = course.value("id", std::string{});
+                const auto id = group.value("id", std::string{});
                 if (id.empty())
                 {
                     continue;
                 }
-                const auto label = course.value("name", id);
+                const auto label = group.value("name", id);
                 bool enabled = false;
                 for (const auto& value : assigned)
                 {
@@ -665,7 +677,7 @@ namespace LamaPon
                     ImGui::SameLine(static_cast<float>(column) * 220.0f);
                 }
                 if (ImGui::Checkbox(
-                        (label + "##bgmcourse-" + id).c_str(), &enabled))
+                        (label + "##bgmgroup-" + id).c_str(), &enabled))
                 {
                     if (enabled)
                     {
@@ -693,21 +705,21 @@ namespace LamaPon
             if (assigned.empty())
             {
                 ImGui::TextDisabled(
-                    "（この曲はどのコースの「おまかせ」にも出てきません）");
+                    "（この曲は自動選曲グループに割り当てられていません）");
             }
         }
 
-        // ---- 試聴 ----
+        // 試聴
         ImGui::Separator();
-        if (ImGui::Button("▶ 序盤から"))
+        if (ImGui::Button("▶ イントロから"))
         {
-            // レースとまったく同じ鳴り方（序盤の開始→LOOP OUT→ループ）。
+            // イントロ開始からLOOP OUTまで再生し、その後ループへ入ります。
             StartPreview(introStart);
         }
         ImGui::SameLine();
         if (ImGui::Button("▶ 試聴範囲"))
         {
-            // ゲームの選曲画面とまったく同じ鳴り方で確かめます。
+            // 指定した試聴範囲を繰り返します。
             StartPreview(previewStart, true);
         }
         ImGui::SameLine();
@@ -718,23 +730,21 @@ namespace LamaPon
             StartPreview(loopEnd > lead ? loopEnd - lead : 0);
         }
         ImGui::SameLine();
-        // 鳴っているかはこの行で取り直す。上のボタンで状態が変わって
-        // いることがあるので、フレーム頭の値を使うと表示がずれる。
+        // 上の操作で変わった試聴状態を取得し直します。
         const bool transportPlaying = state.preview
             && state.preview->State() == DirectX::PLAYING;
         if (transportPlaying)
         {
             if (ImGui::Button("■ 停止"))
             {
-                // streamは残したまま止める。次の「▶ 再生」で読み直さず
-                // すぐ鳴らせる。パネルを閉じるときだけ完全に捨てる。
+                // ストリームを保持したまま停止し、再開時の読み直しを
+                // 避けます。パネルを閉じるときに解放します。
                 state.preview->Stop();
             }
         }
         else if (ImGui::Button("▶ 再生"))
         {
-            // 直前に鳴らした位置から。まだ一度も鳴らしていなければ
-            // 試聴範囲を鳴らす（このパネルで一番よく使う聞き方）。
+            // 直前の位置から再開します。未再生の場合は試聴範囲を使います。
             StartPreview(
                 state.hasLastStart ? state.lastStartFrame : previewStart,
                 state.hasLastStart ? state.lastUsedPreviewRange : true);
@@ -748,10 +758,8 @@ namespace LamaPon
             state.preview->SetVolume(state.previewVolume);
         }
 
-        // 上で求めたplayingは、この間にあるボタン（「■ 停止」や曲の
-        // 切り替え）でstate.previewが捨てられていると嘘になる。
-        // 破棄済みのstreamへPlaybackFrameを呼ぶとその場で落ちるので、
-        // ここで必ず取り直す。
+        // 停止や曲の変更でストリームが解放される場合があるため、
+        // 再生ヘッドを読む直前に状態を確認します。
         const bool stillPlaying = state.preview
             && state.preview->State() == DirectX::PLAYING;
         if (stillPlaying)
@@ -769,8 +777,7 @@ namespace LamaPon
                 static_cast<unsigned long long>(
                     state.preview->CompletedLoopCount()));
 
-            // エンジンの帯域レベルメーター。ゲーム内のBGMプレートと
-            // 同じ値なので、ここで動きを確かめられます。
+            // AudioSourceComponentと同じ帯域レベルを表示します。
             std::array<float, AudioStreamVoice::LevelBandCount> bands{};
             state.preview->ReadLevelBands(bands.data(), bands.size());
             const ImVec2 meterOrigin = ImGui::GetCursorScreenPos();

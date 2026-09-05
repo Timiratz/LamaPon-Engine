@@ -15,12 +15,11 @@ namespace
 {
     using Microsoft::WRL::ComPtr;
 
-    // GUIDの比較にguiddef.hのoperator==/!=を**使わない**こと。
+    // GUIDの比較にguiddef.hのoperator==/!=を使わないこと。
     // グローバルなinline演算子のCOMDATがこのオブジェクトに載ると、
     // CMakeのWINDOWS_EXPORT_ALL_SYMBOLSがexports.defへ「==」「!=」
     // という名前をそのまま書き出し、LamaPonRuntime.dllのリンクが
-    // LNK2001で落ちます（2026-08-07に実際に踏みました。
-    // exports.defの中身を見るまで原因が分かりません）。
+    // LNK2001で失敗するため、バイト列として比較します。
     [[nodiscard]] bool SameGuid(
         const GUID& left,
         const GUID& right) noexcept
@@ -121,10 +120,8 @@ namespace LamaPon
             frame->SetSize(width, height),
             "Could not set the PNG size.");
 
-        // 32bppRGBAを頼みますが、エンコーダーは別形式へ交渉して
-        // 返すことがあります（VM上のWICは32bppBGRAを返しました）。
-        // BGRAならRとBを入れ替えて合わせます。それ以外の形式は、
-        // 黙って書くと色が壊れるので止めます。
+        // エンコーダーが32bppBGRAを選んだ場合はRとBを交換します。
+        // 対応外の形式は色の誤変換を防ぐためエラーにします。
         WICPixelFormatGUID format =
             GUID_WICPixelFormat32bppRGBA;
         ThrowIfFailed(

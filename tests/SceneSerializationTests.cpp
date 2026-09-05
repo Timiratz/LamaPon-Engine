@@ -295,9 +295,8 @@ int RunTest(const std::string_view suite)
 
         auto& root = source.CreateGameObject("ルート");
         root.GetTransform().position = { 10.0f, 2.0f, 0.0f };
-        // 描画カリングはコンポーネントになりました。GameObjectの
-        // IsAlwaysVisible/CullingMarginは読み口として残っているので、
-        // 既存のアサーションはそのまま通ります。
+        // RenderCullingComponentの値を、GameObjectの互換アクセサー
+        // IsAlwaysVisible/CullingMarginからも読み取れることを検証します。
         root.AddComponent<
             LamaPon::RenderCullingComponent>(true, 12.5f);
         root.AddComponent<LamaPon::DirectionalLightComponent>(
@@ -1208,8 +1207,7 @@ int RunTest(const std::string_view suite)
                     loadedProbe->Intensity(), 1.25f),
             "Reflection probe settings did not"
             " round-trip.");
-        // ボックス射影の箱。3軸が揃って戻らないと、部屋の壁が
-        // 無限遠に映る昔の見た目へ黙って戻ってしまいます。
+        // ボックス射影の3軸と有効状態が保存後も保たれること。
         Require(
             loadedProbe != nullptr
                 && NearlyEqual(
@@ -1221,8 +1219,7 @@ int RunTest(const std::string_view suite)
                 && loadedProbe->UsesBoxProjection(),
             "Reflection probe box projection extents did not"
             " round-trip.");
-        // 混ぜ始める距離。0へ戻ると境界で映り込みが飛ぶ昔の挙動へ
-        // 黙って戻ってしまいます。
+        // ブレンド距離が0へ戻らず、境界で映り込みが急変しないこと。
         Require(
             loadedProbe != nullptr
                 && NearlyEqual(
@@ -1231,9 +1228,7 @@ int RunTest(const std::string_view suite)
             " round-trip.");
 
         // 光の筋（ボリュメトリック）の設定もシーンへ保存されます。
-        // 既定値と全項目が違う値を入れて往復させ、1つでも既定へ
-        // 戻ったら落とします（保存漏れは「開き直すと消える」という
-        // 一番気付きにくい壊れ方をするため）。
+        // 全項目へ既定値と異なる値を設定し、保存漏れを検出します。
         {
             LamaPon::Scene volumetricScene(graphics);
             LamaPon::VolumetricLightSettings volumetric{};
@@ -1319,9 +1314,8 @@ int RunTest(const std::string_view suite)
                         3.5f),
                 "Legacy culling keys must migrate into a"
                 " RenderCulling component.");
-            // rotationQuaternionを持たない旧シーン（BoBoBonなど）
-            // でも、オイラー角から回転を復元できること。ここが
-            // 壊れると既存プロジェクトが開いた瞬間に姿勢を失います。
+            // rotationQuaternionを持たない旧シーンでも、
+            // オイラー角から回転を復元できること。
             const auto* legacyRotated =
                 legacyScene.FindGameObjectByName(
                     "LegacyRotated");
@@ -2570,7 +2564,7 @@ int RunTest(const std::string_view suite)
                     {
                         ++received;
                         events.Unsubscribe(selfHandle);
-                        // 発行中の新規購読は今回は呼ばれない
+                        // 発行中に追加した購読は次回から呼ばれる。
                         static_cast<void>(
                             events.Subscribe(
                                 "Once",
@@ -3962,9 +3956,8 @@ int RunTest(const std::string_view suite)
                 " order.");
 
             // 子同士の並び替え。表示順の出どころが親のm_children
-            // なので、m_gameObjectsだけ直しても画面が変わりません
-            // （2026-08-04にこれで「保存には載るのに表示が
-            // 変わらない」不具合を出しました）。両方を検査します。
+            // なので、m_gameObjectsだけを直しても表示順は変わりません。
+            // 両方の並びを検査します。
             auto& parent =
                 reorderScene.CreateGameObject("Parent");
             auto& childA =
@@ -4237,8 +4230,7 @@ int RunTest(const std::string_view suite)
         // 衝突マトリクスで切ったペアは、コライダーのマスクが許して
         // いても当たらないこと。レイヤー0（床）と1を切った状態で、
         // レイヤー0の箱は床に載り、レイヤー1の箱は素通りする。
-        // 同じシーンに両方置くので「物理が丸ごと止まっていた」
-        // だけでは通らない（対照が床に載る必要がある）。
+        // 両方を同じシーンへ置き、物理更新全体の停止を対照で除外します。
         {
             const auto savedPhysics =
                 LamaPon::ActivePhysicsSettings();
@@ -5857,18 +5849,13 @@ int RunTest(const std::string_view suite)
             particleProbe.ActiveParticleCount() == 2,
             "Particle emission rate was not simulated.");
 
-        // 更新中にGameObject／Componentを作っても壊れないこと。
-        // ScriptのStartは最初のUpdateから呼ばれるので、Startの中で
-        // CreateGameObjectするのは普通の書き方です。走査を範囲forで
-        // 回していると、そこでvectorが再確保されてイテレーターが無効に
-        // なり、次の要素（ムーブ済みでnullのunique_ptr）を触って
-        // アクセス違反で落ちていました。
+        // Update中にGameObjectやComponentを追加しても、
+        // 走査中のコンテナ再確保で参照が無効にならないこと。
         {
             LamaPon::Scene spawnScene(graphics);
             auto& spawner =
                 spawnScene.CreateGameObject("Spawner");
-            // 生成役をわざと先頭に置きます。末尾だとループがすぐ
-            // 抜けるので、この不具合を踏みません。
+            // 追加後も後続要素を走査する条件にするため、生成役を先頭に置きます。
             for (int index = 0; index < 4; ++index)
             {
                 spawnScene.CreateGameObject(
@@ -6264,7 +6251,7 @@ int RunTest(const std::string_view suite)
                     == "Async transition target",
             "Asynchronous scene cancellation failed.");
 
-        // ---- 追加読み込み（Additive） ----
+        // 追加シーンの読み込みと破棄を検証します。
         const auto additivePath =
             outputPath.parent_path()
             / "additive-hud.scene.json";
@@ -6404,12 +6391,8 @@ int RunTest(const std::string_view suite)
             "Additive scenes survived a replace load.");
         }
 
-        // プロジェクト設定の重力が、実際にRigidbodyへ効くこと。
-        //
-        // 以前は9.81が積分の中へ直書きで、設定から変えられません
-        // でした。**「設定を持てた」ことと「届いた」ことは別**なので、
-        // 速度が実際に変わることまで見ます
-        // （--warpのフラグが届いていなかった件と同じ形）。
+        // プロジェクト設定の重力がRigidbodyの速度へ反映されることを
+        // 確認します。
         {
             LamaPon::Scene gravityScene(graphics);
             auto& faller =
@@ -6439,7 +6422,7 @@ int RunTest(const std::string_view suite)
             Require(
                 moonVelocity < 0.0f && earthVelocity < 0.0f,
                 "gravity must pull the body down");
-            // 対照が先。地球のほうが強いので、より速く落ちること。
+            // 重力が強い設定ほど下向きの速度が大きくなること。
             Require(
                 earthVelocity < moonVelocity,
                 "a stronger gravity must accelerate the body"
@@ -6451,7 +6434,7 @@ int RunTest(const std::string_view suite)
                 "the body must accelerate by exactly the"
                 " configured gravity");
 
-            // 横向きの重力も効くこと（Y固定の実装だと落ちます）。
+            // 重力がY軸へ固定されず、横向きにも適用されること。
             body.SetVelocity({});
             LamaPon::PhysicsSettings sideways;
             sideways.gravity = { 4.0f, 0.0f, 0.0f };
@@ -6467,8 +6450,7 @@ int RunTest(const std::string_view suite)
                 LamaPon::PhysicsSettings{});
         }
 
-        // DCDの速さ制限。**既定では挙動を変えないこと**が肝心です
-        // （知らせるだけ）。オンにしたときだけ頭打ちになります。
+        // DCDの速度制限は有効時だけ適用し、既定では警告のみにします。
         {
             LamaPon::Scene clampScene(graphics);
             auto& fast = clampScene.CreateGameObject("Fast");
@@ -6487,7 +6469,7 @@ int RunTest(const std::string_view suite)
             body.Integrate(fast, step);
             const float unclamped = body.Velocity().x;
 
-            // 頭打ちオン。しきい値まで落ちること。
+            // 制限を有効にすると、しきい値まで速度が下がること。
             LamaPon::PhysicsSettings clamped = warnOnly;
             clamped.clampDiscreteSpeed = true;
             LamaPon::SetActivePhysicsSettings(clamped);
@@ -6561,12 +6543,8 @@ int main(const int argumentCount, char** arguments)
         CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     const bool uninitializeCom = SUCCEEDED(comResult);
 
-    // RunTest()'s GraphicsDevice lazily creates an AssetManager (WIC/D2D/
-    // DWrite factories) the first time a Scene reads a file. Those COM
-    // objects must be destroyed before CoUninitialize() runs, or their
-    // destructors release COM interfaces into an already-torn-down
-    // apartment. Keeping them inside a function that returns before we
-    // touch COM again guarantees that ordering.
+    // Sceneの読み込みで遅延生成されるCOMオブジェクトを先に破棄するため、
+    // RunTestから戻った後にCoUninitializeを呼びます。
     const int exitCode = RunTest(suite);
 
     if (uninitializeCom)

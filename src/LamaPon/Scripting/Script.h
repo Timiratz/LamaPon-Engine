@@ -167,7 +167,7 @@ namespace LamaPon
             m_timers.clear();
         }
 
-        // ---- コルーチン ----
+        // コルーチン
         // Coroutineを返すメンバー関数をco_awaitで書き、
         // StartCoroutineで開始します。最初の
         // co_awaitまでは即座に実行されます）。
@@ -277,7 +277,7 @@ namespace LamaPon
             return *m_graphics;
         }
 
-        // ---- 初心者向けショートカット ----
+        // 初心者向けショートカット
         // Owner()やGetScene()を書かずに主要な操作を直接呼べます。
 
         // 自分のGameObjectからコンポーネントを取得します。
@@ -418,7 +418,7 @@ namespace LamaPon
                 gameObject);
         }
 
-        // ---- イベント（名前で連携するシグナル） ----
+        // イベント（名前で連携するシグナル）
         // 「敵が倒された」のような出来事を名前で購読・発行でき、
         // コンポーネント同士が直接参照せずに連携できます。
         // UIButtonの「クリックイベント名」もここへ届きます。
@@ -507,15 +507,15 @@ namespace LamaPon
                 eventArgs);
         }
 
-        // ---- 設定値の保存（アプリを終了しても残ります）----------
+        // 設定値の保存（アプリを終了しても残ります）
         //
         // ハイスコアや「音量」「クリアしたステージ」のような小さな値を
         // 保存します。保存先は
-        // `%LOCALAPPDATA%/LamaPon/<ゲーム名>/PlayerPrefs.json`で、
+        // %LOCALAPPDATA%/LamaPon/<ゲーム名>/PlayerPrefs.jsonで、
         // エディターの「セーブデータ」タブから中身を確認できます。
         //
-        // ⚠️ **書くたびにファイルへ保存します。毎フレーム呼ばないで
-        // ください**（ゲームオーバー時など、区切りで呼ぶ想定です）。
+        // 書くたびにファイルへ保存します。毎フレーム呼ばないで
+        // ください（ゲームオーバー時など、区切りで呼ぶ想定です）。
         // 大きな進行状況はSaveDataStore（JSONスロット）向きです。
         void SaveInteger(
             const std::string_view key,
@@ -1084,8 +1084,8 @@ namespace LamaPon
 
 // データアセット（UnityのScriptableObject相当）の型を宣言します。
 // エディターのアセットウィンドウに「新規データアセット」として
-// 現れ、選ぶと`<名前>.asset.json`が作られます。値はInspectorで
-// 編集し、ゲームからは`LoadDataAsset("...")`で読みます。
+// 現れ、選ぶと<名前>.asset.jsonが作られます。値はInspectorで
+// 編集し、ゲームからはLoadDataAsset("...")で読みます。
 //
 //   constexpr char CardSchema[] = R"({
 //       "fields": [

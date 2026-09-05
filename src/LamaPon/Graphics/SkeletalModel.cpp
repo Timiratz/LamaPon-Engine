@@ -1149,8 +1149,8 @@ namespace LamaPon
                 // DirectXTKのEffectは必ずピクセルシェーダーを設定
                 // するので、外さないと影マップの解像度ぶん、
                 // 捨てられるだけの計算が毎フレーム走ります。
-                // **切り抜き（アルファテスト）だけは残します**
-                // ――discardで影の形を決めているためです。
+                // 切り抜き（アルファテスト）は、discardで影の形を
+                // 決めるため残します。
                 if (depthOnly && !useCutout)
                 {
                     context->PSSetShader(nullptr, nullptr, 0);

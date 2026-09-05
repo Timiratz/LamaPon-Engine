@@ -14,7 +14,8 @@
 namespace LamaPon
 {
     // 実オーディオデバイスの再生速度へ依存せず、製品コードと同じ
-    // DecodeChunk/crossfade/seek経路でintro末尾→loop headを検証します。
+    // DecodeChunk、crossfade、seekの各経路でイントロ末尾から
+    // ループ先頭への遷移を検証します。
     struct AudioStreamVoiceTestAccess
     {
         static void VerifyCustomLoop(AudioStreamVoice& stream)
@@ -200,8 +201,8 @@ namespace LamaPon
         }
 
         // 波形表示用のピーク包絡。0..1に収まること、鳴っている音が
-        // あれば平らにならないこと、そして**読み出しても再生位置が
-        // 動かない**ことを確かめます。最後のひとつを落とすと、波形を
+        // あれば平らにならないこと、そして読み出しても再生位置が
+        // 動かないことを確かめます。最後のひとつを落とすと、波形を
         // 描いただけで曲が飛びます。
         static void VerifyPeakEnvelope(AudioStreamVoice& stream)
         {
@@ -470,12 +471,8 @@ int wmain(const int argumentCount, wchar_t** arguments)
         CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     const bool uninitialize = SUCCEEDED(comResult);
 
-    // RunProbe()'s COM-holding locals (AssetManager's WIC/D2D/DWrite
-    // factories, XAudio2 voices) must all be destroyed before
-    // CoUninitialize() runs, or their destructors release COM interfaces
-    // into an already-torn-down apartment. Keeping them inside a function
-    // that returns before we touch COM again (rather than a nested scope
-    // in wmain) guarantees that ordering.
+    // AssetManagerのWIC/D2D/DWriteファクトリとXAudio2の音声はCOMを保持します。
+    // これらをRunProbe内で破棄してからCoUninitializeを呼びます。
     int exitCode = 1;
     try
     {

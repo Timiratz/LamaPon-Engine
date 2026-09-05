@@ -129,8 +129,8 @@ namespace LamaPon
             document.value("depthWrite", true);
         state.depthTest =
             document.value("depthTest", true);
-        // 半透明で深度書き込みを明示していない場合は、重ね合わせの
-        // 事故が起きにくい「書き込まない」を既定にします。
+        // 半透明で指定がない場合は、重ね合わせを保つため深度へ
+        // 書き込まない設定を使います。
         if (state.blend != ShaderBlendMode::Opaque
             && !document.contains("depthWrite"))
         {

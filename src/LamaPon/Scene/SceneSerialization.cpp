@@ -3756,9 +3756,9 @@ namespace
             },
             { "transform", {
                 { "position", ToJson(transform.position) },
-                // rotationは互換のために残しています（古いエンジンや
-                // 外部ツールがこちらを読むため）。正本は
-                // rotationQuaternionで、読み込み時はそちらを優先します。
+                // rotationは既存プロジェクトおよび外部ツールとの互換性のために
+                // 保存します。rotationQuaternionを回転の正本とし、読み込み時も
+                // rotationQuaternionを優先します。
                 { "rotation",
                     ToJson(transform.EulerAngles()) },
                 { "rotationQuaternion",

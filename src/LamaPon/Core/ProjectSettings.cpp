@@ -137,11 +137,8 @@ namespace LamaPon
             throw std::invalid_argument(
                 "Graphics settings are outside their supported range.");
         }
-        // 物理の調整値。**下限は「壊れない値」で切ります。**
-        // 0や負を通すと、その場で落ちるのではなく「動かない」
-        // 「すり抜ける」という原因の見えない壊れ方をします。
-        // 固定ステップの上限0.1秒は、これより粗いと速い物体が
-        // 薄い壁をすり抜け始めるためです。
+        // 物理計算を停止させる0以下の値を拒否します。固定ステップは、
+        // 高速な物体の衝突を安定して検出できる範囲に制限します。
         if (!(settings.physics.fixedTimeStep > 0.0f)
             || settings.physics.fixedTimeStep > 0.1f
             || settings.physics.maximumCatchUpSteps < 1
@@ -551,10 +548,10 @@ namespace LamaPon
                 path.parent_path());
         }
 
-        // レイヤー名は使っている分だけ（末尾の空欄を省く）。
-        // マトリクスはビット列ではなく「当たらないペアの一覧」で
-        // 書きます。既定（全部当たる）なら空配列になり、人やAIが
-        // JSONを直接読んでも意味が分かるためです。
+        // レイヤー名は使用中の項目だけを保存し、末尾の空欄を省きます。
+        // マトリクスはビット列ではなく「衝突しないペアの一覧」で
+        // 保存します。既定値では空配列となり、JSONだけでも設定内容を
+        // 読み取れます。
         nlohmann::json layerNamesJson =
             nlohmann::json::array();
         {
@@ -827,10 +824,7 @@ namespace LamaPon
         // ProjectSettingsが知らないキーは、元のファイルから引き継ぎ
         // ます。ここで丸ごと書き直すと、他の仕組みが書いた項目
         // （engineVersionなど）が保存のたびに消えます。
-        //
-        // 実際、開くたびにengineVersionが消えて「バージョンの記録が
-        // 無いプロジェクト」に戻り、毎回更新確認が出る状態になって
-        // いました（2026-08-07）。
+        // 未知のキーを保持することで、別機能が保存した設定を失いません。
         {
             std::ifstream existing(path, std::ios::binary);
             if (existing)

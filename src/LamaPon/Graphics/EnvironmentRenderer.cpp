@@ -35,8 +35,7 @@ namespace
         const char* entryPoint,
         const char* target)
     {
-        // 実体はShaderCompilerへ集約しました。ディスクキャッシュが
-        // 効くので、2回目以降の起動ではコンパイルが走りません。
+        // ShaderCompilerを通し、コンパイル結果をディスクキャッシュから再利用します。
         return LamaPon::CompileShaderCached(
             assets,
             path,
@@ -487,11 +486,8 @@ namespace LamaPon
         ID3D11ShaderResourceView* const source,
         const std::uint64_t cacheKey)
     {
-        // スカイ用の1組キャッシュ。実体の生成は所有型と共通です。
-        //
-        // 鍵があればまずディスクを引きます。当たれば畳み込みの
-        // GPUコストが丸ごと消えます（出力はfp16キューブ2枚で約1MB。
-        // 生成は決定的なので、前回の出力を使っても絵は同じです）。
+        // スカイ用キャッシュが有効な場合は、決定的な畳み込み結果を
+        // ディスクから復元してGPUでの再計算を省略します。
         m_prefilterSource = source;
         if (cacheKey != 0)
         {
@@ -598,9 +594,8 @@ namespace LamaPon
 
         ComPtr<ID3D11Texture2D> specularTexture;
         ComPtr<ID3D11Texture2D> irradianceTexture;
-        // GIベイクのように照度しか使わない呼び出しでは、スペキュラ
-        // （128px・8ミップ・64サンプル）を丸ごと飛ばします。格子の
-        // 点数ぶん繰り返す処理なので、ここが支配的なコストです。
+        // 照度だけを要求する呼び出しでは、格子点ごとの主な計算負荷となる
+        // スペキュラ畳み込みを省略します。
         if (includeSpecular)
         {
             createCube(
@@ -841,9 +836,8 @@ namespace LamaPon
                 sun->directionToSun.x * scale,
                 sun->directionToSun.y * scale,
                 sun->directionToSun.z * scale,
-                // 角半径0は「点」なので描きようがありません。
-                // 空へ描くぶんだけは最低でも本物の太陽の大きさを
-                // 確保します（0でも丸が消えないように）。
+                // 角半径0でも太陽円盤が消えないよう、描画時の半径には
+                // 太陽相当の最小値を適用します。
                 std::max(sun->angularRadius, 0.004625f)
             };
             constants.sunDiskColor = {
@@ -1173,7 +1167,7 @@ namespace LamaPon
         if (settings.streakIntensity <= 0.0f
             || settings.streakLength <= 0.0f)
         {
-            // 筋を使わない設定なら作りません（3パスまるごと省略）。
+            // アナモルフィック効果が無効な場合は、関連する3パスを省略します。
             return;
         }
 
@@ -1268,9 +1262,8 @@ namespace LamaPon
             m_context->PSSetConstantBuffers(7, 1, buffers);
             m_context->PSSetSamplers(0, 1, samplers);
             // 1回目は元の絵をt0から、2回目以降は前の結果をt5から
-            // 読みます。**書き込み先と同じテクスチャを刺さない**のが
-            // 要点で、刺すとD3D11は警告だけ出してSRVをnullにします
-            // （読んだ値が全部0になり、エラーは出ません）。
+            // 読みます。書き込み先と同じテクスチャをSRVへ設定すると、
+            // D3D11がSRVをnullへ置換して読み取り値が0になるため分離します。
             ID3D11ShaderResourceView* sourceSlot[]{
                 first ? readResource : nullptr
             };
@@ -1382,8 +1375,8 @@ namespace LamaPon
                 std::clamp(settings.tint, -2.0f, 2.0f),
                 std::clamp(settings.vignette, 0.0f, 1.0f),
                 settings.enabled ? 1.0f : 0.0f,
-                // 自動露出の補正（段数）。以前は未使用の詰め物だった
-                // 欄なので、cbufferの並びは変わっていません。
+                // 自動露出の補正（段数）。既存の予約領域を使うため、
+                // cbufferの並びには影響しません。
                 std::clamp(
                     settings.autoExposureStops,
                     -16.0f,
@@ -1519,9 +1512,8 @@ namespace LamaPon
             static_cast<float>(std::max(height, 1u)));
     }
 
-    // SSAOの各パスに共通する描画。t0=ソース、t2=深度
-    // （不要なものはnullptr）。終了時にt0〜t2を外すので、直後に
-    // それらを描画先として使えます。
+    // SSAOの各パスに共通する描画です。t0へソース、t2へ深度を設定し、
+    // 終了時にt0〜t2を解除して次の描画先として利用可能にします。
     void EnvironmentRenderer::DrawAmbientOcclusionPass(
         ID3D11PixelShader* pixelShader,
         ID3D11ShaderResourceView* source,
@@ -1850,7 +1842,7 @@ namespace LamaPon
                 4u,
                 64u));
 
-        // ①半解像度へ色と符号付きCoCを書き出します。
+        // (1)半解像度へ色と符号付きCoCを書き出します。
         constants.texel = {
             1.0f / halfWidth,
             1.0f / halfHeight,
@@ -1873,7 +1865,7 @@ namespace LamaPon
             halfWidth,
             halfHeight);
 
-        // ②半解像度で円形にぼかします。定数は①と同じ（テクセルも
+        // (2)半解像度で円形にぼかします。定数は(1)と同じ（テクセルも
         // 半解像度のまま）なので、更新せずにそのまま使います。
         DrawDepthOfFieldPass(
             m_depthOfFieldBlurPixelShader.Get(),
@@ -1884,7 +1876,7 @@ namespace LamaPon
             halfWidth,
             halfHeight);
 
-        // ③フル解像度で合成します。テクセルだけフル解像度へ直します。
+        // (3)フル解像度で合成します。テクセルだけフル解像度へ直します。
         constants.texel = {
             1.0f / fullWidth,
             1.0f / fullHeight,
@@ -1962,7 +1954,7 @@ namespace LamaPon
         m_context->RSSetState(m_rasterizer.Get());
         m_context->Draw(3, 0);
 
-        // 次のパスがこれらを描画先にできるよう外します。刺したままに
+        // 次のパスで描画先にできるよう、割り当てを解除します。設定したままに
         // すると、同じテクスチャを描画先にした瞬間にD3D11が警告だけ
         // 出してSRVをnullにします（読んだ値が全部0になります）。
         ID3D11ShaderResourceView* nullResources[3]{};
@@ -2144,8 +2136,7 @@ namespace LamaPon
         ID3D11RenderTargetView* noTargets[]{ nullptr };
         m_context->OMSetRenderTargets(1, noTargets, nullptr);
         // 2x2の箱フィルタを段ごとに掛けるので、いちばん小さいミップは
-        // 全画素の平均になります。対数を書いてあるので、これが
-        // 対数平均（＝幾何平均）です。
+        // 全画素の対数を平均し、幾何平均輝度を求めます。
         m_context->GenerateMips(resource);
     }
 
@@ -2167,14 +2158,9 @@ namespace LamaPon
             return;
         }
 
-        // これから描き込むピラミッドは、前フレームのLit描画が
-        // t21/t22（SSRのカラーと深度）へ張ったまま残しています。
-        // 外さずにレンダーターゲットへ設定すると、D3D11がSRVを
-        // 黙ってnullにします（デバッグレイヤーでは1フレームに59件の
-        // 警告になっていました）。絵は正しいままですが、
-        // 「張りっぱなしのSRVが勝手に外れる」状態は事故のもとなので、
-        // こちらから先に外します。LitEffect::Applyが毎回張り直すので、
-        // 戻す必要はありません。
+        // 前フレームのLit描画でt21/t22へ設定したSSRのカラーと深度を
+        // 外してから、同じリソースをレンダーターゲットに設定します。
+        // LitEffect::Applyが次の描画時にSRVを設定し直します。
         {
             ID3D11ShaderResourceView* nullReflection[]{
                 nullptr, nullptr };

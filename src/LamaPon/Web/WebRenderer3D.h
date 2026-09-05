@@ -45,8 +45,8 @@ namespace LamaPon::Web
     {
         Color ambientColor{ 1.0f, 1.0f, 1.0f, 1.0f };
         float ambientIntensity{ 0.42f };
-        // LamaPon NativeのDirectionalLightComponentと同じく、
-        // Lightが進む方向を表します。
+        // Windows版のDirectionalLightComponentと同じく、光が進む方向を
+        // 表します。
         Vec3 directionalDirection{ -0.25f, -0.75f, -0.90f };
         Color directionalColor{ 1.0f, 1.0f, 1.0f, 1.0f };
         float directionalIntensity{ 0.80f };
@@ -62,8 +62,8 @@ namespace LamaPon::Web
     using MeshId = std::uint32_t;
     using TextureId = std::uint32_t;
 
-    // Portable 3D Subset向けのWebGL2 Rendererです。GLuintやDirectX Typeを
-    // 公開せず、GeometryとMaterial Dataを受け取る境界に限定します。
+    // Portable 3D向けのWebGL2描画機能です。GLuintやDirectXの型を
+    // 公開せず、形状とマテリアルのデータだけを受け取ります。
     class Renderer3D final
     {
     public:

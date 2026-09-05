@@ -13,10 +13,9 @@
 
 namespace LamaPon
 {
-    // Read-only access to an encrypted asset archive (".tpak") produced
-    // by AssetPacker when a game is exported. Every entry is AES-256-CBC
-    // encrypted independently, so a single asset can be decrypted without
-    // touching the rest of the archive.
+    // AssetPackerが書き出す暗号化アーカイブ（.tpak）の読み取り専用
+    // インターフェースです。各エントリはAES-256-CBCで個別に暗号化し、
+    // 必要なアセットだけを復号できます。
     //
     // エントリと索引にはHMAC-SHA256が付いていて、復号する前に
     // 検証します。合わなければ例外です（読み飛ばして続けると、

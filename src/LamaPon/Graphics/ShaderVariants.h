@@ -19,11 +19,11 @@ namespace LamaPon
     //   #pragma multi_compile _ FOG_ON
     //   #pragma shader_feature _ DETAIL_ON
     //
-    // 1行が1グループで、そこから必ず1つが選ばれます。`_`は
+    // 1行が1グループで、そこから必ず1つが選ばれます。_は
     // 「どのキーワードも立てない」組み合わせを表します。
-    // 選ばれたキーワードは `#define FOG_ON 1` として渡ります。
+    // 選ばれたキーワードは #define FOG_ON 1 として渡ります。
     //
-    // multi_compileとshader_featureの違いは**書き出し時だけ**です。
+    // multi_compileとshader_featureの違いは書き出し時だけです。
     // multi_compileは全組み合わせを同梱し、shader_featureは
     // 実際にどれかのマテリアルが使っている組み合わせだけを同梱
     // します。エディターでの
@@ -40,7 +40,7 @@ namespace LamaPon
     {
         ShaderVariantKind kind{
             ShaderVariantKind::MultiCompile };
-        // このグループの選択肢。`_`は空文字列として入ります
+        // このグループの選択肢。_は空文字列として入ります
         // （「どれも立てない」を表します）。
         std::vector<std::string> keywords;
     };
@@ -62,11 +62,9 @@ namespace LamaPon
 
     // 組み合わせの上限。これを超える宣言は読み取り時に弾きます。
     //
-    // 組み合わせが増えすぎるのを防ぐための制限です。multi_compileを1行足すたびに
-    // 組み合わせは倍になり、
-    // 10行書けば1024通り、そのすべてが書き出しのコンパイル時間と
-    // 配布サイズになります。後から気付くと直すのが大変なので、
-    // 最初から止めます。
+    // multi_compileを1行追加するたびに組み合わせは倍になり、
+    // 10行では1024通りになります。書き出し時間と配布サイズを
+    // 制御できる範囲へ収めるため、読み取り時に上限を適用します。
     inline constexpr std::size_t MaximumShaderVariants = 64;
 
     // HLSLソースから#pragma multi_compile / shader_featureを読みます。

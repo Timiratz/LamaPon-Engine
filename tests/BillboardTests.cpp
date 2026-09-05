@@ -1,9 +1,7 @@
 // ビルボード（カメラを向き続けるコンポーネント）の向きを検査します。
 //
-// 見るのは「指定した軸が、狙った方向をちゃんと向いているか」です。
-// 回転はクォータニオンなので値を直接読んでも分かりません。回転行列
-// へ戻して、軸のベクトルと期待する向きの内積が1になることを確かめ
-// ます（内積1＝完全に同じ向き）。
+// 指定した軸が期待する方向を向くことを検査します。クォータニオンを
+// 回転行列へ戻し、軸ベクトルと期待方向の内積が1になることを確認します。
 //
 // GPUは要りません。GraphicsDeviceも作らずにSceneを組み、Updateを
 // 1回呼ぶだけです。
@@ -99,7 +97,7 @@ int main()
             subjectPosition,
             cameraPosition);
 
-        // ① カメラの位置を向く＋面は上（+Y）。Planeの画像を
+        // (1) カメラの位置を向く＋面は上（+Y）。Planeの画像を
         // カメラへ正対させる組み合わせです。
         billboard.SetMode(
             LamaPon::BillboardMode::FaceCameraPosition);
@@ -109,7 +107,7 @@ int main()
                 > 0.9999f,
             "FaceCameraPosition with the Up axis must point +Y at the camera.");
 
-        // ② 面を前（+Z）へ変えると、今度は前がカメラを向きます。
+        // (2) 面を前（+Z）へ変えると、今度は前がカメラを向きます。
         billboard.SetFacingAxis(
             LamaPon::BillboardFacingAxis::Forward);
         scene.Update(0.016f);
@@ -118,7 +116,7 @@ int main()
                 > 0.9999f,
             "FaceCameraPosition with the Forward axis must point +Z at the camera.");
 
-        // ③ 画面と平行にする系は、カメラの座標ではなく「カメラが
+        // (3) 画面と平行にする系は、カメラの座標ではなく「カメラが
         // 見ている向き」の逆を向きます。カメラは無回転なので前は
         // +Zで、板の面は-Zへ向くはずです。
         DirectX::XMFLOAT3 cameraForward{};
@@ -138,7 +136,7 @@ int main()
                 > 0.9999f,
             "ScreenAligned must face against the camera's view direction.");
 
-        // ④ 2種類の違いを直接見ます。離れた場所へもう1枚置くと、
+        // (4) 2種類の違いを直接見ます。離れた場所へもう1枚置くと、
         //   ・画面と平行の系 … 位置に関係なく同じ向き
         //   ・位置を向く系 … 位置ごとに違う向き
         // になります。ここが2種類を分ける性質そのものです。
@@ -181,7 +179,7 @@ int main()
         static_cast<void>(
             scene.DestroyGameObject(farSubject));
 
-        // ⑤ 立ったままのモードは上下に傾きません。カメラは上に4だけ
+        // (5) 立ったままのモードは上下に傾きません。カメラは上に4だけ
         // 高いので、傾く実装ならここで上を向いてしまいます。
         billboard.SetMode(
             LamaPon::BillboardMode
@@ -208,7 +206,7 @@ int main()
                 > 0.9999f,
             "Upright modes must keep the object standing upright.");
 
-        // ⑥ 立ったまま画面の向きに合わせるモードも、水平のままで
+        // (6) 立ったまま画面の向きに合わせるモードも、水平のままで
         // あることを見ます（向く先はカメラの向きの逆の水平成分）。
         billboard.SetMode(
             LamaPon::BillboardMode::UprightScreenAligned);
@@ -224,7 +222,7 @@ int main()
                 > 0.9999f,
             "UprightScreenAligned must keep the object standing upright.");
 
-        // ⑦ 座標を指定するモードは、カメラではなくその点を向きます。
+        // (7) 座標を指定するモードは、カメラではなくその点を向きます。
         const DirectX::XMFLOAT3 lookTarget{
             -5.0f, 0.0f, 0.0f };
         billboard.SetMode(
@@ -238,7 +236,7 @@ int main()
                 > 0.9999f,
             "LookAtPosition must aim at the given point, not the camera.");
 
-        // ⑧ 親を回してもカメラを向いたまま。Transformが持つのは
+        // (8) 親を回してもカメラを向いたまま。Transformが持つのは
         // ローカル回転なので、親の回転を打ち消していないとここで
         // 一緒に回ってしまいます。
         billboard.SetMode(
@@ -260,7 +258,7 @@ int main()
                 > 0.9999f,
             "A rotated parent must not drag the billboard off the camera.");
 
-        // ⑨ メインカメラが無いときは向きを変えません（例外も
+        // (9) メインカメラが無いときは向きを変えません（例外も
         // 投げません）。付けた向きのまま残ります。
         subject.SetParent(nullptr);
         billboard.SetFacingAxis(

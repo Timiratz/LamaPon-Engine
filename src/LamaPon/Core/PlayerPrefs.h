@@ -66,10 +66,10 @@ namespace LamaPon
         UserDataDirectory(std::string_view applicationName);
 
     // いま使えるPlayerPrefs。Applicationが起動時に自分のものを登録し、
-    // C++ Script（`LamaPon::Script`のSave/Load系）がここから読み書き
-    // します。**Scriptから設定値を保存できる唯一の入口**です。
+    // C++ Script（LamaPon::ScriptのSave/Load系）がここから読み書き
+    // します。Scriptから設定値を保存できる唯一の入口です。
     //
-    // **実体はPlayerPrefs.cppに1つだけ**あります。ヘッダでinline
+    // 実体はPlayerPrefs.cppに1つだけあります。ヘッダでinline
     // staticにするとEXE側とDLL側で別々の実体になり、保存が無言で
     // 消えます（ActivePhysicsSettingsと同じ理由）。
     //

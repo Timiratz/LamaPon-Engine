@@ -377,7 +377,7 @@ std::shared_ptr<const LamaPon::DataAsset> LoadDataAsset(
 
 | 引数 | 説明 |
 |---|---|
-| `path` | `"data/ゴブリン.asset.json"`のようなassetsからの相対パス |
+| `path` | `"data/goblin.asset.json"`のようなassetsからの相対パス |
 
 **戻り値**
 
@@ -403,7 +403,7 @@ std::shared_ptr<const LamaPon::DataAsset> LoadDataAsset(
 ```cpp
 void Start() override
 {
-    const auto enemy = LoadDataAsset("data/ゴブリン.asset.json");
+    const auto enemy = LoadDataAsset("data/goblin.asset.json");
 
     m_hitPoints = enemy->GetInt("hitPoints");
     m_speed = enemy->GetFloat("moveSpeed");
@@ -2832,7 +2832,7 @@ void OnGameOver()
 | 当たり判定を取る | `OnCollisionEnter` / `OnTriggerEnter`を上書き |
 | 相手を判別する | `event.other.CompareTag("Enemy")` |
 | 弾を出す | `Instantiate("prefabs/bullet.prefab.json")` |
-| 敵やカードの性能表を持つ | データアセット。`LoadDataAsset("data/ゴブリン.asset.json")` |
+| 敵やカードの性能表を持つ | データアセット。`LoadDataAsset("data/goblin.asset.json")` |
 | 3秒後に消す | `Invoke(3.0f, [this]{ Destroy(Owner()); })` |
 | 一定間隔で処理 | `InvokeRepeating(0.0f, 0.5f, [this]{ ... })` |
 | 「◯秒待ってから」の流れ | コルーチン＋`co_await WaitForSeconds{1.0f}` |

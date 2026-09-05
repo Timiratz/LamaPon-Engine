@@ -10,7 +10,7 @@ LamaPon Hub、プロジェクト設定、ゲームのエクスポート、ディ
 `LamaPonHub.exe`はプロジェクトの作成・選択・起動を行う入口です。
 
 - プロジェクト名と保存場所を指定して新規作成
-- 3D、2D、３D学習、２D学習テンプレート
+- 3D、2D、3D学習、2D学習テンプレート
 - 既存のLamaPonプロジェクトを追加
 - 最近使ったプロジェクトを一覧表示
 - 一覧からの除外（プロジェクトファイル自体は削除しません）
@@ -19,7 +19,7 @@ LamaPon Hub、プロジェクト設定、ゲームのエクスポート、ディ
 
 すべての新規プロジェクトに`assets/scenes/Main.scene.json`、`.lamapon/project.json`、描画に必要な組み込みShader、プロジェクト用`.gitignore`とREADMEが生成されます。
 
-「３D学習」「２D学習」には、さらに遊べるScene、`LEARNING.md`、`learning/journey.json`、`learning/design-note.md`、コメント付き`assets/scripts/LearningPlayer.cpp`が入ります。[学習ロードマップ](learning-path.md)も参照してください。
+「3D学習」「2D学習」には、さらに遊べるScene、`LEARNING.md`、`learning/journey.json`、`learning/design-note.md`、コメント付き`assets/scripts/LearningPlayer.cpp`が入ります。[学習ロードマップ](learning-path.md)も参照してください。
 
 3D／2Dは最小構成です。`scripts`や`textures`などは必要になったときにAsset Browserから作成してください。
 履歴は`%LOCALAPPDATA%/LamaPon/hub.json`へ保存されます。
@@ -207,12 +207,11 @@ Screen Space Lens FlareはHigh／Ultraで品質設定側が有効です。
 
 描画スケールは**0.50〜2.00**で設定できます。
 1.00より小さいと軽くなり、**1.00より大きいと高解像度で描いてから画面サイズへ縮小します**（スーパーサンプリング／SSAA）。
-輪郭のギザギザを減らす手段としてはこれが一番よく効きます。
-FXAAが苦手な細い線やテクスチャのちらつきにも効きます。
+高解像度から縮小することで、輪郭のギザギザ、細い線、テクスチャの
+ちらつきを抑えます。
 
-- **2.00がおすすめ**です。縮小時にちょうど2×2ピクセルの平均になるので、
-  最も綺麗な結果になります。
-  ただし**ピクセル数が4倍**になるので重いです
+- **2.00**では、縮小時に2×2ピクセルを平均します。
+  ピクセル数が4倍になるため、描画負荷も増えます
 - 1.50のような中間の値でも効果はありますが、縮小の計算がぴったり
   合わないため2.00ほど綺麗にはなりません
 - プリセットはどれも1.00です。SSAAを使うには描画スケールを手で上げて

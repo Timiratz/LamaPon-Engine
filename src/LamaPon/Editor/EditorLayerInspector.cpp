@@ -1,4 +1,3 @@
-// EditorLayerのInspector描画（全コンポーネント）とAdd Componentメニュー、マテリアルインスペクタをまとめた翻訳単位です。
 #include "LamaPon/Editor/EditorLayer.h"
 
 #include "LamaPon/Editor/EditorLayerShared.h"
@@ -102,8 +101,8 @@ namespace
     }
 
     // コライダーの「レイヤー」をドロップダウンで選びます。
-    // プロジェクト設定で付けた名前が出ます（無名の番号も選べます——
-    // 名前を付ける前に組んだシーンを壊さないため）。
+    // プロジェクト設定で付けた名前を表示します。名前を設定していない
+    // 番号も選択でき、既存シーンとの互換性を保ちます。
     [[nodiscard]] bool DrawCollisionLayerCombo(
         const char* label,
         const std::array<
@@ -1289,12 +1288,9 @@ namespace LamaPon
                 continue;
             }
 
-            // 選択肢から外すのは「マテリアル／スプライトの
-            // Shaderとして使えないもの」です。判定基準は
-            // 「VSMain/PSMainを持たないか、エンジンが専用に
-            // 差し替えて使うか」。エンジンへShaderを足したときは
-            // ここも見てください（名前で外しているので自動では
-            // 増えません）。
+            // 選択肢には、VSMain/PSMainを持つ利用者向けShaderだけを
+            // 表示します。エンジン内部用Shaderはファイル名で除外するため、
+            // 内部用Shaderを追加する場合は下の条件にも追加します。
             //   LamaPonLit         … エンジンが標準として直接使う
             //                        （「LamaPon Lit (Default)」が
             //                        その入口なので二重に出さない）

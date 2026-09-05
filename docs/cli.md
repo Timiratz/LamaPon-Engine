@@ -30,7 +30,7 @@ LamaPonCli.exe build --project "C:\path\to\MyProject"
 LamaPonCli.exe export --project "C:\path\to\MyProject" --zip
 ```
 
-- `new` は３D学習を既定で作ります（`--template 3d`／`2d`／`learning-3d`／`learning-2d`）
+- `new` は3D学習を既定で作ります（`--template 3d`／`2d`／`learning-3d`／`learning-2d`）
 - `learn` は学習進捗、役職、教材診断をJSONで扱います
 - `render` は `shot.png` にスクリーンショットを書き出します
 - `build` はエディターの「保存→自動ビルド」と同じ方法でC++ Game Moduleを建てます
@@ -362,10 +362,10 @@ LamaPonCli.exe patch --project "C:\path\to\MyProject" --scene scenes/main.scene.
 | キー | 意味 |
 |---|---|
 | `image.meanColor` | RGBそれぞれの平均（0〜255）。真っ黒／真っ白の検出に |
-| `image.uniqueColors` | 異なる色の数。**1なら一色だけ＝ほぼ確実に何も描画されていない** |
-| `image.magentaPixels` | 壊れたShaderの代役（マゼンタ）とみなした画素数。**色から推測しているだけ**なので、本当にピンクや水色を使う絵でも増えます（実測: 正常なシーンで画面の7.6%）。壊れているかの判定には使わないでください |
-| `shaderFallbackDraws` | 代役シェーダーが実際に使われた回数。エンジン自身が数えた**事実**で、推測ではありません。**0なら代役は一度も使われていない**と言い切れます。撮った1フレーム分だけを数えます |
-| `problems` | 壊れているものの構造化一覧（下記）。**この配列が空になるまで確認・修正します** |
+| `image.uniqueColors` | 異なる色の数。1なら一色だけで描画されている可能性があります |
+| `image.magentaPixels` | 代役シェーダーの色と一致した画素数。通常の画像に同じ色があれば増えるため、診断の補助値として扱います |
+| `shaderFallbackDraws` | 代役シェーダーを使用した回数。撮影した1フレーム分を数えます |
+| `problems` | 検出した問題の構造化一覧（下記） |
 | `logs` | エンジンの警告とエラー（infoは含めない）。`--d3ddebug` 時はD3D11デバッグレイヤーの警告もここに入る |
 
 ### problemsの中身
@@ -415,7 +415,7 @@ AとDが1つのActionにまとまっているため、既定（正方向）だ�
 ## newのオプション
 
 LamaPon Hubの「新規作成」と同じ処理です。
-既定では遊べるScene、学習教材、コメント付きC++を含む３D学習ができ、Hubの「最近使ったプロジェクト」にも載ります。
+既定では遊べるScene、学習教材、コメント付きC++を含む3D学習ができ、Hubの「最近使ったプロジェクト」にも載ります。
 
 | オプション | 意味 |
 |---|---|
@@ -442,8 +442,8 @@ JSONの `startupScene` に起動シーンのパスが入るので、続けて `r
 - 終了コードが0でも**DLLが実在しなければ失敗扱い**にします
 - `runtimeCompatible` はGame Moduleが現在の`LamaPonRuntime.dll`以降に
   再リンク済みかを示します。`false`なら終了コード0でもbuildは失敗扱いです
-- `moduleUpdated` は今回のビルドでDLLが実際に書き換わったか。
-  **失敗時に前回の古いDLLが残っている**場合は `moduleExists: true` でも`moduleUpdated: false` になります（変更なしのup-to-dateビルドでもfalseですが、その場合は前回の成果物のままで正しい）
+- `moduleUpdated`は、このビルドでDLLが書き換わったかを示します。
+  既存のDLLが残っている失敗時と、変更のない最新状態からの成功時は`false`です
 - Visual StudioのC++ツールセットが必要です（エディターの
   自動ビルドと同じ前提）
 
@@ -502,13 +502,13 @@ LamaPonEditor.exe --project "C:\path\to\MyProject" --screenshot ui.png --report 
 LamaPonEditor.exe --project "C:\path\to\MyProject" --remote C:\work\remote
 ```
 
-> **このモードは本物のマウスカーソルを動かしません。** 注入した座標を
+> **このモードはOSのマウスカーソルを動かしません。** 注入した座標を
 > エディター側で保持し、毎フレームImGuiへ入れ直しています（ImGuiの
 > Win32バックエンドが毎フレーム報告する実カーソル位置を、後ろから
 > 上書きする形）。操作中もそのPCで他の作業ができます。
-> ただし**エディターのウィンドウ内はAIが握っている**ので、人がその
-> ウィンドウをクリックしても意図した場所には当たりません。終わらせる
-> ときは `{"type":"quit"}` を送ってください。
+> ただし自動操作中のエディターウィンドウを手動で操作すると、入力が競合して
+> 意図しない位置へ送られる場合があります。終了するときは
+> `{"type":"quit"}`を送ってください。
 
 指定フォルダーの `command.json` を毎フレーム監視します。
 

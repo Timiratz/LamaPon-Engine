@@ -134,10 +134,8 @@ namespace
         return {};
     }
 
-    // メッセージの最初の 'xxx' を取り出します。HLSLコンパイラは
-    // 「error X3501: 'VSSkinnedMain': entrypoint not found」のように
-    // 対象の名前を必ず引用符で書くので、どの入口／識別子で失敗したかが
-    // これで分かります。
+    // HLSLコンパイラのメッセージでは対象の入口／識別子が引用符で
+    // 囲まれるため、最初の引用名を診断対象として抽出します。
     [[nodiscard]] std::string_view FirstQuotedName(
         const std::string_view message)
     {
@@ -154,9 +152,9 @@ namespace
         return message.substr(begin + 1, end - begin - 1);
     }
 
-    // エンジンが定数バッファで渡している名前。雛形からObjectBufferの
-    // 宣言を写さずに使うと「未定義の識別子」で落ちるので、そのときだけ
-    // 「これはエンジンが渡すものです」と言えます。
+    // 定数バッファ経由でエンジンが提供する識別子の一覧です。
+    // ObjectBuffer宣言が無い状態で一覧中の名前が未定義になった場合に、
+    // 組み込み識別子であることを診断へ補足します。
     [[nodiscard]] bool IsEngineProvidedName(
         const std::string_view name)
     {
@@ -187,17 +185,17 @@ namespace
         switch (usage)
         {
         case LamaPon::ShaderUsage::Material:
-            return "3Dマテリアルには VSMain と PSMain の両方が要ります"
-                "（スキニングモデルへ使うなら VSSkinnedMain と"
-                " PSSkinnedMain も）。";
+            return "3DマテリアルにはVSMainとPSMainが必要です"
+                "（スキニングモデルではVSSkinnedMainと"
+                "PSSkinnedMainも必要です）。";
         case LamaPon::ShaderUsage::Sprite:
             return "スプライト／UI／パーティクルに割り当てられるのは"
-                "ピクセルシェーダーだけです。入口の名前は PSMain で、"
-                "引数は COLOR0 → TEXCOORD0 → SV_Position の順にします。";
+                "ピクセルシェーダーだけです。入口関数をPSMainとし、"
+                "引数をCOLOR0、TEXCOORD0、SV_Positionの順に指定してください。";
         case LamaPon::ShaderUsage::ScreenEffect:
-            return "画面全体のポストエフェクトには PSMain が要ります。";
+            return "画面全体のポストエフェクトにはPSMainが必要です。";
         case LamaPon::ShaderUsage::Compute:
-            return "Compute Shaderの入口は CSMain です"
+            return "Compute Shaderの入口関数はCSMainです"
                 "（スレッドグループは8x8固定）。";
         }
         return {};
@@ -230,9 +228,8 @@ namespace LamaPon
     {
         std::string hint;
 
-        // X1507: includeしたファイルを開けなかった。
-        // 配布漏れで全プロジェクトが開けなくなったことがあるので、
-        // 真っ先に見当がつくようにしています。
+        // X1507はincludeファイルを開けない場合に発生するため、
+        // ファイルの配置とエディターの更新方法を案内します。
         if (Contains(compilerMessage, "X1507")
             || Contains(
                 compilerMessage,
@@ -262,11 +259,10 @@ namespace LamaPon
                 && entryPoints.vertex
                 && entryPoints.pixel)
             {
-                hint = "このShaderは3Dマテリアルとしては書けて"
-                    "いますが、割り当て先が**スキニング（ボーン）"
-                    "モデル**です。VSSkinnedMain と PSSkinnedMain を"
-                    "足すと、このモデルにも使えます"
-                    "（雛形の該当部分をそのまま写せます）。";
+                hint = "このシェーダーは3Dマテリアル用ですが、"
+                    "割り当て先はスキニング（ボーン）モデルです。"
+                    "VSSkinnedMainとPSSkinnedMainを追加してください。"
+                    "雛形の該当する宣言を利用できます。";
             }
             else
             {
@@ -293,26 +289,24 @@ namespace LamaPon
             || Contains(compilerMessage, "X3502")
             || Contains(compilerMessage, "missing semantics"))
         {
-            hint = "戻り値か引数にセマンティクス（`: SV_Target` の"
-                "ような役割の指定）が付いていません。";
+            hint = "戻り値または引数にセマンティクス"
+                "（例: : SV_Target）が付いていません。";
             if (usage == ShaderUsage::Sprite)
             {
                 hint += " スプライト／UI／パーティクルの PSMain は"
                     "「COLOR0 → TEXCOORD0 → SV_Position の順の引数」と"
-                    "「戻り値 : SV_Target」で書きます"
-                    "（**引数の順番が違うと、エラーも出ずに値が"
-                    "1本ずつずれます**）。";
+                    "「戻り値 : SV_Target」で記述します。"
+                    "引数の順序が違うと値がずれて渡されます。";
             }
             else
             {
-                hint += " ピクセルシェーダーの戻り値は `: SV_Target`、"
-                    "頂点シェーダーが返す構造体には `SV_Position` が"
-                    "要ります。";
+                hint += " ピクセルシェーダーの戻り値には : SV_Target、"
+                    "頂点シェーダーが返す構造体にはSV_Positionが"
+                    "必要です。";
             }
         }
-        // X3004/X3000: 未定義の識別子。名前がエンジンの渡すものと
-        // 一致するときだけ説明します（一般の綴り間違いに一般論を
-        // 足しても、本当の原因から目をそらせるだけなので）。
+        // X3004/X3000: 未定義名がエンジン提供の定数と一致する場合だけ、
+        // cbuffer宣言の案内を追加します。それ以外は元の診断を保ちます。
         else if (Contains(compilerMessage, "X3004")
             || Contains(compilerMessage, "undeclared identifier"))
         {
@@ -320,15 +314,13 @@ namespace LamaPon
                     FirstQuotedName(compilerMessage);
                 IsEngineProvidedName(name))
             {
-                hint = "`" + std::string{ name }
-                    + "` はエンジンが定数バッファで渡している値です。"
-                    "使うには、そのShaderの中で cbuffer の宣言を"
-                    "しておく必要があります"
-                    "（ObjectBuffer は `register(b0)`、ライティングは"
-                    " `register(b1)`）。LamaPonLit.hlsl から"
-                    "**丸ごと**写してください。"
-                    "一部だけ写すと、エラーも出ないまま値が"
-                    "ずれて読まれます。";
+                hint = "識別子「" + std::string{ name }
+                    + "」はエンジンが定数バッファで渡す値です。"
+                    "使用するにはシェーダー内でcbufferを宣言してください"
+                    "（ObjectBufferはregister(b0)、ライティングは"
+                    "register(b1)）。LamaPonLit.hlslの関連する宣言を"
+                    "一式コピーしてください。一部だけコピーすると、"
+                    "値の配置が一致しない場合があります。";
             }
         }
 

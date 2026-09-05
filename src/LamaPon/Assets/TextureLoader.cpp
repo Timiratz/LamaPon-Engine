@@ -294,8 +294,8 @@ namespace LamaPon::TextureLoader
                     factory.ReleaseAndGetAddressOf())),
             "CoCreateInstance(WICImagingFactory)");
 
-        // バイト列をコピーせず参照するWICストリームを作ります
-        // （デコードは本関数内で完了するため寿命は足ります）。
+        // 入力バイト列をコピーせず参照するWICストリームを作ります。
+        // デコードはこの関数内で完了するため、参照先は処理中存続します。
         Microsoft::WRL::ComPtr<IWICStream> stream;
         ThrowIfFailed(
             factory->CreateStream(
@@ -598,8 +598,8 @@ namespace LamaPon::TextureLoader
         case TextureUsage::NormalMap:
             return DXGI_FORMAT_BC5_UNORM;
         case TextureUsage::DataMap:
-            // 粗さ・金属度・遮蔽はアルファに意味が無いので、
-            // 透過の有無を見ずにBC1で足ります。
+            // 粗さ、金属度、遮蔽ではアルファを使わないため、
+            // 透過の有無にかかわらずBC1を使用します。
             return DXGI_FORMAT_BC1_UNORM;
         case TextureUsage::Color:
         default:

@@ -149,12 +149,10 @@ namespace
         }
 
         // .gitignoreの中身も確かめます。プロジェクトはGitで共有する
-        // 前提なので、`.lamapon/`へ書き出すものを足したときに除外
+        // 前提なので、.lamapon/へ書き出すものを足したときに除外
         // リストへ入れ忘れると、相手のエディターのレイアウトを
         // 上書きしたり、他人のPCのビルド生成物やパッケージの複製が
-        // コミットに混ざります。存在確認だけでは気付けません
-        // （2026-08-05にprofile.json・game-module-build.log・
-        // package-backups/の3つが漏れていました）。
+        // コミットに混ざるため、存在確認だけでなく内容も検査します。
         {
             std::ifstream ignoreInput(root / L".gitignore");
             const std::string ignoreText(
@@ -302,10 +300,12 @@ namespace
         auto status = LamaPon::Hub::GetLearningStatus(root);
         Require(
             journey.steps.size() == 8
-                && journey.title == "ゲームエンジニアとして成長する"
+                && journey.title == "ゲーム制作でC++を学ぶ"
                 && journey.conceptText
-                    == "C++を理解し、ゲームを作りながら、ゲームエンジニアとして成長できるゲームエンジン"
-                && status.totalSteps == 8
+                    == "ゲームを作りながら、C++とエンジンの基本を学ぶコースです。",
+            "Initial learning journey metadata is incorrect.");
+        Require(
+            status.totalSteps == 8
                 && status.completedSteps == 0
                 && status.nextStep.has_value()
                 && status.nextStep->id == "play-first"

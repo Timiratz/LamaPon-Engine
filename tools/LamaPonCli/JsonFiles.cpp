@@ -68,10 +68,8 @@ namespace LamaPon::Cli
         }
 
         DWORD moveError = ERROR_SUCCESS;
-        // ウイルススキャン等による一時ロックは数百ms〜数秒続くことが
-        // ある（5ms×20回=100msでは足りず、runtime testが
-        // "Could not replace job file (Win32 error 5)" で連続して
-        // 落ちた前例 2026-08-13）。伸びるバックオフで合計約4秒待つ。
+        // ウイルススキャンなどによる一時ロックは数秒続く場合があるため、
+        // 待機時間を延ばしながら合計約4秒まで再試行します。
         for (int attempt = 0; attempt < 50; ++attempt)
         {
             if (MoveFileExW(

@@ -27,9 +27,9 @@ namespace LamaPon::Web
         std::uint64_t index{};
     };
 
-    // すべてのWeb Gameが利用するBrowser Platform Serviceです。
-    // 任意のRenderer、Audio、PhysicsはGame Target側で所有し、要求しない
-    // ProjectのWasmにはLinkされない構造を保ちます。
+    // すべてのWebゲームが利用するブラウザー向けサービスです。任意の
+    // 描画、音声、物理機能はゲーム側で所有し、使わない機能をWasmへ
+    // リンクせずに済む構造を保ちます。
     class WebRuntime final
     {
     public:
@@ -55,8 +55,8 @@ namespace LamaPon::Web
         virtual void Update(WebRuntime& runtime, const WebFrame& frame) = 0;
     };
 
-    // Browser Main Loopを登録します。Emscriptenで正常実行中は戻らないため、
-    // Game ObjectとRuntimeにはstatic相当のProcess Lifetimeが必要です。
+    // ブラウザーのメインループを登録します。Emscriptenで実行中は
+    // 戻らないため、GameObjectとRuntimeはプロセス終了まで保持します。
     [[nodiscard]] int RunWebApplication(
         IWebApplication& application,
         WebRuntime& runtime);

@@ -42,10 +42,8 @@ namespace LamaPon
         void Pause() noexcept;
         void Resume();
         void Stop() noexcept;
-        // 音量。1.0が原音で、**1.0を超える増幅も指定できます**
-        // （上限4.0）。小さくマスタリングされた音源を持ち上げるのに
-        // 要ります。音源のピークによっては歪むので、上げるなら
-        // ピークを測ってから決めてください。
+        // 音量。1.0が等倍で、設定範囲は0.0〜4.0です。
+        // 1.0を超える値ではクリッピングに注意してください。
         void SetVolume(float volume);
         void SetPitch(float pitch);
         void SetPan(float pan);
@@ -53,12 +51,11 @@ namespace LamaPon
         {
             m_loop = loop;
         }
-        // ループ範囲は各チャンネル共通のsample frameで指定します。
-        // Playは常にファイル先頭から始まり、最初にendへ達した後だけ
-        // [start, end)を繰り返します。crossfadeFramesを指定すると
-        // end直前のtailとstart直後のheadを線形合成し、合成済みheadの
-        // 重複を避けてstart+crossfadeFramesから続けます。範囲が不正なら
-        // 従来どおりファイル全体をループします。
+        // ループ範囲は、全チャンネル共通のサンプルフレームで指定します。
+        // PlayはSetStartFrameで指定した位置から始まり、最初にendFrameへ
+        // 達した後は[startFrame, endFrame)を繰り返します。
+        // crossfadeFramesを指定すると、区間の末尾と先頭を線形合成します。
+        // 範囲が不正な場合は、ファイル全体をループします。
         void SetLoopRegionFrames(
             std::uint64_t startFrame,
             std::uint64_t endFrame,
@@ -73,7 +70,7 @@ namespace LamaPon
             return m_completedLoopCount;
         }
 
-        // 再生開始位置（各チャンネル共通のsample frame）。Playはここから
+        // 再生開始位置（全チャンネル共通のサンプルフレーム）。Playはここから
         // 鳴り始めます。ループ範囲を併用した場合は「開始位置→loopEnd」を
         // 一度鳴らしてから[start, end)の反復へ入ります。曲の途中だけを
         // 試聴させたいとき、音源を切り出さずに済ませるための入口です。
@@ -83,11 +80,11 @@ namespace LamaPon
             return m_startFrame;
         }
 
-        // ---- 帯域レベルメーター（音楽ビジュアライザ用） ----
+        // 帯域レベルメーター（音楽ビジュアライザー用）
         // 既定は無効で、無効な間は解析も確保も一切行いません
         // （PCMを触らないので再生経路のコストは0のままです）。
         // 有効にすると、デバイスへ送るPCMそのものを12帯域の
-        // bandpassで追い、**いま鳴っている位置**のレベルを返します。
+        // bandpassで追い、いま鳴っている位置のレベルを返します。
         // 先読みしたPCMではなくbuffer完了callbackを起点に実時間で
         // 補間するため、画面の棒と耳で聞こえる音がずれません。
         static constexpr int LevelBandCount = 12;
@@ -102,7 +99,7 @@ namespace LamaPon
             float* destination,
             std::size_t capacity) const noexcept;
 
-        // いま鳴っている位置（音源内のsample frame）。ループ区間の
+        // 現在の再生位置（音源内のサンプルフレーム）。ループ区間の
         // 折り返しも追えます。再生していないときは開始位置を返します。
         // 進捗バー、歌詞の同期、波形上の再生ヘッドなどに使えます。
         [[nodiscard]] std::uint64_t PlaybackFrame() const noexcept;
@@ -121,14 +118,14 @@ namespace LamaPon
             return m_channels;
         }
 
-        // ---- 低音の持ち上げ（low shelf） ----
+        // 低音の持ち上げ（low shelf）
         // cornerHzより下をgainDbだけ持ち上げます。BGMを車内やスマホの
         // スピーカーで鳴らすと低域が痩せるので、音源を作り直さずに
         // 補うための入口です。0dB（既定）なら一切処理しません。
         //
         // 中では、クリップを避けるためPCM全体をgainDbぶん下げてから
         // 棚を掛けます（int16を持ち上げると簡単に振り切れるため）。
-        // **下げたぶんは再生音量側で自動的に戻す**ので、呼ぶ側は
+        // 下げたぶんは再生音量側で自動的に戻すので、呼ぶ側は
         // SetVolumeを変える必要はありません。聞こえ方は
         // 「中高域はそのまま、低域だけ上がる」になります。
         void SetBassBoost(float gainDb, float cornerHz = 110.0f);
@@ -144,11 +141,9 @@ namespace LamaPon
         // 割り、区間ごとの|最大振幅|を0..1で書き込みます。書き込めた
         // 数を返します。
         //
-        // **重い呼び出しです。** 音源全体をデコードし直すので、5分の
-        // OGGで0.3秒ほど止まります。読み終えたら元の再生位置へ戻し
-        // ますが、鳴らしている最中に呼ぶとその間の供給が滞って音が
-        // 途切れます。波形の絵は停止中に一度だけ作るか、表示用に別の
-        // streamを作って呼んでください。
+        // 音源全体をデコードするため、長い音源では時間がかかります。
+        // 再生中に呼ぶと音声データの供給が滞るため、停止中に一度だけ
+        // 実行するか、表示用に別のストリームを作成してください。
         std::size_t ReadPeakEnvelope(
             float* destination,
             std::size_t bucketCount);
@@ -219,8 +214,7 @@ namespace LamaPon
             BufferCount> m_buffers;
         std::size_t m_nextBuffer{};
 
-        // ---- ここから下は後から足した項目です（2026-08-29） ----
-        // 再生開始位置。Playはここへseekしてから鳴らします。
+        // 再生開始位置。Playはこの位置へシークしてから再生します。
         std::uint64_t m_startFrame{};
 
         // 再生位置の推定。SubmitBufferした累計frameと、完了した

@@ -96,9 +96,9 @@ namespace LamaPon
             std::uint32_t width,
             std::uint32_t height);
         // SSAO。3パスに分かれています。
-        // ①深度から遮蔽を求める（半解像度のRチャンネルへ）
-        // ②深度を見るブラーでザラつきを消す（半解像度）
-        // ③フル解像度のカラーへ掛ける
+        // (1)深度から遮蔽を求める（半解像度のRチャンネルへ）
+        // (2)深度を見るブラーでザラつきを消す（半解像度）
+        // (3)フル解像度のカラーへ掛ける
         // 分けているのはブラーを挟むためです。falseを返したときは
         // 何も描いていないので、呼び出し側は合成を進めないでください。
         [[nodiscard]] bool RenderAmbientOcclusion(
@@ -139,7 +139,7 @@ namespace LamaPon
         {
             ID3D11ShaderResourceView* history{};
             ID3D11ShaderResourceView* depth{};
-            // 今のフレームの逆ビュー射影。**ずらしを含まない**もの
+            // 今のフレームの逆ビュー射影。ずらしを含まないもの
             // を渡してください。ずらし込みで復元すると履歴を読む
             // 位置が毎フレーム動き、輪郭がちらつきます。
             DirectX::XMFLOAT4X4 inverseViewProjection{};
@@ -179,8 +179,8 @@ namespace LamaPon
             // 戻すのに使います。正投影では復元できないため、その
             // ときは何もしません。
             DirectX::XMFLOAT4X4 projection{};
-            // 半解像度の作業用2枚。①の書き出し先→②の読み元、
-            // ②の書き出し先→③の読み元、という受け渡しに使います。
+            // 半解像度の作業用2枚。(1)の書き出し先→(2)の読み元、
+            // (2)の書き出し先→(3)の読み元、という受け渡しに使います。
             ID3D11RenderTargetView* prepareTarget{};
             ID3D11ShaderResourceView* prepareResource{};
             ID3D11RenderTargetView* blurTarget{};
@@ -191,9 +191,9 @@ namespace LamaPon
             std::uint32_t sampleCount{ 22 };
         };
         // 被写界深度（DoF）。3パスに分かれています。
-        // ①半解像度へ色とCoC（ぼけの大きさ）を書き出す
-        // ②半解像度で円形にぼかす
-        // ③フル解像度でCoCの大きさに応じて元の絵と混ぜる
+        // (1)半解像度へ色とCoC（ぼけの大きさ）を書き出す
+        // (2)半解像度で円形にぼかす
+        // (3)フル解像度でCoCの大きさに応じて元の絵と混ぜる
         // 戻り値がtrueのときだけdestinationへ描いています。falseなら
         // 呼び出し側は入れ替えを行わないでください。
         [[nodiscard]] bool ApplyDepthOfField(
@@ -208,8 +208,8 @@ namespace LamaPon
         struct MotionBlurInputs final
         {
             ID3D11ShaderResourceView* depth{};
-            // 今のフレームの逆ビュー射影。TAAと同じく**ずらしを
-            // 含まない**ものを渡してください（含めると毎フレーム
+            // 今のフレームの逆ビュー射影。TAAと同じくずらしを
+            // 含まないものを渡してください（含めると毎フレーム
             // 半画素ぶんの偽の速度が出ます）。
             DirectX::XMFLOAT4X4 inverseViewProjection{};
             // 前フレームのビュー射影（ずらし無し）。ビューごとに

@@ -1,7 +1,6 @@
-// TARGET RANGE — 新機能ドッグフーディング用サンプル。
-// マウス照準・Tag検索・Time.timeScaleポーズ・UIウィジェット・
-// metallicマテリアル・スポット影・インスタンシング・
-// 手続きMesh Collider・CCDを1本で使います。
+// マウス照準、Tag検索、Time.timeScaleによる一時停止、UI、
+// metallicマテリアル、スポット影、インスタンシング、
+// 手続きMesh Collider、CCDを確認する射撃ゲームのサンプルです。
 #include "LamaPon/LamaPon.h"
 
 #include <algorithm>
@@ -327,7 +326,7 @@ namespace
                 { 0.65f, 0.70f, 0.85f });
             directional.SetIntensity(0.9f);
 
-            // 的の真上からのスポット影（影のドッグフーディング）
+            // 的の真上からスポットライトの影を落とします。
             auto& spotObject =
                 scene.CreateGameObject("レンジ照明");
             spotObject.GetTransform().position =

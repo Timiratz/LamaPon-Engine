@@ -108,7 +108,7 @@ namespace
         {
             m_scene->SetPhysicsInterpolationAlpha(frame.fixedStepAlpha);
             // Script側の簡易PhysicsはUpdate()で処理されることが多いため、
-            // 遅いブラウザフレームを60Hz単位に分割します。明示的な積分でも
+            // 遅いブラウザーフレームを60Hz単位に分割します。明示的な積分でも
             // Windows版と同じJump高度やObstacle Timingを保ちます。
             constexpr float MaximumSimulationStep = 1.0f / 60.0f;
             float remaining = std::max(frame.deltaTime, 0.0f);

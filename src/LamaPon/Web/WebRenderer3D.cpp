@@ -280,15 +280,15 @@ void main()
                 ? "webgl2" : version == 1 ? "webgl1" : "canvas2d";
         });
 
-        // Canvas2DはWebGL2経路の代替ではなくCompatibility Rendererです。
-        // WebGL2が無効なBrowserや埋め込みPreviewでも、同じC++ Camera、Mesh、
-        // Physics、Input、Audio Loopを維持してGameを実行可能にします。
+        // Canvas2DはWebGL2を利用できない環境向けの互換レンダラーです。
+        // WebGL2が無効なブラウザーや埋め込みプレビューでも、同じC++側の
+        // カメラ、メッシュ、物理、入力、音声ループを使ってゲームを実行します。
         EM_JS(int, Canvas2DInitialize,
               (const char* selector, int width, int height), {
             const primaryCanvas = document.querySelector(UTF8ToString(selector));
-            // 一部BrowserではWebGL Context作成に失敗したCanvasを2D Contextへ
-            // 切り替えられません。専用Software Surfaceを用意し、空のSVGや
-            // 半端に初期化されたWebGL CanvasにならないFallbackを保証します。
+            // 一部のブラウザーでは、WebGLコンテキストの作成に失敗したCanvasを
+            // 2Dコンテキストへ切り替えられません。専用のソフトウェア描画面を
+            // 使用し、初期化途中のCanvasを再利用しないようにします。
             const canvas = document.querySelector("#software-canvas") || primaryCanvas;
             if (!canvas) {
                 console.error("LamaPon Canvas2D fallback: canvas not found");
@@ -407,7 +407,7 @@ void main()
                 const mix = amount => runtime.sky.top.map(
                     (value, index) => value +
                         (runtime.sky.horizon[index] - value) * amount);
-                // Native版CarGameの1280x720 Sky出力から採取したSampleです。
+                // Native版と同じ空の階調になるよう補間点を配置します。
                 gradient.addColorStop(0.0, rgb(runtime.sky.top));
                 gradient.addColorStop(0.032, rgb(mix(0.05)));
                 gradient.addColorStop(0.097, rgb(mix(0.30)));
@@ -488,10 +488,9 @@ void main()
                     });
                 }
             }
-            // HairpinではTrack Chunk同士がWorld Spaceで重なる場合があります。
-            // 不透明な背景Texture TriangleをView Distance順にまとめて並べ替え、
-            // Skid、Smoke、CarのCommandより前へ戻します。Depth Bufferなしでも
-            // Chunk間のOcclusionを安定させ、Roadが手前のCarを上書きしない順序です。
+            // ワールド空間で重なる不透明な背景メッシュは、テクスチャ付き三角形を
+            // ビュー距離順に並べます。透過エフェクトや動的オブジェクトより先に
+            // 描画し、深度バッファがない場合も前景を上書きしない順序を保ちます。
             const opaqueTexturedTriangles = triangles.filter(triangle =>
                 triangle.command.textureId != 0
                 && !triangle.command.alphaBlended);
@@ -746,9 +745,8 @@ void main()
                         if (leftTransparent !== rightTransparent) {
                             return leftTransparent ? 1 : -1;
                         }
-                        // 不透明Geometryは描画順に依存しないため、手前から処理します。
-                        // 後続の隠れたFragmentを大きなImageData Bufferへ書き込む前に
-                        // Depth Testで除外できます。
+                        // 不透明な形状は手前から処理し、隠れた画素を
+                        // ImageDataへ書き込む前に深度テストで除外します。
                         if (!leftTransparent) {
                             return left.command.values[left.index + 16]
                                 - right.command.values[right.index + 16];
@@ -944,11 +942,10 @@ void main()
                 }
                 return true;
             };
-            // CanvasはWebGLのようにVertex Normalを補間できません。Triangle単位の
-            // 単色描画では曲面Mesh、特に車体の対角線が目立ちます。Materialの
-            // Draw CommandごとにScreen-space Lighting Gradientを1つ生成し、
-            // 隣接Triangleが共有Edgeで同じ色をSampleするようにします。
-            // 各Canvas Triangleで3点Gouraud Shaderを模倣するより滑らかで高速です。
+            // CanvasはWebGLのように頂点法線を補間できません。三角形単位の
+            // 単色描画では、曲面メッシュの境界が目立ちます。マテリアルの
+            // 描画コマンドごとに画面空間の照明グラデーションを生成し、
+            // 隣接する三角形が共有辺で同じ色を参照するようにします。
             const smoothUntexturedFill = command => {
                 if (Object.prototype.hasOwnProperty.call(
                         command, "smoothUntexturedFill")) {
@@ -996,9 +993,9 @@ void main()
                     }
                     ++sampleCount;
                 }
-                // 長い背景MeshはFog境界をまたぐため、従来どおりTriangle単位の
-                // Distance Fogが必要です。Carなど近距離Objectは連続面として
-                // Shadingしても問題ありません。
+                // 広い背景メッシュはフォグ境界をまたぐため、三角形単位で
+                // 距離フォグを適用します。近距離のオブジェクトは連続面として
+                // シェーディングできます。
                 if (sampleCount === 0
                     || (runtime.fog.enabled
                         && maximumDistance > runtime.fog.start)) {
@@ -1047,8 +1044,8 @@ void main()
                 const command = triangle.command;
                 const values = command.values;
                 const index = triangle.index;
-                // Alpha StateはTriangleごとに設定します。透明なSmokeのglobalAlphaが
-                // 後から描く不透明なCarへ漏れないようにします。
+                // アルファ状態は三角形ごとに設定します。透過エフェクトの
+                // globalAlphaが、後から描く不透明オブジェクトへ残らないようにします。
                 context.globalAlpha = 1.0;
                 context.globalCompositeOperation =
                     command.additiveBlend ? "lighter" : "source-over";
@@ -1115,9 +1112,8 @@ void main()
                             slot.pattern2d, iw, ih);
                     if (texturePainted) {
                         context.filter = "none";
-                        // 不透明TextureにはSource Triangleごとに軽量なOverlayを1回描き、
-                        // LightingとFogを適用します。各Perspective LeafへのCanvas Filterは
-                        // 数倍遅く、Frame Pacingも不安定になるため使用しません。
+                        // 不透明テクスチャには元の三角形ごとにオーバーレイを
+                        // 1回描き、照明とフォグを適用します。
                         if (!command.alphaBlended) {
                             const remainingTexture = brightness
                                 * (1.0 - fogAmount);
@@ -1171,11 +1167,10 @@ void main()
                 context.lineTo(expanded2[0], expanded2[1]);
                 context.closePath();
                 context.fill();
-                // Canvas PathはTriangleごとに独立してAnti-aliasされます。Software
-                // Framebufferの表示倍率では、隣接面が同じFillでも点状のSub-pixel
-                // Crackが見える場合があります。同じScreen-space Gradientで境界を
-                // 再描画します。Draw Command全体でStyleを共有するためWireframe状の
-                // Edgeにはなりません。
+                // Canvasは三角形ごとにアンチエイリアスを適用するため、
+                // ソフトウェア描画の拡大時に隣接面の境界へ隙間が見える
+                // 場合があります。同じ画面空間のグラデーションで境界を
+                // 描き直し、隙間を埋めます。
                 if (smoothFill) {
                     context.strokeStyle = smoothFill;
                     context.lineWidth = 1.0;
@@ -1263,9 +1258,9 @@ void main()
                         bitmap.close();
                     } else {
                         slot.image = bitmap;
-                        // GPUなしのDepth Renderer用にCPUで読めるMip Chainを保持します。
-                        // Perspective-correct UVでPixelをSampleし、RoadやWallがTriangleの
-                        // 対角線間で曲がって見えるAffine歪みを防ぎます。
+                        // GPUを使わない深度描画用に、CPUから参照できる
+                        // ミップ列を保持します。透視補正したUVで画素を取得し、
+                        // 三角形の対角線に沿うアフィン歪みを防ぎます。
                         const levels = [];
                         let source = bitmap;
                         let width = Math.max(1, bitmap.width);
@@ -1644,9 +1639,8 @@ void main()
             glEnable(GL_CULL_FACE);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             glCullFace(GL_BACK);
-            // LamaPonのDirectX Procedural Meshは時計回りを表面とします。
-            // WebGL既定の反時計回りへ任せずSource規約を明示し、Roadの誤った
-            // Cullingを防ぎます。
+            // DirectX版の手続き型メッシュと同じく、時計回りを表面として
+            // WebGLへ明示します。
             glFrontFace(GL_CW);
             BrowserSetRendererBackend(m_impl->webGLVersion);
         }
@@ -1674,9 +1668,8 @@ void main()
         m_height = std::max(height, 1u);
         if (m_impl->fallback2D)
         {
-            // Canvas Triangle RasterizationはFill Rateが律速になります。
-            // 480p相当の内部Surfaceで16:9表示を保ち、GPUなしCompatibility Modeでも
-            // 安定した30Hzを維持できる処理Budgetを確保します。
+            // Canvasの三角形描画は塗りつぶす画素数に比例して重くなります。
+            // GPUを使わない互換モードでは内部解像度に上限を設けます。
             constexpr std::uint32_t softwareMaximumWidth = 960u;
             if (m_width > softwareMaximumWidth)
             {
@@ -1783,7 +1776,7 @@ void main()
         {
             Canvas2DEndFrame();
         }
-        // WebGLはBrowser Animation Frameの最後にPresentします。
+        // WebGLはブラウザーの描画フレーム終了時に画面へ反映します。
     }
 
     bool Renderer3D::UsesCanvas2DFallback() const noexcept

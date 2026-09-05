@@ -27,10 +27,10 @@ namespace LamaPon
         // [0, count) をgrainSizeごとの区間へ分割し、
         // body(begin, end) をワーカー＋呼び出しスレッドで
         // 並列実行して完了まで待ちます。
-        // - countが小さいときやワーカーが無いときは逐次実行
-        // - ParallelForの中からの呼び出しは自動で逐次実行
-        //   （ネストによるデッドロックを防ぎます）
-        // - body内の例外は最初の1つが呼び出し元へ再送出されます
+        // 逐次実行条件: countが小さい場合、またはワーカーが無い場合。
+        // ネスト時の動作: ParallelFor内からの呼び出しは、デッドロックを
+        // 防ぐため逐次実行します。
+        // 例外処理: body内で最初に発生した例外を呼び出し元へ再送出します。
         void ParallelFor(
             std::size_t count,
             std::size_t grainSize,

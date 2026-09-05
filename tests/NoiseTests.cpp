@@ -36,7 +36,7 @@ int main()
 {
     using namespace LamaPon;
 
-    // ① 決定性: 同じ入力なら常に同じ値。
+    // (1) 決定性: 同じ入力なら常に同じ値。
     Require(
         Noise::Value2D(3.25f, -7.5f)
             == Noise::Value2D(3.25f, -7.5f),
@@ -46,7 +46,7 @@ int main()
             == Noise::Perlin2D(0.1f, 0.2f),
         "Perlin2D must be deterministic.");
 
-    // ② 範囲: すべて0〜1に収まる（負の座標や大きな座標でも）。
+    // (2) 範囲: すべて0〜1に収まる（負の座標や大きな座標でも）。
     for (float y = -40.0f; y <= 40.0f; y += 3.7f)
     {
         for (float x = -40.0f; x <= 40.0f; x += 3.7f)
@@ -84,7 +84,7 @@ int main()
         }
     }
 
-    // ③ 連続性: これが乱数との決定的な違い。座標を少し動かしたとき、
+    // (3) 連続性: これが乱数との決定的な違い。座標を少し動かしたとき、
     //    値も少しだけ変わること（乱数なら大きく飛ぶ）。
     {
         float maximumStep = 0.0f;
@@ -107,7 +107,7 @@ int main()
                 + std::to_string(maximumStep));
     }
 
-    // ④ 格子の縞が出ないこと: 整数座標ちょうどの値だけが偏ると、
+    // (4) 格子の縞が出ないこと: 整数座標ちょうどの値だけが偏ると、
     //    タイル状の模様として見えます。整数座標と半端な座標で
     //    平均が近いことを確認します。
     {
@@ -144,7 +144,7 @@ int main()
                 + std::to_string(integerMean));
     }
 
-    // ⑤ fBmのオクターブが効いていること（回数を増やすと細部が
+    // (5) fBmのオクターブが効いていること（回数を増やすと細部が
     //    増え、隣接値の差が大きくなる）。
     {
         const auto roughness =
@@ -168,7 +168,7 @@ int main()
             "More fBm octaves must add detail.");
     }
 
-    // ⑥ Curlは発散が小さいこと（湧き出し・吸い込みが無い流れ）。
+    // (6) Curlは発散が小さいこと（湧き出し・吸い込みが無い流れ）。
     {
         float maximumDivergence = 0.0f;
         constexpr float e = 0.01f;

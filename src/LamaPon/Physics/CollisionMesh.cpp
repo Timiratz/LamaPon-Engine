@@ -353,8 +353,8 @@ namespace LamaPon
         {
             return;
         }
-        // Reuse the traversal stack so overlap queries do not allocate on
-        // every physics step.
+        // オーバーラップ判定で物理ステップごとのメモリ確保が発生しないよう、
+        // 探索用スタックを再利用します。
         thread_local std::vector<std::int32_t> stack;
         stack.reserve(256);
         stack.clear();
@@ -410,10 +410,9 @@ namespace LamaPon
         float closest = maximumDistance;
         std::uint32_t closestTriangle{};
         bool found = false;
-        // Raycast is used every fixed step by controller-style gameplay.
-        // Reusing the traversal stack avoids a heap allocation per query,
-        // which otherwise shows up as an occasional frame hitch when a car
-        // starts moving or begins drifting.
+        // キャラクターコントローラーなどでは、固定更新ごとにレイキャストを
+        // 使用します。探索用スタックを再利用し、判定ごとのヒープ確保による
+        // 一時的なフレーム停止を避けます。
         thread_local std::vector<std::int32_t> stack;
         stack.reserve(256);
         stack.clear();

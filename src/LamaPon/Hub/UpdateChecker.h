@@ -13,7 +13,7 @@ namespace LamaPon::Hub
         bool updateAvailable{};
         // "2026.8.1" のような先頭vなしのバージョン。
         std::string latestVersion;
-        // リリースページのURL（ブラウザで開く用）。
+        // リリースページのURL（ブラウザーで開く用）。
         std::string releaseUrl;
     };
 

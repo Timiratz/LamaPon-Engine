@@ -46,8 +46,8 @@ namespace LamaPon
         AssetManager& assets,
         const std::filesystem::path& shaderPath)
     {
-        // Compute Shaderのコンパイル。実体はShaderCompilerへ集約
-        // しました（ディスクキャッシュ付き）。
+        // 共通のディスクキャッシュを使ってCompute Shaderを
+        // コンパイルします。
         const auto byteCode = CompileShaderCached(
             assets,
             shaderPath,

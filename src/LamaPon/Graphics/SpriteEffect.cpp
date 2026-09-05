@@ -41,7 +41,7 @@ namespace
                 "Sprite shader file was not found: "
                 + LamaPon::PathToUtf8(path));
         }
-        // 実体はShaderCompilerへ集約しました（ディスクキャッシュ付き）。
+        // コンパイルとディスクキャッシュはShaderCompilerが処理します。
         return LamaPon::CompileShaderCached(
             assets,
             path,

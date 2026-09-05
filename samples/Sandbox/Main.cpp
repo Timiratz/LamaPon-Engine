@@ -94,11 +94,8 @@ namespace
                 projectRoot = arguments[++index];
                 continue;
             }
-            // 値付きオプションの**値**をプロジェクトパスと
-            // 誤読しないように飛ばします。ここへ足し忘れると、
-            // 値が「-で始まらない引数＝プロジェクト」の規則に
-            // 拾われて「not a LamaPon project」で止まります
-            // （--show project-settings:physics で実際に踏みました）。
+            // 値付きオプションの値をプロジェクトパスと誤認しないよう、
+            // プロジェクトパスの探索対象から除外します。
             if (arguments[index] == L"--screenshot"
                 || arguments[index] == L"--report"
                 || arguments[index] == L"--show"
@@ -223,8 +220,8 @@ int WINAPI wWinMain(
         // 食い違い、描画異常やクラッシュの原因になります。開く前に
         // 最新へ揃えます（改造されていた分は .bak へ退避）。
         //
-        // 揃える前に新旧を確かめます。**新しいエンジンで作られた
-        // プロジェクトを開いてはいけません。** 古いエンジンで
+        // 揃える前に新旧を確かめます。新しいエンジンで作られた
+        // プロジェクトを開いてはいけません。古いエンジンで
         // 書き戻すと、新しい版が足した設定を落としたり、組み込み
         // シェーダーを巻き戻したりして、元のエンジンでも壊れた
         // 状態になります。
@@ -368,14 +365,14 @@ int WINAPI wWinMain(
         const auto assetRoot = projectRoot / L"assets";
         const auto scenePath =
             assetRoot / projectSettings.startupScene;
-        // 起動シーンが読めなくても、**開けなくはしません**。
+        // 起動シーンが読めなくても、開けなくはしません。
         // 開けないということは、エディターで直す手段も無いという
-        // ことです——シーンを選び直すのも、作り直すのも、他の
+        // ことです。シーンを選び直すのも、作り直すのも、他の
         // アセットを見るのも、全部できなくなります。
         //
         // ファイルが無いだけなら、そのパスのまま空のシーンで開きます
         // （保存すればそこへ作られます）。読めたのに壊れている場合は
-        // **パスを渡しません**。渡すとCtrl+Sが「上書き保存」になり、
+        // パスを渡しません。渡すとCtrl+Sが「上書き保存」になり、
         // 手で直せたかもしれないファイルを空のシーンで潰します。
         std::wstring startupSceneProblem;
         bool startupSceneCorrupt = false;
@@ -398,7 +395,7 @@ int WINAPI wWinMain(
 
         // --d3ddebug: D3D11のデバッグレイヤーを有効にします。
         // 不正な描画は、これが無いと警告も出ずにドライバーへ渡り、
-        // WARPでは**プロセスごと落ちます**。落ちる場所を突き止め
+        // WARPではプロセスごと落ちます。落ちる場所を突き止め
         // たいときに付けてください（普段は重いので既定は無効）。
         if (HasCommandLineFlag(L"--d3ddebug"))
         {
@@ -462,8 +459,8 @@ int WINAPI wWinMain(
                     + scenePath.native()
                     + L"\n\n"
                     + LamaPon::Utf8ToWide(exception.what())
-                    + L"\n\n空のシーンで開きます。**元のファイルは"
-                    L"そのまま残してあります。**上書きしないよう、"
+                    + L"\n\n空のシーンで開きます。元のファイルは"
+                    L"そのまま残してあります。上書きしないよう、"
                     L"保存は「名前を付けて保存」になります。";
             }
         }
@@ -493,8 +490,8 @@ int WINAPI wWinMain(
         {
             engineRoot = installedEngineRoot;
         }
-        // スクリーンショットモード: 指定があれば、撮影後に自動終了
-        // します（生成AIがエディターUIを目視確認するための入口）。
+        // スクリーンショットモードでは、指定した画面を撮影して
+        // レポートを保存した後、自動的に終了します。
         LamaPon::EditorScreenshotOptions screenshot;
         screenshot.imagePath = screenshotPath;
         screenshot.reportPath =
@@ -532,7 +529,7 @@ int WINAPI wWinMain(
         catch (const std::exception& exception)
         {
             // Applicationが生きている間はGame Moduleも読み込まれて
-            // います。ここでメッセージをエディタ側の例外へコピーし、
+            // います。ここでメッセージをエディター側の例外へコピーし、
             // DLL解放後に無効な例外vtableを参照しないようにします。
             throw std::runtime_error(exception.what());
         }

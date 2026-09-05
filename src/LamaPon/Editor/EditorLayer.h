@@ -44,7 +44,6 @@ namespace LamaPon
     class Scene;
     class TilemapComponent;
     struct TextureAsset;
-    struct ModelAsset;
 
     enum class AssetIconKind
     {
@@ -504,13 +503,11 @@ namespace LamaPon
         };
         enum class ProjectPanelKind
         {
-            StageRoad,
-            VehicleParameters,
             BgmLoop
         };
         struct ProjectPanelDefinition final
         {
-            ProjectPanelKind kind{ ProjectPanelKind::StageRoad };
+            ProjectPanelKind kind{ ProjectPanelKind::BgmLoop };
             std::string title;
             std::filesystem::path dataPath;
             ProjectMenuCommand saveCommand;
@@ -529,121 +526,12 @@ namespace LamaPon
             ProjectMenuNode& node,
             std::string_view idPath);
         void DrawProjectPanels();
-        void DrawProjectStagePanel(
-            std::size_t panelIndex,
-            ProjectPanelDefinition& panel);
-        void DrawProjectVehiclePanel(
-            std::size_t panelIndex,
-            ProjectPanelDefinition& panel);
-        bool LoadProjectStageProfile(std::size_t profileIndex);
-        void ClearProjectStageMapPreview();
-        void BuildProjectStageMapPreview(const nlohmann::json& profile);
-        void RebuildProjectStageMapPreview();
-        bool SaveProjectStageProfile(ProjectPanelDefinition& panel);
-        [[nodiscard]] DirectX::XMMATRIX
-            ProjectStageViewMatrix() const noexcept;
-        [[nodiscard]] DirectX::XMMATRIX
-            ProjectStageProjectionMatrix() const noexcept;
-        bool LoadProjectVehicleData(ProjectPanelDefinition& panel);
-        bool SaveProjectVehicleData(ProjectPanelDefinition& panel);
         void DrawProjectBgmPanel(
             std::size_t panelIndex,
             ProjectPanelDefinition& panel);
         void LaunchProjectMenuCommand(
             const ProjectMenuCommand& command);
 
-        struct ProjectRoadSection final
-        {
-            DirectX::XMFLOAT3 left{};
-            DirectX::XMFLOAT3 center{};
-            DirectX::XMFLOAT3 right{};
-            float baseWidth{};
-            float baseLeftWidth{};
-            float baseRightWidth{};
-        };
-        struct ProjectStageEditSnapshot final
-        {
-            std::vector<float> widths;
-            std::vector<float> edgeBiases;
-            std::vector<float> heights;
-            int startSection{};
-            int goalSection{};
-        };
-        struct ProjectStageEditorState final
-        {
-            std::size_t panelIndex{ static_cast<std::size_t>(-1) };
-            std::size_t profileIndex{};
-            bool loaded{};
-            bool dirty{};
-            bool fitView{ true };
-            bool focusSelection{};
-            int draggingRoadEdge{};
-            int selectedSection{};
-            int selectionStart{};
-            int selectionEnd{};
-            int startSection{};
-            int goalSection{};
-            float editLeftWidth{};
-            float editRightWidth{};
-            float editHeight{};
-            float brushRadius{ 20.0f };
-            float smoothStrength{ 0.55f };
-            int smoothIterations{ 3 };
-            float zoom{ 1.0f };
-            DirectX::XMFLOAT2 pan{};
-            bool view3D{};
-            bool showVertices{ true };
-            bool showColliders{ true };
-            // 3Dプレビューの右上へステージのミニマップを重ねます。
-            // 参照画像と同じテクスチャを使うため、ステージのモデルや
-            // 道路データを複製せずに全体位置を確認できます。
-            bool mapOverlayVisible{ true };
-            // 編集中の3Dプレビューは変更時だけ再描画します。再生中と
-            // カメラ操作中も更新頻度と解像度を抑え、本画面のFPSを
-            // 優先します。
-            int previewFrameRate{ 15 };
-            float previewRenderScale{ 0.5f };
-            double previewLastRenderAt{};
-            bool previewHasRendered{};
-            bool previewNeedsRender{ true };
-            bool mapModelVisible{ true };
-            GameObjectId mapPreviewRootId{};
-            std::size_t mapPreviewModelCount{};
-            std::string mapPreviewError;
-            bool previewVisible{};
-            DirectX::XMFLOAT2 previewSize{};
-            float orbitYawDegrees{ -38.0f };
-            float orbitPitchDegrees{ 48.0f };
-            float verticalScale{ 2.0f };
-            bool referenceVisible{ true };
-            bool referenceFlipHorizontal{};
-            bool referenceFlipVertical{};
-            float referenceOpacity{ 0.34f };
-            float referenceScale{ 1.0f };
-            float referenceRotationDegrees{};
-            DirectX::XMFLOAT2 referenceOffset{};
-            std::filesystem::path referenceImagePath;
-            std::shared_ptr<const TextureAsset> referenceTexture;
-            std::vector<ProjectRoadSection> baseSections;
-            std::vector<float> widths;
-            std::vector<float> edgeBiases;
-            std::vector<float> heights;
-            std::vector<ProjectStageEditSnapshot> undo;
-            std::vector<ProjectStageEditSnapshot> redo;
-            std::unique_ptr<nlohmann::json> profiles;
-            std::unique_ptr<nlohmann::json> overrideDocument;
-        };
-        struct ProjectVehicleEditorState final
-        {
-            std::size_t panelIndex{ static_cast<std::size_t>(-1) };
-            int selectedVehicle{};
-            bool loaded{};
-            bool dirty{};
-            std::unique_ptr<nlohmann::json> document;
-            int previewVehicle{ -1 };
-            std::shared_ptr<const ModelAsset> previewModel;
-        };
-        // BGMのループ範囲と試聴開始位置を波形の上で決めるパネル。
         enum class ViewportMode
         {
             None,
@@ -806,7 +694,7 @@ namespace LamaPon
         bool m_projectSplashScreenDraft{ true };
         // プロジェクト設定で選択中のカテゴリー（0=ゲーム）。
         int m_projectSettingsCategory{};
-        // ---- パッケージタブの状態 ----
+        // パッケージタブの状態
         enum class PackageListState
         {
             NotLoaded,
@@ -839,7 +727,7 @@ namespace LamaPon
         // インストール済みバージョンのキャッシュ（name→version）。
         std::unordered_map<std::string, std::string>
             m_installedPackageVersions;
-        // ---- 自作パッケージ書き出しダイアログの状態 ----
+        // 自作パッケージ書き出しダイアログの状態
         bool m_packageBuildDialogRequested{};
         std::array<char, 96> m_packageBuildNameBuffer{};
         std::array<char, 128>
@@ -921,8 +809,7 @@ namespace LamaPon
         ProjectSettings m_projectSettings;
         std::vector<ProjectMenuNode> m_projectMenus;
         std::vector<ProjectPanelDefinition> m_projectPanels;
-        ProjectStageEditorState m_projectStageEditor;
-        ProjectVehicleEditorState m_projectVehicleEditor;
+        // BGMのループ範囲と試聴開始位置を波形の上で決めるパネル。
         std::unique_ptr<BgmLoopPanel> m_bgmPanel;
         std::uint64_t m_projectMenuManifestHash{};
         bool m_projectMenuManifestSeen{};
@@ -947,17 +834,11 @@ namespace LamaPon
         RenderTarget m_sceneRenderTarget;
         RenderTarget m_gameRenderTarget;
         RenderTarget m_cameraPreviewRenderTarget;
-        RenderTarget m_projectStagePreview;
-        RenderTarget m_projectVehicleTopPreview;
-        RenderTarget m_projectVehicleSidePreview;
         bool m_gameViewFixedResolution{};
         int m_gameViewResolutionWidth{ 1920 };
         int m_gameViewResolutionHeight{ 1080 };
-        // 固定解像度の描画スケール（0.5/0.75/1.0）。固定解像度は
-        // パネルより大きいことが多く、原寸のまま描くとFPSが解像度
-        // なりに落ちます（実測: 1080pはパネル描画の約3倍）。縮めて
-        // 描いてもアスペクトと「シーンの見え方」は同じなので、
-        // レイアウトの原寸確認が要らない間は下げておけます。
+        // 固定解像度の描画スケール（0.5/0.75/1.0）。アスペクト比を
+        // 保ったまま描画負荷を下げるために使います。
         float m_gameViewResolutionScale{ 1.0f };
         DirectX::XMFLOAT3 m_sceneCameraPosition{ 0.0f, 1.8f, 7.0f };
         DirectX::XMFLOAT3 m_sceneCameraRotation{ -0.12f, 0.0f, 0.0f };
@@ -1042,10 +923,7 @@ namespace LamaPon
         bool m_scriptWriteTimeInitialized{};
         double m_scriptChangeDetectedAt{};
         double m_lastScriptScanAt{};
-        // 走査の実測コストから次回までの間隔を決めます。ローカルなら
-        // 数msなので既定の0.5秒のまま、ネットワークドライブ上の大きな
-        // プロジェクトでは走査自体が1秒近くかかり、固定間隔だと走査が
-        // 終わる前に次が始まってエディターが常時ディスクを舐め続けます。
+        // 直前の走査時間から次の間隔を決め、ディスク負荷を抑えます。
         double m_scriptScanIntervalSeconds{ 0.5 };
         bool m_scriptRebuildQueued{};
         std::vector<PendingScriptAttachment>

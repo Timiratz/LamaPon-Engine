@@ -71,7 +71,7 @@ namespace LamaPon
             return "UILayoutGroup";
         }
 
-        // 子の整列を即時実行します。エディタの編集モード
+        // 子の整列を即時実行します。エディターの編集モード
         // プレビューでも呼ばれます。
         void ApplyLayout();
 

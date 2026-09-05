@@ -131,7 +131,7 @@ namespace
 
     // データアセット（UnityのScriptableObject相当）のサンプルです。
     // アセットウィンドウの右クリック→「新規データアセット」から
-    // `*.asset.json`を作り、Inspectorで値を編集できます。
+    // *.asset.jsonを作り、Inspectorで値を編集できます。
     constexpr char SampleEnemyDataSchema[] = R"({
         "fields": [
             {

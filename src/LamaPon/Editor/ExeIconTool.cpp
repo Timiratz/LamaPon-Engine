@@ -141,7 +141,7 @@ namespace
                         * rowBytes,
                 rowBytes);
         }
-        // アルファ付き32bitなのでANDマスクは全ビット0で足ります。
+        // アルファ付き32bit画像では、ANDマスクの全ビットを0にします。
         entry.resize(
             entry.size()
                 + maskRowBytes * image.height,

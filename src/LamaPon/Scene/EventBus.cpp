@@ -84,7 +84,7 @@ namespace LamaPon
         const std::string_view eventName,
         const EventArgs& eventArgs)
     {
-        // Publish中に追加された購読は今回の発行では呼びません
+        // Publish中に追加された購読は次回の発行から呼びます。
         // （購読→発行の連鎖による無限ループを防ぎます）。
         const std::size_t count =
             m_subscriptions.size();

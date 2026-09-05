@@ -6,7 +6,7 @@
 #include <string>
 #include <string_view>
 
-// データアセット（`*.asset.json`）のスキーマを解釈する小さな関数です。
+// データアセット（*.asset.json）のスキーマを解釈する小さな関数です。
 // 「新規作成時の初期値」と「Inspectorでlistへ要素を足したときの
 // 初期値」は同じ規則である必要があるため、ここに1つだけ置きます。
 namespace LamaPon::EditorDetail
@@ -20,7 +20,7 @@ namespace LamaPon::EditorDetail
     [[nodiscard]] nlohmann::json SchemaDefaultValue(
         const nlohmann::json& field);
 
-    // 型名とスキーマから、既定値だけを詰めた`*.asset.json`の
+    // 型名とスキーマから、既定値だけを詰めた*.asset.jsonの
     // ドキュメントを作ります。スキーマが壊れていても、値が空の
     // ドキュメントを返して作成自体は成功させます。
     [[nodiscard]] nlohmann::json MakeDataAssetDocument(

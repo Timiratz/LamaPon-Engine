@@ -425,10 +425,9 @@ namespace LamaPon
         if (m_audio != nullptr
             && m_audio->DeviceGeneration() != m_deviceGeneration)
         {
-            // The audio device was reset (e.g. the user switched
-            // playback devices). Any previously created voice is
-            // now invalid, so recreate it instead of calling into
-            // it and risking a crash.
+            // 再生デバイスの切り替えなどでオーディオデバイスがリセット
+            // されると、作成済みのボイスは無効になります。古いボイスを
+            // 呼び出してクラッシュしないよう、ここで作り直します。
             m_deviceGeneration = m_audio->DeviceGeneration();
             const bool wasPlaying = State() == DirectX::PLAYING;
             ReloadSound();

@@ -440,9 +440,8 @@ int main()
             assetDirectory / "textures" / "sample.bin",
             textureMarker);
 
-        // 実際にInk Ridgeで起きた回帰: Engineを更新した後も古いGame
-        // Moduleを梱包でき、起動するとNative Scriptが全て未解決のまま
-        // 背景だけ表示されました。配布前に必ず拒否します。
+        // エンジン更新後に古いGame Moduleを梱包するとNative Scriptが
+        // 解決できないため、配布前に拒否します。
         const auto runtimeWriteTime =
             std::filesystem::last_write_time(
                 runtimeDirectory / "LamaPonRuntime.dll");
@@ -566,9 +565,8 @@ int main()
             std::filesystem::is_regular_file(
                 outputDirectory / "assets.tpak"),
             "Encrypted asset archive was not exported.");
-        // 書き出しはゲームごとに鍵を作り、配布した
-        // LamaPonRuntime.dllへ焼き込みます。以降の検証は、その鍵を
-        // 取り出してから行います。
+        // 書き出しごとに配布物固有の鍵を生成し、配布用の
+        // LamaPonRuntime.dllへ埋め込みます。以降はその鍵を取り出して検証します。
         const auto exportedRuntime =
             outputDirectory / "LamaPonRuntime.dll";
         const auto embeddedKey =
@@ -642,7 +640,7 @@ int main()
             !std::filesystem::exists(
                 outputDirectory / "assets"),
             "Loose assets were exported instead of the encrypted archive.");
-        // --- 書き出したゲームだけの鍵になっているか ---
+        // 書き出しごとの配布物固有鍵が埋め込まれることを確認します。
         Require(
             embeddedKey != LamaPon::Crypto::ArchiveKey(),
             "The export must embed its own archive key, not the"
@@ -653,8 +651,7 @@ int main()
                 " exported runtime; otherwise the key can be"
                 " located by pattern.");
         {
-            // エンジン既定の鍵では開けないこと。ここが通ってしまうと
-            // 「1本解けば全ゲーム開く」状態に戻っています。
+            // 既定鍵では開けず、書き出し固有鍵だけが有効であることを確認します。
             bool openedWithEngineKey = true;
             try
             {

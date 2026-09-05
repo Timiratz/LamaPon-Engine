@@ -114,7 +114,6 @@ jobs:
             build-ci/LamaPonGameModule.pdb
             build-ci/generated/build-info.json
           if-no-files-found: error
-          # シンボルだけでActionsの保存容量の8割（約1.1GB）を
-          # 占めており、果てはupload失敗でCIが落ちました。
-          # 見るのはクラッシュを追うときだけなので短くします。
+          # シンボルは約1.1GBでActions保存容量の約8割を占め、
+          # アップロード失敗の原因にもなるため、保持期間を短くします。
           retention-days: 7

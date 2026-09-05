@@ -131,7 +131,7 @@ namespace
         const char* entryPoint,
         const char* target)
     {
-        // 実体はShaderCompilerへ集約しました（ディスクキャッシュ付き）。
+        // コンパイルとディスクキャッシュはShaderCompilerが処理します。
         return LamaPon::CompileShaderCached(
             assets,
             path,

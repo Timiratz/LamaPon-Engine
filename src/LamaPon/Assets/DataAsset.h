@@ -15,49 +15,46 @@ namespace LamaPon
     // ヘッダへ持ち込まないための前方宣言）。
     struct DataAssetBuilder;
 
-    // データアセット（`*.asset.json`）が持てる値の種類です。
-    // JSONを読んだ時点で確定し、以降は文字列比較なしで引けます。
+    // データアセット（*.asset.json）が持てる値の種類です。
+    // JSONの読み込み時に確定し、以降は文字列比較せずに参照できます。
     enum class DataValueKind
     {
         None,
         Boolean,
         Number,
         Text,
-        // JSONの配列。vec3や色も「数値が3つ並んだList」として
-        // 扱うため、種類はこれ1つで足ります。
+        // JSON配列です。vec3や色も数値のListとして扱います。
         List
     };
 
-    // キー1つぶんの値です。取り出しはDataAssetのGet～経由で行うため、
-    // 中身を直接触る必要はありません。
+    // 1つのキーに対応する値です。DataAssetのアクセサーを介して
+    // 参照します。
     struct DataValue final
     {
         std::string key;
         DataValueKind kind{ DataValueKind::None };
         bool boolean{};
-        // 整数も実数もここへ入れます（JSONの数値は元々double）。
+        // JSONの整数と実数を共通のdouble値として保持します。
         double number{};
         std::string text;
-        // Listのとき、要素を1つずつDataAssetとして保持します。
-        // 数値や文字列の並びは、要素の中の"value"というキーへ
-        // 入ります（GetFloatAtなどが代わりに引きます）。
+        // Listでは各要素をDataAssetとして保持します。数値や文字列の
+        // 配列は各要素の"value"キーへ格納し、GetFloatAtなどから参照します。
         std::vector<DataAsset> items;
     };
 
-    // GameObjectへぶら下がらない、単体で存在するデータの入れ物です。
+    // GameObjectに属さず、単独で保持するデータコンテナーです。
     // UnityのScriptableObjectに相当します。型（フィールドの並び）は
-    // Game Moduleが`LAMAPON_DATA_ASSET`で宣言し、値はエディターの
-    // インスペクターで編集して`*.asset.json`へ保存します。
+    // Game ModuleがLAMAPON_DATA_ASSETで宣言し、値はエディターの
+    // インスペクターで編集して*.asset.jsonへ保存します。
     //
-    // 読み込みは`AssetManager::LoadDataAsset`（Scriptからは
-    // `LoadDataAsset`）を使ってください。書き出したゲームでは
-    // アセットが暗号化アーカイブへ入るため、`std::ifstream`で
+    // 読み込みはAssetManager::LoadDataAsset（Scriptからは
+    // LoadDataAsset）を使ってください。書き出したゲームでは
+    // アセットが暗号化アーカイブへ入るため、std::ifstreamで
     // 直接開くとエディターでだけ動く実装になります。
     class DataAsset final
     {
     public:
-        // 壊れたJSONでも例外は投げず、空のDataAssetを返します。
-        // 値が引けないだけで済ませ、ゲームは動き続けます。
+        // 不正なJSONでは例外を送出せず、空のDataAssetを返します。
         [[nodiscard]] static DataAsset FromJson(
             std::string_view json,
             std::string name = {});
@@ -112,7 +109,7 @@ namespace LamaPon
         [[nodiscard]] DirectX::XMFLOAT4 GetVector4(
             std::string_view key,
             DirectX::XMFLOAT4 defaultValue = {}) const noexcept;
-        // 色はアルファ既定1で引きます（color3は1が入ります）。
+        // color3ではアルファに既定値1を設定します。
         [[nodiscard]] DirectX::XMFLOAT4 GetColor(
             std::string_view key,
             DirectX::XMFLOAT4 defaultValue = {
@@ -122,21 +119,21 @@ namespace LamaPon
                 1.0f
             }) const noexcept;
 
-        // 他のアセットへの参照（assetsフォルダーからの相対パス）。
-        // そのまま`Instantiate`や`LoadDataAsset`へ渡せます。
+        // 別のアセットを参照する、assetsフォルダーからの相対パスです。
+        // InstantiateやLoadDataAssetへ直接渡せます。
         [[nodiscard]] std::filesystem::path GetAssetPath(
             std::string_view key) const;
 
-        // listの要素数。listでなければ0です。
+        // Listの要素数を返します。List以外なら0です。
         [[nodiscard]] std::size_t Count(
             std::string_view key) const noexcept;
-        // listの要素。範囲外や型違いでは空のDataAssetを返すので、
-        // 戻り値をそのまま使っても落ちません。
+        // Listの要素を返します。範囲外または型不一致の場合は、
+        // 空のDataAssetを返します。
         [[nodiscard]] const DataAsset& Item(
             std::string_view key,
             std::size_t index) const noexcept;
 
-        // 数値や文字列だけを並べたlist用の近道です。
+        // 数値や文字列のList要素へ直接アクセスするための関数です。
         [[nodiscard]] bool GetBoolAt(
             std::string_view key,
             std::size_t index,
@@ -154,7 +151,7 @@ namespace LamaPon
             std::size_t index,
             std::string defaultValue = {}) const;
 
-        // 参照が空でも必ず有効なDataAssetを返すための共有の空実体。
+        // 範囲外または型不一致の要素に対して返す共有DataAssetです。
         [[nodiscard]] static const DataAsset& Empty() noexcept;
 
     private:
@@ -168,8 +165,7 @@ namespace LamaPon
         std::vector<DataValue> m_values;
     };
 
-    // `*.asset.json`かどうか。エディターとランタイムの両方から
-    // 同じ判定を使うため、ここに1つだけ置きます。
+    // エディターとランタイムで*.asset.jsonの判定を共有します。
     [[nodiscard]] bool IsDataAssetPath(
         const std::filesystem::path& path);
 }

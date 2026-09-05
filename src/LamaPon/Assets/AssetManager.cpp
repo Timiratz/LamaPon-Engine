@@ -431,9 +431,8 @@ namespace LamaPon
         m_archive.reset();
         if (!std::filesystem::is_directory(m_assetRoot))
         {
-            // Exported games ship an encrypted "assets.tpak" file
-            // sitting next to where the loose "assets" folder would
-            // have been, instead of the folder itself.
+            // 配布ゲームでは、展開された"assets"フォルダーを置く場所に
+            // 暗号化済み"assets.tpak"を置き、フォルダー自体は同梱しません。
             auto archivePath = m_assetRoot;
             archivePath += L".tpak";
             if (std::filesystem::is_regular_file(archivePath))
@@ -1602,11 +1601,10 @@ namespace LamaPon
             DirectX::XMFLOAT4> embeddedDiffuseColors;
         if (extension == L".cmo")
         {
-            // Note: EffectFactory resolves each material's textures by
-            // reading them from disk itself, so CMO textures are not
-            // protected by the encrypted archive (this legacy format
-            // predates LamaPon's asset pipeline; prefer glTF or FBX for
-            // anything that needs to ship encrypted).
+            // EffectFactoryは各マテリアルのテクスチャをディスクから直接
+            // 読み込むため、CMOのテクスチャは暗号化アーカイブの対象に
+            // なりません。この形式はLamaPonのアセットパイプラインより
+            // 古いため、暗号化して配布するモデルにはglTFかFBXを使います。
             const auto bytes = ReadFileBytes(resolvedPath);
             MaterialCapturingEffectFactory effectFactory(m_device);
             const auto modelDirectory =
@@ -1939,8 +1937,8 @@ namespace LamaPon
     // 予算を超えていたら、最後に使われたのが古い項目を1つずつ探して
     // 捨てます。キーをコピーしたり、一時配列をソートしたりしないので、
     // 定常状態では1回の走査と1回のeraseだけで済みます。
-    // ただし**まだ誰かが表示に使っているもの（use_count > 1）は
-    // 捨てません**。捨てても解放されないうえ、次のフレームで作り直す
+    // ただしまだ誰かが表示に使っているもの（use_count > 1）は
+    // 捨てません。捨てても解放されないうえ、次のフレームで作り直す
     // ことになるためです（キャッシュの意味が無くなる）。
     void AssetManager::TrimTextCache() noexcept
     {

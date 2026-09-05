@@ -57,7 +57,7 @@ LAMAPON_DATA_ASSET("Game.EnemyData", "敵データ", EnemyDataSchema)
 
 1. アセットウィンドウでフォルダーを右クリックし、
    「**新規データアセット**」を選びます。
-2. **型**を選び、`ゴブリン.asset.json`のような名前を入力します
+2. **型**を選び、`goblin.asset.json`のようにASCII文字だけを使った名前を入力します
    （拡張子は`.asset.json`）。
 3. 作られたファイルを選ぶと、インスペクターに宣言した入力欄が並びます。
    値を編集して「**保存**」を押します。
@@ -73,7 +73,7 @@ class EnemySpawner final : public LamaPon::Script
 public:
     void Start() override
     {
-        const auto enemy = LoadDataAsset("data/ゴブリン.asset.json");
+        const auto enemy = LoadDataAsset("data/goblin.asset.json");
 
         const std::string name = enemy->GetText("displayName");
         const int hitPoints = enemy->GetInt("hitPoints");

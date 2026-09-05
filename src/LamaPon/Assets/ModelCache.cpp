@@ -28,16 +28,13 @@ namespace
     using ModelVertex =
         DirectX::VertexPositionNormalTangentColorTextureSkinning;
 
-    // ファイル形式の版。プリミティブへ保存する項目や、インポーターの
-    // 組み立て（結合の仕方など）を変えたら上げます。鍵にも混ぜるので
-    // 古いエントリは自然に無視されます。
-    // 3: 画像レコードへ用途（TextureUsage）を1バイト追加。
+    // ファイル形式の版。保存項目やインポーターの構成を変更した場合に更新します。
+    // キャッシュキーへ含まれるため、異なる版のエントリは使用されません。
     constexpr std::uint32_t FormatVersion = 3;
 
     constexpr char Magic[4] = { 'T', 'M', 'D', 'L' };
 
-    // 壊れたファイルの検査用の上限。実在のモデルで超えることは
-    // まず無く、超えた値が読めたらファイルが壊れています。
+    // 破損ファイルによる過大な確保を防ぐための読み取り上限です。
     constexpr std::uint32_t MaximumCount = 1u << 24;
     constexpr std::uint32_t MaximumStringLength = 1u << 16;
 
@@ -86,8 +83,7 @@ namespace
     [[nodiscard]] std::uint64_t HashBytes(
         const std::span<const std::uint8_t> bytes) noexcept
     {
-        // FNV-1a 64（texture-cacheと同じ。自分のキャッシュを自分で
-        // 引くだけなので暗号強度は要りません）。
+        // キャッシュ識別用のFNV-1a 64です。暗号学的強度は必要ありません。
         std::uint64_t hash = 14695981039346656037ull;
         for (const std::uint8_t byte : bytes)
         {
@@ -136,7 +132,7 @@ namespace
         }
     }
 
-    // ---- 書き込み側 ----
+    // 書き込み処理
 
     void AppendBytes(
         std::vector<std::uint8_t>& output,
@@ -200,10 +196,9 @@ namespace
         AppendBytes(output, value.data(), value.size());
     }
 
-    // ---- 読み取り側 ----
+    // 読み取り処理
 
-    // 範囲外を読もうとしたらfailに倒し、以降の読み取りを全部
-    // 無効にします（texture-cacheと同じ流儀）。
+    // 範囲外を検出した場合はfailを設定し、以降の読み取りを無効にします。
     struct Reader final
     {
         const std::uint8_t* data{};
@@ -289,10 +284,8 @@ namespace
             "Creating a cached model buffer");
     }
 
-    // インポーター（FBXのFinalizeGpuPrimitive／glTFの組み立て）と
-    // 同じエフェクトと入力レイアウトを作ります。ここが食い違うと
-    // 「キャッシュ経由のときだけ描けない」になるので、変えるときは
-    // 両方のインポーターと一緒に変えてください。
+    // キャッシュ復元後も直接インポート時と同じ描画になるよう、
+    // 各インポーターと同じエフェクトと入力レイアウトを作成します。
     void BuildPrimitiveEffect(
         ID3D11Device* device,
         LamaPon::SkeletalPrimitive& primitive)
@@ -349,15 +342,15 @@ namespace
             const bool isDds,
             const LamaPon::TextureLoader::TextureUsage usage)
     {
-        // インポート時と同じ入口を通します。ここだけ別経路にすると
-        // 「1回目と2回目でフォーマットが違う」ことになります。
+        // 初回インポートとキャッシュ復元で同じ形式になるよう、
+        // 画像は共通の読み込み経路を通します。
         return assets.CreateTextureViewFromMemory(
             bytes,
             isDds,
             usage);
     }
 
-    // ---- チャンネルの読み書き ----
+    // チャンネルの読み書き
 
     void AppendVectorChannel(
         std::vector<std::uint8_t>& output,
@@ -566,8 +559,8 @@ namespace LamaPon::ModelCache
         hash *= 1099511628211ull;
         hash ^= FormatVersion;
         hash *= 1099511628211ull;
-        // 頂点レイアウトが変わったら（DirectXTKの更新など）バイト列の
-        // 意味が変わるので、これも鍵に混ぜて自然に無効化します。
+        // 頂点レイアウトの変更時にキャッシュを無効化するため、
+        // レイアウト識別値をキーへ含めます。
         hash ^= sizeof(ModelVertex);
         hash *= 1099511628211ull;
         return hash;
@@ -579,9 +572,7 @@ namespace LamaPon::ModelCache
         AssetManager& assets,
         const std::uint64_t key)
     {
-        // テクスチャの復元がAssetManager経由（WICデコード→CPUミップ
-        // →BC圧縮）になり、immediate contextを使わなくなりました。
-        // 呼ぶ側の形を変えないため引数は残してあります。
+        // API互換性のためcontext引数を保持しますが、テクスチャ復元では使用しません。
         static_cast<void>(context);
         try
         {
@@ -672,7 +663,7 @@ namespace LamaPon::ModelCache
                 }
             }
 
-            // 画像。外部参照はここで読み直して内容を照合します
+            // 外部参照画像を再読み込みして内容を照合します
             // （照合に読むバイト列がそのままSRVの材料になるので、
             // 二度読みにはなりません）。
             const auto imageCount = reader.Read<std::uint32_t>();
@@ -697,8 +688,7 @@ namespace LamaPon::ModelCache
                     reader.Read<std::uint8_t>();
                 const auto rawUsage =
                     reader.Read<std::uint8_t>();
-                // 知らない値は色扱いにします（前方互換で壊れるより
-                // 圧縮の掛け方が甘い方がまし）。
+                // 未知の用途は色テクスチャとして扱い、安全な圧縮形式へフォールバックします。
                 const auto usage = rawUsage
                         <= static_cast<std::uint8_t>(
                             TextureLoader::TextureUsage::DataMap)
@@ -892,7 +882,7 @@ namespace LamaPon::ModelCache
                 {
                     return nullptr;
                 }
-                // 範囲外の参照は描画時に落ちるので、ここで弾きます。
+                // 描画時の範囲外参照を防ぐため、読み込み時に拒否します。
                 if (primitive.meshNode >= model->nodes.size()
                     || primitive.skin
                         >= static_cast<std::ptrdiff_t>(
@@ -1096,8 +1086,8 @@ namespace LamaPon::ModelCache
         }
         catch (...)
         {
-            // キャッシュが読めない・組み立てられないのは「無い」のと
-            // 同じ扱いにします。呼ぶ側が普通にインポートします。
+            // 読み取りまたは復元に失敗した場合はキャッシュ不在として扱い、
+            // 呼び出し側で再インポートします。
             return nullptr;
         }
     }
@@ -1109,9 +1099,8 @@ namespace LamaPon::ModelCache
     {
         try
         {
-            // 幾何はプリミティブと同じ順で登録されている前提です。
-            // 数が合わないときは、インポーターの登録漏れなので
-            // 保存しません（壊れたキャッシュを作るよりましです）。
+            // 幾何とプリミティブの登録数が一致しない場合は、
+            // 不完全なキャッシュを防ぐため保存しません。
             if (model.primitives.empty()
                 || recorder.geometries.size()
                     != model.primitives.size())

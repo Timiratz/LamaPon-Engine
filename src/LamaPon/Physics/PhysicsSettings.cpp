@@ -6,12 +6,8 @@ namespace LamaPon
 {
     namespace
     {
-        // **実体はここ（.cpp）に1つだけ置きます。** ヘッダの
-        // inline staticにすると、EXE側とLamaPonRuntime.dll側で
-        // 別々の実体になり、設定した値が読む側へ届きません
-        // （--warpで実際に踏んでいます。エラーも警告も出ません）。
-        // 取得と設定の両方をここで定義するのも同じ理由です
-        // ——片方でもinlineにすると、往復のテストが嘘の合格を出します。
+        // EXEとLamaPonRuntime.dllで同じ設定を共有するため、この翻訳
+        // 単位に単一の実体を置きます。取得と設定も同じ側で定義します。
         PhysicsSettings g_physicsSettings{};
     }
 
@@ -23,9 +19,8 @@ namespace LamaPon
     void SetActivePhysicsSettings(
         const PhysicsSettings& settings) noexcept
     {
-        // 壊れる値だけはここで止めます。設定画面を通らない経路
-        // （古いプロジェクトのJSON、スクリプトからの直接指定）でも
-        // 0除算や「一歩も進まない」状態にならないようにするためです。
+        // 設定画面を経由しないJSONやスクリプト入力も正規化し、
+        // 0除算や物理更新の停止を引き起こす値を有効範囲へ制限します。
         PhysicsSettings sanitized = settings;
         sanitized.fixedTimeStep = std::clamp(
             sanitized.fixedTimeStep,

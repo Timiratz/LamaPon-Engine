@@ -30,9 +30,8 @@ namespace LamaPon::Cli
             return true;
         }
 
-        // Compiler diagnostics put `error` after a location or severity.
-        // A plain substring check also matched paths such as winerror.h and
-        // incorrectly reported a successful build as containing errors.
+        // コンパイラー診断で場所や重大度の後に現れるエラー表記だけを
+        // 検出します。winerror.hなど、パスに含まれる語は除外します。
         constexpr std::array<std::string_view, 4> patterns{
             ": error:",
             ": error ",

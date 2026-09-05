@@ -286,10 +286,9 @@ namespace
         LamaPon::AssetManager* assets{};
     };
 
-    // Routes cgltf's file reads (the main .gltf/.glb, and any
-    // externally referenced .bin buffers) through AssetManager so they
-    // are decrypted transparently when the game ships with a packed
-    // asset archive.
+    // cgltfによるファイル読み込み（本体の.gltf/.glbと、外部参照された
+    // .binバッファー）をAssetManagerへ通します。これにより、ゲームが
+    // アセットアーカイブを同梱している場合も透過的に復号できます。
     cgltf_result CgltfFileRead(
         const cgltf_memory_options*,
         const cgltf_file_options* fileOptions,
@@ -418,9 +417,8 @@ namespace
                         imageBytes,
                         IsDdsImage(image),
                         usage);
-                // モデルキャッシュ用の記録。外部ファイルはパス＋
-                // 内容ハッシュだけで足ります（読み込み時に検証を
-                // 兼ねて読み直すため）。
+                // モデルキャッシュには、外部ファイルのパスと内容ハッシュを
+                // 記録します。読み込み時にファイルを再読込して検証します。
                 recorder.RegisterExternalImage(
                     texture.Get(),
                     imagePath,

@@ -15,9 +15,8 @@ namespace LamaPon
         std::uint64_t totalBytes{};
     };
 
-    // Recursively encrypts every file under sourceDirectory into a single
-    // archive at archiveOutputPath. Used by the game exporter so shipped
-    // games never contain plain, individually-readable asset files.
+    // sourceDirectory以下のファイルを暗号化し、archiveOutputPathの
+    // 単一アーカイブへ格納します。
     // skipExtensionsに挙げた拡張子（小文字、ドット付き）は
     // アーカイブへ入れません。書き出しでHLSLソースを外すために
     // 使います。

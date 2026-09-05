@@ -103,7 +103,7 @@ namespace LamaPon
         // SV_Positionから正しい0～1 UVを復元できるようにする。
         // COLORも同様に予約パラメーターへ複製する。
         //
-        // Shaderへ渡すのは**左上**の座標です。Pivotを動かすと
+        // Shaderへ渡すのは左上の座標です。Pivotを動かすと
         // Transformの位置は左上ではなくなるため、その分を戻します。
         const DirectX::XMFLOAT2 topLeft{
             position.x - pivot.x * drawSize.x,
@@ -262,7 +262,7 @@ namespace LamaPon
         // 大きさへ掛け直します）。
         //
         // UIはRect Transformが位置を決めるため中心固定です。
-        // ワールド空間のスプライトはPivotに従い、既定の`{0,0}`なら
+        // ワールド空間のスプライトはPivotに従い、既定の{0,0}なら
         // 従来どおり左上が基準になります。
         const XMFLOAT2 pivot =
             Owner().GetComponent<UIRectTransformComponent>()

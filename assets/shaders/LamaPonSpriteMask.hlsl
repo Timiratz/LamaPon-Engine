@@ -1,4 +1,4 @@
-// LamaPon built-in Sprite Mask shader.
+// LamaPonに組み込まれているスプライトマスク用シェーダーです。
 //
 // MaskInteractionがNone以外のワールド空間Sprite Renderer（UI Rect
 // Transformなし・独自Shaderなし）へ、SpriteMaskが1つでも有効なとき

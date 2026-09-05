@@ -112,8 +112,7 @@ namespace LamaPon
             const CollisionDetectionMode value) noexcept
         {
             m_collisionDetection = value;
-            // 判定方式を変えたら警告をもう一度出せるようにします
-            // （CCDへ移して直したのに黙ったまま、を避けるため）。
+            // 判定方式の変更後に必要な警告を再評価できるよう、通知状態を解除します。
             m_discreteSpeedWarned = false;
         }
         [[nodiscard]] bool Interpolates() const noexcept

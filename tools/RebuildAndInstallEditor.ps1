@@ -71,10 +71,9 @@ foreach ($line in $cmdOutput) {
     }
 }
 
-# NMake Makefiles（CMakeの既定ジェネレーター）はヘッダーの依存関係の
-# 追跡が不完全で、更新されていない古いオブジェクトファイルが
-# そのままリンクされてしまうことがある（実際に一度、ヒープ破損クラッシュの
-# 原因になった）。Ninjaは依存関係の追跡が正確なので、切り替える。
+# ヘッダーの依存関係を正しく追跡するため、Ninjaを使用します。
+# 既存のビルドフォルダーが別のジェネレーターで構成されている場合は、
+# キャッシュを削除して再構成します。
 $cacheFile = Join-Path $buildDir "CMakeCache.txt"
 $usingNinja = (Test-Path $cacheFile) `
     -and (Select-String -Path $cacheFile -Pattern "^CMAKE_GENERATOR:INTERNAL=Ninja$" -Quiet)
@@ -105,11 +104,9 @@ if (-not $usingNinja) {
     }
 }
 
-# build-info.json（クラッシュレポートの Build revision の出どころ）は
-# configure時にgitから作られる。上のNinja切り替えを通らないと
-# 再構成されず、古いリビジョンを名乗るバイナリが入る（実際、
-# 2026-08-18のクラッシュ追跡で別コミットを見させられた）。
-# 数百ミリ秒なので毎回通す。
+# クラッシュレポートに表示するBuild revisionは、configure時に
+# Gitから生成するbuild-info.jsonを使います。古いリビジョンを
+# 埋め込まないよう、ビルド前に毎回再構成します。
 Push-Location $buildDir
 try {
     & cmake .
@@ -131,13 +128,10 @@ try {
     & cmake --build . --target clean
     $buildResult = $LASTEXITCODE
     if ($buildResult -eq 0) {
-        # CMakeListsの install(TARGETS ...) と**同じ面々**をビルドする。
-        # 以前はLamaPonHubだけをビルドしていたが、LamaPonCliはその
-        # 依存に入っていない。手コピー時代はCLIをコピーして
-        # いなかったので露呈しなかったが、cmake --install へ移した
-        # とたん「LamaPonCli.exe が見つからない」で失敗するように
-        # なった（--target clean が前回の成果物も消すため）。
-        # ターゲットを足すときは install(TARGETS ...) も揃えること。
+        # install(TARGETS ...)に含まれる実行ファイルをすべて生成します。
+        # clean後に一部のターゲットだけをビルドすると、cmake --installが
+        # 必要な成果物を見つけられません。ターゲットを追加するときは、
+        # この一覧とインストール対象をそろえてください。
         & cmake --build . --target `
             LamaPonRuntime LamaPonEditorApp LamaPonHub `
             LamaPonGame LamaPonCli
@@ -158,13 +152,8 @@ if (-not (Test-Path $installDir)) {
     Fail "インストール先フォルダが見つかりません: $installDir"
 }
 
-# 以前はここで7ファイルだけを手でコピーしていましたが、
-# CRTのDLL・LamaPonCli・配布ヘッダ・build-info.jsonがリストに
-# 無く、更新されないまま取り残されていました。
-# 2026-08-18にこれが原因で、ツールチェーンをVS2022からVS18へ
-# 移したとたん、古い14.36のCRTが残ったまま14.51のバイナリが
-# 入り、エディターがログを1行も書かないまま落ちるように
-# なりました。CMakeListsの install 規則を唯一の正として使います。
+# Runtime、CLI、公開ヘッダー、CRTなどの配布物を同じ規則で更新するため、
+# CMakeLists.txtのinstall規則を使用します。
 & cmake --install $buildDir --prefix $installDir
 if ($LASTEXITCODE -ne 0) {
     Fail "インストールに失敗しました。上のログを確認してください。"
@@ -176,7 +165,7 @@ Start-Process (Join-Path $installDir "LamaPonHub.exe")
 
 Write-Host ""
 Write-Host "==============================================="
-Write-Host " 成功しました！"
+Write-Host " インストールが完了しました。"
 Write-Host "==============================================="
 if (-not $NonInteractive) {
     Read-Host "終了するには Enter キーを押してください"

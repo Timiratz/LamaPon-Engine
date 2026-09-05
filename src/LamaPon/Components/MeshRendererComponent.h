@@ -327,7 +327,7 @@ namespace LamaPon
         // 無いまま頂点シェーダーだけが刺さり、ラスタライザーへ位置が
         // 届かない不正な描画になります。
         [[nodiscard]] bool CanDrawTessellatedPatch() const noexcept;
-        // パッチを描きます。**描画状態は呼ぶ側の責任**です
+        // パッチを描きます。描画状態は呼ぶ側の責任です
         // （深度パスは影用の設定で描くので、ここで触ると壊れます）。
         void DrawTessellatedPatch() const;
         // 形状に応じた制御点を作ります。四角パッチに割れない形状では

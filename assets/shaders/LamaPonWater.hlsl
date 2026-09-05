@@ -5,11 +5,11 @@
 // 割り当てるだけで動きます。スクリプトは要りません。
 //
 // 中で何をしているか（上から順に）:
-//   ① ノイズを2枚重ねて波の高さを作る（大きなうねり＋細かいさざ波）
-//   ② 高さの傾きから法線を出す（隣を測って引き算するだけ）
-//   ③ 見る角度で「映り込みの強さ」を決める（フレネル。水面を
+//   (1) ノイズを2枚重ねて波の高さを作る（大きなうねり＋細かいさざ波）
+//   (2) 高さの傾きから法線を出す（隣を測って引き算するだけ）
+//   (3) 見る角度で「映り込みの強さ」を決める（フレネル。水面を
 //      真上から見ると透けて、浅い角度で見ると鏡になる現象）
-//   ④ 空の色を映す＋太陽をGGXで反射する
+//   (4) 空の色を映す＋太陽をGGXで反射する
 //
 // ★太陽の向きと色はシーンのDirectional Lightから読んでいます
 //   （下のLightingBufferの宣言）。ライトを回すと反射も動きます。
@@ -176,7 +176,7 @@ PixelInput VSSkinnedMain(SkinnedVertexInput input)
         input.TexCoord);
 }
 
-// ---- ① 波の高さ ----
+// 波の高さ
 // ワールドのXZで測ります（UVではなく）。板を並べても模様が途切れず、
 // 板を大きくしても波の大きさが変わりません。
 float WaveHeight(const float2 position)
@@ -203,7 +203,7 @@ float WaveHeight(const float2 position)
     return swell * 0.75f + ripple * 0.25f;
 }
 
-// ---- ② 高さの傾きから法線を出す ----
+// 高さの傾きから求める法線
 // 隣り合う4点の高さを測って引き算するだけです（中心差分）。
 // ノイズの式を微分しなくてよいので、波の作り方を変えても
 // ここは書き換えずに済みます。
@@ -250,7 +250,7 @@ float3 WaveNormal(
         + forward * (-gradient.y));
 }
 
-// ---- ④ 太陽の反射（GGX＋太陽の角度の大きさ） ----
+// 太陽の反射（GGXと太陽の角半径）
 // 太陽は点ではなく、空に0.53度の円盤として見えています。点として
 // 扱うと、つるつるの水面ではハイライトが1画素の点になってしまい、
 // 「きらきら光る帯」になりません。
@@ -311,9 +311,8 @@ float3 SunSpecular(
     const float denominator =
         normalDotHalf * normalDotHalf * (alphaSquared - 1.0f)
         + 1.0f;
-    // 下限は「絶対に効かない」ほど小さくします。1.0e-4だと鋭い
-    // ハイライトほど分母が小さくなって常に下限へ張り付き、太陽の
-    // 反射が消えます（LamaPonLit.hlslでも同じ間違いがありました）。
+    // 鋭いハイライトではGGXの分母が非常に小さくなるため、
+    // 下限を十分小さくして太陽の反射を保ちます。
     const float distribution = alphaSquared
         / max(WaterPi * denominator * denominator, 1.0e-12f);
 
@@ -382,7 +381,7 @@ float4 ShadeWater(const PixelInput input)
         input.WorldPosition.xz,
         facingNormal);
 
-    // ---- ③ フレネル ----
+    // フレネル反射
     // 真上から覗くと水の中が見え、浅い角度では空が映る、という
     // 見え方の切り替わりです。水のF0（正面から見た反射率）は0.02。
     const float viewDotNormal =

@@ -1,43 +1,45 @@
-# Contributing to LamaPon
+# LamaPonへのコントリビュート
 
 クラスを分けるときは、ファイルだけでなく状態と責務の所有者を分けてください。
-EditorLayerの全体参照を渡す代わりに、必要なサービスと用途を限定した
-コールバックを渡します。BgmLoopPanelはカタログ・波形・試聴を所有し、
-EditorLayerは表示と保存後のコマンド実行を仲介する例です。
-コメントは処理の目的、寿命、例外時の後始末を説明し、戻り値や実装と揃えます。
+`EditorLayer`の全体参照を渡さず、必要なサービスと用途を限定したコールバックを渡します。
+`BgmLoopPanel`はカタログ・波形・試聴を所有し、`EditorLayer`は表示と保存後のコマンド実行を仲介する例です。
+コメントは処理の目的、寿命、例外時の後始末を説明し、戻り値や実装と一致させます。
 
-LamaPon currently targets Windows, MSVC, DirectX 11, and C++20.
+エディターとネイティブ版はWindows、MSVC、DirectX 11、C++20を対象とします。
 
-## Development workflow
+## 開発手順
 
-1. Open an x64 Visual Studio Developer Command Prompt.
-2. Configure with `cmake --preset windows-debug`.
-3. Build with `cmake --build --preset windows-debug`.
-4. Test with `ctest --preset windows-debug`.
-5. Before submitting, repeat the build and tests with `windows-release`.
+1. x64 Visual Studio Developer Command Promptを開きます。
+2. `cmake --preset windows-debug`で構成します。
+3. `cmake --build --preset windows-debug`でビルドします。
+4. `ctest --preset windows-debug`でテストします。
+5. 変更を提出する前に、`windows-release`でもビルドとテストを実行します。
 
-Keep changes focused and preserve existing Japanese and UTF-8 path behavior.
-New runtime behavior should include an automated regression test. Avoid adding
-new third-party dependencies when the Windows SDK or standard library is
-sufficient.
+変更範囲を必要な箇所に絞り、日本語とUTF-8パスの既存動作を維持してください。
+ランタイムの動作を追加・変更する場合は、意味のある回帰テストも追加します。
+Windows SDKや標準ライブラリで十分な場合は、サードパーティー製ライブラリへの
+依存を追加しません。
 
-## Code style
+## コードスタイル
 
 - リポジトリのファイル名・フォルダー名は英語またはローマ字のASCII文字にします。
   コード内の表示名・文章・コメントは日本語で構いません。アセット改名時は
   `.meta`を一緒に移し、GUIDを保ったまま参照パスを更新してください。
-- Use C++20 and four-space indentation.
-- Treat `/W4` warnings in changed code as defects.
-- Prefer RAII, `std::filesystem::path`, and explicit ownership.
-- Keep platform-specific code behind a small interface.
-- Give panels and systems their own state and narrow dependencies. Keep stateless
-  component inspectors independent of `EditorLayer` and share only required operations.
+- C++20と4スペースのインデントを使用します。
+- 変更した自前コードの`/W4`警告は欠陥として扱います。
+- RAII、`std::filesystem::path`、明示的な所有権を優先します。
+- プラットフォーム固有コードは小さなインターフェースの内側に閉じ込めます。
+- パネルやシステムは自身の状態を所有し、依存を必要最小限にします。状態を持たない
+  コンポーネントのInspectorは`EditorLayer`から独立させ、必要な操作だけを共有します。
 - コードコメントは原則として日本語で記述します。API名や外部仕様など、
   英語の方が正確な場合は英語を使用して構いません。自明な各行ではなく、
   処理ブロック、互換処理、例外的な判断の意図が分かる単位で補足します。
+- コードコメントをMarkdown文書のように装飾せず、太字記号、絵文字、日付入りの
+  開発日誌を残しません。現在の処理の目的、呼び出し側との契約、実装を選んだ理由を
+  説明します。変更の経緯はGit履歴や`CHANGELOG.md`へ記録してください。
 
-## Pull requests
+## 変更の提出（Pull Request）
 
-Describe the user-visible behavior, tests run, and compatibility impact.
-Update `CHANGELOG.md` for notable behavior. Do not commit build directories,
-logs, crash dumps, generated projects, or user-specific editor settings.
+利用者から見える変更、実行したテスト、互換性への影響を説明してください。
+利用者に影響する変更は`CHANGELOG.md`へ追記します。ビルドディレクトリ、ログ、
+クラッシュダンプ、生成したプロジェクト、利用者固有のエディター設定はコミットしません。

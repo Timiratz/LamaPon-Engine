@@ -99,18 +99,7 @@
 #include "LamaPon/Scripting/GameModuleHost.h"
 #include "LamaPon/Scripting/Script.h"
 
-// 注意（ここでハマります）: Windowsの`minwindef.h`は16bit時代の名残で
-// `far`／`near`／`pascal`を「空」のマクロとして無条件に定義します。
-// そのため、ゲーム側で
-//
-//     const bool far = (index % 2) == 0;   // 遠くの山かどうか
-//
-// のような自然な名前を使うと、識別子が消えて
-// `error C2513: 型は、識別子の名前を指定せずに宣言されています`
-// になります。**このヘッダーで`#undef far`はしません。**
-// SDK自身が`struct midihdr_tag far *lpNext;`（mmeapi.h）のように
-// 小文字の`far`を宣言に使っており、undefすると
-// Windowsヘッダー側が壊れることを実測で確認したためです。
-// 変数名を`distant`／`nearPlane`などに変えてください
-// （[コード一覧](../../docs/code-reference.md)の
-// 「よくあるコンパイルエラー」にも載せています）。
+// Windowsのminwindef.hはfar、near、pascalを空のマクロとして
+// 定義します。SDK内の宣言を保つため、このヘッダーでは#undef farを
+// 行いません。変数名にはdistantやnearPlaneなど、マクロと衝突しない
+// 名前を使用してください。

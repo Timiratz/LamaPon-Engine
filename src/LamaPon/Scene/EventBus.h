@@ -46,10 +46,9 @@ namespace LamaPon
             std::string_view eventName,
             Handler handler);
         void Unsubscribe(std::uint64_t handle) noexcept;
-        // 同名イベントの全ハンドラーを呼びます。Publish中の
-        // Subscribe（今回は呼ばれない）とUnsubscribeにも
-        // 耐えます。例外時は内部状態を復元して例外を呼び出し元へ返し、
-        // 残りのハンドラーは呼びません。
+        // 同名イベントの全ハンドラーを呼びます。Publish中に追加した
+        // 購読は次回から有効です。購読解除にも対応します。例外時は
+        // 内部状態を復元して呼び出し元へ例外を返し、処理を中断します。
         void Publish(
             std::string_view eventName,
             const EventArgs& eventArgs = {});

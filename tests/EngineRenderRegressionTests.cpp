@@ -179,12 +179,10 @@ namespace
         return total;
     }
 
-    // 指定領域の「鋭さ」。隣どうしの差の**2乗**の平均です。
+    // 指定領域の「鋭さ」。隣どうしの差の2乗の平均です。
     //
-    // 絶対値の平均では駄目です。単調な段差の総変動量はぼかしても
-    // 保存されるので（高さHをN画素へ広げてもΣ|Δ|はHのまま）、窓を
-    // 固定するとまったく同じ値になります。2乗ならH^2/Nになり、
-    // 広がったぶんだけ確実に下がります。
+    // 単調な段差では絶対差の総和がぼかし後も変わらないため、
+    // ぼかし幅に応じて減少する差の2乗を使います。
     [[nodiscard]] double RegionSharpness(
         const std::vector<std::uint8_t>& pixels,
         const std::uint32_t minimumX,
@@ -292,8 +290,8 @@ int main(const int argumentCount, char** arguments)
                 continue;
             }
             // --d3ddebug: D3D11のデバッグレイヤーを有効にして、
-            // 不正な描画をログへ出します。全機能を一度に掃くのに
-            // 使えます（テスト自体の判定は変わりません）。
+            // 不正な描画をログへ出し、描画機能全体の診断に使います。
+            // テストの判定条件には影響しません。
             if (argument == "--d3ddebug")
             {
                 debugLayer = true;
@@ -304,9 +302,8 @@ int main(const int argumentCount, char** arguments)
             CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         static_cast<void>(comResult);
 
-        // 環境キャッシュ（プローブのベイク結果）は専用の置き場で
-        // 走らせます。本物の%LOCALAPPDATA%を汚さないためと、前回の
-        // 実行結果が残っていて表示が変わるのを防ぐためです。
+        // 利用者の%LOCALAPPDATA%と過去の結果を避けるため、
+        // プローブのベイク結果は専用ディレクトリへ保存します。
         LamaPon::EnvironmentCache::SetCacheDirectoryOverride(
             std::filesystem::current_path()
             / "test-output"
@@ -321,10 +318,8 @@ int main(const int argumentCount, char** arguments)
         LamaPon::GraphicsDevice::SetEnableDebugLayer(
             debugLayer);
         // このexeが立てたフラグが、LamaPonRuntime.dllの中まで
-        // 届いていること。ヘッダで`inline static`にすると
-        // EXE側とDLL側で別々の実体になり、**無言で効かなくなり**
-        // ます（2026-08-07に--warpと--d3ddebugの両方が effectively
-        // 無効になっていました）。
+        // 届いていること。ヘッダーでinline staticにするとEXE側とDLL側で
+        // 別々の実体になり、--warpと--d3ddebugが機能しません。
         Require(
             LamaPon::GraphicsDevice::IsDebugLayerEnabled()
                 == debugLayer,
@@ -441,7 +436,7 @@ int main(const int argumentCount, char** arguments)
             return pixels;
         };
 
-        // ① クリアカラーと環境光のみの被写体
+        // (1) クリアカラーと環境光のみの被写体
         Stage("frame-ambient");
         const auto ambientFrame = renderFrame();
         DumpFrame("ambient", ambientFrame);
@@ -465,7 +460,7 @@ int main(const int argumentCount, char** arguments)
             "Center pixel must be dominated by the red cube.");
 
 
-        // ② 平行光源を有効化すると被写体が明るくなる
+        // (2) 平行光源を有効化すると被写体が明るくなる
         sunObject.SetEnabled(true);
         Stage("frame-lit");
         const auto litFrame = renderFrame();
@@ -488,7 +483,7 @@ int main(const int argumentCount, char** arguments)
                     + ambientBrightness / 10,
             "Directional light must brighten the cube.");
 
-        // ③ 同一マテリアルの2個はGPUインスタンシング経路で描画
+        // (3) 同一マテリアルの2個はGPUインスタンシング経路で描画
         subject.GetTransform().position =
             { -2.5f, 0.0f, 0.0f };
         subject.GetTransform().scale =
@@ -563,7 +558,7 @@ int main(const int argumentCount, char** arguments)
             "Disabled instance must not be rendered by batching.");
         clone.SetEnabled(true);
 
-        // ④ カスケード影：影の有無で床の明るさが変わる
+        // (4) カスケード影：影の有無で床の明るさが変わる
         auto& ground = scene.CreateGameObject("Ground");
         ground.GetTransform().position =
             { 0.0f, -1.8f, 0.0f };
@@ -606,7 +601,7 @@ int main(const int argumentCount, char** arguments)
                 < unshadowedFloor,
             "Shadows must darken part of the floor.");
 
-        // ⑤ スカイ：背景がクリアカラーからグラデーションに変わる
+        // (5) スカイ：背景がクリアカラーからグラデーションに変わる
         auto sky = scene.Sky();
         sky.enabled = true;
         sky.topColor = { 0.05f, 0.55f, 0.15f };
@@ -624,7 +619,7 @@ int main(const int argumentCount, char** arguments)
                 14),
             "Sky gradient must replace the clear color.");
 
-        // ⑥ Light2D：組み込みシェーダー（LamaPonSpriteLit.hlsl）が
+        // (6) Light2D：組み込みシェーダー（LamaPonSpriteLit.hlsl）が
         // 実際にコンパイルでき、加算式ライティングとして機能することを
         // 確認します。暗めのグレーを土台にすることで、白飽和で
         // チャンネル差が消えないようにしています。
@@ -716,10 +711,9 @@ int main(const int argumentCount, char** arguments)
                 " and tint the sprite toward blue without"
                 " affecting its red channel.");
 
-        // ⑥-2 Light2DがTilemapへ届くこと。
-        // 灯りをSprite単位ではなく画面単位で評価するようにした本題
-        // です。以前は「オブジェクトの原点に近い2灯」だったので、
-        // 画面いっぱいに広がるTilemapでは成立しませんでした。
+        // (6)-2 Light2DがTilemap全体へ届くこと。広いTilemapでは、
+        // オブジェクトの原点ではなく画面上の画素ごとに灯りを評価する
+        // 必要があります。
         constexpr std::uint32_t TilemapSampleX = 90;
         constexpr std::uint32_t TilemapSampleY = 90;
         auto& tilemapObject =
@@ -785,10 +779,9 @@ int main(const int argumentCount, char** arguments)
             "A nearby blue-tinted Light2D must brighten and"
                 " tint a Tilemap, not only Sprite Renderers.");
 
-        // ⑥-3 UIは既定では照らさず、「UIも照らす」を入れたときだけ
+        // (6)-3 UIは既定では照らさず、「UIも照らす」を入れたときだけ
         // 照らすこと。特定の画素ではなく「変わった画素の数」で見ます
-        // （UIの矩形はアンカー解決で決まるので、位置を決め打ちすると
-        // 解決規則を変えたときに空振りするため）。
+        // （UIの矩形はアンカー解決で決まるため、特定座標には依存しません）。
         auto& uiSpriteObject =
             scene.CreateGameObject("LitUISprite");
         uiSpriteObject.AddComponent<
@@ -834,10 +827,8 @@ int main(const int argumentCount, char** arguments)
         std::cout
             << "ui light2d changed pixels: "
             << changedPixels << std::endl;
-        // UIスプライトは40x40＝1600画素。灯りは中心が最も強く、
-        // 縁では0になるので全部は変わりません。実測で900前後です。
-        // 「UIへ届いていない」ときは0になるので、そこと明確に離した
-        // 400を閾値にしています。
+        // 40x40画素のUIに対して、中心から減衰する光が十分な範囲へ
+        // 届いたことを確認するため400画素を下限にします。
         Require(
             changedPixels > 400,
             "Turning on a Light2D's AffectsUI must light the"
@@ -851,7 +842,7 @@ int main(const int argumentCount, char** arguments)
         static_cast<void>(
             scene.DestroyGameObject(tilemapObject));
 
-        // ⑦ Sprite Mask：組み込みシェーダー（LamaPonSpriteMask.hlsl）が
+        // (7) Sprite Mask：組み込みシェーダー（LamaPonSpriteMask.hlsl）が
         // 実際にコンパイルでき、円マスクの内側／外側で正しくクリップ
         // されることを確認します。マスク円の中心は必ず可視、円から
         // 十分離れた（しかしスプライト矩形内の）点は必ず不可視という、
@@ -967,16 +958,16 @@ int main(const int argumentCount, char** arguments)
                     && broken.green + 60 < broken.blue,
                 "A 2D shader that fails to compile must be"
                 " drawn with the magenta placeholder.");
-            // スプライト自身は暗い色。代役が居座っていないこと。
+            // スプライト自身の暗い色へ戻り、代替表示が解除されること。
             Require(
                 repaired.red < 60
                     && repaired.green < 60
                     && repaired.blue < 60,
                 "Clearing the broken 2D shader must bring the"
-                " sprite's own colour back.");
+                " sprite's own color back.");
             Require(
                 plain.red < 60,
-                "The sprite must start from its own colour.");
+                "The sprite must start from its own color.");
         }
 
         maskedSprite.SetMaskInteraction(
@@ -1017,7 +1008,7 @@ int main(const int argumentCount, char** arguments)
             "The mask center must not show the sprite's"
                 " own color with VisibleOutsideMask.");
 
-        // ⑧ レンダーテクスチャ：サブカメラの絵をSpriteで画面へ出す。
+        // (8) レンダーテクスチャ：サブカメラの絵をSpriteで画面へ出す。
         // 何も無い方向を向かせるので、テクスチャは背景色一色に
         // なります。左上に貼ったSpriteがその色になれば成功です。
         constexpr std::uint32_t RenderTextureSize = 128;
@@ -1130,10 +1121,7 @@ int main(const int argumentCount, char** arguments)
                     graphics.AspectRatio(),
                     false,
                     graphics.SceneCompositionTarget());
-                // Application.cppやEditorLayer.cppと同じ引数で
-                // 呼びます。ここが古い呼び方のままだと、ポスト処理を
-                // 1つ足すたびに「テストだけ通っていない経路」が
-                // 静かに増えていきます。
+                // 実行時と同じフレームデータを渡し、ポスト処理の経路を再現します。
                 graphics.EndSceneComposition(
                     scene.PostProcessFrameData());
                 std::uint32_t width{};
@@ -1189,17 +1177,15 @@ int main(const int argumentCount, char** arguments)
             "Screen outline must change visible boundary pixels.");
         scene.SetScreenOutlineSettings({});
 
-        // ⑨ ボリュメトリックライト（光の筋）。
+        // (9) ボリュメトリックライト（光の筋）。
         //
         // 太陽をカメラの正面奥へ置き、間に「中央だけ隙間のある壁」を
         // 立てます。隙間からは空が見え、レイは最後まで光の中を通ります。
         //
         // 影の判定が効いているかは、壁の上の2箇所を比べて確かめます。
-        // どちらも同じ壁（＝カメラからの距離が同じ）なので、距離による
-        // 減衰は揃います。違うのは「レイのどこから壁の影に入るか」です。
-        //   ・隙間に近い側は、視線が中央寄りなので長い区間を隙間越しの
-        //     光の中で進み、途中から壁の影へ入ります
-        //   ・画面の端に近い側は、すぐ壁の影へ入ります
+        // どちらも同じ壁なので距離減衰は等しく、影へ入るまでの
+        // レイ区間だけが異なります。隙間側は明るい区間が長く、
+        // 画面端側は早く影へ入ります。
         // 前方散乱を0（全方向へ均一）にすると位相関数の角度差も消える
         // ので、この2箇所に差が出る理由は影の判定しか残りません。
         // ただの霧を足しているだけの実装なら、2箇所は同じだけ明るく
@@ -1399,18 +1385,15 @@ int main(const int argumentCount, char** arguments)
                 LamaPon::VolumetricLightSettings{});
         }
 
-        // ⑩ リフレクションプローブのブレンド。
+        // (10) リフレクションプローブのブレンド。
         //
         // カメラの画角の外（左右x=±10）へ緑と赤の壁を置き、その
         // すぐ内側にプローブを1つずつ焼きます。壁は画面に映らない
         // ので、鏡面の球に出る色は「どちらのプローブを読んだか」
         // だけで決まります。
         //
-        // 球は2つのプローブの中間（＝影響度が同じ）に置きます。
-        //   ・混ぜ始める距離0 … 近い方だけを読む（従来の挙動）。
-        //     片方だけを有効にした絵とバイト単位で一致するはず
-        //   ・混ぜ始める距離あり … 半々で混ざるので、緑と赤の差
-        //     （G−R）が単独のときよりはっきり小さくなるはず
+        // 球を2つのプローブの中間へ置きます。ブレンド距離0では近い方だけ、
+        // 距離を与えた場合は両方が同じ重みで反映されることを確認します。
         {
             const auto savedCameraPosition =
                 cameraObject.GetTransform().position;
@@ -1582,9 +1565,8 @@ int main(const int argumentCount, char** arguments)
             DumpFrame(
                 "probe-blend-off",
                 hardSwitchFrame);
-            // 近い方だけを読むので、単独で描いたどちらかの絵と
-            // 1バイトも違わないはずです。既定値のままの既存シーンが
-            // 変わらないことの証明になります。
+            // 近い方だけを読むため、単独で描いたどちらかの画像と
+            // バイト単位で一致し、既定値で描画が変化しないことを確認します。
             Require(
                 hardSwitchFrame == greenOnlyFrame
                     || hardSwitchFrame == redOnlyFrame,
@@ -1661,12 +1643,8 @@ int main(const int argumentCount, char** arguments)
         // 箱は床より手前（カメラ寄り）に置くので画面に写っており、
         // SSRが映せる条件を満たします。
         //
-        // 決め手は2つです。
-        //   ・有効にすると、床の「箱の真下」だけが緑寄りになる。
-        //     箱から離れた床は変わらない（＝画面全体を緑にする
-        //     ような実装では通らない）
-        //   ・切り戻すと元の絵とバイト単位で一致する。既定はオフ
-        //     なので、既存のシーンが変わらないことの証明になります
+        // 有効時は箱の真下だけが緑寄りになり、離れた床は変化しないこと、
+        // 無効へ戻すと元の画像と一致することを確認します。
         //
         // なお前フレームのカラーを読むため、有効化した直後の1枚は
         // まだ映りません。2枚目から比べます。
@@ -1808,9 +1786,8 @@ int main(const int argumentCount, char** arguments)
             // 箱の真下は緑寄りになること。
             //
             // 閾値は「1画素あたり」で決めます。合計値へ小さな定数を
-            // 置くと、実質何も起きていなくても通ってしまうためです
-            // （2026-08-05に閾値+200で空振りを見逃しかけました。
-            // 30x18=540画素なので1画素あたり0.4未満でした）。
+            // 置くと、実質何も起きていなくても通ってしまうためです。
+            // 30x18=540画素では、合計値200も1画素あたり0.4未満です。
             constexpr long long bandPixels =
                 static_cast<long long>(
                     underMaximumX - underMinimumX)
@@ -1830,21 +1807,17 @@ int main(const int argumentCount, char** arguments)
             // 距離フェード。最大距離のところで反射が急に途切れると、
             // カメラが少し動くだけで現れたり消えたりします。
             //
-            // 同じ当たりに対して**最大距離の設定だけ**を変えて測ります。
+            // 同じ当たりに対して最大距離の設定だけを変えて測ります。
             // 幾何は一切動かさないので、差が出るなら距離フェードだけが
             // 原因です。フェードが無ければ、当たりが見つかる限りどの
             // 設定でも同じ値が返ります。
             //
-            // 反復数は全距離で128（上限）に固定します。画面空間の
-            // トラバーサルでは反復数は「歩幅」ではなく「予算」なので、
-            // 十分に与えれば当たり位置は最大距離に依らず同一になり、
-            // 変わるのはフェードだけになります（ワールド等間隔で
-            // 歩いていた頃は、距離に比例させないと刻み幅が変わって
-            // しまうため密度を固定していました）。
+            // 反復数を上限の128に固定し、最大距離によるフェードだけを
+            // 比較できる条件にします。
             {
                 // 測る場所は狭い帯にします。広い帯だと画素ごとに
                 // レイの長さが違うため、最大距離を縮めていくと画素が
-                // 順番に脱落し、**per-pixelのフェードが無くても**
+                // 順番に脱落し、per-pixelのフェードが無くても
                 // 合計は緩やかに落ちます。それでは検証になりません。
                 constexpr std::uint32_t narrowMinimumX = 157;
                 constexpr std::uint32_t narrowMaximumX = 165;
@@ -1888,9 +1861,7 @@ int main(const int argumentCount, char** arguments)
                 };
 
                 Stage("frame-ssr-distance-fade");
-                // 診断: 12mと1.8mの絵を残します（数字が崩れたとき、
-                // 「当たっていない」のか「変な所に当たっている」のかを
-                // 絵で切り分けるため）。
+                // レイの不一致を確認できるよう、12mと1.8mの画像を診断用に残します。
                 {
                     auto diagnostic = reflection;
                     diagnostic.enabled = true;
@@ -1931,14 +1902,8 @@ int main(const int argumentCount, char** arguments)
                     << " 1.3m=" << cutRange
                     << std::endl;
 
-                // 実測: 2474 / 2307 / 1402 / 402 / 0
-                //      （全強度比 100% / 93% / 57% / 16% / 0%）
-                //
-                // **中間の値が並ぶことが決め手です。** フェードが無い
-                // 実装（当たれば全強度、届かなければ0）だと、レイが
-                // 届く1.45mまでは2474のままで、1.3mで一気に0へ落ちる
-                // 崖になります。93%・57%・16%はどれもその形では
-                // 出てきません。
+                // 中間距離で反射強度が段階的に低下し、到達可否だけの
+                // 二値的な結果にならないことを確認します。
                 Require(
                     fullRange > 500,
                     "The narrow band must show a reflection to"
@@ -1951,8 +1916,7 @@ int main(const int argumentCount, char** arguments)
                         && lowRange > cutRange,
                     "SSR must fade monotonically as the ray"
                     " approaches the maximum distance.");
-                // 途中が「全強度でも0でもない」こと。崖ではなく
-                // フェードであることの証明です。
+                // 中間距離で全強度と0の間になり、連続的にフェードすること。
                 Require(
                     midRange * 4 > fullRange
                         && midRange * 4 < fullRange * 3,
@@ -1970,14 +1934,8 @@ int main(const int argumentCount, char** arguments)
 
                 // 反復の上限を変えたときの様子。
                 //
-                // Hi-Zでは、予算が足りてさえいれば当たり位置は
-                // 予算に依りません（トラバーサルは決定的で、余った
-                // 反復は使われないだけ）。実測で48以上は完全に同じ
-                // 値になります（DDA時代は128=1795 / 64=1785 /
-                // 48=1556 と頭打ちにならず、この性質は主張できません
-                // でした）。下の判定はこの飽和を固定します。
-                // 32以下は床を這う区間で予算が尽きて0になります
-                // （これは診断のみ。値は判定しません）。
+                // Hi-Z走査は十分な反復予算があれば同じ交点へ収束するため、
+                // 48回と128回で反射結果が一致することを確認します。
                 const auto measureAtSteps =
                     [&](const std::uint32_t steps)
                 {
@@ -2013,12 +1971,7 @@ int main(const int argumentCount, char** arguments)
                         " exact same reflection.");
                 }
 
-                // 「物の厚み」が実際に効いていること。
-                //
-                // 深度→距離の式が壊れていた間、差の大きさが桁違いに
-                // 小さくなるせいで厚みの判定が常に成立し、この設定は
-                // **何も変えませんでした**。効くようになったことを
-                // 押さえておきます（薄くすれば当たりが減ります）。
+                // 厚みを小さくすると交点が減り、設定値が判定へ反映されること。
                 const auto measureAtThickness =
                     [&](const float value)
                 {
@@ -2040,9 +1993,7 @@ int main(const int argumentCount, char** arguments)
                     << "ssr thickness: 6.0=" << thickHit
                     << " 0.02=" << thinHit
                     << std::endl;
-                // 実測: 6.0=2137 / 0.02=0。厚みを薄くすると当たりが
-                // 完全に無くなります（壊れていた間はどちらも同じ値で、
-                // この設定は何も変えませんでした）。
+                // 厚い設定では交点があり、薄い設定では交点が無いこと。
                 Require(
                     thickHit > 0 && thinHit == 0,
                     "The thickness setting must affect which"
@@ -2058,20 +2009,18 @@ int main(const int argumentCount, char** arguments)
                 // ません。
                 //
                 // そこで、床の面で折り返した位置へ同じ箱をもう1つ
-                // 置き、床をどけて**同じカメラで**描きます。立方体は
+                // 置き、床をどけて同じカメラで描きます。立方体は
                 // 上下対称なので、折り返した形はそのまま立方体です。
                 // それが写った行が、そのまま「反射が出るべき行」に
                 // なります。
                 //
-                // カメラを面で反転させるやり方は採りません。
-                // 2026-08-06に試したところ、反転したカメラからは
-                // 箱が1画素も写らず（切り分けに時間を取られました）、
-                // しかも比べる相手のカメラが変わってしまうので、
+                // カメラを面で反転させると箱が写らず、比較するカメラも
+                // 変わってしまうため、この方法は使用しません。
                 // ずれたときに「反射がおかしい」のか「参照が
                 // おかしい」のか分かりません。同じカメラのままに
                 // できるこちらが確実です。
                 //
-                // 見方は床の縦1列を**行ごと**に。合計値だけだと反射が
+                // 見方は床の縦1列を行ごとに。合計値だけだと反射が
                 // どこまで伸びたかが分からず、既定値の判断はまさに
                 // そこだからです。箱そのものの下端はy=100なので、床
                 // だけを見るためにその下から始めます（入れると箱の緑が
@@ -2159,14 +2108,7 @@ int main(const int argumentCount, char** arguments)
                         savedFloorPosition.y
                         + mirrorFloor.GetTransform().scale.y
                             * 0.5f;
-                    // 鏡像の前に立つ物は2つとも退けます。
-                    //   ・鏡の床そのもの
-                    //   ・④で置いた影用の地面（y=-1.8、上面が-1.7）
-                    // 地面のほうを忘れると、**上面が鏡像の上面と
-                    // ぴったり同一平面**（どちらも-1.7）になり、
-                    // Zファイティングで鏡像が半分しか出ません。
-                    // 2026-08-06にこれで「鏡像は26行」と読み違え、
-                    // 既定値を1つ小さく決めてしまいました。
+                    // 鏡像との重なりを避けるため、鏡の床と影用の地面を退避します。
                     const auto savedGroundPosition =
                         ground.GetTransform().position;
                     mirrorFloor.GetTransform().position =
@@ -2318,15 +2260,8 @@ int main(const int argumentCount, char** arguments)
                         << ", covered " << coveredRows
                         << " from y=" << firstCoveredRow
                         << std::endl;
-                    // 実測: 鏡像はy124から画面下端まで56行。既定1.2で
-                    // **56行＝100%**を埋めます。掃引では0.4=39行(70%)、
-                    // 0.8=48行(86%)、1.0=52行(93%)、1.2で満杯になり、
-                    // 1.6や2.4へ上げても増えません（3.2まで行くと
-                    // 鏡像の外へ漏れ始め、真下の帯が22821→30035へ
-                    // 増えます）。
-                    //
-                    // しきい値は9割。1.2は5行ぶん余裕があり、0.8以下は
-                    // 落ちます。
+                    // 既定の厚みで鏡像の9割以上を覆い、過度に薄い設定を
+                    // 検出できる条件にします。
                     Require(
                         referenceRows >= 40,
                         "The mirrored box must be visible to"
@@ -2398,14 +2333,12 @@ int main(const int argumentCount, char** arguments)
             // 輪郭の「段差」を測ります。
             //
             // 中間色の画素を数える方法は使えません。キューブ面の
-            // 陰影まで中間色として拾ってしまい、2万画素中5500以上が
-            // 常に該当して輪郭の変化が埋もれます（2026-08-05に
-            // 5535→5569しか動かず判定に使えませんでした）。
+            // 陰影まで中間色として拾い、輪郭の変化が埋もれるためです。
             //
             // 代わりに横方向の隣接差の最大値を行ごとに取り、その
             // 平均を見ます。ギザギザした輪郭は1画素で全コントラスト
             // 跳ぶので段差が大きく、均されると小さくなります。
-            // つまりTAAを有効にすると**下がる**のが正しい向きです。
+            // つまりTAAを有効にすると下がるのが正しい向きです。
             const auto edgeStepAverage =
                 [&](const std::vector<std::uint8_t>& frame)
                 {
@@ -2537,18 +2470,12 @@ int main(const int argumentCount, char** arguments)
                 << hardRowCount(taaOffFrame, 100)
                 << " -> " << hardRowCount(taaOnFrame, 100)
                 << std::endl;
-            // 段差が小さくなること＝ギザギザが均されたこと。
-            // 実測は15%減（131.2→111.3）。12%を要求します。
-            //
-            // この12%は「空側を混ぜ忘れた版で落ちる」値です。
-            // シェーダーで深度1の画素を早期returnしていた頃は
-            // 8%減（120.8）しか出ませんでした。輪郭の空側にAAが
-            // かからない状態なので、通してはいけません。
+            // 輪郭の両側へAAが適用されることを確認するため、
+            // 画素間の段差が12%以上減少することを要求します。
             Require(
                 stepAfter < stepBefore * 0.88,
                 "TAA must reduce the hard step across the diagonal edge.");
-            // こちらの方が鋭敏です。実測は80→13（84%減）なので、
-            // 半減を要求します（空側を混ぜ忘れた版は56で落ちます）。
+            // 1画素で大きく変化する行が半減し、輪郭が平滑化されること。
             const auto hardBefore =
                 hardRowCount(taaOffFrame, 150);
             const auto hardAfter =
@@ -2596,10 +2523,7 @@ int main(const int argumentCount, char** arguments)
             // 正しく動いていても落ちます。平均が十分小さければ
             // 「絵として静止している」と言えます。
             //
-            // 閾値0.3は「直す前のコードで落ちる」値です。再投影に
-            // ずらし込みの行列を使っていた版は1.12、空側を混ぜ忘れて
-            // いた版は0.32まで悪化していました（正しい版は0.15）。
-            // ここを緩くすると、同じ間違いを入れても気付けません。
+            // 平均差0.3未満を要求し、再投影誤差による静止画のちらつきを検出します。
             Require(
                 settleAverage < 0.3,
                 "TAA must converge on a static scene instead of flickering.");
@@ -2629,7 +2553,7 @@ int main(const int argumentCount, char** arguments)
                 LamaPon::TemporalAntiAliasingSettings{});
         }
 
-        // ⑦ SSAO（--dump のときだけ）。
+        // (7) SSAO（--dump のときだけ）。
         // 陰りの見た目は数値で判定しにくいので、ここではアサーション
         // をせず、有効・無効の2枚を書き出して目視で比べられるように
         // します。キューブが床に接しているので、接地部分に陰りが
@@ -2669,15 +2593,11 @@ int main(const int argumentCount, char** arguments)
             // 接地部の陰りを見るための専用の段。
             //
             // 既定のシーンはキューブの底が-1.0、床の上面が-1.7で
-            // 0.7だけ浮いているため、SSAOがほとんど効きません
-            // （2026-08-04に上のoff/onを比べたところ、差は最大
-            // 1/255・全体の1%以下しか出ず、判定に使えませんでした）。
+            // 0.7だけ浮いているため、SSAOの差が最大1/255かつ画面全体の
+            // 1%以下となり、判定に使えません。
             // キューブを床へ置き、カメラを上げて見下ろします。
             //
-            // 影を出したまま比べるのが要点です。SSAOを完成した色へ
-            // 掛けていた頃は影の中がさらに暗くなっていたので、
-            // 「接地部には陰りが出て、影の中は変わらない」ことを
-            // この2枚で確認します。
+            // 影を有効にしたまま比較し、接地部だけに陰りが加わることを確認します。
             const auto savedSubjectPosition =
                 subject.GetTransform().position;
             const auto savedCameraPosition =
@@ -2707,10 +2627,10 @@ int main(const int argumentCount, char** arguments)
                 "ssao-contact-on",
                 renderComposedFrame());
 
-            // SSAOが環境光項だけへ掛かっていることの決定的な確認。
+            // SSAOが環境光項だけへ掛かっていることを確認します。
             // 環境光を0にすると掛ける先が無くなるので、SSAOの有無で
             // 絵が1ビットも変わらないはずです。完成した色へ掛けて
-            // いた頃は、環境光が0でも全体が暗くなっていました。
+            // 完成色へ適用される実装では、この条件でも画像が変化します。
             const auto savedAmbientIntensity =
                 scene.AmbientLightIntensity();
             scene.SetAmbientLightIntensity(0.0f);
@@ -2789,17 +2709,13 @@ int main(const int argumentCount, char** arguments)
                     "clustered-lights",
                     clusteredFrame);
 
-                // 描画方式の切り替えが本当に効いているかを絵で
-                // 確かめます。24灯はForward+でしか全部点きません。
+                // 描画方式の切り替えが画像へ反映されることを確認します。
+                // 24灯はForward+でのみすべて処理されます。
                 // Forwardでは品質設定の上限で打ち切られるので、床の
                 // 光だまりが減ります。
                 //
-                // 見るのは「変わった画素の数」です。画面全体の合計
-                // 輝度で測ろうとして一度失敗しました——環境光と
-                // 平行光が支配的なので、24灯が8灯へ減っても合計は
-                // 0.9%しか動かず、正しく動いているのに判定が落ちます。
-                // 一番ありがちな壊れ方は「切り替えても1ビットも
-                // 変わらない」なので、数える方が素直で厳しい。
+                // 環境光と平行光の影響を避けるため合計輝度ではなく、
+                // 経路の切り替えで変化した画素数を比較します。
                 auto forwardSettings = graphics.Settings();
                 forwardSettings.renderingPath =
                     LamaPon::RenderingPath::Forward;
@@ -2840,8 +2756,7 @@ int main(const int argumentCount, char** arguments)
                         pathMaximumDelta = std::max(
                             pathMaximumDelta,
                             delta);
-                        // 8はディザ等の誤差を落とすためのしきい値。
-                        // 実測の最大差は84なので十分下です。
+                        // ディザなどの微小差を除外するため、差8以下は数えません。
                         if (delta > 8)
                         {
                             ++pathChangedPixels;
@@ -2872,8 +2787,8 @@ int main(const int argumentCount, char** arguments)
                     "The point light limit must cut the"
                     " 24 lights for this stage to mean"
                     " anything.");
-                // 実測5243画素。5倍の余裕を見て1000にします。
-                // 配線が外れれば0になるので、空振りはしません。
+                // GPU差を許容しつつ経路の未切り替えを検出するため、
+                // 変化した画素数の下限を1000にします。
                 Require(
                     pathChangedPixels > 1000,
                     "Switching the rendering path must"
@@ -2896,7 +2811,7 @@ int main(const int argumentCount, char** arguments)
 
             // 半透明の前後ソートの確認。
             //
-            // 重なった半透明を2枚置き、**作る順番だけ変えて**2回
+            // 重なった半透明を2枚置き、作る順番だけ変えて2回
             // 描きます。並べ替えが効いていれば結果は作成順に
             // よらないので、2枚の絵は一致するはずです。色の合成式を
             // 当てにしないので、ブレンドの設定を将来変えても
@@ -2937,7 +2852,7 @@ int main(const int argumentCount, char** arguments)
                 constexpr DirectX::XMFLOAT4 nearColor{
                     0.15f, 0.3f, 1.0f, 0.5f };
 
-                // ①手前を先に作る（並べ替えが無いと手前が先に出る）
+                // (1)手前を先に作る（並べ替えが無いと手前が先に出る）
                 auto* firstNear = buildPane(
                     "AlphaNearFirst", nearZ, nearColor);
                 auto* firstFar = buildPane(
@@ -2951,7 +2866,7 @@ int main(const int argumentCount, char** arguments)
                 static_cast<void>(
                     scene.DestroyGameObject(*firstFar));
 
-                // ②奥を先に作る（同じ絵になるはず）
+                // (2)奥を先に作る（同じ絵になるはず）
                 auto* secondFar = buildPane(
                     "AlphaFarFirst", farZ, farColor);
                 auto* secondNear = buildPane(
@@ -2963,7 +2878,7 @@ int main(const int argumentCount, char** arguments)
                 static_cast<void>(
                     scene.DestroyGameObject(*secondNear));
 
-                // ③板が無い絵。上の2枚が「そもそも何も写って
+                // (3)板が無い絵。上の2枚が「そもそも何も写って
                 // いないから一致した」を弾くために要ります。
                 const auto emptyFrame = renderComposedFrame();
 
@@ -3109,15 +3024,9 @@ int main(const int argumentCount, char** arguments)
                     savedCameraRotation);
             }
 
-            // テセレーションの確認。
-            //
-            // 見るのは「不透明として深度を書けること」です。以前は
-            // この経路だけ描画状態が固定で深度を書けず、地形のような
-            // 不透明な面が作れませんでした。
-            //
-            // 板の**後ろ**に箱を置き、板より**後に**作ります。深度を
-            // 書けていれば箱は隠れます。書けていなければ、後から
-            // 描かれる箱が板を上書きして見えてしまいます。
+            // テセレーションした不透明面が深度を書き込むことを
+            // 確認します。板の後ろに箱を置き、板より後に描画します。
+            // 深度が正しければ、箱は板に隠れます。
             {
                 subject.GetTransform().position =
                     { 0.0f, 50.0f, 0.0f };
@@ -3179,7 +3088,7 @@ int main(const int argumentCount, char** arguments)
                 // 対照。板を消して同じ絵を撮ります。ここで箱が
                 // 見えていなければ、隠しているのは板ではなく別の
                 // 何か（前の段で置いた地面など）で、上の判定は
-                // 空振りです。検証シーンは使い回しなので、
+                // 検証になりません。検証シーンは使い回すため、
                 // 「隠れた＝成功」を信じる前に必ずこれを見ます。
                 static_cast<void>(
                     scene.DestroyGameObject(terrain));
@@ -3258,9 +3167,8 @@ int main(const int argumentCount, char** arguments)
                 // テセレーションShaderを、四角パッチに割れない形状
                 // （Sphere）へ割り当てた場合。
                 // ハル／ドメインを束ねたまま三角形リストを描くのは
-                // D3D11では不正で、利用者の環境ではエディターが
-                // ドライバーごと落ちた（2026-08-07）。描けること
-                // 自体が回帰の目印になります。
+                // D3D11では不正で、ドライバー停止の原因になります。
+                // 描画できること自体を回帰条件として確認します。
                 {
                     auto& wrongShape =
                         scene.CreateGameObject("TessOnSphere");
@@ -3303,9 +3211,8 @@ int main(const int argumentCount, char** arguments)
                         }
                     }
 
-                    // 箱を消した絵と見比べます。「落ちなかった」
-                    // だけでは、描画そのものが捨てられていても
-                    // 気付けません。変化した画素を数えます。
+                    // 箱を消した画像と比較し、描画自体が省略されていないことを
+                    // 変化した画素数で確認します。
                     static_cast<void>(
                         scene.DestroyGameObject(wrongShape));
                     const auto withoutCube =
@@ -3349,15 +3256,13 @@ int main(const int argumentCount, char** arguments)
                         " cannot tessellate must still draw the"
                         " mesh.");
                     // テセレーション前提の頂点シェーダーは単体では
-                    // 成立せず、そのまま描くと何も出ません。消える
-                    // より、壊れている色で見えている方が探しやすい。
+                    // 成立しないため、マゼンタの代替表示になることを確認します。
                     Require(
                         magenta > 500,
                         "A tessellation shader on a shape that"
                         " cannot tessellate must fall back to"
                         " the magenta placeholder.");
-                    // 黙って無視すると「書いたのに効かない」に
-                    // なるので、理由が読めること。
+                    // 適用できない理由が診断へ記録されること。
                     Require(
                         !shaderError.empty(),
                         "Assigning a tessellation shader to a"
@@ -3365,16 +3270,16 @@ int main(const int argumentCount, char** arguments)
                         " reported.");
                 }
 
-                // Cubeは6面それぞれを四角パッチにできるので、
-                // テセレーションが**効きます**（以前は代役でした）。
+                // Cubeは6面それぞれを四角パッチとして
+                // テセレーションできます。
                 //
                 // 見るのは2つです。
                 //  (1) 6面ぜんぶがパッチになっていること。1面しか
                 //      描いていなくても「マゼンタが出ない」だけなら
-                //      通ってしまうので、**普通のCubeと同じ大きさに
-                //      見えるか**を対照に置きます。
-                //  (2) 変位が効いていること。**真上から見ると上面は
-                //      +Yへ動くだけで輪郭が変わらない**ので、箱を
+                //      通ってしまうので、普通のCubeと同じ大きさに
+                //      見えるかを対照に置きます。
+                //  (2) 変位が効いていること。真上から見ると上面は
+                //      +Yへ動くだけで輪郭が変わらないので、箱を
                 //      傾けて側面の膨らみが写るようにします。
                 {
                     auto& tessCube =
@@ -3410,12 +3315,11 @@ int main(const int argumentCount, char** arguments)
                         3,
                         DirectX::XMFLOAT4{
                             8.0f, 0.0f, 0.0f, 0.0f });
-                    // 周波数は分割数と**割り切れない**値にします。
+                    // 周波数は分割数と割り切れない値にします。
                     // 分割8に対して周波数4だと sin(u*4*2pi) が
                     // u=k/8 のすべてでちょうど0になり、頂点が1つも
                     // 動きません（傾きだけ変わるので陰影は変わり、
-                    // 「効いているように見えて動いていない」絵に
-                    // なります。2026-08-07に実際に踏みました）。
+                    // 「効いているように見えて動いていない」絵になります。
                     cubeRenderer.SetCustomParameter(
                         1,
                         DirectX::XMFLOAT4{
@@ -3546,14 +3450,11 @@ int main(const int argumentCount, char** arguments)
                 }
 
                 // ジオメトリシェーダー。三角形を面の向きへ押し出す
-                // 見本を割り当てて、**形が変わること**を見ます。
+                // 見本を割り当てて、形が変わることを見ます。
                 // 「マゼンタが出ない」だけでは、GSが1度も走らなくても
                 // 通ってしまいます。
                 {
-                    // 置く前の絵。あとで「消したら元に戻ったか」を
-                    // 見るための対照です。ずっと前の段の絵を使うと、
-                    // 途中で変わった分まで差として出ます
-                    // （最初これで23143画素の誤検出を出しました）。
+                    // 直前の画像を対照に使い、このオブジェクトによる差だけを測ります。
                     const auto beforeGeometryFrame =
                         renderComposedFrame();
 
@@ -3688,8 +3589,8 @@ int main(const int argumentCount, char** arguments)
                         " geometry shader bound, otherwise the"
                         " comparison below means nothing.");
                     // 面がばらけると、外へ広がる分と、隙間から
-                    // 向こうが見える分の両方が起きます。**増える
-                    // とは限らない**ので、増減ではなく変化量を見ます。
+                    // 向こうが見える分の両方が起きます。増える
+                    // とは限らないので、増減ではなく変化量を見ます。
                     const auto silhouetteChange =
                         gsBurstCoverage > gsFlatCoverage
                             ? gsBurstCoverage - gsFlatCoverage
@@ -3739,14 +3640,14 @@ int main(const int argumentCount, char** arguments)
                 }
 
                 // 同じことを読み込みモデルでも見ます。MeshRenderer
-                // だけ塞いでもModelRendererは素通りしていました
-                // （2026-08-07）。パッチで描く経路が無いのは同じ
+                // だけを制限してもModelRendererは通過します。パッチで描く
+                // 経路が無いのは同じ
                 // なので、テセレーション前提の頂点シェーダーが刺さり
-                // **何も描かれない**まま黙って消えます。
+                // 何も描かれないまま黙って消えます。
                 //
                 // 使うのはCMO（スキニングなし）です。glTF/FBXは
                 // VSSkinnedMainが無くてコンパイルの時点で落ちるため、
-                // 差し替えの手前で止まってしまい**この経路を通りません**。
+                // 差し替えの手前で止まってしまいこの経路を通りません。
                 // マテリアル上書きを有効にしないと共通Litで描かれない
                 // （＝カスタムShaderが効かない）ので、そこも合わせます。
                 {
@@ -3907,13 +3808,8 @@ int main(const int argumentCount, char** arguments)
                     ("The compute effect must run: "
                         + computeError).c_str());
 
-                // 出力テクスチャの中身をCPUへ読み戻して確かめます。
-                //
-                // 最初はスプライトで表示した絵を判定していましたが、
-                // シーンの床まで「赤が優勢」に数えてしまい、さらに
-                // 表示経路（フィルタやUV）が挟まるせいで、
-                // 「Computeが書けていない」のか「表示が違う」のかを
-                // 切り分けられませんでした。書いた本人を直接読みます。
+                // 表示経路のフィルターやUV変換を除外するため、
+                // Compute Shaderの出力テクスチャをCPUへ直接読み戻します。
                 const auto* computeTarget =
                     graphics.FindRenderTexture(
                         "computeProbe");
@@ -4004,7 +3900,7 @@ int main(const int argumentCount, char** arguments)
                     std::abs(left.x - computeRed) < 0.01f
                         && left.y < 0.01f,
                     "The compute shader must write the"
-                    " requested colour into the left half.");
+                    " requested color into the left half.");
                 // 下ほど明るい縦のグラデーション。配線だけ通って
                 // 中身が一様だと、ここで落ちます。
                 Require(
@@ -4017,9 +3913,9 @@ int main(const int argumentCount, char** arguments)
                 // 実際に出ることも見ます。テクスチャの右半分は
                 // 明るい緑なので、画面のどこかに緑が優勢な画素が
                 // 無ければ表示できていません。
-                // スプライトの位置とサイズは**画面のピクセル**です
+                // スプライトの位置とサイズは画面のピクセルです
                 // （ワールド座標ではありません）。サイズを省くと
-                // 数ピクセルになって見えず、判定が空振りします。
+                // 数画素に縮小されるため、測定領域から外れます。
                 auto& computeSprite =
                     scene.CreateGameObject("ComputeSprite");
                 computeSprite.GetTransform().position =
@@ -4219,15 +4115,9 @@ int main(const int argumentCount, char** arguments)
                 cameraObject.GetTransform().SetEulerAngles(savedCameraRotation);
             }
 
-            // リフレクションプローブの永続化。ベイク結果はディスクへ
-            // 保存され、シーン由来のプローブは次にシーンを開いたとき
-            // ベイクの代わりに復元されます。ここでは
-            //   ・復元した絵がベイク直後の絵とバイト単位で一致する
-            //   ・本当にディスクから来ている（黙って再ベイクして
-            //     いない）
-            // の2つを確かめます。後者は「壁の色を変えたのに、復元は
-            // 古い色の反射を返す」ことで見分けます。再ベイクなら新しい
-            // 色が映るはずなので、この2つは両立しません。
+            // ベイク結果がディスクへ保存され、シーン再読み込み時に復元されることを
+            // 確認します。復元画像の一致と、壁を変更しても保存済みの反射を返すことを
+            // 別々に検証します。
             {
                 subject.GetTransform().position =
                     { 0.0f, 50.0f, 0.0f };
@@ -4302,7 +4192,7 @@ int main(const int argumentCount, char** arguments)
                     return component;
                 };
 
-                // ①ベイク（初回はキャッシュが無いので普通に焼き、
+                // (1)ベイク（初回はキャッシュが無いので普通に焼き、
                 // 結果がディスクへ書かれる）。
                 auto& bakedProbe =
                     createProbe("PersistedProbe");
@@ -4320,7 +4210,7 @@ int main(const int argumentCount, char** arguments)
                     "Baking a scene-loaded probe must write"
                     " an environment cache entry.");
 
-                // ②作り直して復元（シーンを開き直したのと同じ）。
+                // (2)作り直して復元（シーンを開き直したのと同じ）。
                 // 絵はベイク直後とバイト単位で一致すること。
                 static_cast<void>(
                     scene.DestroyGameObject(
@@ -4339,11 +4229,8 @@ int main(const int argumentCount, char** arguments)
                     "The restored probe must render the exact"
                     " same frame as the fresh bake.");
 
-                // ③壁を赤へ変えて作り直すと、復元は**緑のまま**の
-                // 反射を返すこと。ここが「本当にディスクから来て
-                // いる」ことの証明です（黙って再ベイクしていたら
-                // 赤くなってこの一致が壊れます）。壁はカメラの
-                // 後ろなので、反射以外にこの色変更は写りません。
+                // (3)壁を赤へ変えても復元後は緑の反射を返し、
+                // 再ベイクではなくディスクキャッシュを使うことを確認します。
                 wallRenderer.SetColor(
                     { 0.9f, 0.06f, 0.05f, 1.0f });
                 static_cast<void>(
@@ -4360,8 +4247,7 @@ int main(const int argumentCount, char** arguments)
                     "The restored probe must serve the stored"
                     " bake even after the wall changed.");
 
-                // ④キャッシュを消せば普通のベイクへ落ち、今度は
-                // 赤い壁が映ること（復元へ固執しないことの確認）。
+                // (4)キャッシュ削除後は再ベイクされ、赤い壁が映ること。
                 std::filesystem::remove_all(
                     environmentCacheDirectory,
                     cleanupError);
@@ -4401,17 +4287,11 @@ int main(const int argumentCount, char** arguments)
             // 床に、壁からのはね返り（バウンス光）が出ることを
             // 確かめます。
             //
-            // 決め手は3つ。
-            //   ・有効でも**データが無ければ**絵は1ビットも変わらない
-            //   ・ベイク後、壁のそばの床は赤寄りになり、壁から離れた
-            //     床の変化はそれよりはっきり小さい（＝画面全体を
-            //     一様に赤くする実装では通らない）
-            //   ・JSONへ保存→別のSceneへ読み込みで、同じ間接光が
-            //     再現される
+            // データ未生成時は画像が変化しないこと、ベイク後は壁付近だけへ
+            // 赤い間接光が加わること、JSON往復後も同じ結果になることを検証します。
             {
-                // 前回、cloneを退かし忘れて「離れた床」の帯に赤い
-                // キューブがそのまま写り、検査が壁のはね返りではなく
-                // キューブを測っていました。両方とも退かします。
+                // 測定領域へ検査用オブジェクトが映り込まないよう、
+                // subjectとcloneを画面外へ移動します。
                 const auto giSavedClonePosition =
                     clone.GetTransform().position;
                 subject.GetTransform().position =
@@ -4476,11 +4356,11 @@ int main(const int argumentCount, char** arguments)
                 const auto giOffFrame = renderComposedFrame();
                 DumpFrame("gi-off", giOffFrame);
 
-                // ①有効でもデータが無ければ何も変わらないこと。
+                // (1)有効でもデータが無ければ何も変わらないこと。
                 auto giSettings =
                     scene.BakedGlobalIllumination();
                 giSettings.enabled = true;
-                // ボリュームは**壁のある左半分だけ**を覆います。
+                // ボリュームは壁のある左半分だけを覆います。
                 // 「箱の外の床は1画素も変わらない」を遠い帯の検査に
                 // するためです（縁のフェードの検証も兼ねます）。
                 giSettings.center = { -3.0f, 1.0f, 0.0f };
@@ -4498,7 +4378,7 @@ int main(const int argumentCount, char** arguments)
                     "Enabling GI without baked data must not"
                     " change the frame.");
 
-                // ②ベイク。毎フレーム数点ずつ進むので、終わるまで
+                // (2)ベイク。毎フレーム数点ずつ進むので、終わるまで
                 // 描画を回します（4x2x4=32点なので数フレーム）。
                 scene.RequestBakedGlobalIlluminationBake();
                 Stage("frame-gi-bake");
@@ -4570,7 +4450,7 @@ int main(const int argumentCount, char** arguments)
                     "The floor outside the GI volume must"
                     " stay unchanged.");
 
-                // ③保存→読み込みで同じ間接光が再現されること。
+                // (3)保存→読み込みで同じ間接光が再現されること。
                 // この場でシーンを丸ごとJSONにし、テストの最後に
                 // 別のSceneへ読み込んで見比べます（今のSceneを
                 // 壊すと以降の節が使えなくなるため、検証は最後です）。
@@ -4908,10 +4788,8 @@ int main(const int argumentCount, char** arguments)
                 DumpFrame(
                     "screeneffect-depth",
                     depthFrame);
-                // 特定の画素を決め打ちすると、カメラの向きが変わった
-                // だけで「たまたま両方とも背景」になり、何も検査
-                // しない段に化けます（実際そうなりました）。画面
-                // 全体の最小・最大で見ます。
+                // 特定画素が背景だけを指す場合を避けるため、
+                // 画面全体の最小値と最大値を使います。
                 float nearDistance = depthProbeRange;
                 float farDistance = 0.0f;
                 for (std::uint32_t y = 0; y < Height; ++y)
@@ -4929,9 +4807,7 @@ int main(const int argumentCount, char** arguments)
                             std::max(farDistance, value);
                     }
                 }
-                // 2点だけ見ると「たまたま両方とも背景だった」のか
-                // 「深度が空」なのか区別できません。全画素の幅を
-                // 見れば一発で分かります。
+                // 背景だけを選ぶ可能性を避けるため、全画素の深度範囲を測ります。
                 float rawMinimum = 1.0f;
                 float rawMaximum = 0.0f;
                 for (std::uint32_t y = 0; y < Height; ++y)
@@ -4967,25 +4843,22 @@ int main(const int argumentCount, char** arguments)
                     << " _43=" << probeProjection._43
                     << std::endl;
 
-                // ①深度が読めていること。画面のどこかに遠平面(1.0)
+                // (1)深度が読めていること。画面のどこかに遠平面(1.0)
                 // より手前の画素があれば配線は通っています。
                 // 全面1.0なら深度が空です。
                 Require(
                     rawMinimum < 0.99f,
                     "The screen effect must read scene"
                     " geometry depth, not an empty buffer.");
-                // ②手前の物と背景が区別できていること。
+                // (2)手前の物と背景が区別できていること。
                 Require(
                     nearDistance < depthProbeRange * 0.5f
                         && farDistance
                             > depthProbeRange * 0.95f,
                     "The screen effect must separate near"
                     " geometry from the far background.");
-                // ③距離の式そのものの検査。ドキュメントに載せた式で
-                // CPU側でも同じ距離になることを見ます。符号を1つ
-                // 間違えるだけで落ちるので、ここが式の正解表です
-                // （射影は右手系なので_33も_43も負、分母は普段
-                // マイナスで遠平面で0へ近づきます）。
+                // (3)文書化された距離変換式がCPU側でも同じ結果になること。
+                // 右手系の射影では_33と_43が負で、分母は遠平面で0へ近づきます。
                 const float expectedNearest =
                     probeProjection._43
                     / (rawMinimum + probeProjection._33);
@@ -5000,10 +4873,9 @@ int main(const int argumentCount, char** arguments)
                     "The documented depth linearisation must"
                     " reproduce what the shader computed.");
 
-                // ④深度から組み立てた法線。単位ベクトルになって
+                // (4)深度から組み立てた法線。単位ベクトルになって
                 // いること、かつ画面内で向きが変わっていることを
-                // 見ます。共有実装が壊れると長さが1から外れるか、
-                // 全画素が同じ向きになります。
+                // 見ます。長さと方向の分布を併せて検証します。
                 const auto normalFrame = probeFrame(2.0f);
                 DumpFrame(
                     "screeneffect-normal",
@@ -5209,8 +5081,7 @@ int main(const int argumentCount, char** arguments)
                 // LAMAPON_PROPERTIESの既定値を流し込むのは
                 // Inspector（EditorLayer::ApplyShaderPropertyDefaults）
                 // なので、コードから割り当てるここでは自分で渡します。
-                // 渡さないと全部0＝真っ黒になり、しかも「絵が出て
-                // いる」ので気付きにくい状態になります。
+                // 未設定値による黒一色の描画を避けるため、既定値を明示します。
                 waterRenderer.SetCustomParameter(
                     0,
                     DirectX::XMFLOAT4{
@@ -5242,8 +5113,7 @@ int main(const int argumentCount, char** arguments)
 
                 // 水面が確実に写っている範囲だけを見ます。画面の
                 // 下半分ぜんぶを測ると、水と空の境目の段差だけで
-                // ばらつきが出てしまい、波が死んでいても閾値を
-                // 超えてしまいます（実際に一度これで見逃しました）。
+                // ばらつきが出てしまい、波が無くても閾値を超えるためです。
                 double sum{};
                 double sumSquared{};
                 double peak{};
@@ -5273,13 +5143,8 @@ int main(const int argumentCount, char** arguments)
                     << " stddev=" << deviation
                     << " peak=" << peak
                     << std::endl;
-                // 太陽の反射（光の帯）が出ていること。これが
-                // この見本の主役なので、水色が出ているだけでは
-                // 通さないようにします。空の映り込みだけなら
-                // 200前後までしか上がりません。
-                // 実測値: 太陽の反射が出ているとき peak=226 /
-                // stddev=26。法線が裏返って反射が消えていたときは
-                // peak=179 / stddev=7.1 でした。その間に置きます。
+                // 水面色だけで通らないよう、太陽反射による輝度205超の
+                // ハイライトを要求します。
                 Require(
                     peak > 205.0,
                     "The water sample shader must show the"
@@ -5313,7 +5178,7 @@ int main(const int argumentCount, char** arguments)
             }
 
             // 太陽の角度サイズ。つるつるの球で、見かけの大きさを
-            // 0度（点）／0.53度（本物の太陽）／8度（曇り）と振り、
+            // 0度（点）／0.53度（太陽相当）／8度（曇り）と振り、
             // ハイライトが広がることを画素数で測ります。
             {
                 const auto savedSubject =
@@ -5329,9 +5194,8 @@ int main(const int argumentCount, char** arguments)
                 clone.GetTransform().position =
                     { 0.0f, 50.0f, 0.0f };
                 // 測る相手は球ではなく「寝かせた平面」です。球だと
-                // 法線が画素ごとに大きく回るので、0.53度ぶんの反射は
-                // 1画素未満に潰れて何も測れません（実際に球で試して
-                // 3つとも0になりました）。平面なら反射の向きが
+                // 法線が画素ごとに大きく回るため、0.53度ぶんの反射が
+                // 1画素未満に潰れます。平面なら反射の向きが
                 // ゆっくり変わるので、太陽の円盤が横に伸びた光の帯
                 // として広い面積に写ります。
                 cameraObject.GetTransform().position =
@@ -5342,8 +5206,7 @@ int main(const int argumentCount, char** arguments)
                 scene.SetAmbientLightIntensity(0.02f);
                 // 水面と同じ理由で、太陽はカメラの向こう側・低い
                 // 位置に置きます。背中側にあると鏡の面には太陽が
-                // 一切写らず、角度を変えても3つとも真っ暗な同じ絵に
-                // なります（実際にこれで空振りしました）。
+                // 一切写らず、角度を変えても同じ暗い画像になります。
                 const auto savedSunAnglesForSize =
                     sunObject.GetTransform().EulerAngles();
                 sunObject.GetTransform().SetEulerAngles(
@@ -5389,10 +5252,7 @@ int main(const int argumentCount, char** arguments)
                     DumpFrame(name, frame);
                     int bright{};
                     maximumLuminance = 0;
-                    // 鏡の面が写っている範囲だけを見ます。画面全体
-                    // だと明るい空が数万画素ぶん混ざって、
-                    // ハイライトの差が完全に埋もれます（一度これで
-                    // 3つとも同じ43188という数字になりました）。
+                    // 明るい空の影響を除外するため、鏡面の範囲だけを測ります。
                     for (std::uint32_t y = 100; y < Height; ++y)
                     {
                         for (std::uint32_t x = 0;
@@ -5412,8 +5272,8 @@ int main(const int argumentCount, char** arguments)
                             maximumLuminance = std::max(
                                 maximumLuminance,
                                 luminance);
-                            // 金属面は太陽の反射以外ほぼ真っ暗に
-                            // なるので、境目は低めで足ります。
+                            // 金属面は太陽の反射以外が暗いため、
+                            // 低い閾値で反射部分を数えます。
                             if (luminance > 40)
                             {
                                 ++bright;
@@ -5450,15 +5310,8 @@ int main(const int argumentCount, char** arguments)
                     << " real=" << realPeak
                     << " wide=" << widePeak
                     << std::endl;
-                // 角度を広げるほどハイライトは広がります。実測は
-                // point=5860 / wide=6360 で、差は約500です。角半径が
-                // シェーダーへ届いていないと3つとも完全に同じ数に
-                // なる（差0）ので、その間に200を置いています。
-                //
-                // realがpointとほぼ同じ（5818対5860）なのは正しい
-                // 挙動です。粗さ0.2の面では材質のざらつきのほうが
-                // 太陽の0.53度よりずっと広く、円盤の大きさは埋もれ
-                // ます。太陽の大きさが効くのは磨かれた面だけです。
+                // 角度がシェーダーへ反映されることを検出するため、
+                // 広い光源でハイライトが200画素以上増えることを要求します。
                 Require(
                     wideHighlight > pointHighlight + 200,
                     "A larger angular diameter must widen the"
@@ -5563,9 +5416,8 @@ int main(const int argumentCount, char** arguments)
                 // 「広い面積が薄く変わる」ではなく「狭い面積が
                 // はっきり明るくなる」ことを見ます。
                 //
-                // 実測: changed=44 / perPixel=41。320x180で太陽が
-                // 小さいため面積は狭く出ます。切ると両方0になるので、
-                // その間に置けば空振りしません。
+                // 小さい太陽でも局所的な効果を検出できるよう、20画素超かつ
+                // 1画素あたりの差20超を要求します。
                 Require(
                     changed > 20,
                     "Screen space lens flare must brighten a"
@@ -5646,15 +5498,8 @@ int main(const int argumentCount, char** arguments)
 
             // 被写界深度（DoF）。
             //
-            // 「絵が変わったか」では検証になりません（画面全体を
-            // ぼかす実装でも通ってしまう）。手前と奥に同じ立方体を
-            // 置き、**ピント位置だけ**を入れ替えた2枚を撮って、
-            // 「ピントを合わせた側の輪郭が鋭く、もう一方が甘い」を
-            // 両方向で確かめます。この形なら
-            //   ・何もしていない  → 2枚が同じで両方の比が1になる
-            //   ・全体をぼかす    → 同じく比が1になる
-            //   ・ピント位置を無視 → 同じく比が1になる
-            // のいずれも落ちます。
+            // 手前と奥の同じ立方体で焦点位置を入れ替え、焦点側の輪郭だけが
+            // 鋭くなることを両方向で確認します。
             {
                 const auto savedSubject =
                     subject.GetTransform().position;
@@ -5686,7 +5531,7 @@ int main(const int argumentCount, char** arguments)
                     noTemporal);
                 // 品質側のDoFを明示的に有効にします（プリセットの
                 // 既定に依存させると、既定を変えた日に無言で
-                // 空振りするテストになります）。
+                // 対象を測定できません）。
                 auto depthOfFieldQuality = graphics.Settings();
                 depthOfFieldQuality.depthOfFieldEnabled = true;
                 depthOfFieldQuality.depthOfFieldSampleCount = 24;
@@ -5709,17 +5554,8 @@ int main(const int argumentCount, char** arguments)
                 clone.GetTransform().scale =
                     { 2.0f, 2.0f, 2.0f };
 
-                // 測る帯は実際のダンプ画像から決めました。縦画角45度・
-                // 320x180で、手前の立方体は左端が画面外へ出て**右の
-                // 輪郭が x=98 付近**に来ます（一番右へ出るのは手前の
-                // 面の角ではなく**奥の面の角**です。中心軸から見て
-                // 奥のほうが軸に近いため、投影は外側へ回ります）。
-                // 奥の立方体は x=178〜194・y=83〜97 の小さな四角です。
-                //
-                // どちらの帯も**地面（y=118付近から下）と空の境目を
-                // 含めない**ようにしています。地面は奥へ向かって深度が
-                // 連続的に変わるため、ピント位置を動かすと地平線の
-                // ぼけ具合まで一緒に動いて、立方体の寄与と混ざります。
+                // 320x180、縦画角45度で各立方体の輪郭を含み、
+                // 地面と空の境界を避ける帯を測定します。
                 constexpr std::uint32_t NearMinimumX = 78;
                 constexpr std::uint32_t NearMaximumX = 124;
                 constexpr std::uint32_t NearMinimumY = 58;
@@ -5735,7 +5571,7 @@ int main(const int argumentCount, char** arguments)
                 depthOfField.blurStrength = 1.0f;
                 depthOfField.maximumRadius = 12.0f;
 
-                // ①手前にピント（深度5〜7が鋭い帯）。
+                // (1)手前にピント（深度5〜7が鋭い帯）。
                 depthOfField.focusDistance = 6.0f;
                 scene.SetDepthOfFieldSettings(depthOfField);
                 Stage("frame-dof-focus-near");
@@ -5743,7 +5579,7 @@ int main(const int argumentCount, char** arguments)
                     renderComposedFrame();
                 DumpFrame("dof-focus-near", focusNearFrame);
 
-                // ②奥にピント（深度29〜31が鋭い帯）。
+                // (2)奥にピント（深度29〜31が鋭い帯）。
                 depthOfField.focusDistance = 30.0f;
                 scene.SetDepthOfFieldSettings(depthOfField);
                 Stage("frame-dof-focus-far");
@@ -5790,23 +5626,16 @@ int main(const int argumentCount, char** arguments)
 
                 // まず両方の帯に輪郭があること。帯の置き場所を間違えて
                 // 立方体の内側（真っ平ら）だけを測っていると比の判定が
-                // 無意味になるので、先に押さえます。実際に最初はこれで
-                // 空振りし、帯が立方体の中に丸ごと入っていました
-                // （鋭さ0.06＝ほぼ完全に平ら）。
+                // 無意味になるため、先に確認します。
                 //
-                // 実測: ピントの合っている側は手前438・奥904。外した
-                // 側の39・52とは桁が違うので、100はその間に置けます。
+                // 測定帯が輪郭を含むことを保証するため、鋭さ100超を要求します。
                 Require(
                     nearWhenFocusedNear > 100.0
                         && farWhenFocusedFar > 100.0,
                     "Both cubes must show an edge when they"
                     " are in focus.");
-                // ピントを外した側は鋭さが落ちること。実測の落ち方は
-                // 手前が11.1倍、奥が17.5倍です。3.0倍に置いているのは、
-                // 「何もしない」「全体を均一にぼかす」「ピント位置を
-                // 無視する」のどれでも比が1.0付近に張り付くのに対し、
-                // 正しく効いていれば10倍以上出るためで、その間で
-                // いちばん広い余裕を取れる位置です。
+                // 焦点位置を無視する一様なぼかしを除外するため、
+                // 焦点を外した側の鋭さが3分の1未満になることを要求します。
                 Require(
                     nearWhenFocusedNear
                         > nearWhenFocusedFar * 3.0,
@@ -5837,8 +5666,7 @@ int main(const int argumentCount, char** arguments)
 
             // モーションブラー（カメラの動きによるブレ）。
             //
-            // 「動かして撮った絵が甘い」では検証になりません（動かせば
-            // 絵は変わるので当たり前です）。**まったく同じカメラの動き**
+            // カメラ移動による差を除くため、まったく同じカメラの動き
             // に対して、ブラーのオン/オフだけを変えた2枚を撮って比べます。
             // さらに「カメラを動かさなければオンでもオフと同じ」ことも
             // 見ます。効果がゼロになる条件を用意するのがいちばん強い
@@ -5953,10 +5781,7 @@ int main(const int argumentCount, char** arguments)
                     << " / still on " << stillSharpness
                     << std::endl;
 
-                // 実測: 振ったときの鋭さは 604 → 229（2.63倍落ちる）、
-                // 動かさなければ 605 でオフとほぼ同一（差0.2%）。
-                // 効いていなければ3つとも604付近に揃うので、閾値は
-                // その間に置いています。
+                // カメラ移動時は鋭さが半分未満になり、静止時は保たれること。
                 Require(
                     panOffSharpness > 100.0,
                     "The cube must show an edge when motion blur"
@@ -5991,7 +5816,7 @@ int main(const int argumentCount, char** arguments)
             // 自動露出（明順応・暗順応）。
             //
             // 「絵が明るくなった」だけでは、露出を上げるだけの実装でも
-            // 通ります。**暗いシーンでは開き、明るいシーンでは絞る**の
+            // 通ります。暗いシーンでは開き、明るいシーンでは絞るの
             // 両方向を見ます。どちらもオフの絵との比で測るので、
             // シーンの明るさそのものの差は約分されます。
             {
@@ -6018,14 +5843,9 @@ int main(const int argumentCount, char** arguments)
                 autoExposure.minimumLuminance = 0.001f;
                 autoExposure.maximumLuminance = 20.0f;
 
-                // 明るさを測る帯は**空の側**（画面上部）にします。
-                // 画面全体の平均では検証になりませんでした。明るい
-                // シーンでは地面がACESの肩に乗って圧縮されるため、
-                // 露出を1段以上絞っても合計が7%しか動かず、実際に
-                // 効いているのに落ちる判定になりました（絵を見ると
-                // 地面は白飛び側から灰へ、空も暗くなっていました）。
-                // 空は輝度0.1程度で肩から遠いので、露出の変化が
-                // そのまま画素に出ます。
+                // 明るさは画面上部の空で測ります。高輝度の地面は
+                // ACESの肩で圧縮され、露出差が画素値へ現れにくいためです。
+                // 輝度が低い空なら、露出の変化を直接測定できます。
                 constexpr std::uint32_t SkyMinimumY = 4;
                 constexpr std::uint32_t SkyMaximumY = 56;
 
@@ -6126,24 +5946,8 @@ int main(const int argumentCount, char** arguments)
                     << " stops=" << brightStops
                     << std::endl;
 
-                // 実測（320x180の検証シーン）:
-                //   暗いシーン L=0.0713 → 露出 +1.34段、
-                //     空の帯 2.63e6 → 5.64e6（2.14倍）
-                //   明るいシーン L=0.218 → 露出 -0.28段、
-                //     空の帯 2.63e6 → 2.13e6（0.81倍）
-                // 効いていなければ段数は両方0、画素の比は両方1.0に
-                // 張り付くので、閾値はその間に置いています。
-                //
-                // **明るい側の段数が小さいのは正しい挙動です。** 露出は
-                // 画面の**幾何平均**（対数平均）に対して働き、この検証
-                // シーンは上半分がクリアカラー（環境光を上げても変わらない
-                // 固定色、輝度0.1程度）で占められているので、平均が
-                // なかなか上がりません。実際のゲームでは空も明るくなる
-                // ので、もっと大きく振れます。ここを「弱い」と見て
-                // シェーダーを触らないでください。
-                //
-                // まず測った明るさがシーンの明るさに追随していること。
-                // ここが動かないと、以下の判定は全部たまたまです。
+                // 暗い場面と明るい場面で露出が逆方向へ補正されることを確認します。
+                // 先に測定輝度が場面の明るさへ追随することを検証します。
                 Require(
                     brightLuminance > darkLuminance * 2.0,
                     "The measured luminance must follow the"
@@ -6350,8 +6154,7 @@ int main(const int argumentCount, char** arguments)
                 const auto missing =
                     sampleShaderError("shader-error-missing");
 
-                // 2D用のShaderを3Dマテリアルへ入れた場合。利用者が
-                // 実際にやった操作で、HLSLは
+                // 2D用のシェーダーを3Dマテリアルへ設定した場合、HLSLは
                 // 「'VSMain': entrypoint not found」としか言いません。
                 // 説明が足されて届くところまで（配線）を見ます。
                 errorRenderer.SetShaderPath(
@@ -6394,8 +6197,7 @@ int main(const int argumentCount, char** arguments)
                 const auto edited =
                     sampleShaderError("shader-error-edited");
 
-                // 直したときに元へ戻ること。代役が居座ると、今度は
-                // 「直したのに直らない」に見えます。
+                // 修正後は本来の色へ戻り、代替表示が解除されること。
                 writeProbe("variant-probe.hlsl");
                 errorRenderer.ReloadShader();
                 const auto repaired =
@@ -6682,7 +6484,7 @@ int main(const int argumentCount, char** arguments)
             occlusion.enabled = false;
             scene.SetAmbientOcclusionSettings(occlusion);
 
-            // ⑧ 読み込みモデル（--dump のときだけ）。
+            // (8) 読み込みモデル（--dump のときだけ）。
             // スキニングモデルはDirectXTKの頂点シェーダーで変形し、
             // ピクセルシェーダーだけをLamaPon Litへ差し替える構造の
             // ため、PSSkinnedMainの入力セマンティクスがずれていると
@@ -6722,7 +6524,7 @@ int main(const int argumentCount, char** arguments)
             modelRenderer.SetRoughness(0.5f);
             modelRenderer.SetMaterialOverrideEnabled(false);
 
-            // ⑨ 発光とBloom。発光はライティングと無関係に加算され、
+            // (9) 発光とBloom。発光はライティングと無関係に加算され、
             // 1を超える値はBloomが滲ませます。
             auto emissiveBloom = graphics.Settings();
             emissiveBloom.bloomEnabled = true;
@@ -6740,7 +6542,7 @@ int main(const int argumentCount, char** arguments)
         }
 
         // ベイクした間接光の保存→読み込み。GIの節で丸ごとJSONへ
-        // したシーンを**別のScene**へ読み込み、同じ場所に同じ
+        // したシーンを別のSceneへ読み込み、同じ場所に同じ
         // はね返りが出ることを確かめます（焼き込みデータはbase64の
         // fp16なので、復元はビット単位で同じテクスチャになるはず）。
         // 主のsceneを壊さないよう、専用のSceneで行います。
@@ -6827,13 +6629,13 @@ int main(const int argumentCount, char** arguments)
                 " bounce light.");
         }
 
-        // 画面エフェクトの差し込み地点。**Bloomの前へ置いた光は
-        // 滲み、後ろへ置いた光は滲みません。** 同じShaderを同じ
+        // 画面エフェクトの差し込み地点。Bloomの前へ置いた光は
+        // 滲み、後ろへ置いた光は滲みません。 同じShaderを同じ
         // パラメーターで2回かけ、滲みの差だけを見ます。
         // 「落ちない」「色が出る」だけでは、指定した位置に入ったのか
         // 従来どおり末尾に入ったのかを区別できません。
         //
-        // この段も**絵を見る判定の最後**へ置いています（後ろは時間しか
+        // この段も絵を見る判定の最後へ置いています（後ろは時間しか
         // 測らないベンチだけ）。途中へ差すと後ろの段の測定値が動きます。
         {
             const auto savedGraphicsSettings =
@@ -6894,7 +6696,7 @@ int main(const int argumentCount, char** arguments)
                 "frame-inject-after-tonemap",
                 afterToneMapFrame);
 
-            // 四角の中は数えません。滲みは**外側**に出ます。
+            // 四角の中は数えません。滲みは外側に出ます。
             const auto insideDot =
                 [](const std::uint32_t x,
                     const std::uint32_t y)
@@ -6961,11 +6763,8 @@ int main(const int argumentCount, char** arguments)
 
         // テセレーションした形で影を落とせること。
         //
-        // **この段は一番後ろに置いています。** 検証シーンは全段で
-        // 使い回すので、途中へ差し込むと後ろの段の測定値が動きます
-        // （実際、GIの数値が3.5倍に動きました）。絵を見る判定は
-        // ここまでで終わっているので、時間しか測らないベンチの手前が
-        // 一番安全です。
+        // 検証シーンを全段で共有するため、この段は描画判定の最後に置き、
+        // 後続の測定値へ影響しないようにします。
         {
             const auto benchSavedCameraPosition =
                 cameraObject.GetTransform().position;
@@ -6991,7 +6790,7 @@ int main(const int argumentCount, char** arguments)
                 DirectX::XMFLOAT4{
                     1.0f, 1.0f, 1.0f, 1.0f });
 
-            // 対照が先です。**同じ大きさ・同じ位置の普通の板**
+            // 対照が先です。同じ大きさ・同じ位置の普通の板
             // が影を落とせているかを見ておかないと、下の判定が
             // 0でも「テセレーションが原因」とは言えません
             // （カメラの向きや太陽の角度で影が画面外へ出て
@@ -7135,8 +6934,8 @@ int main(const int argumentCount, char** arguments)
         }
 
         // エディターの「シーンビュー経路」と「ゲームビュー経路」の
-        // A/B計測（--benchmark/--dump時のみの診断。時間は判定しません——WARPの
-        // 絶対値は環境依存ですが、同じマシンでの相対比較はできます）。
+        // A/B計測（--benchmark/--dump時のみの診断）。WARPの絶対時間は
+        // 環境に依存するため判定せず、同じ環境で相対比較します。
         //
         // エディターでゲームビューのFPSがシーンビューより低い、という
         // 報告の切り分け用です。両経路は同じターゲット・同じポスト
@@ -7175,12 +6974,8 @@ int main(const int argumentCount, char** arguments)
                     }
                 };
 
-                // 1枚ごとにフェンスで待つと、1回の提出にかかる固定費が
-                // 結果をまるごと覆い隠します。実際、320x180から
-                // 1280x720までどの解像度も16.6msに張り付いていました
-                // （表示周期そのものの値です）。これでは解像度の差が
-                // 見えないので、何枚かまとめて積んでから1度だけ待ち、
-                // 1枚あたりへ割り戻します。
+                // 提出ごとの固定費を抑えるため複数フレームをまとめて実行し、
+                // 1回だけ待機して1フレームあたりの時間へ換算します。
                 constexpr int benchBatch = 8;
                 constexpr int benchSamples = 5;
 
@@ -7783,14 +7578,14 @@ int main(const int argumentCount, char** arguments)
             }
         }
 
-        // ---- 法線マップ: BC5でも同じ絵になるか ----
+        // BC5圧縮後も法線マップの描画結果が保たれることを検証します。
         //
         // 法線マップはBC5（RGの2チャンネル）で読み込まれるように
         // なり、シェーダーはZをxyから復元します。ここでは同じ構図で
         // 3枚撮って突き合わせます。背景の物体は3枚とも同じなので、
         // 差はこの平面の陰影にだけ出ます。
-        //   ①法線マップなし ②非圧縮の法線マップ ③BC5の法線マップ
-        // ①と②が違えば法線マップが効いていて、②と③が近ければ
+        //   (1)法線マップなし (2)非圧縮の法線マップ (3)BC5の法線マップ
+        // (1)と(2)が違えば法線マップが効いていて、(2)と(3)が近ければ
         // BC5にしても絵が変わっていない、と言えます。
         {
             const auto normalMapDirectory =
@@ -8010,8 +7805,8 @@ int main(const int argumentCount, char** arguments)
                 << " changed-by-bc5=" << compressionEffect
                 << " bc5-mse=" << compressionError
                 << std::endl;
-            // 実測は2209画素（320x180のうち3.8%）。GPUが変われば
-            // 多少動くので、半分に落ちても気付ける値にしています。
+            // GPU差を許容しつつ法線マップ未適用を検出するため、
+            // 変化した画素数の下限を1000にします。
             Require(
                 mapEffect > 1000,
                 "the normal map must visibly change the shading");
@@ -8043,8 +7838,8 @@ int main(const int argumentCount, char** arguments)
     }
 
     // シェーダーのコンパイル状況。キャッシュが効いているかを
-    // 数字で確かめるために出します（1回目はcompiled中心、2回目は
-    // cacheHit中心になるのが正しい姿）。
+    // 数字で確かめるために出します。1回目はcompiled、2回目は
+    // cacheHitが中心になります。
     {
         const auto stats = LamaPon::ShaderCompileStatistics();
         std::cout

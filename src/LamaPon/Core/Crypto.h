@@ -20,8 +20,8 @@ namespace LamaPon::Crypto
     // （下のKeySlotを参照）。エディターやテストでは、埋め込み前の
     // 既定値がそのまま返ります。
     //
-    // 鍵は復号する実行ファイルへ同梱するしかないので、**解析者に対する
-    // 秘密にはなりません**。ここで守れるのは「1本解いても他のゲームは
+    // 鍵は復号する実行ファイルへ同梱するしかないので、解析者に対する
+    // 秘密にはなりません。ここで守れるのは「1本解いても他のゲームは
     // 開けない」ことと、「バイナリを眺めただけでは鍵が拾えない」ことの
     // 2つだけです。
     [[nodiscard]] AesKey ArchiveKey();
@@ -30,7 +30,7 @@ namespace LamaPon::Crypto
     [[nodiscard]] AesKey RandomKey();
     [[nodiscard]] AesIv RandomIv();
 
-    // ---- 鍵スロット（エクスポーターがバイナリを書き換えるための口）----
+    // 鍵スロット（エクスポーターがバイナリを書き換えるための領域）
     //
     // LamaPonRuntime.dllの.dataには、次の並びのブロックが1つだけあります。
     //
@@ -38,8 +38,8 @@ namespace LamaPon::Crypto
     //     [16,48) パッド（乱数）
     //     [48,80) 鍵 XOR パッド
     //
-    // 書き出しでは、このブロックをゲームごとの鍵で上書きし、**目印も
-    // 乱数で潰します**。実行時はブロックの位置をアドレスで知っている
+    // 書き出しでは、このブロックをゲームごとの鍵で上書きし、目印も
+    // 乱数で潰します。実行時はブロックの位置をアドレスで知っている
     // ので目印は要らず、配布物からは探す手掛かりが消えます。
     inline constexpr std::size_t KeySlotMarkerSize = 16;
     inline constexpr std::size_t KeySlotSize =
@@ -48,7 +48,7 @@ namespace LamaPon::Crypto
     using KeySlot = std::array<std::uint8_t, KeySlotSize>;
     using KeySlotMarker = std::array<std::uint8_t, KeySlotMarkerSize>;
 
-    // 探すための目印。**このバイナリのスロットの先頭から読みます。**
+    // 探すための目印。このバイナリのスロットの先頭から読みます。
     // 定数として持つと、同じ並びが.rdataにも載って書き換え先が
     // 2箇所に見えてしまうためです（書き出しはそこで失敗します）。
     [[nodiscard]] KeySlotMarker ExpectedKeySlotMarker();
@@ -56,7 +56,7 @@ namespace LamaPon::Crypto
     // 目印を乱数で潰した、書き込み用のスロットを組み立てます。
     [[nodiscard]] KeySlot MakeKeySlot(const AesKey& key);
 
-    // ---- AES-256-CBC（PKCS#7）とHMAC-SHA256。どちらもCNG（bcrypt）----
+    // AES-256-CBC（PKCS#7）とHMAC-SHA256。どちらもCNG（bcrypt）を使用。
     [[nodiscard]] std::vector<std::uint8_t> AesEncrypt(
         const std::uint8_t* data,
         std::size_t size,
@@ -106,7 +106,7 @@ namespace LamaPon::Crypto
         const std::uint8_t* cipherText,
         std::size_t size);
 
-    // ---- 単体ファイル用の封筒 ----
+    // 単体ファイル用の暗号化形式
     //
     // 配布物へ同梱する1ファイルを、そのまま置き換えられる形で
     // 包みます。並びは 目印8 + IV16 + MAC32 + 暗号文 です。

@@ -829,9 +829,8 @@ namespace LamaPon::Hub
         // C++スクリプトを追加します。
         std::filesystem::create_directories(
             projectRoot / L"assets" / L"scenes");
-        // 一覧はLamaPon::BuiltInProjectAssets()が持ちます。ここへ
-        // 直接並べていた頃は、既存プロジェクトの更新側の一覧と
-        // 食い違い、片方にしか無いファイルができました。
+        // 新規作成と既存プロジェクトの更新で同じ組み込みアセット一覧を
+        // 使用します。
         for (const auto& relative :
             LamaPon::BuiltInProjectAssets())
         {
@@ -843,23 +842,15 @@ namespace LamaPon::Hub
             settings,
             ProjectSettingsFileType::Project);
         // 作った直後のプロジェクトにエンジンバージョンを記録します。
-        // 記録が無いと、最初にエディターで開いたとき「古いプロジェクト
-        // なので更新しますか？」と、作りたてなのに訊かれます
-        // （LamaPonCliのnewで作ったプロジェクトで実際に踏みました）。
+        // 記録が無いと、最初に開いたときに旧版として判定されます。
         RecordProjectEngineVersion(
             projectRoot,
             VersionString);
         WriteJson(
             projectRoot / L"assets" / L"scenes" / L"Main.scene.json",
             SceneForTemplate(projectTemplate));
-        // Gitで共有する前提の除外リストです。`.lamapon/`の中は
-        // project.jsonだけが共有すべき内容で、残りは実行した
-        // PCごとの状態（レイアウト、ログ、ビルド生成物）です。
-        //
-        // ここへ足し忘れると、共有した相手のエディターのレイアウトを
-        // 上書きしたり、他人のPCのビルド生成物がコミットに混ざったり
-        // します。`.lamapon/`へ何か書き出す機能を足したときは、
-        // 共有すべきものかどうかを必ず判断してください。
+        // Gitで共有するproject.jsonを除き、.lamapon内の端末固有データ
+        // （レイアウト、ログ、ビルド生成物）を除外します。
         WriteText(
             projectRoot / L".gitignore",
             ".lamapon/editor-settings.json\n"
@@ -867,17 +858,13 @@ namespace LamaPon::Hub
             ".lamapon/LamaPonEditor.log\n"
             ".lamapon/bin/\n"
             ".lamapon/build/\n"
-            // GPUプロファイラーの書き出し。計測値はPCごとに違うので
-            // 共有しても意味がありません。
+            // GPUプロファイラーが出力する端末固有の計測値。
             ".lamapon/profile.json\n"
             // C++ Game Moduleのビルドログ。
             ".lamapon/game-module-build.log\n"
-            // パッケージ更新前の退避（1世代）。パッケージ本体の
-            // 丸ごとの複製なので、共有するとリポジトリが二重に
-            // 太ります。
+            // パッケージ更新前に作る1世代分のバックアップ。
             ".lamapon/package-backups/\n"
-            // クラッシュダンプ。落ちたPCの状態そのものなので、
-            // 他の人が持っていても意味がありません。
+            // 実行した端末のクラッシュダンプ。
             ".lamapon/Crashes/\n"
             // CLIの非同期実行・常駐Runtimeが作るセッション記録。
             ".lamapon/jobs/\n"
@@ -893,10 +880,7 @@ namespace LamaPon::Hub
             "__pycache__/\n"
             ".pytest_cache/\n"
             "*.py[cod]\n"
-            // プロジェクト移行が組み込みアセットを更新するときに
-            // 残す退避（`<名前>.bak`）。エンジンはこれをアセットとして
-            // 扱わず（.metaも作らず、書き出しにも含めず）、移行を
-            // 走らせたPCにだけできるものなので共有しません。
+            // プロジェクト移行時に作る組み込みアセットのバックアップ。
             "*.bak\n");
         if (projectTemplate == ProjectTemplate::LearningThreeDimensional
             || projectTemplate == ProjectTemplate::LearningTwoDimensional)
@@ -904,12 +888,12 @@ namespace LamaPon::Hub
             WriteText(
                 projectRoot / L"README.md",
                 "# " + projectName + "\n\n"
-                "C++を理解し、ゲームを作りながら、ゲームエンジニアとして"
-                "成長できるLamaPon学習プロジェクトです。\n\n"
+                "ゲーム制作を通してC++とエンジンの基本を学ぶ、"
+                "LamaPonのサンプルプロジェクトです。\n\n"
                 "まず[`LEARNING.md`](LEARNING.md)を開いてください。\n\n"
                 "- `assets/`: 実際に動くSceneとC++ Script\n"
                 "- `learning/journey.json`: 共有する学習手順\n"
-                "- `learning/design-note.md`: 企画の改造メモ\n"
+                "- `learning/design-note.md`: ゲーム企画メモ\n"
                 "- `.lamapon/project.json`: 共有するプロジェクト設定\n"
                 "- `.lamapon/learning-progress.json`: 個人の進捗（Git除外）\n");
             InitializeLearningJourney(projectRoot, true);

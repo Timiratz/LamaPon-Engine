@@ -41,8 +41,8 @@ namespace LamaPon
             std::string_view key) const noexcept;
         [[nodiscard]] bool Contains(
             std::string_view key) const noexcept;
-        // AI/デバッグ用に現在値を列挙します。返り値はコピーなので、
-        // ゲーム更新中に呼び出しても保持中の値を変更しません。
+        // 自動検証とデバッグのために現在値を列挙します。戻り値は
+        // コピーなので、ゲーム更新中に呼び出しても状態を変更しません。
         [[nodiscard]] std::vector<
             std::pair<std::string, Value>> Snapshot() const;
         bool Remove(std::string_view key);

@@ -146,11 +146,10 @@ int main()
                 LamaPon::ShaderUsage::Material);
             Require(
                 Contains(message, "Compute Shader"),
-                "the hint must recognise a compute shader");
+                "the hint must recognize a compute shader");
         }
 
-        // includeの取りこぼし。全プロジェクトを開けなくした穴なので、
-        // ここだけはソースが読めなくても説明が出ること。
+        // include不足はソースを読み取れない場合も診断できること。
         {
             const auto message = LamaPon::ExplainShaderError(
                 "error X1507: failed to open source file:"
@@ -173,14 +172,13 @@ int main()
                 LamaPon::ShaderUsage::Material);
             Require(
                 Contains(message, "VSSkinnedMain")
-                    && Contains(
-                        message,
-                        "3Dマテリアルとしては書けて"),
+                    && Contains(message, "PSSkinnedMain")
+                    && Contains(message, "スキニング"),
                 "a skinned-only miss must say which entry points"
                 " to add");
         }
 
-        // 逆に、入口がまるごと無いものへは従来どおりの説明。
+        // 入口が一つも無い場合は、必要な入口を案内すること。
         {
             const auto message = LamaPon::ExplainShaderError(
                 "error X3501: 'VSMain': entrypoint not found",
@@ -220,9 +218,8 @@ int main()
                 " constant buffer declaration");
         }
 
-        // 見当がつかないものは元のまま返すこと。勝手な説明を足すと
-        // 本当の原因から目をそらせます。**上の判定は名前が一致した
-        // ときだけ効くこと**を、ここで縛っています。
+        // 未知のエラーは原文を返します。誤診を避けるため、上記のヒントは
+        // 識別子が一致する場合だけ追加します。
         {
             const std::string original =
                 "error X3004: undeclared identifier 'Foo'";
@@ -232,7 +229,7 @@ int main()
                 LamaPon::ShaderUsage::Material);
             Require(
                 message == original,
-                "an unrecognised error must be passed through");
+                "an unrecognized error must be passed through");
         }
 
         std::cout << "Shader diagnostics tests passed.\n";

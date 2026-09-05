@@ -7,7 +7,7 @@
 
 namespace LamaPon
 {
-    // ---- co_awaitで使う待機条件 ----
+    // co_awaitで使う待機条件
 
     // 指定秒数待ちます（timeScale適用後のゲーム時間）。
     struct WaitForSeconds final

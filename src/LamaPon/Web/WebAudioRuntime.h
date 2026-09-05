@@ -7,8 +7,8 @@ namespace LamaPon::Web
 {
     using AudioHandle = std::uint32_t;
 
-    // Browser向けの薄いWeb Audio Adapterです。Game CodeはURLまたはToneで
-    // 再生を要求し、自動再生制限はUnlockFromUserGesture()で処理します。
+    // ブラウザー向けのWeb Audioアダプターです。URLまたは音色を指定して
+    // 再生し、自動再生の制限はUnlockFromUserGesture()で処理します。
     class WebAudioRuntime final
     {
     public:

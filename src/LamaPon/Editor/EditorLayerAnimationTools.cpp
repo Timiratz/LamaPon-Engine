@@ -1,4 +1,3 @@
-// EditorLayerのアニメーションタイムラインとAnimator Controllerグラフをまとめた翻訳単位です。
 #include "LamaPon/Editor/EditorLayer.h"
 
 #include "LamaPon/Editor/EditorLayerShared.h"

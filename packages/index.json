@@ -4,7 +4,7 @@
     {
       "name": "easing-tween",
       "displayName": "Easing & Tween",
-      "description": "動きに緩急をつけるイージング関数（27種＋Linear）と、位置・回転・拡縮を時間をかけて動かすTweenコンポーネント。Easing.hをincludeすれば自分のScriptからも使えます。",
+      "description": "Linearを含む28種類のイージング関数と、位置・回転・拡大縮小を補間するTweenコンポーネントを提供します。Easing.hをインクルードすると、独自のスクリプトからも利用できます。",
       "author": "LamaPon",
       "version": "1.0.0",
       "minimumEngineVersion": "0.1.0",

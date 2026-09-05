@@ -1,9 +1,7 @@
 // Transformの回転（クォータニオン正本）を検査します。
 //
-// 一番重要なのは「オイラー角→クォータニオン→行列」が、以前の
-// 「オイラー角→行列」と同じ行列になること。ここがずれると、
-// 既存シーンの見た目が全部変わります。
-// あわせてジンバルロックが解消されたことも確認します。
+// オイラー角からクォータニオンを経て作る行列の互換性と、
+// クォータニオンによる回転合成を検証します。
 
 #include "LamaPon/Scene/GameObject.h"
 #include "LamaPon/Scene/Transform.h"
@@ -69,7 +67,7 @@ int main()
     using namespace DirectX;
     using LamaPon::Transform;
 
-    // ① 既定は無回転。
+    // (1) 既定は無回転。
     {
         Transform transform;
         Require(
@@ -86,9 +84,8 @@ int main()
             " Euler angles.");
     }
 
-    // ② 行列の互換: SetEulerAnglesで作った回転行列が、以前の
+    // (2) 行列の互換: SetEulerAnglesの結果が
     //    XMMatrixRotationRollPitchYawと一致すること。
-    //    ここが崩れると既存シーンの見た目が変わります。
     {
         const float angles[]{
             -3.0f, -1.5f, -0.7f, 0.0f,
@@ -132,7 +129,7 @@ int main()
             << checked << " angle triples\n";
     }
 
-    // ③ オイラー角の往復: 同じ「回転」に戻ること。数値が同じに
+    // (3) オイラー角の往復: 同じ「回転」に戻ること。数値が同じに
     //    戻るとは限らないので（-180度と180度など）、行列で比べます。
     {
         const float angles[]{
@@ -174,7 +171,7 @@ int main()
         }
     }
 
-    // ④ ジンバルロックが解消されていること。
+    // (4) ジンバルロックが解消されていること。
     //    オイラー角ではピッチ90度でヨーとロールが縮退し、別々に
     //    回しても同じ姿勢になってしまいます。クォータニオンなら
     //    Rotateで独立に回せます。
@@ -209,7 +206,7 @@ int main()
             "Rotate must change the orientation.");
     }
 
-    // ⑤ Rotateの合成が正しいこと: 90度を2回で180度。
+    // (5) Rotateの合成が正しいこと: 90度を2回で180度。
     {
         Transform transform;
         transform.Rotate({ 0.0f, 1.0f, 0.0f }, XM_PIDIV2);
@@ -224,7 +221,7 @@ int main()
             " yaw.");
     }
 
-    // ⑥ 正規化されていること（合成を繰り返しても崩れない）。
+    // (6) 正規化されていること（合成を繰り返しても崩れない）。
     {
         Transform transform;
         for (int step = 0; step < 2000; ++step)
@@ -243,7 +240,7 @@ int main()
                 + std::to_string(length));
     }
 
-    // ⑦ 位置と大きさが回転と独立に効くこと。
+    // (7) 位置と大きさが回転と独立に効くこと。
     {
         Transform transform;
         transform.position = { 1.0f, 2.0f, 3.0f };
@@ -262,7 +259,7 @@ int main()
             " translation.");
     }
 
-    // ⑧ 無効なクォータニオンを受け取っても、NaNをシーンへ広げず
+    // (8) 無効なクォータニオンを受け取っても、NaNをシーンへ広げず
     //    単位回転へ戻します。
     {
         Transform transform;
@@ -284,7 +281,7 @@ int main()
             "A non-finite quaternion must fall back to identity.");
     }
 
-    // ⑨ 親が回転していてもRotateWorldはEuler成分を近似せず、
+    // (9) 親が回転していてもRotateWorldはEuler成分を近似せず、
     //    ワールド軸まわりの回転として適用します。
     {
         LamaPon::GameObject parent(1, "Parent");

@@ -81,7 +81,7 @@
         {
           "type": "TextRenderer",
           "enabled": true,
-          "text": "Scene Managerで遷移しました！",
+          "text": "シーンマネージャーでシーンを切り替えました！",
           "fontFamily": "Yu Gothic UI",
           "fontSize": 42.0,
           "color": [0.4, 0.85, 1.0, 1.0],
@@ -94,7 +94,7 @@
     },
     {
       "id": 4,
-      "name": "元のSceneへ戻る",
+      "name": "元のシーンへ戻る",
       "enabled": true,
       "parent": 1,
       "transform": {
@@ -115,7 +115,7 @@
         {
           "type": "UIButton",
           "enabled": true,
-          "label": "元のSceneへ戻る",
+          "label": "元のシーンへ戻る",
           "fontFamily": "Yu Gothic UI",
           "fontSize": 24.0,
           "fallbackSize": [320.0, 72.0],

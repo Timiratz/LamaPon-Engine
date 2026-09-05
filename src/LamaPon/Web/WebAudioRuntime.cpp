@@ -68,9 +68,9 @@ namespace
         };
         runtime.context.addEventListener("statechange", runtime.publishState);
         runtime.publishState();
-        // BrowserはUser GestureまでAudioをSuspendします。最初のKeyboard、
-        // Pointer、Touch操作を受け付け、Target専用の「Audio有効化」Buttonを
-        // Game側で用意しなくても再生を開始できるようにします。
+        // ブラウザーはユーザー操作まで音声を停止します。最初のキー、
+        // ポインター、タッチ操作で再開し、ゲーム固有の有効化ボタンを
+        // 必須にしません。
         root.addEventListener("keydown", runtime.unlock, { passive: true });
         root.addEventListener("pointerdown", runtime.unlock, { passive: true });
         root.addEventListener("touchstart", runtime.unlock, { passive: true });
@@ -117,9 +117,9 @@ namespace
         if (!runtime || !runtime.master) return;
         const sourceUrl = UTF8ToString(url);
         const context = runtime.context;
-        // Export GameはAssetをEmscripten Virtual File Systemへ埋め込みます。
-        // /assets/... のfetchは別ServerがDirectoryを公開した場合だけ有効なため、
-        // 埋め込みByteを優先し、fetchは通常の複数File Package用Fallbackにします。
+        // エクスポート時にアセットをEmscriptenの仮想ファイルシステムへ
+        // 埋め込みます。埋め込みデータを優先し、複数ファイル構成では
+        // fetchを代替手段として使います。
         let load;
         try {
             load = typeof FS !== "undefined"

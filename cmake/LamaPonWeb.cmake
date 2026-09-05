@@ -52,9 +52,10 @@ function(lamapon_add_web_game target)
         "${LAMAPON_WEB_ROOT}/src/LamaPon/Web/WebApplication.cpp"
         "${LAMAPON_WEB_ROOT}/src/LamaPon/Web/WebInput.cpp"
     )
-    # Portable 2D and 3D share the tiny canvas/context owner. A 2D-only target
-    # does not expose or use Model/Mesh components, but still needs the frame
-    # clear/present path before DOM sprites and text are composited.
+    # Portable 2Dと3Dは、キャンバスとコンテキストを管理する小さな実装を
+    # 共有します。2D専用ターゲットはModel/Meshコンポーネントを公開も使用も
+    # しませんが、DOMのスプライトとテキストを合成する前にフレームの消去と
+    # 表示処理が必要です。
     if("renderer3d" IN_LIST TWG_MODULES
        OR (TWG_PORTABLE_GAME AND "renderer2d" IN_LIST TWG_MODULES))
         list(APPEND runtime_sources
@@ -120,8 +121,8 @@ function(lamapon_add_web_game target)
         -Wall
         -Wextra
         -Wpedantic
-        # Scene/Scriptの既存catchを有効にし、復旧可能な例外で
-        # ブラウザーRuntime全体がabortしないようにします。
+        # シーン／スクリプトにある既存の例外処理を有効にし、回復可能な例外で
+        # ブラウザーランタイム全体が強制終了しないようにします。
         -fexceptions
     )
 
@@ -141,8 +142,8 @@ function(lamapon_add_web_game target)
     if(TWG_SINGLE_FILE)
         target_link_options(${target} PRIVATE
             "-sSINGLE_FILE=1"
-            # Base64 keeps a self-contained HTML/Wasm package valid when it is
-            # opened directly from file:// without a local web server.
+            # Base64にすると、ローカルWebサーバーを使わずfile://から直接
+            # 開いた場合も、自己完結型のHTML/Wasmパッケージとして動作します。
             "-sSINGLE_FILE_BINARY_ENCODE=0"
         )
     endif()
@@ -166,10 +167,10 @@ function(lamapon_add_web_game target)
         target_link_options(${target} PRIVATE
             "--embed-file=${asset_directory}@/assets"
         )
-        # Emscripten embeds the directory during link.  CMake does not infer
-        # individual files from --embed-file, so explicitly make every staged
-        # asset a link dependency.  A PNG->WebP reconversion must always
-        # regenerate the distributable HTML even when C++ did not change.
+        # Emscriptenはリンク時にディレクトリを埋め込みます。CMakeは
+        # --embed-fileから個々のファイルを推測しないため、ステージングした
+        # 全アセットを明示的にリンク依存へ加えます。C++に変更がなくても、
+        # PNGからWebPへの再変換後は配布用HTMLを必ず作り直します。
         file(GLOB_RECURSE lamapon_web_asset_files
             CONFIGURE_DEPENDS
             LIST_DIRECTORIES false

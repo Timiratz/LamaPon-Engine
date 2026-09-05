@@ -13,13 +13,9 @@ namespace LamaPon::EnvironmentCache
 {
     // 事前畳み込み済み環境（IBL）のディスクキャッシュ。
     //
-    // リフレクションプローブはシーンを開くたびに自動で再ベイク
-    // されます（6面の描画＋GGX畳み込み×プローブ数）。SkyboxのIBLも
-    // キューブマップを設定するたびに畳み込みが走ります。どちらも
-    // 結果は前回と同じなのにGPUでやり直していました。ここでは
-    // 畳み込みの**出力**（スペキュラ8ミップ＋放射照度、fp16キューブ
-    // 2枚で1組あたり約1MB）を保存し、2回目以降はファイルから
-    // テクスチャを作るだけにします。
+    // リフレクションプローブとSkyboxの決定的な畳み込み結果を保存し、
+    // 同じ入力に対するGPUでの再計算を省略します。1組はスペキュラ8ミップと
+    // 放射照度のfp16キューブ2枚で構成されます。
     //
     // 何をもって「同じ」とするかは呼ぶ側が鍵で表します（プローブは
     // シーンのパス＋位置＋範囲、Skyはキューブマップの内容ハッシュ）。
@@ -34,9 +30,9 @@ namespace LamaPon::EnvironmentCache
     [[nodiscard]] std::uint64_t HashBytes(
         std::span<const std::uint8_t> bytes) noexcept;
 
-    // 保存。GPUのキューブ2枚をCPUへ読み戻すので、ベイク直後や
-    // 畳み込み直後（どうせGPUを待つ場面）で呼びます。失敗しても
-    // 何も起きません。
+    // GPUのキューブ2枚をCPUへ読み戻して保存します。GPUとの同期が
+    // 必要なため、ベイクや畳み込みの直後に呼びます。失敗時は保存を
+    // 行いません。
     void Store(
         std::uint64_t key,
         ID3D11Device* device,
@@ -44,8 +40,8 @@ namespace LamaPon::EnvironmentCache
         const EnvironmentRenderer::OwnedPrefilteredEnvironment&
             environment) noexcept;
 
-    // 読み込み。無い・壊れているときは IsValid() が偽の値を返します
-    // （呼ぶ側は普通にベイク／畳み込みをすればよい）。
+    // キャッシュが無い、または破損している場合はIsValid()が偽の値を返し、
+    // 呼び出し側でベイクまたは畳み込みを実行します。
     [[nodiscard]]
     EnvironmentRenderer::OwnedPrefilteredEnvironment TryLoad(
         ID3D11Device* device,

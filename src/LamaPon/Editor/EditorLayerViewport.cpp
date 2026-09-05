@@ -1,4 +1,3 @@
-// EditorLayerのScene/Gameビューポート描画、ギズモ、シーンカメラ、タイル描画をまとめた翻訳単位です。
 #include "LamaPon/Editor/EditorLayer.h"
 
 #include "LamaPon/Editor/EditorLayerShared.h"
@@ -314,9 +313,8 @@ namespace LamaPon
         }
         ImGui::PopStyleColor(6);
 
-        // Submit both tab headers before the viewport content.  The viewport
-        // uses the same draw list for its image and overlays, so drawing it
-        // between tab items can hide a later inactive tab on some frames.
+        // 両方のタブ見出しを登録してから、共通の描画リストへ
+        // ビューポート画像とオーバーレイを追加します。
         if (drawSceneViewport)
         {
             m_activeViewport = ViewportMode::Scene;
@@ -1144,10 +1142,8 @@ namespace LamaPon
         }
         else
         {
-            // 自由（パネル追従）でも描画スケールを効かせます。
-            // こちらが既定なので、ここで効かないと「重いときに
-            // 軽くする手段が無い」状態になります。パネルの大きさは
-            // 変わらないので、絵はそのまま拡大表示されます。
+            // 既定のパネル追従モードにも描画スケールを適用します。
+            // パネルの表示サイズは保ち、縮小した描画結果を拡大表示します。
             const float panelScale =
                 m_graphics.Settings().renderScale
                 * resolutionScale;
@@ -1169,10 +1165,8 @@ namespace LamaPon
             m_gameRenderTarget.Width(),
             m_gameRenderTarget.Height());
 
-        // When a fixed resolution is chosen, letterbox/pillarbox
-        // the render inside the available panel space instead of
-        // stretching it, so the aspect ratio matches the target
-        // resolution exactly so the result matches the game view.
+        // 固定解像度では画像を引き伸ばさず、パネル内へ余白付きで配置し、
+        // ゲームビューと同じアスペクト比を保ちます。
         ImVec2 displaySize = size;
         ImVec2 displayOffset{};
         if (m_gameViewFixedResolution)
@@ -1349,9 +1343,8 @@ namespace LamaPon
         ImGui::TextDisabled("描画スケール");
         ImGui::SameLine();
         ImGui::TextDisabled("(?)");
-        // ツールチップは必ず出る項目へ付けます。条件付きの行の
-        // 後ろに置くと、その行が出ないフレームでは係り先が別物へ
-        // ずれ、既定の100%では一度も表示されませんでした。
+        // ツールチップは常に表示されるラベルへ結び付け、
+        // 解像度設定にかかわらず同じ項目を参照させます。
         if (ImGui::IsItemHovered())
         {
             ImGui::SetTooltip(
@@ -1379,9 +1372,8 @@ namespace LamaPon
         scaleButton("50%", 0.5f);
         ImGui::NewLine();
 
-        // 実際の描画解像度は常に出します。自由だと設定値のどこにも
-        // 数字が出ないため、FPSが落ちた原因が解像度なのか中身なのか
-        // を切り分けられませんでした。
+        // 実際の描画解像度を常に表示し、描画スケールと
+        // パフォーマンスの関係を確認できるようにします。
         ImGui::TextDisabled(
             "実際の描画: %u x %u",
             m_gameRenderTarget.Width(),

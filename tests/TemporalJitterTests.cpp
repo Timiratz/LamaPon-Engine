@@ -40,7 +40,7 @@ namespace
 
 int main()
 {
-    // ① Halton列の既知の値。基数2は 1/2, 1/4, 3/4, 1/8 ... と
+    // (1) Halton列の既知の値。基数2は 1/2, 1/4, 3/4, 1/8 ... と
     // 続きます（桁を逆順に読んだ小数）。ここがずれていると列全体が
     // 別物になります。
     Require(
@@ -70,7 +70,7 @@ int main()
             2.0f / 3.0f),
         "Halton(2,3) must be 2/3.");
 
-    // ② ずらし量は必ず -0.5〜+0.5 の範囲へ収まること。範囲を
+    // (2) ずらし量は必ず -0.5〜+0.5 の範囲へ収まること。範囲を
     // 超えると隣のピクセルを描いてしまい、輪郭が太ります。
     constexpr std::uint32_t period = 8u;
     std::vector<DirectX::XMFLOAT2> offsets;
@@ -86,7 +86,7 @@ int main()
         offsets.push_back(offset);
     }
 
-    // ③ 1周のあいだに同じ点が出ないこと。同じ点が続くと、その
+    // (3) 1周のあいだに同じ点が出ないこと。同じ点が続くと、その
     // フレームは前と同じ絵になるのでアンチエイリアスが進みません。
     for (std::size_t left = 0; left < offsets.size(); ++left)
     {
@@ -107,7 +107,7 @@ int main()
         }
     }
 
-    // ④ 1周すると同じ列へ戻ること（周期8）。
+    // (4) 1周すると同じ列へ戻ること（周期8）。
     Require(
         NearlyEqual(
             LamaPon::TemporalJitterOffset(0u).x,
@@ -117,7 +117,7 @@ int main()
             LamaPon::TemporalJitterOffset(period).y),
         "The jitter sequence must repeat with its period.");
 
-    // ⑤ 平均が中央（0）に近いこと。偏っていると絵全体が
+    // (5) 平均が中央（0）に近いこと。偏っていると絵全体が
     // 半ピクセルずれて見えます。
     float sumX = 0.0f;
     float sumY = 0.0f;
@@ -133,9 +133,9 @@ int main()
     Require(
         std::abs(averageX) < 0.1f
             && std::abs(averageY) < 0.1f,
-        "The jitter sequence must be centred on the pixel.");
+        "The jitter sequence must be centered on the pixel.");
 
-    // ⑥ 射影への織り込み。1ピクセルずらすと、クリップ空間では
+    // (6) 射影への織り込み。1ピクセルずらすと、クリップ空間では
     // 2/幅（yは符号が逆）だけ動くはずです。ここを間違えると
     // ずらし量が画面の解像度に応じて狂います。
     {

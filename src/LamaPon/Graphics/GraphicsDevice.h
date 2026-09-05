@@ -38,20 +38,16 @@ namespace LamaPon
         float cpuTimeMilliseconds{};
         std::uint64_t totalFrames{};
 
-        // ---- 以降は末尾へ足すこと（FrameStatsは参照で返しますが、
+        // 以降のフィールドは末尾へ追加します。FrameStatsは参照で返しますが、
         // 呼び出し側が値で受け取ると自分の定義の大きさで写すため、
-        // 既存フィールドの位置が動かないことが前提です）。----
+        // 既存フィールドの位置が動かないことが前提です。
 
-        // 壊れたシェーダーの代役（マゼンタ）が使われた回数。
+        // 壊れたシェーダーの代役をDrawへ渡した回数です。画素の色による
+        // 判定では通常の画像を誤検知するため、描画時に直接数えます。
+        // 0は、最後のリセット以降に代役を使用していないことを示します。
         //
-        // なぜ要るか: 撮った絵の「マゼンタっぽい画素数」を数えると、
-        // 本当にピンクや水色を使った絵で誤検知します（実測: 正常な
-        // シーンで画面の7.6%）。代役へ差し替えたかどうかはエンジン
-        // 自身が知っている事実なので、推測せずここで数えます。
-        // **0なら代役は一度も使われていない**と言い切れます。
-        //
-        // ResetShaderFallbackDrawsで0に戻せます。CLIは撮る1フレーム
-        // だけを測るために、最後のフレームの手前で戻します。
+        // ResetShaderFallbackDrawsで0に戻せます。CLIでは撮影対象の
+        // 1フレームだけを測るため、直前にリセットします。
         std::uint32_t shaderFallbackDraws{};
     };
 
@@ -117,20 +113,19 @@ namespace LamaPon
 
     // 画面エフェクトをポスト処理のどこへ差し込むか。
     //
-    // 既定は AfterToneMapping で、これは以前からの唯一の場所です。
+    // 既定のAfterToneMappingでは、LDRへ変換した後に効果を適用します。
     // 前へ置くほど「まだHDRで、後ろのパスの材料になる」効果になります。
     // 例えば BeforeBloom へ置いた発光はBloomで滲みますが、
     // AfterToneMapping へ置いた発光は滲みません。
     //
-    // **並びの実体は RunPostProcess にしかありません。** 値を足すときは
-    // あちらの呼び出し位置と一緒に増やしてください。
+    // 列挙値はRunPostProcessの呼び出し順と対応します。
     enum class ScreenEffectPoint : std::uint8_t
     {
-        // 3Dを描き終えた素のHDR。TAAより前なので、ここで足した色も
+        // 3D描画直後のHDR。TAAより前なので、この地点で追加した色も
         // 時間方向に均されます。
         BeforePostProcess,
         // 被写界深度・モーションブラーの後、Bloomの前。HDR。
-        // 「光らせたいもの」はここへ置きます。
+        // Bloom対象の発光表現はこの地点へ配置します。
         BeforeBloom,
         // Bloomとレンズフレアの後、トーンマップの前。HDR。
         BeforeToneMapping,
@@ -186,22 +181,16 @@ namespace LamaPon
         // フォールバックします。
         //
         // 実体はLamaPonRuntime.dllの中に1つだけ置きます。ヘッダで
-        // `inline static`にすると、EXE側とDLL側で**別々の実体**に
-        // なり、EXEが立てたフラグをDLLのInitializeが見ません
-        // （2026-08-07にこれで--warpと--d3ddebugが無言で効いて
-        // いませんでした）。設定する側と読む側がモジュールを
-        // またぐ変数は、必ずcppへ置くこと。
+        // inline staticではEXE側とDLL側に別々の実体ができるため、
+        // モジュールをまたいで共有する状態はcppに定義します。
         static void SetPreferWarpAdapter(
             const bool prefer) noexcept;
 
         // Initialize前に呼ぶと、Releaseビルドでも D3D11 の
-        // デバッグレイヤーを有効にします（`--d3ddebug`）。
+        // デバッグレイヤーを有効にします（--d3ddebug）。
         //
-        // なぜ要るか: 不正な描画状態はデバッグレイヤーが有効なら
-        // 「読めるエラー」で分かりますが、無効だとそのままドライバー
-        // へ渡ります。**WARPは不正な描画を弾かず自分の中で落ちる**
-        // ので、Releaseだと何の手がかりも無くプロセスが消えます
-        // （2026-08-07にテセレーションShaderで実際に起きました）。
+        // 不正な描画状態をドライバーへ渡す前に診断し、WARPでの
+        // プロセス終了を含む問題の原因を特定するために使います。
         // 常時有効にはしません。デバッグレイヤーは重く、開発者向けの
         // SDK部品が要るためです。
         static void SetEnableDebugLayer(
@@ -211,7 +200,7 @@ namespace LamaPon
 
         // バックバッファのピクセルをRGBA8で読み出します
         // （スクリーンショット・描画回帰テスト用）。EndFrameの
-        // Present前に呼んでください。
+        // EndFrameのPresentより前に呼び出します。
         [[nodiscard]] std::vector<std::uint8_t>
             CaptureBackBuffer(
                 std::uint32_t& width,
@@ -286,9 +275,8 @@ namespace LamaPon
             const ColorGradingSettings& colorGrading,
             const VolumetricLightFrame& volumetric,
             const TemporalAntiAliasingFrame& temporal);
-        // 本来の入口。上のオーバーロードは足りないぶんを既定値で
-        // 埋めてここへ流します。Scene::PostProcessFrameData()を
-        // そのまま渡してください。
+        // 全ポスト処理情報を受け取る共通の入口です。簡易オーバーロードは
+        // 不足値を既定値で補い、Scene::PostProcessFrameData()を渡します。
         void EndSceneComposition(
             const PostProcessFrame& frame);
         // ゲーム実行時に3Dを描くHDRターゲット。BeginSceneComposition
@@ -354,9 +342,8 @@ namespace LamaPon
         {
             m_frameStatistics.shaderFallbackDraws = 0;
         }
-        // falseなら、VSyncを切ってもモニターのリフレッシュレートが
-        // FPSの上限になります（「FPS上限を上げたのに数字が動かない」
-        // の答えがここにあるので、エディターの統計へ出しています）。
+        // falseの場合はVSyncを無効にしてもFPSがモニターの
+        // リフレッシュレートを超えないため、統計へ表示します。
         [[nodiscard]] bool TearingAllowed() const noexcept
         {
             return m_tearingAllowed;
@@ -390,7 +377,7 @@ namespace LamaPon
         [[nodiscard]] ClusteredLights& Clusters() const;
         [[nodiscard]] LitEffect& Lit() const;
         // スキニングモデル（glTF/FBX）用のLamaPon Lit。
-        // カスタムShader未指定のモデルはこれで描かれます。
+        // カスタムShader未指定のモデルはSkinnedLitで描画します。
         [[nodiscard]] LitEffect& SkinnedLit() const;
         // コンパイルできなかったシェーダーの代役（マゼンタ一色）。
         // 用意できないときはnullptr（このシェーダー自体が配られて
@@ -429,8 +416,8 @@ namespace LamaPon
 
         // そのシェーダーが宣言しているバリアント（#pragma
         // multi_compile / shader_feature）。Inspectorのキーワード
-        // 一覧と、描画時の正規化の両方がこれを使います。
-        // 解釈結果はシェーダーごとに覚えます（毎フレーム読み直すと
+        // 一覧と描画時の正規化は、同じ宣言情報を使います。
+        // 解釈結果はシェーダーごとにキャッシュします（毎フレーム読み直すと
         // ファイルI/Oが増えるため）。
         [[nodiscard]] const ShaderVariantDeclaration&
             ShaderVariantsFor(
@@ -550,9 +537,7 @@ namespace LamaPon
     private:
         friend class Application;
 
-        // 組み込みシェーダー（Lit・Environment・LightCulling）を
-        // 組み立てられなかったときの記録。詳しくは実体の側
-        // （BuildBuiltIn）にあります。
+        // 組み込みシェーダーの組み立てに失敗した時刻とエラーを保持します。
         struct BuiltInFailure final
         {
             std::string message;
@@ -560,10 +545,8 @@ namespace LamaPon
             double lastAttempt{};
         };
 
-        // 組み込みシェーダーを1回だけ組み立て、失敗を覚えます。
-        // 毎フレーム作り直すと、壊れている間エディターが事実上
-        // 止まるためです。一定時間ごとに試し直すので、直せば
-        // そのまま復帰します。
+        // 組み込みシェーダーの失敗を一定時間保持し、毎フレームの
+        // 再コンパイルを防ぎます。再試行に成功すると通常状態へ復帰します。
         template <typename T, typename Factory>
         T& BuildBuiltIn(
             std::unique_ptr<T>& slot,
@@ -578,7 +561,7 @@ namespace LamaPon
         void LogSelectedAdapter() const;
         // 積まれた画面エフェクトを順に適用して待ち行列を空にします。
         // ポスト処理の並びはRunPostProcessが持っているので、その
-        // トーンマップ後フックからここが呼ばれます。
+        // トーンマップ後のフックから画面エフェクトを適用します。
         // その地点に指定された画面エフェクトだけをかけ、かけた分を
         // 待ち行列から取り除きます。4地点すべてを通ると空になります。
         void ApplyQueuedScreenEffects(
@@ -604,8 +587,8 @@ namespace LamaPon
         std::size_t m_instanceBufferCapacity{};
         DepthPassKind m_depthPass{ DepthPassKind::None };
         // ティアリング許可（可変リフレッシュ／リフレッシュレート超え）。
-        // これが無いと、VSyncを切ってもモニターのリフレッシュレートが
-        // そのままFPSの上限になります。詳しくはInitializeを参照。
+        // 無効な場合はVSyncを切ってもFPSがモニターの
+        // リフレッシュレートを超えません。
         bool m_tearingAllowed{};
         GpuProfiler m_gpuProfiler;
         // WARP強制フラグ（Initialize前にテスト等から設定）。
@@ -615,7 +598,7 @@ namespace LamaPon
 
         // デバッグレイヤーが出したメッセージをログへ流します。
         // OutputDebugStringはデバッガーを繋いでいないと読めないため、
-        // これが無いと --d3ddebug を付けても何も見えません。
+        // --d3ddebug指定時の診断をエンジンログで確認可能にします。
         void DrainDebugMessages();
         Microsoft::WRL::ComPtr<ID3D11InfoQueue> m_infoQueue;
         std::uint64_t m_debugMessagesLogged{};
@@ -642,25 +625,17 @@ namespace LamaPon
             m_renderTextures;
         mutable std::unique_ptr<LitEffect> m_litEffect;
         mutable std::unique_ptr<LitEffect> m_skinnedLitEffect;
-        // コンパイル失敗の代役。作れなかったときは二度と試しません
-        // （毎フレーム失敗を繰り返すと、壊れている間だけ極端に
-        // 重くなるため）。
+        // コンパイル失敗時の代替シェーダーです。作成に失敗した場合は
+        // 毎フレームの再試行による負荷を避けるため再生成しません。
         mutable std::unique_ptr<LitEffect> m_errorEffect;
         mutable std::unique_ptr<LitEffect> m_skinnedErrorEffect;
         mutable std::unique_ptr<SpriteEffect> m_spriteErrorEffect;
         mutable bool m_errorEffectUnavailable{};
         mutable bool m_skinnedErrorEffectUnavailable{};
         mutable bool m_spriteErrorEffectUnavailable{};
-        // 組み込みシェーダー（Lit・Environment・LightCulling）を
-        // 組み立てられなかったときの記録です。ユーザーのShaderと違って
-        // 代役を差し込める場所が無いので、投げること自体は変えられ
-        // ません。**同じ失敗を毎フレーム作り直さないため**にここへ
-        // 覚えます——大きなHLSLのコンパイルを毎フレーム走らせると、
-        // 壊れている間エディターが事実上止まります。
-        //
-        // 直したら戻ってこられるよう、一定時間ごとに試し直します
-        // （BuiltInRetrySeconds）。失敗はキャッシュに残らないので、
-        // ファイルを直せば次の試行で通ります。
+        // 組み込みシェーダーには代替描画経路が無いため、失敗を記録して
+        // 毎フレームの再コンパイルを防ぎます。BuiltInRetrySecondsごとに
+        // 再試行し、成功すると記録を解除します。
         mutable BuiltInFailure m_litFailure;
         mutable BuiltInFailure m_skinnedLitFailure;
         mutable BuiltInFailure m_environmentFailure;

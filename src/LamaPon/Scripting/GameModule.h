@@ -10,53 +10,11 @@ namespace LamaPon
     class Script;
     struct CollisionEvent;
 
-    // PhysicsSettingsにlayerNames（std::string×32）と
-    // collisionMatrixを足したため6へ上げます。
-    //
-    // 上げる基準は「NativeScriptTypeDescriptorが変わったとき」だけ
-    // ではありません。**Game Moduleから見える構造体のレイアウトが
-    // 変わったら上げます**。Game Moduleはエンジンのヘッダを直接
-    // includeしてLamaPonRuntime.libとリンクするので、古いDLLは
-    // 古いsizeofのまま動きます。値渡し・参照渡しでその構造体を
-    // runtime側へ渡すと、runtimeは新しいレイアウトで読み、
-    // 足したぶんが未初期化のゴミになります。POD同士なら変な数値で
-    // 済みましたが、std::stringが入った今はゴミのポインタを
-    // 解放しにいって落ちます（例: 古いDLLからの
-    // SetActivePhysicsSettings）。
-    //
-    // 5はasScriptの追加で上げたものです。NativeScriptTypeDescriptorは
-    // 配列で受け渡すため、フィールドを足すと要素サイズが変わり、
-    // 古いモジュールでは要素境界がずれて別のフィールドを読みます。
-    // GameModuleHostがapiVersionの完全一致を要求して古いDLLを
-    // 弾くので、どちらの状態にもなりません（保存時の自動ビルドで
-    // 作り直されます）。
-    // 8はMeshRendererComponentへProcedural Mesh用の公開APIと保持
-    // データを追加したときに上げました。Game Module側がComponentを
-    // 生成するため、クラスの大きさが違う古いDLLは混在できません。
-    // 9はMeshRendererComponentへカリングモードの上書きを追加した
-    // ときに上げました。古いDLLとはComponentのサイズが異なります。
-    // 10はAudioSourceComponentへ任意区間ループの保持データを
-    // 追加したときに上げました。これを忘れていた間、古いDLLが
-    // 弾かれずに読み込まれ、エディターがログを1行も書かないまま
-    // アクセス違反で落ちていました。
-    //
-    // 7はAssetManager::LoadTextureへ用途（TextureUsage）の引数を
-    // 足したときに上げました。既定値付きなので書き換えは不要ですが、
-    // 既定引数は呼ぶ側で埋まる＝エクスポート名が変わるので、古い
-    // DLLはこの関数を解決できません。構造体のレイアウトだけでなく、
-    // **公開関数のシグネチャを変えたときも上げます**。
-    //
-    // 11はUIButtonComponentへ円形当たり判定フラグ
-    // （m_circularHitArea）を足してsizeofが変わったときに上げました。
-    // 12はデータアセット（ScriptableObject相当）を足したときに
-    // 上げました。GameModuleDescriptorの末尾へ2フィールド増えた
-    // ため、古いDLLのディスクリプタを新しいレイアウトで読むと
-    // 存在しない配列を辿ってしまいます。AssetManagerにも
-    // データアセットのキャッシュが増えてsizeofが変わりました。
-    // 15はSceneの空間索引とGraphicsDeviceのサービス所有を専用クラスへ
-    // 移したためです。公開クラスのレイアウトを使う既存DLLは再ビルドします。
-    // 16はSceneの物理時計を専用クラスへ移したためです。補間時刻を
-    // 公開するSceneのレイアウトが変わるので、ゲーム用DLLを再ビルドします。
+    // Game ModuleとRuntimeのABIを識別します。公開構造体のレイアウトや
+    // 公開関数のシグネチャを変更した場合は、この値も更新してください。
+    // GameModuleHostは完全一致を要求し、互換性のないDLLを読み込みません。
+    // API 16ではSceneの物理時計を専用クラスへ移し、Sceneのレイアウトが
+    // 変わったため、ゲーム用DLLの再ビルドが必要です。
     inline constexpr std::uint32_t GameModuleApiVersion = 16;
 
     using NativeScriptCreateFunction = void* (*)(
@@ -94,13 +52,13 @@ namespace LamaPon
         NativeScriptCollisionFunction collisionStay{};
         NativeScriptCollisionFunction collisionExit{};
         NativeScriptSerializeFunction serialize{};
-        // Optional 60 Hz callback for physics and continuous forces.
+        // 任意: プロジェクトで設定した固定時間刻みごとに呼ばれます。
         NativeScriptUpdateFunction fixedUpdate{};
-        // Optional JSON schema used to draw typed fields in the Inspector.
+        // 任意: Inspectorへ型付きフィールドを表示するJSONスキーマ。
         const char* propertiesSchemaJson{};
         // 任意: 生成後、最初のUpdateの直前に一度だけ呼ばれます。
         NativeScriptStartFunction start{};
-        // 任意: 毎フレーム、全ComponentのUpdate後に呼ばれます。
+        // 任意: 毎フレーム、Update・固定更新・物理計算の後に呼ばれます。
         NativeScriptUpdateFunction lateUpdate{};
         // 任意: 実効アクティブ状態の遷移（OnEnable/OnDisable）。
         NativeScriptSetActiveFunction setActive{};
@@ -111,17 +69,17 @@ namespace LamaPon
         NativeScriptCollisionFunction triggerExit{};
         // 任意: instanceをScript*として取り出します。これがあると
         // GameObject::GetScript<T>()で自作インターフェースを引けます。
-        // 古いGame Moduleではnullptrになるため、呼び出し側で確認します。
+        // この変換を登録しない型ではnullptrになるため、呼び出し側で確認します。
         NativeScriptAsScriptFunction asScript{};
     };
 
-    // データアセット（`*.asset.json`）の型宣言です。値そのものは
+    // データアセット（*.asset.json）の型宣言です。値そのものは
     // 持たず、「どんなフィールドがあるか」だけをエディターへ
     // 伝えます。読み書きはエンジン側（DataAsset）が行うため、
     // Hot Reloadで型が消えてもゲーム中のデータは無効になりません。
     struct NativeDataAssetTypeDescriptor final
     {
-        // 例: "Game.CardData"。`*.asset.json`の"type"と対応します。
+        // 例: "Game.CardData"。*.asset.jsonの"type"と対応します。
         const char* typeName{};
         // 「新規データアセット」メニューへ出す表示名。
         const char* displayName{};
@@ -137,7 +95,7 @@ namespace LamaPon
         const char* moduleName{};
         std::size_t componentCount{};
         const NativeScriptTypeDescriptor* components{};
-        // 任意: データアセットの型。古いモジュールは0のままです。
+        // データアセット型の数。未登録の場合は0です。
         std::size_t dataAssetCount{};
         const NativeDataAssetTypeDescriptor* dataAssets{};
     };

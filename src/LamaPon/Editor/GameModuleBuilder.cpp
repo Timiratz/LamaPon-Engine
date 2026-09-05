@@ -207,12 +207,8 @@ namespace
 
     // VS同梱のninja.exeを探します。
     //
-    // NMake Makefilesはヘッダ依存の追跡が不完全で、エンジンの
-    // ヘッダを更新しても古いobjをそのままリンクします。
-    // エンジン本体のビルドは同じ理由で既にNinjaへ移してあり、
-    // Game Module側だけが取り残されていました（2026-08-18に
-    // GameModuleApiVersion を上げたとき、CarGameのモジュールが
-    // 版数9のまま作り直されず、再生が背景だけになった）。
+    // NMake Makefilesはヘッダ依存の追跡が不完全で、更新後も古いobjを
+    // リンクする場合があるため、利用可能ならNinjaを使います。
     //
     // 見つからなければ空を返し、従来どおりNMakeへ戻ります。
     [[nodiscard]] std::filesystem::path FindNinja()
@@ -332,7 +328,7 @@ namespace
     //
     // GetNativeSystemInfoはエミュレーション中のx64プロセスから呼ぶと
     // AMD64を返してしまう（見た目のアーキテクチャしか分からない）ので、
-    // IsWow64Process2で**本当のマシン**を訊きます。
+    // IsWow64Process2で本当のマシンを訊きます。
     [[nodiscard]] bool IsHostArm64() noexcept
     {
         USHORT processMachine{};
@@ -382,9 +378,8 @@ namespace
         {
             return true;
         }
-        // Extended-length local paths (\\?\C:\...) and device paths
-        // (\\.\...) are not network paths merely because they begin with
-        // two separators.
+        // 拡張長のローカルパス（\\?\C:\...）とデバイスパス（\\.\...）は、
+        // 先頭に区切り文字が2つあってもネットワークパスではありません。
         if (value.starts_with(L"\\\\?\\")
             || value.starts_with(L"\\\\.\\"))
         {
@@ -696,7 +691,7 @@ namespace LamaPon
                         + L"\" -arch=x64 -host_arch=x64"
                           L" > nul 2>&1 &&";
         }
-        // CMakeはMSVCの `/showIncludes` 接頭辞を検出してNinjaへ渡します。
+        // CMakeはMSVCの /showIncludes 接頭辞を検出してNinjaへ渡します。
         // 日本語Windowsの既定コードページのままだと、その接頭辞が
         // rules.ninja内で文字化けしてdepsが0件になり、ヘッダ変更後に
         // 古いobjを再利用して構造体レイアウトが混在します。configureと
@@ -734,9 +729,8 @@ namespace LamaPon
             + L"\"";
         if (!compiler.empty())
         {
-            // CMakeCache.txtはコンパイラの絶対パスを保持します。
-            // Visual Studioを更新／追加したときに古いcl.exeへ戻らない
-            // よう、今回選んだツールセットを毎回明示します。
+            // CMakeCache.txtに残る古いcl.exeを使わないよう、検出した
+            // ツールセットを毎回明示します。
             command.parameters +=
                 L" -DCMAKE_CXX_COMPILER:FILEPATH=\""
                 + compiler.wstring()
@@ -768,7 +762,7 @@ namespace LamaPon
             + L" 2>&1";
         if (command.usesLocalBuildCache)
         {
-            // `)`までの終了コードを保存し、成功・失敗どちらでもログを
+            // )までの終了コードを保存し、成功・失敗どちらでもログを
             // projectへ1回だけコピーします。途中ログをWebDAVへ流し
             // 続けないためです。DLLの配置はCMakeのPOST_BUILDなので、
             // リンク失敗時に前回の正常DLLを壊しません。
@@ -965,9 +959,8 @@ namespace LamaPon
                 CloseHandle(handle);
             }
 
-            // 今回のハッシュを記録（ビルド失敗時も、次回に同じ判定が
-            // できるよう書いておく。touch済みのmtimeは残るので
-            // NMakeは変更を見失わない）
+            // 現在のハッシュを記録します。ビルドに失敗した場合も、
+            // 更新した時刻と判定結果を次回の依存確認に使用します。
             std::error_code createError;
             std::filesystem::create_directories(
                 buildDirectory, createError);

@@ -9,8 +9,8 @@
 
 namespace LamaPon::Web
 {
-    // Browser InputはEvent駆動ですが、Game向けAPIではWindows Runtimeと
-    // 同じFrame内で安定したKey State Queryとして公開します。
+    // ブラウザーのイベント駆動入力を、Windows版と同じフレーム単位の
+    // キー状態として公開します。
     class WebInput final
     {
     public:

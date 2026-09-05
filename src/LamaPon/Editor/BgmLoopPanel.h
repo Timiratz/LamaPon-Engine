@@ -15,9 +15,10 @@ namespace LamaPon
     class AssetManager;
     class AudioStreamVoice;
 
-    // BGMカタログ・波形・試聴の寿命を所有するパネルです。
-    // EditorLayerは表示と保存後のコマンド実行だけを仲介します。
-    // audio/assetsはこのパネルより長く生存する必要があります。
+    // BGMカタログ、波形キャッシュ、試聴音声を管理するパネルです。
+    // AudioSystemとAssetManagerは借用参照として保持するため、このパネルより
+    // 長く生存する必要があります。EditorLayerはパネルの表示と保存後の
+    // コマンド実行を仲介します。
     class BgmLoopPanel final
     {
     public:

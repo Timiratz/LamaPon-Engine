@@ -66,7 +66,7 @@ float LamaPonNoiseFade(float t)
     return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
 }
 
-// ---- Value Noise（格子点の値を補間する。一番素直） ----
+// Value Noise（格子点の値を補間）
 
 float LamaPonValueNoise1D(float x)
 {
@@ -131,7 +131,7 @@ float LamaPonValueNoise3D(float3 position)
         tz);
 }
 
-// ---- Perlin Noise（格子点の「傾き」を補間する。より自然） ----
+// Perlin Noise（格子点の傾きを補間）
 // 戻り値は0〜1へ収めています（元の定義は-1〜1）。
 
 float2 LamaPonNoiseGradient2(int x, int y)
@@ -182,7 +182,7 @@ float LamaPonPerlinNoise2D(float2 position)
     return saturate(value * 0.7071f + 0.5f);
 }
 
-// ---- Fractal Noise（fBm。周波数を重ねて細部を作る） ----
+// Fractal Noise（fBm。周波数を重ねて細部を作る）
 // octaves: 重ねる回数（多いほど細かい。5前後が定番）
 // lacunarity: 1回ごとに周波数を何倍にするか（2.0が定番）
 // gain: 1回ごとに振幅を何倍にするか（0.5が定番）
@@ -242,7 +242,7 @@ float LamaPonFractalPerlin2D(
         : 0.0f;
 }
 
-// ---- Worley Noise（セル状。石畳・ひび割れ・泡） ----
+// Worley Noise（セル状の模様）
 // 一番近い「種」までの距離を返します（0で種の位置、1で遠い）。
 
 float LamaPonWorleyNoise2D(float2 position)
@@ -270,18 +270,17 @@ float LamaPonWorleyNoise2D(float2 position)
     return saturate(sqrt(nearest));
 }
 
-// ---- Curl Noise（渦。パーティクルを自然に流す） ----
+// Curl Noise（パーティクルに使う渦状の流れ）
 // 発散のない（湧き出しも吸い込みもない）流れになるので、
 // 煙や水の渦に向いています。
 
 float2 LamaPonCurlNoise2D(float2 position, float epsilon)
 {
     const float e = max(epsilon, 0.0001f);
-    // ポテンシャル場の勾配を90度回すと発散0のベクトル場になります。
-    // 元にするのはPerlinです。Valueノイズの微分は縦横方向へ偏るため、
-    // 渦のはずが格子に沿った縞に見えてしまいます（実際にValueで
-    // 試して確認しました）。Perlinは格子点の傾きを補間するので、
-    // 微分が等方的で自然な渦になります。
+    // ポテンシャル場の勾配を90度回すと、発散が0のベクトル場になります。
+    // 元にはPerlinノイズを使います。Valueノイズの微分は縦横方向へ偏り、
+    // 格子に沿った縞が現れるためです。Perlinノイズは格子点の勾配を
+    // 補間するので、微分が等方的になり自然な渦を作れます。
     const float right =
         LamaPonPerlinNoise2D(position + float2(e, 0.0f));
     const float left =

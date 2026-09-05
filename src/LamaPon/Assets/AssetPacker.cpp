@@ -15,9 +15,8 @@
 namespace
 {
     using Json = nlohmann::json;
-    // v2で「暗号文のHMAC-SHA256」を足しました。v1は読みません
-    // （読めるようにすると、改ざんした側がv1で作り直すだけで
-    // 検証を外せてしまうため）。書き出し直しが必要です。
+    // v2は暗号文をHMAC-SHA256で検証します。認証を回避できるv1は拒否し、
+    // 読み込みにはv2形式での再書き出しを要求します。
     constexpr std::array<char, 8> ArchiveMagic{
         'T', 'R', 'D', 'N', 'P', 'A', 'K', '2'
     };
@@ -28,7 +27,7 @@ namespace
     }
 
     // AssetDatabase側と同じ判定です（一時ファイルと、移行が残した
-    // `<名前>.bak`バックアップは書き出しに含めません）。
+    // <名前>.bakバックアップは書き出しに含めません）。
     bool IsTemporaryAssetFile(const std::filesystem::path& path)
     {
         const auto name = path.filename().wstring();
@@ -220,8 +219,7 @@ namespace LamaPon
             indexPlainBytes,
             key,
             indexIv);
-        // 索引そのものも改ざん検知の対象です。ここを守らないと、
-        // エントリのMACを丸ごと差し替えられます。
+        // エントリのMAC差し替えを防ぐため、索引自体も改ざん検知の対象にします。
         const auto indexMac = Crypto::MacForCipherText(
             macKey,
             indexIv,

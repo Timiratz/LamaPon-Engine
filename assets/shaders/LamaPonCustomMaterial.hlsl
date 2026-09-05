@@ -1,6 +1,6 @@
-// LamaPon custom material shader template.
-// Entry points must remain VSMain and PSMain (Shader Model 5.0).
-// Inspector values are available as CustomParameters[0..7].
+// LamaPonのカスタムマテリアル用シェーダーテンプレートです。
+// エントリーポイント名はVSMainとPSMainのままにします（Shader Model 5.0）。
+// インスペクターの値はCustomParameters[0..7]から参照できます。
 
 /* LAMAPON_RENDER_STATE
 { "blend": "opaque", "cull": "back", "depthWrite": true }
@@ -10,8 +10,8 @@
 //          additive（発光・エフェクト）／premultiplied
 //   cull:  back（既定・裏面を描かない）／front／none（両面）
 //   depthWrite / depthTest: 深度への書き込みとテスト。
-//   blendがopaque以外でdepthWriteを省略すると、重ね合わせの事故を
-//   避けるため自動でfalseになります。宣言ごと消しても動きます。
+//   blendがopaque以外でdepthWriteを省略した場合は、半透明の
+//   重ね合わせを保つため自動的にfalseになります。
 
 /* LAMAPON_PROPERTIES
 [
@@ -182,9 +182,9 @@ OutlinePixelInput VSSkinnedOutline(SkinnedVertexInput input)
 
 float4 ShadeMaterial(PixelInput input)
 {
-    // Parameter 1: rgb = tint, a = tint blend (0..1)
-    // Parameter 2: x = emissive amount, y = rim amount
-    // Parameter 3: xy = UV scale (0 uses 1), zw = UV offset
+    // パラメーター1: rgb = 色合い、a = 色合いの合成率（0..1）
+    // パラメーター2: x = 発光量、y = リムライト量
+    // パラメーター3: xy = UVスケール（0なら1を使用）、zw = UVオフセット
     float2 uvScale = CustomParameters[2].xy;
     uvScale = float2(
         abs(uvScale.x) < 0.0001f ? 1.0f : uvScale.x,

@@ -55,7 +55,7 @@ namespace LamaPon
     {
     public:
         // keywordsはバリアントのキーワードです（#pragma
-        // multi_compileで宣言されたもの）。渡すと `#define` として
+        // multi_compileで宣言されたもの）。渡すと #define として
         // コンパイルへ入り、分岐そのものが消えます。
         LitEffect(
             ID3D11Device* device,
@@ -131,9 +131,9 @@ namespace LamaPon
         }
 
         // GSMainを書いたShaderか。テセレーションと違って束ねる条件は
-        // 「持っているか」で足ります――エンジンが流すのは常に三角形で、
+        // 「持っているか」で判定できます。エンジンが渡すのは常に三角形で、
         // 三角形入力でないGSはコンパイル時に弾いているためです。
-        // ただし**束ねたまま抜けない**ことは呼ぶ側の責任です
+        // ただし束ねたまま抜けないことは呼ぶ側の責任です
         // （スプライトやポスト処理まで巻き込みます）。
         [[nodiscard]] bool HasGeometryShader() const noexcept
         {

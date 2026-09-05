@@ -121,7 +121,7 @@ namespace LamaPon
         colorDescription.Height = m_height;
         colorDescription.MipLevels = 1;
         colorDescription.ArraySize = 1;
-        // Preserve values above 1.0 until bloom and tone mapping have run.
+        // ブルームとトーンマッピングが終わるまで、1.0を超える値を保ちます。
         colorDescription.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
         colorDescription.SampleDesc.Count = 1;
         colorDescription.Usage = D3D11_USAGE_DEFAULT;
@@ -146,8 +146,8 @@ namespace LamaPon
                 nullptr,
                 m_shaderResourceView.ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateShaderResourceView(offscreen)");
-        // SSR用の「前フレームのカラー」。描画先にはしないので
-        // SHADER_RESOURCEだけで足ります。
+        // SSR用に前フレームの色を保持します。描画先にはしないため、
+        // D3D11_BIND_SHADER_RESOURCEだけを指定します。
         D3D11_TEXTURE2D_DESC historyDescription =
             colorDescription;
         historyDescription.BindFlags =
@@ -167,7 +167,7 @@ namespace LamaPon
             "ID3D11Device::CreateShaderResourceView"
             "(SSR history)");
 
-        // TAAの履歴。SSRの履歴と同じくSRVだけで足ります。
+        // TAAの履歴もSSRの履歴と同じくSRVだけを作成します。
         ThrowIfFailed(
             device->CreateTexture2D(
                 &historyDescription,
@@ -401,7 +401,7 @@ namespace LamaPon
                 m_luminanceRenderTargetView
                     .ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateRenderTargetView(luminance)");
-        // SRVは**全ミップ**を見るものにします。GenerateMipsはこの
+        // SRVは全ミップを見るものにします。GenerateMipsはこの
         // ビューの範囲しか埋めないので、ミップ0だけのビューを渡すと
         // 何も起きません。
         ThrowIfFailed(
@@ -452,10 +452,9 @@ namespace LamaPon
         // 表示専用テクスチャ。ポスト処理のswapに左右されない
         // 安定したSRVをImGui等へ渡すために使います。
         //
-        // Compute Shaderの書き込み先にするときだけUAVのフラグを
-        // 足します。色本体やポスト処理用には付けません——通常の
-        // 描画先へ余計なバインドフラグを付けると、ドライバーが
-        // 圧縮を諦めて遅くなることがあるためです。
+        // Compute Shaderの書き込み先にするときだけUAVフラグを追加します。
+        // 通常の描画先には不要なバインドフラグを付けず、ドライバーの
+        // 最適化を妨げないようにします。
         D3D11_TEXTURE2D_DESC displayDescription =
             colorDescription;
         if (m_computeWritable)
@@ -901,9 +900,9 @@ namespace LamaPon
                 m_postShaderResourceView);
         }
 
-        // 解決した絵（初回は今の絵）を次フレームの履歴へ控えます。
-        // 混ぜられなかった初回もここを通すのが要点です。控えないと
-        // 履歴が永遠に空のままで、TAAが一度も効きません。
+        // 解決した画像を次フレームの履歴へ保存します。
+        // 初回も現在の画像を保存し、次フレームから履歴を利用できる
+        // 状態にします。
         if (context != nullptr
             && m_temporalHistoryTexture != nullptr
             && m_colorTexture != nullptr)
@@ -1049,9 +1048,8 @@ namespace LamaPon
                 m_postShaderResourceView);
         }
 
-        // 描けなかった最初のフレームもここを通すのが要点です。控えない
-        // と前フレームの行列が永遠に埋まらず、一度も効きません（TAAの
-        // 履歴で同じ間違いをしています）。
+        // エフェクトを適用しなかった初回も行列を保存し、
+        // 次フレームのモーション判定に使える状態にします。
         m_motionBlurPreviousViewProjection = viewProjection;
         m_motionBlurPreviousValid = true;
     }
@@ -1088,9 +1086,8 @@ namespace LamaPon
             settings.maximumLuminance,
             minimumLuminance);
 
-        // ①前フレームの測定結果を読みます。GPUの完了を待たない
-        // 指定なので、まだ書き終わっていなければ今回は見送ります
-        // （待つとフレームがそこで止まります）。
+        // 前フレームの測定結果を読みます。GPUの完了を待たず、結果が
+        // 未完成ならそのフレームの更新を見送ります。
         if (m_luminanceStagingReady)
         {
             D3D11_MAPPED_SUBRESOURCE mapped{};
@@ -1120,22 +1117,18 @@ namespace LamaPon
                     maximumLuminance);
                 if (m_adaptedLuminance <= 0.0f)
                 {
-                    // 初回は順応させずそのまま採ります。ゲーム開始
-                    // 直後に画面が明るくなったり暗くなったりする
-                    // 「勝手に動く数秒」を作らないためです。
+                    // 初回は測定値を直接採用し、起動直後の
+                    // 不要な露出変化を避けます。
                     m_adaptedLuminance = measured;
                 }
                 else
                 {
-                    // 明るい方へは速く、暗い方へは遅く慣れます
-                    // （本物の目と同じ非対称さです）。
+                    // 明所と暗所で異なる順応速度を適用します。
                     const float speed = measured > m_adaptedLuminance
                         ? std::max(settings.speedToBright, 0.0f)
                         : std::max(settings.speedToDark, 0.0f);
-                    // 1 - exp(-dt*speed) にすると、フレームレートが
-                    // 変わっても同じ秒数で同じところまで慣れます
-                    // （dtを直接掛けると60fpsと30fpsで速さが変わり、
-                    // しかもdtが大きいと行き過ぎて振動します）。
+                    // 指数補間により順応時間をフレームレートから分離し、
+                    // 大きなdeltaTimeでも行き過ぎを防ぎます。
                     const float blend = speed > 0.0f
                         ? 1.0f - std::exp(
                             -std::max(deltaSeconds, 0.0f) * speed)
@@ -1150,7 +1143,7 @@ namespace LamaPon
             }
         }
 
-        // ②今のフレームを測ります。結果は次のフレームで読みます。
+        // 現在のフレームを測定し、結果を次のフレームで読みます。
         renderer.RenderLuminance(
             m_shaderResourceView.Get(),
             m_luminanceRenderTargetView.Get(),
@@ -1186,7 +1179,7 @@ namespace LamaPon
             return false;
         }
 
-        // ①半解像度で遮蔽を求めます。射影が復元不能な場合などは
+        // (1)半解像度で遮蔽を求めます。射影が復元不能な場合などは
         // falseが返るので、遮蔽なしとして扱います。
         if (!renderer.RenderAmbientOcclusion(
             m_depthShaderResourceView.Get(),
@@ -1200,7 +1193,7 @@ namespace LamaPon
             return false;
         }
 
-        // ②深度を見るブラーでザラつきを均します。ここまでで完成で、
+        // (2)深度を見るブラーでザラつきを均します。ここまでで完成で、
         // カラーへの反映はLitシェーダーが環境光項に対して行います。
         renderer.BlurAmbientOcclusion(
             m_occlusionShaderResourceView.Get(),

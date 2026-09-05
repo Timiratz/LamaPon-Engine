@@ -175,9 +175,8 @@ int main()
             second.previousEngineVersion == "2026.8.1",
             "the recorded version must round-trip");
 
-        // 改行コードだけが違うファイルは書き換えない（エンジンの
-        // CRLFチェックアウトとLFのプロジェクトの間で、開くたびに
-        // シェーダーが書き換わる「いたちごっこ」の再発防止）。
+        // 改行コードだけが異なる場合は、プロジェクトを開くたびに
+        // ファイルが更新されないよう書き換えを省略します。
         WriteFile(
             engineAssets / "shaders" / "LamaPonLit.hlsl",
             "// lit v2\r\nline2\r\n");
@@ -271,8 +270,8 @@ int main()
                 projectRoot, "2026.8.5").status
                 == LamaPon::ProjectVersionStatus::Older,
             "an older project must be reported as older");
-        // ここが一番大事。新しいプロジェクトを古いエディターで
-        // 開くと、新しい版が足した設定を落とします。
+        // 新しい形式のプロジェクトを古いエディターで開くと設定が失われるため、
+        // エディターより新しい版は拒否します。
         recordVersion("2026.9.1");
         const auto newer = LamaPon::InspectProjectVersion(
             projectRoot, "2026.8.5");
@@ -285,9 +284,8 @@ int main()
             "the recorded version must be reported back so"
             " the message can name it");
 
-        // 記録が無い／読めないものは「古い」側へ倒します。ここで
-        // 開けなくすると、手で書き換えたproject.jsonでプロジェクトが
-        // 人質になります。
+        // バージョンが無い、または読めない場合は移行対象として扱い、
+        // 手動編集されたproject.jsonも開けるようにします。
         WriteFile(settingsPath, "{}");
         Require(
             LamaPon::InspectProjectVersion(
@@ -306,15 +304,11 @@ int main()
         // プロジェクト設定を保存しても、他の仕組みが書いたキーが
         // 残ること。
         //
-        // 2026-08-07、開くたびにengineVersionが消えて「記録の無い
-        // プロジェクト」に戻り、毎回更新確認が出る状態になっていた。
-        // SaveProjectSettingsがProjectSettingsの持ち物だけで
-        // ファイルを作り直していたため。
+        // 保存後もengineVersionと未知のキーが保持されることを確認します。
         {
             const auto settingsFile =
                 projectRoot / ".lamapon" / "project.json";
-            // 直前の段でengineVersionだけの壊れた文書を書いている
-            // ので、まず読める形を用意します。
+            // 保存検証用に、読み取り可能な設定を用意します。
             nlohmann::json before;
             before["format"] = "LamaPonProject";
             before["version"] = 1;
@@ -346,10 +340,8 @@ int main()
 
         // 物理の設定が保存・読み込みで往復すること。
         //
-        // **書き出したゲームにも入ること**まで見ます。エディターの
-        // 表示設定（inspectorDecimals）はProjectにしか書かないので、
-        // 同じつもりで物理も落とすと「エディターでは効くのに
-        // 書き出すと元に戻る」という分かりにくい壊れ方をします。
+        // 物理設定はエディターと書き出したゲームの両方で必要なため、
+        // ProjectとRuntimeの設定へ保存されることを確認します。
         {
             const auto settingsFile =
                 projectRoot / ".lamapon" / "physics.json";
@@ -455,9 +447,7 @@ int main()
             std::filesystem::remove(settingsFile);
         }
 
-        // 壊れる値は受け付けないこと。0の刻み幅を通すと、その場で
-        // 落ちるのではなく「物理が一歩も進まない」という原因の
-        // 見えない壊れ方をします。
+        // 物理更新が停止しないよう、刻み幅0などの無効値を拒否します。
         {
             LamaPon::ProjectSettings settings;
             settings.physics.fixedTimeStep = 0.0f;
@@ -475,8 +465,7 @@ int main()
                 "a zero fixed time step must be rejected");
         }
 
-        // 直接入れた場合も丸められること。設定画面を通らない経路
-        // （古いJSON、スクリプトからの指定）でも壊れないように。
+        // 設定画面を通らないJSONやスクリプトからの値も有効範囲へ丸めます。
         {
             LamaPon::PhysicsSettings broken;
             broken.fixedTimeStep = 0.0f;
@@ -495,12 +484,8 @@ int main()
 
         // 組み込みアセットのincludeの取りこぼし検査。
         //
-        // 2026-08-07、LamaPonEnvironment.hlslへ
-        // #include "LamaPonScreenDepth.hlsli" を足したのに、
-        // 配る一覧へ.hlsliを入れ忘れた。更新したプロジェクトは
-        // 「新しい環境シェーダーだけ入って、それがincludeする
-        // ファイルは無い」状態になり、開いた瞬間に落ちた。
-        // 人間が2つの一覧を見比べる運用では防げないので機械で見る。
+        // 組み込みシェーダーへ.hlsliのincludeを追加した場合も、参照先が
+        // 配布一覧へ含まれることを機械的に確認します。
         {
             const auto& builtIns =
                 LamaPon::BuiltInProjectAssets();
@@ -578,10 +563,8 @@ int main()
 
         // エンジンが名前で読むシェーダーの取りこぼし検査。
         //
-        // includeの検査（上）は「配るものが何をincludeするか」しか
-        // 見ない。エンジン自身が "shaders/○○.hlsl" と書いて読む
-        // ファイルが一覧から漏れると、リポジトリでは動くのに
-        // プロジェクトでだけ落ちる。壊れ方が同じなので機械で見る。
+        // include検査では直接参照されるシェーダーを検出できないため、
+        // ソース内のシェーダーパスも配布一覧と照合します。
         {
             const auto& builtIns =
                 LamaPon::BuiltInProjectAssets();

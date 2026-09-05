@@ -12,20 +12,20 @@
 // 「近い座標なら近い値」という連続性があります。地形の高さ、
 // オブジェクトの分布、揺らぎなど「自然なムラ」に使います。
 //
-// ★この実装は assets/shaders/LamaPonNoise.hlsli（HLSL）と
+// この実装は assets/shaders/LamaPonNoise.hlsli（HLSL）と
 //   完全に同じ値を返します。C++で地形メッシュを作り、シェーダーで
 //   同じノイズを使って色や草を乗せる、という組み合わせが成立します。
 //   片方を直したら必ず両方直してください
 //   （tests/NoiseTests.cpp が代表点での一致を検査します）。
 //
 // 一致のために守っていること:
-//   - ハッシュは uint32_t の桁あふれ（ラップ）前提。HLSLのuintと同じ
-//   - 0〜1への変換は上位24ビット / 16777216（float の仮数に収める）
-//   - 補間は5次のスムーズステップ（3次だと格子線が見える）
-//   - floor と int キャストの順序も揃える（負の座標で差が出るため）
+// 1. ハッシュは uint32_t の桁あふれ（ラップ）を前提とし、HLSLのuintと揃えます。
+// 2. 0〜1への変換は上位24ビット / 16777216とし、floatの仮数へ収めます。
+// 3. 補間には5次のスムーズステップを使い、格子線の発生を抑えます。
+// 4. 負の座標でも一致するよう、floorとintキャストの順序を揃えます。
 namespace LamaPon::Noise
 {
-    // ---- 内部: 格子点のハッシュ ----
+    // 格子点のハッシュ
 
     [[nodiscard]] inline std::uint32_t Hash(
         std::uint32_t value) noexcept
@@ -92,7 +92,7 @@ namespace LamaPon::Noise
         return a + (b - a) * t;
     }
 
-    // ---- Value Noise（格子点の値を補間。一番素直） ----
+    // Value Noise（格子点の値を補間）
 
     [[nodiscard]] inline float Value1D(
         const float x) noexcept
@@ -166,7 +166,7 @@ namespace LamaPon::Noise
             tz);
     }
 
-    // ---- Perlin Noise（格子点の傾きを補間。より自然） ----
+    // Perlin Noise（格子点の傾きを補間）
 
     [[nodiscard]] inline DirectX::XMFLOAT2 Gradient2(
         const std::int32_t x,
@@ -236,7 +236,7 @@ namespace LamaPon::Noise
             1.0f);
     }
 
-    // ---- Fractal Noise（fBm。周波数を重ねて細部を作る） ----
+    // Fractal Noise（fBm。周波数を重ねて細部を作る）
     // octaves: 重ねる回数（多いほど細かい。5前後が定番、上限8）
     // lacunarity: 1回ごとの周波数倍率（2.0が定番）
     // gain: 1回ごとの振幅倍率（0.5が定番）
@@ -293,7 +293,7 @@ namespace LamaPon::Noise
             : 0.0f;
     }
 
-    // ---- Worley Noise（セル状。石畳・ひび割れ・泡） ----
+    // Worley Noise（セル状の模様）
     // 一番近い「種」までの距離（0で種の位置、1で遠い）。
 
     [[nodiscard]] inline float Worley2D(
@@ -334,12 +334,10 @@ namespace LamaPon::Noise
             1.0f);
     }
 
-    // ---- Curl Noise（渦。発散のない流れ） ----
+    // Curl Noise（発散のない渦状の流れ）
 
-    // 元にするのはPerlinです。Valueノイズの微分は縦横方向へ偏るため、
-    // 渦のはずが格子に沿った縞に見えてしまいます（実際にValueで
-    // 試して確認しました）。Perlinは格子点の傾きを補間するので、
-    // 微分が等方的で自然な渦になります。
+    // Valueノイズの微分は格子軸へ偏るため、等方的な微分を得られる
+    // Perlinノイズを基底に使います。
     [[nodiscard]] inline DirectX::XMFLOAT2 Curl2D(
         const float x,
         const float y,

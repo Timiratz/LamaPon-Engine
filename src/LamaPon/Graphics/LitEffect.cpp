@@ -43,7 +43,7 @@ namespace
         const char* target,
         const std::vector<std::string>& keywords)
     {
-        // 実体はShaderCompilerへ集約しました（ディスクキャッシュ付き）。
+        // ShaderCompilerを通してコンパイル結果をディスクへキャッシュします。
         return LamaPon::CompileShaderCached(
             assets,
             path,
@@ -114,8 +114,7 @@ namespace LamaPon
                 "LitEffect requires a Direct3D device and context.");
         }
 
-        // Shaderが宣言した描画状態を読み取ります（実行時にも必要な
-        // 情報なので、エディターではなくここで解釈します）。
+        // 実行時にも必要なため、Shaderが宣言した描画状態をLitEffectで解釈します。
         {
             const auto sourceBytes =
                 assets.ReadFileBytes(shaderPath);
@@ -196,12 +195,11 @@ namespace LamaPon
             keywords);
         // ジオメトリシェーダー（定義があるシェーダーのみ）。
         //
-        // **入力プリミティブを必ず確かめます。** エンジンが流すのは
+        // 入力プリミティブを必ず確かめます。エンジンが流すのは
         // 三角形（通常の描画も、テセレーションのドメイン出力も）だけ
         // なので、point/line を宣言したGSを束ねるとD3D11では不正な
-        // 描画になります。WARPはそれを弾かずに自分の中で落ちるので、
-        // ドライバーへ渡す前にこちらで止めます（テセレーションで
-        // 同じ形の不具合を出しています）。
+        // 描画になります。WARPではプロセス終了につながるため、
+        // ドライバーへ渡す前に拒否します。
         if (const auto geometryShaderByteCode =
                 TryCompileShader(
                     assets,
@@ -474,9 +472,8 @@ namespace LamaPon
             XMVector3Normalize(
                 XMVectorNegate(inverseView.r[2])));
 
-        // 経過時間もカメラと同じ「フレームごとの状態」なので、
-        // ここでまとめて入れます。自作Shaderが揺れや流れを書くのに
-        // スクリプトを1本も書かずに済むようにするためです。
+        // カスタムシェーダーが揺れや流れを計算できるよう、
+        // 経過時間をフレーム単位の定数として渡します。
         //
         // 秒は1時間で巻き戻します。floatの仮数は24ビットしかなく、
         // 起動から数時間そのまま渡すと下位が丸められて、波のような
@@ -501,8 +498,7 @@ namespace LamaPon
     {
         m_objectConstants.materialColor =
             material.BaseColor();
-        // zはApply直前にResolveTextureFlagsが上書きします
-        // （実際にバインドされた法線テクスチャで判定するため）。
+        // zはApply直前に、バインド済み法線テクスチャの有無で上書きします。
         m_objectConstants.materialParameters = {
             material.Roughness(),
             material.NormalStrength(),
@@ -522,7 +518,7 @@ namespace LamaPon
     {
         // アルベド未設定は白へ落とします。nullのSRVをバインドすると
         // サンプル結果が0になり、モデルが真っ黒になります
-        // （baseColorTextureを持たないglTFで実際に発生しました）。
+        // （baseColorTextureを持たないglTFにも適用します）。
         m_albedoTexture = albedoTexture != nullptr
             ? albedoTexture
             : m_whiteTexture.Get();
@@ -603,9 +599,7 @@ namespace LamaPon
                 source.direction.z,
                 source.intensity
             };
-            // wは以前1.0固定の空き枠でした。cbufferの並びを1バイトも
-            // 変えずに太陽の角半径を運べるので、ここへ入れています
-            // （LamaPonLit.hlslとLamaPonWater.hlslが読みます）。
+            // cbufferのレイアウトを維持するため、color.wへ太陽の角半径を格納します。
             destination.color = {
                 source.color.x,
                 source.color.y,
@@ -898,7 +892,7 @@ namespace LamaPon
             : nullptr;
         // ベイクした間接光（照度ボリューム）。3枚のSH係数
         // テクスチャが揃っていなければ無効にして、シェーダーは
-        // 従来のフラットなAmbientをそのまま使います。
+        // SH係数が不足している場合はフラットな環境光を使います。
         const auto& bakedGi = lighting.bakedGlobalIllumination;
         const bool bakedGiActive =
             bakedGi.enabled
@@ -945,7 +939,7 @@ namespace LamaPon
     {
         // リフレクションプローブによる、オブジェクト単位のIBL
         // 差し替えです。SetLightingがシーン共通の環境を設定した後、
-        // 描画直前にこれを呼びます。
+        // SetLighting後、描画直前にプローブ設定を適用します。
         if (!probe.IsValid())
         {
             return;
@@ -1094,12 +1088,12 @@ namespace LamaPon
                 0);
             // 深度だけのパスでも、パッチで描くなら束ねます。外すと
             // 位置を出す段（ドメイン）が無くなるので、影の形が
-            // 分割前の板のままになる――どころか、そもそも描かれません。
+            // 分割前の板にならず、描画自体が失敗します。
             // 描く側が明示したときだけ束ねるのは通常のApplyと同じで、
             // 「持っているか」ではなく「今それで描くか」で決めます。
             // b3（自作Shaderのベクトル枠）は深度パスでは更新して
             // いなかったので、頂点より後ろの段を使うときだけ揃えます。
-            // 揃えないと前の描画の値で形が決まり、**影だけ形が違う**
+            // 揃えないと前の描画の値で形が決まり、影だけ形が違う
             // という追いにくい絵になります。
             if (m_tessellationDraw || m_geometryShader)
             {
@@ -1280,10 +1274,8 @@ namespace LamaPon
             m_tessellationDraw ? m_domainShader.Get() : nullptr,
             nullptr,
             0);
-        // ジオメトリシェーダーは「持っていれば束ねる」で足ります。
-        // 三角形入力でないGSはコンパイル時に弾いてあり、エンジンが
-        // 流すのは常に三角形だからです（通常の描画も、テセレーションの
-        // ドメイン出力も）。**外すのは描いた側の責任**です。
+        // 入力が三角形以外のGSはコンパイル時に拒否されるため、
+        // 有効なジオメトリシェーダーをそのまま設定します。
         context->GSSetShader(
             m_geometryShader.Get(),
             nullptr,
@@ -1425,8 +1417,8 @@ namespace LamaPon
             0);
         context->HSSetShader(nullptr, nullptr, 0);
         context->DSSetShader(nullptr, nullptr, 0);
-        // 輪郭は専用の頂点シェーダーで描くので、GSMainが期待する
-        // 入力とは限りません。ここでは束ねません。
+        // 輪郭用頂点シェーダーはGSMainの入力と一致する保証がないため、
+        // ジオメトリシェーダーを設定しません。
         context->GSSetShader(nullptr, nullptr, 0);
         context->PSSetShader(
             m_outlinePixelShader.Get(),
@@ -1496,9 +1488,8 @@ namespace LamaPon
         // GSMainが期待する入力とは限りません。束ねません。
         context->GSSetShader(nullptr, nullptr, 0);
         context->PSSetShader(m_pixelShader.Get(), nullptr, 0);
-        // t0〜t6を全部バインドします。以前はt0〜t2（アルベド・法線・
-        // カスケード影）だけだったため、この経路で描かれるスキニング
-        // モデルはIBLとスポット／ポイント影が効いていませんでした。
+        // スキニング経路でもIBLとスポット／ポイント影を使えるよう、
+        // アルベドや法線を含むt0〜t6をすべてバインドします。
         BindMaterialAndShadowTextures(context);
         BindPbrTextures(context);
         ID3D11SamplerState* samplers[]{
@@ -1514,8 +1505,8 @@ namespace LamaPon
     void LitEffect::BindMaterialAndShadowTextures(
         ID3D11DeviceContext* context) const noexcept
     {
-        // SetTexturesが呼ばれていない場合もnullをバインドしないよう、
-        // ここでも白／フラット法線へ落とします。
+        // SetTextures未呼び出し時もnullを設定しないよう、
+        // 白テクスチャとフラット法線へフォールバックします。
         ID3D11ShaderResourceView* textures[]{
             m_albedoTexture != nullptr
                 ? m_albedoTexture

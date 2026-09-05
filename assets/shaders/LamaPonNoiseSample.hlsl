@@ -152,8 +152,7 @@ float4 ShadeNoise(PixelInput input)
     const float scale = max(CustomParameters[0].y, 0.001f);
     const int octaves = (int)max(CustomParameters[0].z, 1.0f);
     const float flowSpeed = CustomParameters[0].w;
-    // 時間はエンジンが入れるので、「流れる速さ」を上げるだけで
-    // 動きます（以前はスクリプトから秒を渡す必要がありました）。
+    // エンジンが渡す時刻と流れる速さから移動量を計算します。
     const float time = TimeParameters.x;
 
     // UVを大きさ倍して、時間で流します。

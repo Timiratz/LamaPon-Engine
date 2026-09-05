@@ -60,13 +60,9 @@ target_include_directories(LamaPonGameModule PRIVATE
     "${LAMAPON_ENGINE_ROOT}/third_party/DirectXTK/include"
     "${LAMAPON_ENGINE_ROOT}/third_party/XAudio2Redist/include"
 )
-# 配布パッケージではsrc/LamaPon/Core/Version.hが同梱されるためこれは
-# 不要。エンジンのソースツリーを直接LAMAPON_ENGINE_ROOTに指定する場合
-# （開発中のエンジンをLamaPonHub/LamaPonEditor越しに使うケースなど）は
-# エンジン本体をビルドするまでVersion.hが存在しないため、呼び出し元の
-# LamaPonEditor.exeがどこにあるか（配布パッケージ／別のビルドディレクトリ）
-# に関係なく解決できるよう、このモジュール自身のビルドディレクトリに
-# 同じ内容を自前生成する。
+# 配布パッケージにはsrc/LamaPon/Core/Version.hが含まれます。エンジンの
+# ソースツリーをLAMAPON_ENGINE_ROOTへ直接指定した場合は、本体のビルド前でも
+# 解決できるよう、このモジュールのビルドディレクトリにも同じ内容を生成します。
 if(NOT EXISTS "${LAMAPON_ENGINE_ROOT}/src/LamaPon/Core/Version.h")
     set(LAMAPON_BUILD_REVISION "unknown")
     find_package(Git QUIET)
@@ -87,9 +83,8 @@ if(NOT EXISTS "${LAMAPON_ENGINE_ROOT}/src/LamaPon/Core/Version.h")
         endif()
     endif()
 
-    # バージョン番号自体はエンジン本体のCMakeLists.txtが真実の情報源
-    # なので、project()宣言の行から読み取る（このサブビルドの
-    # project()にはVERSIONを指定していないため）。
+    # バージョン番号はエンジン本体のCMakeLists.txtを正本とし、
+    # project()のVERSIONから読み取ります。
     file(STRINGS
         "${LAMAPON_ENGINE_ROOT}/CMakeLists.txt"
         LAMAPON_MODULE_VERSION_LINE
@@ -157,7 +152,7 @@ set_target_properties(LamaPonGameModule PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY "${LAMAPON_MODULE_OUTPUT_DIR}"
 )
 
-# ネットワーク上のprojectでは、中間生成物をローカルへ置き、リンクが
+# ネットワーク上のプロジェクトでは、中間生成物をローカルへ置き、リンクが
 # 完了したDLLだけを共有先へ配置します。copy_if_differentなので、変更が
 # 無い再ビルドでWebDAVのタイムスタンプを無駄に更新しません。
 if(DEFINED LAMAPON_MODULE_DEPLOY_DIR

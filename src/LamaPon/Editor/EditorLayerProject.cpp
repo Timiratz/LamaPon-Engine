@@ -963,9 +963,8 @@ namespace LamaPon
             }
             ImGui::EndCombo();
         }
-        // リフレッシュレートを超えたい人がまず引っかかるところなので、
-        // 「VSyncを切る」までを1行で書きます（60Hzのモニターだと、
-        // VSyncが入ったままでは360を選んでも60から動きません）。
+        // VSync有効時はモニターのリフレッシュレートが上限になるため、
+        // フレームレート設定の直後に解除方法を案内します。
         ImGui::TextDisabled(
             "リフレッシュレートを超えるにはVSyncを切ってください。"
             "有効なままだと、上限を上げてもモニターの値で頭打ちです。");
@@ -1139,8 +1138,7 @@ namespace LamaPon
         }
         ImGui::TextDisabled(
             "描画が遅れたときに取り戻す上限です。"
-            "**増やしすぎると「重いほどさらに重くなる」**"
-            "悪循環に入ります。");
+            "増やしすぎると処理負荷が増え、遅延がさらに悪化します。");
 
         ImGui::SeparatorText("当たり判定の解決");
         int iterations = static_cast<int>(
@@ -1162,7 +1160,7 @@ namespace LamaPon
         ImGui::TextDisabled(
             "既定の離散判定（DCD）は、1歩で進む距離が当たり判定の"
             "薄さを超えるとすり抜けます。連続判定（CCD）は"
-            "**オブジェクトごと**にRigidbodyで選びます（重いので"
+            "オブジェクトごとにRigidbodyで選びます（重いので"
             "必要なものだけに）。");
         ImGui::DragFloat(
             "DCDで安全な速さ（m/s）##Physics",
@@ -1184,8 +1182,8 @@ namespace LamaPon
         ImGui::TextDisabled(
             "オフ（既定）なら、超えた物体をログで知らせるだけで"
             "挙動は変わりません。オンにするとCCD無しでもすり抜け"
-            "にくくなりますが、**落下が途中で頭打ちになるなど"
-            "見た目が変わります**。CCDを選んだ物体、キネマティック、"
+            "にくくなりますが、落下速度などの挙動が変わる場合が"
+            "あります。CCDを選んだ物体、キネマティック、"
             "眠っている物体はどちらの対象にもなりません。");
 
         ImGui::SeparatorText("スリープ（止まったものを休ませる）");
@@ -1272,8 +1270,8 @@ namespace LamaPon
             }
             // ScrollX付きのテーブルは子ウィンドウになるため、
             // 高さを明示しないと「残りの高さ」に合わせられます。
-            // スクロールの末尾では残りが無く**高さ0＝見えない表**に
-            // なるので（実際に撮って発覚）、行数から高さを決めます。
+            // スクロール末尾でも高さ0にならないよう、行数から高さを
+            // 決めます。
             const float matrixHeight =
                 ImGui::GetTextLineHeightWithSpacing()
                 * (static_cast<float>(usedLayers.size())
@@ -1363,8 +1361,7 @@ namespace LamaPon
         }
         ImGui::SameLine();
         ImGui::TextDisabled(
-            "既定値は、この設定を足す前にコードへ直書き"
-            "されていた値と同じです。");
+            "エンジン標準の物理設定に戻します。");
     }
 
     void EditorLayer::DrawProjectSettingsTagsSection()
@@ -1867,7 +1864,6 @@ namespace LamaPon
             }
             m_playing = true;
             m_paused = false;
-            m_projectStageEditor.previewNeedsRender = true;
             m_stepRequested = false;
             m_remoteInputSnapshot.reset();
             m_remoteInputFrames = 0;
@@ -1889,7 +1885,6 @@ namespace LamaPon
             return;
         }
         m_paused = paused;
-        m_projectStageEditor.previewNeedsRender = true;
         // 溜まったステップ要求を持ち越さないようにします。
         m_stepRequested = false;
         // 絵が止まっているのに音だけ進むと状態がズレるので、
@@ -1909,7 +1904,6 @@ namespace LamaPon
             return;
         }
         m_stepRequested = true;
-        m_projectStageEditor.previewNeedsRender = true;
         SetStatus("1フレーム進めました");
     }
 
@@ -1917,9 +1911,6 @@ namespace LamaPon
     {
         try
         {
-            // LoadFromJsonでエディター専用オブジェクトも破棄されるため、
-            // IDを残さず明示的に片付けてから編集状態を復元します。
-            ClearProjectStageMapPreview();
             m_scene.LoadFromJson(m_playSnapshot);
             m_scene.Scenes().
                 CancelPending();
@@ -1941,9 +1932,6 @@ namespace LamaPon
             // 一時停止したまま停止しても音が止まったままにならないように。
             m_graphics.Audio().SetSuspended(false);
             m_playSnapshot.clear();
-            RebuildProjectStageMapPreview();
-            m_projectStageEditor.previewHasRendered = false;
-            m_projectStageEditor.previewNeedsRender = true;
             // ゲームが変更したタイムスケールを編集モードへ持ち込まない。
             Time::Detail::Reset();
             SetStatus("停止しました。編集状態を復元しました");

@@ -349,7 +349,7 @@ class WebExportToolTests(unittest.TestCase):
             )
             project = {
                 "name": "PortableGame",
-                "projectName": "CarGame",
+                "projectName": "SampleGame",
                 "gameName": "Portable Game",
                 "export": {
                     "targets": ["web"],
@@ -391,7 +391,7 @@ class WebExportToolTests(unittest.TestCase):
 
             self.assertIn("PORTABLE_GAME", cmake)
             self.assertIn(
-                "OUTPUT_NAME [==[LamaPonWebGL-CarGame]==]", cmake
+                "OUTPUT_NAME [==[LamaPonWebGL-SampleGame]==]", cmake
             )
             self.assertIn("GAME_NAME [==[Portable Game]==]", cmake)
             self.assertIn(
@@ -604,9 +604,8 @@ class WebExportToolTests(unittest.TestCase):
                 "GamePadY",
             )
 
-            # The Editor can now hot-reload an externally changed
-            # project.json. Export must likewise read the latest on-disk
-            # bindings instead of reusing a map cached by an earlier preview.
+            # 書き出し時にproject.jsonを読み直し、外部で変更された
+            # 入力設定が反映されることを検証します。
             (root / ".lamapon" / "project.json").write_text(json.dumps({
                 "inputActions": [{
                     "name": "ToggleView",

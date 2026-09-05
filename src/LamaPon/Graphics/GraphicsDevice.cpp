@@ -54,9 +54,7 @@ namespace
         }
     }
 
-    // コンパイル失敗のメッセージへ、原因の見当を足します。
-    // ソースはここで読み直します（失敗は稀なので、読み直しの
-    // 手間より「なぜ落ちたか読める」ことを取ります）。
+    // コンパイル失敗時にソースを読み、原因に対応する診断を追加します。
     [[nodiscard]] std::string DescribeShaderFailure(
         LamaPon::AssetManager& assets,
         const std::filesystem::path& shaderPath,
@@ -108,9 +106,7 @@ namespace
 
 namespace LamaPon
 {
-    // ここが唯一の実体です。ヘッダで`inline static`にすると、
-    // EXEとDLLで別々の実体になり、EXEが立てたフラグをDLLが
-    // 見ません（詳しくはGraphicsDevice.hの説明）。
+    // EXEとDLLで初期化フラグを共有するため、実体をDLL内へ一つだけ定義します。
     bool GraphicsDevice::s_preferWarpAdapter = false;
     bool GraphicsDevice::s_enableDebugLayer = false;
 
@@ -292,16 +288,12 @@ namespace LamaPon
         m_uiHeight = m_height;
         m_sprite2DOffset = {};
 
-        // ティアリング許可が無いと、VSyncを切っても**モニターの
-        // リフレッシュレートがそのままFPSの上限**になります。フリップ
+        // ティアリング許可が無いと、VSyncを切ってもモニターの
+        // リフレッシュレートがそのままFPSの上限になります。フリップ
         // モデルでは提示が垂直同期の間隔で引き取られ、積める枚数
         // （BufferCount）を使い切った時点でPresentが待たされるためです。
-        // 「FPS上限に360を入れても60しか出ない」の正体はこれで、60Hz
-        // のモニターだと設定が何であれ60で頭打ちになります。
-        //
-        // 使うには3つ揃える必要があります: ①アダプターが対応して
-        // いること、②スワップチェーンをこのフラグ付きで作ること、
-        // ③Presentへ同期間隔0とセットで渡すこと。
+        // ティアリングには、アダプター対応、スワップチェーン作成フラグ、
+        // Presentの同期間隔0と提示フラグの組み合わせが必要です。
         m_tearingAllowed = QueryTearingSupport();
 
         DXGI_SWAP_CHAIN_DESC swapChainDescription{};
@@ -365,8 +357,7 @@ namespace LamaPon
                 : D3D_DRIVER_TYPE_HARDWARE;
         HRESULT result = createDevice(primaryDriver, flags);
 
-        // デバッグレイヤーはSDKの部品が要ります。入っていない環境で
-        // 起動ごと失敗させないよう、落として作り直します。
+        // SDKのデバッグレイヤーが利用できない場合は、フラグを外して再作成します。
         if (wantDebugLayer
             && result == DXGI_ERROR_SDK_COMPONENT_MISSING)
         {
@@ -374,12 +365,9 @@ namespace LamaPon
             result = createDevice(primaryDriver, flags);
         }
 
-        // 「対応している」と答えたのに作成が通らないドライバーがあり
-        // ます。ここで起動ごと失敗させるのは割に合わないので、フラグを
-        // 落として作り直します（FPSの上限がリフレッシュレートへ戻る
-        // だけで、絵は変わりません）。デバッグレイヤー欠落の判定より
-        // 後に置くこと——先に置くと、そちらの失敗をティアリングの
-        // せいだと誤診してフラグだけ落としてしまいます。
+        // 対応判定後もティアリング付き作成が失敗するドライバーでは、
+        // 提示フラグを外して再作成します。描画結果は維持されますが、
+        // FPS上限はリフレッシュレートへ戻ります。
         if (FAILED(result) && m_tearingAllowed)
         {
             m_tearingAllowed = false;
@@ -411,10 +399,8 @@ namespace LamaPon
 
         ThrowIfFailed(result, "D3D11CreateDeviceAndSwapChain");
 
-        // デバッグレイヤーのメッセージはOutputDebugStringへ出るので、
-        // デバッガーを繋いでいないと読めません。InfoQueueから自分で
-        // 引き取ってエンジンのログへ流します。これが無いと
-        // --d3ddebug を付けても何も見えません。
+        // デバッガーなしでも確認できるよう、InfoQueueのメッセージを
+        // エンジンログへ転送します。
         if ((flags & D3D11_CREATE_DEVICE_DEBUG) != 0)
         {
             if (SUCCEEDED(m_device.As(&m_infoQueue)))
@@ -446,8 +432,7 @@ namespace LamaPon
 
         LogSelectedAdapter();
         RefreshMemoryStatistics(true);
-        // 書き出したゲームにはエディターの統計パネルが無いので、
-        // 「FPS上限が効かない」の切り分けができるようログにも残します。
+        // エディター外でもFPS制限の状態を確認できるよう、ログへ記録します。
         if (!m_tearingAllowed)
         {
             Logger::Instance().Info(
@@ -686,8 +671,7 @@ namespace LamaPon
         }
         if (!entry->effect)
         {
-            // 失敗はマゼンタで知らせます。普通に描いてしまうと、
-            // 壊れていることに見た目では気付けません。
+            // コンパイル失敗を視認できるよう、マゼンタの代替表示を使います。
             if (!entry->error.empty())
             {
                 if (auto* const placeholder =
@@ -1059,7 +1043,7 @@ namespace LamaPon
         m_gpuProfiler.CloseFrame();
         // DXGI_PRESENT_ALLOW_TEARINGは同期間隔0とセットでしか使えません
         // （VSync有効時に渡すとPresentがE_INVALIDARGを返します）。
-        // これを渡して初めてリフレッシュレートを超えられます。上限は
+        // ALLOW_TEARINGを指定するとリフレッシュレートを超えられます。上限は
         // Application側のフレームペーサー（targetFrameRate）が持ちます。
         const bool immediate =
             !m_graphicsSettings.vSyncEnabled;
@@ -1205,9 +1189,8 @@ namespace LamaPon
         }
         // UAVのバインドフラグは作成時にしか決められないので、
         // Resizeより前に印を付けます。カメラの描画先として先に
-        // 作られていた名前だと、ここで印を付けても既存の
-        // テクスチャは作り直されません（同じサイズならResizeが
-        // 何もしないため）。名前は使い分けてください。
+        // 既存の同名テクスチャには作成フラグを追加できないため、
+        // カメラ描画先とは異なる名前を使用します。
         slot->SetComputeWritable(true);
         slot->Resize(
             m_device.Get(),
@@ -1337,9 +1320,7 @@ namespace LamaPon
     void GraphicsDevice::EndSceneComposition(
         const PostProcessFrame& frame)
     {
-        // 「ポスト処理」の区間はRunPostProcessが自分で開きます
-        // （5経路すべてを同じ条件で測るため）。ここで囲むと
-        // 二重計上になります。
+        // RunPostProcessが計測区間を開始するため、呼び出し側では開始しません。
         RunPostProcess(
             *this,
             *m_sceneCompositionTarget,
@@ -1362,10 +1343,7 @@ namespace LamaPon
 
     void GraphicsDevice::LogSelectedAdapter() const
     {
-        // 起動時にどのアダプターで動いているかを1行残します。
-        // WARP（CPU描画）だと性能が2桁変わるので、性能の相談を
-        // 受けたときに最初に見る情報になります。フォールバック時の
-        // 警告だけでは、はじめからWARPで起動した場合に分かりません。
+        // 性能診断でGPUとWARPを区別できるよう、起動時のアダプター名を記録します。
         Microsoft::WRL::ComPtr<IDXGIDevice> dxgiDevice;
         if (FAILED(m_device.As(&dxgiDevice)))
         {
@@ -1426,8 +1404,7 @@ namespace LamaPon
         RenderTarget& target,
         const ScreenEffectPoint point)
     {
-        // その地点の分が無ければ、深度の係数を組み立てる必要も
-        // ありません（4地点すべてで呼ばれるので、空振りが普通です）。
+        // 対象地点にエフェクトが無い場合は、深度変換係数の計算を省略します。
         if (std::ranges::none_of(
                 m_queuedScreenEffects,
                 [point](const QueuedScreenEffect& queued)
@@ -1439,8 +1416,8 @@ namespace LamaPon
         }
         // 深度を距離へ直す係数。式は距離＝y/(深度+x)で、SSRの
         // Hi-Z作成（PSReflectionDepthLinearize）と同じものです。
-        // 導出し直すと符号を間違えても絵がそれらしく出てしまうので、
-        // 同じ形を使い回します。射影はこの絵を描いたときのもの
+        // SSRの深度変換と同じ式を使い、変換規則を一致させます。
+        // 射影はこの画像を描いたときのもの
         // （TAAのずらし込み＝深度バッファと噛み合う方）。
         const auto& projection = SceneProjection();
         const DirectX::XMFLOAT4 depthParameters{
@@ -1485,9 +1462,8 @@ namespace LamaPon
                 depthUnprojection,
                 queued.parameters);
         }
-        // かけた分だけ取り除きます。**全部消してはいけません** ――
-        // 4地点は同じフレームで順に呼ばれるので、まだ来ていない地点の
-        // 分まで捨てると、後ろへ置いたエフェクトが無言で消えます。
+        // 現在の地点で適用したエフェクトだけを取り除きます。同じフレームの
+        // 後続地点に登録されたエフェクトはキューへ残します。
         std::erase_if(
             m_queuedScreenEffects,
             [point](const QueuedScreenEffect& queued)
@@ -1926,7 +1902,7 @@ namespace LamaPon
             layout);
         if (text && text->view)
         {
-            // 文字テクスチャは白で焼かれるので色はここで掛けます。
+            // 白で生成した文字テクスチャへ描画時の色を掛けます。
             sprites.Draw(
                 text->view.Get(),
                 XMFLOAT2{
@@ -1956,8 +1932,8 @@ namespace LamaPon
         std::shared_ptr<const TextureAsset> logo;
         try
         {
-            // The texture is cached after the first frame, so the startup
-            // path only pays for one small image load.
+            // テクスチャは最初のフレームでキャッシュされるため、起動処理で
+            // 小さな画像を読み込むのは一度だけです。
             logo = Assets().LoadTexture(logoPath);
         }
         catch (const std::exception&)
@@ -2259,9 +2235,8 @@ namespace LamaPon
 
     namespace
     {
-        // 失敗した組み込みシェーダーを試し直す間隔（秒）。
-        // 短すぎると壊れている間ずっと重く、長すぎると直したのに
-        // 戻ってこないように見えます。
+        // 失敗した組み込みシェーダーの再試行間隔です。連続コンパイルを避けつつ、
+        // 修正後に復帰できる時間として設定します。
         constexpr double BuiltInRetrySeconds = 2.0;
 
         [[nodiscard]] double SteadySeconds() noexcept
@@ -2272,17 +2247,9 @@ namespace LamaPon
         }
     }
 
-    // 組み込みシェーダーの組み立てを1回だけ試し、失敗を覚えます。
-    //
-    // ユーザーのShaderならマゼンタの代役を差し込めますが（
-    // ShaderErrorPlaceholderを参照）、Lit本体やEnvironmentには
-    // 差し込む先がありません。**投げること自体は変えられない**ので、
-    // ここでできるのは「毎フレーム作り直して事実上フリーズする」のを
-    // 防ぐことと、直したら戻ってこられるようにすることです。
-    //
-    // 呼び出し側（Application）は描画をtry/catchで囲み、失敗しても
-    // エディターのUIは動かし続けます。そうすればユーザーは開いたまま
-    // Shaderを直せます。
+    // 組み込みシェーダーの失敗を記録して毎フレームの再コンパイルを防ぎ、
+    // 再試行間隔後に復帰を試みます。代替描画経路が無いため失敗は送出し、
+    // Application側が描画失敗を処理してエディターUIを継続します。
     template <typename T, typename Factory>
     T& GraphicsDevice::BuildBuiltIn(
         std::unique_ptr<T>& slot,
@@ -2297,7 +2264,7 @@ namespace LamaPon
         if (!failure.message.empty()
             && now - failure.lastAttempt < BuiltInRetrySeconds)
         {
-            // 覚えている失敗をそのまま返します（コンパイルしません）。
+            // 再試行時刻までは記録済みの失敗を返し、コンパイルを省略します。
             throw std::runtime_error(failure.message);
         }
         failure.lastAttempt = now;
@@ -2338,10 +2305,8 @@ namespace LamaPon
     {
         if (!m_clusteredLights)
         {
-            // カリングCSはユーザーが編集しない内部シェーダーです。
-            // 新しいエンジンで古いプロジェクト（このファイルが
-            // 作成時に無かった）を開いても動くよう、プロジェクトに
-            // 無ければエンジン本体のassetsから読みます。
+            // カリングCSがプロジェクトに無い場合は、互換性維持のため
+            // エンジン同梱のアセットから読み込みます。
             constexpr const char* relativePath =
                 "shaders/LamaPonLightCulling.hlsl";
             auto shaderPath =
@@ -2407,9 +2372,7 @@ namespace LamaPon
         auto& unavailable = skinned
             ? m_skinnedErrorEffectUnavailable
             : m_errorEffectUnavailable;
-        // 代役を実際に渡した回数を数えます。撮った絵の色から推測
-        // せずに「壊れたものが描かれたか」を言い切るための事実です
-        // （FrameStatistics::shaderFallbackDrawsを参照）。
+        // 代替シェーダーを設定した回数をFrameStatisticsへ記録します。
         if (effect)
         {
             ++m_frameStatistics.shaderFallbackDraws;
@@ -2420,9 +2383,8 @@ namespace LamaPon
             return nullptr;
         }
 
-        // プロジェクトに配られていない場合はエンジン同梱の実体を
-        // 使います。壊れたシェーダーの知らせ方が、プロジェクトの
-        // 更新状況で変わってしまわないようにするためです。
+        // プロジェクトに代替シェーダーが無い場合はエンジン同梱版を使い、
+        // プロジェクトの版に関係なく同じ失敗表示を提供します。
         constexpr const char* relativePath =
             "shaders/LamaPonShaderError.hlsl";
         auto shaderPath = Assets().ResolvePath(relativePath);
@@ -2551,8 +2513,7 @@ namespace LamaPon
         }
         catch (const std::exception&)
         {
-            // 読めないシェーダーは「宣言なし」として扱います。
-            // ここで投げると、Inspectorを開いただけで落ちます。
+            // 読み取り失敗時は宣言なしとして扱い、Inspectorの表示を継続します。
             declaration = {};
         }
         return m_shaderVariants
@@ -2599,9 +2560,7 @@ namespace LamaPon
             entry->keywords = normalized.Keywords();
         }
 
-        // コンパイルできていれば本来のシェーダー、失敗していれば
-        // マゼンタの代役です。標準Litで代役を務めると、動いている
-        // ように見えて実は壊れている状態になります。
+        // コンパイル失敗を明示するため標準Litではなくマゼンタの代替表示を使います。
         const auto resolve = [this, &entry]() -> LitEffect&
         {
             if (entry->effect)
@@ -2619,7 +2578,7 @@ namespace LamaPon
             return Lit();
         };
 
-        // 非同期コンパイルの完了待ち。出来ていればここで組み立てます
+        // 非同期コンパイル完了後にLitEffectを組み立てます
         // （キャッシュに当たるので一瞬で終わります）。
         if (entry->pending)
         {
@@ -2655,7 +2614,7 @@ namespace LamaPon
             }
             else
             {
-                // まだ焼けていません。止めずに標準Litで描きます。
+                // 非同期コンパイルの完了までは標準Litで描画を継続します。
                 generation = entry->generation;
                 error.clear();
                 return Lit();
@@ -2673,9 +2632,9 @@ namespace LamaPon
         }
         entry->nextCheck = now + std::chrono::milliseconds(250);
 
-        // Archived (shipped) games have no loose files to watch for
-        // changes, so hot-reload's mtime check only applies to the
-        // editor's loose-file assets; archived shaders load once.
+        // アーカイブで配布したゲームには変更監視の対象となる展開済みファイルが
+        // ありません。ホットリロードの更新日時確認はエディター上の展開済み
+        // アセットだけに行い、アーカイブ内のシェーダーは一度だけ読み込みます。
         const bool archived = Assets().IsArchived();
         std::error_code fileError;
         const bool sourceExists = Assets().FileExists(absolutePath);
@@ -2714,8 +2673,7 @@ namespace LamaPon
                     if (m_asyncShaderCompilation
                         && !Assets().IsArchived())
                     {
-                        // ここでeffectを捨てるので、失敗したときは
-                        // 代役が出ます（下のcatchも同じ考え方）。
+                        // effectを破棄すると、失敗時は代替表示へ切り替わります。
                         auto* const assets = &Assets();
                         const auto path = absolutePath;
                         const auto keywordList = entry->keywords;
@@ -2752,10 +2710,8 @@ namespace LamaPon
                         absolutePath,
                         exception.what(),
                         ShaderUsage::Material);
-                    // 直前に成功したものを残すと、書き間違えた
-                    // シェーダーが前のまま描かれ続けます。
-                    // 「編集しても見た目が変わらない」の正体が
-                    // これでした。捨てて代役に任せます。
+                    // 再コンパイル失敗を視認できるよう、直前のシェーダーを破棄して
+                    // 代替表示へ切り替えます。
                     entry->effect.reset();
                 }
             }
@@ -2800,9 +2756,8 @@ namespace LamaPon
             entry->keywords = normalized.Keywords();
         }
 
-        // 通常マテリアルと同じく、失敗はマゼンタの代役で知らせます。
-        // 以前はnullptrを返して「何も描かない」でしたが、消えた
-        // モデルの原因を探すのは壊れた色を見るより難しい作業です。
+        // 通常マテリアルと同じく、失敗時はマゼンタの代替表示を使い、
+        // シェーダーを作成できなかったモデルを画面上で特定できます。
         const auto resolve = [this, &entry]() -> LitEffect*
         {
             if (entry->effect)
@@ -2827,9 +2782,9 @@ namespace LamaPon
         }
         entry->nextCheck = now + std::chrono::milliseconds(250);
 
-        // Archived (shipped) games have no loose files to watch for
-        // changes, so hot-reload's mtime check only applies to the
-        // editor's loose-file assets; archived shaders load once.
+        // アーカイブで配布したゲームには変更監視の対象となる展開済みファイルが
+        // ありません。ホットリロードの更新日時確認はエディター上の展開済み
+        // アセットだけに行い、アーカイブ内のシェーダーは一度だけ読み込みます。
         const bool archived = Assets().IsArchived();
         std::error_code fileError;
         const bool sourceExists = Assets().FileExists(absolutePath);

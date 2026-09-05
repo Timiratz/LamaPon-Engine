@@ -679,11 +679,10 @@ namespace
             return;
         }
 
-        // Legacy FBX materials often store a viewport diffuse colour even
-        // when the diffuse texture already contains the final baked colour.
-        // Blender connects that texture directly and does not multiply the
-        // legacy diffuse RGB into it. Match that behaviour so textured FBX
-        // assets are not tinted twice; keep the scalar alpha/opacity above.
+        // 古いFBXマテリアルでは、拡散テクスチャに最終色が焼き込まれていても、
+        // ビューポート用の拡散色が保存されている場合があります。Blenderは
+        // テクスチャを直接接続し、古い拡散RGBを乗算しません。同じ挙動にして
+        // テクスチャ付きFBXへの二重着色を防ぎ、上で求めたアルファ値だけを残します。
         primitive.baseColor.x = 1.0f;
         primitive.baseColor.y = 1.0f;
         primitive.baseColor.z = 1.0f;
@@ -858,8 +857,8 @@ namespace
                 color.z,
                 color.w
             },
-            // FBX UVs use a bottom-left texture origin while Direct3D
-            // samples WIC textures from the top-left.
+            // FBXのUVはテクスチャの左下を原点としますが、Direct3Dは
+            // WICテクスチャを左上原点としてサンプリングします。
             DirectX::XMFLOAT2{ uv.x, 1.0f - uv.y },
             jointIndices,
             blendWeights
@@ -1397,9 +1396,9 @@ namespace LamaPon
         // 子ノードへは通常の階層変換で伝播するため、ここではルート
         // （parentを持たないノード）だけを補正すれば十分です。
         //
-        // キャッシュには適用**後**のノードが入るので、.metaを依存として
+        // キャッシュには適用後のノードが入るので、.metaを依存として
         // 記録します（スケールを変えたら作り直しになるように。
-        // 「無い」ことも記録します——後から.metaを作ったときも
+        // 「無い」ことも記録します。後から.metaを作ったときも
         // 作り直しが要るためです）。
         {
             const std::filesystem::path metaPath(

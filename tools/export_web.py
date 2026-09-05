@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""EmscriptenでLamaPon Web TargetをBuildし、Web Packageを収集します。"""
+"""EmscriptenでLamaPonのWebターゲットをビルドし、Webパッケージを収集します。"""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ ENGINE_ROOT = Path(__file__).resolve().parent.parent
 
 
 class ExportError(RuntimeError):
-    """利用者が対処できるWeb Export設定またはBuild Errorです。"""
+    """利用者が対処できるWeb出力設定またはビルドエラーです。"""
 
 
 WEB_PROFILES: dict[str, dict[str, Any]] = {
@@ -35,15 +35,15 @@ WEB_PROFILES: dict[str, dict[str, Any]] = {
             "audio",
         },
         "module_reasons": {
-            "renderer3d": "The normal Windows/D3D11 3D renderer is not part of this 2D profile.",
-            "physics3d": "The normal physics API is not part of this 2D profile; the portable Web physics runtime is selected by the 3D profile.",
-            "particles3d": "The current particle renderer is D3D11-specific.",
-            "postprocess": "The current post-process chain is D3D11/HLSL-specific.",
-            "compute": "WebGL2 compute shaders are not part of this profile.",
-            "custom-hlsl": "HLSL is not accepted by the WebGL2 shader path.",
-            "native-plugin": "DLL/EXE plugins cannot be loaded by a browser.",
-            "filesystem-native": "Browser output must use the virtual asset filesystem.",
-            "threads": "The initial profile does not enable pthreads or SharedArrayBuffer.",
+            "renderer3d": "Windows/D3D11用の3Dレンダラーは、この2Dプロファイルに含まれません。",
+            "physics3d": "標準の物理APIはこの2Dプロファイルに含まれません。ポータブルWeb物理ランタイムは3Dプロファイルで使用できます。",
+            "particles3d": "現在のパーティクルレンダラーはD3D11専用です。",
+            "postprocess": "現在のポストプロセス処理はD3D11/HLSL専用です。",
+            "compute": "このプロファイルはWebGL2のコンピュートシェーダーに対応していません。",
+            "custom-hlsl": "WebGL2のシェーダー経路ではHLSLを使用できません。",
+            "native-plugin": "ブラウザーではDLL/EXEプラグインを読み込めません。",
+            "filesystem-native": "ブラウザー出力では仮想アセットファイルシステムを使用する必要があります。",
+            "threads": "この基本プロファイルではpthreadsとSharedArrayBufferを有効にしていません。",
         },
         "asset_extensions": {
             ".json",
@@ -69,12 +69,12 @@ WEB_PROFILES: dict[str, dict[str, Any]] = {
             "particles3d",
         },
         "module_reasons": {
-            "postprocess": "The current Web post-process chain is not part of the basic 3D runtime.",
-            "compute": "WebGL2 compute shaders are not part of this profile.",
-            "custom-hlsl": "HLSL is not accepted by the WebGL2 shader path.",
-            "native-plugin": "DLL/EXE plugins cannot be loaded by a browser.",
-            "filesystem-native": "Browser output must use the virtual asset filesystem.",
-            "threads": "The initial profile does not enable pthreads or SharedArrayBuffer.",
+            "postprocess": "現在のWebポストプロセス処理は、基本3Dランタイムに含まれません。",
+            "compute": "このプロファイルはWebGL2のコンピュートシェーダーに対応していません。",
+            "custom-hlsl": "WebGL2のシェーダー経路ではHLSLを使用できません。",
+            "native-plugin": "ブラウザーではDLL/EXEプラグインを読み込めません。",
+            "filesystem-native": "ブラウザー出力では仮想アセットファイルシステムを使用する必要があります。",
+            "threads": "この基本プロファイルではpthreadsとSharedArrayBufferを有効にしていません。",
         },
         "asset_extensions": {
             ".json",
@@ -113,18 +113,18 @@ SOURCE_EXTENSIONS = {
 }
 
 FORBIDDEN_SOURCE_TOKENS = {
-    "#include <Windows.h>": "Win32 headers",
-    '#include "Windows.h"': "Win32 headers",
-    "#include <d3d11.h>": "Direct3D 11 headers",
-    "#include <dxgi.h>": "DXGI headers",
-    "#include <DirectXMath.h>": "DirectXMath headers",
-    "#include <xaudio2.h>": "XAudio2 headers",
-    "#include <WICTextureLoader.h>": "DirectXTK texture loading",
-    "ID3D11": "Direct3D 11 object types",
-    "D3D11_": "Direct3D 11 constants",
-    "DirectX::": "DirectXMath or DirectXTK types",
-    "HWND": "Win32 window handles",
-    "XAudio": "XAudio2 APIs",
+    "#include <Windows.h>": "Win32ヘッダー",
+    '#include "Windows.h"': "Win32ヘッダー",
+    "#include <d3d11.h>": "Direct3D 11ヘッダー",
+    "#include <dxgi.h>": "DXGIヘッダー",
+    "#include <DirectXMath.h>": "DirectXMathヘッダー",
+    "#include <xaudio2.h>": "XAudio2ヘッダー",
+    "#include <WICTextureLoader.h>": "DirectXTKのテクスチャ読み込み",
+    "ID3D11": "Direct3D 11のオブジェクト型",
+    "D3D11_": "Direct3D 11の定数",
+    "DirectX::": "DirectXMathまたはDirectXTKの型",
+    "HWND": "Win32ウィンドウハンドル",
+    "XAudio": "XAudio2 API",
 }
 
 PORTABLE_DIRECTX_TOKEN = re.compile(
@@ -134,21 +134,21 @@ PORTABLE_DIRECTX_TOKEN = re.compile(
 
 SOURCE_WARNINGS = {
     "std::filesystem::exists": (
-        "filesystem existence checks see only the packaged browser virtual "
-        "filesystem"
+        "ファイルの存在確認では、パッケージ内のブラウザー用仮想"
+        "ファイルシステムだけが見えます"
     ),
     "std::filesystem::directory_iterator": (
-        "directory iteration sees only the packaged browser virtual filesystem"
+        "フォルダー走査では、パッケージ内のブラウザー用仮想ファイルシステムだけが見えます"
     ),
     "std::filesystem::recursive_directory_iterator": (
-        "directory iteration sees only the packaged browser virtual filesystem"
+        "フォルダー走査では、パッケージ内のブラウザー用仮想ファイルシステムだけが見えます"
     ),
     "std::thread": (
-        "threads require an explicitly configured SharedArrayBuffer/pthreads "
-        "deployment and are not in the basic profile"
+        "スレッドにはSharedArrayBuffer/pthreadsを有効にした配布設定が必要です。"
+        "基本プロファイルでは使用できません"
     ),
     "std::async": (
-        "async work is not a browser thread guarantee in the basic profile"
+        "基本プロファイルでは、非同期処理がブラウザースレッドで実行される保証はありません"
     ),
 }
 
@@ -202,9 +202,9 @@ PORTABLE_API_MODULES: dict[str, str] = {
 PORTABLE_SCENE_COMPONENTS: dict[str, str] = {
     "NativeScript": "core",
     "Camera": "renderer3d",
-    # これらのScene ComponentはPortable Subset内で独立したRuntime処理を
-    # 持ちません。LightingはScene Environment既定値から利用し、Browserの
-    # AudioContextにはListener Component Objectが不要です。
+    # これらのシーンコンポーネントには、ポータブル版で独立したランタイム処理が
+    # ありません。ライティングにはシーン環境の既定値を使い、ブラウザーの
+    # AudioContextではAudioListenerオブジェクトを必要としません。
     "AudioListener": "audio",
     "DirectionalLight": "renderer3d",
     "InputMover": "input",
@@ -229,7 +229,7 @@ PORTABLE_SCENE_COMPONENTS: dict[str, str] = {
 PORTABLE_NOOP_SCENE_COMPONENTS = {"AudioListener", "RenderCulling"}
 PORTABLE_APPROXIMATE_SCENE_COMPONENTS = {"DirectionalLight"}
 
-# Native Scene Componentの全種類を明示します。新しいNative Componentは
+# ネイティブシーンコンポーネントの全種類を明示します。新しいコンポーネントは
 # Web互換を宣言する前に、ここおよびPORTABLE_SCENE_COMPONENTSで分類します。
 KNOWN_NATIVE_SCENE_COMPONENTS = {
     "AudioListener", "AudioSource", "Billboard", "BoxCollider2D",
@@ -261,11 +261,11 @@ DYNAMIC_SCRIPT_TOKEN = re.compile(
     re.MULTILINE,
 )
 WEB_UNSUPPORTED_ENVIRONMENT_EFFECTS = {
-    "autoExposure": "automatic exposure",
-    "bloom": "bloom",
-    "depthOfField": "depth of field",
-    "motionBlur": "motion blur",
-    "screenSpaceLensFlare": "screen-space lens flare",
+    "autoExposure": "自動露出",
+    "bloom": "ブルーム",
+    "depthOfField": "被写界深度",
+    "motionBlur": "モーションブラー",
+    "screenSpaceLensFlare": "スクリーンスペースレンズフレア",
 }
 PORTABLE_INPUT_ACTIONS = {
     "MoveHorizontal",
@@ -311,14 +311,14 @@ IGNORED_RUNTIME_ASSET_EXTENSIONS = {
     ".hpp",
     ".hxx",
     ".meta",
-    # Source付属FileはStaging中に正規GLBへ統合します。
+    # ソースに付属するファイルは、準備中に正規化したGLBへ統合します。
     ".bin",
     ".mtl",
 }
 
-# 変換後もVirtual Asset Pathを変更しません。たとえばtextures/road.pngは同じ
-# PathへWebP Byteとして配置するため、既存C++やScene参照の書き換えは不要です。
-# Browser Decoderは元の拡張子ではなくFile Signatureを使用します。
+# 変換後も仮想アセットパスを変更しません。たとえばtextures/road.pngは同じ
+# パスへWebPデータとして配置するため、既存のC++コードやシーン参照を直す必要は
+# ありません。ブラウザー側は拡張子ではなくファイルシグネチャで形式を判定します。
 WEB_ASSET_CONVERSIONS: dict[str, tuple[str, str]] = {
     ".bmp": ("image", "webp"),
     ".dds": ("image", "webp"),
@@ -365,10 +365,15 @@ WEB_ASSET_CONVERSIONS: dict[str, tuple[str, str]] = {
 }
 
 WEB_ASSET_CONVERTER_SETTINGS = {
-    # Windowsに同名で存在する無関係なconvert.exeへFallbackしません。
+    # Windowsに同名のconvert.exeがあっても、代替ツールとして使用しません。
     "image": ("imageMagick", ("magick",)),
     "audio": ("ffmpeg", ("ffmpeg",)),
     "model": ("assimp", ("assimp",)),
+}
+WEB_ASSET_KIND_LABELS = {
+    "image": "画像",
+    "audio": "音声",
+    "model": "モデル",
 }
 
 INVALID_WEB_PROJECT_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -386,7 +391,7 @@ DEFAULT_RUNTIME_ASSET_DIRECTORIES = (
 
 
 def portable_project_input_actions(source: Path) -> dict[str, list[dict[str, Any]]]:
-    """LamaPon ProjectからBrowser向けに直列化可能なInput Bindingを読み込みます。"""
+    """LamaPonプロジェクトから、ブラウザー用に変換できる入力設定を読み込みます。"""
     project_path = source / ".lamapon" / "project.json"
     if not project_path.is_file():
         return {}
@@ -423,7 +428,7 @@ def web_project_name(
     project: dict[str, Any],
     project_kind: str,
 ) -> str:
-    """配布File名に使用する安定したProject名を返します。"""
+    """配布ファイル名に使用する安定したプロジェクト名を返します。"""
     explicit_name = project.get("projectName")
     if explicit_name is not None:
         name = explicit_name
@@ -492,10 +497,10 @@ def prepare_normal_lamapon_web_configuration(
     source: Path,
     project: dict[str, Any],
 ) -> dict[str, Any]:
-    """通常のLamaPonProjectからMemory上にPortable Targetを作成します。
+    """通常のLamaPonプロジェクトからメモリ上にポータブルターゲットを作成します。
 
-    Source Projectには何も書き込みません。明示された高度な設定は保持し、
-    初心者は通常のProject File、Script、Editorが生成するStartup Sceneだけで
+    元のプロジェクトには何も書き込みません。明示された高度な設定は保持し、
+    通常のプロジェクト設定、スクリプト、エディターが生成する起動シーンだけで
     利用できるようにします。
     """
     export = project.get("export", {})
@@ -697,14 +702,14 @@ def run_asset_conversion(
 ) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     if kind == "image":
-        # LamaPon NativeのTexture経路ではGIFをTimelineではなく単一Textureとして
-        # 扱うため、先頭Frameを選択して同じ挙動を保ちます。
+        # LamaPonのネイティブ版ではGIFを動画ではなく単一テクスチャとして扱うため、
+        # 先頭フレームを選んで同じ挙動を保ちます。
         image_source = f"{source}[0]" if source.suffix.lower() == ".gif" \
             else str(source)
         command = [str(converter), image_source]
         if runtime_format == "webp":
-            # Decode済みPixelとAlphaを保持します。追加の非可逆劣化を発生させず、
-            # Web出力のContainerだけを標準化します。
+            # デコード済みの画素とアルファを保持し、追加の非可逆劣化を避けながら
+            # Web出力のコンテナーだけを標準化します。
             command.extend((
                 "-define", "webp:lossless=true",
                 "-quality", "100",
@@ -777,11 +782,11 @@ def externalize_glb_images(
     glb_path: Path,
     image_converter: Path | None,
 ) -> list[Path]:
-    """GLB埋め込み画像を可逆WebPのSidecarへ書き換えます。
+    """GLBの埋め込み画像を可逆WebPのサイドカーファイルへ書き換えます。
 
-    正規Modelは元のVirtual Pathに保ち、Material Image URIは隣に配置する通常の
-    WebP Package Fileへ変更します。すべてのBrowser Image Payloadに同じ
-    WebP限定Policyを適用できます。
+    正規化したモデルは元の仮想パスに保ち、マテリアルの画像URIは隣に配置する
+    WebPファイルへ変更します。これにより、ブラウザーへ渡すすべての画像に
+    WebP限定の規則を適用できます。
     """
     data = glb_path.read_bytes()
     if len(data) < 20 or data[:4] != b"glTF":
@@ -907,7 +912,7 @@ def externalize_glb_images(
 
 
 def validate_portable_glb(glb_path: Path) -> dict[str, int]:
-    """Portable Runtimeで保持できない正規GLB機能を拒否します。"""
+    """ポータブルランタイムで保持できない正規GLB機能を拒否します。"""
     data = glb_path.read_bytes()
     if len(data) < 20 or data[:4] != b"glTF":
         raise ExportError(f"Converted model is not a GLB 2.0 file: {glb_path}")
@@ -941,9 +946,9 @@ def validate_portable_glb(glb_path: Path) -> dict[str, int]:
             f"Converted model requires unsupported GLB extension(s) "
             f"{', '.join(map(str, required_extensions))}: {glb_path}"
         )
-    # extensionsUsedだけではErrorにしません。AssimpはMaterialが有効化していない
-    # 無害な既定Extensionも列挙します。実Payloadを検証して一般的なImportを許可し、
-    # 失われるVisual Featureだけは黙って通過させません。
+    # extensionsUsedの列挙だけではエラーにしません。Assimpはマテリアルが使用しない
+    # 無害な既定拡張も列挙するため、実データを検査して一般的なインポートを許可し、
+    # 失われる描画機能だけを拒否します。
     unsupported_material_extensions = {
         "KHR_materials_anisotropy",
         "KHR_materials_clearcoat",
@@ -1094,7 +1099,7 @@ def validate_portable_glb(glb_path: Path) -> dict[str, int]:
 
 
 def infer_lamapon_modules(source: Path, project: dict[str, Any]) -> list[str]:
-    """通常のLamaPon Projectが使用する最小Web Moduleを推定します。"""
+    """通常のLamaPonプロジェクトが使用する最小限のWebモジュールを推定します。"""
     modules = ["core", "input"]
     script_files = [
         path
@@ -1133,8 +1138,8 @@ def infer_lamapon_modules(source: Path, project: dict[str, Any]) -> list[str]:
                     if module is not None:
                         modules.append(module)
 
-    # 通常のLamaPon 3D ProjectではStartup Sceneが空でもScriptがRender Objectを
-    # 動的生成できます。その場合はGraphics設定を最後の保守的な判定材料にします。
+    # 通常のLamaPon 3Dプロジェクトでは、起動シーンが空でもスクリプトが描画
+    # オブジェクトを動的に生成できます。その場合はグラフィックス設定から判定します。
     graphics = project.get("graphics", {})
     if not ({"renderer2d", "renderer3d"} & set(modules)):
         modules.append(
@@ -1232,43 +1237,42 @@ def validate_asset_integrity(
     except OSError as error:
         return [finding(
             "reject", "unreadable-web-asset",
-            f"Asset '{relative}' could not be read: {error}",
-            "Restore file permissions or replace the asset.",
+            f"アセット「{relative}」を読み込めませんでした: {error}",
+            "ファイルのアクセス権を修復するか、アセットを置き換えてください。",
         )]
     if not data:
         return [finding(
             "reject", "empty-web-asset",
-            f"Asset '{relative}' is empty.",
-            "Replace or remove the empty asset.",
+            f"アセット「{relative}」が空です。",
+            "空のアセットを置き換えるか削除してください。",
         )]
     if extension == ".png":
         if len(data) < 24 or data[:8] != b"\x89PNG\r\n\x1a\n":
             findings.append(finding(
                 "reject", "corrupt-png-asset",
-                f"Asset '{relative}' does not have a valid PNG header.",
-                "Re-export the texture as a valid PNG.",
+                f"アセット「{relative}」のPNGヘッダーが正しくありません。",
+                "テクスチャを有効なPNGとして再出力してください。",
             ))
         else:
             width, height = struct.unpack(">II", data[16:24])
             if width == 0 or height == 0:
                 findings.append(finding(
                     "reject", "invalid-texture-size",
-                    f"Texture '{relative}' has a zero dimension.",
-                    "Re-export the texture.",
+                    f"テクスチャ「{relative}」の幅または高さが0です。",
+                    "テクスチャを再出力してください。",
                 ))
             elif width > 4096 or height > 4096:
                 findings.append(finding(
                     "warning", "large-web-texture",
-                    f"Texture '{relative}' is {width}x{height}; this may "
-                    "consume substantial browser memory.",
-                    "Consider a Web-specific texture size of 4096 or lower.",
+                    f"テクスチャ「{relative}」のサイズは{width}x{height}です。ブラウザーのメモリを多く消費する可能性があります。",
+                    "Web用テクスチャは4096以下を目安に縮小してください。",
                 ))
     elif extension in {".jpg", ".jpeg"}:
         if len(data) < 4 or not data.startswith(b"\xff\xd8") or not data.endswith(b"\xff\xd9"):
             findings.append(finding(
                 "reject", "corrupt-jpeg-asset",
-                f"Asset '{relative}' does not have valid JPEG boundaries.",
-                "Re-export the texture as a valid JPEG.",
+                f"アセット「{relative}」のJPEG境界マーカーが正しくありません。",
+                "テクスチャを有効なJPEGとして再出力してください。",
             ))
     elif extension == ".webp":
         if (
@@ -1278,15 +1282,15 @@ def validate_asset_integrity(
         ):
             findings.append(finding(
                 "reject", "corrupt-webp-asset",
-                f"Asset '{relative}' does not have a valid WebP header.",
-                "Re-export the texture as a valid WebP image.",
+                f"アセット「{relative}」のWebPヘッダーが正しくありません。",
+                "テクスチャを有効なWebPとして再出力してください。",
             ))
     elif extension == ".wav":
         if len(data) < 12 or data[:4] != b"RIFF" or data[8:12] != b"WAVE":
             findings.append(finding(
                 "reject", "corrupt-wav-asset",
-                f"Asset '{relative}' does not have a valid RIFF/WAVE header.",
-                "Re-export the audio as a valid WAV file.",
+                f"アセット「{relative}」のRIFF/WAVEヘッダーが正しくありません。",
+                "音声を有効なWAVファイルとして再出力してください。",
             ))
     elif extension == ".json":
         try:
@@ -1294,8 +1298,8 @@ def validate_asset_integrity(
         except (UnicodeDecodeError, json.JSONDecodeError):
             findings.append(finding(
                 "reject", "invalid-json-asset",
-                f"Asset '{relative}' is not valid UTF-8 JSON.",
-                "Repair or re-export the JSON asset.",
+                f"アセット「{relative}」は有効なUTF-8 JSONではありません。",
+                "JSONアセットを修復するか再出力してください。",
             ))
     return findings
 
@@ -1325,14 +1329,14 @@ def validate_portable_contract(
         if required not in declared_modules:
             findings.append(finding(
                 "reject", "missing-portable-base-module",
-                f"Portable Web games require the '{required}' module.",
-                f"Add '{required}' to export.modules.",
+                f"ポータブルWebゲームには「{required}」モジュールが必要です。",
+                f"export.modulesに「{required}」を追加してください。",
             ))
     if not ({"renderer2d", "renderer3d"} & declared_modules):
         findings.append(finding(
             "reject", "missing-renderer-module",
-            "Portable Web games require renderer2d or renderer3d.",
-            "Declare the renderer used by the project.",
+            "ポータブルWebゲームにはrenderer2dまたはrenderer3dが必要です。",
+            "プロジェクトが使用するレンダラーを指定してください。",
         ))
     api_locations: dict[str, list[str]] = {}
     asset_references: dict[str, list[str]] = {}
@@ -1365,34 +1369,29 @@ def validate_portable_contract(
             findings.append(finding(
                 "reject",
                 "unsupported-portable-api",
-                f"{location}: LamaPon::{api} has no Portable Web contract.",
-                "Add and test this API in the Portable Runtime before Web export.",
+                f"{location}: LamaPon::{api}にはポータブルWeb版の実装がありません。",
+                "Web出力を行う前に、このAPIをポータブルランタイムへ実装してテストしてください。",
             ))
         elif required_module not in declared_modules:
             findings.append(finding(
                 "reject",
                 "missing-required-module",
-                f"{location}: LamaPon::{api} requires module "
-                f"'{required_module}', but the project did not request it.",
-                f"Add '{required_module}' to export.modules.",
+                f"{location}: LamaPon::{api}には「{required_module}」モジュールが必要ですが、プロジェクトで指定されていません。",
+                f"export.modulesに「{required_module}」を追加してください。",
             ))
     for script_id, locations in sorted(dynamic_scripts.items()):
         if script_id not in registered_scripts:
             findings.append(finding(
                 "reject", "unregistered-dynamic-script",
-                f"{locations[0]} creates NativeScript '{script_id}', but "
-                "selected Web sources do not register it.",
-                "Add the source containing LAMAPON_SCRIPT_NAMED or correct "
-                "the script ID.",
+                f"{locations[0]}はNativeScript「{script_id}」を作成しますが、選択したWebソースに登録がありません。",
+                "LAMAPON_SCRIPT_NAMEDを含むソースを追加するか、スクリプトIDを修正してください。",
             ))
     for action, locations in sorted(input_actions.items()):
         if action not in available_input_actions:
             findings.append(finding(
                 "reject", "unsupported-input-action",
-                f"{locations[0]} uses input action '{action}', but the "
-                "Portable Web input map does not define it.",
-                "Add the action and browser bindings to the portable Input "
-                "backend before exporting.",
+                f"{locations[0]}は入力アクション「{action}」を使用しますが、ポータブルWeb入力マップに定義がありません。",
+                "Web出力を行う前に、ポータブル入力バックエンドへアクションとブラウザー用バインドを追加してください。",
             ))
             continue
         unsupported_controls = sorted({
@@ -1403,17 +1402,14 @@ def validate_portable_contract(
         if unsupported_controls:
             findings.append(finding(
                 "reject", "unsupported-input-control",
-                f"Input action '{action}' uses controls that the browser "
-                f"backend cannot map: {', '.join(unsupported_controls)}.",
-                "Use keyboard, mouse, or standard Gamepad controls supported "
-                "by the Portable Input backend.",
+                f"入力アクション「{action}」には、ブラウザーバックエンドで割り当てられない操作があります: {', '.join(unsupported_controls)}。",
+                "ポータブル入力バックエンドが対応するキーボード、マウス、標準ゲームパッドの操作を使用してください。",
             ))
         elif action not in PORTABLE_INPUT_ACTIONS:
             findings.append(finding(
                 "auto", "project-input-action-map",
-                f"Project input action '{action}' will be mapped from its "
-                "LamaPon Project bindings at Export time.",
-                "No engine edit is required for this action name.",
+                f"プロジェクトの入力アクション「{action}」は、出力時にLamaPonプロジェクトのバインドから変換されます。",
+                "このアクション名のためにエンジンを変更する必要はありません。",
             ))
 
     asset_selection = web_asset_roots(source, web)
@@ -1426,9 +1422,8 @@ def validate_portable_contract(
             findings.append(finding(
                 "reject",
                 "missing-asset-directory",
-                f"{locations[0]} references '{reference}', but the asset "
-                "directory does not exist.",
-                "Restore the asset directory or remove the reference.",
+                f"{locations[0]}は「{reference}」を参照していますが、アセットフォルダーがありません。",
+                "アセットフォルダーを復元するか、参照を削除してください。",
             ))
             continue
         target = (asset_directory / reference).resolve()
@@ -1436,24 +1431,23 @@ def validate_portable_contract(
             findings.append(finding(
                 "reject",
                 "missing-referenced-asset",
-                f"{locations[0]} references missing asset '{reference}'.",
-                "Add the asset or correct the portable asset path.",
+                f"{locations[0]}が参照するアセット「{reference}」が見つかりません。",
+                "アセットを追加するか、ポータブルアセットパスを修正してください。",
             ))
         elif not asset_is_selected(target, included_roots):
             findings.append(finding(
                 "reject",
                 "unpackaged-referenced-asset",
-                f"{locations[0]} references '{reference}', but it is excluded "
-                "from assetIncludePaths.",
-                "Include the containing asset path in the Web package.",
+                f"{locations[0]}が参照する「{reference}」はassetIncludePathsの対象外です。",
+                "参照先を含むアセットパスをWebパッケージへ追加してください。",
             ))
 
     scene_path = web.get("scenePath", "/assets/scenes/Main.scene.json")
     if not isinstance(scene_path, str) or not scene_path.startswith("/assets/"):
         findings.append(finding(
             "reject", "invalid-scene-path",
-            "The portable Scene path must begin with '/assets/'.",
-            "Set export.web.scenePath to a packaged Scene JSON path.",
+            "ポータブルシーンのパスは「/assets/」で始める必要があります。",
+            "export.web.scenePathに、パッケージへ含めるシーンJSONのパスを指定してください。",
         ))
         return findings
     scene_file = (
@@ -1463,30 +1457,30 @@ def validate_portable_contract(
     if scene_file is None or not scene_file.is_file():
         findings.append(finding(
             "reject", "missing-startup-scene",
-            f"Portable startup Scene was not found: {scene_path}",
-            "Package the Scene or correct export.web.scenePath.",
+            f"起動シーンが見つかりません: {scene_path}",
+            "シーンをパッケージへ追加するか、export.web.scenePathを修正してください。",
         ))
         return findings
     if not asset_is_selected(scene_file.resolve(), included_roots):
         findings.append(finding(
             "reject", "unpackaged-startup-scene",
-            f"Startup Scene '{scene_path}' is excluded from assetIncludePaths.",
-            "Include its scenes directory in the Web package.",
+            f"起動シーン「{scene_path}」はassetIncludePathsの対象外です。",
+            "シーンを含むフォルダーをWebパッケージへ追加してください。",
         ))
     try:
         scene = json.loads(scene_file.read_text(encoding="utf-8"))
     except json.JSONDecodeError as error:
         findings.append(finding(
             "reject", "invalid-scene-json",
-            f"{scene_file.relative_to(source)}:{error.lineno}: invalid Scene JSON.",
-            "Fix the Scene file before exporting.",
+            f"{scene_file.relative_to(source)}:{error.lineno}: シーンJSONが正しくありません。",
+            "Web出力を行う前にシーンファイルを修正してください。",
         ))
         return findings
     if not isinstance(scene, dict) or scene.get("format") != "LamaPonScene":
         findings.append(finding(
             "reject", "invalid-scene-format",
-            f"{scene_file.relative_to(source)} is not a LamaPonScene document.",
-            "Open and save the Scene with a compatible LamaPon Editor.",
+            f"{scene_file.relative_to(source)}はLamaPonScene形式ではありません。",
+            "互換性のあるLamaPon Editorでシーンを開き、保存し直してください。",
         ))
         return findings
 
@@ -1511,15 +1505,14 @@ def validate_portable_contract(
         if not is_within(target, asset_directory) or not target.is_file():
             findings.append(finding(
                 "reject", "missing-scene-asset",
-                f"{scene_location} references missing asset '{reference}'.",
-                "Add the asset or repair the Scene reference.",
+                f"{scene_location}が参照するアセット「{reference}」が見つかりません。",
+                "アセットを追加するか、シーン内の参照を修正してください。",
             ))
         elif not asset_is_selected(target, included_roots):
             findings.append(finding(
                 "reject", "unpackaged-scene-asset",
-                f"{scene_location} references '{reference}', but it is "
-                "excluded from assetIncludePaths.",
-                "Include the asset in the Web package.",
+                f"{scene_location}が参照する「{reference}」はassetIncludePathsの対象外です。",
+                "アセットをWebパッケージへ追加してください。",
             ))
 
     material_files: list[Path] = []
@@ -1542,8 +1535,8 @@ def validate_portable_contract(
         ):
             findings.append(finding(
                 "reject", "invalid-portable-material",
-                f"Material '{location}' is not a supported LamaPonLitMaterial.",
-                "Open and resave the material in a compatible LamaPon Editor.",
+                f"マテリアル「{location}」は対応しているLamaPonLitMaterial形式ではありません。",
+                "互換性のあるLamaPon Editorでマテリアルを開き、保存し直してください。",
             ))
             continue
         for field in (
@@ -1557,39 +1550,35 @@ def validate_portable_contract(
             if not is_within(target, asset_directory) or not target.is_file():
                 findings.append(finding(
                     "reject", "missing-material-asset",
-                    f"Material '{location}' references missing {field} "
-                    f"'{reference}'.",
-                    "Add the texture or repair the material reference.",
+                    f"マテリアル「{location}」が参照する{field}「{reference}」が見つかりません。",
+                    "テクスチャを追加するか、マテリアル内の参照を修正してください。",
                 ))
             elif not asset_is_selected(target, included_roots):
                 findings.append(finding(
                     "reject", "unpackaged-material-asset",
-                    f"Material '{location}' references '{reference}', but it "
-                    "is excluded from assetIncludePaths.",
-                    "Include the texture in the Web package.",
+                    f"マテリアル「{location}」が参照する「{reference}」はassetIncludePathsの対象外です。",
+                    "テクスチャをWebパッケージへ追加してください。",
                 ))
         shader = material.get("shader", "")
         if isinstance(shader, str) and shader:
             if Path(shader).name.lower() == "lamaponlit.hlsl":
                 findings.append(finding(
                     "auto", "standard-shader-backend-replacement",
-                    f"Material '{location}' uses LamaPonLit; WebGL selects the "
-                    "matching built-in GLSL material backend.",
-                    "No project change is required.",
+                    f"マテリアル「{location}」にはLamaPonLitが設定されています。WebGLでは対応する組み込みGLSLバックエンドを使用します。",
+                    "プロジェクトの変更は不要です。",
                 ))
             else:
                 findings.append(finding(
                     "reject", "unsupported-custom-material-shader",
-                    f"Material '{location}' uses custom HLSL shader '{shader}'.",
-                    "Provide a portable shader graph/GLSL backend or use the "
-                    "standard LamaPonLit material for Web.",
+                    f"マテリアル「{location}」はカスタムHLSLシェーダー「{shader}」を使用しています。",
+                    "ポータブル版のシェーダーグラフまたはGLSLバックエンドを用意するか、Webでは標準のLamaPonLitマテリアルを使用してください。",
                 ))
         custom_textures = material.get("customTextures", [])
         if isinstance(custom_textures, list) and any(custom_textures):
             findings.append(finding(
                 "reject", "unsupported-custom-material-textures",
-                f"Material '{location}' binds custom shader texture slots.",
-                "Custom texture slots require a portable custom shader backend.",
+                f"マテリアル「{location}」はカスタムシェーダーのテクスチャスロットを使用しています。",
+                "カスタムテクスチャスロットには、ポータブル版のカスタムシェーダーバックエンドが必要です。",
             ))
         custom_parameters = material.get("customParameters", [])
         if (
@@ -1602,9 +1591,8 @@ def validate_portable_contract(
         ):
             findings.append(finding(
                 "reject", "unsupported-custom-material-parameters",
-                f"Material '{location}' uses non-default custom shader "
-                "parameters.",
-                "Custom parameters require a portable custom shader backend.",
+                f"マテリアル「{location}」は既定値以外のカスタムシェーダーパラメーターを使用しています。",
+                "カスタムパラメーターには、ポータブル版のカスタムシェーダーバックエンドが必要です。",
             ))
 
     animation_files: list[Path] = []
@@ -1657,17 +1645,16 @@ def validate_portable_contract(
         if not valid:
             findings.append(finding(
                 "reject", "invalid-portable-animation",
-                f"Animation '{location}' is not a valid "
-                "LamaPonAnimationClip version 1 document.",
-                "Open and resave the clip in a compatible LamaPon Editor.",
+                f"アニメーション「{location}」は有効なLamaPonAnimationClip version 1形式ではありません。",
+                "互換性のあるLamaPon Editorでクリップを開き、保存し直してください。",
             ))
 
     objects = scene.get("objects", [])
     if not isinstance(objects, list):
         findings.append(finding(
             "reject", "invalid-scene-objects",
-            "Scene 'objects' must be an array.",
-            "Repair or resave the Scene.",
+            "シーンの「objects」は配列である必要があります。",
+            "シーンを修復するか保存し直してください。",
         ))
         return findings
     object_ids: set[int] = set()
@@ -1679,8 +1666,8 @@ def validate_portable_contract(
         if not isinstance(object_value, dict):
             findings.append(finding(
                 "reject", "invalid-scene-object",
-                f"Scene object #{index} is not an object.",
-                "Repair or resave the Scene.",
+                f"シーンオブジェクト#{index}はオブジェクト形式ではありません。",
+                "シーンを修復するか保存し直してください。",
             ))
             continue
         object_id = object_value.get("id")
@@ -1688,8 +1675,8 @@ def validate_portable_contract(
         if not isinstance(object_id, int) or object_id in object_ids:
             findings.append(finding(
                 "reject", "invalid-scene-object-id",
-                f"Scene object '{name}' has a missing or duplicate integer ID.",
-                "Repair or resave the Scene.",
+                f"シーンオブジェクト「{name}」の整数IDがないか、ほかのオブジェクトと重複しています。",
+                "シーンを修復するか保存し直してください。",
             ))
         else:
             object_ids.add(object_id)
@@ -1699,8 +1686,8 @@ def validate_portable_contract(
         if not isinstance(components, list):
             findings.append(finding(
                 "reject", "invalid-scene-components",
-                f"Scene object '{name}' components must be an array.",
-                "Repair or resave the Scene.",
+                f"シーンオブジェクト「{name}」のcomponentsは配列である必要があります。",
+                "シーンを修復するか保存し直してください。",
             ))
             continue
         for component in components:
@@ -1711,57 +1698,46 @@ def validate_portable_contract(
                 findings.append(finding(
                     "reject",
                     "unsupported-scene-component",
-                    f"Scene object '{name}' uses "
-                    f"{'a known native' if known_native else 'an unknown'} "
-                    f"Component '{component_type}' without a Portable Runtime "
-                    "backend.",
-                    "Remove it for Web or add and test its Portable Runtime "
-                    "implementation before export.",
+                    f"シーンオブジェクト「{name}」は、{'既知のネイティブ' if known_native else '未登録の'}コンポーネント「{component_type}」を使用していますが、ポータブルランタイムに対応するバックエンドがありません。",
+                    "Web版から削除するか、ポータブルランタイムへ実装してテストしてから出力してください。",
                 ))
                 continue
             if required_module not in declared_modules:
                 findings.append(finding(
                     "reject", "missing-scene-module",
-                    f"Scene Component '{component_type}' on '{name}' requires "
-                    f"module '{required_module}'.",
-                    f"Add '{required_module}' to export.modules.",
+                    f"シーンの「{name}」にある{component_type}コンポーネントには「{required_module}」モジュールが必要です。",
+                    f"export.modulesに「{required_module}」を追加してください。",
                 ))
             if component_type in PORTABLE_NOOP_SCENE_COMPONENTS:
                 description = (
-                    "is preserved as a Component but requires no culling work "
-                    "because the basic portable renderer draws every enabled object"
+                    "コンポーネントとして保持されますが、基本ポータブルレンダラーは"
+                    "有効な全オブジェクトを描画するため、カリング処理を行いません"
                     if component_type == "RenderCulling"
-                    else "is handled by the browser backend without a native object"
+                    else "ネイティブオブジェクトを作らずブラウザーバックエンドで処理されます"
                 )
                 findings.append(finding(
                     "auto", "scene-component-backend-replacement",
-                    f"Scene Component '{component_type}' on '{name}' {description}.",
-                    "No project change is required.",
+                    f"シーンの「{name}」にある{component_type}コンポーネントは、{description}。",
+                    "プロジェクトの変更は不要です。",
                 ))
             if component_type in PORTABLE_APPROXIMATE_SCENE_COMPONENTS:
                 findings.append(finding(
                     "warning", "scene-component-approximation",
-                    f"Scene Component '{component_type}' on '{name}' uses "
-                    "the basic Web lighting approximation.",
-                    "Compare lighting in Preview; advanced shadows and native "
-                    "shader behavior are not reproduced by this profile.",
+                    f"シーンの「{name}」にある{component_type}コンポーネントには、Web版の簡易ライティングを使用します。",
+                    "プレビューでライティングを確認してください。このプロファイルでは高度な影やネイティブシェーダーの動作を再現しません。",
                 ))
                 if component.get("castsShadows", False):
                     findings.append(finding(
                         "warning", "unsupported-web-shadows",
-                        f"Scene light '{name}' requests shadows, but "
-                        "webgl2-basic-3d does not render them.",
-                        "Disable shadows for Web or use a future shadow-enabled "
-                        "profile.",
+                        f"シーンのライト「{name}」で影が有効ですが、webgl2-basic-3dでは描画できません。",
+                        "Web版では影を無効にするか、影に対応したプロファイルを使用してください。",
                     ))
             if component_type == "Camera":
                 if component.get("targetTexture"):
                     findings.append(finding(
                         "reject", "unsupported-camera-render-texture",
-                        f"Camera on '{name}' renders to targetTexture "
-                        f"'{component.get('targetTexture')}'.",
-                        "Use the main canvas Camera for the basic Web profile "
-                        "or add a portable render-texture backend.",
+                        f"「{name}」のカメラはtargetTexture「{component.get('targetTexture')}」へ描画します。",
+                        "基本WebプロファイルではメインCanvasのカメラを使用するか、ポータブル版のレンダーテクスチャバックエンドを追加してください。",
                     ))
             if component_type == "MeshRenderer":
                 if str(component.get("shape", "Cube")) not in {
@@ -1769,9 +1745,8 @@ def validate_portable_contract(
                 }:
                     findings.append(finding(
                         "reject", "unsupported-primitive-shape",
-                        f"MeshRenderer on '{name}' uses unsupported primitive "
-                        f"shape '{component.get('shape')}'.",
-                        "Use Cube, Sphere, Cylinder, Plane, or a ModelRenderer.",
+                        f"「{name}」のMeshRendererは、未対応のプリミティブ形状「{component.get('shape')}」を使用しています。",
+                        "Cube、Sphere、Cylinder、Plane、またはModelRendererを使用してください。",
                     ))
                 shader = component.get("shader", "")
                 if (
@@ -1781,9 +1756,8 @@ def validate_portable_contract(
                 ):
                     findings.append(finding(
                         "reject", "unsupported-mesh-custom-shader",
-                        f"MeshRenderer on '{name}' uses custom shader "
-                        f"'{shader}'.",
-                        "Use LamaPonLit or add a matching portable shader.",
+                        f"「{name}」のMeshRendererはカスタムシェーダー「{shader}」を使用しています。",
+                        "LamaPonLitを使用するか、対応するポータブルシェーダーを追加してください。",
                     ))
                 mesh_custom_textures = [
                     value for key, value in component.items()
@@ -1805,41 +1779,34 @@ def validate_portable_contract(
                 ):
                     findings.append(finding(
                         "reject", "unsupported-mesh-custom-bindings",
-                        f"MeshRenderer on '{name}' uses custom shader "
-                        "keywords, textures, or parameters.",
-                        "Use standard PBR material slots for Web.",
+                        f"「{name}」のMeshRendererは、カスタムシェーダーのキーワード、テクスチャ、またはパラメーターを使用しています。",
+                        "Web版では標準のPBRマテリアルスロットを使用してください。",
                     ))
                 if component.get("worldOverlay", False):
                     findings.append(finding(
                         "reject", "unsupported-world-overlay",
-                        f"MeshRenderer on '{name}' requests world-overlay "
-                        "rendering.",
-                        "Disable worldOverlay or add the portable overlay pass.",
+                        f"「{name}」のMeshRendererでworldOverlayが有効です。",
+                        "worldOverlayを無効にするか、ポータブル版のオーバーレイパスを追加してください。",
                     ))
             if component_type == "ModelRenderer":
                 if component.get("wireframe", False):
                     findings.append(finding(
                         "reject", "unsupported-model-wireframe",
-                        f"ModelRenderer on '{name}' enables wireframe rendering.",
-                        "Disable wireframe for Web or add a portable line-render "
-                        "backend before export.",
+                        f"「{name}」のModelRendererでワイヤーフレーム描画が有効です。",
+                        "Web版ではワイヤーフレームを無効にするか、ポータブル版のライン描画バックエンドを追加してください。",
                     ))
                 controller = component.get("animationController", "")
                 if isinstance(controller, str) and controller:
                     findings.append(finding(
                         "reject", "unsupported-animation-controller",
-                        f"ModelRenderer on '{name}' uses Animator Controller "
-                        f"'{controller}', whose state machine is not in the "
-                        "Portable Runtime yet.",
-                        "Use the embedded model animation controls or add the "
-                        "portable Animator Controller runtime.",
+                        f"「{name}」のModelRendererはAnimator Controller「{controller}」を使用していますが、ステートマシンはポータブルランタイムで未対応です。",
+                        "モデルに埋め込まれたアニメーション操作を使用するか、ポータブル版のAnimator Controllerランタイムを追加してください。",
                     ))
                 if component.get("applyRootMotion", False):
                     findings.append(finding(
                         "reject", "unsupported-root-motion",
-                        f"ModelRenderer on '{name}' applies animation root motion.",
-                        "Disable root motion or add the portable root-motion "
-                        "integration before export.",
+                        f"「{name}」のModelRendererでアニメーションのルートモーションが有効です。",
+                        "ルートモーションを無効にするか、ポータブル版のルートモーション処理を追加してください。",
                     ))
                 shader = component.get("shader", "")
                 if (
@@ -1849,32 +1816,26 @@ def validate_portable_contract(
                 ):
                     findings.append(finding(
                         "reject", "unsupported-model-custom-shader",
-                        f"ModelRenderer on '{name}' uses custom HLSL shader "
-                        f"'{shader}'.",
-                        "Use the standard LamaPonLit material or add a "
-                        "portable shader backend.",
+                        f"「{name}」のModelRendererはカスタムHLSLシェーダー「{shader}」を使用しています。",
+                        "標準のLamaPonLitマテリアルを使用するか、ポータブル版のシェーダーバックエンドを追加してください。",
                     ))
                 if component.get("shaderKeywords"):
                     findings.append(finding(
                         "reject", "unsupported-model-shader-keywords",
-                        f"ModelRenderer on '{name}' enables custom shader "
-                        "keywords.",
-                        "Shader variants require a portable shader backend.",
+                        f"「{name}」のModelRendererでカスタムシェーダーキーワードが有効です。",
+                        "シェーダーバリアントには、ポータブル版のシェーダーバックエンドが必要です。",
                     ))
                 if component.get("useLegacyShading", False):
                     findings.append(finding(
                         "reject", "unsupported-legacy-model-shading",
-                        f"ModelRenderer on '{name}' requests legacy native "
-                        "shading that the Web PBR backend does not emulate.",
-                        "Use LamaPonLit PBR or add a matching portable backend.",
+                        f"「{name}」のModelRendererは、Web版のPBRバックエンドで再現できない従来のネイティブシェーディングを使用しています。",
+                        "LamaPonLit PBRを使用するか、対応するポータブルバックエンドを追加してください。",
                     ))
                 if component.get("preserveEmbeddedMaterialColor", False):
                     findings.append(finding(
                         "reject", "unsupported-preserve-material-color",
-                        f"ModelRenderer on '{name}' requests embedded material "
-                        "color preservation during override.",
-                        "Bake the desired base color into the material until "
-                        "this override mode is implemented for Web.",
+                        f"「{name}」のModelRendererでは、オーバーライド時に埋め込みマテリアルの色を保持する設定が有効です。",
+                        "Web版へこの設定を実装するまでは、必要なベースカラーをマテリアルへ反映してください。",
                     ))
                 custom_textures = [
                     value for key, value in component.items()
@@ -1892,43 +1853,37 @@ def validate_portable_contract(
                 ):
                     findings.append(finding(
                         "reject", "unsupported-model-custom-bindings",
-                        f"ModelRenderer on '{name}' binds custom shader "
-                        "textures or parameters.",
-                        "Use standard PBR slots or add a portable custom shader "
-                        "backend.",
+                        f"「{name}」のModelRendererは、カスタムシェーダーのテクスチャまたはパラメーターを使用しています。",
+                        "標準のPBRスロットを使用するか、ポータブル版のカスタムシェーダーバックエンドを追加してください。",
                     ))
             if component_type == "AudioSource":
                 if component.get("spatial", False):
                     findings.append(finding(
                         "warning", "web-spatial-audio-approximation",
-                        f"AudioSource on '{name}' requests 3D spatial audio.",
-                        "Web Audio distance/panning is selected; compare the "
-                        "listener and falloff in browser Preview.",
+                        f"「{name}」のAudioSourceで3D空間音響が有効です。",
+                        "Web Audioの距離減衰とパンを使用します。ブラウザーのプレビューで、リスナー位置と減衰範囲を確認してください。",
                     ))
                 if component.get("streaming", False):
                     findings.append(finding(
                         "warning", "web-audio-buffered-stream",
-                        f"AudioSource on '{name}' requests streaming playback.",
-                        "The basic Web profile decodes the packaged sound into "
-                        "memory before playback.",
+                        f"「{name}」のAudioSourceでストリーミング再生が有効です。",
+                        "基本Webプロファイルでは、パッケージ内の音声を再生前にメモリへデコードします。",
                     ))
             if component_type == "ParticleSystem":
                 shape = str(component.get("shape", "Point"))
                 if shape not in {"Point", "Cone", "Sphere", "Box"}:
                     findings.append(finding(
                         "warning", "web-particle-shape-approximation",
-                        f"ParticleSystem on '{name}' uses emitter shape '{shape}'.",
-                        "The basic Web particle backend substitutes a Point "
-                        "emitter; compare the effect in Preview.",
+                        f"「{name}」のParticleSystemはエミッター形状「{shape}」を使用しています。",
+                        "基本WebプロファイルではPointエミッターへ置き換えます。プレビューで効果を確認してください。",
                     ))
                 if str(component.get("renderMode", "Billboard")) not in {
                     "Billboard", "Horizontal",
                 }:
                     findings.append(finding(
                         "reject", "unsupported-particle-render-mode",
-                        f"ParticleSystem on '{name}' uses unsupported render "
-                        f"mode '{component.get('renderMode')}'.",
-                        "Use Billboard or Horizontal particle rendering.",
+                        f"「{name}」のParticleSystemは、未対応の描画モード「{component.get('renderMode')}」を使用しています。",
+                        "BillboardまたはHorizontalを使用してください。",
                     ))
                 particle_shader = component.get("shader", "")
                 auxiliary_texture = component.get("auxiliaryTexture", "")
@@ -1950,26 +1905,20 @@ def validate_portable_contract(
                 ):
                     findings.append(finding(
                         "reject", "unsupported-particle-custom-shader",
-                        f"ParticleSystem on '{name}' uses a custom shader, "
-                        "auxiliary texture, or non-default shader parameters.",
-                        "Use the standard particle material or add its portable "
-                        "shader backend.",
+                        f"「{name}」のParticleSystemは、カスタムシェーダー、補助テクスチャ、または既定値以外のシェーダーパラメーターを使用しています。",
+                        "標準のパーティクルマテリアルを使用するか、ポータブル版のシェーダーバックエンドを追加してください。",
                     ))
             if component_type == "BoxCollider3D":
                 findings.append(finding(
                     "warning", "web-basic-box-physics",
-                    f"BoxCollider3D on '{name}' uses the deterministic AABB "
-                    "browser physics backend.",
-                    "Rotation, friction combine modes, and continuous collision "
-                    "are approximated; verify gameplay in Preview.",
+                    f"「{name}」のBoxCollider3Dには、決定論的なAABB方式のブラウザー物理バックエンドを使用します。",
+                    "回転、摩擦の合成方法、連続衝突は近似されます。プレビューでゲームプレイを確認してください。",
                 ))
             if component_type == "MeshCollider3D":
                 findings.append(finding(
                     "reject", "unsupported-scene-mesh-collider",
-                    f"MeshCollider3D on '{name}' cannot yet build collision "
-                    "triangles from its model asset in the Portable Scene loader.",
-                    "Use BoxCollider3D for this Web profile or add the portable "
-                    "mesh-collider asset decoder.",
+                    f"「{name}」のMeshCollider3Dは、ポータブルシーンローダーでモデルから衝突用三角形をまだ生成できません。",
+                    "このWebプロファイルではBoxCollider3Dを使用するか、ポータブル版のメッシュコライダー用デコーダーを追加してください。",
                 ))
             if component_type == "Rigidbody":
                 advanced_rigidbody = (
@@ -1993,19 +1942,14 @@ def validate_portable_contract(
                 if advanced_rigidbody:
                     findings.append(finding(
                         "reject", "unsupported-advanced-rigidbody",
-                        f"Rigidbody on '{name}' uses mass, drag, angular, "
-                        "constraint, or continuous-collision settings that the "
-                        "basic Web physics backend cannot preserve yet.",
-                        "Use the basic velocity/gravity/kinematic subset or add "
-                        "the full portable rigidbody solver.",
+                        f"「{name}」のRigidbodyは、基本Web物理バックエンドでまだ保持できない質量、抗力、角速度、重心、拘束、または連続衝突の設定を使用しています。",
+                        "速度、重力、キネマティックだけを使うか、これらの設定に対応するポータブル版Rigidbodyソルバーを追加してください。",
                     ))
                 if object_value.get("parent") is not None:
                     findings.append(finding(
                         "reject", "unsupported-parented-rigidbody",
-                        f"Rigidbody on '{name}' is parented, but the basic AABB "
-                        "solver resolves world-axis contact in root space.",
-                        "Move this Rigidbody to a root GameObject or use a "
-                        "future full portable physics backend.",
+                        f"「{name}」のRigidbodyには親がありますが、基本AABBソルバーはルート空間のワールド軸で接触を解決します。",
+                        "このRigidbodyをルートGameObjectへ移動するか、親子Transformに対応した物理バックエンドを実装してください。",
                     ))
             if component_type == "InputMover":
                 for field, fallback in (
@@ -2016,10 +1960,8 @@ def validate_portable_contract(
                     if action not in available_input_actions:
                         findings.append(finding(
                             "reject", "unsupported-input-action",
-                            f"InputMover on '{name}' uses action '{action}', "
-                            "which has no basic Web binding.",
-                            "Use a supported portable Input Action or add its "
-                            "keyboard/gamepad/touch mapping.",
+                            f"「{name}」のInputMoverは、基本Webバインドにないアクション「{action}」を使用しています。",
+                            "対応する入力アクションを使用するか、キーボード、ゲームパッド、タッチの割り当てを追加してください。",
                         ))
             if component_type == "SpriteAnimator":
                 columns = component.get("columns", 1)
@@ -2046,10 +1988,8 @@ def validate_portable_contract(
                 ):
                     findings.append(finding(
                         "reject", "invalid-sprite-animation",
-                        f"SpriteAnimator on '{name}' has an invalid sheet grid "
-                        "or clip definition.",
-                        "Use positive rows/columns, frame counts, FPS, and "
-                        "non-empty clip names.",
+                        f"「{name}」のSpriteAnimatorには、無効なスプライトシートのグリッドまたはクリップ定義があります。",
+                        "行数、列数、フレーム数、FPSには正の値を指定し、クリップ名を空にしないでください。",
                     ))
             if component_type == "ParallaxLayer":
                 reference = component.get("referenceId", 0)
@@ -2059,10 +1999,8 @@ def validate_portable_contract(
                 if component.get("renderTexture"):
                     findings.append(finding(
                         "reject", "unsupported-sprite-render-texture",
-                        f"SpriteRenderer on '{name}' displays renderTexture "
-                        f"'{component.get('renderTexture')}'.",
-                        "Use an image asset or add portable render-texture "
-                        "sampling.",
+                        f"「{name}」のSpriteRendererはrenderTexture「{component.get('renderTexture')}」を表示します。",
+                        "画像アセットを使用するか、ポータブル版のレンダーテクスチャ読み込みを追加してください。",
                     ))
                 sprite_shader = component.get("shader", "")
                 sprite_parameters = component.get("customParameters", [])
@@ -2079,9 +2017,8 @@ def validate_portable_contract(
                 ):
                     findings.append(finding(
                         "reject", "unsupported-sprite-custom-shader",
-                        f"SpriteRenderer on '{name}' uses a custom shader or "
-                        "non-default parameters.",
-                        "Use the standard Sprite material for Web.",
+                        f"「{name}」のSpriteRendererは、カスタムシェーダーまたは既定値以外のパラメーターを使用しています。",
+                        "Web版では標準のSpriteマテリアルを使用してください。",
                     ))
             if component_type == "TextRenderer":
                 font_asset = component.get("fontAsset", "")
@@ -2092,20 +2029,16 @@ def validate_portable_contract(
                 }:
                     findings.append(finding(
                         "warning", "system-font-may-differ",
-                        f"TextRenderer on '{name}' uses system font "
-                        f"'{font_family}' without a packaged fontAsset.",
-                        "Package TTF/OTF/WOFF/WOFF2 in fontAsset for stable "
-                        "glyphs and layout across browsers.",
+                        f"「{name}」のTextRendererは、fontAssetを指定せずにシステムフォント「{font_family}」を使用しています。",
+                        "ブラウザー間で字形とレイアウトをそろえるには、TTF、OTF、WOFF、またはWOFF2をfontAssetとしてパッケージへ追加してください。",
                     ))
             if component_type == "TransformAnimator":
                 controller = component.get("controller", "")
                 if isinstance(controller, str) and controller:
                     findings.append(finding(
                         "reject", "unsupported-transform-animator-controller",
-                        f"TransformAnimator on '{name}' uses state-machine "
-                        f"controller '{controller}'.",
-                        "Use a direct LamaPonAnimationClip for the basic Web "
-                        "profile or add the portable controller runtime.",
+                        f"「{name}」のTransformAnimatorはステートマシンコントローラー「{controller}」を使用しています。",
+                        "基本WebプロファイルではLamaPonAnimationClipを直接使用するか、ポータブル版のコントローラーランタイムを追加してください。",
                     ))
             if (
                 component_type == "Camera"
@@ -2119,8 +2052,8 @@ def validate_portable_contract(
                 if not isinstance(script_id, str) or not script_id:
                     findings.append(finding(
                         "reject", "invalid-scene-script",
-                        f"NativeScript on '{name}' has no script ID.",
-                        "Assign a registered script to the Component.",
+                        f"「{name}」のNativeScriptにスクリプトIDがありません。",
+                        "登録済みのスクリプトをコンポーネントへ割り当ててください。",
                     ))
                 else:
                     scene_scripts.add(script_id)
@@ -2128,30 +2061,28 @@ def validate_portable_contract(
         if parent not in object_ids:
             findings.append(finding(
                 "reject", "missing-scene-parent",
-                f"Scene object '{name}' references missing parent ID {parent}.",
-                "Repair the Scene hierarchy.",
+                f"シーンオブジェクト「{name}」が、存在しない親ID {parent}を参照しています。",
+                "シーン階層を修復してください。",
             ))
     for name, component_type, target in component_links:
         if target not in object_ids:
             findings.append(finding(
                 "reject", "missing-component-reference",
-                f"{component_type} on '{name}' references missing object ID "
-                f"{target}.",
-                "Repair the Component reference before exporting.",
+                f"「{name}」の{component_type}が、存在しないオブジェクトID {target}を参照しています。",
+                "Web出力を行う前にコンポーネントの参照を修復してください。",
             ))
     main_camera = scene.get("mainCamera")
     if "renderer3d" in declared_modules and main_camera not in cameras:
         findings.append(finding(
             "reject", "invalid-main-camera",
-            "Scene mainCamera does not reference an enabled Camera Component.",
-            "Assign a valid Main Camera before exporting.",
+            "シーンのmainCameraが、有効なCameraコンポーネントを参照していません。",
+            "Web出力を行う前に、有効なメインカメラを割り当ててください。",
         ))
     for script_id in sorted(scene_scripts - registered_scripts):
         findings.append(finding(
             "reject", "unregistered-scene-script",
-            f"Scene references script '{script_id}', but selected Web sources "
-            "do not register it with LAMAPON_SCRIPT_NAMED.",
-            "Add its C++ source to export.web.sources or fix the Scene script ID.",
+            f"シーンはスクリプト「{script_id}」を参照していますが、選択したWebソースにはLAMAPON_SCRIPT_NAMEDによる登録がありません。",
+            "C++ソースをexport.web.sourcesへ追加するか、シーンのスクリプトIDを修正してください。",
         ))
 
     environment = scene.get("environment", {})
@@ -2161,14 +2092,12 @@ def validate_portable_contract(
             if isinstance(effect, dict) and effect.get("enabled", False):
                 findings.append(finding(
                     "warning", "unsupported-environment-effect",
-                    f"Scene enables {label}, which is not rendered by "
-                    "webgl2-basic-3d.",
-                    "The effect is disabled automatically for Web; compare "
-                    "the Preview before distribution.",
+                    f"シーンで{label}が有効ですが、webgl2-basic-3dでは描画できません。",
+                    "Web版ではこの効果を自動的に無効にします。配布前にプレビューを確認してください。",
                 ))
 
-    # 再帰的なWorldMatrix走査がBrowser StackをOverflowする前に、
-    # Hierarchyの循環を検出します。
+    # ワールド行列の再帰走査でブラウザーのスタックがあふれる前に、
+    # シーン階層の循環を検出します。
     parents = {
         value.get("id"): value.get("parent")
         for value in objects
@@ -2181,9 +2110,8 @@ def validate_portable_contract(
             if current in visited:
                 findings.append(finding(
                     "reject", "cyclic-scene-hierarchy",
-                    f"Scene hierarchy contains a parent cycle at object ID "
-                    f"{current}.",
-                    "Repair the Scene hierarchy before exporting.",
+                    f"シーン階層のオブジェクトID {current}に親子関係の循環があります。",
+                    "Web出力を行う前にシーン階層を修復してください。",
                 ))
                 break
             visited.add(current)
@@ -2192,10 +2120,8 @@ def validate_portable_contract(
     if not any(item["level"] == "reject" for item in findings):
         findings.append(finding(
             "auto", "portable-contract-complete",
-            f"Strict Portable check passed: {len(api_locations)} API types, "
-            f"{len(objects)} Scene objects, {len(asset_references)} referenced "
-            f"assets, and {len(registered_scripts)} registered scripts.",
-            "The project may proceed to the Emscripten compile check.",
+            f"Web互換性チェックに合格しました（API型: {len(api_locations)}、シーンオブジェクト: {len(objects)}、参照アセット: {len(asset_references)}、登録スクリプト: {len(registered_scripts)}）。",
+            "Emscriptenによるコンパイル確認を実行できます。",
         ))
     return findings
 
@@ -2206,8 +2132,8 @@ def validate_web_compatibility(
     profile_name: str,
     project_kind: str,
 ) -> list[dict[str, str]]:
-    # Path Aliasがある環境でも、ContainmentとDiagnosticの全Path検査が同じ
-    # Physical Project Rootを使うよう最初に1度だけ正規化します。
+    # パスの別名がある環境でも、包含関係と診断に同じ物理プロジェクトルートを
+    # 使用できるよう、開始時に一度だけ正規化します。
     source = source.resolve()
     profile = WEB_PROFILES.get(profile_name)
     if profile is None:
@@ -2221,22 +2147,20 @@ def validate_web_compatibility(
         finding(
             "auto",
             "renderer-backend",
-            "WebGL2 is selected automatically, with WebGL1 compatibility fallback.",
-            "Canvas software rendering is used only when browser GPU APIs are unavailable.",
+            "WebGL2を自動選択し、非対応環境ではWebGL1へ切り替えます。",
+            "ブラウザーのGPU APIを利用できない場合に限り、Canvasのソフトウェア描画を使用します。",
         ),
         finding(
             "auto",
             "input-backend",
-            "The browser keyboard input backend will be selected automatically.",
-            "Use LamaPon::Input instead of Win32 messages.",
+            "ブラウザーのキーボード入力バックエンドを自動選択します。",
+            "Win32メッセージの代わりにLamaPon::Inputを使用してください。",
         ),
         finding(
             "auto",
             "standard-output-name",
-            "Web output will use the standard name "
-            f"'{web_artifact_prefix(source, project, project_kind)}.html'.",
-            "The Exporter owns the filename so every LamaPon Web game uses "
-            "the same naming rule.",
+            f"Web出力には標準名「{web_artifact_prefix(source, project, project_kind)}.html」を使用します。",
+            "すべてのLamaPon Webゲームで同じ規則を使うため、出力ファイル名はエクスポーターが決定します。",
         ),
     ]
     export = project.get("export", {})
@@ -2248,19 +2172,16 @@ def validate_web_compatibility(
             finding(
                 "auto",
                 "project-detection",
-                "Detected a normal LamaPonProject; Web modules were inferred "
-                "from its 3D settings, scripts, and assets.",
-                "The project file itself was not modified.",
+                "通常のLamaPonプロジェクトとして検出し、3D設定、スクリプト、アセットからWeb用モジュールを推定しました。",
+                "プロジェクト設定ファイルは変更していません。",
             )
         )
         findings.append(
             finding(
                 "info",
                 "source-conversion-policy",
-                "Native C++ and shader text is not rewritten by string "
-                "replacement; semantic changes require a Web backend.",
-                "Use portable LamaPon APIs or add a target-specific Web "
-                "implementation, then rerun export.",
+                "ネイティブC++コードやシェーダーを文字列置換では書き換えません。動作を変えるにはWeb用バックエンドが必要です。",
+                "ポータブル版のLamaPon APIを使用するか、Web専用の実装を追加してから再出力してください。",
             )
         )
     allowed_modules = profile["modules"]
@@ -2272,11 +2193,8 @@ def validate_web_compatibility(
                 finding(
                     "reject",
                     "unsupported-module",
-                    f"Module '{module}' is not available in the "
-                    f"{profile_name!r} Web profile: "
-                    f"{reasons.get(module, 'not declared by this profile')}",
-                    "Add a Web backend for this module or remove the "
-                    "feature from the Web target.",
+                    f"モジュール「{module}」はWebプロファイル{profile_name!r}で使用できません: {reasons.get(module, 'このプロファイルに定義がありません')}",
+                    "このモジュールのWeb用バックエンドを追加するか、Webターゲットから該当機能を削除してください。",
                 )
             )
 
@@ -2330,7 +2248,7 @@ def validate_web_compatibility(
                             "warning",
                             "browser-runtime-difference",
                             f"{path.relative_to(source)}:{line_number}: {message}",
-                            "Use a LamaPon platform service when possible.",
+                            "可能な場合はLamaPonのプラットフォームサービスを使用してください。",
                         )
                     )
     if source_hits:
@@ -2339,9 +2257,8 @@ def validate_web_compatibility(
                 finding(
                     "reject",
                     "native-source-dependency",
-                    f"Web source uses a native-only dependency: {hit}",
-                    "Replace it with a LamaPon portable API or move it behind "
-                    "a target-specific backend.",
+                    f"Webソースがネイティブ専用の依存関係を使用しています: {hit}",
+                    "ポータブル版のLamaPon APIへ置き換えるか、ターゲット専用バックエンドの内部へ移してください。",
                 )
             )
         if len(source_hits) > 32:
@@ -2349,10 +2266,8 @@ def validate_web_compatibility(
                 finding(
                     "reject",
                     "native-source-dependency-truncated",
-                    f"{len(source_hits) - 32} additional native-only source "
-                    "dependencies were found.",
-                    "Open the source scan from the Web export diagnostics and "
-                    "port each remaining dependency.",
+                    f"ほかに{len(source_hits) - 32}件のネイティブ専用依存関係が見つかりました。",
+                    "Web出力の診断にあるソース検査結果を開き、残りの依存関係も移植してください。",
                 )
             )
     findings.extend(warnings)
@@ -2362,8 +2277,8 @@ def validate_web_compatibility(
             finding(
                 "auto",
                 "platform-entrypoint",
-                f"Windows entrypoint(s) ignored for Web: {names}.",
-                "The Web backend supplies its own browser entrypoint.",
+                f"Web版ではWindows用エントリーポイントを除外します: {names}。",
+                "ブラウザー用エントリーポイントはWebバックエンドが提供します。",
             )
         )
 
@@ -2396,30 +2311,25 @@ def validate_web_compatibility(
         if path.stat().st_size == 0:
             findings.append(finding(
                 "reject", "empty-convertible-asset",
-                f"Asset '{path.relative_to(source)}' is empty and cannot be "
-                "converted.",
-                "Replace or remove the empty asset.",
+                f"アセット「{path.relative_to(source)}」が空のため変換できません。",
+                "空のアセットを置き換えるか削除してください。",
             ))
     for (kind, runtime_format), paths in sorted(conversion_groups.items()):
         converter = web_asset_converter(web, kind)
+        kind_label = WEB_ASSET_KIND_LABELS.get(kind, kind)
         extensions = ", ".join(sorted({path.suffix.lower() for path in paths}))
         if converter is None:
             setting_name, _ = WEB_ASSET_CONVERTER_SETTINGS[kind]
             findings.append(finding(
                 "reject", "missing-asset-converter",
-                f"{len(paths)} {kind} asset(s) ({extensions}) require "
-                f"conversion to {runtime_format.upper()}, but the converter "
-                "is not installed.",
-                f"Install the Hub {kind} conversion module or configure "
-                f"export.web.converterTools.{setting_name}.",
+                f"{len(paths)}件の{kind_label}アセット（{extensions}）を{runtime_format.upper()}へ変換する必要がありますが、変換ツールがありません。",
+                f"Hubの{kind_label}変換モジュールをインストールするか、export.web.converterTools.{setting_name}を設定してください。",
             ))
         else:
             findings.append(finding(
                 "auto", "asset-format-conversion",
-                f"{len(paths)} {kind} asset(s) ({extensions}) will be "
-                f"converted to {runtime_format.upper()} for Web by "
-                f"'{converter.name}'.",
-                "Original project files and virtual asset paths remain unchanged.",
+                f"{len(paths)}件の{kind_label}アセット（{extensions}）を「{converter.name}」でWeb用の{runtime_format.upper()}へ変換します。",
+                "元のプロジェクトファイルと仮想アセットパスは変更しません。",
             ))
     unsupported_assets = [
         path.relative_to(source)
@@ -2443,28 +2353,24 @@ def validate_web_compatibility(
                 finding(
                     "reject",
                     "unsupported-asset-format",
-                    f"{count} asset(s) use unsupported Web format "
-                    f"'{extension}'.",
-                    "Convert the asset or add a Web asset backend before "
-                    "exporting.",
+                    f"{count}件のアセットが、未対応のWeb形式「{extension}」を使用しています。",
+                    "アセットを変換するか、Web用アセットバックエンドを追加してから出力してください。",
                 )
             )
     findings.append(
         finding(
             "auto",
             "asset-packaging",
-            "Portable JSON and image assets will be copied into the Web package.",
-            "The browser package uses the virtual/static asset path.",
+            "ポータブル版のJSONと画像アセットをWebパッケージへコピーします。",
+            "ブラウザー用パッケージでは仮想アセットパスを使用します。",
         )
     )
     if project_kind == "lamapon-project":
         findings.append(finding(
             "auto",
             "generated-web-runtime-target",
-            "A Portable Emscripten target will be generated from the normal "
-            "LamaPonProject without editing it.",
-            "The generated target, converted assets, and output remain under "
-            "the selected Web build/output directories.",
+            "通常のLamaPonプロジェクトを変更せず、ポータブル版のEmscriptenターゲットを生成します。",
+            "生成したターゲット、変換済みアセット、出力は、指定したWebビルド／出力フォルダー内に保存します。",
         ))
     return findings
 
@@ -2539,7 +2445,7 @@ def sha256_file(path: Path) -> str:
 
 
 def source_fingerprint(source: Path) -> str:
-    """Build／Cache出力を除外してPortable SourceとAsset InputをHash化します。"""
+    """ビルド／キャッシュ出力を除外し、ポータブルソースとアセットをハッシュ化します。"""
     digest = hashlib.sha256()
     ignored_directories = {
         ".git",
@@ -2584,9 +2490,9 @@ def require_relative_file(
 
 def cmake_bracket(value: Path | str) -> str:
     if isinstance(value, Path):
-        # CMakeのBracket ArgumentはBackslashをそのまま保持しますが、値は
-        # add_executableなどで再度Parseされます。2回目のParse時にWindows Drive
-        # Pathが\U形式のEscapeを含まないようPortableなSlash形式を使います。
+        # CMakeの角括弧引数はバックスラッシュを保持しますが、値はadd_executable
+        # などで再度解析されます。Windowsのドライブパスが2回目の解析で\U形式の
+        # エスケープにならないよう、スラッシュ区切りに変換します。
         value = value.as_posix()
     return f"[==[{value}]==]"
 
@@ -2783,8 +2689,8 @@ def generate_lamapon_web_target(
         raise ExportError("export.web.scenePath must begin with '/assets/'.")
 
     generated_directory.mkdir(parents=True, exist_ok=True)
-    # CMakeは1つのSOURCES Keywordの後に複数値を受け取れます。生成Fileの
-    # Diagnosticを読みやすく保つため1つのBlockへまとめます。
+    # CMakeは1つのSOURCESキーワードで複数の値を受け取れます。生成ファイルの
+    # 診断を読みやすくするため、1つのブロックへまとめます。
     source_lines = "\n".join(
         ["    SOURCES"]
         + [f"        {cmake_bracket(path)}" for path in source_files]
@@ -3055,9 +2961,9 @@ def copy_web_package(
                 and previous_path.name not in build_artifact_names
             ):
                 previous_path.unlink()
-    # Profile変更で古い.js／.data／.wasm成果物が不要になる場合があります。
+    # プロファイル変更で古い.js／.data／.wasm成果物が不要になる場合があります。
     # たとえばSINGLE_FILEではHTMLへ埋め込まれます。利用者がHTMLを直接開いた際に
-    # Runtimeが曖昧にならないよう、新Packageの隣へ古いFileを残しません。
+    # 読み込むランタイムが曖昧にならないよう、新しいパッケージの隣に古いファイルを残しません。
     for existing in output_directory.iterdir():
         if (
             existing.is_file()
@@ -3113,7 +3019,7 @@ def copy_web_package(
 
 
 def run_command(command: list[str], cwd: Path, dry_run: bool) -> None:
-    # EditorはSDKのPythonエントリーを直接指定します。Windowsのbatを
+    # エディターはSDKのPythonエントリーを直接指定します。Windowsのbatを
     # 経由せず、空白・日本語・シェルの特殊文字を引数のまま渡します。
     if Path(command[0]).name in {"emcmake", "emcmake.py"} and Path(command[0]).is_file():
         command = [sys.executable, *command]

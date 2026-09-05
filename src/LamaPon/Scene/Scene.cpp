@@ -1064,11 +1064,9 @@ namespace
     // 1対1対応（SpriteRendererComponentの位置計算と同じ）なので、
     // 灯りの座標はそのまま画面座標として渡せます。
     //
-    // 以前は「近い2灯をCustomParametersへ詰める」方式でしたが、
-    // 画面いっぱいに広がるTilemapでは「オブジェクトの原点に近い2灯」
-    // が地図の反対側の画素にも使われてしまい成立しません。灯りは
-    // Sprite単位ではなく画面単位のものなので、b1の専用バッファへ
-    // 一覧ごと載せて、画素ごとに全灯を評価します。
+    // 画面全体に広がるTilemapでは、オブジェクトの原点だけを基準に
+    // ライトを選べません。画面単位で使うライトをb1の専用バッファへ
+    // まとめ、画素ごとに評価します。
     LamaPon::Sprite2DLighting BuildSprite2DLighting(
         const std::vector<Light2DEntry>& lights,
         const bool uiOnly,
@@ -1464,9 +1462,9 @@ namespace LamaPon
     {
     }
 
-    // リフレクションプローブのベイクに使う共有リソース。
-    // どのプローブも同じキューブへ描いてから事前フィルタで
-    // 自分用の結果を作るので、キューブ本体は1組で足ります。
+    // リフレクションプローブのベイクに使う共有リソースです。
+    // 各プローブを同じキューブへ描画し、事前フィルターで個別の結果を
+    // 生成するため、キューブ本体は1組を共有します。
     struct Scene::ReflectionProbeBakeResources final
     {
         static constexpr std::uint32_t FaceSize = 128;
@@ -1638,17 +1636,6 @@ namespace LamaPon
         auto* result = gameObject.get();
         m_gameObjects.emplace_back(std::move(gameObject));
         return *result;
-    }
-
-    GameObject& Scene::CreateEditorPreviewGameObject(std::string name)
-    {
-        auto& gameObject = CreateGameObject(std::move(name));
-        // UINT32_MAX は実際の追加シーンハンドルとして予約しない
-        // エディター専用値です。SceneSerializationはPrimarySceneHandle
-        // 以外を主シーンへ保存しないため、プレビューがシーンファイルへ
-        // 混ざることもありません。
-        gameObject.m_sourceScene = static_cast<SceneHandle>(-1);
-        return gameObject;
     }
 
     GameObject& Scene::DuplicateGameObject(
@@ -4634,8 +4621,8 @@ namespace LamaPon
 
                 if (!firstContactThisFrame)
                 {
-                    // Contact resolution still runs for every CCD substep,
-                    // but gameplay callbacks are emitted once per frame.
+                    // 接触の解決はCCDの各サブステップで行いますが、ゲーム側への
+                    // コールバックはフレームごとに一度だけ通知します。
                 }
                 else if (m_activeCollisions.contains(key))
                 {
@@ -4779,9 +4766,8 @@ namespace LamaPon
                     : 1;
                 std::array<float, 4>
                     accumulatedNormalImpulses{};
-                // 接触の解決を繰り返す回数。プロジェクト設定から
-                // （以前は8回で固定でした）。積み上げた箱が沈む
-                // ときに増やします。
+                // 接触の解決を繰り返す回数。積み上げた物体が沈む場合は、
+                // プロジェクト設定の値を増やします。
                 const int impulseIterations =
                     static_cast<int>(
                         ActivePhysicsSettings()
@@ -6303,8 +6289,8 @@ namespace LamaPon
             ++m_temporalFrameIndex;
         }
 
-        // SSAOが深度をビュー空間へ戻すのに使うため、今回の射影を
-        // 記録します（ゲーム実行時のポスト処理が参照します）。
+        // SSAOが深度をビュー空間へ戻すため、現在の描画で使用する
+        // 射影を記録します。
         DirectX::XMFLOAT4X4 storedProjection{};
         DirectX::XMStoreFloat4x4(
             &storedProjection,
@@ -6331,9 +6317,8 @@ namespace LamaPon
             m_renderingInterpolatedTransforms,
             true
         };
-        // プローブのベイク中はカリングを使いません。128pxの
-        // 一回きりの描画なので全描画で構わず、視錐台・遮蔽の
-        // 取りこぼしがベイク結果に焼き付く事故も避けられます。
+        // プローブのベイク中はカリングを無効にし、必要な描画対象が
+        // ベイク結果から欠落しないようにします。
         const auto visibility = m_bakingReflectionProbes
             ? VisibilityResult{}
             : BuildRenderVisibility(view, projection);
@@ -7074,7 +7059,7 @@ namespace LamaPon
         }
 
         // ベイクした間接光（照度ボリューム）。焼いたときの形
-        // （m_bakedGiBakedShape）で表示します——設定の格子数を後から
+        // （m_bakedGiBakedShape）で表示します。設定の格子数を後から
         // 変えても、次にベイクするまで見た目が壊れないように。
         // ベイク中は自分の焼きかけを読まないよう無効にします
         // （焼き込みは常に「GIなしの絵」から＝1バウンスで確定）。
@@ -7178,9 +7163,8 @@ namespace LamaPon
             catch (const std::exception& exception)
             {
                 m_graphics.Gpu().EndSection();
-                // シェーダーが無い・コンパイルできない環境では
-                // 従来の16灯経路で描き続けます。毎フレーム
-                // 例外を投げ直さないよう、一度きりで諦めます。
+                // シェーダーを使用できない環境では16灯までの描画経路へ
+                // 切り替え、同じ初期化を毎フレーム再試行しません。
                 m_clusteredLightingUnavailable = true;
                 lighting.clustered = {};
                 Logger::Instance().Warning(
@@ -7305,9 +7289,9 @@ namespace LamaPon
         // カメラの遠い順に描きます。手前から描くと、後ろのものが
         // 先に置かれた深度に阻まれて消えるためです。
         //
-        // 遮蔽用の事前パスを持つものはここへ入れません。あちらは
-        // 「配列上で連続していること」を前提に組を作るので、
-        // 抜き出すと組が崩れます。
+        // 遮蔽用の事前パスを持つオブジェクトは、アルファ合成用の一覧へ
+        // 入れません。preRenderGroupはm_gameObjects上で連続する要素を1組として
+        // 扱うため、事前に抜き出すと組が崩れます。
         struct AlphaBlendedDraw final
         {
             GameObject* object;
@@ -7441,8 +7425,7 @@ namespace LamaPon
             // ずらし込みの逆行列で復元すると、履歴を読む位置が毎
             // フレーム±0.5pxだけ動きます。内部は平均されるので
             // 収束しますが、コントラストの高い輪郭では読む場所が
-            // 揺れるぶんそのまま出力が振れ、エッジがちらつきます
-            // （2026-08-05に連続フレームの差が最大95まで出ました）。
+            // 揺れるぶん出力も変動し、エッジがちらつきます。
             // 深度側にサブピクセルのずれは残りますが、写像が毎
             // フレーム同じであることの方がずっと重要です。
             DirectX::XMVECTOR determinant{};
@@ -7781,8 +7764,8 @@ namespace LamaPon
         }
         catch (const std::exception& exception)
         {
-            // リソースが作れない環境では諦めます（毎フレーム
-            // 例外にしないため、要求だけ下ろします）。
+            // リソースを作成できない場合は要求を解除し、毎フレームの
+            // 再試行を防ぎます。
             for (auto* probe : pending)
             {
                 probe->SetBakedEnvironment({});
@@ -7842,12 +7825,10 @@ namespace LamaPon
                     probe->Owner().WorldMatrix();
                 DirectX::XMFLOAT3 eye{};
                 DirectX::XMStoreFloat3(&eye, world.r[3]);
-                // エンジンの右手系のまま、鏡像なしで描きます。
-                // D3Dのキューブ面レイアウト（左手系）との差は、
-                // 描いた後の左右反転コピーで吸収します。射影行列で
-                // 鏡像にすると巻き方向が反転して裏面カリングが
-                // 逆になり、閉じたメッシュが裏返ります（実際に
-                // プローブを球の中へ置いたら球の内壁だけが焼けました）。
+                // エンジンの右手系のまま、鏡像なしで描画します。
+                // D3Dのキューブ面レイアウト（左手系）との差は、描画後の
+                // 左右反転コピーで補正します。射影行列を鏡像にすると巻き方向と
+                // 裏面カリングが反転し、閉じたメッシュの内側だけが描画されます。
                 const auto faceProjection =
                     DirectX::XMMatrixPerspectiveFovRH(
                         DirectX::XM_PIDIV2,
@@ -7921,8 +7902,8 @@ namespace LamaPon
                 // 事前フィルタはこのキューブをSRV（t1）として読む
                 // ので、先に描画先から外します。最後の面のRTVが
                 // 着いたままだと、同じリソースのRTV/SRV同時バインド
-                // をD3D11が検出してSRVを黙ってnullにし、真っ黒を
-                // 積分した結果が返ります（実際に踏みました）。
+                // をD3D11が検出してSRVをnullにし、積分結果が黒く
+                // なるためです。
                 context->OMSetRenderTargets(
                     0, nullptr, nullptr);
                 auto baked = m_graphics.Environment()
@@ -8709,14 +8690,14 @@ namespace LamaPon
 
         // ポイント／スポットは2つの行き先へ集めます。
         //
-        // ①従来の固定配列（先着N灯）: 自作ShaderとDirectXTKへの
+        // (1)従来の固定配列（先着N灯）: 自作ShaderとDirectXTKへの
         //   フォールバックが読む互換経路。上限は品質設定どおり。
-        // ②clusteredLights: クラスタカリング（Forward+）の全量。
+        // (2)clusteredLights: クラスタカリング（Forward+）の全量。
         //   LamaPonLit.hlslはこちらを使うので、上限は256灯。
         //
-        // ②の並び順は①と同じ（ポイントが先、次にスポット、どちらも
-        // m_gameObjects順）。影のスロット対応が「①でのライト番号＝
-        // ②での並び位置」で成立することに依存しています。ここの
+        // (2)の並び順は(1)と同じ（ポイントが先、次にスポット、どちらも
+        // m_gameObjects順）。影のスロット対応が「(1)でのライト番号＝
+        // (2)での並び位置」で成立することに依存しています。ここの
         // 順序を変えるときはRenderWithMatricesの影割り当ても直すこと。
         const std::size_t pointLimit =
             std::min<std::size_t>(

@@ -24,9 +24,9 @@ namespace LamaPon
     class GraphicsDevice;
     struct TextureAsset;
 
-    // A small, world-space 2D burst emitter. It deliberately uses the same
-    // SpriteBatch path as SpriteRenderer so it needs no particle shader or
-    // texture: a 1x1 white texture is enough to draw every particle.
+    // ワールド空間で小規模な2Dバーストを生成します。SpriteRendererと
+    // 同じSpriteBatch経路を使うため、専用のパーティクルシェーダーや
+    // テクスチャは不要で、1x1の白いテクスチャだけで描画できます。
     class SpriteParticles2DComponent final : public Component
     {
     public:
@@ -111,7 +111,7 @@ namespace LamaPon
             return m_particles.size();
         }
 
-        // Emits one burst at the owner's current world-space position.
+        // 所有オブジェクトの現在のワールド座標にバーストを1つ生成します。
         void Emit(std::uint32_t count);
         void Clear() noexcept
         {

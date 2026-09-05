@@ -12,7 +12,8 @@ namespace LamaPon
 {
     enum class GameExportTarget { Windows, Web };
 
-    // パスと設定のスナップショット、およびUIスレッドで実行する操作だけを借用します。
+    // ダイアログへ渡すパスと設定のスナップショット、および
+    // UIスレッドで実行するコールバックです。
     struct GameExportDialogContext final
     {
         std::filesystem::path engineRoot;
@@ -25,7 +26,8 @@ namespace LamaPon
         std::function<std::optional<std::filesystem::path>(const std::filesystem::path&)> browse;
     };
 
-    // 出力先・形式・診断・ビルド寿命を所有し、EditorLayerの状態は保持しません。
+    // 入力値、診断結果、実行中のWeb出力ジョブを内部で管理します。
+    // EditorLayerの状態は保持しません。
     class GameExportDialog final
     {
     public:

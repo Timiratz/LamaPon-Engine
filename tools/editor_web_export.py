@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""EditorのWeb出力を準備し、成功したパッケージだけを公開します。"""
+"""エディターのWeb出力を準備し、成功したパッケージだけを公開します。"""
 from __future__ import annotations
 
 import argparse
@@ -14,7 +14,7 @@ import uuid
 
 
 def validate_output(project: Path, output: Path, engine: Path) -> Path:
-    """原本・SDK・その親を置き換える指定は、ディレクトリ作成前に拒否します。"""
+    """プロジェクトやSDK、その親フォルダーを上書きする出力先を拒否します。"""
     output = output.resolve()
     root = project.parent.parent if project.parent.name == ".lamapon" else project.parent
     root = root.resolve()
@@ -88,7 +88,7 @@ def publish_package(stage: Path, output: Path) -> None:
         try:
             shutil.rmtree(backup)
         except OSError as error:
-            print(f"旧出力を保持しました: {backup}: {error}", flush=True)
+            print(f"以前の出力を保持しました: {backup}: {error}", flush=True)
 
 
 def export(project: Path, output: Path, result_path: Path, emsdk: Path | None) -> dict:
@@ -128,7 +128,7 @@ def export(project: Path, output: Path, result_path: Path, emsdk: Path | None) -
         html_name = html_files[0].name
         publish_package(stage, output)
         warnings = sum(item.get("level") == "warning" for item in document.get("findings", []))
-        message = "Web（HTML）の出力が完了しました。"
+        message = "Web（HTML）形式での出力が完了しました。"
         if warnings:
             message += f"互換性の注意事項が{warnings}件あります。ビルドログを確認してください。"
         return {"ok": True, "outputDirectory": str(output), "htmlPath": str(output / html_name),
@@ -151,7 +151,7 @@ def main() -> int:
         result = export(args.project, args.output, args.result, args.emsdk)
     except Exception as error:
         result = {"ok": False, "message": str(error)}
-    # UIは終了コードと今回の結果ファイルを両方検査します。
+    # UIは終了コードと、この実行で生成した結果ファイルを検査します。
     temporary = args.result.with_suffix(".tmp")
     temporary.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     temporary.replace(args.result)

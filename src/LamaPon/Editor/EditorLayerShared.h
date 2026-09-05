@@ -232,10 +232,9 @@ namespace LamaPon::EditorDetail
             || filename == "lamaponspriteerror.hlsl";
     }
 
-    // マテリアル／スプライトのShaderとして割り当ててよいか。
-    // **割り当ての入口はコンボだけではありません**——ドラッグ＆
-    // ドロップと「選択Shaderを設定」もあるので、判定はここに1つ置いて
-    // 全部から通します（以前はコンボにしか効いていませんでした）。
+    // マテリアル／スプライトへ割り当て可能なShaderかを判定します。
+    // コンボ、ドラッグ＆ドロップ、「選択Shaderを設定」の各経路で
+    // 同じ判定を使用します。
     inline bool IsAssignableShaderAsset(
         const std::filesystem::path& path)
     {

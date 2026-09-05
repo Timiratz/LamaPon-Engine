@@ -45,10 +45,10 @@ namespace LamaPon
         [[nodiscard]] float Pan() const noexcept { return m_pan; }
         void SetLoop(bool loop);
         [[nodiscard]] bool Loop() const noexcept { return m_loop; }
-        // streaming音源の任意区間ループ。単位は各チャンネル共通の
-        // sample frameです。Play時は必ず0から再生し、最初のend到達後に
-        // [start, end)を繰り返します。crossfadeFramesはend直前のtailと
-        // start直後のheadを線形合成する長さです。不正な範囲は
+        // ストリーミング音源の任意区間ループ。単位は全チャンネル共通の
+        // サンプルフレームです。Playは設定した開始位置から始まり、最初に
+        // endFrameへ達した後は[startFrame, endFrame)を繰り返します。
+        // crossfadeFramesは区間の末尾と先頭を線形合成する長さです。不正な範囲は
         // 全体ループへ戻します。
         void SetLoopRegionFrames(
             std::uint64_t startFrame,
@@ -96,11 +96,9 @@ namespace LamaPon
             return m_bus;
         }
 
-        // ストリーミング音源の再生開始位置（各チャンネル共通の
-        // sample frame）。Playはここから鳴り始めます。曲の途中だけを
-        // 試聴させたいときに、音源を切り出さずに済ませるための入口
-        // です。ループ範囲と併用すると「開始位置→loopEnd」を一度
-        // 鳴らしてから[start, end)の反復へ入ります。
+        // ストリーミング音源の再生開始位置（チャンネル共通のサンプル
+        // フレーム）。ループ範囲との併用時は、開始位置からloopEndまで
+        // 再生した後に[start, end)を繰り返します。
         // 音源の長さを超える値は先頭（0）として扱います。
         void SetStartFrame(std::uint64_t frame) noexcept;
         [[nodiscard]] std::uint64_t StartFrame() const noexcept
@@ -108,12 +106,10 @@ namespace LamaPon
             return m_startFrame;
         }
 
-        // ---- 帯域レベルメーター（音楽ビジュアライザ用） ----
+        // 帯域レベルメーター（音楽ビジュアライザー用）
         // 既定は無効で、無効な間は解析も確保もしません。
-        // 有効にすると、デバイスへ送るPCMを12帯域のbandpassで追い、
-        // **いま鳴っている位置**のレベルを0..1で返します。先読み
-        // されたPCMではなく再生位置に合わせて返すので、画面の棒と
-        // 耳で聞こえる音がずれません。ストリーミング音源専用です。
+        // 有効にすると、再生位置に対応する12帯域のレベルを0〜1で
+        // 返します。ストリーミング音源専用です。
         static constexpr int LevelBandCount =
             AudioStreamVoice::LevelBandCount;
         void SetLevelMeterEnabled(bool enabled);
@@ -126,7 +122,7 @@ namespace LamaPon
             float* destination,
             std::size_t capacity) const noexcept;
 
-        // いま鳴っている位置（音源内のsample frame）。ループ区間の
+        // 現在の再生位置（音源内のサンプルフレーム）。ループ区間の
         // 折り返しも追えます。ストリーミング音源専用で、それ以外は0。
         [[nodiscard]] std::uint64_t PlaybackFrame() const noexcept;
         // 音源の長さとサンプリング周波数（ストリーミング音源のみ）。
@@ -142,8 +138,8 @@ namespace LamaPon
 
         // 低音の持ち上げ（low shelf）。cornerHzより下をgainDbだけ
         // 持ち上げます。0dB（既定）なら一切処理しません。
-        // クリップ防止に内部でPCMを下げますが、**下げたぶんは再生
-        // 音量側で自動的に戻る**ので、呼ぶ側はSetVolumeをそのままに
+        // クリップ防止に内部でPCMを下げますが、下げたぶんは再生
+        // 音量側で自動的に戻るので、呼ぶ側はSetVolumeをそのままに
         // しておけます。ストリーミング音源専用です。
         void SetBassBoost(float gainDb, float cornerHz = 110.0f);
         [[nodiscard]] float BassBoostDb() const noexcept
@@ -158,7 +154,7 @@ namespace LamaPon
         }
 
         // 表示用のピーク包絡（0..1）。波形を描くための値です。
-        // **重い呼び出しで、鳴らしている最中に呼ぶと音が途切れます。**
+        // 重い呼び出しで、鳴らしている最中に呼ぶと音が途切れます。
         // 詳細はAudioStreamVoice::ReadPeakEnvelopeの説明を見てください。
         std::size_t ReadPeakEnvelope(
             float* destination,
@@ -218,18 +214,16 @@ namespace LamaPon
         X3DAUDIO_DISTANCE_CURVE_POINT
             m_distanceCurvePoints[3]{};
         X3DAUDIO_DISTANCE_CURVE m_distanceCurve{};
-        // ---- ここから下は後から足した項目です。**必ず末尾へ足す**
-        // こと（途中へ入れるとこのクラスのレイアウトがずれ、
-        // 作り直していないGame Module DLLが壊れます）。
-        // sizeofが変わるので GameModuleApiVersion も上げること。----
+        // ABI互換性を維持するため、新しいフィールドは末尾に追加します。
+        // クラスのサイズを変更した場合はGameModuleApiVersionも更新します。
         std::uint64_t m_loopStartFrame{};
         std::uint64_t m_loopEndFrame{};
         std::uint64_t m_loopCrossfadeFrames{};
         bool m_hasLoopRegion{};
-        // 2026-08-29追加。再生開始位置と帯域レベルメーターの有無。
+        // 再生開始位置と帯域レベルメーターの状態。
         std::uint64_t m_startFrame{};
         bool m_levelMeterEnabled{};
-        // 2026-08-30追加。低音の持ち上げ。
+        // 低音補正のゲインと境界周波数。
         float m_bassBoostDb{};
         float m_bassCornerHz{ 110.0f };
     };

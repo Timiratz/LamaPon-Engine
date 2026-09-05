@@ -102,11 +102,6 @@ namespace LamaPon
         Scene& operator=(const Scene&) = delete;
 
         GameObject& CreateGameObject(std::string name);
-        // エディターの一時プレビュー用。主シーンへ保存せず、
-        // ヒエラルキーにも表示しない特別な由来を付けます。
-        // 実行中のゲームシーンへ混ざらないよう、利用側で無効化を
-        // 維持し、プレビュー描画時だけ有効にします。
-        GameObject& CreateEditorPreviewGameObject(std::string name);
         GameObject& DuplicateGameObject(
             const GameObject& source,
             GameObject* targetParent = nullptr,
@@ -513,7 +508,7 @@ namespace LamaPon
         [[nodiscard]] const LoadedSceneInfo*
             FindAdditiveScene(
                 SceneHandle handle) const noexcept;
-        // データアセット（`*.asset.json`）を読み込みます。読めない
+        // データアセット（*.asset.json）を読み込みます。読めない
         // ときも空のDataAssetを返すため、戻り値は常に有効です
         // （初心者がnull判定を書かなくても落ちないようにするため）。
         [[nodiscard]] std::shared_ptr<const DataAsset>

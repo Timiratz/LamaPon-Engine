@@ -147,10 +147,7 @@ namespace
         // zlibヘッダー＋store（無圧縮）deflateブロック列。
         // storeブロックの長さは16bitまでなので、65535バイト
         // ずつに割り、BFINALは最後のブロックにだけ立てます。
-        // 1ブロックのまま書くと64KB超で長さが黙って切り捨て
-        // られ、**下のほうの画素が壊れたPNG**になります
-        // （2026-08-06に512x512で踏みました。WICはエラーを
-        // 出さずに壊れた画素を返すので気付きにくい）。
+        // 16bitのブロック長を超えないよう、65535バイトずつに分割します。
         std::vector<std::uint8_t> idat{ 0x78, 0x01 };
         std::size_t offset = 0;
         do
@@ -346,9 +343,8 @@ namespace
     // それぞれBC3のアルファ部と同じ符号化です。
     void TestNormalMapCompression()
     {
-        // Rは行ごとに変え、Gは全画素同じにします。R側だけ端点が
-        // 開いていれば「R・Gを別々のブロックへ入れている」ことが
-        // 分かります（両方同じ値を入れると取り違えに気付けません）。
+        // Rだけを行ごとに変化させ、RとGが別々のブロックへ
+        // 符号化されることを判別します。
         auto image = SolidImage(4, 4, { 0, 90, 255, 255 });
         const std::array<std::uint8_t, 4> rowRed{
             255, 170, 85, 0 };
@@ -395,7 +391,7 @@ namespace
                 mips,
                 true,
                 Usage::Color) == DXGI_FORMAT_BC1_UNORM,
-            "opaque colour must choose BC1");
+            "opaque color must choose BC1");
         Require(
             LamaPon::TextureLoader::ChooseTextureFormat(
                 mips,
@@ -443,11 +439,8 @@ namespace
                 == uncompressed.levels[0].bytes.size(),
             "the top BC5 level must be exactly a quarter of RGBA8");
 
-        // ミップ列全体で見るときは実用的な大きさで測ります。
-        // BCは4x4未満のミップでも1ブロック（BC5なら16バイト）要る
-        // ので、末端の 2x2・1x1 が効いて 1/4 には収まりません。
-        // 4x4の画像だと末端しか無いので逆に増えます。64x64なら
-        // 5488 / 21844 = 約25.1%です。
+        // BC5は4x4未満のミップにも16バイトを使うため、末端ミップの
+        // 比率が小さい64x64画像でミップ列全体の削減量を検証します。
         const auto sizedNormal = SolidImage(
             64,
             64,
@@ -677,8 +670,7 @@ namespace
             if (coldDescription.Format
                 != DXGI_FORMAT_BC1_UNORM)
             {
-                // 落ちたときに「実際は何だったのか」が分かる
-                // ように出します（推測での切り分けを避ける）。
+                // 失敗時に取得した形式とミップ数を診断用に出力します。
                 std::cout
                     << "diag cached.png: format="
                     << coldDescription.Format
@@ -711,10 +703,7 @@ namespace
                 "a disk-cache hit must produce the same"
                 " texture");
 
-            // 圧縮を切って同じファイルを読むと非圧縮RGBA8になる
-            // こと。これはディスクキャッシュの鍵の守りも兼ねて
-            // います（鍵に圧縮設定が入っていないと、上で書かれた
-            // BC1のエントリが返ってきてここで落ちます）。
+            // 圧縮設定がキャッシュキーへ含まれ、無効時はRGBA8を返すこと。
             assets.SetRuntimeTextureCompressionEnabled(
                 false);
             assets.Clear();
@@ -740,14 +729,12 @@ namespace
             "compression toggle off must keep RGBA8");
     }
 
-    // テクスチャのディスクキャッシュ（保存→読み込みの往復と、
-    // 壊れたファイルの拒否）を検証します。GPUは使いません。
+    // テクスチャのディスクキャッシュについて、保存と読み込みの往復、
+    // および破損ファイルの拒否をGPUなしで検証します。
     void TestDiskCache()
     {
-        // 256x256のアルファ付きグラデーション。保存の下限
-        // （64KB）を超える最小クラスの実サイズです。全ピクセル
-        // 同色だとBCの端点が縮退して、バイト比較が「たまたま
-        // 一致」で通ってしまうため、変化のある絵にします。
+        // 保存下限の64KBを超える256x256画像を使います。BC端点の縮退を
+        // 避けるため、画素値にはアルファのグラデーションを付けます。
         LamaPon::TextureLoader::CpuImage image;
         image.width = 256;
         image.height = 256;
@@ -770,9 +757,7 @@ namespace
         const std::vector<std::uint8_t> sourceBytes =
             BuildPng(256, 256, image.pixels);
 
-        // 鍵の性質: 同じ入力なら同じ鍵、圧縮設定か内容が違えば
-        // 別の鍵。ここが崩れると「設定を変えたのに前の結果が
-        // 返る」という一番嫌な壊れ方をします。
+        // 同じ入力は同じキー、圧縮設定または内容が異なる入力は別のキーになること。
         const auto keyCompressed =
             LamaPon::TextureCache::ComputeKey(
                 sourceBytes,
@@ -861,10 +846,8 @@ namespace
             }
         }
 
-        // 壊れたファイルは黙って拒否されること（＝普通の
-        // 作り直しへ落ちる）。壊し方は「途中で切れた」と
-        // 「末尾にゴミ」の2通り。どちらも実際に起きます
-        // （書き込み中の電源断、別プロセスの追記事故）。
+        // 途中で切れたファイルと末尾に余分なデータを持つファイルを拒否し、
+        // 通常の再生成経路へ移れることを確認します。
         const auto key =
             LamaPon::TextureCache::ComputeKey(
                 sourceBytes,
@@ -969,10 +952,8 @@ namespace
                 "tiny textures must not be stored");
         }
 
-        // 実測（診断出力のみ、判定はしません。WARPのVMでは
-        // 時間の主張ができないためです）。1024x1024のノイズ画像で
-        // 「キャッシュが省く仕事」と「キャッシュ自体のコスト」を
-        // 並べます。
+        // WARP環境では時間を合否条件にせず、1024x1024画像の
+        // 初回処理とキャッシュ利用時の時間を診断用に出力します。
         {
             LamaPon::TextureLoader::CpuImage large;
             large.width = 1024;
@@ -1152,7 +1133,7 @@ namespace
             assets.PendingTextureUploadCount() == 0,
             "cleared textures must be dropped from the queue");
 
-        // しきい値未満は従来どおり一括アップロードされます。
+        // しきい値未満のデータは一括アップロードされること。
         assets.SetProgressiveUploadThreshold(
             std::numeric_limits<std::size_t>::max());
         static_cast<void>(assets.LoadTexture(L"small.png"));
@@ -1170,10 +1151,8 @@ int main()
             CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         static_cast<void>(comResult);
 
-        // 全テストを専用のキャッシュ置き場で走らせます。本物の
-        // %LOCALAPPDATA%を汚さないためと、前回の実行結果が
-        // 残っていて「コールドのつもりがヒット」になるのを
-        // 防ぐためです。
+        // 利用者のキャッシュと過去のテスト結果を避けるため、
+        // 全テストを専用のキャッシュディレクトリで実行します。
         const auto cacheRoot =
             std::filesystem::current_path()
             / "test-output"

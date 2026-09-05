@@ -111,8 +111,8 @@ namespace LamaPon
     {
         DepthPrepassResult result{};
         const auto& settings = graphics.Settings();
-        // SSAOとSSRのどちらかが要求していれば走らせます。どちらも
-        // 深度を読むので、プリパス自体は1回で足ります。
+        // SSAOとSSRのどちらかが要求していれば実行します。どちらも
+        // 同じ深度を使うため、プリパスは1回だけ実行します。
         const bool occlusionWanted =
             ambientOcclusion.enabled
             && settings.ambientOcclusionEnabled;
@@ -169,17 +169,15 @@ namespace LamaPon
             return;
         }
 
-        // 計測をここへ置いているのは、5経路すべてがこの関数を通る
-        // からです。以前はGraphicsDevice側にしか区間が無く、
-        // エディタービューポートのBloom・トーンマップ・FXAAが
-        // まるごと計測外でした（GPU合計と内訳が合わない原因）。
+        // 5つの描画経路が通る位置で計測し、エディタービューポートの
+        // Bloom、トーンマップ、FXAAもGPU時間の内訳へ含めます。
         const GpuSectionScope postScope{
             graphics,
             "ポスト処理" };
 
         const auto& settings = graphics.Settings();
 
-        // 差し込み地点は4つです。**位置の意味はここにしかありません**
+        // 差し込み地点は4つです。位置の意味はここにしかありません
         // ので、増やすときはこの関数の中だけを直してください
         // （5経路すべてがここを通ります）。
         const auto inject =

@@ -35,7 +35,7 @@ namespace
     // 読み取り専用のキャッシュ置き場（書き出したゲームへ同梱した
     // ものなど）。書き込みは常にShaderCacheDirectory()の側だけ。
     std::vector<std::filesystem::path> g_searchDirectories;
-    // 事前コンパイル中だけ、書き込み先をここへ向けます。読み取りも
+    // 事前コンパイル中は専用ディレクトリへ書き込み、読み取りも
     // 止めます（キャッシュに当たると何も書かれず、配布フォルダーへ
     // ファイルが出来ないため）。
     std::filesystem::path g_writeOverride;
@@ -71,14 +71,12 @@ namespace
     std::mutex g_statisticsMutex;
     LamaPon::ShaderCompileStats g_statistics{};
 
-    // キャッシュの形式を変えたらここを上げます。古いファイルは
+    // キャッシュ形式を変更した場合は版番号を更新します。古いファイルは
     // キーが変わって参照されなくなるので、消さなくても害はありません。
     constexpr int CacheFormatVersion = 1;
 
-    // 中身のSHA-256を16進文字列で返します。衝突すると「別のシェーダーの
-    // バイトコードを読む」という追いにくい壊れ方をするので、速いだけの
-    // 32/64ビットハッシュではなくSHA-256にしています（bcryptはAESで
-    // 既にリンク済み）。
+    // 内容のSHA-256を16進文字列で返します。異なるシェーダーの
+    // バイトコードを共有しないよう、キャッシュの識別に使います。
     [[nodiscard]] std::string HashBytes(
         const std::uint8_t* data,
         const std::size_t size)
@@ -147,9 +145,8 @@ namespace
         return LamaPon::PathToUtf8(path);
     }
 
-    // 相対#includeもAssetManager経由で解決します。通常フォルダーと
-    // パッケージ化済みアセットの両方で同じHLSLが使えるようにするため
-    // で、これは元々各所にあった実装をここへ集約したものです。
+    // 通常フォルダーとパッケージ化済みアセットで同じHLSLを使えるよう、
+    // 相対#includeもAssetManager経由で解決します。
     //
     // キャッシュのために「実際に開いたファイルとその中身のハッシュ」を
     // 記録します。#includeした側だけを直したときにキャッシュが古い
@@ -209,7 +206,7 @@ namespace
             try
             {
                 auto source = m_assets.ReadFileBytes(path);
-                // パスはアセットルート相対で覚えます。書き出し時は
+                // パスはアセットルート相対で記録します。書き出し時は
                 // プロジェクトのassetsフォルダー、実行時はassets.tpakの
                 // 中と、同じファイルでも絶対パスが変わるためです。
                 // 相対で持てば、同梱したキャッシュがそのまま通ります。
@@ -282,9 +279,8 @@ namespace
     // 読めてしまうため）。開発中の%LOCALAPPDATA%側は平文のままなので、
     // 先頭を見てどちらかを判断します。
     //
-    // 復号できないときはnullopt——つまり「キャッシュが無かった」
-    // 扱いにします。キャッシュは速さのためだけの仕組みで、無くても
-    // 動くのが正しい姿なので、ここで例外を投げて描画を止めません。
+    // 復号できないときはキャッシュ不在として扱い、通常のコンパイルへ
+    // フォールバックします。キャッシュの不具合で描画を停止させません。
     [[nodiscard]] std::optional<std::vector<std::uint8_t>>
         ReadCacheFile(const std::filesystem::path& path)
     {
@@ -389,27 +385,14 @@ namespace
         return true;
     }
 
-    // その失敗を覚えてよいかどうか。**許可リストです**——
-    // 「入口が無い（X3501）」だけを覚え、他は全部覚えません。
-    //
-    // ヘッダに書いてあるとおり、このキャッシュは速さのためだけの
-    // 仕組みで、**無くても動くのが正しい姿**です。失敗を覚えると
-    // その性質が崩れます。キーはソースの内容ハッシュなので、
-    // 覚えた失敗1件で**同じ組み込みシェーダーを持つすべての
-    // プロジェクト**が開けなくなり得ます（2026-08-07に実際に
-    // 起きました）。しかも置き場所は%LOCALAPPDATA%で、エンジンにも
-    // プロジェクトにも属さないので、どちらを入れ直しても消えません。
-    //
-    // それでも入口の失敗だけを覚えるのは、LitEffectが
+    // 失敗キャッシュには、入口が存在しないX3501だけを記録します。
+    // その他の失敗は環境や依存ファイルの修正で解消される可能性があり、
+    // キャッシュすると修正後も失敗が返り続けるためです。
+    // X3501を記録するのは、LitEffectが
     // VSInstancedMain/HSMain/DSMain/VSOutline/PSOutlineを
     // 「あれば使う」方式で毎回試すからです（下の呼び出し側を参照）。
-    // 無い入口の失敗は成功と同じだけ時間を食うので、ここを覚えないと
-    // キャッシュの効果が半減します。**失敗キャッシュを入れた理由は
-    // これだけ**なので、覚える対象もこれだけで足ります。
-    //
-    // 禁止リスト（「この失敗は覚えない」）にしていた頃は、想定して
-    // いなかった失敗が出るたびに同じ壊れ方をしました。許可リストなら
-    // 未知の失敗は自動的に「覚えない」側に落ちます。
+    // 存在しない入口の探索コストを避けるためです。未知の失敗は記録
+    // しないよう、許可リストで判定します。
     [[nodiscard]] bool ShouldRememberFailure(
         const std::string& details)
     {
@@ -471,9 +454,8 @@ namespace
         const void* data,
         const std::size_t size)
     {
-        // 途中で落ちても壊れたキャッシュが残らないよう、別名で
-        // 書いてから置き換えます。壊れた.csoを読むと「実行はする
-        // のに絵が出ない」という最悪の壊れ方をします。
+        // 不完全なキャッシュを残さないよう、別名で書いてから
+        // 保存先へ置き換えます。
         auto temporary = destination;
         temporary += L".tmp";
         {
@@ -504,8 +486,7 @@ namespace
     }
 
     // 依存の一覧と、結果（バイトコードまたはエラーメッセージ）を書きます。
-    // successPathとfailurePathは片方だけを残し、もう片方は消します。
-    // 両方あると、直したのに古い失敗を読み続けることになります。
+    // successPathとfailurePathは一方だけを残し、矛盾する結果の再利用を防ぎます。
     void WriteCacheEntry(
         const std::filesystem::path& cacheDirectory,
         const std::filesystem::path& dependencyPath,
@@ -699,10 +680,8 @@ namespace LamaPon
     const std::vector<ShaderEntryPoint>&
         KnownShaderEntryPoints()
     {
-        // エンジンが実際に探す入口の全部です。ここに漏れがあると、
-        // 書き出したゲームの初回起動でその1本だけコンパイルが走ります
-        // （動作は正しいまま、遅くなるだけ）。新しい入口を足したら
-        // ここにも足してください。
+        // 実行時に探索する全入口を事前コンパイルし、配布後の初回起動で
+        // コンパイルが発生しないようにします。
         static const std::vector<ShaderEntryPoint> entries{
             // Lit系マテリアル（LitEffect）。
             { "VSMain", "vs_5_0" },
@@ -758,8 +737,8 @@ namespace LamaPon
         // 書き込み先を配布フォルダーへ向け、読み取りは止めます。
         // 止めないと、開発機のキャッシュに当たったときに何も書かれず、
         // 配布フォルダーが空のままになります。
-        // バリアントの全組み合わせを焼きます。呼び出し側からdefinesを
-        // 渡された場合はそれを固定の追加キーワードとして扱います。
+        // バリアントの全組み合わせを焼きます。呼び出し側のdefinesは
+        // 固定の追加キーワードとして扱います。
         std::vector<ShaderKeywordSet> variants;
         try
         {
@@ -773,9 +752,7 @@ namespace LamaPon
             variants = EnumerateShaderVariants(
                 declaration,
                 usedKeywords);
-            // 黙って削らないこと。減らした事実がログに残らないと、
-            // 「同梱したはずのバリアントが実行時にコンパイル
-            // されている」理由を後から追えません。
+            // 上限超過で削減したバリアント数を、原因調査用にログへ記録します。
             if (variants.size() < total)
             {
                 Logger::Instance().Info(
@@ -893,10 +870,8 @@ namespace LamaPon
         {
             return 0;
         }
-        // 覚えている失敗（.fail）と、その組の依存（.deps）だけを
-        // 捨てます。**バイトコード（.cso）は残します**——成功した
-        // 結果が起動を妨げることは無く、捨てると次の起動が
-        // 全部コンパイルからになるためです。
+        // 記録した失敗（.fail）と対応する依存情報（.deps）だけを
+        // 削除します。成功済みのバイトコード（.cso）は再利用します。
         std::size_t removed = 0;
         std::vector<std::filesystem::path> failures;
         for (const auto& entry :
@@ -941,8 +916,7 @@ namespace LamaPon
     {
         if (!assets.FileExists(path))
         {
-            // 配布物からHLSLを外している場合はここへ来ます。
-            // ソースが無いのでハッシュは作れず、索引で引きます。
+            // 配布物にHLSLソースが無い場合は、ハッシュの代わりに索引から読み込みます。
             if (auto blob = LoadFromIndex(
                     assets,
                     path,
@@ -961,9 +935,9 @@ namespace LamaPon
         const UINT flags = CompileFlags();
 
         // キャッシュのキーはHLSL本体の中身＋入口＋ターゲット＋
-        // コンパイルフラグ。#includeの中身はここには入りません
+        // コンパイルフラグです。#includeの内容はキーには含めません
         // （コンパイルするまで何を読むか分からないため）。代わりに
-        // 前回読んだ一覧を.depsへ残し、そちらを突き合わせます。
+        // コンパイル時に読み取った依存一覧を.depsへ保存し、再利用前に照合します。
         std::string key;
         std::filesystem::path cacheDirectory;
         std::filesystem::path byteCodePath;
@@ -1019,12 +993,8 @@ namespace LamaPon
             // 見ます（書き出したゲームの初回起動でコンパイルを
             // 走らせないため）。書き込み先は常にcacheDirectoryです。
             //
-            // 読み取り側（byteCodePath・failurePath・dependencyPath）は
-            // **空のまま始めます**。書き込み先をそのまま初期値に
-            // すると、下の突き合わせがどれも通らなかったときに初期値が
-            // 残り、依存を確かめないまま結果を読んでしまいます。
-            // 「.hlsliだけ直したのに古いバイトコードが返る」
-            // 「直したのに古い失敗が返り続ける」はこれが原因です。
+            // 読み取り先は依存関係の一致を確認した候補だけに設定します。
+            // 初期値を空にし、未検証の結果を読み込まないようにします。
             std::vector<std::filesystem::path> readDirectories;
             {
                 const std::lock_guard<std::mutex> lock(
@@ -1063,12 +1033,10 @@ namespace LamaPon
             const auto started =
                 std::chrono::steady_clock::now();
             std::error_code error;
-            // 失敗も覚えておきます。LitEffectは
+            // 入口不足の失敗もキャッシュします。LitEffectは
             // VSInstancedMain/HSMain/DSMain/VSOutline/PSOutlineを
             // 「あれば使う」方式で毎回試し、無いシェーダーでは
-            // その全部が失敗します。失敗は成功と同じだけ（むしろ
-            // 構文解析をやり切るぶん余計に）時間を食うので、
-            // ここを覚えないとキャッシュの効果が半減します。
+            // その全部を試すため、記録しないと同じ探索コストが繰り返されます。
             // ソースのハッシュがキーなので、直せば自動的に
             // 試し直されます。
             if (std::filesystem::exists(failurePath, error))
@@ -1078,14 +1046,9 @@ namespace LamaPon
                 {
                     if (!ShouldRememberFailure(stored))
                     {
-                        // 覚えてはいけない失敗が入っています——許可
-                        // リストにする前のエンジンが書いたものです。
-                        // 読み続けると、原因を直してもプロジェクトが
-                        // 開けないままになります。捨ててコンパイル
-                        // し直します（消せない場所——書き出したゲームへ
-                        // 同梱した読み取り専用のキャッシュ——でも
-                        // 「読まない」ことが本体なので、消す方の失敗は
-                        // 無視します）。
+                        // 現在の保存条件に合わない古い失敗記録は無効として扱い、
+                        // 次の処理で再コンパイルします。読み取り専用の場所では
+                        // 削除に失敗しても、この記録を再利用しなければ問題ありません。
                         std::filesystem::remove(
                             failurePath,
                             error);
@@ -1192,16 +1155,10 @@ namespace LamaPon
                 g_statistics.compileMilliseconds
                     += elapsed.count();
             }
-            // 覚えるのは「入口が無い」失敗だけです。読む側でも同じ
+            // 記録するのは「入口が無い」失敗だけです。読む側でも同じ
             // 条件で弾きます（ShouldRememberFailureの説明を参照）。
-            //
-            // 覚えてしまうと何が起きるかの実例: 2026-08-07、組み込み
-            // シェーダーへ足した.hlsliを配布一覧へ入れ忘れ、
-            // 「includeが開けない」失敗がキャッシュへ入りました。
-            // 開けなかった相手は依存（.deps）に載らないので、ファイルを
-            // 置き直しても突き合わせる先が無く、**直したのに失敗が
-            // 返り続けます**。鍵は内容ハッシュなので、同じ組み込み
-            // シェーダーを持つ全プロジェクトが開けなくなりました。
+            // include失敗などは依存一覧へ完全に記録できないため、
+            // 修正を検出できず古い失敗を返すおそれがあります。
             if (ShouldRememberFailure(details))
             {
                 WriteCacheEntry(

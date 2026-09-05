@@ -11,8 +11,8 @@ namespace LamaPon
     // cmd.exe コマンド一式です。
     //
     // なぜ「実行」ではなく「コマンドの構築」までなのか:
-    // エディターは編集を止めないよう**非同期**（ShellExecuteEx）で、
-    // LamaPonCliは結果をJSONで返すため**同期**（CreateProcess＋待機）で
+    // エディターは編集を止めないよう非同期（ShellExecuteEx）で、
+    // LamaPonCliは結果をJSONで返すため同期（CreateProcess＋待機）で
     // 実行します。実行方法だけが違い、コマンドの中身が食い違うと
     // 「エディターでは通るのにCLIでは失敗する」（またはその逆）が
     // 生まれるので、構築を1箇所に集めています。
@@ -47,10 +47,9 @@ namespace LamaPon
         const std::filesystem::path& projectRoot,
         const std::filesystem::path& outputModule = {}) noexcept;
 
-    // Mapped drives and UNC/WebDAV projects should keep CMake/NMake
-    // intermediates on a local disk. Project loading can canonicalize a
-    // mapped drive (for example Z:) to a UNC path before this builder is
-    // called, so both path forms need to be recognized.
+    // マップドドライブやUNC/WebDAV上のプロジェクトでは、CMake/NMakeの
+    // 中間生成物をローカルディスクに置きます。読み込み時にマップド
+    // ドライブがUNCパスへ正規化される場合があるため、両方を判定します。
     [[nodiscard]] bool ShouldUseLocalGameModuleBuildCache(
         const std::filesystem::path& projectRoot) noexcept;
 
@@ -63,11 +62,8 @@ namespace LamaPon
             const std::filesystem::path& runtimeDirectory,
             const std::string& configuration);
 
-    // WebDAV（Z:等のネットワークドライブ）のmtimeキャッシュ対策。
-    // ホスト側で編集したソースの更新時刻が古いまま見えることがあり、
-    // NMakeが「変更なし」と誤判定して古いDLLのまま成功を返す
-    // （手掛かりはbuild結果のmoduleUpdated:falseだけ。2026-08-13に
-    // CarGameで実際に発生し、旧DLLで回帰テストを通してしまった）。
+    // WebDAVなどでは編集後も更新時刻が古いまま見えることがあり、
+    // NMakeが変更を見落とすため、内容ハッシュでも更新を検出します。
     // 前回ビルド時の内容ハッシュをbuildDirectory内のマニフェストと
     // 比較し、内容が変わっているソースの更新時刻を現在時刻へ進めて
     // NMakeに確実に拾わせます。戻り値は進めたファイル数。
@@ -76,16 +72,11 @@ namespace LamaPon
         const std::filesystem::path& projectRoot,
         const std::filesystem::path& buildDirectory) noexcept;
 
-    // ビルドされたDLLが**実際に名乗るAPI版数**を返します
+    // ビルドされたDLLが公開するAPI版数を返します
     // （LamaPonGetGameModuleを呼んでdescriptorを見るだけ）。
     //
-    // なぜ更新時刻の比較では足りないのか: NMakeはヘッダ依存の
-    // 追跡が不完全で、GameModule.hの GameModuleApiVersion を上げても
-    // それを埋め込んだobjを再コンパイルせず、他のobjだけを作り
-    // 直してリンクします。するとDLLの更新時刻だけ新しくなり、
-    // 中身は古い版数のままになります。2026-08-18にCarGameで発生し、
-    // buildは runtimeCompatible:true を返したのにエディターの再生が
-    // 背景だけになりました。
+    // NMakeはヘッダ依存の追跡が不完全なため、更新時刻だけではAPI版数の
+    // 更新を確認できません。DLL自身が公開する版数を読み取ります。
     //
     // 読めないとき（ファイルが無い、ロードできない、エクスポートが
     // 無い）は nullopt です。

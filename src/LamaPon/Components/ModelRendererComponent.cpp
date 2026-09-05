@@ -36,11 +36,11 @@ namespace
     // モデルにはパッチで描く経路が無いので、ハル／ドメインは束ねられず、
     // テセレーション前提の頂点シェーダーだけが刺さります。この頂点
     // シェーダーはSV_Positionを出さない（出すのはドメインの仕事）ため、
-    // ラスタライザーへ位置が届かず**何も描かれません**。黙って消えるより
+    // ラスタライザーへ位置が届かず何も描かれません。黙って消えるより
     // 理由を出してマゼンタの代役を描きます。
     //
     // 差し替えを1箇所にまとめてあるのは、Effectを選ぶ入口が
-    // RefreshShaderとRebuildCommonLitResourcesの**2つ**あるからです。
+    // RefreshShaderとRebuildCommonLitResourcesの2つあるからです。
     // 片方だけ直すと、もう片方が生のEffectでm_effectを上書きして
     // 元へ戻してしまいます。
     LamaPon::LitEffect* SubstituteUnsupportedTessellation(
@@ -2718,9 +2718,8 @@ namespace LamaPon
 
         auto& model = *m_model->model;
         std::uint64_t generation{};
-        // ここもShaderを選ぶ入口です。RefreshShaderで差し替えても、
-        // この後に呼ばれるここが生のEffectで上書きしてしまうため、
-        // 同じ差し替えを通します。
+        // マテリアルからEffectを取得する経路にも、RefreshShaderと同じ
+        // 非対応テセレーションの代替処理を適用します。
         auto& effect = *SubstituteUnsupportedTessellation(
             &m_graphics->MaterialShader(
                 m_material.Shader(),

@@ -54,9 +54,9 @@ LamaPonCli render --project C:\work\MyGame --out check.png
 LamaPonCli export --project C:\work\MyGame --zip
 ```
 
-- `render` のJSONで `uniqueColors: 1`（何も描けていない）、
+- `render` のJSONで `uniqueColors: 1`（単色で描画されている可能性）、
   `shaderFallbackDraws > 0`（Shader破損）、`problems`（原因の特定）を確認
-- **`magentaPixels` で壊れ判定をしないこと。** あれは色からの推測で、
+- **`magentaPixels` で壊れ判定をしないこと。** この値は色からの推測で、
   ピンクや水色を使った正常な絵でも増えます。
   事実は`shaderFallbackDraws`（エンジンが数えた代役の使用回数）です
 - シーンJSONの形式は `new` が生成する `Main.scene.json` が最小の見本
@@ -102,8 +102,8 @@ LamaPonEditor --project <dir> --remote C:\work\remote
 
 > **このモードは実際のマウスカーソルを動かしません。** 注入した座標をエディター
 > 側で保持し、毎フレームImGuiへ入れ直しています。実行中もそのPCで他の作業が
-> できます。ただしエディターのウィンドウ内の操作はAIが握っているので、人が
-> そのウィンドウをクリックしても意図した場所には当たりません。
+> できます。ただし自動操作中のエディターウィンドウを手動で操作すると、入力が
+> 競合して意図しない位置へ送られる場合があります。
 
 操作は `C:\work\remote\command.json`（連番seq）で送り、結果は`state.json` で受け取る。
 **基本ループ**:
@@ -138,7 +138,8 @@ LamaPonEditor --project <dir> --remote C:\work\remote
   に結果が出るまで**待ってから**次を送る
 - 同じseqは再実行されない。**必ず連番を進める**
 - エディターが応答しない場合は、デスクトップ全体を撮って
-  **何のダイアログが出ているか**を見る（無人実行モードでは既知のダイアログは全部抑止されているが、未知のものが出たらそれが新しいバグ）
+  **何のダイアログが出ているか**を確認する。未想定のダイアログが
+  操作を妨げていないか調べる
 
 ## レシピ4: 実行中ゲームを観測・操作する
 

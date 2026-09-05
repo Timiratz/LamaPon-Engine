@@ -1,4 +1,4 @@
-// LamaPon built-in 2D sprite lighting shader.
+// LamaPonに組み込まれている2Dスプライト用ライティングシェーダーです。
 //
 // Light2Dが1つでも有効なシーンで、エンジンが自動的に差し替えます。
 // 対象はワールド空間のSprite RendererとTilemap、それにUIを照らす

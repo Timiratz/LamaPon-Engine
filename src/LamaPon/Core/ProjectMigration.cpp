@@ -225,9 +225,8 @@ namespace LamaPon
             currentEngineVersion);
         if (!comparison)
         {
-            // 読めない版番号は「よく分からない古いもの」として
-            // 扱います。ここで開けなくすると、手で書き換えた
-            // project.jsonでプロジェクトが人質になります。
+            // 解釈できない版番号は未記録として扱い、project.jsonを
+            // 手動編集したプロジェクトも開けるようにします。
             info.status =
                 ProjectVersionStatus::Unrecorded;
             return info;
@@ -290,8 +289,7 @@ namespace LamaPon
                     // 改行コードだけの差では書き換えない。エンジンの
                     // チェックアウト(CRLF)とプロジェクトのリポジトリ
                     // (LF)の間で、エディターを開くたびシェーダーが
-                    // 書き換わる「いたちごっこ」になるため
-                    // （CarGameのLamaPonLit.hlslで発生 2026-08-13）。
+                    // 不要に書き換わるのを防ぎます。
                     const auto normalize =
                         [](std::string text)
                     {

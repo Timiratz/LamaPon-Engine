@@ -36,7 +36,7 @@ namespace LamaPon
         LAMAPON_API void Initialize(HINSTANCE instance);
         LAMAPON_API void AttachLayer(
             std::unique_ptr<ApplicationLayer> layer);
-        // Shows the startup logo for the complete first scene load.
+        // 最初のシーンを読み込み終えるまで起動ロゴを表示します。
         LAMAPON_API void SetStartupSplashScreenEnabled(
             bool enabled) noexcept;
         LAMAPON_API int Run();

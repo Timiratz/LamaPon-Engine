@@ -128,9 +128,8 @@ add_library(DearImGui STATIC
     third_party/imgui/imgui_widgets.cpp
     third_party/imgui/backends/imgui_impl_dx11.cpp
     third_party/imgui/backends/imgui_impl_win32.cpp
-    # テストエンジンフックの実装（UIの記録）。imgui.objが
-    # シンボルを参照するため、エディターではなく**ここ**に置きます
-    # （エディター側に置くと、imguiだけ使うLamaPonHubがリンクできない）。
+    # UIを記録するテストエンジンフックはimgui.objから参照されます。
+    # LamaPonHubでもリンクできるよう、実装はこのターゲットに置きます。
     src/LamaPon/Editor/UiRecorder.cpp
     src/LamaPon/Editor/UiRecorder.h
 )
@@ -143,8 +142,8 @@ target_include_directories(DearImGui PRIVATE
 )
 target_compile_definitions(DearImGui PUBLIC
     IMGUI_DISABLE_OBSOLETE_FUNCTIONS
-    # ウィジェット登録時にImGuiTestEngineHook_*を呼ばせます
-    # （実際に記録するかは実行時フラグ。UiRecorder.cppを参照）。
+    # ウィジェット登録時にImGuiTestEngineHook_*を呼びます。記録の有無は
+    # 実行時フラグで制御します（UiRecorder.cppを参照）。
     IMGUI_ENABLE_TEST_ENGINE
 )
 target_compile_options(DearImGui PRIVATE
@@ -723,7 +722,7 @@ target_compile_options(LamaPonGame
 lamapon_enable_release_symbols(LamaPonGame)
 
 # エディターを開かずにプロジェクトを操作するCLI。
-# WIN32を付けない＝コンソールアプリです（stdoutへJSONを返すため）。
+# stdoutへJSONを返すため、WIN32を付けずコンソールアプリとして構成します。
 add_executable(LamaPonCli
     tools/LamaPonCli/Main.cpp
     tools/LamaPonCli/SceneCommands.cpp
@@ -735,7 +734,8 @@ add_executable(LamaPonCli
 target_link_libraries(LamaPonCli
     PRIVATE
         LamaPonRuntime
-        # new: Hubと同じプロジェクト作成。export: エディターと同じ梱包。
+        # newはHubと同じ方法でプロジェクトを作成し、exportは
+        # エディターと同じ方法でパッケージを作成します。
         LamaPonHubCore
         LamaPonEditor
         # PNG書き出し（WIC）。LamaPonRuntimeはPRIVATEでしか
@@ -1647,17 +1647,14 @@ source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/src PREFIX "Editor" FILES
 # インストールしていないPCでもHub／Editor／エクスポートしたゲームが
 # そのまま起動できるようにします。
 if(MSVC)
-    # 同梱するVC++ランタイムDLLは、**今ビルドに使っている
-    # コンパイラと同じ版**でなければなりません。アプリと同じ
-    # フォルダのDLLがDLL検索順で勝つため、古いCRTを置くと
-    # エディターがログを1行も書かないままアクセス違反で
-    # 落ちます（2026-08-18に14.51のバイナリへ14.36のCRTが
-    # 残っていて実際に踏みました）。
+    # 同梱するVC++ランタイムDLLは、ビルドに使用したコンパイラと
+    # 同じ版である必要があります。同じフォルダーのDLLが優先されるため、
+    # 古いCRTが残ると起動時にアクセス違反が発生します。
     #
     # InstallRequiredSystemLibrariesの自動検出は、Visual Studioが
     # 複数入っているPCで別の版を拾ったり、新しいtoolsetの
     # ディレクトリ名（Microsoft.VC145.CRT）を当てられずに
-    # **何も同梱しない**ことがあります。どちらも黙って壊れるので、
+    # DLLを検出できないことがあります。誤った配布物を作らないよう、
     # vcvarsが指すVCToolsRedistDirから実在するディレクトリを
     # 直接探し、見つからなければ構成時に止めます。
     set(LAMAPON_CRT_DLLS "")
@@ -1675,8 +1672,8 @@ if(MSVC)
             "Bundling VC++ runtime from: ${LAMAPON_REDIST_ROOT}")
         install(FILES ${LAMAPON_CRT_DLLS} DESTINATION ".")
     else()
-        # 自動検出へ戻すと版がめちゃくちゃになるので、
-        # ここで止めて原因を見せます。vcvarsを通してください。
+        # 自動検出では異なる版を選ぶおそれがあるため、ここで構成を停止し、
+        # vcvarsの設定が必要であることを表示します。
         message(FATAL_ERROR
             "VC++ runtime DLLs were not found. "
             "Configure from a Visual Studio developer prompt "

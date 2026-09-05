@@ -243,12 +243,8 @@ int main()
             duplicateRejected,
             "Duplicate asset GUID was accepted.");
 
-        // 壊れたファイルが1つあっても、走査ごと失敗しないこと。
-        //
-        // ここで投げると AssetManager::SetAssetRoot ごと失敗し、
-        // **壊れたファイル1つでプロジェクトが開けなくなります**。
-        // 開けないということは、その1つを直す手段も無いという
-        // ことです。壊れたものだけを飛ばして、残りは通します。
+        // 1件の破損でプロジェクト全体を開けなくしないよう、壊れた
+        // ファイルだけを読み飛ばし、残りのアセットを走査します。
         {
             std::filesystem::remove_all(root);
             const auto healthy = root / "textures" / "ok.bin";

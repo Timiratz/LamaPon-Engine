@@ -291,11 +291,8 @@ namespace
                     == "// edited by user",
             "the replaced version, edits included, must survive in the backup");
 
-        // 置き換えに失敗しても旧版が無傷なこと。旧版の中の
-        // ファイルを開いたまま更新すると、フォルダーのrenameが
-        // 失敗します（Windowsは開いているファイルを含む
-        // フォルダーを動かせません）。以前の「消してから入れる」
-        // 実装では、この状況で旧版が半分消えたまま残りました。
+        // ファイルを開いたままにしてフォルダーの移動を失敗させ、
+        // 更新に失敗しても旧版が損なわれないことを検証します。
         {
             std::ifstream lock(
                 installed / "NewFile.cpp",

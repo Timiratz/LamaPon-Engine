@@ -1,18 +1,13 @@
-// LamaPonCli: エディターを開かずにプロジェクトを操作する
-// コマンドラインツールです。
-//
-// なぜ要るか: 生成AIには目も手も無いので、GUIでしかできない操作は
-// AIにとって「存在しない機能」になります。このツールは人がエディターで
-// やることをテキスト（JSON）とexitコードで返し、AIが自分の変更を
-// 自分で確かめられるようにします。
+// LamaPonCliは、GUIを開かずにプロジェクトの操作と検証を行う
+// コマンドラインツールです。自動化クライアントが結果を判定できるよう、
+// 操作結果をJSONと終了コードで返します。
 //
 // 出力の約束（機械可読の契約）:
-//   - stdoutへはJSONオブジェクトを**1つだけ**書きます。
-//     進行状況などの人向けの文はすべてstderrへ出します。
-//   - exitコードは 0=成功 / 1=失敗。失敗時もJSONは出ます
-//     （ok:false と error に理由が入る）。
-//   - キーは足すことはあっても消さない方針です。AIの手順が
-//     キー名に依存するためです。
+// 1. stdoutへはJSONオブジェクトを1つだけ書きます。
+//    進行状況などの人向けの文はすべてstderrへ出します。
+// 2. exitコードは 0=成功 / 1=失敗です。失敗時もJSONを出力し、
+//    ok:false と error に理由を格納します。
+// 3. 既存の自動化処理との互換性を保つため、公開済みのキーは削除しません。
 //
 // 今あるサブコマンド:
 //   render  シーンをヘッドレスで1枚撮り、PNGと数値サマリーを返す
@@ -73,12 +68,12 @@ namespace
         std::cerr << message << std::endl;
     }
 
-    // ---- AI向けバックグラウンドジョブ ----
+    // バックグラウンドジョブ
     //
     // build/render/exportは既存の同期CLIとしても残します。job startは
     // 同じLamaPonCliを専用ワーカープロセスとして起動し、プロセス間の
     // 受け渡しをJSONファイルで行います。これにより、呼び出し側は
-    // CLIの終了を待たずにjobIdを受け取り、別プロセスや別のAIターンから
+    // CLIの終了を待たずにjobIdを受け取り、別プロセスから
     // status/cancelを呼べます。
 
     constexpr int JobFileVersion = 1;
@@ -854,8 +849,8 @@ namespace
     }
 
 
-    // 画像の数値サマリー。AIが「画像を見ずに」壊れ方の当たりを
-    // 付けるための値です。
+    // 画像を開けない自動検証でも描画異常を判定できるよう、
+    // 画素の統計値を返します。
     struct ImageSummary final
     {
         // チャンネルごとの平均（0〜255）。
@@ -951,13 +946,13 @@ namespace
 
     // シーン内の「壊れているもの」を構造化して集めます。
     //
-    // logsの文章と違い、ここは**機械が読む**前提です。magentaPixelsは
+    // logsの文章と違い、ここは自動検証での利用を前提とします。magentaPixelsは
     // 「どこかのShaderが壊れた」までしか言えませんが、こちらは
     // どのオブジェクトの・どのShaderが・何のエラーかまで特定します。
-    // AIはこの配列が空になるまで直せばよい、という使い方になります。
+    // problemsが空なら、検出対象の問題がないと判断できます。
     //
     // 注意: Shaderのコンパイルは最初の描画時に走るので、この収集は
-    // **描画の後**に呼ぶこと。描かれなかったもの（無効化されている、
+    // 描画の後に呼ぶこと。描かれなかったもの（無効化されている、
     // カメラ外でカリングされた等）のエラーは載りません。
     [[nodiscard]] nlohmann::json CollectProblems(
         const LamaPon::Scene& scene)
@@ -1073,10 +1068,10 @@ namespace
         // ウォームアップします。撮るのは最後の1枚です。
         std::uint32_t frames{ 4 };
         // ゲーム時間を進める秒数（1/60刻みでScene::Updateを回す）。
-        // 既定の0では**シーンは置いたまま**です。物理で落ち着かせて
+        // 既定の0ではシーンは置いたままです。物理で落ち着かせて
         // から撮りたいときなどに使います。
         double simulateSeconds{};
-        // 撮る前に押しておく入力（`--input Jump@0.5:0.2`）。
+        // 撮る前に押しておく入力（--input Jump@0.5:0.2）。
         // 「押した結果」を撮れないと、ジャンプや攻撃のような操作を
         // CLIから確認できないため、Action名と押す時刻を受け取ります。
         struct InputEvent final
@@ -1085,8 +1080,8 @@ namespace
             double at{};
             double duration{ 0.1 };
             // 正なら正方向のBinding、負なら負方向のBindingを押します。
-            // `MoveHorizontal`のような軸のActionは、AとDが同じ名前に
-            // まとまっているため、これが無いと**片方向しか試せません**
+            // MoveHorizontalのような軸のActionは、AとDが同じ名前に
+            // まとまっているため、これが無いと片方向しか試せません
             // （右へは動かせるが左へは動かせない）。
             double value{ 1.0 };
         };
@@ -1095,11 +1090,11 @@ namespace
         bool d3dDebug{};
     };
 
-    // ---- AI向け常駐ランタイムセッション ----
+    // 常駐ランタイムセッション
     //
     // EditorのUIを経由せず、LamaPonCli自身がゲームループを持ちます。
-    // セッションの入出力はJSONファイルだけなので、別のAIターンや
-    // 外部オーケストレーターからも同じ手順で操作できます。
+    // セッションの入出力はJSONファイルだけなので、別プロセスや
+    // 外部の自動化ツールからも同じ手順で操作できます。
 
     constexpr int RuntimeFileVersion = 1;
 
@@ -1378,10 +1373,8 @@ namespace
     {
         const auto path = directory / L"state.json";
         std::string lastError;
-        // MoveFileEx is atomic on a local NTFS volume, but WebDAV providers
-        // can briefly expose neither the old nor the new name while replacing
-        // a file. Runtime state is polled concurrently, so that transient
-        // provider window must not fail a command or an entire test.
+        // WebDAVではファイル置換中に旧名と新名のどちらも見えない場合が
+        // あるため、並行して更新される実行状態を一定回数読み直します。
         for (int attempt = 0; attempt < 50; ++attempt)
         {
             try
@@ -1496,9 +1489,9 @@ namespace
             return { { "op", trimmed } };
         }
 
-        // PowerShell can remove the inner quotes when a JSON object is passed
-        // to a native process. Accept the resulting compact form as a small,
-        // predictable command DSL so agents can use --command directly.
+        // PowerShellからネイティブプロセスへJSONを渡すと内側の引用符が
+        // 失われる場合があります。その形式を限定的なコマンド表記として
+        // 解釈し、--commandから同じ操作を実行できるようにします。
         if (trimmed.size() >= 2
             && trimmed.front() == '{'
             && trimmed.back() == '}'
@@ -2316,10 +2309,8 @@ namespace
                 --inputFrames;
                 if (inputFrames == 0)
                 {
-                    // UpdateFromSnapshot has already consumed this final
-                    // frame. Clear the retained controls as well so a later
-                    // input command cannot resurrect a key/button from an
-                    // earlier command when it adds its own control.
+                    // 最終フレームを反映した後で保持中の入力を消し、次の
+                    // コマンドへキーやボタンの状態を引き継がないようにします。
                     inputSnapshot.values.clear();
                 }
             }
@@ -3713,15 +3704,14 @@ namespace
             std::istreambuf_iterator<char>{} };
     }
 
-    // ソースから`LAMAPON_SCRIPT`系の登録名を拾います。
+    // ソースからLAMAPON_SCRIPT系の登録名を拾います。
     //
-    // シーンJSONのNativeScriptへ書く名前は、クラス名そのものではなく
-    // `Game.<クラス名>`です（`LAMAPON_SCRIPT`が`"Game." #type`で
-    // 登録するため）。この対応をCLIから知る手段が無く、`Game.`を
-    // 忘れても`patch`も`build`も成功してしまい、`render`の`problems`に
-    // 「型が登録されていません」と出るまで気付けませんでした。
+    // シーンJSONのNativeScriptには、クラス名ではなく
+    // Game.<クラス名>を設定します（LAMAPON_SCRIPTが"Game." #typeで
+    // 登録するため）。クラス名だけでは実行時の型検索に失敗するため、
+    // CLIはマクロに記述された登録名を返します。
     //
-    // DLLを読まずソースを読むだけなので、`build`の前でも答えられます。
+    // DLLを読まずソースから抽出するため、build前でも利用できます。
     [[nodiscard]] nlohmann::json ScriptTypesInSource(
         const std::string& contents)
     {
@@ -3806,7 +3796,7 @@ namespace
                         : "Game." + className;
                 types.push_back({
                     { "class", className },
-                    // シーンJSONの`"script"`へそのまま書ける値。
+                    // シーンJSONの"script"へそのまま書ける値。
                     { "id", id },
                 });
             }
@@ -3859,7 +3849,7 @@ namespace
                     { "guid", record.guid },
                     { "path", LamaPon::PathToUtf8(record.path) },
                     { "bytes", sizeError ? 0 : size },
-                    // シーンJSONへ書く登録名。`patch`の
+                    // シーンJSONへ書く登録名。patchの
                     // add-componentへそのまま渡せます。
                     { "scriptTypes",
                         ScriptTypesInSource(
@@ -4336,13 +4326,11 @@ namespace
         graphics.SetAsyncShaderCompilationEnabled(false);
         LamaPon::SetActivePhysicsSettings(settings.physics);
 
-        // C++ Script（Game Module）を読み込みます。**シーンを読む前**に
+        // C++ Script（Game Module）を読み込みます。シーンを読む前に
         // 用意しないと、NativeScriptComponentが型を見つけられません。
         //
-        // これが無いと「Scriptで画面を組み立てるゲーム」は1行も動かず、
-        // 真っ黒な絵が撮れてしまいます（しかも原因が出ません）。
-        // AIがrenderで自分の成果を確かめられるようにするため、
-        // ここはApplicationと同じようにロードします。
+        // Scriptで画面を構成するゲームも描画できるよう、
+        // Applicationと同じ手順でGame Moduleを読み込みます。
         LamaPon::GameModuleHost gameModule;
         const auto gameModulePath = projectRoot
             / L".lamapon" / L"bin"
@@ -4378,10 +4366,10 @@ namespace
             throw std::runtime_error(
                 scene.Scenes().LastError());
         }
-        // RequestLoadは要求を積むだけです（実際の読み込みは毎フレームの
-        // ポンプが行う）。CLIはゲームループを回さないので、ここで
-        // 自分でポンプします。忘れると**空のシーンを撮ってしまい**、
-        // しかもエラーは出ません。
+        // RequestLoadは読み込み要求をキューへ追加し、通常はフレーム更新中に
+        // 処理されます。CLIはゲームループを実行しないため、ProcessPendingで
+        // 要求を同期処理します。ProcessPendingを省くと、読み込み前の空シーンが
+        // 正常結果として出力されます。
         if (!scene.Scenes().ProcessPending())
         {
             throw std::runtime_error(
@@ -4398,7 +4386,7 @@ namespace
                 "画面はクリア色のままになります。");
         }
 
-        // C++ Scriptがあるかどうか。`Start()`は最初の更新で呼ばれるため、
+        // C++ Scriptがあるかどうか。Start()は最初の更新で呼ばれるため、
         // Scriptで画面を組み立てるゲームは1回も更新しないと空のままです。
         bool sceneHasScripts = false;
         for (const auto& gameObject : scene.GameObjects())
@@ -4413,13 +4401,13 @@ namespace
             }
         }
 
-        // `--input`のAction名を、実際に押すControlへ解決します。
+        // --inputのAction名を、実際に押すControlへ解決します。
         // Actionは複数のBindingを持てるので、要求された向きと同じ
         // 符号の倍率が付いたものだけを押します（既定は正方向。
         // 押したつもりが逆に動くのを避けるためです）。
         //
-        // `MoveHorizontal`のようにAとDが1つのActionへまとまっている
-        // 場合、正方向だけでは**右にしか動かせません**。`=-1`を書くと
+        // MoveHorizontalのようにAとDが1つのActionへまとまっている
+        // 場合、正方向だけでは右にしか動かせません。=-1を書くと
         // 負方向のBinding（A）を押せます。
         struct ResolvedInput final
         {
@@ -4478,11 +4466,11 @@ namespace
         const float step = 1.0f / 60.0f;
         auto steps = static_cast<std::uint32_t>(
             std::max(options.simulateSeconds, 0.0) * 60.0);
-        // `--input`だけ渡されたときは、その入力が効くところまで自動で
-        // 進めます（`--simulate`を書き忘れて「何も起きない」結果に
+        // --inputだけ渡されたときは、その入力が効くところまで自動で
+        // 進めます（--simulateを書き忘れて「何も起きない」結果に
         // なるのを防ぐため）。押し終わりから0.25秒だけ余韻を見ます。
         //
-        // `--simulate`が明示されている場合は延ばしません。「押した
+        // --simulateが明示されている場合は延ばしません。「押した
         // 直後の1コマを撮る」ような使い方を潰さないためです。
         if (!resolvedInputs.empty()
             && options.simulateSeconds <= 0.0)
@@ -4492,7 +4480,7 @@ namespace
             steps = std::max(steps, needed);
         }
         // Scriptがあるなら最低1フレームは回します。そうしないと
-        // `Start()`が呼ばれず、「Scriptで作った画面」が写りません。
+        // Start()が呼ばれず、「Scriptで作った画面」が写りません。
         // Scriptが無いプロジェクトの挙動は今までと変わりません。
         if (sceneHasScripts && steps == 0u)
         {
@@ -4508,7 +4496,7 @@ namespace
                 ++index)
             {
                 // 押している時間帯なら、そのフレームのスナップショット
-                // へControlを立てます。Actionの`WasPressed`は前フレーム
+                // へControlを立てます。ActionのWasPressedは前フレーム
                 // との差で決まるので、押した瞬間・離した瞬間も
                 // ゲーム側から見えます。
                 if (!resolvedInputs.empty())
@@ -4536,9 +4524,8 @@ namespace
             }
         }
 
-        // Application.cppのゲーム実行と同じ経路で描きます。
-        // ここが独自の呼び方だと「CLIだけ通っていない経路」が
-        // できて、撮った絵が本物と食い違います。
+        // ゲーム実行時の出力と一致させるため、Application.cppと同じ
+        // 描画経路を使用します。
         const float clearColor[4]{
             0.025f, 0.035f, 0.055f, 1.0f };
         std::vector<std::uint8_t> pixels;
@@ -4666,15 +4653,13 @@ namespace
                 { "magentaPixels",
                     summary.magentaPixels },
             } },
-            // 壊れたシェーダーの代役が使われた回数。**0なら一度も
-            // 使われていない**と言い切れます（エンジン自身が数えた
-            // 事実で、image.magentaPixelsのような色からの推測では
-            // ありません）。撮った1フレーム分だけを数えます。
+            // 描画時に代役シェーダーを使用した回数です。画素色からの
+            // 推測ではなく、撮影した1フレーム分を直接数えます。
             { "shaderFallbackDraws",
                 graphics.FrameStats()
                     .shaderFallbackDraws },
-            // 壊れているものの一覧（オブジェクト名・種類・対象・
-            // 詳細）。AIはここが空になるまで直せばよい。
+            // 描画上の問題を、オブジェクト名、種類、対象、詳細と
+            // ともに返します。空の配列は問題を検出しなかったことを示します。
             { "problems", std::move(problems) },
             { "errorCount", errorCount },
             { "warningCount", warningCount },
@@ -4757,7 +4742,7 @@ namespace
                 options.projectTemplate) },
             { "learningJourney",
                 LamaPon::Hub::HasLearningJourney(projectRoot) },
-            // 作った直後のrender用。ここを読めば次のコマンドが組める。
+            // startupSceneは、作成直後のプロジェクトに対するrenderコマンドの入力です。
             { "startupScene", "scenes/Main.scene.json" },
             { "errorCount", errorCount },
             { "warningCount", warningCount },
@@ -5001,8 +4986,8 @@ namespace
         return 0;
     }
 
-    // C++ Game Moduleのビルド。エディターの「保存→自動ビルド」と
-    // 同じコマンド（GameModuleBuilder）を、こちらは同期で実行します。
+    // CLIのC++ Game Moduleビルドは、エディターの自動ビルドと同じ
+    // GameModuleBuilderコマンドを同期実行します。
     struct BuildOptions final
     {
         std::filesystem::path projectRoot;
@@ -5095,13 +5080,9 @@ namespace
         return LamaPon::WideToUtf8(wide);
     }
 
-    // ビルドログをUTF-8で読みます。
-    //
-    // ログは**混在エンコーディング**です（VMで実測）: NMAKEやcl.exeの
-    // 直接の出力はANSIコードページ（CP932）ですが、CMakeの依存関係
-    // スキャナー経由で再出力されるコンパイルエラーはUTF-8で届きます。
-    // 全体を一括でCP932変換すると、UTF-8の行が「讒区枚繧ｨ繝ｩ繝ｼ」の
-    // ような化け方をするため、**行ごとに**判定して変換します。
+    // NMAKEやcl.exeの出力にはCP932とUTF-8の行が混在します。
+    // 全体を一つの文字コードとして変換すると一部が文字化けするため、
+    // 行ごとに文字コードを判定します。
     [[nodiscard]] std::string ReadBuildLog(
         const std::filesystem::path& path)
     {
@@ -5147,8 +5128,8 @@ namespace
 
     // ログから「error」を含む行を抜き出します（cl.exeの
     // 「error C2065」、リンクの「error LNK2019」、CMakeの
-    // 「CMake Error」を拾う）。AIはこの配列だけ読めばよく、
-    // ログ全文を漁らずに済みます。
+    // 「CMake Error」を拾う）。呼び出し側はログ全文を解析せずに
+    // 主要なエラーを確認できます。
     [[nodiscard]] nlohmann::json ExtractErrorLines(
         const std::string& log)
     {
@@ -5218,16 +5199,15 @@ namespace
             "build: "
             + LamaPon::PathToUtf8(
                 buildCommand.outputModule));
-        // WebDAV上のプロジェクトはソースのmtimeが古いまま見えることが
-        // あり、NMakeが変更を見失う（旧DLLのまま「成功」）。内容ハッシュで
-        // 検出して時刻を進める。進めた数は結果JSONで報告する。
+        // WebDAVではソースの更新時刻が正しく反映されない場合があるため、
+        // 内容ハッシュでも変更を検出します。更新したファイル数は結果JSONへ
+        // 記録します。
         const int touchedStaleSources =
             LamaPon::RefreshStaleGameModuleSources(
                 projectRoot,
                 buildCommand.buildDirectory);
-        // ビルド前のDLLの時刻。「今回のビルドで実際に更新されたか」を
-        // 後で判定するため（失敗しても前回のDLLは残るので、存在だけ
-        // では紛らわしい）。
+        // ビルド開始前のDLL更新時刻を保存し、完了後に更新の有無を
+        // 判定します。古いDLLが残っていても成功とはみなしません。
         std::error_code timeError;
         const auto moduleTimeBefore =
             std::filesystem::last_write_time(
@@ -5297,10 +5277,8 @@ namespace
         const std::string log =
             ReadBuildLog(buildCommand.logPath);
         auto buildErrors = ExtractErrorLines(log);
-        // Z:(WebDAV)はコピー完了直後のstatが一時的に失敗することがある
-        // （実在するのに moduleExists:false → ビルド失敗と誤報した前例
-        // 2026-08-13。HANDOFF-ENGINE §4-12のrename問題と同族）。
-        // ビルドが成功を主張しているときだけ、少し待って再確認する。
+        // WebDAVではコピー直後のstatが一時的に失敗することがあります。
+        // ビルド成功時に限り、少し待ってから存在を再確認します。
         std::error_code existsError;
         bool moduleExists =
             std::filesystem::is_regular_file(
@@ -5341,14 +5319,12 @@ namespace
                 "Game Module is still older than LamaPonRuntime.dll;"
                 " the build did not relink the module.");
         }
-        // 時刻だけでは足りません。NMakeはヘッダ依存の追跡が
+        // 時刻だけでは互換性を確認できません。NMakeはヘッダ依存の追跡が
         // 不完全で、GameModuleApiVersion を上げてもそれを埋め込んだ
         // objを再コンパイルせず、他のobjだけでリンクします。
         // するとDLLの時刻は新しくなるのに中身は古い版数のままに
-        // なり、ここで runtimeCompatible:true を返してしまいます
-        // （2026-08-18にCarGameで発生。エディターの再生が背景だけに
-        // なったのに、buildは成功と言い続けた）。
-        // 実際にDLLへ聞いて、嫌でも嘲かないようにします。
+        // なり、runtimeCompatible:trueを誤って返す可能性があります。
+        // DLLに埋め込まれたAPIバージョンを直接確認します。
         if (runtimeCompatible)
         {
             const auto builtApiVersion =
@@ -5378,15 +5354,13 @@ namespace
                     + "\" and build again.");
             }
         }
-        // 終了コード0でもDLLが無い／古ければ成功とは言いません
-        // （「exit=0を信じて古いバイナリを検証し続けた」事故の再発防止）。
+        // 終了コードが0でも、DLLが存在しない場合やRuntimeと互換性がない
+        // 場合は失敗として扱います。
         const bool ok = exitCode == 0
             && moduleExists
             && runtimeCompatible;
-        // 今回のビルドでDLLが実際に書き換わったか。失敗時に前回の
-        // 古いDLLを「ある」と読んで載せてしまう誤解を防ぎます。
-        // 変更が無くup-to-dateだった成功ビルドでもfalseになります
-        // （その場合は前回の成果物のままで正しい）。
+        // moduleUpdatedは、このビルドでDLLが書き換わったかを示します。
+        // 変更のない最新状態からの成功ビルドではfalseになります。
         std::error_code afterError;
         const auto moduleTimeAfter =
             std::filesystem::last_write_time(
@@ -5472,9 +5446,8 @@ namespace
             LamaPon::LoadProjectSettings(settingsPath);
 
         // エディターと同じ場所からGame Moduleを拾います。
-        // 無くても書き出しは成立します（C++ Script未使用の
-        // プロジェクト）が、「入っていると思っていたのに入って
-        // いない」が最悪なので、有無をJSONへ明示します。
+        // C++ Scriptを使わないプロジェクトでは存在しない場合もあります。
+        // 書き出し結果を判定できるよう、有無をJSONへ明示します。
         const auto gameModulePath = projectRoot
             / L".lamapon" / L"bin"
             / L"LamaPonGameModule.dll";
@@ -6670,10 +6643,10 @@ int wmain(const int argumentCount, wchar_t** arguments)
                 }
                 else if (argument == L"--input")
                 {
-                    // `Jump@0.5:0.2,Fire@1.0` のように、
+                    // Jump@0.5:0.2,Fire@1.0 のように、
                     // Action名@秒[:押している秒数][=向き] をカンマ区切りで。
-                    // 向きは省略すると+1（正方向）。`=-1`と書くと
-                    // `MoveHorizontal=-1@2.0`のように逆方向へ倒せます。
+                    // 向きは省略すると+1（正方向）。=-1と書くと
+                    // MoveHorizontal=-1@2.0のように逆方向へ倒せます。
                     const auto specification =
                         LamaPon::WideToUtf8(next());
                     std::size_t start = 0;
@@ -6710,9 +6683,9 @@ int wmain(const int argumentCount, wchar_t** arguments)
                                 " (for example Jump@0.5): "
                                 + item);
                         }
-                        // 向きは`@`より前、Action名の後ろに書きます
-                        // （`MoveHorizontal=-1@2.0`）。時刻を切り離して
-                        // から探さないと、`1.0`の小数点や`:`と混ざります。
+                        // 向きは@より前、Action名の後ろに書きます
+                        // （MoveHorizontal=-1@2.0）。時刻を切り離して
+                        // から探さないと、1.0の小数点や:と混ざります。
                         auto name = item.substr(0, at);
                         const auto equals = name.rfind('=');
                         if (equals != std::string::npos)
@@ -6899,8 +6872,8 @@ int wmain(const int argumentCount, wchar_t** arguments)
     }
     catch (const std::exception& exception)
     {
-        // 失敗してもstdoutの約束（JSONを1つ）は守ります。ここまでの
-        // ログも一緒に返すと、AIが原因へ一足で届きます。
+        // 失敗時もstdoutにはJSONを1件だけ出力し、診断に必要なログを
+        // 同じレポートへ含めます。
         std::size_t errorCount{};
         std::size_t warningCount{};
         auto logs = CollectLogs(errorCount, warningCount);

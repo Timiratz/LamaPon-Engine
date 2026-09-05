@@ -374,7 +374,7 @@ LAMAPON_DATA_ASSET("Game.EnemyData", "敵データ", EnemyDataSchema)
 ```
 
 ```cpp
-const auto enemy = LoadDataAsset("data/ゴブリン.asset.json");
+const auto enemy = LoadDataAsset("data/goblin.asset.json");
 const int hitPoints = enemy->GetInt("hitPoints");
 ```
 

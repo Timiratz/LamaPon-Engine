@@ -19,7 +19,7 @@ Rigidbody、Collider、Raycast、CharacterController、物理マテリアル、C
 class JumpBox final : public LamaPon::Script
 {
 public:
-    void Update(float deltaTime) override
+    void Update(float) override
     {
         // Space（既定のJump）で上向きに瞬間的な力を加えます
         if (Graphics().Input().WasPressed("Jump"))
@@ -48,7 +48,7 @@ LAMAPON_SCRIPT(JumpBox);
 人型キャラクターの移動は、自前でRigidbodyを操作するより**Character Controller**（後述）を使うのが簡単です。
 WASDとSpaceが最初から使えます。
 
-## 物理と衝突判定
+## RigidbodyとCollider
 
 Inspectorの「コンポーネントを追加」から次を追加できます。
 
@@ -67,7 +67,7 @@ Rigidbodyは質量、速度、角速度、ローカル重心、移動／回転�
 力やトルクに加え、`AddForceAtPosition`で重心から離れた位置へ力を加えられます。
 衝突解決も接触点の速度とボックス形状から求めた慣性を使うため、崖際に偏って載った箱、斜めに接触したOBB、摩擦で転がる物体が角運動を伴って反応します。
 
-高速で移動する弾丸などは`Continuous (CCD)`を選ぶと、移動距離とColliderの大きさに応じて1フレームを最大32回へ自動分割し、薄いColliderのすり抜けを抑えます。
+高速で移動する弾丸などは`Continuous (CCD)`を選ぶと、前の位置から移動先までをスイープし、最初の接触位置で止めて薄いColliderのすり抜けを抑えます。
 通常の物体は負荷の小さい`Discrete`を使用します。
 Colliderをトリガーにすると衝突イベントのみ発生し、位置の押し戻しは行いません。
 各Colliderの「摩擦係数」と「反発係数」はPhysics Materialとしてシーンへ保存されます。
@@ -92,7 +92,7 @@ Manifold内の法線Impulseを8回、同じBroad Phase候補に含まれる全�
 C++の`Sleep()`／`WakeUp()`とInspectorの「休止させる」／「起こす」から手動操作もできます。
 
 Windows Runtimeの物理演算は描画FPSと分離した固定間隔（既定60 Hz）で実行され、プロジェクトの`fixedTimeStep`で変更できます。
-通常のアニメーションやUIは`OnUpdate(deltaTime)`で経過時間を使い、Rigidbodyへ継続的な力を加える処理は`OnFixedUpdate(fixedDeltaTime)`へ記述します。
+C++ Scriptでは、通常のアニメーションやUIは`Update(deltaTime)`で経過時間を使い、Rigidbodyへ継続的な力を加える処理は`FixedUpdate(fixedDeltaTime)`へ記述します。
 既定設定では、追いつき上限に達しない限り30／60／144 FPSのどの場合も1秒間に60回の物理更新となり、描画FPSによる挙動の変化を抑えます。重いフレームは入力時間を最大0.1秒、固定更新を`maximumCatchUpSteps`回に制限します。捨てた時間は物理時計へ加算しません。
 
 Rigidbodyの「描画を補間」は既定で有効です。
@@ -104,7 +104,7 @@ Teleportなど物理外でTransformを直接変更した場合は履歴を同期
 これらは`LateUpdate`で参照します。一時停止のゼロ時間更新では表示済みの補間位置を保持し、停止中のTransform編集は履歴へ同期します。
 
 ```cpp
-void OnFixedUpdate(float fixedDeltaTime) override
+void FixedUpdate(float fixedDeltaTime) override
 {
     auto* body = Owner().GetComponent<LamaPon::RigidbodyComponent>();
     body->AddForce(

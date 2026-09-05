@@ -589,8 +589,7 @@ namespace LamaPon
                     InverseMass()));
             if (m_useGravity)
             {
-                // 重力はプロジェクト設定から。以前はここへ9.81を
-                // 直書きしていたので、宇宙も水中も作れませんでした。
+                // プロジェクト設定の重力を適用します。
                 const auto& gravity =
                     ActivePhysicsSettings().gravity;
                 acceleration.x += gravity.x;
@@ -631,13 +630,9 @@ namespace LamaPon
                     angularDamping),
                 false);
 
-            // DCD（既定の離散判定）で速すぎないかを見ます。
-            // CCDを選んだ物体は連続判定で守られるので対象外です。
-            //
-            // 既定では**知らせるだけ**で、挙動は変えません。
-            // すり抜けは「気付いたときには原因が分からない」типの
-            // 不具合なので、どのオブジェクトを CCD にすべきかを
-            // その場で名指しします。
+            // 離散判定で安定して扱える速度を超えた物体を検出します。
+            // 連続判定を使う物体は対象外です。挙動は変えず、連続判定を
+            // 検討すべきGameObjectを診断へ記録します。
             if (!UsesContinuousCollisionDetection())
             {
                 const auto& physics = ActivePhysicsSettings();

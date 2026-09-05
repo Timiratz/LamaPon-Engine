@@ -14,9 +14,9 @@
 
 namespace
 {
-    // このランタイム（LamaPonRuntime.dll）自身のビルド時刻を返します。
-    // 静的リンクなどで見つからない場合はfalseで、判定を諦めます
-    // （誤検知で読み込みを止めるほうが害が大きいため）。
+    // このランタイム（LamaPonRuntime.dll）のビルド時刻を返します。
+    // 静的リンクなどで取得できない場合はfalseを返し、時刻による
+    // 互換性判定を省略します。
     [[nodiscard]] bool TryGetRuntimeWriteTime(
         std::filesystem::file_time_type& writeTime) noexcept
     {
@@ -284,13 +284,9 @@ namespace LamaPon
     std::filesystem::path GameModuleHost::HotReloadDirectoryFor(
         const std::filesystem::path& modulePath)
     {
-        // ネットワーク/WebDAV上のプロジェクトでは、シャドウコピー先の
-        // ディレクトリ作成やコピー、そしてLoadLibraryそのものが
-        // リダイレクター都合で失敗します（実測: WebDAVで
-        // ERROR_NOT_SUPPORTED になり、エディターの再生が「背景だけ」の
-        // まま C++ Script が一切動かなくなった）。Build Cache（IR-07）と
-        // 同じ考え方で、リモートのモジュールはユーザーローカルへ
-        // 退避してから読み込みます。
+        // ネットワークやWebDAV上ではシャドウコピーとLoadLibraryが
+        // 失敗する場合があります。リモートのモジュールはユーザーの
+        // ローカル領域へコピーしてから読み込みます。
         if (!UsesNetworkDrive(modulePath))
         {
             return modulePath.parent_path() / L".lamapon-hot-reload";
@@ -337,12 +333,9 @@ namespace LamaPon
             return false;
         }
 
-        // エンジンを建て直したあとにモジュールを建て直していないと、
-        // ヘッダーの食い違いで**警告も無くプロセスが即死する**ことが
-        // あります（apiVersionは関数テーブルの形しか見ないため、
-        // クラスの構成が変わった場合は通り抜けます。実際にCLIが
-        // exit 116で落ちました）。読み込む前に弾いて、何をすれば
-        // よいかを伝えます。
+        // Runtimeより古いGame Moduleは、同じAPI番号でも公開クラスの
+        // レイアウトが一致しない可能性があります。読み込み前に更新時刻を
+        // 比較し、再ビルドが必要な場合は手順を案内します。
         std::filesystem::file_time_type runtimeWriteTime{};
         if (TryGetRuntimeWriteTime(runtimeWriteTime)
             && candidate.writeTime < runtimeWriteTime)
@@ -358,8 +351,8 @@ namespace LamaPon
         auto hotReloadDirectory = HotReloadDirectoryFor(m_modulePath);
         if (!EnsureDirectoryExists(hotReloadDirectory, error))
         {
-            // プロジェクト内に作れない環境（読み取り専用・権限不足）でも
-            // 読み込みは諦めず、ユーザーローカルへ切り替えてやり直します。
+            // 読み取り専用や権限不足でプロジェクト内へ作成できない場合は、
+            // ユーザーのローカル領域へ切り替えて再試行します。
             const auto fallback =
                 LocalEngineCachePath(L"HotReload")
                 / PathCacheKey(m_modulePath.parent_path());
@@ -454,10 +447,8 @@ namespace LamaPon
         }
 
         candidate.descriptor = getDescriptor();
-        // バージョン違いは他の不正と分けて報告します。エンジンを
-        // 更新した人が必ず一度は踏むうえ、直し方が「作り直す」の
-        // 一手に決まっているためです（まとめて「invalid」と言うと、
-        // 自分のスクリプトが悪いのかと探し始めてしまいます）。
+        // APIバージョンの不一致は再ビルドで解消できるため、
+        // 一般的なモジュール破損と分けて必要な操作を案内します。
         if (candidate.descriptor != nullptr
             && candidate.descriptor->apiVersion
                 != GameModuleApiVersion)

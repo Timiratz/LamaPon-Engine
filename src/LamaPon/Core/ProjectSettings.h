@@ -82,7 +82,7 @@ namespace LamaPon
         // 足しています（途中へ入れると構造体のレイアウトがずれ、
         // 作り直していないGame Module DLLが壊れます）。
         //
-        // 入れると、事前コンパイルは**全バリアント**を焼きます。
+        // 入れると、事前コンパイルは全バリアントを焼きます。
         // shader_featureのストリップと同時にやると、取りこぼした
         // 組み合わせを実行時に作り直せず（ソースが無いので）
         // 標準Litへ落ちてしまうためです。
@@ -91,11 +91,11 @@ namespace LamaPon
         // 外しても全バリアントを焼くので実行時の挙動は変わりません
         // （既に保存済みのプロジェクトは、保存された値のままです）。
         bool stripShaderSourceOnExport{ true };
-        // 物理・当たり判定の調整値。**末尾へ足しています**
+        // 物理・当たり判定の調整値。末尾へ足しています
         // （途中へ入れると構造体のレイアウトがずれ、作り直して
         // いないGame Module DLLが壊れます）。
         PhysicsSettings physics;
-        // Show the LamaPon logo while the initial scene is loading.
+        // 最初のシーンを読み込んでいる間、LamaPonのロゴを表示します。
         bool splashScreenEnabled{ true };
     };
 

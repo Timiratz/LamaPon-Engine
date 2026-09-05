@@ -50,11 +50,10 @@ cbuffer PrefilterBuffer : register(b3)
 
 cbuffer ColorGradingBuffer : register(b2)
 {
-    // exposure, contrast, saturation, temperature
+    // 露出、コントラスト、彩度、色温度
     float4 ColorGradePrimary;
-    // tint, vignette, grading enabled, 自動露出の補正（段数）。
-    // 最後の欄は以前は未使用の詰め物だったので、並びは変わって
-    // いません。
+    // 色合い、周辺減光、有効状態、自動露出の補正（段数）。
+    // 自動露出の補正には既存の予約領域を使用します。
     float4 ColorGradeSecondary;
 };
 
@@ -105,12 +104,12 @@ cbuffer TemporalBuffer : register(b6)
 cbuffer DepthOfFieldBuffer : register(b8)
 {
     // x=ピントの合う距離, y=ピントの合う幅, z=ぼけの強さ,
-    // w=ぼけ半径の上限（**フル解像度の**画素数）。
+    // w=ぼけ半径の上限（フル解像度の画素数）。
     float4 DepthOfFieldParameters;
     // 深度をビュー空間のZ（カメラからの距離）へ戻すための射影の値。
     // x=projection._33, y=projection._43, z/w=予約。
     float4 DepthOfFieldProjection;
-    // x=1/幅, y=1/高さ（**そのパスの**解像度）, z=サンプル数,
+    // x=1/幅, y=1/高さ（そのパスの解像度）, z=サンプル数,
     // w=予約。
     float4 DepthOfFieldTexel;
 };
@@ -119,7 +118,7 @@ cbuffer DepthOfFieldBuffer : register(b8)
 cbuffer MotionBlurBuffer : register(b9)
 {
     // 深度→ワールド座標の復元に使う逆ビュー射影（今のフレーム。
-    // TAAと同じく**ずらしを含まない**もの。ずらしを含めると
+    // TAAと同じく、ずらしを含まないもの。ずらしを含めると
     // 毎フレーム半画素ぶんの偽の速度が出ます）。
     row_major float4x4 MotionBlurInverseViewProjection;
     // 前フレームのビュー射影（ずらしを含まないもの）。
@@ -134,7 +133,7 @@ cbuffer MotionBlurBuffer : register(b9)
 // 自動露出の明るさ測定パス。
 cbuffer LuminanceBuffer : register(b10)
 {
-    // x=1/幅, y=1/高さ（**測定先の**解像度）, z/w=予約。
+    // x=1/幅, y=1/高さ（測定先の解像度）, z/w=予約。
     float4 LuminanceTexel;
 };
 
@@ -162,9 +161,9 @@ Texture2DArray VolumetricShadowTexture : register(t3);
 Texture2D TemporalHistoryTexture : register(t4);
 // 多段でぼかし終えた筋（1/4解像度）。レンズフレアの合成が読みます。
 Texture2D LensFlareStreakTexture : register(t5);
-// 被写界深度の作業用（半解像度、rgb=色, a=符号付きCoC）。ぼかしパスは
-// 「①が書いた色とCoC」を、合成パスは「②がぼかし終えた絵」を、
-// どちらもここから読みます（同時には刺さらないので1枠で足ります）。
+// 被写界深度の作業用（半解像度、rgb=色, a=符号付きCoC）です。
+// ぼかしパスは(1)が書いた色とCoCを、合成パスは(2)のぼかし結果を読みます。
+// 2つのパスは同時に参照しないため、同じテクスチャ枠を共有します。
 Texture2D DepthOfFieldTexture : register(t6);
 SamplerState LinearSampler : register(s0);
 SamplerComparisonState VolumetricShadowSampler
@@ -459,7 +458,7 @@ float3 LensFlareChromaticSample(float2 uv, float2 direction)
 // （7タップで画面の半分を伸ばすと、間が数百画素も飛びます）。そこで
 // 「4タップだけ進めて書き戻す」を3回繰り返し、毎回タップ間隔を4倍に
 // 広げます。1回目は1画素刻み、2回目は4画素刻み、3回目は16画素刻みで、
-// 前の回の結果を読むので**隙間が埋まったまま**遠くまで伸びます。
+// 前の回の結果を読むので、隙間を埋めた状態で遠くまで伸びます。
 // 12タップで64画素ぶんの連続した筋になる、という理屈です。
 float4 PSLensFlareStreak(ScreenVertex input) : SV_Target
 {
@@ -476,9 +475,8 @@ float4 PSLensFlareStreak(ScreenVertex input) : SV_Target
     [loop]
     for (int index = 0; index < directionCount; ++index)
     {
-        // 方向は等間隔に散らします。2本なら十字ではなく180度
-        // 反対まで含めて水平＋垂直、というふうに半円で割ります
-        // （筋は両側へ伸ばすので、半円ぶんあれば足ります）。
+        // 方向は半円内へ等間隔に配置します。筋を両方向へ伸ばすため、
+        // 2本なら水平と垂直の方向になります。
         const float angle = baseAngle
             + 3.14159265f * (float)index
                 / (float)directionCount;
@@ -704,8 +702,8 @@ float4 PSToneMap(ScreenVertex input) : SV_Target
         1.0f - temperature * 0.16f - tint * 0.05f),
         0.05f);
     // 自動露出の補正（段数）。CPU側が測った平均輝度から決めた値が
-    // 入ってきます（自動露出が無効なら0）。**カラー調整のオン/オフとは
-    // 独立に効かせます。** 露出はカメラの挙動であって色の作り込みでは
+    // 入ってきます（自動露出が無効なら0）。カラー調整のオン／オフとは
+    // 独立に適用します。露出はカメラの挙動であって色の作り込みでは
     // ないので、「カラー調整を切ったら真っ白になった」という驚きを
     // 作らないためです。
     const float autoExposure = ColorGradeSecondary.w;
@@ -742,7 +740,7 @@ float4 PSCopy(ScreenVertex input) : SV_Target
         input.uv);
 }
 
-// ---- SSRのHi-Z深度ピラミッド ----
+// SSRのHi-Z深度ピラミッド
 // 深度バッファを「カメラからの距離」へ直したものを頂点に、各ミップが
 // 「4テクセルの最小値（いちばん手前）」を持つピラミッドを作ります。
 // SSRのレイは「この区画の最も手前より、レイの区間全体が手前」なら
@@ -772,7 +770,7 @@ float4 PSReflectionDepthLinearize(
 // PrefilterParameters.xy = 親ミップの大きさ。
 //
 // 親の辺が奇数のときは、端の1列（1行）がどの子にも入らず
-// こぼれます。こぼれた列は端の子が余分に読んで拾います——
+// こぼれます。端の子が余った列を追加で読みます。
 // minのピラミッドで拾い漏れがあると「本当はそこに物があるのに
 // 無いことになっている」区画ができ、レイが物を突き抜けます。
 float4 PSReflectionDepthDownsample(
@@ -814,7 +812,7 @@ float4 PSReflectionDepthDownsample(
     return nearest;
 }
 
-// ---- SSAO（遮蔽による陰り） ----
+// SSAO（遮蔽による陰り）
 // 深度バッファだけから、物が接している隙間や角を暗くします。法線
 // バッファを持たない前方レンダリングでも動くよう、法線は深度から
 // 復元した位置の傾きで求めます。深度から作ったビュー空間位置の
@@ -1008,12 +1006,10 @@ float4 PSAmbientOcclusionBlur(ScreenVertex input) : SV_Target
     const float centerDepth = AmbientOcclusionViewDepth(
         DepthTexture.Sample(LinearSampler, input.uv).r);
 
-    // 深度差の許容量。遠くほど絶対差が大きくなるので距離に比例させます。
-    // 床のように視線に対して浅い角度の面では、隣の画素でも深度が
-    // それなりに変わります。ここを厳しくすると全部の隣接画素が
-    // 却下されて中心だけが残り、ブラーが効かなくなります
-    // （実際に2%の二値判定にしたところ、接地部の陰りが点々のまま
-    // 残りました）。少し広めに取り、二値ではなく連続的に落とします。
+    // 深度差の許容量は、遠方ほど絶対差が大きくなるため距離に比例させます。
+    // 床など視線に対して浅い角度の面では隣接画素間でも深度が変わります。
+    // 許容量が小さいと隣接画素が却下されてブラーが効かないため、
+    // 深度差に応じて重みを連続的に下げます。
     const float depthScale =
         max(centerDepth * 0.08f, 0.05f);
 
@@ -1056,16 +1052,16 @@ float4 PSAmbientOcclusionBlur(ScreenVertex input) : SV_Target
 
 // 求めた遮蔽をカラーへ掛けます。AOは半解像度なので、ここで
 // バイリニア補間されながら拡大されます。
-// ---- 被写界深度（DoF） ----
+// 被写界深度（DoF）
 //
 // 3パスです。
-//   ①半解像度へ「色」と「符号付きCoC」を書き出す
-//   ②半解像度で円形にぼかす
-//   ③フル解像度で、CoCの大きさに応じて元の絵と混ぜる
+//   (1)半解像度へ「色」と「符号付きCoC」を書き出す
+//   (2)半解像度で円形にぼかす
+//   (3)フル解像度で、CoCの大きさに応じて元の絵と混ぜる
 //
 // 半解像度でぼかすのは、同じ見た目のぼけを1/4のコストで作れる
 // からです。ぼけた絵に細部は残らないので、解像度を落としても
-// 失うものがありません。逆に③をフル解像度で行うのは必須で、
+// 失うものがありません。逆に(3)をフル解像度で行うのは必須で、
 // ピントが合っている面をここで元の絵から取り直します。
 
 // 深度（0-1）からビュー空間のZ（カメラからの距離）へ戻します。
@@ -1098,7 +1094,7 @@ float DepthOfFieldViewDepth(float depth)
 // 距離の差をそのまま使うと、この非対称さが出ずに「奥だけ延々と
 // ぼける」不自然な絵になります。
 //
-// 符号を持たせているのは、②のにじみの向きを決めるためです。深度を
+// 符号を持たせているのは、(2)のにじみの向きを決めるためです。深度を
 // もう1枚読まずに前後を判定できます。
 float DepthOfFieldSignedCircleOfConfusion(float viewDepth)
 {
@@ -1134,7 +1130,7 @@ float DepthOfFieldSignedCircleOfConfusion(float viewDepth)
         * saturate(relative * max(DepthOfFieldParameters.z, 0.0f));
 }
 
-// ①半解像度へ色とCoCを書き出します。
+// (1)半解像度へ色とCoCを書き出します。
 //
 // 半解像度の画素の中心はフル解像度の4画素のちょうど角に当たるので、
 // 色はバイリニア1回でその4画素の平均になります（追加のタップは
@@ -1144,8 +1140,8 @@ float DepthOfFieldSignedCircleOfConfusion(float viewDepth)
 // 奥の間のどこか」という存在しない距離になり、それがたまたま焦点面に
 // 当たると輪郭沿いだけCoCが0になります。すると奥のぼけた背景に、
 // 手前の物の形をした鋭い輪が残ります。そこで4画素を個別に読み、
-// **絶対値が最大のCoC**を採ります。こちらへ寄せた場合の誤差は
-// 「手前の物の縁が半画素ぶん余分にぼける」ですが、その画素は③で
+// 絶対値が最大のCoCを採ります。こちらへ寄せた場合の誤差は
+// 「手前の物の縁が半画素ぶん余分にぼける」ですが、その画素は(3)で
 // フル解像度の鋭い色に戻されるため、画面には出てきません。
 float4 PSDepthOfFieldPrepare(ScreenVertex input) : SV_Target
 {
@@ -1177,7 +1173,7 @@ float4 PSDepthOfFieldPrepare(ScreenVertex input) : SV_Target
     return float4(color, signedCoc);
 }
 
-// ②半解像度で円形にぼかします。
+// (2)半解像度で円形にぼかします。
 //
 // サンプル点は黄金角の螺旋で置きます。リング数とリングごとの点数を
 // 決め打ちするやり方と違い、サンプル数を何個にしても円の中へ均等に
@@ -1233,12 +1229,8 @@ float4 PSDepthOfFieldBlur(ScreenVertex input) : SV_Target
             uv,
             0.0f);
 
-        // にじみの向き。手前のもの（CoCが負）は奥へ自由にはみ出します
-        // ——本物のぼけと同じで、ピントの合った被写体の前にある枝は
-        // 被写体に覆いかぶさります。逆に、奥のものが鋭い手前へ
-        // はみ出すのは間違いで、そのままにすると輪郭の外側に薄い霧を
-        // まとった「切り抜き」のような絵になります。そちら向きは
-        // 中心のぼけ具合までに抑えます。
+        // 手前のぼけ（CoCが負）は奥へ広げます。奥のぼけは、焦点の
+        // 合った手前の輪郭へにじまないよう中心画素のCoCまでに抑えます。
         const float tapCoc = abs(tap.a);
         const float spread = tap.a < 0.0f
             ? tapCoc
@@ -1250,13 +1242,13 @@ float4 PSDepthOfFieldBlur(ScreenVertex input) : SV_Target
         total += tap.rgb * weight;
         totalWeight += weight;
     }
-    // CoCはそのまま持ち回します（③はフル解像度で読み直すので
+    // CoCはそのまま持ち回します（(3)はフル解像度で読み直すので
     // 使いませんが、デバッグでこのテクスチャを覗いたときに
     // 意味のある値が入っている方が追いやすいためです）。
     return float4(total / totalWeight, center.a);
 }
 
-// ③フル解像度で合成します。
+// (3)フル解像度で合成します。
 float4 PSDepthOfFieldComposite(ScreenVertex input) : SV_Target
 {
     const float4 sharp = SourceTexture.Sample(
@@ -1284,7 +1276,7 @@ float4 PSDepthOfFieldComposite(ScreenVertex input) : SV_Target
         sharp.a);
 }
 
-// ---- モーションブラー（カメラの動きによるブレ） ----
+// モーションブラー（カメラの動きによるブレ）
 //
 // TAAの再投影とまったく同じ計算で「この画素が前フレームどこに写って
 // いたか」を求め、今の位置との差（＝画面上の移動量）に沿ってサンプル
@@ -1379,9 +1371,9 @@ float4 PSMotionBlur(ScreenVertex input) : SV_Target
     return float4(total / totalWeight, source.a);
 }
 
-// ---- 自動露出の明るさ測定 ----
+// 自動露出の明るさ測定
 //
-// トーンマップ前のHDRから輝度の**対数**を書き出します。以降の平均は
+// トーンマップ前のHDRから輝度の対数を書き出します。以降の平均は
 // GenerateMipsに任せ、いちばん小さいミップ（1x1）をCPUが読みます。
 //
 // 対数で平均するのは、明るさの感じ方が比で決まるためです。線形の平均を
@@ -1390,7 +1382,7 @@ float4 PSMotionBlur(ScreenVertex input) : SV_Target
 //
 // 出力先は1/4解像度で、1画素がフル解像度の4x4を覆います。バイリニアの
 // 1タップはちょうど2x2の平均になるので、2x2の位置へ4タップ置けば
-// 16画素の正確な平均になります。**取りこぼしを作らないのが要点**で、
+// 16画素の平均になります。端の画素を取りこぼさないよう、
 // 間引くと細かい明滅がそのまま露出のちらつきになります。
 float4 PSLuminance(ScreenVertex input) : SV_Target
 {
@@ -1420,7 +1412,7 @@ float4 PSLuminance(ScreenVertex input) : SV_Target
     return log(max(average, 1e-4f)).xxxx;
 }
 
-// ---- ボリュメトリックライト（光の筋 / god ray） ----
+// ボリュメトリックライト（光の筋）
 //
 // カメラから各ピクセルへ向かうレイに沿って進み、「その点に光が
 // 届いているか」をシャドウマップで判定して足し込みます。光が
@@ -1590,10 +1582,9 @@ float4 PSTemporalAntiAliasing(ScreenVertex input)
     const float3 current =
         SourceTexture.Sample(LinearSampler, input.uv).rgb;
 
-    // 深度が最遠（空・何も描かれていない）でも打ち切りません。
-    // 無限遠の点として再投影すれば正しく前フレームへ写るからです。
-    // ここで打ち切ると輪郭の空側だけ混ざらず、エッジの片側しか
-    // 均されません（2026-08-05に段差が半分しか減らない原因でした）。
+    // 深度が最遠（空や未描画）でも打ち切りません。無限遠の点として
+    // 再投影すると、前フレームの正しい位置へ写ります。ここで打ち切ると
+    // 輪郭の空側が混ざらず、エッジの片側だけが平滑化されます。
     const float depth =
         DepthTexture.Sample(LinearSampler, input.uv).r;
 
@@ -1693,7 +1684,7 @@ float4 PSCopyMirrorX(ScreenVertex input) : SV_Target
         float2(1.0f - input.uv.x, input.uv.y));
 }
 
-// ---- IBL事前フィルタ（スカイキューブマップ設定時に1回だけ実行） ----
+// IBL事前フィルター（スカイキューブマップ設定時に1回だけ実行）
 
 // キューブ面のUVから方向ベクトルを作ります（D3D11の面順）。
 float3 CubeDirection(uint face, float2 uv)

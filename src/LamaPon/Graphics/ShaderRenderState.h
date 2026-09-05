@@ -64,7 +64,7 @@ namespace LamaPon
     // 書き込み先のアルファを一切汚しません（Alpha: Zero+One）。
     // シーンバッファのアルファは後段（被写界深度のCoC等）が意味を
     // 持って読むため、加算描画がアルファを積み上げると後段の
-    // フレームが黒く巻き込まれます（CardBattleで実際に発生）。
+    // フレームが暗くなります。
     // 失敗時はnullptrを返します。
     [[nodiscard]] Microsoft::WRL::ComPtr<ID3D11BlendState>
         CreateAdditiveBlendPreservingAlpha(ID3D11Device* device);

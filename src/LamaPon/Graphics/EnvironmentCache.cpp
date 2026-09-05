@@ -120,8 +120,8 @@ namespace
         return total;
     }
 
-    // SRVの元テクスチャをSTAGINGへコピーし、詰めた形で読み出します。
-    // 失敗はfalse（呼ぶ側が保存を諦めます）。
+    // SRVの元テクスチャをSTAGINGへコピーし、連続したデータとして
+    // 読み出します。失敗時はfalseを返します。
     [[nodiscard]] bool ReadCube(
         ID3D11Device* const device,
         ID3D11DeviceContext* const context,

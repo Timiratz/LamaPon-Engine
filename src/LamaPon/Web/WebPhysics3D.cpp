@@ -281,8 +281,7 @@ namespace LamaPon::Web
 
     void Physics3D::ResolveStaticBoxes(Body& body) noexcept
     {
-        // dynamic=falseのBodyは単純な静的AABBとして扱います。
-        // Browser Runtimeの決定性を保ちつつTrack Wallを表現できます。
+        // dynamic=falseの物体は静的なAABBとして衝突を解決します。
         for (const Body& obstacle : m_bodies)
         {
             if (!obstacle.active || obstacle.desc.dynamic || &obstacle == &body)

@@ -91,17 +91,12 @@ namespace
         }
     }
 
-    // 書き出したLamaPonRuntime.dllの鍵スロットを、このゲームだけの
-    // 鍵で上書きします（詳しい並びはCrypto.hを参照）。
-    //
-    // ゲームごとに鍵を変えるのが目的です。エンジン共通の鍵のままだと、
-    // 1本のゲームから鍵を抜いた人が、他のすべてのゲームのassets.tpakを
-    // そのまま開けてしまいます。しかもエンジンは公開予定なので、
-    // 共通鍵ならソースを読むだけで済みます。
-    //
-    // 見つからなければ書き出しごと失敗させます。ここを黙って
-    // 素通りさせると、既定の鍵（＝公開されている鍵）で暗号化された
-    // ゲームが出荷されてしまいます。
+    // 配布物ごとに生成した鍵を、書き出したLamaPonRuntime.dllの
+    // 鍵スロットへ埋め込みます（配置はCrypto.hを参照）。
+    // 共通鍵はソースから確認できるため、鍵を書き出しごとに分けることで、
+    // 一つの鍵が別の配布物へ流用されるのを防ぎます。
+    // 鍵スロットが見つからない場合は、既定鍵を含む配布物を生成しないよう
+    // 書き出しを中止します。
     void EmbedArchiveKey(
         const std::filesystem::path& runtimeLibrary,
         const LamaPon::Crypto::AesKey& key)
@@ -156,7 +151,7 @@ namespace
     }
 
     // 配布物へ同梱する（アーカイブへ入らない）ファイルを、その場で
-    // 暗号化します。事前コンパイル済みシェーダーが対象です——
+    // 暗号化します。事前コンパイル済みシェーダーが対象です。
     // HLSLソースを外しても、DXBCがそのまま置いてあれば逆アセンブルで
     // 中身は読めてしまいます。
     std::size_t SealFilesInDirectory(
@@ -899,10 +894,9 @@ namespace LamaPon
                     stagingDirectory
                         / gameModule.filename());
 
-                // Project game modules can depend on project-local runtime
-                // libraries (middleware, native gameplay runtimes, and so
-                // on). Keep those DLLs beside the exported executable so the
-                // Windows loader can resolve them without machine-wide setup.
+                // Game Moduleが参照するプロジェクト固有のDLLを実行ファイルの
+                // 隣へコピーし、Windowsローダーが同じ場所から解決できる
+                // ようにします。
                 for (const auto& entry :
                     std::filesystem::directory_iterator(
                         gameModule.parent_path()))
@@ -952,9 +946,8 @@ namespace LamaPon
                     archiveKey,
                     skippedExtensions));
 
-            // シェーダーを先にコンパイルして同梱します。これが無いと、
-            // プレイヤーの初回起動で全シェーダーのコンパイル（実測で
-            // 53本・約3.5秒）をまるごと待たせることになります。
+            // シェーダーを事前にコンパイルして同梱し、プレイヤーの
+            // 初回起動時に発生するコンパイル待ちを避けます。
             //
             // 入口は総当たりです。VSOutlineのような「あれば使う」枠は
             // 持っていないシェーダーのほうが多く、その失敗も覚えないと

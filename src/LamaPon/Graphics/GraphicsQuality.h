@@ -52,7 +52,8 @@ namespace LamaPon
         // 半解像度で計算し、後段のブラーで均すため、少なめでも
         // 実用になります（Low=8, Medium=12, High=16, Ultra=24）。
         std::uint32_t ambientOcclusionSampleCount{ 16 };
-        // 0 means unlimited. VSync can still impose the display refresh rate.
+        // 0なら上限なしです。VSyncによってディスプレイの更新頻度に
+        // 制限される場合があります。
         std::uint32_t targetFrameRate{};
         // PNG/JPG等の読み込み時にBC1/BC3へランタイム圧縮して
         // VRAM使用量を約1/4〜1/8にします（画質は少し低下）。

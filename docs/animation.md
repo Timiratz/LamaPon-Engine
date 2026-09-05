@@ -5,7 +5,7 @@ Transformアニメーション、スケルタルアニメーション、Animator
 
 [← ドキュメント一覧へ戻る](index.md)
 
-## 1分でためす（上下にふわふわ動く床）
+## 1分で試す（上下にふわふわ動く床）
 
 1. 動かしたいGameObjectへ「**Transformアニメーター**」を追加します。
 2. Inspectorの「**新規Animation Clipを作成...**」でClipを作り、
@@ -27,7 +27,7 @@ if (animator != nullptr)
 
 2Dスプライトのコマ送りアニメーションはこのページではなく、[UIと2D機能のSprite Animator](ui-2d.md)を使います。
 
-## Animation
+## Transform Animation Clip
 
 `.animation.json`は位置、回転、拡縮を持つTransformキーフレームを保存する再利用可能なAnimation Clipです。
 位置と拡縮は線形補間し、回転はラジアン単位で角度をまたぐ場合も最短方向に補間します。

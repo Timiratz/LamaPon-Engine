@@ -521,12 +521,8 @@ int main()
         CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     const bool uninitializeCom = SUCCEEDED(comResult);
 
-    // RunTest()'s D3D/COM-holding locals (device, context, AssetManager,
-    // the imported model's GPU resources) must all be destroyed before
-    // CoUninitialize() runs, or their destructors release COM interfaces
-    // into an already-torn-down apartment. Keeping them inside a function
-    // that returns before we touch COM again (rather than a nested scope
-    // in main) guarantees that ordering.
+    // デバイス、コンテキスト、AssetManager、モデルのGPUリソースはCOMを
+    // 保持するため、RunTest内で破棄してからCoUninitializeを呼びます。
     int exitCode = 1;
     try
     {

@@ -6,7 +6,7 @@
 // ラベル・矩形・状態」を毎フレーム記録します。リモート操作モードの
 // dump / click-label コマンドがこれを読みます。
 //
-// **このファイルはDearImGuiターゲットに入れます。** フックのシンボルは
+// このファイルはDear ImGuiターゲットに入れます。フックのシンボルは
 // imgui.obj から参照されるので、エディター側のライブラリに置くと
 // imguiだけ使うターゲット（LamaPonHub）がリンクできなくなります。
 #include "LamaPon/Editor/UiRecorder.h"
@@ -81,7 +81,7 @@ namespace LamaPon::UiRecorder
     }
 }
 
-// ---- ここからImGuiが要求するフックの実体 ----
+// ImGuiが要求するフックの実体
 
 void ImGuiTestEngineHook_ItemAdd(
     ImGuiContext* ctx,

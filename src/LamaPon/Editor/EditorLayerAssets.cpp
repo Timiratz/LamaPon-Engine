@@ -1,4 +1,3 @@
-// EditorLayerのアセットブラウザとアセット操作（作成/改名/削除/移動/参照リマップ/インポート/C++スクリプトビルド）をまとめた翻訳単位です。
 #include "LamaPon/Editor/EditorLayer.h"
 
 #include "LamaPon/Editor/EditorLayerShared.h"
@@ -1142,9 +1141,7 @@ namespace LamaPon
                 std::filesystem::weakly_canonical(
                     m_graphics.Assets().AssetRoot().parent_path());
             const auto executableDirectory = ExecutableDirectory();
-            // コマンドの構築はLamaPonCliと共有です（GameModuleBuilder）。
-            // ここに直接書いていた頃は「エディターだけ通る組み立て」に
-            // なる恐れがありました。
+            // LamaPonCliと同じGameModuleBuilderでコマンドを構築します。
             const auto buildCommand =
                 MakeGameModuleBuildCommand(
                     projectRoot,
@@ -1260,12 +1257,8 @@ namespace LamaPon
         }
 
         const double now = ImGui::GetTime();
-        // 走査は間隔を空けて抑えます（毎フレームだとディスクを
-        // 舐め続けることになるため）。間隔は前回の実測コストから
-        // 決めます: 走査に要した時間の20倍（0.5〜30秒）空けるので、
-        // ローカルの小さなプロジェクトは従来どおり0.5秒間隔、
-        // WebDAV上の大きなプロジェクト（1回約1秒）では20秒間隔まで
-        // 自動で下がり、走査が走査を追いかける状態になりません。
+        // ディスク負荷を抑えるため、直前の走査時間を基に次の間隔を
+        // 0.5〜30秒の範囲で調整します。
         if (now - m_lastScriptScanAt >= m_scriptScanIntervalSeconds)
         {
             m_lastScriptScanAt = now;
@@ -1290,10 +1283,9 @@ namespace LamaPon
                     m_graphics.Assets().AssetRoot().parent_path());
                 if (state.buildRequired)
                 {
-                    // 「1.5秒のデバウンスを飛ばして即ビルド」の意図だが、
-                    // 起動直後は now(起動からの秒数) が1.5未満のため負に
-                    // なり、「未検出」センチネル(<=0)に飲まれて初回ビルドが
-                    // 一度も発火しなかった。最低でも正の値を入れる
+                    // 初回ビルドではデバウンス待ちを省きます。
+                    // 起動直後も「未検出」を表す0と区別できるよう、
+                    // 検出時刻には必ず正の値を設定します。
                     m_scriptChangeDetectedAt = std::max(now - 1.5, 0.000001);
                     const char* reason =
                         "C++ Scriptが更新されているためGame Moduleをビルドします";

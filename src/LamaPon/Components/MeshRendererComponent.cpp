@@ -763,9 +763,8 @@ namespace LamaPon
     bool MeshRendererComponent::CanDrawTessellatedPatch()
         const noexcept
     {
-        // 形状の名前ではなく「制御点を作れたか」で判断します。
-        // 対応形状を増やすときに、ここを直し忘れて無言で
-        // 効かなくなるのを避けるためです。
+        // 形状名への個別対応を不要にするため、テセレーション対応は
+        // 入力レイアウトと制御点バッファの生成結果で判定します。
         return m_effect != nullptr
             && m_effect->HasTessellation()
             && m_inputLayout
@@ -803,11 +802,8 @@ namespace LamaPon
         m_effect->SetTessellationDrawEnabled(false);
         context->HSSetShader(nullptr, nullptr, 0);
         context->DSSetShader(nullptr, nullptr, 0);
-        // トポロジーもここで戻します。パッチのまま抜けると、
-        // 次に描く側が自分で設定していなかった場合に「ハル無しで
-        // パッチを描く」不正な状態になります。今の描画経路は
-        // どれも自分で設定しているので現状は問題になりませんが、
-        // その前提が崩れた瞬間に無言で壊れる置き方をやめます。
+        // ハル／ドメインシェーダーを解除した後は三角形トポロジーへ戻し、
+        // 後続の描画がパッチトポロジーを引き継がないようにします。
         context->IASetPrimitiveTopology(
             D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     }
@@ -849,16 +845,13 @@ namespace LamaPon
             compileError,
             m_material.ShaderKeywords());
         m_shaderError = std::move(compileError);
-        // テセレーションが効くのは四角パッチに割れる形状（Plane・
-        // Cube）だけです。Sphere／Cylinderでは制御点を作れないので
-        // HSMain/DSMainを使えません。しかもテセレーション前提の
-        // 頂点シェーダーは単体では成立せず、**何も描かれなく**
-        // なります（検証で確認）。消えたものの原因を探すのは
-        // 壊れた色を見るより難しいので、代役を出します。
+        // テセレーションは四角パッチ用の制御点を生成できるPlaneとCubeに
+        // 対応します。Sphere／CylinderではHSMain/DSMainを実行できず、
+        // テセレーション用頂点シェーダーだけでは描画が成立しません。
+        // 非対応形状では描画消失を避けるため代替シェーダーを使用します。
         //
-        // 判定は形状の名前ではなく制御点の有無で行います。対応形状を
-        // 増やしたときに、ここを直し忘れて「作ったのに使われない」に
-        // ならないようにするためです。
+        // 対応判定には形状名ではなく制御点バッファの有無を使用し、
+        // 新しい対応形状にも同じ条件を適用します。
         if (m_shaderError.empty()
             && selected->HasTessellation()
             && !m_tessellationPatches)
@@ -1045,7 +1038,7 @@ namespace LamaPon
         }
 
         // ジオメトリシェーダーを束ねたまま抜けると、スプライトや
-        // ポスト処理など**GSを設定しない経路まで巻き込みます**
+        // ポスト処理などGSを設定しない経路まで巻き込みます
         // （ハル／ドメインとまったく同じ理由）。抜け道が多い関数なので
         // RAIIで外します。
         const GeometryShaderScope geometryScope{
@@ -1095,27 +1088,19 @@ namespace LamaPon
                 Owner().WorldMatrix(),
                 view,
                 projection);
-            // 深度パスは長らくマテリアルを渡していませんでした
-            // （深度だけなら色は要らないため）。ですが**頂点の位置が
-            // マテリアルのカスタム値で決まる**Shaderがあります――
-            // テセレーションの分割量と起伏、ジオメトリシェーダーの
-            // 押し出し量。渡さないと直前に描いた別のオブジェクトの値で
-            // 変形し、プリパスの深度がメインパスとずれて、
-            // **本体が消えたり虫食いになったり**します（両方とも
-            // 検証で踏みました）。色を使わない経路でも常に渡します。
+            // 頂点位置がマテリアルのカスタム値に依存するShaderがあるため、
+            // 深度パスにもマテリアルを渡します。テセレーションの起伏や
+            // ジオメトリシェーダーの押し出し量をメインパスと一致させます。
             m_effect->SetMaterial(m_material);
             m_effect->SetDepthOnlyEnabled(true);
             if (CanDrawTessellatedPatch())
             {
-                // 影も深度も、分割**後**の形で書きます。板のまま
+                // 影も深度も、分割後の形で書きます。板のまま
                 // 書くと、起伏が影を落とさず自分にも影が乗りません。
                 //
-                // 状態は自分で設定します。**深度パスは誰も設定して
-                // いません**――普通のメッシュは
-                // GeometricPrimitive::Drawが自分で設定するので
-                // 成り立っていただけです。ここで設定しないと、直前の
-                // ポスト処理が残した「深度を書かない」状態のまま描き、
-                // 影が1画素も書かれません（検証で確認）。
+                // この経路はGeometricPrimitive::Drawを通らないため、
+                // 描画状態を明示します。直前のパスが残した状態にかかわらず、
+                // 深度と影を書き込める状態へ設定します。
                 // 分割後の三角形の向きは板の指定に依らないので、
                 // 影は両面で書きます。
                 auto* context = m_graphics->Context();
@@ -1176,9 +1161,7 @@ namespace LamaPon
             auto& states = m_graphics->States();
             constexpr float blendFactor[4]{};
             // 描画状態はShaderの宣言（LAMAPON_RENDER_STATE）に
-            // 従います。以前はここだけ「両面・深度書き込みなし・
-            // 半透明」で固定していたため、**不透明な地形が作れず**、
-            // テセレーションが実質「水面専用」になっていました。
+            // 従い、不透明な地形を含む各マテリアルの設定を反映します。
             const auto& renderState = m_effect->RenderState();
             if (renderState.declared)
             {
@@ -1431,8 +1414,8 @@ namespace LamaPon
         ApplyReflectionProbe();
         m_effect->SetInstancingEnabled(true);
         auto* context = m_graphics->Context();
-        // バッチキーにはShaderが含まれるため、バッチ内の宣言は必ず
-        // 同じです。したがってバッチ単位で1回適用すれば足ります。
+        // バッチキーにはShaderが含まれるため、バッチ内の宣言は同じです。
+        // 描画状態はバッチごとに1回だけ適用します。
         const auto& renderState = m_effect->RenderState();
         m_primitive->DrawInstanced(
             m_effect,

@@ -97,7 +97,7 @@ namespace LamaPon
         // 足してからApplyToneMappingを呼んでください。
         //
         // 測定はGPU、順応の計算はCPUです。読み出すのは1x1ミップの
-        // 4バイトだけで、しかも**1フレーム遅れ**で読みます（同じ
+        // 4バイトだけで、しかも1フレーム遅れで読みます（同じ
         // フレームで読むとGPUの完了待ちで必ず止まります）。目の順応
         // 自体が時間をかける表現なので、1フレームの遅れは見えません。
         [[nodiscard]] float UpdateAutoExposure(
@@ -236,7 +236,7 @@ namespace LamaPon
                 : nullptr;
         }
         // Compute Shaderから表示用テクスチャへ直接書けるようにする
-        // かどうか。**Resizeより前に**呼んでください（バインド
+        // かどうか。Resizeより前に呼んでください（バインド
         // フラグは作成時にしか決められないため）。既定はfalseで、
         // 通常の描画先には余計なフラグを付けません。
         void SetComputeWritable(bool value) noexcept
@@ -282,7 +282,7 @@ namespace LamaPon
         Microsoft::WRL::ComPtr<ID3D11DepthStencilView> m_depthStencilView;
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
             m_depthShaderResourceView;
-        // SSAO用（半解像度）。①遮蔽を求める先と②ブラーの出力先の
+        // SSAO用（半解像度）。(1)遮蔽を求める先と(2)ブラーの出力先の
         // 2枚を使います。AOは低周波なので半分の解像度で十分で、
         // 計算量が1/4になります。1チャンネルなので1080pでも
         // 2枚あわせて約1MBです。
@@ -315,9 +315,10 @@ namespace LamaPon
             m_streakBlurShaderResourceView;
         std::uint32_t m_streakWidth{};
         std::uint32_t m_streakHeight{};
-        // 被写界深度の作業用（半解像度）。①色とCoCの書き出し先と
-        // ②ぼかしの出力先で2枚使います。ぼけた絵に細部は残らないので
-        // 半解像度で足り、計算量が1/4になります。RGBA16Fなので
+        // 被写界深度の作業用です。(1)色とCoCの書き出し先と、
+        // (2)ぼかしの出力先で半解像度のテクスチャを2枚使います。
+        // ぼけた絵では細部を保持する必要がないため、計算量が1/4になります。
+        // RGBA16Fなので
         // 1080pでも2枚あわせて約8MBです。
         Microsoft::WRL::ComPtr<ID3D11Texture2D>
             m_depthOfFieldTexture;

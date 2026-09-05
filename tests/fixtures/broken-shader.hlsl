@@ -1,7 +1,5 @@
-// Deliberately broken shader for the error placeholder test.
-// わざとコンパイルに失敗させるための見本です。直さないでください。
-// （存在しない関数を呼びます。構文は通るので、コンパイラが
-//   「undeclared identifier」で落ちる形にしています）
+// エラー時の代替表示を検証するため、コンパイルに失敗するシェーダーです。
+// 存在しない関数を呼び、undeclared identifierエラーを発生させます。
 
 cbuffer ObjectBuffer : register(b0)
 {

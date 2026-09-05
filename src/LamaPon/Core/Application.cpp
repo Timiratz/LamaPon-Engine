@@ -86,16 +86,15 @@ namespace LamaPon
         }
         m_lastRenderFailure = message;
         Logger::Instance().Error(
-            "このフレームの描画を飛ばしました。"
-            "アプリケーションは動き続けます——原因を直せば"
-            "そのまま描画が戻ります: "
+            "描画に失敗したため、このフレームをスキップしました。"
+            "アプリケーションは動作を継続します: "
             + message);
     }
 
     Application::~Application()
     {
         Logger::Instance().Info(
-            "LamaPon application is shutting down.");
+            "LamaPonを終了します。");
         // 先に登録を外します。破棄済みのPlayerPrefsへScriptが
         // 触れないようにするためです。
         SetActivePlayerPrefs(nullptr);
@@ -106,13 +105,13 @@ namespace LamaPon
             {
                 m_playerPrefs->Save();
                 Logger::Instance().Info(
-                    "PlayerPrefs saved.");
+                    "PlayerPrefsを保存しました。");
             }
             catch (const std::exception& exception)
             {
                 Logger::Instance().Error(
                     std::string(
-                        "Could not save PlayerPrefs: ")
+                        "PlayerPrefsを保存できませんでした: ")
                     + exception.what());
             }
         }
@@ -133,10 +132,9 @@ namespace LamaPon
 
     void Application::Initialize(const HINSTANCE instance)
     {
-        // Shell dialogs used by the editor (folder browse, etc.)
-        // require the calling thread to be a single-threaded
-        // apartment; COINIT_MULTITHREADED made SHBrowseForFolderW
-        // hang indefinitely.
+        // エディターが使うフォルダー選択などのシェルダイアログは、呼び出し元の
+        // スレッドがシングルスレッドアパートメントであることを前提とします。
+        // COINIT_MULTITHREADEDではSHBrowseForFolderWが応答しなくなります。
         const HRESULT comResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
         if (SUCCEEDED(comResult))
         {
@@ -188,7 +186,7 @@ namespace LamaPon
                 executableDirectory
                     / L"LamaPon.log"));
         Logger::Instance().Info(
-            "LamaPon application initialized.");
+            "LamaPonを初期化しました。");
 
         const auto userData =
             UserDataDirectory(m_persistenceName);
@@ -210,8 +208,8 @@ namespace LamaPon
             m_playerPrefs->DeleteAll();
             Logger::Instance().Warning(
                 std::string(
-                    "PlayerPrefs could not be loaded; "
-                    "using empty preferences: ")
+                    "PlayerPrefsを読み込めないため、"
+                    "空の設定を使用します: ")
                 + exception.what());
         }
 
@@ -228,7 +226,7 @@ namespace LamaPon
         else
         {
             Logger::Instance().Info(
-                "Game Module loaded.");
+                "Game Moduleを読み込みました。");
         }
         m_scene = std::make_unique<Scene>(m_graphics);
     }
@@ -301,10 +299,10 @@ namespace LamaPon
                 }
                 catch (const std::exception& exception)
                 {
-                    // A device change can make the audio engine
-                    // throw while it recovers.
+                    // デバイス切り替え後の復旧中は、オーディオエンジンから
+                    // 例外が送出されることがあります。
                     Logger::Instance().Warning(
-                        std::string{ "Audio update failed: " }
+                        std::string{ "音声の更新に失敗しました: " }
                         + exception.what());
                 }
             }
@@ -362,15 +360,9 @@ namespace LamaPon
                 LAMAPON_PROFILE_SCOPE("Render");
                 if (m_layer)
                 {
-                    // **3Dの描画が失敗しても、エディターのUIは
-                    // 動かし続けます。** 以前はここで投げた例外が
-                    // main まで飛び、シェーダー1本の失敗で
-                    // エディターごと終了していました。プロジェクトが
-                    // 開けない＝直す手段も無い、という状態になります。
-                    //
-                    // UIさえ生きていれば、ユーザーはAsset Browserや
-                    // ログを見ながら**開いたまま**原因を直せます。
-                    // 直ればGraphicsDevice側が作り直して復帰します。
+                    // シーン描画の例外はここで処理し、エディターUIを
+                    // 継続します。ログを確認しながら原因を修正でき、
+                    // 修正後はGraphicsDeviceが描画資源を再作成します。
                     try
                     {
                         m_layer->RenderSceneViews();
@@ -385,9 +377,8 @@ namespace LamaPon
                 else
                 {
                     m_graphics.BeginFrame(m_clearColor);
-                    // 書き出したゲームでも同じです。絵が出ないのは
-                    // 困りますが、**落ちるよりは良い**——ログに理由が
-                    // 残り、ゲーム側の処理は動き続けます。
+                    // ゲーム実行時も描画失敗をログに記録し、更新処理を
+                    // 継続します。
                     try
                     {
                         m_graphics.BeginSceneComposition(
@@ -416,8 +407,8 @@ namespace LamaPon
                         }
                         else if (m_startupSplashScreenEnabled)
                         {
-                            // The startup logo is intentionally one-shot;
-                            // later scene loads use the normal loading UI.
+                            // 起動ロゴを表示するのは初回だけです。以降のシーン
+                            // 読み込みでは通常の読み込み画面を使います。
                             m_startupSplashScreenEnabled = false;
                         }
                         // F1でデバッグオーバーレイを表示します

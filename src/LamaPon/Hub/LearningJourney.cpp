@@ -228,12 +228,12 @@ namespace
     {
         using LamaPon::Hub::LearningStep;
         return {
-            "ゲームエンジニアとして成長する",
-            "C++を理解し、ゲームを作りながら、ゲームエンジニアとして成長できるゲームエンジン",
+            "ゲーム制作でC++を学ぶ",
+            "ゲームを作りながら、C++とエンジンの基本を学ぶコースです。",
             {
                 LearningStep{
-                    "play-first", "understand", "C++とSceneの関係を読む",
-                    "ゲームエンジニアとして、C++とエンジンの接点を最初に把握します。",
+                    "play-first", "understand", "C++とSceneの関係を知る",
+                    "SceneとC++コードのつながりを確認します。",
                     sampleSceneIncluded
                         ? "Main.scene.jsonとLearningPlayer.cppを開き、Player、Goal、Input Mover、NativeScriptがゲームのどこを担当するか確認します。"
                         : "起動SceneとLearningPlayer.cppを開き、GameObject、Component、C++ Scriptの関係を確認します。",
@@ -244,17 +244,17 @@ namespace
                 },
                 LearningStep{
                     "ask-why", "build", "C++をビルドして動かす",
-                    "C++の変更をビルドし、ゲームの動作へ反映する一連の工程を通します。",
+                    "C++の変更をビルドし、ゲームで動作を確認します。",
                     sampleSceneIncluded
-                        ? "Editorで再生し、Input Moverの設定とLearningPlayer.cppのUpdateが動作へどう関わるか確認します。"
-                        : "Editorで再生し、SceneのComponentとLearningPlayer.cppのUpdateが動作へどう関わるか確認します。",
+                        ? "Editorで再生し、Input Moverの設定とLearningPlayer.cppのUpdateが動作にどう関わるか確認します。"
+                        : "Editorで再生し、SceneのComponentとLearningPlayer.cppのUpdateが動作にどう関わるか確認します。",
                     sampleSceneIncluded
-                        ? "C++ Game Moduleをビルドし、変更がゲームへ反映されることを確認できた。"
-                        : "C++ Game Moduleをビルドし、変更がゲームへ反映されることを確認できた。",
+                        ? "C++ Game Moduleをビルドし、変更がゲームに反映されることを確認できた。"
+                        : "C++ Game Moduleをビルドし、変更がゲームに反映されることを確認できた。",
                     "planner", 8, { "assets/" + startupScene }
                 },
                 LearningStep{
-                    "understand-loop", "understand", "ゲームループを読む",
+                    "understand-loop", "understand", "ゲームループを理解する",
                     "C++のUpdateとdeltaTimeが毎フレームの動きを作ることを理解します。",
                     "LearningPlayer.cppを開き、Start、Update、deltaTime、Inputの4か所をコメントと一緒に読みます。",
                     "Updateがいつ呼ばれ、deltaTimeを掛ける理由を自分の言葉で説明できた。",
@@ -262,46 +262,46 @@ namespace
                     { "assets/scripts/LearningPlayer.cpp" }
                 },
                 LearningStep{
-                    "modify-code", "modify", "C++で手触りを変える",
-                    "小さな変更を保存・ビルド・実行まで自分で通します。",
+                    "modify-code", "modify", "C++で動きを変える",
+                    "値を変更し、保存、ビルド、実行の流れを試します。",
                     sampleSceneIncluded
                         ? "LearningPlayer.cppのSpinSpeedまたはBoostScaleを変更して保存し、再生中の回転やSpaceキーの反応を比べます。"
-                        : "Cubeを1つ作り、LearningPlayer.cppを保存・ビルドしてそのCubeへ付けます。SpinSpeedを変更して回転を比べます。",
+                        : "Cubeを1つ作り、LearningPlayer.cppを保存・ビルドしてそのCubeに付けます。SpinSpeedを変更して回転を比べます。",
                     sampleSceneIncluded
-                        ? "変更前後の違いを確認し、元へ戻す方法も分かった。"
+                        ? "変更前後の違いを確認し、元に戻す方法も分かった。"
                         : "自分で作ったCubeがC++のUpdateによって回転した。",
                     "engineer", 15,
                     { "assets/scripts/LearningPlayer.cpp" }
                 },
                 LearningStep{
-                    "design-look", "modify", "見た目と伝わり方を変える",
-                    "操作感だけでなく、色・光・カメラもゲーム体験を作ると知ります。",
+                    "design-look", "modify", "見た目を調整する",
+                    "色、光、カメラが見やすさや雰囲気にどう影響するか確認します。",
                     sampleSceneIncluded
                         ? "Player、Goal、Directional Light、Main Cameraのうち2つ以上をInspectorで変更し、遊びやすさを比較します。"
                         : "色、Directional Light、Main Camera、配置のうち2つ以上をInspectorで変更し、見やすさを比較します。",
-                    "自分の変更が見やすさや雰囲気へ与えた効果を説明できた。",
+                    "変更によって見やすさや雰囲気がどう変わったか説明できた。",
                     "designer", 12, { "assets/" + startupScene }
                 },
                 LearningStep{
-                    "plan-rule", "modify", "ルールを一つ設計する",
-                    "実装前に目的・制約・成功条件を言葉にするプランナーの仕事を体験します。",
-                    "learning/design-note.mdへ30秒で遊べる追加ルールを書き、シーンへObstacleかGoalを1つ追加します。",
+                    "plan-rule", "modify", "ルールを1つ考える",
+                    "実装前に目的、制約、成功条件を整理します。",
+                    "learning/design-note.mdに30秒で遊べる追加ルールを書き、シーンにObstacleかGoalを1つ追加します。",
                     "誰が何をすると成功か、第三者にも読めるルールになった。",
                     "planner", 15,
                     { "learning/design-note.md", "assets/" + startupScene }
                 },
                 LearningStep{
-                    "verify-share", "understand", "再現して確かめる",
-                    "自分のPCだけで動く状態を避け、制作手順を再現可能にします。",
+                    "verify-share", "understand", "別の環境でも確かめる",
+                    "別のPCでも同じ手順で確認できる状態にします。",
                     "LamaPonCliでlearn doctor、validate、buildを実行し、エラーがあればJSONレポートから原因を直します。",
                     "doctorの必須項目とScene検証が成功し、変更したC++もビルドできた。",
                     "engineer", 10,
                     { "learning/journey.json", "LEARNING.md" }
                 },
                 LearningStep{
-                    "choose-path", "choose", "次に伸ばす力を決める",
-                    "ゲームを作り続けながら、次に伸ばす力と取り組みを具体化します。",
-                    "C++、ゲーム制作、ゲームエンジニアとしての実践、エンジンのサポートのうち、次に取り組むものを1つ決めてlearning/design-note.mdへ書きます。",
+                    "choose-path", "choose", "次に学ぶことを決める",
+                    "次に取り組む内容を1つ決めます。",
+                    "C++、ゲーム制作、エンジンの仕組みのうち、次に取り組むものを1つ決めてlearning/design-note.mdに書きます。",
                     "次に作る機能や改善内容を1つ決めた。",
                     "explorer", 5,
                     { "learning/design-note.md" }
@@ -316,32 +316,32 @@ namespace
         const bool sampleSceneIncluded)
     {
         return "# " + projectName + " 学習ガイド\n\n"
-            "このプロジェクトは、C++を理解し、実際にゲームを作りながら、ゲームエンジニアとして成長するための教材です。\n\n"
-            "## LamaPonが目指す4つの軸\n\n"
-            "- **ゲームエンジニアを育てる**\n"
-            "- **C++を理解する**\n"
-            "- **実際にゲームを作る**\n"
-            "- **ゲームエンジンのサポートを充実させる**\n\n"
+            "このプロジェクトでは、ゲームを作りながらC++とエンジンの基本を学びます。\n\n"
+            "## 学ぶこと\n\n"
+            "- **ゲーム制作の流れを知る**\n"
+            "- **C++の基礎を理解する**\n"
+            "- **ゲームのルールや見た目を変更する**\n"
+            "- **エンジンの仕組みと検証方法を知る**\n\n"
             "## 最初の5分\n\n"
             "1. LamaPon Editor上部の再生ボタンを押し、現在のゲームを動かします。\n"
             + (sampleSceneIncluded
                 ? std::string{
-                    "2. Game Viewをクリックし、WASD（またはゲームパッド左スティック）で青いPlayerを黄色いGoalへ動かします。\n"
+                    "2. Game Viewをクリックし、WASD（またはゲームパッド左スティック）で青いPlayerを黄色いGoalまで動かします。\n"
                     "3. Space（またはゲームパッドA）を押し、Playerの大きさが変わることを確認します。\n\n"
                     "C++ Game Moduleの初回ビルド中でも、移動は組み込みのInput Moverで試せます。Spaceの反応がまだ無い場合はビルド完了を待つか、`LearningPlayer.cpp`を保存してください。\n\n" }
                 : std::string{
                     "2. 起動Sceneと`LearningPlayer.cpp`を開き、GameObject、Component、C++ Scriptの関係を確認します。\n"
-                    "3. C++を試す段階ではCubeへ`LearningPlayer.cpp`を付けます。保存するとGame Moduleが自動ビルドされます。\n\n" })
+                    "3. C++を試す段階ではCubeに`LearningPlayer.cpp`を付けます。保存するとGame Moduleが自動ビルドされます。\n\n" })
             + "## なぜ動くのか\n\n"
             "- `assets/" + startupScene + "`: GameObjectとComponentの組み合わせ。\n"
             + (sampleSceneIncluded
                 ? std::string{
-                    "- `Input Mover`: 名前付き入力を毎フレーム位置へ変換する組み込みComponent。\n" }
+                    "- `Input Mover`: 名前付き入力を毎フレームの移動量に変換する組み込みComponent。\n" }
                 : std::string{})
             + "- `assets/scripts/LearningPlayer.cpp`: `Update(deltaTime)`で回転とSpace入力を扱うプロジェクト側のC++。\n"
             "- LamaPon Runtime: ゲームループを回し、全ComponentのUpdate、描画、入力を同じ順序で呼ぶ部分。\n\n"
             "## 進め方\n\n"
-            "進捗は`.lamapon/learning-progress.json`へPCごとに保存され、Gitには入りません。教材の`learning/journey.json`は共有できます。CLIで進捗を確認・更新できます。\n\n"
+            "進捗はPCごとに`.lamapon/learning-progress.json`へ保存され、Gitには入りません。教材の`learning/journey.json`は共有できます。CLIで進捗を確認・更新できます。\n\n"
             "```powershell\n"
             "LamaPonCli.exe learn status --project \".\"\n"
             "LamaPonCli.exe learn complete --project \".\"\n"
@@ -349,17 +349,17 @@ namespace
             "LamaPonCli.exe validate --project \".\"\n"
             "LamaPonCli.exe build --project \".\"\n"
             "```\n\n"
-            "## 次に伸ばす力\n\n"
-            "- **ゲームエンジニアを育てる**: C++、入力、ゲームルール、エラー修正を実践します。\n"
-            "- **C++を理解する**: `Start`、`Update`、`deltaTime`、コンポーネントの関係を読み解きます。\n"
-            "- **実際にゲームを作る**: ルール、見た目、操作感を変更し、動くゲームとして確かめます。\n"
-            "- **ゲームエンジンのサポートを充実させる**: `validate`、`build`、`doctor`で再現性を確認し、必要な改善を記録します。\n";
+            "## 次に学ぶこと\n\n"
+            "- **ゲーム制作の流れを知る**: 入力、ゲームルール、エラー修正を実践します。\n"
+            "- **C++の基礎を理解する**: `Start`、`Update`、`deltaTime`、コンポーネントの関係を読み解きます。\n"
+            "- **ゲームを調整する**: ルール、見た目、操作感を変更し、動作を確かめます。\n"
+            "- **エンジンの仕組みを知る**: `validate`、`build`、`doctor`でプロジェクトの状態を確認します。\n";
     }
 
     constexpr std::string_view StarterScript = R"LAMAPON(#include "LamaPon/LamaPon.h"
 
-// このファイルは「ゲームループ」を読むための最小サンプルです。
-// Engine本体ではなく、このプロジェクトのassets内だけを改造します。
+// このファイルはゲームループを学ぶための最小サンプルです。
+// 変更するのはエンジン本体ではなく、プロジェクト内のassetsです。
 class LearningPlayer final : public LamaPon::Script
 {
 public:
@@ -386,7 +386,7 @@ public:
     }
 
 private:
-    // 最初の改造ポイント: 値を変えて保存し、動きを比べてください。
+    // まずは値を変えて保存し、動きの違いを比べてください。
     static constexpr float SpinSpeed = 1.2f;
     static constexpr float BoostScale = 1.35f;
 };
@@ -397,7 +397,7 @@ LAMAPON_SCRIPT(LearningPlayer);
 
     constexpr std::string_view DesignNote = R"LAMAPON(# ゲーム企画メモ
 
-正解を書く欄ではありません。遊んだ人へ何を感じてほしいかを短く決めます。
+遊ぶ人にどのような体験をしてほしいか、短く整理します。
 
 ## 30秒で伝えたい体験
 
@@ -434,7 +434,7 @@ LAMAPON_SCRIPT(LearningPlayer);
         {
             contents.push_back('\n');
         }
-        contents += "# 個人ごとの学習進捗（教材はlearning/へ共有）\n";
+        contents += "# 個人ごとの学習進捗（教材はlearning/で共有）\n";
         contents += entry;
         contents.push_back('\n');
         WriteText(ignorePath, contents);

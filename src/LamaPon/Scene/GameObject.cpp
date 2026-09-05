@@ -321,8 +321,7 @@ namespace LamaPon
         {
             return false;
         }
-        // いったん抜いてから基準を探します（抜くと添字がずれる
-        // ため、先に見つけた位置は使えません）。
+        // 対象を外すと添字が変わるため、その後で挿入位置を探します。
         const auto movedIndex = static_cast<std::size_t>(
             movedPosition - m_components.begin());
         auto detached = std::move(*movedPosition);
@@ -578,11 +577,9 @@ namespace LamaPon
             return;
         }
 
-        // ユーザーコードを呼ぶ走査は添字で回します。ScriptのStartは
-        // ここから呼ばれるので、Startの中でAddComponentするとm_components
-        // が再確保され、範囲forのイテレーターが無効になります。
-        // （Startで自分にAudioSourceを足すのはドキュメントが勧めている
-        //   書き方なので、ここが壊れると素直な使い方で落ちます）
+        // Script::Start内でAddComponentを呼ぶとm_componentsが再確保される
+        // 可能性があり、範囲forのイテレーターが無効になります。ユーザー
+        // コードを呼び出す走査は添字で行い、再確保後に要素を取得し直します。
         for (std::size_t index = 0;
             index < m_components.size();
             ++index)

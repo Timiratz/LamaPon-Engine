@@ -436,7 +436,7 @@ namespace LamaPon
             // Game Module Hostが無い環境（DLLを読まないツールなど）で
             // 黙って何もしないと、「画面が空なのに理由がどこにも
             // 出ない」ことになります。理由を残して追えるようにします
-            // （CLIの`problems`はここのLastErrorを拾います）。
+            // （CLIのproblemsはここのLastErrorを拾います）。
             if (m_lastError.empty())
             {
                 m_lastError =

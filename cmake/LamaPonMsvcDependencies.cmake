@@ -29,9 +29,8 @@ function(lamapon_configure_msvc_dependencies)
            "(^|[\r\n])([^\r\n]+: +)[^\r\n]*lamapon-msvc-prefix\\.h")
         set(CMAKE_CXX_CL_SHOWINCLUDES_PREFIX "${CMAKE_MATCH_2}" PARENT_SCOPE)
         set(CMAKE_CL_SHOWINCLUDES_PREFIX "${CMAKE_MATCH_2}" PARENT_SCOPE)
-        # Ninjaは接頭辞だけの変更では既存オブジェクトを再コンパイル
-        # しません。以前に欠落した依存も採取し直すよう、検出方式と
-        # 接頭辞をコンパイルコマンドへ刻みます。同じ構成では不変です。
+        # 検出方式と接頭辞のハッシュをコンパイル定義へ含め、接頭辞が
+        # 変わった場合にNinjaの依存情報を再生成します。
         string(SHA256 prefix_hash "1:${CMAKE_MATCH_2}")
         string(SUBSTRING "${prefix_hash}" 0 8 prefix_hash)
         add_compile_options(

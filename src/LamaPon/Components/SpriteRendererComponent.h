@@ -45,14 +45,12 @@ namespace LamaPon
 
         void SetSize(const DirectX::XMFLOAT2& size) noexcept { m_size = size; }
         void SetColor(const DirectX::XMFLOAT4& color) noexcept { m_color = color; }
-        // 基準点（0〜1の割合）。`{0,0}`が左上（既定＝従来の動き）、
-        // `{0.5,0.5}`が中心、`{1,1}`が右下です。
+        // 基準点（0〜1の割合）。{0,0}が左上、{0.5,0.5}が中心、
+        // {1,1}が右下です。既定値は左上です。
         //
-        // これは「**Transformの位置がスプライトのどこを指すか**」と
-        // 「**回転の中心**」の両方を決めます。`{0.5,0.5}`にすると
-        // 「中心を指定して置く」「その場で回す」がそのまま書けます
-        // （左上のままだと回すたびに位置がずれるため、自分で
-        // 三角関数の補正を書く必要がありました）。
+        // Transformの位置が指す場所と回転の中心を、この値で指定します。
+        // 中心を使う場合は{0.5,0.5}を設定すると、回転時の位置補正が
+        // 不要になります。
         //
         // UI Rect Transformを持つGameObjectでは使いません。UIの位置は
         // Rect Transform側のAnchorとPivotが決め、回転は矩形の中心です。

@@ -83,11 +83,9 @@ namespace LamaPon
         return value.starts_with(L"\\\\");
     }
 
-    // ネットワークドライブ（UNC・割り当てドライブ・WebDAV）の判定。
-    // 共有ドライブ上ではディレクトリ作成・rename・DLLロードが
-    // リダイレクター都合で失敗することがある（実測: WebDAVの
-    // ERROR_NOT_SUPPORTED）ため、呼び出し側はこれを見てユーザー
-    // ローカルの作業領域へ切り替えます。
+    // UNC、割り当てドライブ、WebDAVを判定します。共有ドライブ上で
+    // ファイル操作やDLL読み込みを行えない場合に、呼び出し側が
+    // ユーザーのローカル領域へ切り替えるために使います。
     inline bool UsesNetworkDrive(
         const std::filesystem::path& path) noexcept
     {

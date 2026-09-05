@@ -22,23 +22,12 @@ namespace LamaPon
 
 namespace LamaPon::ModelCache
 {
-    // モデルのインポートキャッシュ。
-    //
-    // FBX/glTFの読み込みは、パース（ufbx/cgltf）→頂点の組み立て→
-    // 静的パーツの結合→GPUリソース生成、と続く長い仕事で、結果は
-    // 毎回同じなのに開くたびにやり直していました。ここでは
-    // 「GPUへ渡す直前のCPU側の材料」を丸ごとファイルへ残し、
-    // 2回目以降はパースと組み立てを全部飛ばします。
-    // shader-cache／texture-cacheと同じ構図のモデル版です。
-    //
-    // 外部依存（.gltfが参照する.bin、外部テクスチャ、.meta）は
-    // パス＋内容ハッシュで一緒に記録し、読み込み時に照合します。
-    // どれか1つでも変わっていたら丸ごと作り直しへ落ちるので、
-    // 「テクスチャだけ差し替えたのに古い絵が出る」ことはありません。
+    // FBX/glTFを解析して組み立てたCPU側のモデルデータを保存し、
+    // 次回の解析と組み立てを省略します。.gltfが参照する.bin、外部
+    // テクスチャ、.metaのパスと内容ハッシュも保存します。いずれかの
+    // 依存ファイルが変わった場合はキャッシュを再生成します。
 
-    // インポーターが読み込みの過程で「組み立て直しに必要な材料」を
-    // 登録していく記録器。登録は追加式なので、既存のインポーターの
-    // 流れを変えずに差し込めます。
+    // キャッシュの再構築に必要なデータをインポーターから受け取ります。
     class Recorder final
     {
     public:
@@ -51,9 +40,8 @@ namespace LamaPon::ModelCache
             bool hasTransparency,
             TextureLoader::TextureUsage usage
                 = TextureLoader::TextureUsage::Color);
-        // 外部ファイルの画像はバイト列を保存せず、パス＋ハッシュだけ
-        // 記録します（読み込み時にどうせ検証のため読み直すので、
-        // キャッシュへ複製すると容量が倍になるだけです）。
+        // 外部画像は容量の重複を避けるため、バイト列ではなくパスと
+        // 内容ハッシュを記録します。
         void RegisterExternalImage(
             ID3D11ShaderResourceView* view,
             const std::filesystem::path& path,

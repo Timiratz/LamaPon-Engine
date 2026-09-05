@@ -1,14 +1,6 @@
-// C++ Scriptから設定値を保存できること（ハイスコアなど）を確かめます。
-//
-// 何を守るテストか: 以前は`PlayerPrefs`がApplicationの持ち物で、
-// Scriptから触る方法がありませんでした（ドキュメントにも「Scriptから
-// 直接アクセスできません」と書いてあった）。そのため、ワンボタン
-// ゲームでハイスコアを残すことすらできませんでした。
-//
-// ここでは Script の Save/Load 系が
-//   1) 実際にファイルへ書けること（別インスタンスから読めること）
-//   2) Applicationが無い環境（CLIなど）でも落ちず、既定値を返すこと
-// を確認します。2はCLIやテストで必ず通る道なので重要です。
+// C++ ScriptからPlayerPrefsを利用できることを確認します。
+// 保存した値を別インスタンスから読み込めることと、Applicationがない
+// CLIやテスト環境でも安全に既定値を返すことを検証します。
 #include "LamaPon/Core/PlayerPrefs.h"
 #include "LamaPon/Scripting/Script.h"
 

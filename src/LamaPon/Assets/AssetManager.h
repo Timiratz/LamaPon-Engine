@@ -113,16 +113,15 @@ namespace LamaPon
         [[nodiscard]] const std::filesystem::path& AssetRoot() const noexcept { return m_assetRoot; }
         [[nodiscard]] std::filesystem::path ResolvePath(const std::filesystem::path& path) const;
 
-        // True once a shipped game's encrypted assets.tpak has been
-        // loaded in place of a loose assets/ folder.
+        // 配布ゲーム用の暗号化済みassets.tpakを、展開されたassets/
+        // フォルダーの代わりに読み込んだ後はtrueになります。
         [[nodiscard]] bool IsArchived() const noexcept
         {
             return m_archive != nullptr;
         }
-        // Every asset load should go through this instead of opening
-        // std::ifstream directly, so it transparently works whether the
-        // assets are loose files (editor) or packed into an encrypted
-        // archive (exported game).
+        // すべてのアセット読み込みをここに通します。std::ifstreamを直接
+        // 開かないことで、エディターの展開済みファイルと、配布ゲームの
+        // 暗号化アーカイブを呼び出し側から同じように扱えます。
         [[nodiscard]] std::vector<std::uint8_t> ReadFileBytes(
             const std::filesystem::path& path) const;
         [[nodiscard]] bool FileExists(
@@ -150,10 +149,9 @@ namespace LamaPon
         // そのまま、それ以外はWICデコード→ミップ生成→（設定に
         // より）BC圧縮で、結果はTextureCacheへ残ります。
         //
-        // モデル（glTF/FBX）に埋まった画像と、モデルが参照する
-        // 外部画像のための入口です。以前はインポーターが
-        // CreateWICTextureFromMemoryを直接呼んでいて、単体
-        // テクスチャだけが圧縮とキャッシュの恩恵を受けていました。
+        // モデル（glTF/FBX）に埋め込まれた画像と、モデルが参照する
+        // 外部画像もこの経路で読み込みます。読み込んだ画像は単体の
+        // テクスチャと同じく圧縮し、TextureCacheへ保存します。
         // usageは圧縮フォーマットの選択に使います（法線はBC5）。
         [[nodiscard]]
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
@@ -266,12 +264,11 @@ namespace LamaPon
         [[nodiscard]] std::shared_ptr<const AnimatorController>
             ReloadAnimatorController(
                 const std::filesystem::path& path);
-        // 文字テクスチャは**白**で焼きます。色は描くとき（SpriteBatchの
-        // 色）で掛けてください。色を焼き込むと、色を変えるたびに別の
-        // テクスチャができてしまい、フェードのような演出ができません
-        // （キャッシュのキーからも色が消えるので、同じ文字なら色違いでも
-        // 1枚で足ります）。
-        // データアセット（`*.asset.json`）を読み込みます。読み込みは
+        // 文字テクスチャは白で生成し、描画時にSpriteBatchの色を乗算します。
+        // キャッシュキーに色を含めないため、同じ文字列では色が異なっても
+        // 1枚のテクスチャを共有します。色の変化やフェードでもテクスチャを
+        // 作り直す必要はありません。
+        // データアセット（*.asset.json）を読み込みます。読み込みは
         // アーカイブ越しにも通るため、書き出したゲームでも同じ
         // コードで動きます。同じパスは2回目からキャッシュを返します。
         [[nodiscard]] std::shared_ptr<const DataAsset>

@@ -56,9 +56,8 @@ namespace LamaPon
         {
             return "Component";
         }
-        // Higher values are drawn later (on top) in the 2D/UI
-        // sprite pass. Defaults to 0 for components that do not
-        // render anything themselves.
+        // 2D/UIスプライトパスの描画順です。値が大きいほど後から描画し、
+        // 描画を行わないコンポーネントは0を返します。
         [[nodiscard]] virtual int RenderSortOrder() const noexcept
         {
             return 0;
