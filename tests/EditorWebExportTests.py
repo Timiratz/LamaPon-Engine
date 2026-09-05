@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -52,9 +53,20 @@ class EditorWebExportTests(unittest.TestCase):
         (sdk / ".emscripten").touch()
         with mock.patch.object(EXPORT.shutil, "which", return_value="cmake"):
             env, found = EXPORT.build_environment(sdk)
-        self.assertEqual(found, entry)
-        self.assertEqual(env["EM_CONFIG"], str(sdk / ".emscripten"))
+        self.assertTrue(found.samefile(entry))
+        self.assertTrue(Path(env["EM_CONFIG"]).samefile(sdk / ".emscripten"))
         self.assertEqual(env["PYTHONUTF8"], "1")
+
+    def test_status_output_falls_back_to_utf8(self):
+        output = io.BytesIO()
+        stream = io.TextIOWrapper(output, encoding="cp1252")
+        with mock.patch.object(EXPORT.sys, "stdout", stream):
+            EXPORT.print_status("Web出力を開始します。")
+        stream.flush()
+        self.assertEqual(
+            output.getvalue().decode("utf-8").splitlines(),
+            ["Web出力を開始します。"],
+        )
 
     def test_missing_sdk_has_actionable_error(self):
         with self.assertRaisesRegex(ValueError, "Emscripten SDK"):
@@ -78,7 +90,7 @@ class EditorWebExportTests(unittest.TestCase):
     def test_success_replaces_package_and_keeps_literal_paths(self):
         self.previous_output()
         def build(command, **kwargs):
-            self.assertIn(str(self.project), command)
+            self.assertIn(str(self.project.resolve()), command)
             self.assertNotIn("shell", kwargs)
             stage = Path(command[command.index("--output") + 1])
             (stage / "LamaPonWebGL-Game.html").write_text("<canvas></canvas>", encoding="utf-8")
