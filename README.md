@@ -16,29 +16,53 @@ LamaPon Hubの「3D学習」「2D学習」には、最初から遊べるScene、
 C++20、DirectX 11、DirectXTK11、`GameObject + Component`、ランタイムとエディターの分離を
 技術的な土台としています。同じJSON形式のSceneを、エディター、単体ゲーム、CLIテストで読み込めます。
 
-## 入手・ビルド
+## 開発環境の構築
 
-ソースコード：[LamaPon-Engine](https://github.com/Timiratz/LamaPon-Engine)
+LamaPonのソースコードはMITライセンスで公開しています。ビルド済みの開発環境はリポジトリへ含めず、Visual Studioとビルドツールは各開発者のPCへ用意する構成です。
 
-LamaPonのソースコードはMITライセンスで提供します。リポジトリが非公開の場合は、閲覧と取得にアクセス権が必要です。
+対応環境はWindows 10/11（x64）です。Visual Studio InstallerからVisual Studio 2022以降の「C++によるデスクトップ開発」を導入し、次を利用できる状態にしてください。
 
-Windows 10/11、Visual Studioの「C++によるデスクトップ開発」、CMake 3.25以上、Ninjaを用意し、x64 Native Tools Command Promptから実行します。
+- MSVC x64 C++ビルドツール
+- Windows 10またはWindows 11 SDK
+- CMake 3.25以上
+- Ninja
+- Git
+
+Visual Studio付属のx64 Native Tools Command Promptを開き、ソースコードを取得します。
 
 ```bat
 git clone https://github.com/Timiratz/LamaPon-Engine.git
 cd LamaPon-Engine
+```
+
+## LamaPon Hubのビルドと起動
+
+リポジトリ直下で、Release版のHubをビルドして起動します。
+
+```bat
 cmake --preset windows-release
-cmake --build --preset windows-release
-ctest --preset windows-release
+cmake --build --preset windows-release --target LamaPonHub
 out\build\windows-release\LamaPonHub.exe
 ```
 
-ビルド済みパッケージは、リリース作成後に[Releases](https://github.com/Timiratz/LamaPon-Engine/releases)へ掲載します。
-ZIPを展開して`LamaPonHub.exe`を起動すると、プロジェクト作成、Scene編集、ゲームのエクスポートを利用できます。
-C++ ScriptのビルドにはVisual StudioのC++開発環境が必要です。
+デバッグビルドを使う場合は、`windows-release`を`windows-debug`へ置き換えます。
 
-- `LamaPon-<version>-windows-x64.zip` — エンジン一式
-- `LamaPon-symbols-windows-x64.zip` — クラッシュ解析用 PDB
+```bat
+cmake --preset windows-debug
+cmake --build --preset windows-debug --target LamaPonHub
+out\build\windows-debug\LamaPonHub.exe
+```
+
+起動後は「新しいプロジェクトを作成」または「既存のLamaPonプロジェクトを追加」を選びます。新規プロジェクトの保存場所には、このエンジンリポジトリの外側を指定してください。詳しい操作は[入門チュートリアル](docs/getting-started.md)を参照してください。
+
+ビルド成果物は`out/`へ作成され、Gitの追跡対象にはなりません。Visual Studioのユーザー設定、ログ、キャッシュ、生成したプロジェクトもコミットしないでください。
+
+ビルドとテストをまとめて確認する場合は、次を実行します。
+
+```bat
+cmake --build --preset windows-release
+ctest --preset windows-release
+```
 
 ## ドキュメント
 
