@@ -7,6 +7,34 @@
 
 エディターとネイティブ版はWindows、MSVC、DirectX 11、C++20を対象とします。
 
+## 必須のブランチ運用ルール
+
+コミュニティ向けの変更は、すべて`community/main`を起点にします。
+
+1. 最新の`community/main`へ切り替えます。
+2. `community/main`から新しい作業ブランチを作成します。
+3. 作業ブランチで変更とcommitを行います。
+4. Pull Requestを作成し、マージ先（base）に`community/main`を指定します。
+5. レビューを依頼し、明示的な許可が下りるまでマージせずに待ちます。
+
+```bash
+git fetch origin
+git switch community/main
+git pull --ff-only origin community/main
+git switch -c community/<変更内容>
+```
+
+次の操作は禁止です。
+
+- `community/main`へ直接commitまたはpushする
+- Pull Requestを作成せずに`community/main`へ変更をマージする
+- レビューで明示的な許可が下りる前にPull Requestをマージする
+- `main`または`student/main`から作業ブランチを作成する
+- `main`または`student/main`を直接編集する
+- `main`または`student/main`をPull Requestのマージ先にする
+- コミュニティ向けの変更を`main`または`student/main`へマージする
+- `main`または`student/main`を削除する
+
 ## 開発手順
 
 1. x64 Visual Studio Developer Command Promptを開きます。
