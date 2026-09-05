@@ -1,0 +1,69 @@
+name: Linux Headless CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - community/linux/main
+    paths:
+      - "CMakeLists.txt"
+      - "CMakePresets.json"
+      - "cmake/LamaPonHeadless.cmake"
+      - "src/LamaPon/Core/**"
+      - "src/LamaPon/Reactive/**"
+      - "tests/HeadlessCoreTests.cpp"
+      - "tests/ReactiveTests.cpp"
+      - "tests/CrashSentinelTests.cpp"
+      - ".github/workflows/linux-headless-ci.yml"
+  pull_request:
+    paths:
+      - "CMakeLists.txt"
+      - "CMakePresets.json"
+      - "cmake/LamaPonHeadless.cmake"
+      - "src/LamaPon/Core/**"
+      - "src/LamaPon/Reactive/**"
+      - "tests/HeadlessCoreTests.cpp"
+      - "tests/ReactiveTests.cpp"
+      - "tests/CrashSentinelTests.cpp"
+      - ".github/workflows/linux-headless-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-headless-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - compiler: gcc
+            cc: gcc
+            cxx: g++
+          - compiler: clang
+            cc: clang
+            cxx: clang++
+
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Configure headless core
+        run: cmake --preset linux-headless
+
+      - name: Build headless core
+        run: cmake --build --preset linux-headless
+
+      - name: Test headless core
+        run: ctest --preset linux-headless

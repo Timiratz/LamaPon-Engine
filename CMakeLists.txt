@@ -49,15 +49,32 @@ configure_file(
     @ONLY
 )
 
-if(NOT WIN32)
-    message(FATAL_ERROR "LamaPon currently targets Windows and DirectX 11.")
-endif()
-
-enable_language(RC)
-
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+set(LAMAPON_HEADLESS_DEFAULT OFF)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(LAMAPON_HEADLESS_DEFAULT ON)
+endif()
+option(
+    LAMAPON_BUILD_HEADLESS
+    "Build only the platform-neutral LamaPon headless core"
+    ${LAMAPON_HEADLESS_DEFAULT}
+)
+
+if(LAMAPON_BUILD_HEADLESS)
+    include(cmake/LamaPonHeadless.cmake)
+    return()
+endif()
+
+if(NOT WIN32)
+    message(FATAL_ERROR
+        "The LamaPon desktop runtime currently targets Windows and DirectX 11. "
+        "Configure with -DLAMAPON_BUILD_HEADLESS=ON for the portable headless core.")
+endif()
+
+enable_language(RC)
 
 # LamaPonRuntimeは失敗をC++例外で通知します。MSVCの既定フラグを
 # 外部ビルドが上書きしても例外処理が強制終了へ変わらないよう、

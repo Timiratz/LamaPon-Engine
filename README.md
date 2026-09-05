@@ -67,6 +67,25 @@ cmake --build --preset windows-release
 ctest --preset windows-release
 ```
 
+## Linuxヘッドレスビルド（実験段階）
+
+Linuxでは、描画・音声・ウィンドウを持たない`LamaPon::Headless`をビルドできます。
+現在含まれるのは、ジョブシステム、時間管理、Reactive、CPUプロファイラー、
+クラッシュ検知、バージョン比較です。Hub、Editor、ゲーム画面のLinuxネイティブ起動には
+まだ対応していません。
+
+GCCまたはClang、CMake 3.25以上、Ninjaを用意し、リポジトリ直下で実行します。
+
+```sh
+cmake --preset linux-headless
+cmake --build --preset linux-headless
+ctest --preset linux-headless
+```
+
+Linuxでは通常の`cmake -S . -B build`でもヘッドレス構成が既定になります。
+`LAMAPON_BUILD_HEADLESS=ON`を明示すれば、Windows上でも同じ構成を検証できます。
+GitHub ActionsではGCCとClangの両方でビルドとテストを実行します。
+
 ## ドキュメント
 
 使い方は[docs/のドキュメント一覧](docs/index.md)から機能別に確認できます。

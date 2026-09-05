@@ -35,6 +35,22 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
       }
+    },
+    {
+      "name": "linux-headless",
+      "displayName": "Linux Headless",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "cacheVariables": {
+        "BUILD_TESTING": "ON",
+        "CMAKE_BUILD_TYPE": "Release",
+        "LAMAPON_BUILD_HEADLESS": "ON"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
     }
   ],
   "buildPresets": [
@@ -54,6 +70,11 @@
       "targets": [
         "package"
       ],
+      "jobs": 0
+    },
+    {
+      "name": "linux-headless",
+      "configurePreset": "linux-headless",
       "jobs": 0
     }
   ],
@@ -76,6 +97,16 @@
       },
       "execution": {
         "jobs": 4
+      }
+    },
+    {
+      "name": "linux-headless",
+      "configurePreset": "linux-headless",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 2
       }
     }
   ]
