@@ -13,6 +13,9 @@ LamaPon Hubの「3D学習」「2D学習」には、最初から遊べるScene、
 
 **はじめての方は[学習ロードマップ](docs/learning-path.md)と[入門チュートリアル](docs/getting-started.md)からどうぞ。**
 
+> [!IMPORTANT]
+> コミュニティ向けの変更は、必ず`community/main`から新しい作業ブランチを作成し、Pull Requestのマージ先にも`community/main`を指定してください。`community/main`への直接pushは禁止です。`main`と`student/main`は、作業ブランチの起点、編集、Pull Request、マージ、削除の対象にしないでください。詳しくは[コントリビューションガイド](CONTRIBUTING.md#必須のブランチ運用ルール)を確認してください。
+
 C++20、DirectX 11、DirectXTK11、`GameObject + Component`、ランタイムとエディターの分離を
 技術的な土台としています。同じJSON形式のSceneを、エディター、単体ゲーム、CLIテストで読み込めます。
 
