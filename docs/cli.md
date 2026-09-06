@@ -488,8 +488,9 @@ LamaPonEditor.exe --project "C:\path\to\MyProject" --screenshot ui.png --report 
 
 | 値 | 開くUI |
 |---|---|
-| `project-settings:<区分>` | プロジェクト設定ダイアログ。区分は `game` / `graphics` / `viewport` / `physics` / `tags` / `input` / `scripts`（日本語名も可） |
+| `project-settings:<区分>` | プロジェクト設定ダイアログ。区分は `game` / `graphics` / `viewport` / `physics` / `tags` / `input` / `scripts` / `build`（日本語名も可） |
 | `inspector:<GameObject名>` | そのGameObjectを選択した状態（Inspectorに中身が出る） |
+| `help` | 「ヘルプとサポート」画面 |
 
 末尾に `:bottom` を付けると、対象を**末尾までスクロールした状態**で撮ります（例: `project-settings:physics:bottom` で衝突マトリクスが、`inspector:Player:bottom` で下の方のコンポーネントが写ります）。
 
@@ -538,7 +539,7 @@ LamaPonEditor.exe --project "C:\path\to\MyProject" --remote C:\work\remote
 
 ```json
 { "seq": 2, "commands": [ { "type": "dump" } ] }
-{ "seq": 3, "commands": [ { "type": "click-label", "label": "プロジェクト設定...", "window": "ファイル" } ] }
+{ "seq": 3, "commands": [ { "type": "click-label", "label": "プロジェクト設定とビルド...", "window": "ファイル" } ] }
 ```
 
 - `dump` は**いま画面に見えているウィジェットの一覧**

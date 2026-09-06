@@ -2563,9 +2563,9 @@ namespace LamaPon
             1000.0f);
     }
 
-    void EditorLayer::DrawTilePalette()
+    void EditorLayer::DrawTilePalette(bool& open)
     {
-        if (!m_tilePalettePanelOpen)
+        if (!open)
         {
             return;
         }
@@ -2577,7 +2577,7 @@ namespace LamaPon
             ImGuiWindowFlags_NoCollapse;
         if (!ImGui::Begin(
                 "タイルパレット",
-                &m_tilePalettePanelOpen,
+                &open,
                 flags))
         {
             ImGui::End();

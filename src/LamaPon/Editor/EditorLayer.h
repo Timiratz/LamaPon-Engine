@@ -1,5 +1,6 @@
 #pragma once
 
+#include "LamaPon/Editor/EditorExtensionRegistry.h"
 #include "LamaPon/Editor/UIComponentInspectors.h"
 
 #include "LamaPon/Core/ApplicationLayer.h"
@@ -44,6 +45,7 @@ namespace LamaPon
     class Scene;
     class TilemapComponent;
     struct TextureAsset;
+    enum class GameExportTarget;
 
     enum class AssetIconKind
     {
@@ -128,7 +130,31 @@ namespace LamaPon
         // （保存して閉じる／保存せずに閉じる／キャンセル）。
         [[nodiscard]] bool ConfirmClose() override;
 
+        // 組み込み機能と将来のプラグインが共有する登録口です。
+        // パネル、拡張メニュー、ライフサイクル処理をEditorLayerの
+        // 描画ループへ直接書き足さずに接続できます。
+        [[nodiscard]] EditorExtensionRegistry& ExtensionRegistry() noexcept
+        {
+            return m_editorExtensions;
+        }
+        [[nodiscard]] const EditorExtensionRegistry& ExtensionRegistry()
+            const noexcept
+        {
+            return m_editorExtensions;
+        }
+
     private:
+        static constexpr std::string_view ConsolePanelId{ "console" };
+        static constexpr std::string_view PerformancePanelId{
+            "performance" };
+        static constexpr std::string_view PersistencePanelId{
+            "persistence" };
+        static constexpr std::string_view AssetBrowserPanelId{
+            "assetBrowser" };
+        static constexpr std::string_view TilePalettePanelId{
+            "tilePalette" };
+        static constexpr std::string_view PackagesPanelId{ "packages" };
+
         // 最後に保存（または読み込み）した時点のシーンJSON。
         // 現在の状態との比較で未保存変更を判定します。
         void MarkSceneSaved();
@@ -136,9 +162,21 @@ namespace LamaPon
         void ToggleFullscreen();
         void DrawToolbar();
         void DrawDockSpace();
-        void DrawConsole();
-        void DrawPerformancePanel();
-        void DrawPersistencePanel();
+        void RegisterBuiltInEditorExtensions();
+        void DrawRegisteredPanelMenuItems();
+        void DrawRegisteredExtensionMenuItems();
+        void DrawRegisteredPanels();
+        void DrawConsole(bool& open);
+        void OpenHelpCenter();
+        void DrawHelpCenter();
+        void OpenOnlineManual();
+        void OpenLocalDocumentation();
+        void OpenEditorLog(bool openFolder);
+        void CopySupportInformation();
+        [[nodiscard]] std::filesystem::path
+            LocalDocumentationIndexPath() const;
+        void DrawPerformancePanel(bool& open);
+        void DrawPersistencePanel(bool& open);
         // カスタムShaderのパラメーターUI。Shaderに
         // LAMAPON_PROPERTIES宣言があれば名前付きのUIを生成し、
         // 無ければ生のfloat4を8本編集する従来のUIを出します。
@@ -200,7 +238,7 @@ namespace LamaPon
         void ExecutePendingHierarchyParentChange();
         // 溜めておいた並び替えを適用します（ヒエラルキーの走査後）。
         void ExecutePendingHierarchyReorder();
-        void DrawAssetBrowser();
+        void DrawAssetBrowser(bool& open);
         void OpenImportAssetsDialog();
         void ImportAssets(
             const std::vector<std::filesystem::path>& sources);
@@ -218,6 +256,8 @@ namespace LamaPon
         void DrawAssetDirectoryMenuContents(
             const std::filesystem::path& directory,
             bool isRoot);
+        void DrawCreateAssetMenuContents(
+            const std::filesystem::path& directory);
         void DrawAssetFolderDialogs();
         void OpenCreateAssetFolderDialog(
             const std::filesystem::path& parentDirectory);
@@ -340,11 +380,27 @@ namespace LamaPon
         [[nodiscard]] bool DrawCubemapAssetSelector(
             const char* label,
             std::filesystem::path& cubemapPath);
-        void DrawTilePalette();
+        void DrawTilePalette(bool& open);
         void HandleTilemapPainting();
         void DrawAnimationTimeline();
         void DrawAnimatorControllerGraph();
         void DrawAddComponent(GameObject& gameObject);
+        enum class BuiltInGameObjectKind
+        {
+            Camera,
+            Sprite,
+            Cube,
+            Sphere,
+            Cylinder,
+            Plane,
+            DirectionalLight,
+            PointLight,
+            SpotLight,
+            Light2D,
+            AudioSource,
+            UICanvas
+        };
+        void CreateBuiltInGameObject(BuiltInGameObjectKind kind);
         void CreateRootGameObject();
         void CreateChildGameObject();
         void CreateUICanvasGameObject();
@@ -360,6 +416,9 @@ namespace LamaPon
         void RefreshAssets(bool reuseExistingDatabase = false);
         void UpdateExternalSceneFile();
         void ReimportSelectedAsset();
+        void ReimportAllAssets();
+        void ReimportAssets(
+            const std::optional<std::filesystem::path>& asset);
         void OpenSelectedAsset();
         void InstantiateSelectedPrefab();
         void ApplySelectedPrefab();
@@ -428,7 +487,7 @@ namespace LamaPon
         void SaveSelectedAsPrefab();
         void ReloadScene();
         // パッケージタブ（一覧取得・インストール・削除）。
-        void DrawPackagesPanel();
+        void DrawPackagesPanel(bool& open);
         // 自作パッケージの書き出しダイアログ。
         void OpenPackageBuildDialog();
         void DrawPackageBuildDialog();
@@ -452,6 +511,8 @@ namespace LamaPon
         void DrawProjectSettingsTagsSection();
         void DrawProjectSettingsInputSection();
         void DrawProjectSettingsScriptingSection();
+        void DrawProjectSettingsBuildSection();
+        [[nodiscard]] bool SaveProjectSettingsDraft();
         void BrowseForScriptEditor();
         [[nodiscard]] std::filesystem::path ProjectSettingsPath() const;
         [[nodiscard]] bool LoadProjectConfiguration();
@@ -463,6 +524,7 @@ namespace LamaPon
         // 失敗時はステータスへ理由を出してfalseを返します。
         bool AddProjectTag(std::string tag);
         void OpenGameExportDialog();
+        void RequestGameExportDialog(GameExportTarget target);
         void DrawGameExportDialog();
         void StartPlaying();
         void StopPlaying();
@@ -694,6 +756,8 @@ namespace LamaPon
         bool m_projectSplashScreenDraft{ true };
         // プロジェクト設定で選択中のカテゴリー（0=ゲーム）。
         int m_projectSettingsCategory{};
+        std::optional<GameExportTarget>
+            m_requestedGameExportTarget;
         // パッケージタブの状態
         enum class PackageListState
         {
@@ -702,7 +766,6 @@ namespace LamaPon
             Ready,
             Failed
         };
-        bool m_packagesPanelOpen{ false };
         PackageListState m_packageListState{
             PackageListState::NotLoaded
         };
@@ -980,11 +1043,12 @@ namespace LamaPon
         bool m_sceneEnvironmentOpen{};
         std::filesystem::path m_skyboxValidationPath;
         std::string m_skyboxValidationError;
-        bool m_performancePanelOpen{ true };
-        bool m_consolePanelOpen{ true };
-        bool m_persistencePanelOpen{ true };
-        bool m_assetBrowserPanelOpen{ true };
-        bool m_tilePalettePanelOpen{ true };
+        EditorExtensionRegistry m_editorExtensions;
+        bool m_focusConsoleRequested{};
+        // メニューバーからInspectorの追加ピッカーを開く要求。
+        // DrawToolbarとDrawInspectorは同じフレームで別ウィンドウを描くため、
+        // ImGuiのPopup IDではなく明示的な状態で橋渡しします。
+        bool m_addComponentPickerRequested{};
         bool m_statusIsError{};
         bool m_playing{};
         // 再生中の一時停止。描画は続け、ゲームプレイの更新だけ止めます。
@@ -1048,7 +1112,9 @@ namespace LamaPon
         bool m_win32Initialized{};
         bool m_dx11Initialized{};
         bool m_projectSettingsDialogRequested{};
+        bool m_helpCenterRequested{};
         std::string m_imguiIniPath;
         bool m_resetDockLayout{};
+        bool m_selectAssetTabAfterLayoutReset{};
     };
 }

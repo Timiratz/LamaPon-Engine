@@ -219,16 +219,15 @@ namespace LamaPon
             iterator != settings.end() && iterator->is_object())
         {
             const auto& panels = *iterator;
-            m_consolePanelOpen = panels.value(
-                "console", m_consolePanelOpen);
-            m_performancePanelOpen = panels.value(
-                "performance", m_performancePanelOpen);
-            m_persistencePanelOpen = panels.value(
-                "persistence", m_persistencePanelOpen);
-            m_assetBrowserPanelOpen = panels.value(
-                "assetBrowser", m_assetBrowserPanelOpen);
-            m_tilePalettePanelOpen = panels.value(
-                "tilePalette", m_tilePalettePanelOpen);
+            for (const auto& [id, value] : panels.items())
+            {
+                if (value.is_boolean())
+                {
+                    m_editorExtensions.RestorePanelVisibility(
+                        id,
+                        value.get<bool>());
+                }
+            }
         }
 
         if (const auto iterator = settings.find("gameView");
@@ -407,6 +406,12 @@ namespace LamaPon
         const auto path = EditorSettingsPath();
         std::filesystem::create_directories(path.parent_path());
 
+        nlohmann::json panelVisibility = nlohmann::json::object();
+        for (const auto& panel : m_editorExtensions.Panels())
+        {
+            panelVisibility[panel.id] = panel.open;
+        }
+
         nlohmann::json settings{
             { "version", 2 },
             {
@@ -503,16 +508,7 @@ namespace LamaPon
             },
             {
                 "panels",
-                {
-                    { "console", m_consolePanelOpen },
-                    { "performance", m_performancePanelOpen },
-                    { "persistence", m_persistencePanelOpen },
-                    {
-                        "assetBrowser",
-                        m_assetBrowserPanelOpen
-                    },
-                    { "tilePalette", m_tilePalettePanelOpen }
-                }
+                std::move(panelVisibility)
             },
             {
                 "gameView",
@@ -634,6 +630,7 @@ namespace LamaPon
         m_assetDirectoryTreeVisible = false;
         m_assetDirectory.clear();
         m_assetFilter.fill('\0');
+        m_editorExtensions.ResetPanelVisibility();
         m_resetDockLayout = true;
     }
 

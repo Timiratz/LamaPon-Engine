@@ -148,7 +148,8 @@ namespace LamaPon
         // 閉じた後の次スキャンで確実に反映される
         if (m_gameModuleBuildProcess != nullptr
             || m_playing
-            || ImGui::IsPopupOpen("プロジェクト設定##ProjectSettings"))
+            || ImGui::IsPopupOpen(
+                "プロジェクト設定とビルド##ProjectSettings"))
         {
             return;
         }
@@ -495,6 +496,104 @@ namespace LamaPon
             "既定の1は「0.0」表示で、ざっと確認するのに読みやすい\n"
             "桁数です。表示だけを丸めるので、入力した値はそのまま\n"
             "保持されます。");
+    }
+
+    void EditorLayer::DrawProjectSettingsBuildSection()
+    {
+        ImGui::TextUnformatted("ビルドプロファイル");
+        ImGui::Separator();
+        ImGui::TextWrapped(
+            "プロジェクト設定を確認して、出力先に合うプロファイルを"
+            "選びます。「設定して書き出す」を押すと、この画面の変更を"
+            "保存してから書き出し設定を開きます。");
+        ImGui::Spacing();
+
+        ImGui::Text("ゲーム名: %s", m_projectGameNameBuffer.data());
+        ImGui::Text(
+            "初期解像度: %d x %d",
+            m_projectWindowSize[0],
+            m_projectWindowSize[1]);
+        ImGui::Text(
+            "起動シーン: %s",
+            m_projectStartupSceneBuffer.data());
+        ImGui::Text(
+            "グラフィック品質: %s",
+            GraphicsQualityPresetName(
+                m_projectGraphicsDraft.preset).data());
+        ImGui::Text(
+            "配布時のHLSLソース: %s",
+            m_projectStripShaderSourceDraft
+                ? "除外"
+                : "同梱");
+        ImGui::Spacing();
+
+        const float spacing = ImGui::GetStyle().ItemSpacing.x;
+        const float profileWidth = std::max(
+            250.0f,
+            (ImGui::GetContentRegionAvail().x - spacing)
+                * 0.5f);
+        const bool hasSavedScene = !m_scenePath.empty();
+
+        ImGui::BeginChild(
+            "WindowsBuildProfile",
+            ImVec2{ profileWidth, 190.0f },
+            ImGuiChildFlags_Borders);
+        ImGui::TextUnformatted("Windows");
+        ImGui::Separator();
+        ImGui::TextWrapped(
+            "Windows用のEXE、Runtime DLL、暗号化したアセットを"
+            "まとめて出力します。");
+        ImGui::Spacing();
+        ImGui::TextDisabled("出力: dist/LamaPonGame");
+        ImGui::TextDisabled("配布用ZIPも作成できます");
+        ImGui::Spacing();
+        ImGui::BeginDisabled(!hasSavedScene);
+        if (ImGui::Button(
+            "設定して書き出す##Windows",
+            ImVec2{ -1.0f, 0.0f })
+            && SaveProjectSettingsDraft())
+        {
+            RequestGameExportDialog(
+                GameExportTarget::Windows);
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndDisabled();
+        ImGui::EndChild();
+
+        ImGui::SameLine();
+        ImGui::BeginChild(
+            "WebBuildProfile",
+            ImVec2{ profileWidth, 190.0f },
+            ImGuiChildFlags_Borders);
+        ImGui::TextUnformatted("Web");
+        ImGui::Separator();
+        ImGui::TextWrapped(
+            "ブラウザー用のHTMLとWebAssemblyを出力し、"
+            "未対応機能を事前に検査します。");
+        ImGui::Spacing();
+        ImGui::TextDisabled("出力: dist/LamaPonWeb");
+        ImGui::TextDisabled("環境: Emscripten / Python / CMake");
+        ImGui::Spacing();
+        ImGui::BeginDisabled(!hasSavedScene);
+        if (ImGui::Button(
+            "設定して書き出す##Web",
+            ImVec2{ -1.0f, 0.0f })
+            && SaveProjectSettingsDraft())
+        {
+            RequestGameExportDialog(
+                GameExportTarget::Web);
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndDisabled();
+        ImGui::EndChild();
+
+        if (!hasSavedScene)
+        {
+            ImGui::Spacing();
+            ImGui::TextColored(
+                ImVec4{ 1.0f, 0.65f, 0.25f, 1.0f },
+                "ビルドする前にシーンを保存してください。");
+        }
     }
 
     // プロジェクト設定「ゲーム」カテゴリー（名前・解像度・アイコン・起動シーン）。
@@ -1596,10 +1695,106 @@ namespace LamaPon
 
     }
 
+    bool EditorLayer::SaveProjectSettingsDraft()
+    {
+        try
+        {
+            ProjectSettings settings;
+            settings.gameName =
+                m_projectGameNameBuffer.data();
+            settings.windowWidth =
+                static_cast<std::uint32_t>(
+                    std::max(m_projectWindowSize[0], 0));
+            settings.windowHeight =
+                static_cast<std::uint32_t>(
+                    std::max(m_projectWindowSize[1], 0));
+            settings.startupScene =
+                PathFromUtf8(
+                    m_projectStartupSceneBuffer.data());
+            settings.gameIcon =
+                PathFromUtf8(
+                    m_projectGameIconBuffer.data());
+            settings.splashScreenEnabled =
+                m_projectSplashScreenDraft;
+            settings.graphics =
+                ClampGraphicsSettings(
+                    m_projectGraphicsDraft);
+            settings.viewport = m_projectViewportDraft;
+            settings.physics = m_projectPhysicsDraft;
+            settings.inputActions =
+                m_projectInputActionsDraft;
+            settings.tags = m_projectTagsDraft;
+            settings.scriptEditorPath =
+                m_projectScriptEditorDraft;
+            settings.stripShaderSourceOnExport =
+                m_projectStripShaderSourceDraft;
+            settings.autoBuildGameModuleOnSave =
+                m_projectAutoBuildDraft;
+            settings.inspectorDecimals =
+                static_cast<std::uint32_t>(
+                    std::clamp(
+                        m_projectInspectorDecimalsDraft,
+                        0,
+                        6));
+            ValidateProjectSettings(settings);
+
+            const auto startupScene =
+                m_graphics.Assets().AssetRoot()
+                / settings.startupScene;
+            if (!std::filesystem::is_regular_file(
+                startupScene))
+            {
+                throw std::runtime_error(
+                    "起動シーンが見つかりません: "
+                    + PathToUtf8(settings.startupScene));
+            }
+            if (!settings.gameIcon.empty()
+                && !std::filesystem::is_regular_file(
+                    m_graphics.Assets().AssetRoot()
+                    / settings.gameIcon))
+            {
+                throw std::runtime_error(
+                    "ゲームアイコンが見つかりません: "
+                    + PathToUtf8(settings.gameIcon));
+            }
+            if (!settings.scriptEditorPath.empty()
+                && !std::filesystem::is_regular_file(
+                    settings.scriptEditorPath))
+            {
+                throw std::runtime_error(
+                    "スクリプトエディターが見つかりません: "
+                    + PathToUtf8(settings.scriptEditorPath));
+            }
+
+            m_projectSettings = std::move(settings);
+            SaveProjectConfiguration();
+            m_graphics.Input().SetActions(
+                m_projectSettings.inputActions);
+            m_graphics.SetGraphicsSettings(
+                m_projectSettings.graphics);
+            m_scene.SetRegisteredTags(
+                m_projectSettings.tags);
+            SetStatus(
+                "プロジェクト設定を保存しました: "
+                + m_projectSettings.gameName);
+            m_projectSettingsError.clear();
+            return true;
+        }
+        catch (const std::exception& exception)
+        {
+            m_projectSettingsError = exception.what();
+            SetStatus(
+                "プロジェクト設定を保存できませんでした: "
+                + m_projectSettingsError,
+                true);
+            return false;
+        }
+    }
+
     void EditorLayer::DrawProjectSettingsDialog()
     {
         constexpr const char* popupName =
-            "プロジェクト設定##ProjectSettings";
+            "プロジェクト設定とビルド##ProjectSettings";
         if (m_projectSettingsDialogRequested)
         {
             ImGui::OpenPopup(popupName);
@@ -1607,7 +1802,7 @@ namespace LamaPon
         }
 
         ImGui::SetNextWindowSize(
-            ImVec2{ 760.0f, 700.0f },
+            ImVec2{ 840.0f, 700.0f },
             ImGuiCond_Appearing);
         if (!ImGui::BeginPopupModal(
             popupName,
@@ -1618,18 +1813,19 @@ namespace LamaPon
         }
 
         // 左のカテゴリー一覧と右の内容ペインへ分割します。
-        constexpr std::array<const char*, 7> categories{
+        constexpr std::array<const char*, 8> categories{
             "ゲーム",
             "グラフィック",
             "ビューポート設定",
             "物理",
             "タグ",
             "入力",
-            "スクリプト"
+            "スクリプト",
+            "ビルドプロファイル"
         };
         ImGui::BeginChild(
             "ProjectSettingsCategories",
-            ImVec2{ 150.0f, -96.0f },
+            ImVec2{ 175.0f, -96.0f },
             true);
         for (std::size_t index = 0;
             index < categories.size();
@@ -1676,6 +1872,9 @@ namespace LamaPon
         case 6:
             DrawProjectSettingsScriptingSection();
             break;
+        case 7:
+            DrawProjectSettingsBuildSection();
+            break;
         default:
             DrawProjectSettingsGameSection();
             break;
@@ -1693,100 +1892,10 @@ namespace LamaPon
         }
 
         ImGui::Spacing();
-        if (ImGui::Button("保存", ImVec2{ 100.0f, 0.0f }))
+        if (ImGui::Button("保存", ImVec2{ 100.0f, 0.0f })
+            && SaveProjectSettingsDraft())
         {
-            try
-            {
-                ProjectSettings settings;
-                settings.gameName =
-                    m_projectGameNameBuffer.data();
-                settings.windowWidth =
-                    static_cast<std::uint32_t>(
-                        std::max(m_projectWindowSize[0], 0));
-                settings.windowHeight =
-                    static_cast<std::uint32_t>(
-                        std::max(m_projectWindowSize[1], 0));
-                settings.startupScene =
-                    PathFromUtf8(
-                        m_projectStartupSceneBuffer.data());
-                settings.gameIcon =
-                    PathFromUtf8(
-                        m_projectGameIconBuffer.data());
-                settings.splashScreenEnabled =
-                    m_projectSplashScreenDraft;
-                settings.graphics =
-                    ClampGraphicsSettings(
-                        m_projectGraphicsDraft);
-                settings.viewport = m_projectViewportDraft;
-                settings.physics = m_projectPhysicsDraft;
-                settings.inputActions =
-                    m_projectInputActionsDraft;
-                settings.tags = m_projectTagsDraft;
-                settings.scriptEditorPath =
-                    m_projectScriptEditorDraft;
-                settings.stripShaderSourceOnExport =
-                    m_projectStripShaderSourceDraft;
-                settings.autoBuildGameModuleOnSave =
-                    m_projectAutoBuildDraft;
-                settings.inspectorDecimals =
-                    static_cast<std::uint32_t>(
-                        std::clamp(
-                            m_projectInspectorDecimalsDraft,
-                            0,
-                            6));
-                ValidateProjectSettings(settings);
-
-                const auto startupScene =
-                    m_graphics.Assets().AssetRoot()
-                    / settings.startupScene;
-                if (!std::filesystem::is_regular_file(
-                    startupScene))
-                {
-                    throw std::runtime_error(
-                        "起動シーンが見つかりません: "
-                        + PathToUtf8(settings.startupScene));
-                }
-                if (!settings.gameIcon.empty()
-                    && !std::filesystem::is_regular_file(
-                        m_graphics.Assets().AssetRoot()
-                        / settings.gameIcon))
-                {
-                    throw std::runtime_error(
-                        "ゲームアイコンが見つかりません: "
-                        + PathToUtf8(settings.gameIcon));
-                }
-                if (!settings.scriptEditorPath.empty()
-                    && !std::filesystem::is_regular_file(
-                        settings.scriptEditorPath))
-                {
-                    throw std::runtime_error(
-                        "スクリプトエディターが見つかりません: "
-                        + PathToUtf8(settings.scriptEditorPath));
-                }
-
-                m_projectSettings = std::move(settings);
-                SaveProjectConfiguration();
-                m_graphics.Input().SetActions(
-                    m_projectSettings.inputActions);
-                m_graphics.SetGraphicsSettings(
-                    m_projectSettings.graphics);
-                m_scene.SetRegisteredTags(
-                    m_projectSettings.tags);
-                SetStatus(
-                    "プロジェクト設定を保存しました: "
-                    + m_projectSettings.gameName);
-                m_projectSettingsError.clear();
-                ImGui::CloseCurrentPopup();
-            }
-            catch (const std::exception& exception)
-            {
-                m_projectSettingsError =
-                    exception.what();
-                SetStatus(
-                    "プロジェクト設定を保存できませんでした: "
-                    + m_projectSettingsError,
-                    true);
-            }
+            ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
         if (ImGui::Button("キャンセル"))
@@ -1805,8 +1914,30 @@ namespace LamaPon
         m_gameExportDialog->Open(m_graphics.Assets().AssetRoot().parent_path());
     }
 
+    void EditorLayer::RequestGameExportDialog(
+        const GameExportTarget target)
+    {
+        m_requestedGameExportTarget = target;
+    }
+
     void EditorLayer::DrawGameExportDialog()
     {
+        if (m_requestedGameExportTarget.has_value()
+            && !ImGui::IsPopupOpen(
+                "プロジェクト設定とビルド##ProjectSettings"))
+        {
+            if (!m_gameExportDialog)
+            {
+                m_gameExportDialog =
+                    std::make_unique<GameExportDialog>();
+            }
+            m_gameExportDialog->SelectTarget(
+                *m_requestedGameExportTarget);
+            m_gameExportDialog->Open(
+                m_graphics.Assets().AssetRoot().
+                    parent_path());
+            m_requestedGameExportTarget.reset();
+        }
         if (!m_gameExportDialog) return;
         // UIとワーカーは専用担当へ渡し、Sceneの保存はUIスレッドで完了します。
         m_gameExportDialog->Draw(GameExportDialogContext{

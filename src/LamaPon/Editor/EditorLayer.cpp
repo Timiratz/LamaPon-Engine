@@ -11,22 +11,29 @@
 #include "LamaPon/Components/AudioSourceComponent.h"
 #include "LamaPon/Components/CameraComponent.h"
 #include "LamaPon/Components/DirectionalLightComponent.h"
+#include "LamaPon/Components/Light2DComponent.h"
+#include "LamaPon/Components/MeshCollider3DComponent.h"
 #include "LamaPon/Components/MeshRendererComponent.h"
 #include "LamaPon/Components/ModelRendererComponent.h"
 #include "LamaPon/Components/ParticleSystemComponent.h"
+#include "LamaPon/Components/PointLightComponent.h"
+#include "LamaPon/Components/SpotLightComponent.h"
 #include "LamaPon/Components/UICanvasComponent.h"
 #include "LamaPon/Components/UIButtonComponent.h"
 #include "LamaPon/Components/UILayoutGroupComponent.h"
 #include "LamaPon/Components/RigidbodyComponent.h"
+#include "LamaPon/Components/SpriteParticles2DComponent.h"
 #include "LamaPon/Components/SpriteRendererComponent.h"
 #include "LamaPon/Components/TilemapComponent.h"
 #include "LamaPon/Components/TransformAnimatorComponent.h"
+#include "LamaPon/Components/UIImageComponent.h"
 #include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Core/Log.h"
 #include "LamaPon/Core/PlayerPrefs.h"
 #include "LamaPon/Core/Profiler.h"
 #include "LamaPon/Core/SaveData.h"
 #include "LamaPon/Core/Time.h"
+#include "LamaPon/Core/Version.h"
 #include "LamaPon/Graphics/DebugRenderer.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Graphics/PngWriter.h"
@@ -79,6 +86,9 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
 namespace
 {
     constexpr float ToolbarHeight = 52.0f;
+    // 新しい公式サイトが決まったら、このURLだけを差し替えます。
+    constexpr wchar_t OnlineManualUrl[] =
+        L"https://lamapon-wiki.lamapon.workers.dev";
 
     bool HasSceneExtension(const std::filesystem::path& path)
     {
@@ -271,6 +281,7 @@ namespace LamaPon
         // 起動経路では直前に SetAssetRoot が走査を終えています。
         RefreshAssets(true);
         CreateDefaultEditorPresets();
+        RegisterBuiltInEditorExtensions();
         std::string projectSettingsError;
         try
         {
@@ -343,6 +354,9 @@ namespace LamaPon
         catch (const std::exception&)
         {
         }
+
+        // 拡張機能の終了処理はImGuiコンテキストが有効なうちに行います。
+        m_editorExtensions.Shutdown();
 
         if (m_dx11Initialized)
         {
@@ -1503,6 +1517,11 @@ namespace LamaPon
                 ? GameExportTarget::Web : GameExportTarget::Windows);
             return;
         }
+        if (show == "help")
+        {
+            OpenHelpCenter();
+            return;
+        }
         if (show.empty())
         {
             return;
@@ -1527,7 +1546,7 @@ namespace LamaPon
         {
             // カテゴリー名はDrawProjectSettingsDialogと同じ順にします。
             // ASCIIだけを扱う自動化スクリプト向けに別名も受け付けます。
-            constexpr std::array<const char*, 7>
+            constexpr std::array<const char*, 8>
                 categories{
                     "ゲーム",
                     "グラフィック",
@@ -1535,9 +1554,10 @@ namespace LamaPon
                     "物理",
                     "タグ",
                     "入力",
-                    "スクリプト"
+                    "スクリプト",
+                    "ビルドプロファイル"
                 };
-            constexpr std::array<const char*, 7>
+            constexpr std::array<const char*, 8>
                 aliases{
                     "game",
                     "graphics",
@@ -1545,7 +1565,8 @@ namespace LamaPon
                     "physics",
                     "tags",
                     "input",
-                    "scripts"
+                    "scripts",
+                    "build"
                 };
             const std::string category =
                 show.substr(settingsPrefix.size());
@@ -1643,6 +1664,7 @@ namespace LamaPon
         UpdateExternalProjectSettings();
         UpdateProjectMenus();
         UpdateScriptAutoBuild();
+        m_editorExtensions.Update();
         const bool editorLocked =
             m_gameModuleBuildProcess != nullptr;
         if (editorLocked)
@@ -1690,21 +1712,17 @@ namespace LamaPon
         ImGui::BeginDisabled(editorLocked);
         DrawToolbar();
         DrawDockSpace();
-        DrawConsole();
-        DrawPerformancePanel();
+        DrawRegisteredPanels();
         DrawProjectPanels();
-        DrawPersistencePanel();
         DrawHierarchy();
-        DrawAssetBrowser();
         DrawViewport();
         DrawInspector();
-        DrawTilePalette();
-        DrawPackagesPanel();
         DrawPackageBuildDialog();
         DrawAnimationTimeline();
         DrawAnimatorControllerGraph();
         DrawProjectSettingsDialog();
         DrawGameExportDialog();
+        DrawHelpCenter();
         ImGui::EndDisabled();
 
         DrawGameModuleBuildOverlay();
@@ -2653,21 +2671,12 @@ namespace LamaPon
                 }
                 ImGui::Separator();
                 if (ImGui::MenuItem(
-                    "プロジェクト設定...",
+                    "プロジェクト設定とビルド...",
                     nullptr,
                     false,
                     !m_playing))
                 {
                     OpenProjectSettingsDialog();
-                }
-                if (ImGui::MenuItem(
-                    "ゲームをエクスポート...",
-                    nullptr,
-                    false,
-                    !m_playing
-                        && !m_scenePath.empty()))
-                {
-                    OpenGameExportDialog();
                 }
                 ImGui::Separator();
                 if (ImGui::MenuItem("終了", "Alt+F4"))
@@ -2754,8 +2763,8 @@ namespace LamaPon
                     m_scene.FindGameObject(
                         m_selectedObjectId) != nullptr;
                 if (ImGui::MenuItem(
-                    "空のルートを作成",
-                    nullptr,
+                    "空のGameObjectを作成",
+                    "Ctrl+Shift+N",
                     false,
                     !m_playing))
                 {
@@ -2763,20 +2772,91 @@ namespace LamaPon
                 }
                 if (ImGui::MenuItem(
                     "空の子を作成",
-                    nullptr,
+                    "Alt+Shift+N",
                     false,
                     !m_playing && hasSelection))
                 {
                     CreateChildGameObject();
                 }
                 ImGui::Separator();
-                if (ImGui::BeginMenu("UI"))
+                if (ImGui::BeginMenu("2Dオブジェクト", !m_playing))
                 {
-                    if (ImGui::MenuItem(
-                        "Canvas",
-                        nullptr,
-                        false,
-                        !m_playing))
+                    if (ImGui::MenuItem("スプライト"))
+                    {
+                        CreateBuiltInGameObject(
+                            BuiltInGameObjectKind::Sprite);
+                    }
+                    ImGui::EndMenu();
+                }
+                if (ImGui::BeginMenu("3Dオブジェクト", !m_playing))
+                {
+                    if (ImGui::MenuItem("立方体"))
+                    {
+                        CreateBuiltInGameObject(
+                            BuiltInGameObjectKind::Cube);
+                    }
+                    if (ImGui::MenuItem("球"))
+                    {
+                        CreateBuiltInGameObject(
+                            BuiltInGameObjectKind::Sphere);
+                    }
+                    if (ImGui::MenuItem("円柱"))
+                    {
+                        CreateBuiltInGameObject(
+                            BuiltInGameObjectKind::Cylinder);
+                    }
+                    if (ImGui::MenuItem("平面"))
+                    {
+                        CreateBuiltInGameObject(
+                            BuiltInGameObjectKind::Plane);
+                    }
+                    ImGui::EndMenu();
+                }
+                if (ImGui::BeginMenu("ライト", !m_playing))
+                {
+                    if (ImGui::MenuItem("平行光源"))
+                    {
+                        CreateBuiltInGameObject(
+                            BuiltInGameObjectKind::DirectionalLight);
+                    }
+                    if (ImGui::MenuItem("ポイントライト"))
+                    {
+                        CreateBuiltInGameObject(
+                            BuiltInGameObjectKind::PointLight);
+                    }
+                    if (ImGui::MenuItem("スポットライト"))
+                    {
+                        CreateBuiltInGameObject(
+                            BuiltInGameObjectKind::SpotLight);
+                    }
+                    if (ImGui::MenuItem("2Dライト"))
+                    {
+                        CreateBuiltInGameObject(
+                            BuiltInGameObjectKind::Light2D);
+                    }
+                    ImGui::EndMenu();
+                }
+                if (ImGui::BeginMenu("オーディオ", !m_playing))
+                {
+                    if (ImGui::MenuItem("オーディオソース"))
+                    {
+                        CreateBuiltInGameObject(
+                            BuiltInGameObjectKind::AudioSource);
+                    }
+                    ImGui::EndMenu();
+                }
+                if (ImGui::MenuItem(
+                    "カメラ",
+                    nullptr,
+                    false,
+                    !m_playing))
+                {
+                    CreateBuiltInGameObject(
+                        BuiltInGameObjectKind::Camera);
+                }
+                if (ImGui::BeginMenu("UI", !m_playing))
+                {
+                    if (ImGui::MenuItem("Canvas"))
                     {
                         CreateUICanvasGameObject();
                     }
@@ -2794,10 +2874,38 @@ namespace LamaPon
                 ImGui::EndMenu();
             }
 
+            if (ImGui::BeginMenu("コンポーネント"))
+            {
+                const bool hasSelection =
+                    m_scene.FindGameObject(
+                        m_selectedObjectId) != nullptr;
+                if (ImGui::MenuItem(
+                    "選択中のGameObjectに追加...",
+                    nullptr,
+                    false,
+                    !m_playing && hasSelection))
+                {
+                    // Asset Inspectorが前面でも、選択済みGameObjectの
+                    // Inspectorへ戻して追加ピッカーを開きます。
+                    m_selectedAsset.clear();
+                    m_addComponentPickerRequested = true;
+                }
+                ImGui::EndMenu();
+            }
+
             if (ImGui::BeginMenu("アセット"))
             {
+                if (ImGui::BeginMenu(
+                    "作成",
+                    !m_playing
+                        && m_gameModuleBuildProcess == nullptr))
+                {
+                    DrawCreateAssetMenuContents(
+                        m_assetDirectory);
+                    ImGui::EndMenu();
+                }
                 if (ImGui::MenuItem(
-                    "ファイルをインポート...",
+                    "新しいアセットをインポート...",
                     nullptr,
                     false,
                     !m_playing
@@ -2805,10 +2913,33 @@ namespace LamaPon
                 {
                     OpenImportAssetsDialog();
                 }
-                if (ImGui::MenuItem("アセットを更新", "F5"))
+                ImGui::Separator();
+                if (ImGui::MenuItem(
+                    "選択項目を再インポート",
+                    nullptr,
+                    false,
+                    !m_playing
+                        && m_gameModuleBuildProcess == nullptr
+                        && !m_selectedAsset.empty()))
+                {
+                    ReimportSelectedAsset();
+                }
+                if (ImGui::MenuItem(
+                    "すべてのアセットを再インポート",
+                    nullptr,
+                    false,
+                    !m_playing
+                        && m_gameModuleBuildProcess == nullptr))
+                {
+                    ReimportAllAssets();
+                }
+                if (ImGui::MenuItem(
+                    "アセット一覧を更新",
+                    "F5"))
                 {
                     RefreshAssets();
                 }
+                ImGui::Separator();
                 if (ImGui::MenuItem(
                     "選択項目をエクスプローラーで表示",
                     nullptr,
@@ -2832,26 +2963,7 @@ namespace LamaPon
                     ToggleFullscreen();
                 }
                 ImGui::Separator();
-                ImGui::MenuItem(
-                    "コンソール",
-                    nullptr,
-                    &m_consolePanelOpen);
-                ImGui::MenuItem(
-                    "パフォーマンス",
-                    nullptr,
-                    &m_performancePanelOpen);
-                ImGui::MenuItem(
-                    "セーブデータ",
-                    nullptr,
-                    &m_persistencePanelOpen);
-                ImGui::MenuItem(
-                    "アセット",
-                    nullptr,
-                    &m_assetBrowserPanelOpen);
-                ImGui::MenuItem(
-                    "タイルパレット",
-                    nullptr,
-                    &m_tilePalettePanelOpen);
+                DrawRegisteredPanelMenuItems();
                 ImGui::Separator();
                 if (ImGui::MenuItem(
                     "レイアウトを保存"))
@@ -2865,6 +2977,7 @@ namespace LamaPon
                 if (ImGui::MenuItem(
                     "標準レイアウトに戻す"))
                 {
+                    m_editorExtensions.ResetPanelVisibility();
                     m_resetDockLayout = true;
                     SetStatus(
                         "標準レイアウトへ戻しました");
@@ -2878,67 +2991,41 @@ namespace LamaPon
             // 入口なので、独立したメニューにします。
             if (ImGui::BeginMenu("拡張機能"))
             {
-                if (ImGui::MenuItem(
-                    "パッケージを探す...",
-                    nullptr,
-                    &m_packagesPanelOpen))
-                {
-                    if (m_packagesPanelOpen)
-                    {
-                        SetStatus(
-                            "公式パッケージの一覧を取得しています");
-                    }
-                }
-                ImGui::Separator();
-                if (ImGui::MenuItem(
-                    "Zipから読み込む...",
-                    nullptr,
-                    false,
-                    !m_playing))
-                {
-                    ImportPackageFromZipDialog();
-                }
-                if (ImGui::MenuItem(
-                    "パッケージを作成...",
-                    nullptr,
-                    false,
-                    !m_playing))
-                {
-                    OpenPackageBuildDialog();
-                }
-                ImGui::Separator();
-                if (ImGui::MenuItem(
-                    "インストール先を開く"))
-                {
-                    const auto packagesRoot =
-                        m_graphics.Assets().AssetRoot()
-                        / L"packages";
-                    std::error_code createError;
-                    std::filesystem::create_directories(
-                        packagesRoot,
-                        createError);
-                    ShellExecuteW(
-                        m_window,
-                        L"open",
-                        packagesRoot.c_str(),
-                        nullptr,
-                        nullptr,
-                        SW_SHOWNORMAL);
-                }
+                DrawRegisteredExtensionMenuItems();
                 ImGui::EndMenu();
             }
 
             if (ImGui::BeginMenu("ヘルプ"))
             {
-                if (ImGui::MenuItem("マニュアル"))
+                if (ImGui::MenuItem("ヘルプとサポート..."))
                 {
-                    ShellExecuteW(
-                        m_window,
-                        L"open",
-                        L"https://lamapon-wiki.lamapon.workers.dev",
-                        nullptr,
-                        nullptr,
-                        SW_SHOWNORMAL);
+                    OpenHelpCenter();
+                }
+                ImGui::Separator();
+                if (ImGui::MenuItem("オンラインマニュアル"))
+                {
+                    OpenOnlineManual();
+                }
+                if (ImGui::MenuItem("ローカルドキュメント"))
+                {
+                    OpenLocalDocumentation();
+                }
+                ImGui::Separator();
+                if (ImGui::MenuItem("コンソールを表示"))
+                {
+                    static_cast<void>(
+                        m_editorExtensions.SetPanelOpen(
+                            ConsolePanelId,
+                            true));
+                    m_focusConsoleRequested = true;
+                }
+                if (ImGui::MenuItem("エディターログを開く"))
+                {
+                    OpenEditorLog(false);
+                }
+                if (ImGui::MenuItem("ログフォルダーを開く"))
+                {
+                    OpenEditorLog(true);
                 }
                 ImGui::EndMenu();
             }
@@ -3137,6 +3224,29 @@ namespace LamaPon
 
         if (!inputOutput.WantTextInput
             && !m_playing
+            && inputOutput.KeyShift
+            && inputOutput.KeyCtrl
+            && !inputOutput.KeyAlt
+            && ImGui::IsKeyPressed(
+                ImGuiKey_N,
+                false))
+        {
+            CreateRootGameObject();
+        }
+        else if (!inputOutput.WantTextInput
+            && !m_playing
+            && inputOutput.KeyShift
+            && inputOutput.KeyAlt
+            && !inputOutput.KeyCtrl
+            && ImGui::IsKeyPressed(
+                ImGuiKey_N,
+                false))
+        {
+            CreateChildGameObject();
+        }
+
+        if (!inputOutput.WantTextInput
+            && !m_playing
             && inputOutput.KeyCtrl
             && !inputOutput.KeyShift
             && ImGui::IsKeyPressed(
@@ -3315,15 +3425,6 @@ namespace LamaPon
                 &rightId,
                 &centerId);
 
-            ImGuiID hierarchyId = leftId;
-            ImGuiID assetId{};
-            ImGui::DockBuilderSplitNode(
-                hierarchyId,
-                ImGuiDir_Down,
-                0.46f,
-                &assetId,
-                &hierarchyId);
-
             ImGuiID consoleId{};
             ImGui::DockBuilderSplitNode(
                 centerId,
@@ -3334,16 +3435,16 @@ namespace LamaPon
 
             ImGui::DockBuilderDockWindow(
                 "ヒエラルキー",
-                hierarchyId);
-            ImGui::DockBuilderDockWindow(
-                "アセット",
-                assetId);
-            ImGui::DockBuilderDockWindow(
-                "タイルパレット",
-                assetId);
+                leftId);
             ImGui::DockBuilderDockWindow(
                 "ビューポート",
                 centerId);
+            // 日常的に使うAssetを中央下の先頭タブにし、Consoleを
+            // その隣へまとめます。必要時だけ開く補助パネルも同じ
+            // ノードへ置き、画面を細かく分割しません。
+            ImGui::DockBuilderDockWindow(
+                "アセット",
+                consoleId);
             ImGui::DockBuilderDockWindow(
                 "コンソール",
                 consoleId);
@@ -3354,11 +3455,15 @@ namespace LamaPon
                 "パフォーマンス",
                 consoleId);
             ImGui::DockBuilderDockWindow(
+                "タイルパレット",
+                consoleId);
+            ImGui::DockBuilderDockWindow(
                 "インスペクター",
                 rightId);
             ImGui::DockBuilderFinish(
                 dockspaceId);
             m_resetDockLayout = false;
+            m_selectAssetTabAfterLayoutReset = true;
         }
 
         ImGui::DockSpace(
@@ -3367,19 +3472,24 @@ namespace LamaPon
         ImGui::End();
     }
 
-    void EditorLayer::DrawConsole()
+    void EditorLayer::DrawConsole(bool& open)
     {
-        if (!m_consolePanelOpen)
+        if (!open)
         {
             return;
         }
 
+        if (m_focusConsoleRequested)
+        {
+            ImGui::SetNextWindowFocus();
+            m_focusConsoleRequested = false;
+        }
         ImGui::SetNextWindowSize(
             ImVec2{ 720.0f, 230.0f },
             ImGuiCond_FirstUseEver);
         if (!ImGui::Begin(
-                "コンソール",
-                &m_consolePanelOpen,
+            "コンソール",
+                &open,
                 ImGuiWindowFlags_NoCollapse))
         {
             ImGui::End();
@@ -3660,9 +3770,294 @@ namespace LamaPon
         ImGui::End();
     }
 
-    void EditorLayer::DrawPerformancePanel()
+    void EditorLayer::OpenHelpCenter()
     {
-        if (!m_performancePanelOpen)
+        m_helpCenterRequested = true;
+    }
+
+    std::filesystem::path
+        EditorLayer::LocalDocumentationIndexPath() const
+    {
+        const auto executableDirectory =
+            ExecutableDirectory();
+        const std::array candidates{
+            m_engineRoot / L"docs" / L"index.md",
+            executableDirectory / L"docs" / L"index.md",
+            executableDirectory.parent_path()
+                / L"docs" / L"index.md"
+        };
+        for (const auto& candidate : candidates)
+        {
+            std::error_code error;
+            if (std::filesystem::is_regular_file(
+                candidate,
+                error))
+            {
+                return candidate;
+            }
+        }
+        return {};
+    }
+
+    void EditorLayer::OpenOnlineManual()
+    {
+        const HINSTANCE result = ShellExecuteW(
+            m_window,
+            L"open",
+            OnlineManualUrl,
+            nullptr,
+            nullptr,
+            SW_SHOWNORMAL);
+        if (reinterpret_cast<std::intptr_t>(result) <= 32)
+        {
+            SetStatus(
+                "オンラインマニュアルを開けませんでした",
+                true);
+            return;
+        }
+        SetStatus("オンラインマニュアルを開きました");
+    }
+
+    void EditorLayer::OpenLocalDocumentation()
+    {
+        const auto documentation =
+            LocalDocumentationIndexPath();
+        if (documentation.empty())
+        {
+            SetStatus(
+                "ローカルドキュメントが見つかりませんでした",
+                true);
+            return;
+        }
+        const HINSTANCE result = ShellExecuteW(
+            m_window,
+            L"open",
+            documentation.c_str(),
+            nullptr,
+            documentation.parent_path().c_str(),
+            SW_SHOWNORMAL);
+        if (reinterpret_cast<std::intptr_t>(result) <= 32)
+        {
+            SetStatus(
+                "ローカルドキュメントを開けませんでした: "
+                    + PathToUtf8(documentation),
+                true);
+            return;
+        }
+        SetStatus(
+            "ローカルドキュメントを開きました: "
+                + PathToUtf8(documentation));
+    }
+
+    void EditorLayer::OpenEditorLog(
+        const bool openFolder)
+    {
+        const auto logPath =
+            Logger::Instance().FilePath();
+        const auto target = openFolder
+            ? logPath.parent_path()
+            : logPath;
+        std::error_code error;
+        const bool exists = openFolder
+            ? std::filesystem::is_directory(target, error)
+            : std::filesystem::is_regular_file(target, error);
+        if (target.empty() || !exists)
+        {
+            SetStatus(
+                openFolder
+                    ? "ログフォルダーが見つかりませんでした"
+                    : "エディターログがまだ作成されていません",
+                true);
+            return;
+        }
+        const HINSTANCE result = ShellExecuteW(
+            m_window,
+            L"open",
+            target.c_str(),
+            nullptr,
+            openFolder
+                ? nullptr
+                : target.parent_path().c_str(),
+            SW_SHOWNORMAL);
+        if (reinterpret_cast<std::intptr_t>(result) <= 32)
+        {
+            SetStatus(
+                openFolder
+                    ? "ログフォルダーを開けませんでした"
+                    : "エディターログを開けませんでした",
+                true);
+            return;
+        }
+        SetStatus(
+            openFolder
+                ? "ログフォルダーを開きました"
+                : "エディターログを開きました");
+    }
+
+    void EditorLayer::CopySupportInformation()
+    {
+        const auto projectRoot =
+            ProjectSettingsPath().parent_path().
+                parent_path();
+        const auto logPath =
+            Logger::Instance().FilePath();
+        std::ostringstream information;
+        information
+            << "LamaPon Engine: " << VersionString
+            << '\n'
+            << "Revision: " << BuildRevision
+            << '\n'
+            << "Build configuration: "
+            << m_buildConfiguration
+            << '\n'
+            << "Safe mode: "
+            << (m_safeMode ? "yes" : "no")
+            << '\n'
+            << "Project: " << PathToUtf8(projectRoot)
+            << '\n'
+            << "Scene: "
+            << (m_scenePath.empty()
+                ? "(unsaved)"
+                : PathToUtf8(m_scenePath))
+            << '\n'
+            << "Log: " << PathToUtf8(logPath);
+        const std::string text = information.str();
+        ImGui::SetClipboardText(text.c_str());
+        SetStatus("サポート情報をクリップボードへコピーしました");
+    }
+
+    void EditorLayer::DrawHelpCenter()
+    {
+        constexpr const char* popupName =
+            "ヘルプとサポート##HelpCenter";
+        if (m_helpCenterRequested)
+        {
+            ImGui::OpenPopup(popupName);
+            m_helpCenterRequested = false;
+        }
+
+        ImGui::SetNextWindowSize(
+            ImVec2{ 720.0f, 470.0f },
+            ImGuiCond_Appearing);
+        if (!ImGui::BeginPopupModal(
+            popupName,
+            nullptr,
+            ImGuiWindowFlags_None))
+        {
+            return;
+        }
+
+        ImGui::Text(
+            "LamaPon Engine %.*s",
+            static_cast<int>(VersionString.size()),
+            VersionString.data());
+        ImGui::TextDisabled(
+            "Revision: %.*s  /  %s",
+            static_cast<int>(BuildRevision.size()),
+            BuildRevision.data(),
+            m_buildConfiguration.c_str());
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        if (ImGui::BeginTable(
+            "HelpSections",
+            2,
+            ImGuiTableFlags_BordersInnerV
+                | ImGuiTableFlags_SizingStretchSame))
+        {
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted("ドキュメント");
+            ImGui::TextWrapped(
+                "オンライン版と、エンジンに同梱されたローカル版を"
+                "選べます。");
+            if (ImGui::Button(
+                "オンラインマニュアルを開く",
+                ImVec2{ -1.0f, 0.0f }))
+            {
+                OpenOnlineManual();
+            }
+            const auto documentation =
+                LocalDocumentationIndexPath();
+            ImGui::BeginDisabled(documentation.empty());
+            if (ImGui::Button(
+                "ローカルドキュメントを開く",
+                ImVec2{ -1.0f, 0.0f }))
+            {
+                OpenLocalDocumentation();
+            }
+            ImGui::EndDisabled();
+            ImGui::TextDisabled(
+                "%s",
+                documentation.empty()
+                    ? "ローカル版は見つかりませんでした"
+                    : "場所: docs/index.md");
+            if (!documentation.empty()
+                && ImGui::IsItemHovered())
+            {
+                ImGui::SetTooltip(
+                    "%s",
+                    PathToUtf8(documentation).c_str());
+            }
+
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted("診断とサポート");
+            ImGui::TextWrapped(
+                "Consoleとログを確認し、問い合わせに必要な環境情報を"
+                "まとめてコピーできます。");
+            if (ImGui::Button(
+                "コンソールを表示",
+                ImVec2{ -1.0f, 0.0f }))
+            {
+                static_cast<void>(
+                    m_editorExtensions.SetPanelOpen(
+                        ConsolePanelId,
+                        true));
+                m_focusConsoleRequested = true;
+                ImGui::CloseCurrentPopup();
+            }
+            if (ImGui::Button(
+                "エディターログを開く",
+                ImVec2{ -1.0f, 0.0f }))
+            {
+                OpenEditorLog(false);
+            }
+            if (ImGui::Button(
+                "ログフォルダーを開く",
+                ImVec2{ -1.0f, 0.0f }))
+            {
+                OpenEditorLog(true);
+            }
+            if (ImGui::Button(
+                "サポート情報をコピー",
+                ImVec2{ -1.0f, 0.0f }))
+            {
+                CopySupportInformation();
+            }
+            ImGui::EndTable();
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::TextWrapped(
+            "ログ: %s",
+            PathToUtf8(
+                Logger::Instance().FilePath()).c_str());
+        ImGui::TextDisabled(
+            "不具合を報告するときは、サポート情報とログを添えると"
+            "原因を追いやすくなります。");
+        ImGui::Spacing();
+        if (ImGui::Button(
+            "閉じる",
+            ImVec2{ 100.0f, 0.0f }))
+        {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
+    void EditorLayer::DrawPerformancePanel(bool& open)
+    {
+        if (!open)
         {
             return;
         }
@@ -3671,8 +4066,8 @@ namespace LamaPon
             ImVec2{ 560.0f, 300.0f },
             ImGuiCond_FirstUseEver);
         if (!ImGui::Begin(
-                "パフォーマンス",
-                &m_performancePanelOpen,
+            "パフォーマンス",
+                &open,
                 ImGuiWindowFlags_NoCollapse))
         {
             ImGui::End();
@@ -4030,9 +4425,9 @@ namespace LamaPon
         ImGui::End();
     }
 
-    void EditorLayer::DrawPersistencePanel()
+    void EditorLayer::DrawPersistencePanel(bool& open)
     {
-        if (!m_persistencePanelOpen)
+        if (!open)
         {
             return;
         }
@@ -4041,8 +4436,8 @@ namespace LamaPon
             ImVec2{ 720.0f, 260.0f },
             ImGuiCond_FirstUseEver);
         if (!ImGui::Begin(
-                "セーブデータ",
-                &m_persistencePanelOpen,
+            "セーブデータ",
+                &open,
                 ImGuiWindowFlags_NoCollapse))
         {
             ImGui::End();
@@ -5073,6 +5468,7 @@ namespace LamaPon
     {
         auto& gameObject = m_scene.CreateGameObject("GameObject");
         m_selectedObjectId = gameObject.Id();
+        m_selectedAsset.clear();
         RecordHistory();
         SetStatus("ルートGameObjectを作成しました");
     }
@@ -5088,17 +5484,128 @@ namespace LamaPon
         auto& gameObject = m_scene.CreateGameObject("GameObject");
         gameObject.SetParent(parent);
         m_selectedObjectId = gameObject.Id();
+        m_selectedAsset.clear();
         RecordHistory();
         SetStatus("子GameObjectを作成しました");
     }
 
+    void EditorLayer::CreateBuiltInGameObject(
+        const BuiltInGameObjectKind kind)
+    {
+        if (m_playing)
+        {
+            return;
+        }
+
+        const char* name = "GameObject";
+        switch (kind)
+        {
+        case BuiltInGameObjectKind::Camera:
+            name = "カメラ";
+            break;
+        case BuiltInGameObjectKind::Sprite:
+            name = "スプライト";
+            break;
+        case BuiltInGameObjectKind::Cube:
+            name = "立方体";
+            break;
+        case BuiltInGameObjectKind::Sphere:
+            name = "球";
+            break;
+        case BuiltInGameObjectKind::Cylinder:
+            name = "円柱";
+            break;
+        case BuiltInGameObjectKind::Plane:
+            name = "平面";
+            break;
+        case BuiltInGameObjectKind::DirectionalLight:
+            name = "平行光源";
+            break;
+        case BuiltInGameObjectKind::PointLight:
+            name = "ポイントライト";
+            break;
+        case BuiltInGameObjectKind::SpotLight:
+            name = "スポットライト";
+            break;
+        case BuiltInGameObjectKind::Light2D:
+            name = "2Dライト";
+            break;
+        case BuiltInGameObjectKind::AudioSource:
+            name = "オーディオソース";
+            break;
+        case BuiltInGameObjectKind::UICanvas:
+            name = "Canvas";
+            break;
+        }
+
+        auto& gameObject = m_scene.CreateGameObject(name);
+        switch (kind)
+        {
+        case BuiltInGameObjectKind::Camera:
+        {
+            auto& camera =
+                gameObject.AddComponent<CameraComponent>();
+            if (m_scene.MainCamera() == nullptr)
+            {
+                m_scene.SetMainCamera(camera);
+            }
+            break;
+        }
+        case BuiltInGameObjectKind::Sprite:
+            gameObject.AddComponent<SpriteRendererComponent>();
+            break;
+        case BuiltInGameObjectKind::Cube:
+            gameObject.AddComponent<MeshRendererComponent>(
+                PrimitiveShape::Cube);
+            break;
+        case BuiltInGameObjectKind::Sphere:
+            gameObject.AddComponent<MeshRendererComponent>(
+                PrimitiveShape::Sphere);
+            break;
+        case BuiltInGameObjectKind::Cylinder:
+            gameObject.AddComponent<MeshRendererComponent>(
+                PrimitiveShape::Cylinder);
+            break;
+        case BuiltInGameObjectKind::Plane:
+            gameObject.AddComponent<MeshRendererComponent>(
+                PrimitiveShape::Plane);
+            break;
+        case BuiltInGameObjectKind::DirectionalLight:
+            gameObject.GetTransform().SetEulerAngles({
+                DirectX::XMConvertToRadians(-45.0f),
+                DirectX::XMConvertToRadians(-35.0f),
+                0.0f
+            });
+            gameObject.AddComponent<
+                DirectionalLightComponent>();
+            break;
+        case BuiltInGameObjectKind::PointLight:
+            gameObject.AddComponent<PointLightComponent>();
+            break;
+        case BuiltInGameObjectKind::SpotLight:
+            gameObject.AddComponent<SpotLightComponent>();
+            break;
+        case BuiltInGameObjectKind::Light2D:
+            gameObject.AddComponent<Light2DComponent>();
+            break;
+        case BuiltInGameObjectKind::AudioSource:
+            gameObject.AddComponent<AudioSourceComponent>();
+            break;
+        case BuiltInGameObjectKind::UICanvas:
+            gameObject.AddComponent<UICanvasComponent>();
+            break;
+        }
+
+        m_selectedObjectId = gameObject.Id();
+        m_selectedAsset.clear();
+        RecordHistory();
+        SetStatus(std::string{ name } + "を作成しました");
+    }
+
     void EditorLayer::CreateUICanvasGameObject()
     {
-        auto& gameObject = m_scene.CreateGameObject("Canvas");
-        gameObject.AddComponent<UICanvasComponent>();
-        m_selectedObjectId = gameObject.Id();
-        RecordHistory();
-        SetStatus("UI Canvasを作成しました");
+        CreateBuiltInGameObject(
+            BuiltInGameObjectKind::UICanvas);
     }
 
     void EditorLayer::DeleteSelectedGameObject()
@@ -5260,20 +5767,58 @@ namespace LamaPon
     void EditorLayer::ReimportSelectedAsset()
     {
         if (m_selectedAsset.empty()
-            || m_playing)
+            || m_playing
+            || m_gameModuleBuildProcess != nullptr)
         {
             return;
         }
+
+        ReimportAssets(m_selectedAsset);
+    }
+
+    void EditorLayer::ReimportAllAssets()
+    {
+        if (m_playing
+            || m_gameModuleBuildProcess != nullptr)
+        {
+            return;
+        }
+
+        ReimportAssets(std::nullopt);
+    }
+
+    void EditorLayer::ReimportAssets(
+        const std::optional<std::filesystem::path>& asset)
+    {
+        const bool allAssets = !asset.has_value();
+        const auto matches =
+            [&asset, allAssets](
+                const std::filesystem::path& reference)
+            {
+                return !reference.empty()
+                    && (allAssets
+                        || IsSameAssetReference(
+                            reference,
+                            *asset));
+            };
 
         try
         {
             static_cast<void>(
                 m_graphics.Assets().Database().Refresh(
                     true));
-            m_graphics.Assets().Clear();
-            if (IsAudioAsset(m_selectedAsset))
+            if (allAssets)
             {
+                m_graphics.Assets().Clear();
                 m_graphics.Audio().Clear();
+            }
+            else
+            {
+                m_graphics.Assets().Invalidate(*asset);
+                if (IsAudioAsset(*asset))
+                {
+                    m_graphics.Audio().Clear();
+                }
             }
 
             for (const auto& gameObject :
@@ -5283,20 +5828,24 @@ namespace LamaPon
                         gameObject->GetComponent<
                             SpriteRendererComponent>();
                     sprite != nullptr
-                    && IsSameAssetReference(
-                        sprite->TexturePath(),
-                        m_selectedAsset))
+                    && matches(sprite->TexturePath()))
                 {
                     sprite->SetTexturePath(
                         sprite->TexturePath());
+                }
+                if (auto* sprite =
+                        gameObject->GetComponent<
+                            SpriteRendererComponent>();
+                    sprite != nullptr
+                    && matches(sprite->ShaderPath()))
+                {
+                    sprite->ReloadShader();
                 }
                 if (auto* audio =
                         gameObject->GetComponent<
                             AudioSourceComponent>();
                     audio != nullptr
-                    && IsSameAssetReference(
-                        audio->AudioPath(),
-                        m_selectedAsset))
+                    && matches(audio->AudioPath()))
                 {
                     audio->SetAudioPath(
                         audio->AudioPath());
@@ -5306,15 +5855,12 @@ namespace LamaPon
                             TransformAnimatorComponent>();
                     animator != nullptr)
                 {
-                    if (IsSameAssetReference(
-                            animator->ControllerPath(),
-                            m_selectedAsset))
+                    if (matches(
+                            animator->ControllerPath()))
                     {
                         animator->ReloadController();
                     }
-                    else if (IsSameAssetReference(
-                            animator->ClipPath(),
-                            m_selectedAsset))
+                    if (matches(animator->ClipPath()))
                     {
                         animator->ReloadClip();
                     }
@@ -5324,43 +5870,58 @@ namespace LamaPon
                             ModelRendererComponent>();
                     model != nullptr)
                 {
-                    if (IsSameAssetReference(
-                            model->AnimationControllerPath(),
-                            m_selectedAsset))
+                    if (matches(
+                            model->AnimationControllerPath()))
                     {
                         model->ReloadAnimationController();
                     }
-                    if (IsSameAssetReference(
-                            model->ModelPath(),
-                            m_selectedAsset))
+                    if (matches(model->ModelPath()))
                     {
                         model->SetModelPath(
                             model->ModelPath());
                     }
-                    if (IsSameAssetReference(
-                            model->AlbedoTexturePath(),
-                            m_selectedAsset))
+                    if (matches(
+                            model->MaterialAssetPath()))
+                    {
+                        model->ReloadMaterialAsset();
+                    }
+                    if (matches(
+                            model->AlbedoTexturePath()))
                     {
                         model->SetAlbedoTexturePath(
                             model->AlbedoTexturePath());
                     }
-                    if (IsSameAssetReference(
-                            model->NormalTexturePath(),
-                            m_selectedAsset))
+                    if (matches(
+                            model->NormalTexturePath()))
                     {
                         model->SetNormalTexturePath(
                             model->NormalTexturePath());
                     }
-                    if (IsSameAssetReference(
-                            model->MaterialAssetPath(),
-                            m_selectedAsset))
+                    if (matches(
+                            model->RoughnessTexturePath()))
                     {
-                        model->SetMaterialAssetPath(
-                            model->MaterialAssetPath());
+                        model->SetRoughnessTexturePath(
+                            model->RoughnessTexturePath());
                     }
-                    if (IsSameAssetReference(
-                            model->ShaderPath(),
-                            m_selectedAsset))
+                    if (matches(
+                            model->MetallicTexturePath()))
+                    {
+                        model->SetMetallicTexturePath(
+                            model->MetallicTexturePath());
+                    }
+                    if (matches(
+                            model->OcclusionTexturePath()))
+                    {
+                        model->SetOcclusionTexturePath(
+                            model->OcclusionTexturePath());
+                    }
+                    if (matches(
+                            model->EmissiveTexturePath()))
+                    {
+                        model->SetEmissiveTexturePath(
+                            model->EmissiveTexturePath());
+                    }
+                    if (matches(model->ShaderPath()))
                     {
                         model->ReloadShader();
                     }
@@ -5370,46 +5931,145 @@ namespace LamaPon
                             MeshRendererComponent>();
                     mesh != nullptr)
                 {
-                    if (IsSameAssetReference(
-                            mesh->AlbedoTexturePath(),
-                            m_selectedAsset))
+                    if (matches(
+                            mesh->MaterialAssetPath()))
+                    {
+                        mesh->ReloadMaterialAsset();
+                    }
+                    if (matches(
+                            mesh->AlbedoTexturePath()))
                     {
                         mesh->SetAlbedoTexturePath(
                             mesh->AlbedoTexturePath());
                     }
-                    if (IsSameAssetReference(
-                            mesh->NormalTexturePath(),
-                            m_selectedAsset))
+                    if (matches(
+                            mesh->NormalTexturePath()))
                     {
                         mesh->SetNormalTexturePath(
                             mesh->NormalTexturePath());
                     }
-                    if (IsSameAssetReference(
-                            mesh->MaterialAssetPath(),
-                            m_selectedAsset))
+                    if (matches(
+                            mesh->RoughnessTexturePath()))
                     {
-                        mesh->SetMaterialAssetPath(
-                            mesh->MaterialAssetPath());
+                        mesh->SetRoughnessTexturePath(
+                            mesh->RoughnessTexturePath());
                     }
-                    if (IsSameAssetReference(
-                            mesh->ShaderPath(),
-                            m_selectedAsset))
+                    if (matches(
+                            mesh->MetallicTexturePath()))
+                    {
+                        mesh->SetMetallicTexturePath(
+                            mesh->MetallicTexturePath());
+                    }
+                    if (matches(
+                            mesh->OcclusionTexturePath()))
+                    {
+                        mesh->SetOcclusionTexturePath(
+                            mesh->OcclusionTexturePath());
+                    }
+                    if (matches(
+                            mesh->EmissiveTexturePath()))
+                    {
+                        mesh->SetEmissiveTexturePath(
+                            mesh->EmissiveTexturePath());
+                    }
+                    if (matches(mesh->ShaderPath()))
                     {
                         mesh->ReloadShader();
                     }
                 }
+                if (auto* particles =
+                        gameObject->GetComponent<
+                            ParticleSystemComponent>();
+                    particles != nullptr)
+                {
+                    if (matches(particles->TexturePath()))
+                    {
+                        particles->SetTexturePath(
+                            particles->TexturePath());
+                    }
+                    if (matches(
+                            particles->AuxiliaryTexturePath()))
+                    {
+                        particles->SetAuxiliaryTexturePath(
+                            particles->AuxiliaryTexturePath());
+                    }
+                    if (matches(particles->ShaderPath()))
+                    {
+                        particles->ReloadShader();
+                    }
+                }
+                if (auto* particles2D =
+                        gameObject->GetComponent<
+                            SpriteParticles2DComponent>();
+                    particles2D != nullptr
+                    && matches(particles2D->TexturePath()))
+                {
+                    particles2D->SetTexturePath(
+                        particles2D->TexturePath());
+                }
+                if (auto* tilemap =
+                        gameObject->GetComponent<
+                            TilemapComponent>();
+                    tilemap != nullptr
+                    && matches(tilemap->TexturePath()))
+                {
+                    tilemap->SetTexturePath(
+                        tilemap->TexturePath());
+                }
+                if (auto* button =
+                        gameObject->GetComponent<
+                            UIButtonComponent>();
+                    button != nullptr
+                    && matches(button->TexturePath()))
+                {
+                    button->SetTexturePath(
+                        button->TexturePath());
+                }
+                if (auto* image =
+                        gameObject->GetComponent<
+                            UIImageComponent>();
+                    image != nullptr
+                    && matches(image->TexturePath()))
+                {
+                    image->SetTexturePath(
+                        image->TexturePath());
+                }
+                if (auto* collider =
+                        gameObject->GetComponent<
+                            MeshCollider3DComponent>();
+                    collider != nullptr
+                    && matches(collider->ModelPath()))
+                {
+                    collider->SetModelPath(
+                        collider->ModelPath());
+                }
             }
-            RefreshAssets();
-            SetStatus(
-                "再インポートしました: "
-                + PathToUtf8(m_selectedAsset));
+            RefreshAssets(true);
+            if (allAssets)
+            {
+                SetStatus(
+                    "すべてのアセットを再インポートしました（"
+                    + std::to_string(
+                        m_graphics.Assets().Database().
+                            Assets().size())
+                    + "件）");
+            }
+            else
+            {
+                SetStatus(
+                    "再インポートしました: "
+                    + PathToUtf8(*asset));
+            }
         }
         catch (const std::exception& exception)
         {
             SetStatus(
                 std::string{
-                    "再インポートに失敗しました: "
-                } + exception.what(),
+                    allAssets
+                        ? "すべての再インポートに失敗しました: "
+                        : "再インポートに失敗しました: "
+                }
+                    + exception.what(),
                 true);
         }
     }

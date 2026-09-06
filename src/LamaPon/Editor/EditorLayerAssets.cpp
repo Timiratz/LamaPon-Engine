@@ -28,6 +28,7 @@
 
 #include <commdlg.h>
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <nlohmann/json.hpp>
 #include <shellapi.h>
 
@@ -597,10 +598,11 @@ namespace LamaPon
             ImGui::Separator();
         }
         if (ImGui::MenuItem(
-            "再インポート",
+            "このアセットを再インポート",
             nullptr,
             false,
-            !m_playing))
+            !m_playing
+                && m_gameModuleBuildProcess == nullptr))
         {
             m_selectedAsset = asset;
             ReimportSelectedAsset();
@@ -690,8 +692,17 @@ namespace LamaPon
             m_assetDirectory = directory;
             m_selectedAsset.clear();
         }
+        ImGui::Separator();
+        if (ImGui::BeginMenu(
+            "作成",
+            !m_playing
+                && m_gameModuleBuildProcess == nullptr))
+        {
+            DrawCreateAssetMenuContents(directory);
+            ImGui::EndMenu();
+        }
         if (ImGui::MenuItem(
-            "ファイルをインポート...",
+            "新しいアセットをインポート...",
             nullptr,
             false,
             !m_playing
@@ -701,62 +712,6 @@ namespace LamaPon
             m_selectedAsset.clear();
             OpenImportAssetsDialog();
         }
-        ImGui::Separator();
-        if (ImGui::MenuItem(
-            "新規フォルダー",
-            nullptr,
-            false,
-            !m_playing))
-        {
-            OpenCreateAssetFolderDialog(directory);
-        }
-        if (ImGui::MenuItem(
-            "新規シーン",
-            nullptr,
-            false,
-            !m_playing))
-        {
-            OpenCreateSceneDialog(directory);
-        }
-        if (ImGui::MenuItem(
-            "新規Lit Material",
-            nullptr,
-            false,
-            !m_playing))
-        {
-            OpenCreateMaterialDialog(directory);
-        }
-        if (ImGui::MenuItem(
-            "新規データアセット",
-            nullptr,
-            false,
-            !m_playing))
-        {
-            OpenCreateDataAssetDialog(directory);
-        }
-        if (ImGui::IsItemHovered(
-                ImGuiHoveredFlags_AllowWhenDisabled))
-        {
-            ImGui::SetTooltip(
-                "GameObjectへ付けずに持てるデータです"
-                "（型はGame ModuleのLAMAPON_DATA_ASSETで宣言します）");
-        }
-        if (ImGui::MenuItem(
-            "新規カスタムShader",
-            nullptr,
-            false,
-            !m_playing))
-        {
-            OpenCreateShaderDialog(directory);
-        }
-        if (ImGui::MenuItem(
-            "新規C++ Script",
-            nullptr,
-            false,
-            !m_playing))
-        {
-            OpenCreateCppScriptDialog(directory);
-        }
         if (ImGui::MenuItem(
             "Game Moduleをビルド",
             nullptr,
@@ -765,6 +720,8 @@ namespace LamaPon
         {
             static_cast<void>(BuildGameModule());
         }
+        ImGui::Separator();
+
         if (ImGui::MenuItem(
             "名前変更",
             nullptr,
@@ -794,6 +751,72 @@ namespace LamaPon
         if (ImGui::MenuItem("Explorerで開く"))
         {
             OpenAssetInExplorer(directory, false);
+        }
+    }
+
+    void EditorLayer::DrawCreateAssetMenuContents(
+        const std::filesystem::path& directory)
+    {
+        if (ImGui::MenuItem(
+            "フォルダー",
+            nullptr,
+            false,
+            !m_playing
+                && m_gameModuleBuildProcess == nullptr))
+        {
+            OpenCreateAssetFolderDialog(directory);
+        }
+        if (ImGui::MenuItem(
+            "シーン",
+            nullptr,
+            false,
+            !m_playing
+                && m_gameModuleBuildProcess == nullptr))
+        {
+            OpenCreateSceneDialog(directory);
+        }
+        if (ImGui::MenuItem(
+            "Lit Material",
+            nullptr,
+            false,
+            !m_playing
+                && m_gameModuleBuildProcess == nullptr))
+        {
+            OpenCreateMaterialDialog(directory);
+        }
+        if (ImGui::MenuItem(
+            "データアセット",
+            nullptr,
+            false,
+            !m_playing
+                && m_gameModuleBuildProcess == nullptr))
+        {
+            OpenCreateDataAssetDialog(directory);
+        }
+        if (ImGui::IsItemHovered(
+                ImGuiHoveredFlags_AllowWhenDisabled))
+        {
+            ImGui::SetTooltip(
+                "GameObjectへ付けずに持てるデータです"
+                "（型はGame ModuleのLAMAPON_DATA_ASSETで宣言します）");
+        }
+        if (ImGui::MenuItem(
+            "カスタムShader",
+            nullptr,
+            false,
+            !m_playing
+                && m_gameModuleBuildProcess == nullptr))
+        {
+            OpenCreateShaderDialog(directory);
+        }
+        if (ImGui::MenuItem(
+            "C++ Script",
+            nullptr,
+            false,
+            !m_playing
+                && m_gameModuleBuildProcess == nullptr))
+        {
+            OpenCreateCppScriptDialog(directory);
         }
     }
 
@@ -5146,9 +5169,9 @@ namespace LamaPon
         return m_fileTypeIcons[index];
     }
 
-    void EditorLayer::DrawAssetBrowser()
+    void EditorLayer::DrawAssetBrowser(bool& open)
     {
-        if (!m_assetBrowserPanelOpen)
+        if (!open)
         {
             return;
         }
@@ -5160,7 +5183,26 @@ namespace LamaPon
         constexpr ImGuiWindowFlags flags =
             ImGuiWindowFlags_NoCollapse;
 
-        if (!ImGui::Begin("アセット", &m_assetBrowserPanelOpen, flags))
+        const bool visible = ImGui::Begin(
+            "アセット",
+            &open,
+            flags);
+        if (m_selectAssetTabAfterLayoutReset)
+        {
+            auto* window = ImGui::GetCurrentWindow();
+            if (window->DockNode != nullptr
+                && window->DockNode->TabBar != nullptr)
+            {
+                window->DockNode->SelectedTabId =
+                    window->TabId;
+                window->DockNode->TabBar->SelectedTabId =
+                    window->TabId;
+                window->DockNode->TabBar->NextSelectedTabId =
+                    window->TabId;
+                m_selectAssetTabAfterLayoutReset = false;
+            }
+        }
+        if (!visible)
         {
             ImGui::End();
             return;
