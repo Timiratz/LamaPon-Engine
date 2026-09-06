@@ -447,6 +447,8 @@ set(LAMAPON_EDITOR_SOURCES
     src/LamaPon/Editor/ExeIconTool.h
     src/LamaPon/Editor/BgmLoopPanel.cpp
     src/LamaPon/Editor/BgmLoopPanel.h
+    src/LamaPon/Editor/VehicleParametersPanel.cpp
+    src/LamaPon/Editor/VehicleParametersPanel.h
     src/LamaPon/Editor/GameExporter.cpp
     src/LamaPon/Editor/GameExporter.h
     src/LamaPon/Editor/GameExportDialog.cpp

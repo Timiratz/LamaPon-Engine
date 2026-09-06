@@ -1,6 +1,7 @@
 #include "LamaPon/Editor/BgmLoopPanel.h"
 #include "LamaPon/Editor/EditorLayer.h"
 #include "LamaPon/Editor/GameExportDialog.h"
+#include "LamaPon/Editor/VehicleParametersPanel.h"
 
 #include "LamaPon/Editor/EditorLayerShared.h"
 
@@ -2336,6 +2337,10 @@ namespace LamaPon
                     {
                         panel.kind = ProjectPanelKind::BgmLoop;
                     }
+                    else if (type == "vehicle-parameters")
+                    {
+                        panel.kind = ProjectPanelKind::VehicleParameters;
+                    }
                     else
                     {
                         throw std::runtime_error("未対応のpanel.typeです: " + type);
@@ -2572,7 +2577,14 @@ namespace LamaPon
             {
                 continue;
             }
-            DrawProjectBgmPanel(index, panel);
+            if (panel.kind == ProjectPanelKind::BgmLoop)
+            {
+                DrawProjectBgmPanel(index, panel);
+            }
+            else
+            {
+                DrawProjectVehiclePanel(index, panel);
+            }
         }
     }
 
@@ -2595,6 +2607,35 @@ namespace LamaPon
                 LaunchProjectMenuCommand(panel.saveCommand);
             }
         });
+    }
+
+    void EditorLayer::DrawProjectVehiclePanel(
+        const std::size_t,
+        ProjectPanelDefinition& panel)
+    {
+        const auto root = ProjectSettingsPath().parent_path().parent_path();
+        const auto dataPath = root / panel.dataPath;
+        if (!m_vehicleParametersPanel
+            || !m_vehicleParametersPanel->Matches(dataPath))
+        {
+            m_vehicleParametersPanel =
+                std::make_unique<VehicleParametersPanel>(
+                    m_graphics,
+                    m_graphics.Assets(),
+                    dataPath,
+                    [this](std::string message, const bool error)
+                    { SetStatus(std::move(message), error); });
+        }
+        m_vehicleParametersPanel->Draw(
+            panel.title,
+            panel.open,
+            [&]
+            {
+                if (!panel.saveCommand.command.empty())
+                {
+                    LaunchProjectMenuCommand(panel.saveCommand);
+                }
+            });
     }
 
     void EditorLayer::DrawToolbar()
