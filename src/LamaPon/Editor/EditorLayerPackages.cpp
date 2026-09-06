@@ -567,11 +567,9 @@ namespace LamaPon
         ImGui::EndPopup();
     }
 
-    void EditorLayer::DrawPackagesPanel()
+    void EditorLayer::DrawPackagesPanel(bool& open)
     {
-        ConsumePackageWorkerResult();
-
-        if (!m_packagesPanelOpen)
+        if (!open)
         {
             return;
         }
@@ -581,7 +579,7 @@ namespace LamaPon
             ImGuiCond_FirstUseEver);
         if (!ImGui::Begin(
                 "パッケージ",
-                &m_packagesPanelOpen,
+                &open,
                 ImGuiWindowFlags_NoCollapse))
         {
             ImGui::End();

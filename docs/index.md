@@ -26,6 +26,7 @@ LamaPonのプロジェクト作成、C++スクリプト、エディター操作�
 | [コード一覧](code-reference.md) | 使える機能を宣言・引数・サンプル付きで一覧 |
 | [データアセット](data-assets.md) | ScriptableObject相当。GameObjectに依存しないデータをエディターで編集して読む |
 | [パッケージ](packages.md) | 公式パッケージのワンクリック導入・更新・削除 |
+| [エディター拡張](editor-extensions.md) | パネル、拡張メニュー、ライフサイクルの登録API |
 
 ## 機能別ガイド
 

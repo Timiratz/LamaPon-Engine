@@ -4229,6 +4229,10 @@ namespace LamaPon
         constexpr ImGuiWindowFlags inspectorFlags =
             ImGuiWindowFlags_NoCollapse;
 
+        if (m_addComponentPickerRequested)
+        {
+            ImGui::SetNextWindowFocus();
+        }
         ImGui::Begin(
             "インスペクター",
             nullptr,
@@ -4497,7 +4501,10 @@ namespace LamaPon
                 m_selectedAsset = prefabAsset;
                 m_assetDirectory =
                     prefabAsset.parent_path();
-                m_assetBrowserPanelOpen = true;
+                static_cast<void>(
+                    m_editorExtensions.SetPanelOpen(
+                        AssetBrowserPanelId,
+                        true));
                 RefreshAssets();
                 SetStatus(
                     "Prefabアセットを選択しました: "
@@ -11998,9 +12005,12 @@ namespace LamaPon
             };
 
         ImGui::Separator();
+        const bool openFromMenu = m_addComponentPickerRequested;
+        m_addComponentPickerRequested = false;
         if (ImGui::Button(
                 "コンポーネントを追加",
-                ImVec2{ -1.0f, 0.0f }))
+                ImVec2{ -1.0f, 0.0f })
+            || openFromMenu)
         {
             componentSearch.fill('\0');
             componentCategoryIndex = 0;

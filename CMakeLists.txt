@@ -427,10 +427,13 @@ set(LAMAPON_RUNTIME_SOURCES
 set(LAMAPON_EDITOR_SOURCES
     src/LamaPon/Editor/Editor.cpp
     src/LamaPon/Editor/Editor.h
+    src/LamaPon/Editor/EditorExtensionRegistry.cpp
+    src/LamaPon/Editor/EditorExtensionRegistry.h
     src/LamaPon/Editor/EditorLayer.cpp
     src/LamaPon/Editor/EditorLayer.h
     src/LamaPon/Editor/EditorLayerAnimationTools.cpp
     src/LamaPon/Editor/EditorLayerAssets.cpp
+    src/LamaPon/Editor/EditorLayerExtensions.cpp
     src/LamaPon/Editor/EditorLayerInspector.cpp
     src/LamaPon/Editor/UIComponentInspectors.cpp
     src/LamaPon/Editor/DataAssetSchema.cpp
@@ -863,6 +866,15 @@ if(BUILD_TESTING)
         $<$<CXX_COMPILER_ID:MSVC>:/permissive->
         $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
     add_test(NAME UIComponentInspectorIsolation COMMAND LamaPonUIComponentInspectorTests)
+    add_executable(LamaPonEditorExtensionRegistryTests
+        tests/EditorExtensionRegistryTests.cpp)
+    target_link_libraries(LamaPonEditorExtensionRegistryTests PRIVATE LamaPonEditor)
+    target_compile_options(LamaPonEditorExtensionRegistryTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
+    add_test(NAME EditorExtensionRegistry
+        COMMAND LamaPonEditorExtensionRegistryTests)
     foreach(test_name IN ITEMS RuntimeServices RenderSpatialIndex)
         add_executable(LamaPon${test_name}Tests tests/${test_name}Tests.cpp)
         target_link_libraries(LamaPon${test_name}Tests PRIVATE LamaPonRuntime)
