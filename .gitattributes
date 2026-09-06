@@ -1,0 +1,4 @@
+# CI definitions and scripts must keep Unix line endings on every platform.
+*.yml text eol=lf
+*.yaml text eol=lf
+*.py text eol=lf
