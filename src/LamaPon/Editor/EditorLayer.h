@@ -44,6 +44,7 @@ namespace LamaPon
     class SaveDataStore;
     class Scene;
     class TilemapComponent;
+    class VehicleParametersPanel;
     struct TextureAsset;
     enum class GameExportTarget;
 
@@ -565,7 +566,8 @@ namespace LamaPon
         };
         enum class ProjectPanelKind
         {
-            BgmLoop
+            BgmLoop,
+            VehicleParameters
         };
         struct ProjectPanelDefinition final
         {
@@ -589,6 +591,9 @@ namespace LamaPon
             std::string_view idPath);
         void DrawProjectPanels();
         void DrawProjectBgmPanel(
+            std::size_t panelIndex,
+            ProjectPanelDefinition& panel);
+        void DrawProjectVehiclePanel(
             std::size_t panelIndex,
             ProjectPanelDefinition& panel);
         void LaunchProjectMenuCommand(
@@ -874,6 +879,8 @@ namespace LamaPon
         std::vector<ProjectPanelDefinition> m_projectPanels;
         // BGMのループ範囲と試聴開始位置を波形の上で決めるパネル。
         std::unique_ptr<BgmLoopPanel> m_bgmPanel;
+        // 車種別の性能・寸法・Colliderを調整するプロジェクトパネル。
+        std::unique_ptr<VehicleParametersPanel> m_vehicleParametersPanel;
         std::uint64_t m_projectMenuManifestHash{};
         bool m_projectMenuManifestSeen{};
         double m_lastProjectMenuScanAt{ -2.0 };

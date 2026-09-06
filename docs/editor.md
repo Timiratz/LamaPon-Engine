@@ -118,7 +118,7 @@ BGMのループ範囲を調整する`bgm-loop`の例は次のとおりです。
 - `arguments`: 省略可能な文字列配列。各引数はWindows向けに個別にクォートされます
 - `workingDirectory`: 省略時はプロジェクトルート。相対パスも同ルート基準です
 - `enabledWhilePlaying`: 省略時は`false`。`true`ならPlay中もその項目を実行できます
-- `panel.type`: 組み込みパネルの種類。`bgm-loop`はBGMのループ範囲を編集します
+- `panel.type`: 組み込みパネルの種類。`bgm-loop`はBGMのループ範囲、`vehicle-parameters`は車種別の性能・寸法・Colliderを編集します
 - `panel.data`: パネルが読むプロジェクト相対のJSON
 - `panel.saveCommand` / `panel.saveArguments`: 省略可能。パネルがJSONを保存した後に追加の生成処理を実行します
 
