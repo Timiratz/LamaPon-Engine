@@ -2638,6 +2638,7 @@ namespace LamaPon
                     { SetStatus(std::move(message), error); });
         }
         m_vehicleParametersPanel->Draw(
+            *m_editorGuiRenderer,
             panel.title,
             panel.open,
             [&]

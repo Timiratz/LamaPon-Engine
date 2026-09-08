@@ -7,13 +7,10 @@
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
-#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <string_view>
 #include <vector>
-
-struct ID3D11ShaderResourceView;
 
 // EditorLayerの分割翻訳単位（EditorLayer*.cpp）で共有する
 // 小さなヘルパー群です。特定の翻訳単位でしか使わない大きな
@@ -286,14 +283,6 @@ namespace LamaPon::EditorDetail
     inline bool IsCppScriptAsset(const std::filesystem::path& path)
     {
         return Lowercase(LamaPon::PathToUtf8(path.extension())) == ".cpp";
-    }
-
-    inline ImTextureRef MakeTextureReference(ID3D11ShaderResourceView* texture)
-    {
-        return ImTextureRef{
-            static_cast<ImTextureID>(
-                reinterpret_cast<std::uintptr_t>(texture))
-        };
     }
 
     inline bool IsPathWithin(

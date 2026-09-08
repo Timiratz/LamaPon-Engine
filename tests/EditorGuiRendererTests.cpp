@@ -1,19 +1,38 @@
 #include "LamaPon/Editor/EditorGuiRenderer.h"
+#include "LamaPon/Assets/AssetManager.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
+#include "LamaPon/Graphics/RenderTarget.h"
 
 #include <Windows.h>
 #include <imgui.h>
 
+#include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
 #include <stdexcept>
+#include <vector>
 
 namespace
 {
     void Require(const bool condition, const char* message)
     {
         if (!condition) throw std::runtime_error(message);
+    }
+
+    template <typename Exception, typename Function>
+    void RequireThrows(Function&& function, const char* message)
+    {
+        try
+        {
+            function();
+        }
+        catch (const Exception&)
+        {
+            return;
+        }
+        throw std::runtime_error(message);
     }
 
     void RequireFactoryRejected(
@@ -35,6 +54,97 @@ namespace
 
     constexpr std::uint32_t Width = 96;
     constexpr std::uint32_t Height = 64;
+
+    [[nodiscard]] ImTextureID ExpectedTextureId(
+        const ID3D11ShaderResourceView* const view) noexcept
+    {
+        return static_cast<ImTextureID>(
+            reinterpret_cast<std::uintptr_t>(view));
+    }
+
+    [[nodiscard]] LamaPon::TextureAsset CreateSolidTexture(
+        LamaPon::GraphicsDevice& graphics,
+        const std::array<std::uint8_t, 4>& color)
+    {
+        D3D11_TEXTURE2D_DESC description{};
+        description.Width = 1;
+        description.Height = 1;
+        description.MipLevels = 1;
+        description.ArraySize = 1;
+        description.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        description.SampleDesc.Count = 1;
+        description.Usage = D3D11_USAGE_IMMUTABLE;
+        description.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+        const D3D11_SUBRESOURCE_DATA initialData{
+            color.data(),
+            static_cast<UINT>(color.size()),
+            0
+        };
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+        Require(
+            SUCCEEDED(graphics.Device()->CreateTexture2D(
+                &description,
+                &initialData,
+                texture.ReleaseAndGetAddressOf())),
+            "Editor GUI test texture creation failed");
+
+        LamaPon::TextureAsset asset;
+        asset.width = 1;
+        asset.height = 1;
+        Require(
+            SUCCEEDED(graphics.Device()->CreateShaderResourceView(
+                texture.Get(),
+                nullptr,
+                asset.view.ReleaseAndGetAddressOf())),
+            "Editor GUI test texture view creation failed");
+        return asset;
+    }
+
+    void DrawImageWindow(
+        const char* const title,
+        const ImVec2 position,
+        const ImTextureRef texture)
+    {
+        constexpr ImGuiWindowFlags flags =
+            ImGuiWindowFlags_NoDecoration
+            | ImGuiWindowFlags_NoBackground
+            | ImGuiWindowFlags_NoInputs
+            | ImGuiWindowFlags_NoSavedSettings;
+        ImGui::SetNextWindowPos(position, ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2{ 40.0f, 48.0f }, ImGuiCond_Always);
+        ImGui::PushStyleVar(
+            ImGuiStyleVar_WindowPadding,
+            ImVec2{ 0.0f, 0.0f });
+        ImGui::Begin(title, nullptr, flags);
+        ImGui::Image(texture, ImVec2{ 40.0f, 48.0f });
+        ImGui::End();
+        ImGui::PopStyleVar();
+    }
+
+    void RequirePixelNear(
+        const std::vector<std::uint8_t>& pixels,
+        const std::uint32_t x,
+        const std::uint32_t y,
+        const std::array<std::uint8_t, 3>& expected,
+        const char* const message)
+    {
+        const auto offset =
+            (static_cast<std::size_t>(y) * Width + x) * 4u;
+        Require(offset + 2u < pixels.size(),
+            "Editor GUI sampled pixel is outside the back buffer");
+        constexpr int tolerance = 4;
+        Require(
+            std::abs(static_cast<int>(pixels[offset]) - expected[0])
+                    <= tolerance
+                && std::abs(
+                    static_cast<int>(pixels[offset + 1u])
+                    - expected[1]) <= tolerance
+                && std::abs(
+                    static_cast<int>(pixels[offset + 2u])
+                    - expected[2]) <= tolerance,
+            message);
+    }
 
     class HiddenWindow final
     {
@@ -138,17 +248,84 @@ namespace
         ImGuiContextScope imguiContext;
         auto renderer = LamaPon::CreateEditorGuiRenderer(
             graphics.ActiveRenderingApi());
+
+        constexpr std::array<std::uint8_t, 4> assetColor{
+            224u, 48u, 32u, 255u };
+        auto textureAsset = CreateSolidTexture(graphics, assetColor);
+        LamaPon::RenderTarget displayTarget;
+        displayTarget.Resize(graphics.Device(), 1, 1);
+        constexpr float displayColor[]{
+            0.1f, 0.85f, 0.2f, 1.0f };
+        displayTarget.Clear(graphics.Context(), displayColor);
+        displayTarget.CopyToDisplay(graphics.Context());
+
+        RequireThrows<std::logic_error>(
+            [&]
+            {
+                static_cast<void>(
+                    renderer->TextureReference(textureAsset));
+            },
+            "An uninitialized editor GUI renderer must reject asset textures");
+        RequireThrows<std::logic_error>(
+            [&]
+            {
+                static_cast<void>(
+                    renderer->DisplayTextureReference(displayTarget));
+            },
+            "An uninitialized editor GUI renderer must reject display textures");
+
         renderer->Initialize(graphics);
         Require(renderer->IsInitialized(),
             "DirectX 11 editor GUI renderer initialization failed");
 
         renderer->NewFrame();
         ImGui::NewFrame();
+
+        LamaPon::TextureAsset emptyTextureAsset;
+        LamaPon::RenderTarget emptyDisplayTarget;
+        RequireThrows<std::invalid_argument>(
+            [&]
+            {
+                static_cast<void>(
+                    renderer->TextureReference(emptyTextureAsset));
+            },
+            "Editor GUI renderer must reject an asset with no texture view");
+        RequireThrows<std::invalid_argument>(
+            [&]
+            {
+                static_cast<void>(
+                    renderer->DisplayTextureReference(
+                        emptyDisplayTarget));
+            },
+            "Editor GUI renderer must reject an empty display target");
+
+        const auto assetTextureReference =
+            renderer->TextureReference(textureAsset);
+        const auto displayTextureReference =
+            renderer->DisplayTextureReference(displayTarget);
+        Require(
+            assetTextureReference.GetTexID()
+                == ExpectedTextureId(textureAsset.view.Get()),
+            "Asset texture reference must contain its DirectX 11 SRV");
+        Require(
+            displayTextureReference.GetTexID()
+                == ExpectedTextureId(
+                    displayTarget.DisplayShaderResourceView()),
+            "Display texture reference must contain its DirectX 11 SRV");
+
         ImGui::SetNextWindowPos(ImVec2(4.0f, 4.0f));
         ImGui::SetNextWindowSize(ImVec2(88.0f, 56.0f));
         ImGui::Begin("Editor GUI backend smoke test");
         ImGui::TextUnformatted("DirectX 11 fallback");
         ImGui::End();
+        DrawImageWindow(
+            "Asset texture",
+            ImVec2{ 4.0f, 8.0f },
+            assetTextureReference);
+        DrawImageWindow(
+            "Render target texture",
+            ImVec2{ 52.0f, 8.0f },
+            displayTextureReference);
         ImGui::Render();
 
         constexpr float clearColor[]{
@@ -189,19 +366,39 @@ namespace
         }
         Require(containsGuiPixel,
             "Dear ImGui draw data must change the cleared back buffer");
+        RequirePixelNear(
+            pixels,
+            24u,
+            32u,
+            { assetColor[0], assetColor[1], assetColor[2] },
+            "ImGui::Image must sample the asset texture reference");
+        RequirePixelNear(
+            pixels,
+            72u,
+            32u,
+            { 26u, 217u, 51u },
+            "ImGui::Image must sample the render target texture reference");
 
         auto* const ownerContext = ImGui::GetCurrentContext();
         auto* const alternateContext = ImGui::CreateContext();
         ImGui::SetCurrentContext(alternateContext);
-        try
-        {
-            renderer->NewFrame();
-            throw std::runtime_error(
-                "Editor GUI renderer must reject a different ImGui context");
-        }
-        catch (const std::logic_error&)
-        {
-        }
+        RequireThrows<std::logic_error>(
+            [&] { renderer->NewFrame(); },
+            "Editor GUI renderer must reject a different ImGui context");
+        RequireThrows<std::logic_error>(
+            [&]
+            {
+                static_cast<void>(
+                    renderer->TextureReference(textureAsset));
+            },
+            "Asset texture conversion must reject a different ImGui context");
+        RequireThrows<std::logic_error>(
+            [&]
+            {
+                static_cast<void>(
+                    renderer->DisplayTextureReference(displayTarget));
+            },
+            "Display texture conversion must reject a different ImGui context");
         renderer->Shutdown();
         Require(
             !renderer->IsInitialized()

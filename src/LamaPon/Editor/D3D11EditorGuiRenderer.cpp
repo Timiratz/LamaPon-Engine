@@ -1,11 +1,26 @@
 #include "LamaPon/Editor/D3D11EditorGuiRenderer.h"
 
+#include "LamaPon/Assets/AssetManager.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
+#include "LamaPon/Graphics/RenderTarget.h"
 
 #include <imgui.h>
 #include <imgui_impl_dx11.h>
 
+#include <cstdint>
 #include <stdexcept>
+
+namespace
+{
+    ImTextureRef MakeD3D11TextureReference(
+        ID3D11ShaderResourceView* const texture)
+    {
+        return ImTextureRef{
+            static_cast<ImTextureID>(
+                reinterpret_cast<std::uintptr_t>(texture))
+        };
+    }
+}
 
 namespace LamaPon
 {
@@ -50,22 +65,51 @@ namespace LamaPon
 
     void D3D11EditorGuiRenderer::NewFrame()
     {
-        if (!m_initialized)
-        {
-            throw std::logic_error(
-                "The DirectX 11 editor GUI renderer is not initialized.");
-        }
-        if (ImGui::GetCurrentContext() != m_imguiContext)
-        {
-            throw std::logic_error(
-                "The DirectX 11 editor GUI renderer requires its initializing "
-                "ImGui context to be current.");
-        }
+        RequireCurrentContext();
         ImGui_ImplDX11_NewFrame();
+    }
+
+    ImTextureRef D3D11EditorGuiRenderer::TextureReference(
+        const TextureAsset& texture)
+    {
+        RequireCurrentContext();
+        auto* const view = texture.view.Get();
+        if (view == nullptr)
+        {
+            throw std::invalid_argument(
+                "The editor GUI texture asset has no DirectX 11 shader "
+                "resource view.");
+        }
+        return MakeD3D11TextureReference(view);
+    }
+
+    ImTextureRef D3D11EditorGuiRenderer::DisplayTextureReference(
+        const RenderTarget& target)
+    {
+        RequireCurrentContext();
+        auto* const view = target.DisplayShaderResourceView();
+        if (view == nullptr)
+        {
+            throw std::invalid_argument(
+                "The editor GUI render target has no DirectX 11 display "
+                "shader resource view.");
+        }
+        return MakeD3D11TextureReference(view);
     }
 
     void D3D11EditorGuiRenderer::RenderDrawData(
         ImDrawData* const drawData)
+    {
+        RequireCurrentContext();
+        if (drawData == nullptr)
+        {
+            throw std::invalid_argument(
+                "Dear ImGui draw data must not be null.");
+        }
+        ImGui_ImplDX11_RenderDrawData(drawData);
+    }
+
+    void D3D11EditorGuiRenderer::RequireCurrentContext() const
     {
         if (!m_initialized)
         {
@@ -78,12 +122,6 @@ namespace LamaPon
                 "The DirectX 11 editor GUI renderer requires its initializing "
                 "ImGui context to be current.");
         }
-        if (drawData == nullptr)
-        {
-            throw std::invalid_argument(
-                "Dear ImGui draw data must not be null.");
-        }
-        ImGui_ImplDX11_RenderDrawData(drawData);
     }
 
     void D3D11EditorGuiRenderer::Shutdown() noexcept

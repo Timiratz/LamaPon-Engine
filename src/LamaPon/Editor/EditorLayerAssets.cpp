@@ -1,5 +1,6 @@
 #include "LamaPon/Editor/EditorLayer.h"
 
+#include "LamaPon/Editor/EditorGuiRenderer.h"
 #include "LamaPon/Editor/EditorLayerShared.h"
 #include "LamaPon/Editor/DataAssetSchema.h"
 #include "LamaPon/Editor/GameModuleBuilder.h"
@@ -5363,7 +5364,7 @@ namespace LamaPon
                     {
                         return ImGui::ImageButton(
                             imageId,
-                            MakeTextureReference(icon->view.Get()),
+                            m_editorGuiRenderer->TextureReference(*icon),
                             size);
                     }
                     return ImGui::Button(fallbackLabel, size);
@@ -5431,7 +5432,8 @@ namespace LamaPon
                                 m_graphics.Assets().LoadTexture(asset);
                             clicked = ImGui::ImageButton(
                                 "##AssetThumbnail",
-                                MakeTextureReference(texture->view.Get()),
+                                m_editorGuiRenderer->TextureReference(
+                                    *texture),
                                 ImVec2{ 64.0f, 64.0f });
                         }
                         catch (const std::exception&)
@@ -5626,7 +5628,8 @@ namespace LamaPon
                     if (folderIcon)
                     {
                         ImGui::Image(
-                            MakeTextureReference(folderIcon->view.Get()),
+                            m_editorGuiRenderer->TextureReference(
+                                *folderIcon),
                             ImVec2{ 16.0f, 16.0f });
                         ImGui::SameLine();
                     }
@@ -5672,7 +5675,7 @@ namespace LamaPon
                 if (listIcon)
                 {
                     ImGui::Image(
-                        MakeTextureReference(listIcon->view.Get()),
+                        m_editorGuiRenderer->TextureReference(*listIcon),
                         ImVec2{ 16.0f, 16.0f });
                     ImGui::SameLine();
                 }

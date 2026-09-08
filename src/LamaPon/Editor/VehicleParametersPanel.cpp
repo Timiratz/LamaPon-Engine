@@ -2,6 +2,7 @@
 
 #include "LamaPon/Assets/AssetManager.h"
 #include "LamaPon/Core/PathUtils.h"
+#include "LamaPon/Editor/EditorGuiRenderer.h"
 #include "LamaPon/Editor/EditorLayerShared.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Graphics/LitMaterial.h"
@@ -239,6 +240,7 @@ namespace LamaPon
     }
 
     void VehicleParametersPanel::Draw(
+        EditorGuiRenderer& guiRenderer,
         const std::string& title,
         bool& open,
         const std::function<void()>& onSaved)
@@ -707,18 +709,16 @@ namespace LamaPon
                         distance * 2.0f));
 
                 draw->AddImage(
-                    MakeTextureReference(
-                        m_topPreview
-                            ->DisplayShaderResourceView()),
+                    guiRenderer.DisplayTextureReference(
+                        *m_topPreview),
                     ImVec2{ origin.x, origin.y + 25.0f },
                     ImVec2{
                         origin.x + previewWidth,
                         origin.y + 25.0f + previewHeight
                     });
                 draw->AddImage(
-                    MakeTextureReference(
-                        m_sidePreview
-                            ->DisplayShaderResourceView()),
+                    guiRenderer.DisplayTextureReference(
+                        *m_sidePreview),
                     ImVec2{
                         origin.x + area.x - previewWidth,
                         origin.y + 25.0f

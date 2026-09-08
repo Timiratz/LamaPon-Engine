@@ -10,6 +10,7 @@
 namespace LamaPon
 {
     class AssetManager;
+    class EditorGuiRenderer;
     class GraphicsDevice;
     class RenderTarget;
     struct ModelAsset;
@@ -34,6 +35,7 @@ namespace LamaPon
             const VehicleParametersPanel&) = delete;
 
         void Draw(
+            EditorGuiRenderer& guiRenderer,
             const std::string& title,
             bool& open,
             const std::function<void()>& onSaved);

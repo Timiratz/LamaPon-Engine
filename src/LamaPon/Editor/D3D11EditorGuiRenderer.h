@@ -31,10 +31,16 @@ namespace LamaPon
 
         void Initialize(GraphicsDevice& graphics) override;
         void NewFrame() override;
+        [[nodiscard]] ImTextureRef TextureReference(
+            const TextureAsset& texture) override;
+        [[nodiscard]] ImTextureRef DisplayTextureReference(
+            const RenderTarget& target) override;
         void RenderDrawData(ImDrawData* drawData) override;
         void Shutdown() noexcept override;
 
     private:
+        void RequireCurrentContext() const;
+
         ImGuiContext* m_imguiContext{};
         bool m_initialized{};
     };
