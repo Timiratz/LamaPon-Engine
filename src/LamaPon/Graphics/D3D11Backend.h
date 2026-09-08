@@ -51,6 +51,7 @@ namespace LamaPon
         {
             return m_tearingAllowed;
         }
+        void BindBackBuffer() override;
 
         // 既存のDirectX 11描画経路へ貸し出す非所有ポインターです。
         // GraphicsDeviceは移行期間中、従来のDevice/Context APIを
@@ -64,11 +65,6 @@ namespace LamaPon
             Context() const noexcept
         {
             return m_context.Get();
-        }
-        [[nodiscard]] ID3D11RenderTargetView*
-            BackBufferRenderTargetView() const noexcept
-        {
-            return m_renderTargetView.Get();
         }
 
     private:

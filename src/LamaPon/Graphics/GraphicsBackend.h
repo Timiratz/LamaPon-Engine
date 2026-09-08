@@ -83,6 +83,12 @@ namespace LamaPon
                 std::uint32_t& height) const = 0;
         [[nodiscard]] virtual bool
             TearingAllowed() const noexcept = 0;
+
+        // クリアせず、既定のバックバッファを描画先へ戻します。
+        // 深度ターゲットは外し、バックバッファ用viewportを設定します。
+        // Initializeが成功したBackendに対して呼びます。
+        // 既存virtualのslotを維持するため、新しい契約は末尾へ追加します。
+        virtual void BindBackBuffer() = 0;
     };
 
     // activeApiはSelectGraphicsBackendで解決済みの値を渡します。

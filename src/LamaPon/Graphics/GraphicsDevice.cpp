@@ -95,18 +95,6 @@ namespace
             backend);
     }
 
-    [[nodiscard]] LamaPon::D3D11Backend&
-        RequireD3D11Backend(
-            LamaPon::GraphicsBackend* const backend)
-    {
-        auto* const d3d11 = AsD3D11Backend(backend);
-        if (d3d11 == nullptr)
-        {
-            throw std::logic_error(
-                "The active graphics backend is not DirectX 11.");
-        }
-        return *d3d11;
-    }
 }
 
 namespace LamaPon
@@ -1118,13 +1106,16 @@ namespace LamaPon
                 ApplyQueuedScreenEffects(target, point);
             });
         m_gpuProfiler.BeginSection("画面へ転送");
-        Environment().Copy(
-            m_sceneCompositionTarget->
-                ShaderResourceView(),
-            RequireD3D11Backend(m_backend.get())
-                .BackBufferRenderTargetView(),
-            m_width,
-            m_height);
+        // バックバッファの実体はBackendだけが扱います。Renderer側は
+        // bind済みの出力先へ最終画像を描くため、D3D11のRTVを取得しません。
+        auto& environment = Environment();
+        auto* const source = m_sceneCompositionTarget->
+            ShaderResourceView();
+        if (source != nullptr)
+        {
+            m_backend->BindBackBuffer();
+            environment.CopyToBoundRenderTarget(source);
+        }
         m_gpuProfiler.EndSection();
     }
 

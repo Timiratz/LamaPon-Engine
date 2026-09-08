@@ -7,7 +7,8 @@
 - Project SettingsのGraphicsへ`Auto` / `DirectX 11` / `DirectX 12 Experimental`の選択を追加。既定は従来どおりDirectX 11で、変更は次回起動時に反映する。
 - DirectX 12は未実装のため、安全にDirectX 11へフォールバックする。将来のD3D11 / D3D12バックエンド分離に備えて起動時の選択経路を追加。
 - Device / Context / SwapChainとバックバッファ資源の所有を`D3D11Backend`へ分離し、`GraphicsDevice`をBackend選択の窓口に変更。API固有型を含まない共通Backend契約と、選択結果・フォールバック理由を追加。
-- `GraphicsSettings`と`GraphicsDevice`のABI変更に伴い、Game Module APIを18へ更新。
+- 最終合成時のバックバッファbindを共通Backend契約へ移し、RendererがD3D11のバックバッファRTVを直接参照しない経路へ変更。
+- `GraphicsSettings`と`GraphicsDevice`のABI変更、および共通Backend契約の拡張に伴い、Game Module APIを19へ更新。
 
 ### ファイル名の統一
 
@@ -32,7 +33,8 @@
 - 配布ゲームの起動判定、Script終了時の解放、Scene設定のリセット、EventBusの例外復帰を修正。
 - BGMパネル、UIコンポーネントのInspector、描画用空間索引、実行時サービス、CLIのScene／Prefabコマンドを分離。
 - 責務分割に伴う公開クラスのレイアウト変更でGame Module APIを14から15へ更新し、
-  物理と描画の時刻同期で16、描画API設定で17、Backend分離で現在の18へ更新。
+  物理と描画の時刻同期で16、描画API設定で17、Backend分離で18、
+  バックバッファ契約の追加で現在の19へ更新。
 - MSVC／Ninjaのヘッダー依存検出を修正。ローカライズされた出力と既存ビルドの依存情報再取得に対応。
 - Web入力の登録解除・例外処理・ログを改善し、SDK構成、ライセンス同梱、Windows／Webの回帰検査を整備。
 

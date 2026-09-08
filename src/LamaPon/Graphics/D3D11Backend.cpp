@@ -277,6 +277,22 @@ namespace LamaPon
         CreateSizeDependentResources(width, height);
     }
 
+    void D3D11Backend::BindBackBuffer()
+    {
+        if (!IsInitialized() || m_renderTargetView == nullptr)
+        {
+            throw std::logic_error(
+                "BindBackBuffer requires an initialized backend.");
+        }
+        ID3D11RenderTargetView* renderTargets[]{
+            m_renderTargetView.Get() };
+        m_context->OMSetRenderTargets(
+            1,
+            renderTargets,
+            nullptr);
+        m_context->RSSetViewports(1, &m_viewport);
+    }
+
     void D3D11Backend::BindAndClearBackBuffer(
         const float clearColor[4])
     {

@@ -344,7 +344,30 @@ int main(const int argumentCount, char** arguments)
         }
         LamaPon::GraphicsDevice graphics;
         Stage("initialize");
-        graphics.Initialize(window, Width, Height);
+        // DirectX 12 ExperimentalはまだD3D11へフォールバックします。
+        // この後の全描画検証をその起動経路で通し、設定しただけで
+        // エディター相当の実描画が壊れないことも同時に確認します。
+        graphics.Initialize(
+            window,
+            Width,
+            Height,
+            LamaPon::RenderingApi::DirectX12Experimental);
+        Require(
+            graphics.StartupRenderingApi()
+                == LamaPon::RenderingApi::DirectX12Experimental,
+            "The startup API must retain the DirectX 12 Experimental request.");
+        Require(
+            graphics.ActiveRenderingApi()
+                == LamaPon::RenderingApi::DirectX11,
+            "DirectX 12 Experimental must currently run on the DirectX 11 backend.");
+        Require(
+            graphics.RenderingApiFallback()
+                == LamaPon::RenderingApiFallbackReason::NotImplemented,
+            "DirectX 12 Experimental must report the not-implemented fallback.");
+        Require(
+            graphics.Device() != nullptr
+                && graphics.Context() != nullptr,
+            "The DirectX 11 fallback must expose a valid device and context.");
         Stage("asset-root");
         graphics.Assets().SetAssetRoot(
             LAMAPON_TEST_ASSET_DIR);

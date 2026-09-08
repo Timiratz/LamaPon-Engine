@@ -2362,6 +2362,16 @@ namespace LamaPon
             1.0f
         };
         m_context->RSSetViewports(1, &viewport);
+        CopyToBoundRenderTarget(source);
+    }
+
+    void EnvironmentRenderer::CopyToBoundRenderTarget(
+        ID3D11ShaderResourceView* source)
+    {
+        if (source == nullptr)
+        {
+            return;
+        }
         m_context->IASetInputLayout(nullptr);
         m_context->IASetPrimitiveTopology(
             D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);

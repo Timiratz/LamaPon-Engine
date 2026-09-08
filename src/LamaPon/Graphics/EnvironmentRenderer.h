@@ -249,6 +249,9 @@ namespace LamaPon
             ID3D11RenderTargetView* destination,
             std::uint32_t destinationWidth,
             std::uint32_t destinationHeight);
+        // 呼び出し側が設定済みの描画先とviewportを変えずにコピーします。
+        void CopyToBoundRenderTarget(
+            ID3D11ShaderResourceView* source);
         // 左右反転コピー（リフレクションプローブのベイク用。
         // 理由はLamaPonEnvironment.hlslのPSCopyMirrorXを参照）。
         void CopyMirroredX(
