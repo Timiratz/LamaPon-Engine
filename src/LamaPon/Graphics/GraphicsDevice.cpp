@@ -6,6 +6,7 @@
 #include "LamaPon/Core/RuntimeServices.h"
 #include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Graphics/ClusteredLights.h"
+#include "LamaPon/Graphics/D3D11Backend.h"
 #include "LamaPon/Graphics/DebugRenderer.h"
 #include "LamaPon/Graphics/EnvironmentRenderer.h"
 #include "LamaPon/Graphics/LitEffect.h"
@@ -24,8 +25,8 @@
 #include <CommonStates.h>
 #include <SpriteBatch.h>
 
-// IDXGIFactory5（ティアリング許可の問い合わせ）。d3d11.hが引く
-// dxgi.hには入っていません。
+// IDXGIAdapter3（DXGIメモリ予算）。d3d11.hが引くdxgi.hには
+// 入っていません。
 #include <dxgi1_5.h>
 
 #include <psapi.h>
@@ -36,7 +37,6 @@
 #include <chrono>
 #include <future>
 #include <cmath>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -81,26 +81,31 @@ namespace
             usage);
     }
 
-    // このアダプターがティアリング許可に対応しているか。対応が無い
-    // 環境（Windows 10より前、リモートデスクトップ、一部の仮想GPU）
-    // ではIDXGIFactory5そのものが取れないので、そのままfalseです。
-    [[nodiscard]] bool QueryTearingSupport()
+    [[nodiscard]] LamaPon::D3D11Backend*
+        AsD3D11Backend(
+            LamaPon::GraphicsBackend* const backend) noexcept
     {
-        Microsoft::WRL::ComPtr<IDXGIFactory5> factory;
-        if (FAILED(CreateDXGIFactory1(
-                IID_PPV_ARGS(factory.GetAddressOf()))))
+        if (backend == nullptr
+            || backend->Api()
+                != LamaPon::RenderingApi::DirectX11)
         {
-            return false;
+            return nullptr;
         }
-        BOOL allowed = FALSE;
-        if (FAILED(factory->CheckFeatureSupport(
-                DXGI_FEATURE_PRESENT_ALLOW_TEARING,
-                &allowed,
-                sizeof(allowed))))
+        return static_cast<LamaPon::D3D11Backend*>(
+            backend);
+    }
+
+    [[nodiscard]] LamaPon::D3D11Backend&
+        RequireD3D11Backend(
+            LamaPon::GraphicsBackend* const backend)
+    {
+        auto* const d3d11 = AsD3D11Backend(backend);
+        if (d3d11 == nullptr)
         {
-            return false;
+            throw std::logic_error(
+                "The active graphics backend is not DirectX 11.");
         }
-        return allowed != FALSE;
+        return *d3d11;
     }
 }
 
@@ -125,6 +130,43 @@ namespace LamaPon
     bool GraphicsDevice::IsDebugLayerEnabled() noexcept
     {
         return s_enableDebugLayer;
+    }
+
+    RenderingApi GraphicsDevice::ActiveRenderingApi() const noexcept
+    {
+        return m_backend != nullptr
+            ? m_backend->Api()
+            : RenderingApi::DirectX11;
+    }
+
+    bool GraphicsDevice::TearingAllowed() const noexcept
+    {
+        return m_backend != nullptr
+            && m_backend->TearingAllowed();
+    }
+
+    bool GraphicsDevice::IsInitialized() const noexcept
+    {
+        return m_backend != nullptr
+            && m_backend->IsInitialized();
+    }
+
+    ID3D11Device* GraphicsDevice::Device() const noexcept
+    {
+        const auto* const backend =
+            AsD3D11Backend(m_backend.get());
+        return backend != nullptr
+            ? backend->Device()
+            : nullptr;
+    }
+
+    ID3D11DeviceContext* GraphicsDevice::Context() const noexcept
+    {
+        const auto* const backend =
+            AsD3D11Backend(m_backend.get());
+        return backend != nullptr
+            ? backend->Context()
+            : nullptr;
     }
 
     struct GraphicsDevice::MaterialShaderEntry final
@@ -240,10 +282,11 @@ namespace LamaPon
 
     void GraphicsDevice::Shutdown() noexcept
     {
-        if (m_context)
+        if (m_backend)
         {
-            m_context->ClearState();
-            m_context->Flush();
+            // BackendのDevice/Contextを借りている高レベル資源より先に
+            // 描画状態だけを解除し、COM本体は最後まで保持します。
+            m_backend->PrepareForResourceRelease();
         }
         m_shadowMap.reset();
         m_spotShadowMap.reset();
@@ -266,12 +309,11 @@ namespace LamaPon
         m_commonStates.reset();
         m_spriteBatch.reset();
         m_whiteTexture.Reset();
-        m_depthStencilView.Reset();
-        m_depthTexture.Reset();
-        m_renderTargetView.Reset();
-        m_swapChain.Reset();
-        m_context.Reset();
-        m_device.Reset();
+        if (m_backend)
+        {
+            m_backend->Shutdown();
+            m_backend.reset();
+        }
         m_width = 0;
         m_height = 0;
         m_sprite2DOffset = {};
@@ -295,28 +337,41 @@ namespace LamaPon
         const std::uint32_t height,
         RenderingApi requestedApi)
     {
-        // TODO: D3D12Backendを追加したら、ここでrequestedApiに応じて
-        // D3D11Backend / D3D12Backendを選択する。未実装の間は既存の
-        // DirectX 11経路だけを使い、設定だけで起動不能にしない。
-        switch (requestedApi)
+        // Backend選択はここへ集約します。ProjectSettingsや各起動経路は
+        // 要求値を渡すだけにし、実効APIとフォールバック理由を一箇所で
+        // 決定します。
+        const GraphicsBackendSelection selection =
+            SelectGraphicsBackend(requestedApi);
+        switch (selection.fallbackReason)
         {
-        case RenderingApi::Auto:
-        case RenderingApi::DirectX11:
+        case RenderingApiFallbackReason::None:
             break;
-        case RenderingApi::DirectX12Experimental:
+        case RenderingApiFallbackReason::NotImplemented:
             Logger::Instance().Warning(
                 "DirectX 12 Experimentalは未実装のため、"
                 "DirectX 11へフォールバックして起動します。");
             break;
-        default:
+        case RenderingApiFallbackReason::UnknownApi:
             Logger::Instance().Warning(
                 "不明なRendering APIが指定されたため、"
                 "DirectX 11へフォールバックして起動します。");
-            requestedApi = RenderingApi::DirectX11;
+            break;
+        case RenderingApiFallbackReason::Unsupported:
+            Logger::Instance().Warning(
+                "選択されたRendering APIを現在の環境で使用できないため、"
+                "DirectX 11へフォールバックして起動します。");
+            break;
+        case RenderingApiFallbackReason::InitializationFailed:
+            Logger::Instance().Warning(
+                "選択されたRendering APIの初期化に失敗したため、"
+                "DirectX 11へフォールバックして起動します。");
             break;
         }
-        m_startupRenderingApi = requestedApi;
-        m_graphicsSettings.renderingApi = requestedApi;
+        m_startupRenderingApi = selection.requestedApi;
+        m_renderingApiFallbackReason =
+            selection.fallbackReason;
+        m_graphicsSettings.renderingApi =
+            selection.requestedApi;
 
         m_width = std::max(width, 1u);
         m_height = std::max(height, 1u);
@@ -324,162 +379,29 @@ namespace LamaPon
         m_uiHeight = m_height;
         m_sprite2DOffset = {};
 
-        // ティアリング許可が無いと、VSyncを切ってもモニターの
-        // リフレッシュレートがそのままFPSの上限になります。フリップ
-        // モデルでは提示が垂直同期の間隔で引き取られ、積める枚数
-        // （BufferCount）を使い切った時点でPresentが待たされるためです。
-        // ティアリングには、アダプター対応、スワップチェーン作成フラグ、
-        // Presentの同期間隔0と提示フラグの組み合わせが必要です。
-        m_tearingAllowed = QueryTearingSupport();
+        m_backend = CreateGraphicsBackend(
+            selection.activeApi);
+        m_backend->Initialize(GraphicsBackendCreateInfo{
+            static_cast<void*>(window),
+            m_width,
+            m_height,
+            s_preferWarpAdapter,
+            s_enableDebugLayer
+        });
 
-        DXGI_SWAP_CHAIN_DESC swapChainDescription{};
-        swapChainDescription.BufferDesc.Width = m_width;
-        swapChainDescription.BufferDesc.Height = m_height;
-        swapChainDescription.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        swapChainDescription.SampleDesc.Count = 1;
-        swapChainDescription.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-        swapChainDescription.BufferCount = 2;
-        swapChainDescription.OutputWindow = window;
-        swapChainDescription.Windowed = TRUE;
-        swapChainDescription.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-        swapChainDescription.Flags = m_tearingAllowed
-            ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING
-            : 0u;
-
-        constexpr std::array featureLevels{
-            D3D_FEATURE_LEVEL_11_1,
-            D3D_FEATURE_LEVEL_11_0
-        };
-
-        UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
-        const bool wantDebugLayer =
-#if defined(_DEBUG)
-            true;
-#else
-            s_enableDebugLayer;
-#endif
-        if (wantDebugLayer)
-        {
-            flags |= D3D11_CREATE_DEVICE_DEBUG;
-        }
-
-        D3D_FEATURE_LEVEL selectedFeatureLevel{};
-        const auto createDevice =
-            [this,
-                &swapChainDescription,
-                &featureLevels,
-                &selectedFeatureLevel](
-                const D3D_DRIVER_TYPE driverType,
-                const UINT deviceFlags)
-        {
-            return D3D11CreateDeviceAndSwapChain(
-                nullptr,
-                driverType,
-                nullptr,
-                deviceFlags,
-                featureLevels.data(),
-                static_cast<UINT>(featureLevels.size()),
-                D3D11_SDK_VERSION,
-                &swapChainDescription,
-                m_swapChain.ReleaseAndGetAddressOf(),
-                m_device.ReleaseAndGetAddressOf(),
-                &selectedFeatureLevel,
-                m_context.ReleaseAndGetAddressOf());
-        };
-
-        const D3D_DRIVER_TYPE primaryDriver =
-            s_preferWarpAdapter
-                ? D3D_DRIVER_TYPE_WARP
-                : D3D_DRIVER_TYPE_HARDWARE;
-        HRESULT result = createDevice(primaryDriver, flags);
-
-        // SDKのデバッグレイヤーが利用できない場合は、フラグを外して再作成します。
-        if (wantDebugLayer
-            && result == DXGI_ERROR_SDK_COMPONENT_MISSING)
-        {
-            flags &= ~D3D11_CREATE_DEVICE_DEBUG;
-            result = createDevice(primaryDriver, flags);
-        }
-
-        // 対応判定後もティアリング付き作成が失敗するドライバーでは、
-        // 提示フラグを外して再作成します。描画結果は維持されますが、
-        // FPS上限はリフレッシュレートへ戻ります。
-        if (FAILED(result) && m_tearingAllowed)
-        {
-            m_tearingAllowed = false;
-            swapChainDescription.Flags = 0;
-            result = createDevice(primaryDriver, flags);
-            if (SUCCEEDED(result))
-            {
-                Logger::Instance().Warning(
-                    "ティアリング許可付きのスワップチェーンを作れ"
-                    "なかったため、無効で起動しました。VSyncを切っても"
-                    "モニターのリフレッシュレートがFPSの上限になります。");
-            }
-        }
-
-        // GPUが使えない環境（VM・リモートデスクトップ・CI）では
-        // WARP（CPUラスタライザ）へ自動フォールバックします。
-        if (FAILED(result) && !s_preferWarpAdapter)
-        {
-            result = createDevice(
-                D3D_DRIVER_TYPE_WARP,
-                flags);
-            if (SUCCEEDED(result))
-            {
-                Logger::Instance().Warning(
-                    "GPUデバイスの作成に失敗したため、WARP"
-                    "（CPU描画）で起動しました。描画性能は低下します。");
-            }
-        }
-
-        ThrowIfFailed(result, "D3D11CreateDeviceAndSwapChain");
-
-        // デバッガーなしでも確認できるよう、InfoQueueのメッセージを
-        // エンジンログへ転送します。
-        if ((flags & D3D11_CREATE_DEVICE_DEBUG) != 0)
-        {
-            if (SUCCEEDED(m_device.As(&m_infoQueue)))
-            {
-                Logger::Instance().Info(
-                    "D3D11のデバッグレイヤーを有効にしました。"
-                    "不正な描画はログへ出ます（描画は遅くなります）。");
-            }
-            else
-            {
-                Logger::Instance().Warning(
-                    "D3D11のデバッグレイヤーは有効ですが、"
-                    "InfoQueueを取得できませんでした。");
-            }
-        }
-        else if (s_enableDebugLayer)
-        {
-            Logger::Instance().Warning(
-                "--d3ddebug が指定されましたが、D3D11の"
-                "デバッグレイヤーを有効にできませんでした。"
-                "Windowsのオプション機能「グラフィックス ツール」が"
-                "必要です。");
-        }
-
-        if (selectedFeatureLevel < D3D_FEATURE_LEVEL_11_0)
-        {
-            throw std::runtime_error("Direct3D feature level 11.0 is required.");
-        }
-
-        LogSelectedAdapter();
         RefreshMemoryStatistics(true);
         // エディター外でもFPS制限の状態を確認できるよう、ログへ記録します。
-        if (!m_tearingAllowed)
+        if (!TearingAllowed())
         {
             Logger::Instance().Info(
                 "ティアリング許可が使えない環境です。VSyncを切っても"
                 "モニターのリフレッシュレートがFPSの上限になります。");
         }
-
-        CreateSizeDependentResources();
         CreateWhiteTexture();
-        m_spriteBatch = std::make_unique<DirectX::SpriteBatch>(m_context.Get());
-        m_commonStates = std::make_unique<DirectX::CommonStates>(m_device.Get());
+        m_spriteBatch =
+            std::make_unique<DirectX::SpriteBatch>(Context());
+        m_commonStates =
+            std::make_unique<DirectX::CommonStates>(Device());
         {
             // UIクリッピング（ScrollView等）用のシザー有効
             // ラスタライザ。
@@ -490,24 +412,24 @@ namespace LamaPon
             scissorDescription.DepthClipEnable = TRUE;
             scissorDescription.ScissorEnable = TRUE;
             ThrowIfFailed(
-                m_device->CreateRasterizerState(
+                Device()->CreateRasterizerState(
                     &scissorDescription,
                     m_uiScissorRasterizer
                         .ReleaseAndGetAddressOf()),
                 "ID3D11Device::CreateRasterizerState");
         }
-        m_services->Initialize(m_device.Get(), m_context.Get(), window,
+        m_services->Initialize(Device(), Context(), window,
             m_graphicsSettings.runtimeTextureCompression);
         m_debugRenderer = std::make_unique<DebugRenderer>(
-            m_device.Get(),
-            m_context.Get());
+            Device(),
+            Context());
         m_shadowMap = std::make_unique<ShadowMap>();
         m_spotShadowMap = std::make_unique<ShadowMap>();
         m_pointShadowMap = std::make_unique<ShadowMap>();
         if (m_graphicsSettings.shadowsEnabled)
         {
             m_shadowMap->Initialize(
-                m_device.Get(),
+                Device(),
                 m_graphicsSettings.shadowResolution,
                 m_graphicsSettings.shadowCascadeLimit);
             // スポット/ポイントはカスケードより解像度を落とします。
@@ -517,12 +439,12 @@ namespace LamaPon
                         / 2u,
                     256u);
             m_spotShadowMap->Initialize(
-                m_device.Get(),
+                Device(),
                 localShadowResolution,
                 static_cast<std::uint32_t>(
                     MaximumSpotShadows));
             m_pointShadowMap->Initialize(
-                m_device.Get(),
+                Device(),
                 localShadowResolution,
                 6u,
                 true);
@@ -530,8 +452,8 @@ namespace LamaPon
         m_sceneCompositionTarget =
             std::make_unique<RenderTarget>();
         m_gpuProfiler.Initialize(
-            m_device.Get(),
-            m_context.Get());
+            Device(),
+            Context());
     }
 
     void GraphicsDevice::Resize(const std::uint32_t width, const std::uint32_t height)
@@ -546,26 +468,7 @@ namespace LamaPon
         m_uiWidth = width;
         m_uiHeight = height;
 
-        m_context->OMSetRenderTargets(0, nullptr, nullptr);
-        m_renderTargetView.Reset();
-        m_depthStencilView.Reset();
-        m_depthTexture.Reset();
-        m_context->Flush();
-
-        // 作成時と同じフラグを渡し直さないと、リサイズした瞬間に
-        // ティアリング許可が外れ、次のPresentがE_INVALIDARGで落ちます。
-        ThrowIfFailed(
-            m_swapChain->ResizeBuffers(
-                0,
-                m_width,
-                m_height,
-                DXGI_FORMAT_UNKNOWN,
-                m_tearingAllowed
-                    ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING
-                    : 0u),
-            "IDXGISwapChain::ResizeBuffers");
-
-        CreateSizeDependentResources();
+        m_backend->Resize(m_width, m_height);
     }
 
     void GraphicsDevice::BeginFrame(const float clearColor[4])
@@ -581,15 +484,7 @@ namespace LamaPon
         }
         m_uiWidth = m_width;
         m_uiHeight = m_height;
-        ID3D11RenderTargetView* renderTargets[]{ m_renderTargetView.Get() };
-        m_context->OMSetRenderTargets(1, renderTargets, m_depthStencilView.Get());
-        m_context->RSSetViewports(1, &m_viewport);
-        m_context->ClearRenderTargetView(m_renderTargetView.Get(), clearColor);
-        m_context->ClearDepthStencilView(
-            m_depthStencilView.Get(),
-            D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL,
-            1.0f,
-            0);
+        m_backend->BindAndClearBackBuffer(clearColor);
     }
 
     DirectX::SpriteBatch& GraphicsDevice::BeginSprites()
@@ -672,8 +567,8 @@ namespace LamaPon
                     {
                         auto candidate =
                             std::make_unique<SpriteEffect>(
-                                m_device.Get(),
-                                m_context.Get(),
+                                Device(),
+                                Context(),
                                 Assets(),
                                 absolutePath);
                         entry->effect = std::move(candidate);
@@ -825,8 +720,8 @@ namespace LamaPon
                     {
                         auto candidate =
                             std::make_unique<SpriteEffect>(
-                                m_device.Get(),
-                                m_context.Get(),
+                                Device(),
+                                Context(),
                                 Assets(),
                                 absolutePath);
                         entry->effect = std::move(candidate);
@@ -927,7 +822,7 @@ namespace LamaPon
 
         // 進行中のバッチを確定してからシザー状態へ切り替えます。
         m_spriteBatch->End();
-        m_context->RSSetScissorRects(1, &scissor);
+        Context()->RSSetScissorRects(1, &scissor);
         m_spriteBatch->Begin(
             DirectX::SpriteSortMode_Deferred,
             m_commonStates->NonPremultiplied(),
@@ -951,7 +846,7 @@ namespace LamaPon
                 m_commonStates->NonPremultiplied());
             return;
         }
-        m_context->RSSetScissorRects(
+        Context()->RSSetScissorRects(
             1,
             &m_uiScissorStack.back());
         m_spriteBatch->Begin(
@@ -988,7 +883,7 @@ namespace LamaPon
                 D3D11_BIND_VERTEX_BUFFER;
             description.CPUAccessFlags =
                 D3D11_CPU_ACCESS_WRITE;
-            if (FAILED(m_device->CreateBuffer(
+            if (FAILED(Device()->CreateBuffer(
                     &description,
                     nullptr,
                     m_instanceBuffer
@@ -1002,7 +897,7 @@ namespace LamaPon
         }
 
         D3D11_MAPPED_SUBRESOURCE mapped{};
-        if (FAILED(m_context->Map(
+        if (FAILED(Context()->Map(
                 m_instanceBuffer.Get(),
                 0,
                 D3D11_MAP_WRITE_DISCARD,
@@ -1012,106 +907,18 @@ namespace LamaPon
             return nullptr;
         }
         std::memcpy(mapped.pData, data, bytes);
-        m_context->Unmap(m_instanceBuffer.Get(), 0);
+        Context()->Unmap(m_instanceBuffer.Get(), 0);
         return m_instanceBuffer.Get();
-    }
-
-    void GraphicsDevice::DrainDebugMessages()
-    {
-        if (!m_infoQueue)
-        {
-            return;
-        }
-
-        const auto stored =
-            m_infoQueue->GetNumStoredMessages();
-        for (UINT64 index = 0; index < stored; ++index)
-        {
-            SIZE_T length = 0;
-            if (FAILED(m_infoQueue->GetMessage(
-                    index,
-                    nullptr,
-                    &length))
-                || length == 0)
-            {
-                continue;
-            }
-            std::vector<std::byte> storage(length);
-            auto* const message =
-                reinterpret_cast<D3D11_MESSAGE*>(
-                    storage.data());
-            if (FAILED(m_infoQueue->GetMessage(
-                    index,
-                    message,
-                    &length)))
-            {
-                continue;
-            }
-
-            const std::string text(
-                message->pDescription,
-                message->DescriptionByteLength > 0
-                    ? message->DescriptionByteLength - 1
-                    : 0);
-            ++m_debugMessagesLogged;
-            switch (message->Severity)
-            {
-            case D3D11_MESSAGE_SEVERITY_CORRUPTION:
-            case D3D11_MESSAGE_SEVERITY_ERROR:
-                Logger::Instance().Error("D3D11: " + text);
-                break;
-            case D3D11_MESSAGE_SEVERITY_WARNING:
-                Logger::Instance().Warning("D3D11: " + text);
-                break;
-            default:
-                Logger::Instance().Info("D3D11: " + text);
-                break;
-            }
-        }
-        m_infoQueue->ClearStoredMessages();
     }
 
     void GraphicsDevice::EndFrame()
     {
         // Presentより前に流します。デバイスを失う描画があった場合、
         // その理由はこのメッセージ側に出ていることが多いためです。
-        DrainDebugMessages();
+        m_backend->DrainDebugMessages();
         m_gpuProfiler.CloseFrame();
-        // DXGI_PRESENT_ALLOW_TEARINGは同期間隔0とセットでしか使えません
-        // （VSync有効時に渡すとPresentがE_INVALIDARGを返します）。
-        // ALLOW_TEARINGを指定するとリフレッシュレートを超えられます。上限は
-        // Application側のフレームペーサー（targetFrameRate）が持ちます。
-        const bool immediate =
-            !m_graphicsSettings.vSyncEnabled;
-        const HRESULT presented = m_swapChain->Present(
-            immediate ? 0u : 1u,
-            (immediate && m_tearingAllowed)
-                ? DXGI_PRESENT_ALLOW_TEARING
-                : 0u);
-        // デバイスを失ったときは、Presentの戻り値ではなく
-        // GetDeviceRemovedReasonの方に本当の理由が入ります。
-        // 数字だけ投げると「HRESULT 2289696802」のような、
-        // 手がかりの無いメッセージになります。
-        if (presented == DXGI_ERROR_DEVICE_REMOVED
-            || presented == DXGI_ERROR_DEVICE_RESET)
-        {
-            const HRESULT reason = m_device
-                ? m_device->GetDeviceRemovedReason()
-                : presented;
-            std::ostringstream message;
-            message
-                << "The graphics device was lost while"
-                   " presenting a frame (Present=0x"
-                << std::hex << std::uppercase
-                << static_cast<unsigned long>(presented)
-                << ", reason=0x"
-                << static_cast<unsigned long>(reason)
-                << "). This usually means the driver rejected"
-                   " the previous draw call. Run with"
-                   " --d3ddebug to see which one.";
-            throw std::runtime_error(message.str());
-        }
-        ThrowIfFailed(presented, "IDXGISwapChain::Present");
+        m_backend->Present(
+            m_graphicsSettings.vSyncEnabled);
     }
 
     std::vector<std::uint8_t>
@@ -1119,69 +926,12 @@ namespace LamaPon
             std::uint32_t& width,
             std::uint32_t& height) const
     {
-        if (!IsInitialized() || m_swapChain == nullptr)
+        if (!IsInitialized())
         {
             throw std::logic_error(
                 "CaptureBackBuffer requires an initialized device.");
         }
-
-        Microsoft::WRL::ComPtr<ID3D11Texture2D> backBuffer;
-        ThrowIfFailed(
-            m_swapChain->GetBuffer(
-                0,
-                IID_PPV_ARGS(
-                    backBuffer.ReleaseAndGetAddressOf())),
-            "IDXGISwapChain::GetBuffer");
-
-        D3D11_TEXTURE2D_DESC description{};
-        backBuffer->GetDesc(&description);
-        description.Usage = D3D11_USAGE_STAGING;
-        description.BindFlags = 0;
-        description.CPUAccessFlags =
-            D3D11_CPU_ACCESS_READ;
-        description.MiscFlags = 0;
-
-        Microsoft::WRL::ComPtr<ID3D11Texture2D> staging;
-        ThrowIfFailed(
-            m_device->CreateTexture2D(
-                &description,
-                nullptr,
-                staging.ReleaseAndGetAddressOf()),
-            "ID3D11Device::CreateTexture2D(staging)");
-        m_context->CopyResource(
-            staging.Get(),
-            backBuffer.Get());
-
-        D3D11_MAPPED_SUBRESOURCE mapped{};
-        ThrowIfFailed(
-            m_context->Map(
-                staging.Get(),
-                0,
-                D3D11_MAP_READ,
-                0,
-                &mapped),
-            "ID3D11DeviceContext::Map(staging)");
-
-        width = description.Width;
-        height = description.Height;
-        std::vector<std::uint8_t> pixels(
-            static_cast<std::size_t>(width)
-            * height
-            * 4);
-        for (std::uint32_t row = 0; row < height; ++row)
-        {
-            std::memcpy(
-                pixels.data()
-                    + static_cast<std::size_t>(row)
-                        * width * 4,
-                static_cast<const std::uint8_t*>(
-                    mapped.pData)
-                    + static_cast<std::size_t>(row)
-                        * mapped.RowPitch,
-                static_cast<std::size_t>(width) * 4);
-        }
-        m_context->Unmap(staging.Get(), 0);
-        return pixels;
+        return m_backend->CaptureBackBuffer(width, height);
     }
 
     RenderTarget& GraphicsDevice::AcquireRenderTexture(
@@ -1202,7 +952,7 @@ namespace LamaPon
         // Resizeは同じサイズなら何もしません（作り直しの判定は
         // RenderTarget側が持っています）。
         slot->Resize(
-            m_device.Get(),
+            Device(),
             safeWidth,
             safeHeight);
         return *slot;
@@ -1229,7 +979,7 @@ namespace LamaPon
         // カメラ描画先とは異なる名前を使用します。
         slot->SetComputeWritable(true);
         slot->Resize(
-            m_device.Get(),
+            Device(),
             safeWidth,
             safeHeight);
         return *slot;
@@ -1288,13 +1038,13 @@ namespace LamaPon
         const float clearColor[4])
     {
         m_sceneCompositionTarget->Resize(
-            m_device.Get(),
+            Device(),
             RenderWidth(),
             RenderHeight());
         m_sceneCompositionTarget->Bind(
-            m_context.Get());
+            Context());
         m_sceneCompositionTarget->Clear(
-            m_context.Get(),
+            Context(),
             clearColor);
     }
 
@@ -1371,69 +1121,11 @@ namespace LamaPon
         Environment().Copy(
             m_sceneCompositionTarget->
                 ShaderResourceView(),
-            m_renderTargetView.Get(),
+            RequireD3D11Backend(m_backend.get())
+                .BackBufferRenderTargetView(),
             m_width,
             m_height);
         m_gpuProfiler.EndSection();
-    }
-
-    void GraphicsDevice::LogSelectedAdapter() const
-    {
-        // 性能診断でGPUとWARPを区別できるよう、起動時のアダプター名を記録します。
-        Microsoft::WRL::ComPtr<IDXGIDevice> dxgiDevice;
-        if (FAILED(m_device.As(&dxgiDevice)))
-        {
-            return;
-        }
-        Microsoft::WRL::ComPtr<IDXGIAdapter> adapter;
-        if (FAILED(dxgiDevice->GetAdapter(
-                adapter.GetAddressOf()))
-            || adapter == nullptr)
-        {
-            return;
-        }
-        DXGI_ADAPTER_DESC description{};
-        if (FAILED(adapter->GetDesc(&description)))
-        {
-            return;
-        }
-
-        // WARPは固定のベンダー／デバイスIDで名乗ります。
-        const bool isWarp =
-            description.VendorId == 0x1414u
-            && description.DeviceId == 0x8cu;
-        std::string name;
-        for (const auto character : description.Description)
-        {
-            if (character == L'\0')
-            {
-                break;
-            }
-            name.push_back(
-                character < 128
-                    ? static_cast<char>(character)
-                    : '?');
-        }
-        const auto videoMemoryMegabytes =
-            static_cast<std::uint64_t>(
-                description.DedicatedVideoMemory)
-            / (1024u * 1024u);
-
-        auto message = "描画アダプター: " + name
-            + "（VRAM " + std::to_string(
-                videoMemoryMegabytes)
-            + " MB）";
-        if (isWarp)
-        {
-            Logger::Instance().Warning(
-                message
-                + " ※WARP（CPU描画）です。GPUを使っていないため"
-                  "描画性能は大幅に低下します。");
-        }
-        else
-        {
-            Logger::Instance().Info(message);
-        }
     }
 
     void GraphicsDevice::ApplyQueuedScreenEffects(
@@ -1576,8 +1268,8 @@ namespace LamaPon
                     {
                         auto candidate =
                             std::make_unique<ScreenEffect>(
-                                m_device.Get(),
-                                m_context.Get(),
+                                Device(),
+                                Context(),
                                 Assets(),
                                 absolutePath);
                         entry->effect = std::move(candidate);
@@ -1707,8 +1399,8 @@ namespace LamaPon
                     {
                         entry->effect =
                             std::make_unique<ComputeEffect>(
-                                m_device.Get(),
-                                m_context.Get(),
+                                Device(),
+                                Context(),
                                 Assets(),
                                 absolutePath);
                         entry->error.clear();
@@ -2061,8 +1753,10 @@ namespace LamaPon
 
             Microsoft::WRL::ComPtr<IDXGIDevice> dxgiDevice;
             Microsoft::WRL::ComPtr<IDXGIAdapter> adapter;
-            if (!m_device
-                || FAILED(m_device.As(&dxgiDevice))
+            if (Device() == nullptr
+                || FAILED(Device()->QueryInterface(
+                    IID_PPV_ARGS(
+                        dxgiDevice.GetAddressOf())))
                 || FAILED(dxgiDevice->GetAdapter(
                     adapter.GetAddressOf()))
                 || !adapter)
@@ -2153,7 +1847,7 @@ namespace LamaPon
             if (m_graphicsSettings.shadowsEnabled)
             {
                 m_shadowMap->Initialize(
-                    m_device.Get(),
+                    Device(),
                     m_graphicsSettings.shadowResolution,
                     m_graphicsSettings.shadowCascadeLimit);
                 const std::uint32_t
@@ -2162,12 +1856,12 @@ namespace LamaPon
                             .shadowResolution / 2u,
                         256u);
                 m_spotShadowMap->Initialize(
-                    m_device.Get(),
+                    Device(),
                     localShadowResolution,
                     static_cast<std::uint32_t>(
                         MaximumSpotShadows));
                 m_pointShadowMap->Initialize(
-                    m_device.Get(),
+                    Device(),
                     localShadowResolution,
                     6u,
                     true);
@@ -2222,7 +1916,7 @@ namespace LamaPon
 
     AssetManager& GraphicsDevice::Assets() const
     {
-        return m_services->EnsureAssets(m_device.Get(), m_context.Get(),
+        return m_services->EnsureAssets(Device(), Context(),
             m_graphicsSettings.runtimeTextureCompression);
     }
 
@@ -2256,7 +1950,7 @@ namespace LamaPon
         if (!m_additiveBlendPreservingAlpha)
         {
             m_additiveBlendPreservingAlpha =
-                CreateAdditiveBlendPreservingAlpha(m_device.Get());
+                CreateAdditiveBlendPreservingAlpha(Device());
         }
         return m_additiveBlendPreservingAlpha.Get();
     }
@@ -2331,8 +2025,8 @@ namespace LamaPon
             [this]
             {
                 return std::make_unique<EnvironmentRenderer>(
-                    m_device.Get(),
-                    m_context.Get(),
+                    Device(),
+                    Context(),
                     Assets(),
                     Assets().ResolvePath(
                         "shaders/LamaPonEnvironment.hlsl"));
@@ -2361,7 +2055,7 @@ namespace LamaPon
                 [this, shaderPath]
                 {
                     return std::make_unique<ClusteredLights>(
-                        m_device.Get(),
+                        Device(),
                         Assets(),
                         shaderPath);
                 });
@@ -2377,8 +2071,8 @@ namespace LamaPon
             [this]
             {
                 return std::make_unique<LitEffect>(
-                    m_device.Get(),
-                    m_context.Get(),
+                    Device(),
+                    Context(),
                     Assets(),
                     Assets().ResolvePath(
                         "shaders/LamaPonLit.hlsl"));
@@ -2393,8 +2087,8 @@ namespace LamaPon
             [this]
             {
                 return std::make_unique<LitEffect>(
-                    m_device.Get(),
-                    m_context.Get(),
+                    Device(),
+                    Context(),
                     Assets(),
                     Assets().ResolvePath(
                         "shaders/LamaPonLit.hlsl"),
@@ -2435,8 +2129,8 @@ namespace LamaPon
         try
         {
             effect = std::make_unique<LitEffect>(
-                m_device.Get(),
-                m_context.Get(),
+                Device(),
+                Context(),
                 Assets(),
                 shaderPath,
                 skinned);
@@ -2479,8 +2173,8 @@ namespace LamaPon
         {
             m_spriteErrorEffect =
                 std::make_unique<SpriteEffect>(
-                    m_device.Get(),
-                    m_context.Get(),
+                    Device(),
+                    Context(),
                     Assets(),
                     shaderPath);
         }
@@ -2631,8 +2325,8 @@ namespace LamaPon
                 {
                     entry->effect =
                         std::make_unique<LitEffect>(
-                            m_device.Get(),
-                            m_context.Get(),
+                            Device(),
+                            Context(),
                             Assets(),
                             absolutePath,
                             false,
@@ -2730,8 +2424,8 @@ namespace LamaPon
                         return Lit();
                     }
                     auto candidate = std::make_unique<LitEffect>(
-                        m_device.Get(),
-                        m_context.Get(),
+                        Device(),
+                        Context(),
                         Assets(),
                         absolutePath,
                         false,
@@ -2855,8 +2549,8 @@ namespace LamaPon
                 try
                 {
                     auto candidate = std::make_unique<LitEffect>(
-                        m_device.Get(),
-                        m_context.Get(),
+                        Device(),
+                        Context(),
                         Assets(),
                         absolutePath,
                         true,
@@ -2974,53 +2668,6 @@ namespace LamaPon
         return *m_pointShadowMap;
     }
 
-    void GraphicsDevice::CreateSizeDependentResources()
-    {
-        Microsoft::WRL::ComPtr<ID3D11Texture2D> backBuffer;
-        ThrowIfFailed(
-            m_swapChain->GetBuffer(
-                0,
-                IID_PPV_ARGS(backBuffer.ReleaseAndGetAddressOf())),
-            "IDXGISwapChain::GetBuffer");
-
-        ThrowIfFailed(
-            m_device->CreateRenderTargetView(
-                backBuffer.Get(),
-                nullptr,
-                m_renderTargetView.ReleaseAndGetAddressOf()),
-            "ID3D11Device::CreateRenderTargetView");
-
-        D3D11_TEXTURE2D_DESC depthDescription{};
-        depthDescription.Width = m_width;
-        depthDescription.Height = m_height;
-        depthDescription.MipLevels = 1;
-        depthDescription.ArraySize = 1;
-        depthDescription.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
-        depthDescription.SampleDesc.Count = 1;
-        depthDescription.BindFlags = D3D11_BIND_DEPTH_STENCIL;
-
-        ThrowIfFailed(
-            m_device->CreateTexture2D(
-                &depthDescription,
-                nullptr,
-                m_depthTexture.ReleaseAndGetAddressOf()),
-            "ID3D11Device::CreateTexture2D(depth)");
-
-        ThrowIfFailed(
-            m_device->CreateDepthStencilView(
-                m_depthTexture.Get(),
-                nullptr,
-                m_depthStencilView.ReleaseAndGetAddressOf()),
-            "ID3D11Device::CreateDepthStencilView");
-
-        m_viewport.TopLeftX = 0.0f;
-        m_viewport.TopLeftY = 0.0f;
-        m_viewport.Width = static_cast<float>(m_width);
-        m_viewport.Height = static_cast<float>(m_height);
-        m_viewport.MinDepth = 0.0f;
-        m_viewport.MaxDepth = 1.0f;
-    }
-
     void GraphicsDevice::CreateWhiteTexture()
     {
         constexpr std::uint32_t whitePixel = 0xffffffffu;
@@ -3041,14 +2688,14 @@ namespace LamaPon
 
         Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
         ThrowIfFailed(
-            m_device->CreateTexture2D(
+            Device()->CreateTexture2D(
                 &textureDescription,
                 &initialData,
                 texture.ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateTexture2D(white)");
 
         ThrowIfFailed(
-            m_device->CreateShaderResourceView(
+            Device()->CreateShaderResourceView(
                 texture.Get(),
                 nullptr,
                 m_whiteTexture.ReleaseAndGetAddressOf()),

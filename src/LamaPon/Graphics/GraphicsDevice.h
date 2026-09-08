@@ -1,12 +1,12 @@
 #pragma once
 
 #include "LamaPon/Graphics/GpuProfiler.h"
+#include "LamaPon/Graphics/GraphicsBackend.h"
 #include "LamaPon/Graphics/Lighting.h"
 #include "LamaPon/Graphics/GraphicsQuality.h"
 #include "LamaPon/Graphics/ShaderVariants.h"
 
 #include <d3d11.h>
-#include <d3d11sdklayers.h>
 #include <DirectXMath.h>
 #include <wrl/client.h>
 
@@ -323,20 +323,22 @@ namespace LamaPon
         {
             return m_graphicsSettings;
         }
-        // 現在の実装が実際に使用している描画APIです。要求された設定は
-        // Settings().renderingApi に保持しますが、未実装のAPIへは
-        // 切り替えずDirectX 11で安全に起動します。
+        // 実際に生成されたBackendの描画APIです。要求された設定は
+        // Settings().renderingApi に保持します。
         [[nodiscard]] RenderingApi
-            ActiveRenderingApi() const noexcept
-        {
-            return RenderingApi::DirectX11;
-        }
+            ActiveRenderingApi() const noexcept;
         // Initialize時に選択された設定です。実行中の設定変更では
         // 書き換えず、再起動が必要かどうかの判定に使います。
         [[nodiscard]] RenderingApi
             StartupRenderingApi() const noexcept
         {
             return m_startupRenderingApi;
+        }
+        // 起動時の要求と生成されたBackendが異なる理由です。
+        [[nodiscard]] RenderingApiFallbackReason
+            RenderingApiFallback() const noexcept
+        {
+            return m_renderingApiFallbackReason;
         }
         [[nodiscard]] const FrameStatistics&
             FrameStats() const noexcept
@@ -364,14 +366,13 @@ namespace LamaPon
         }
         // falseの場合はVSyncを無効にしてもFPSがモニターの
         // リフレッシュレートを超えないため、統計へ表示します。
-        [[nodiscard]] bool TearingAllowed() const noexcept
-        {
-            return m_tearingAllowed;
-        }
+        [[nodiscard]] bool TearingAllowed() const noexcept;
 
-        [[nodiscard]] bool IsInitialized() const noexcept { return m_device != nullptr; }
-        [[nodiscard]] ID3D11Device* Device() const noexcept { return m_device.Get(); }
-        [[nodiscard]] ID3D11DeviceContext* Context() const noexcept { return m_context.Get(); }
+        [[nodiscard]] bool IsInitialized() const noexcept;
+        // 既存のD3D11描画コード向け互換facadeです。Backend共通interfaceへ
+        // D3D11型を持ち込まず、段階的なrenderer移行までここで転送します。
+        [[nodiscard]] ID3D11Device* Device() const noexcept;
+        [[nodiscard]] ID3D11DeviceContext* Context() const noexcept;
         [[nodiscard]] ID3D11ShaderResourceView* WhiteTexture() const noexcept { return m_whiteTexture.Get(); }
         [[nodiscard]] AssetManager& Assets() const;
         [[nodiscard]] AssetManager* TryAssets() const noexcept;
@@ -574,11 +575,7 @@ namespace LamaPon
             Factory&& factory) const;
 
         void Shutdown() noexcept;
-        void CreateSizeDependentResources();
         void CreateWhiteTexture();
-        // 起動時に選ばれたアダプター名をログへ出します
-        // （WARPかどうかが分かるように）。
-        void LogSelectedAdapter() const;
         // 積まれた画面エフェクトを順に適用して待ち行列を空にします。
         // ポスト処理の並びはRunPostProcessが持っているので、その
         // トーンマップ後のフックから画面エフェクトを適用します。
@@ -588,12 +585,10 @@ namespace LamaPon
             RenderTarget& target,
             ScreenEffectPoint point);
 
-        Microsoft::WRL::ComPtr<ID3D11Device> m_device;
-        Microsoft::WRL::ComPtr<ID3D11DeviceContext> m_context;
-        Microsoft::WRL::ComPtr<IDXGISwapChain> m_swapChain;
-        Microsoft::WRL::ComPtr<ID3D11RenderTargetView> m_renderTargetView;
-        Microsoft::WRL::ComPtr<ID3D11Texture2D> m_depthTexture;
-        Microsoft::WRL::ComPtr<ID3D11DepthStencilView> m_depthStencilView;
+        // Device / Context / SwapChainとバックバッファ資源の所有者です。
+        // 現在はD3D11Backendだけを生成し、D3D12はrenderer移行完了まで
+        // 選択段階で安全にD3D11へフォールバックします。
+        std::unique_ptr<GraphicsBackend> m_backend;
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_whiteTexture;
         std::unique_ptr<DirectX::SpriteBatch> m_spriteBatch;
         std::unique_ptr<DirectX::CommonStates> m_commonStates;
@@ -606,22 +601,12 @@ namespace LamaPon
             m_instanceBuffer;
         std::size_t m_instanceBufferCapacity{};
         DepthPassKind m_depthPass{ DepthPassKind::None };
-        // ティアリング許可（可変リフレッシュ／リフレッシュレート超え）。
-        // 無効な場合はVSyncを切ってもFPSがモニターの
-        // リフレッシュレートを超えません。
-        bool m_tearingAllowed{};
         GpuProfiler m_gpuProfiler;
         // WARP強制フラグ（Initialize前にテスト等から設定）。
         // 定義はGraphicsDevice.cpp（DLLの中に1つだけ）。
         static bool s_preferWarpAdapter;
         static bool s_enableDebugLayer;
 
-        // デバッグレイヤーが出したメッセージをログへ流します。
-        // OutputDebugStringはデバッガーを繋いでいないと読めないため、
-        // --d3ddebug指定時の診断をエンジンログで確認可能にします。
-        void DrainDebugMessages();
-        Microsoft::WRL::ComPtr<ID3D11InfoQueue> m_infoQueue;
-        std::uint64_t m_debugMessagesLogged{};
         // 既存のAssets/Audio/Input APIを保ち、サービスの寿命管理は
         // 専用の所有者へ委譲します。D3Dデバイスより先に終了します。
         std::unique_ptr<RuntimeServices> m_services;
@@ -707,7 +692,6 @@ namespace LamaPon
         GraphicsSettings m_graphicsSettings =
             GraphicsSettingsForPreset(
                 GraphicsQualityPreset::High);
-        D3D11_VIEWPORT m_viewport{};
         std::uint32_t m_width{};
         std::uint32_t m_height{};
         std::uint32_t m_uiWidth{};
@@ -720,8 +704,9 @@ namespace LamaPon
         GraphicsMemoryStatistics m_memoryStatistics;
         std::chrono::steady_clock::time_point
             m_lastMemoryStatisticsSample{};
-        // 公開クラスの既存メンバー配置を保つため末尾へ追加します。
         RenderingApi m_startupRenderingApi{
             RenderingApi::DirectX11 };
+        RenderingApiFallbackReason m_renderingApiFallbackReason{
+            RenderingApiFallbackReason::None };
     };
 }

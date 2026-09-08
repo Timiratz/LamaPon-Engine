@@ -763,12 +763,21 @@ namespace LamaPon
                 "DirectX 12は実験的な設定です。"
                 "現在の環境では未実装または一部機能が"
                 "動作しない可能性があります。");
-            if (m_graphics.ActiveRenderingApi()
-                != RenderingApi::DirectX12Experimental)
+            if (m_graphics.RenderingApiFallback()
+                    == RenderingApiFallbackReason::NotImplemented
+                && m_graphics.StartupRenderingApi()
+                    == RenderingApi::DirectX12Experimental)
             {
                 drawRenderingApiWarning(
                     "現時点ではDirectX 11へフォールバックして"
                     "起動しています。");
+            }
+            else if (m_graphics.StartupRenderingApi()
+                != RenderingApi::DirectX12Experimental)
+            {
+                drawRenderingApiWarning(
+                    "現在のビルドでは再起動後もDirectX 11"
+                    "バックエンドへフォールバックします。");
             }
         }
 

@@ -267,8 +267,12 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Core/Window.h
     src/LamaPon/Graphics/GpuProfiler.cpp
     src/LamaPon/Graphics/GpuProfiler.h
+    src/LamaPon/Graphics/GraphicsBackend.cpp
+    src/LamaPon/Graphics/GraphicsBackend.h
     src/LamaPon/Graphics/GraphicsDevice.cpp
     src/LamaPon/Graphics/GraphicsDevice.h
+    src/LamaPon/Graphics/D3D11Backend.cpp
+    src/LamaPon/Graphics/D3D11Backend.h
     src/LamaPon/Graphics/Lighting.cpp
     src/LamaPon/Graphics/Lighting.h
     src/LamaPon/Graphics/LitEffect.cpp
@@ -877,7 +881,7 @@ if(BUILD_TESTING)
         $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
     add_test(NAME EditorExtensionRegistry
         COMMAND LamaPonEditorExtensionRegistryTests)
-    foreach(test_name IN ITEMS RuntimeServices RenderSpatialIndex)
+    foreach(test_name IN ITEMS RuntimeServices RenderSpatialIndex GraphicsBackendSelection)
         add_executable(LamaPon${test_name}Tests tests/${test_name}Tests.cpp)
         target_link_libraries(LamaPon${test_name}Tests PRIVATE LamaPonRuntime)
         target_compile_options(LamaPon${test_name}Tests PRIVATE
