@@ -558,12 +558,12 @@ namespace LamaPon
                         std::round(
                             static_cast<float>(previewTargetWidth)
                             / previewAspect)));
-                m_topPreview->Resize(
-                    m_graphics.Device(),
+                m_graphics.ResizeOffscreenTarget(
+                    *m_topPreview,
                     previewTargetWidth,
                     previewTargetHeight);
-                m_sidePreview->Resize(
-                    m_graphics.Device(),
+                m_graphics.ResizeOffscreenTarget(
+                    *m_sidePreview,
                     previewTargetWidth,
                     previewTargetHeight);
 
@@ -596,8 +596,9 @@ namespace LamaPon
                     constexpr float clear[]{
                         0.035f, 0.045f, 0.06f, 1.0f
                     };
-                    target.Bind(m_graphics.Context());
-                    target.Clear(m_graphics.Context(), clear);
+                    m_graphics.BeginOffscreenTarget(
+                        target,
+                        clear);
                     const LitMaterial material{
                         DirectX::XMFLOAT4{
                             0.15f, 0.82f, 1.0f, 1.0f
@@ -647,7 +648,7 @@ namespace LamaPon
                             projection,
                             true);
                     }
-                    target.CopyToDisplay(m_graphics.Context());
+                    m_graphics.PublishOffscreenTarget(target);
                 };
 
                 const auto focus = DirectX::XMLoadFloat3(&center3);

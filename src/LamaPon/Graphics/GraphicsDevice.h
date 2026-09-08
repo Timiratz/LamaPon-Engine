@@ -369,6 +369,26 @@ namespace LamaPon
         [[nodiscard]] bool TearingAllowed() const noexcept;
 
         [[nodiscard]] bool IsInitialized() const noexcept;
+        // API固有のDevice / Contextを呼び出し側へ渡さず、オフスクリーン
+        // 描画先を操作するための移行境界です。現在のRenderTargetは
+        // DirectX 11資源を持ちますが、将来はこの境界の内側でBackendに
+        // 対応する資源を選びます。
+        void ResizeOffscreenTarget(
+            RenderTarget& target,
+            std::uint32_t width,
+            std::uint32_t height);
+        // targetを描画先へ設定してから、色と深度をclearColorで初期化
+        // します。UIの基準サイズやGPU計測区間は変更しません。
+        void BeginOffscreenTarget(
+            RenderTarget& target,
+            const float clearColor[4]);
+        // clearせずにtargetを描画先へ戻します。ポスト処理後に補助表示を
+        // 重ねる場合など、完成途中の内容を保ったまま再開するために使います。
+        void BindOffscreenTarget(RenderTarget& target);
+        // 完成画像を表示専用資源へ確定します。targetのunbindや
+        // バックバッファへの復帰は行わず、呼び出し側の描画順を保ちます。
+        void PublishOffscreenTarget(RenderTarget& target);
+
         // 既存のD3D11描画コード向け互換facadeです。Backend共通interfaceへ
         // D3D11型を持ち込まず、段階的なrenderer移行までここで転送します。
         [[nodiscard]] ID3D11Device* Device() const noexcept;

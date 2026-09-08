@@ -344,8 +344,8 @@ namespace LamaPon
         size.x = std::max(size.x, 16.0f);
         size.y = std::max(size.y, 16.0f);
 
-        m_sceneRenderTarget.Resize(
-            m_graphics.Device(),
+        m_graphics.ResizeOffscreenTarget(
+            m_sceneRenderTarget,
             std::max(
                 static_cast<std::uint32_t>(
                     std::lround(
@@ -453,8 +453,8 @@ namespace LamaPon
             {
                 const float renderScale =
                     m_graphics.Settings().renderScale;
-                m_cameraPreviewRenderTarget.Resize(
-                    m_graphics.Device(),
+                m_graphics.ResizeOffscreenTarget(
+                    m_cameraPreviewRenderTarget,
                     std::max(
                         static_cast<std::uint32_t>(
                             std::lround(
@@ -1157,8 +1157,8 @@ namespace LamaPon
                 1u);
         }
 
-        m_gameRenderTarget.Resize(
-            m_graphics.Device(),
+        m_graphics.ResizeOffscreenTarget(
+            m_gameRenderTarget,
             targetWidth,
             targetHeight);
         m_graphics.SetUIViewportSize(

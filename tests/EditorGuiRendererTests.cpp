@@ -4,6 +4,7 @@
 #include "LamaPon/Graphics/RenderTarget.h"
 
 #include <Windows.h>
+#include <SpriteBatch.h>
 #include <imgui.h>
 
 #include <array>
@@ -12,6 +13,7 @@
 #include <cstdint>
 #include <iostream>
 #include <stdexcept>
+#include <typeinfo>
 #include <vector>
 
 namespace
@@ -31,6 +33,26 @@ namespace
         catch (const Exception&)
         {
             return;
+        }
+        throw std::runtime_error(message);
+    }
+
+    template <typename Exception, typename Function>
+    void RequireThrowsExactly(Function&& function, const char* message)
+    {
+        try
+        {
+            function();
+        }
+        catch (const Exception& exception)
+        {
+            if (typeid(exception) == typeid(Exception))
+            {
+                return;
+            }
+        }
+        catch (...)
+        {
         }
         throw std::runtime_error(message);
     }
@@ -99,6 +121,24 @@ namespace
                 asset.view.ReleaseAndGetAddressOf())),
             "Editor GUI test texture view creation failed");
         return asset;
+    }
+
+    void DrawSolidRectangle(
+        LamaPon::GraphicsDevice& graphics,
+        const DirectX::XMFLOAT2 position,
+        const DirectX::XMFLOAT2 size,
+        const DirectX::XMFLOAT4 color)
+    {
+        auto& sprites = graphics.BeginSprites();
+        sprites.Draw(
+            graphics.WhiteTexture(),
+            position,
+            nullptr,
+            DirectX::XMLoadFloat4(&color),
+            0.0f,
+            DirectX::XMFLOAT2{},
+            size);
+        graphics.EndSprites();
     }
 
     void DrawImageWindow(
@@ -245,6 +285,32 @@ namespace
                     == LamaPon::RenderingApiFallbackReason::NotImplemented,
             "Editor GUI smoke test requires the DirectX 11 fallback");
 
+        constexpr float displayColor[]{
+            0.1f, 0.85f, 0.2f, 1.0f };
+        LamaPon::RenderTarget emptyOffscreenTarget;
+        RequireThrows<std::invalid_argument>(
+            [&]
+            {
+                graphics.BeginOffscreenTarget(
+                    emptyOffscreenTarget,
+                    displayColor);
+            },
+            "Beginning an empty offscreen target must be rejected");
+        RequireThrows<std::invalid_argument>(
+            [&]
+            {
+                graphics.BindOffscreenTarget(
+                    emptyOffscreenTarget);
+            },
+            "Binding an empty offscreen target must be rejected");
+        RequireThrows<std::invalid_argument>(
+            [&]
+            {
+                graphics.PublishOffscreenTarget(
+                    emptyOffscreenTarget);
+            },
+            "Publishing an empty offscreen target must be rejected");
+
         ImGuiContextScope imguiContext;
         auto renderer = LamaPon::CreateEditorGuiRenderer(
             graphics.ActiveRenderingApi());
@@ -253,11 +319,52 @@ namespace
             224u, 48u, 32u, 255u };
         auto textureAsset = CreateSolidTexture(graphics, assetColor);
         LamaPon::RenderTarget displayTarget;
-        displayTarget.Resize(graphics.Device(), 1, 1);
-        constexpr float displayColor[]{
-            0.1f, 0.85f, 0.2f, 1.0f };
-        displayTarget.Clear(graphics.Context(), displayColor);
-        displayTarget.CopyToDisplay(graphics.Context());
+        graphics.ResizeOffscreenTarget(displayTarget, 0, 0);
+        Require(
+            displayTarget.IsValid()
+                && displayTarget.Width() == 1u
+                && displayTarget.Height() == 1u,
+            "Offscreen target dimensions must be clamped to at least one");
+        graphics.ResizeOffscreenTarget(displayTarget, 8, 4);
+        Require(
+            displayTarget.IsValid()
+                && displayTarget.Width() == 8u
+                && displayTarget.Height() == 4u,
+            "Offscreen target resize must apply the requested dimensions");
+        RequireThrows<std::invalid_argument>(
+            [&]
+            {
+                graphics.BeginOffscreenTarget(
+                    displayTarget,
+                    nullptr);
+            },
+            "Beginning an offscreen target with no clear color must be rejected");
+
+        graphics.BeginOffscreenTarget(displayTarget, displayColor);
+        constexpr DirectX::XMFLOAT4 leftColor{
+            0.9f, 0.1f, 0.05f, 1.0f };
+        DrawSolidRectangle(
+            graphics,
+            { 0.0f, 0.0f },
+            { 2.0f, 4.0f },
+            leftColor);
+
+        LamaPon::RenderTarget diversionTarget;
+        graphics.ResizeOffscreenTarget(diversionTarget, 8, 4);
+        constexpr float diversionColor[]{
+            0.02f, 0.03f, 0.04f, 1.0f };
+        graphics.BeginOffscreenTarget(
+            diversionTarget,
+            diversionColor);
+        graphics.BindOffscreenTarget(displayTarget);
+        constexpr DirectX::XMFLOAT4 rightColor{
+            0.05f, 0.2f, 0.9f, 1.0f };
+        DrawSolidRectangle(
+            graphics,
+            { 6.0f, 0.0f },
+            { 2.0f, 4.0f },
+            rightColor);
+        graphics.PublishOffscreenTarget(displayTarget);
 
         RequireThrows<std::logic_error>(
             [&]
@@ -374,10 +481,22 @@ namespace
             "ImGui::Image must sample the asset texture reference");
         RequirePixelNear(
             pixels,
+            59u,
+            32u,
+            { 230u, 26u, 13u },
+            "Beginning an offscreen target must bind it for drawing");
+        RequirePixelNear(
+            pixels,
             72u,
             32u,
             { 26u, 217u, 51u },
-            "ImGui::Image must sample the render target texture reference");
+            "Beginning an offscreen target must clear it before drawing");
+        RequirePixelNear(
+            pixels,
+            84u,
+            32u,
+            { 13u, 51u, 230u },
+            "Binding must restore and publishing must expose the offscreen target");
 
         auto* const ownerContext = ImGui::GetCurrentContext();
         auto* const alternateContext = ImGui::CreateContext();
@@ -429,6 +548,39 @@ int main()
     try
     {
         LamaPon::GraphicsDevice graphics;
+        LamaPon::RenderTarget offscreenTarget;
+        constexpr float offscreenClear[]{
+            0.0f, 0.0f, 0.0f, 1.0f };
+        RequireThrowsExactly<std::logic_error>(
+            [&]
+            {
+                graphics.ResizeOffscreenTarget(
+                    offscreenTarget,
+                    1,
+                    1);
+            },
+            "Resizing an offscreen target requires an initialized device");
+        RequireThrowsExactly<std::logic_error>(
+            [&]
+            {
+                graphics.BeginOffscreenTarget(
+                    offscreenTarget,
+                    offscreenClear);
+            },
+            "Beginning an offscreen target requires an initialized device");
+        RequireThrowsExactly<std::logic_error>(
+            [&]
+            {
+                graphics.BindOffscreenTarget(offscreenTarget);
+            },
+            "Binding an offscreen target requires an initialized device");
+        RequireThrowsExactly<std::logic_error>(
+            [&]
+            {
+                graphics.PublishOffscreenTarget(
+                    offscreenTarget);
+            },
+            "Publishing an offscreen target requires an initialized device");
         const auto renderer = LamaPon::CreateEditorGuiRenderer(
             LamaPon::RenderingApi::DirectX11);
         Require(renderer != nullptr,

@@ -1920,8 +1920,9 @@ namespace LamaPon
             m_graphics.SetUIViewportSize(
                 m_sceneRenderTarget.Width(),
                 m_sceneRenderTarget.Height());
-            m_sceneRenderTarget.Bind(m_graphics.Context());
-            m_sceneRenderTarget.Clear(m_graphics.Context(), sceneClearColor);
+            m_graphics.BeginOffscreenTarget(
+                m_sceneRenderTarget,
+                sceneClearColor);
             m_scene.RenderWithMatrices(
                 SceneViewMatrix(),
                 SceneProjectionMatrix(),
@@ -1938,8 +1939,8 @@ namespace LamaPon
             // エディターの補助表示はUIより手前に保つ。
             m_graphics.Gpu().BeginSection(
                 "エディター補助表示");
-            m_sceneRenderTarget.Bind(
-                m_graphics.Context());
+            m_graphics.BindOffscreenTarget(
+                m_sceneRenderTarget);
             if (m_gridVisible)
             {
                 if (m_scene2DMode)
@@ -1972,8 +1973,8 @@ namespace LamaPon
             DrawSelectionHighlight();
             // 完成画像を表示用へ確定します（ポスト処理のswap回数に
             // よらず、ImGuiには常に最終結果を見せるため）。
-            m_sceneRenderTarget.CopyToDisplay(
-                m_graphics.Context());
+            m_graphics.PublishOffscreenTarget(
+                m_sceneRenderTarget);
             m_graphics.Gpu().EndSection();
 
             const auto* selected =
@@ -1987,10 +1988,8 @@ namespace LamaPon
                 m_graphics.SetUIViewportSize(
                     m_cameraPreviewRenderTarget.Width(),
                     m_cameraPreviewRenderTarget.Height());
-                m_cameraPreviewRenderTarget.Bind(
-                    m_graphics.Context());
-                m_cameraPreviewRenderTarget.Clear(
-                    m_graphics.Context(),
+                m_graphics.BeginOffscreenTarget(
+                    m_cameraPreviewRenderTarget,
                     gameClearColor);
                 m_scene.RenderWithMatrices(
                     selectedCamera->ViewMatrix(),
@@ -2005,8 +2004,8 @@ namespace LamaPon
                     m_cameraPreviewRenderTarget,
                     m_scene.PostProcessFrameData());
                 m_scene.Render2D();
-                m_cameraPreviewRenderTarget.CopyToDisplay(
-                    m_graphics.Context());
+                m_graphics.PublishOffscreenTarget(
+                    m_cameraPreviewRenderTarget);
             }
         }
         else if (m_activeViewport == ViewportMode::Game
@@ -2015,8 +2014,9 @@ namespace LamaPon
             m_graphics.SetUIViewportSize(
                 m_gameRenderTarget.Width(),
                 m_gameRenderTarget.Height());
-            m_gameRenderTarget.Bind(m_graphics.Context());
-            m_gameRenderTarget.Clear(m_graphics.Context(), gameClearColor);
+            m_graphics.BeginOffscreenTarget(
+                m_gameRenderTarget,
+                gameClearColor);
             m_scene.RenderMainCamera(
                 m_gameRenderTarget.AspectRatio(),
                 false,
@@ -2040,8 +2040,8 @@ namespace LamaPon
                     m_gameRenderTarget.Width(),
                     m_gameRenderTarget.Height());
             }
-            m_gameRenderTarget.CopyToDisplay(
-                m_graphics.Context());
+            m_graphics.PublishOffscreenTarget(
+                m_gameRenderTarget);
         }
     }
 
