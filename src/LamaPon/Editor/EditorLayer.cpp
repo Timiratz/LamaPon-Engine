@@ -1,5 +1,6 @@
 #include "LamaPon/Editor/BgmLoopPanel.h"
 #include "LamaPon/Editor/EditorLayer.h"
+#include "LamaPon/Editor/EditorGuiRenderer.h"
 #include "LamaPon/Editor/GameExportDialog.h"
 #include "LamaPon/Editor/VehicleParametersPanel.h"
 
@@ -52,7 +53,6 @@
 // メンバーを破棄するこの翻訳単位では完全型が必要です。
 #include <nlohmann/json.hpp>
 #include <imgui_internal.h>
-#include <imgui_impl_dx11.h>
 #include <imgui_impl_win32.h>
 #include <ImGuizmo.h>
 
@@ -269,13 +269,23 @@ namespace LamaPon
             ImGui::DestroyContext();
             throw std::runtime_error("ImGui Win32 backend initialization failed.");
         }
-        m_dx11Initialized = ImGui_ImplDX11_Init(graphics.Device(), graphics.Context());
-        if (!m_dx11Initialized)
+        try
         {
+            m_editorGuiRenderer = CreateEditorGuiRenderer(
+                graphics.ActiveRenderingApi());
+            m_editorGuiRenderer->Initialize(graphics);
+        }
+        catch (...)
+        {
+            if (m_editorGuiRenderer)
+            {
+                m_editorGuiRenderer->Shutdown();
+                m_editorGuiRenderer.reset();
+            }
             ImGui_ImplWin32_Shutdown();
             m_win32Initialized = false;
             ImGui::DestroyContext();
-            throw std::runtime_error("ImGui DirectX 11 backend initialization failed.");
+            throw;
         }
         ResetHistory();
         MarkSceneSaved();
@@ -359,9 +369,10 @@ namespace LamaPon
         // 拡張機能の終了処理はImGuiコンテキストが有効なうちに行います。
         m_editorExtensions.Shutdown();
 
-        if (m_dx11Initialized)
+        if (m_editorGuiRenderer)
         {
-            ImGui_ImplDX11_Shutdown();
+            m_editorGuiRenderer->Shutdown();
+            m_editorGuiRenderer.reset();
         }
         if (m_win32Initialized)
         {
@@ -443,7 +454,7 @@ namespace LamaPon
 
     void EditorLayer::BeginFrame()
     {
-        ImGui_ImplDX11_NewFrame();
+        m_editorGuiRenderer->NewFrame();
         ImGui_ImplWin32_NewFrame();
         // リモート操作: 入力の注入はImGui::NewFrame()の前に
         // 行います（このフレームのイベントキューへ載せるため）。
@@ -2041,7 +2052,7 @@ namespace LamaPon
         // 分けて出さないと、GPU合計との差がどこから来たのか
         // 判断できません（パネルの枚数で普通に数ms動きます）。
         m_graphics.Gpu().BeginSection("エディターUI");
-        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+        m_editorGuiRenderer->RenderDrawData(ImGui::GetDrawData());
         m_graphics.Gpu().EndSection();
 
         // スクリーンショットモード: UIがバックバッファへ描かれた

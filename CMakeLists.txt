@@ -433,6 +433,10 @@ set(LAMAPON_EDITOR_SOURCES
     src/LamaPon/Editor/Editor.h
     src/LamaPon/Editor/EditorExtensionRegistry.cpp
     src/LamaPon/Editor/EditorExtensionRegistry.h
+    src/LamaPon/Editor/EditorGuiRenderer.cpp
+    src/LamaPon/Editor/EditorGuiRenderer.h
+    src/LamaPon/Editor/D3D11EditorGuiRenderer.cpp
+    src/LamaPon/Editor/D3D11EditorGuiRenderer.h
     src/LamaPon/Editor/EditorLayer.cpp
     src/LamaPon/Editor/EditorLayer.h
     src/LamaPon/Editor/EditorLayerAnimationTools.cpp
@@ -881,6 +885,19 @@ if(BUILD_TESTING)
         $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
     add_test(NAME EditorExtensionRegistry
         COMMAND LamaPonEditorExtensionRegistryTests)
+    add_executable(LamaPonEditorGuiRendererTests
+        tests/EditorGuiRendererTests.cpp)
+    target_link_libraries(LamaPonEditorGuiRendererTests
+        PRIVATE LamaPonEditor DearImGui)
+    target_compile_options(LamaPonEditorGuiRendererTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
+    add_test(NAME EditorGuiRendererWarp
+        COMMAND LamaPonEditorGuiRendererTests)
+    set_tests_properties(EditorGuiRendererWarp PROPERTIES
+        LABELS "editor;graphics"
+        TIMEOUT 60)
     foreach(test_name IN ITEMS RuntimeServices RenderSpatialIndex GraphicsBackendSelection)
         add_executable(LamaPon${test_name}Tests tests/${test_name}Tests.cpp)
         target_link_libraries(LamaPon${test_name}Tests PRIVATE LamaPonRuntime)
