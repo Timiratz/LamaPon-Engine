@@ -132,6 +132,25 @@ namespace LamaPon
 
     void Application::Initialize(const HINSTANCE instance)
     {
+        Initialize(instance, RenderingApi::DirectX11);
+    }
+
+    void Application::Initialize(
+        const HINSTANCE instance,
+        const RenderingApi requestedApi)
+    {
+        const auto executableDirectory = ExecutableDirectory();
+        if (executableDirectory.empty())
+        {
+            throw std::runtime_error("GetModuleFileNameW failed.");
+        }
+        // GraphicsDeviceの初期化警告（未実装APIからのフォールバック等）も
+        // 起動ログへ残るよう、デバイス作成より先に出力先を開きます。
+        static_cast<void>(
+            Logger::Instance().SetFilePath(
+                executableDirectory
+                    / L"LamaPon.log"));
+
         // エディターが使うフォルダー選択などのシェルダイアログは、呼び出し元の
         // スレッドがシングルスレッドアパートメントであることを前提とします。
         // COINIT_MULTITHREADEDではSHBrowseForFolderWが応答しなくなります。
@@ -167,12 +186,8 @@ namespace LamaPon
         m_graphics.Initialize(
             m_window.Handle(),
             m_window.ClientWidth(),
-            m_window.ClientHeight());
-        const auto executableDirectory = ExecutableDirectory();
-        if (executableDirectory.empty())
-        {
-            throw std::runtime_error("GetModuleFileNameW failed.");
-        }
+            m_window.ClientHeight(),
+            requestedApi);
         m_graphics.Assets().SetAssetRoot(
             executableDirectory / L"assets");
         // 書き出し時に同梱した事前コンパイル済みシェーダー。これが
@@ -181,10 +196,6 @@ namespace LamaPon
         // %LOCALAPPDATA%側のキャッシュが効きます）。
         AddShaderCacheSearchDirectory(
             executableDirectory / L"shader-cache");
-        static_cast<void>(
-            Logger::Instance().SetFilePath(
-                executableDirectory
-                    / L"LamaPon.log"));
         Logger::Instance().Info(
             "LamaPonを初期化しました。");
 

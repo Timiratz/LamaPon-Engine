@@ -351,6 +351,14 @@ namespace LamaPon
                             RenderingPathName(
                                 settings.graphics
                                     .renderingPath))));
+            settings.graphics.renderingApi =
+                RenderingApiFromName(
+                    graphics->value(
+                        "renderingApi",
+                        std::string(
+                            RenderingApiName(
+                                settings.graphics
+                                    .renderingApi))));
         }
         if (const auto viewport = document.find("viewport");
             viewport != document.end()
@@ -696,6 +704,12 @@ namespace LamaPon
                         RenderingPathName(
                             settings.graphics
                                 .renderingPath)
+                    },
+                    {
+                        "renderingApi",
+                        RenderingApiName(
+                            settings.graphics
+                                .renderingApi)
                     },
                     {
                         "runtimeTextureCompression",

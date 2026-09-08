@@ -410,7 +410,9 @@ int WINAPI wWinMain(
             720,
             projectSettings.gameName);
 
-        application.Initialize(instance);
+        application.Initialize(
+            instance,
+            projectSettings.graphics.renderingApi);
         application.Graphics().SetGraphicsSettings(
             projectSettings.graphics);
         application.Input().SetActions(

@@ -65,7 +65,10 @@ int WINAPI wWinMain(
             settings.windowHeight,
             settings.gameName);
 
-        application.Initialize(instance);
+        // 描画APIはデバイス初期化時にだけ選択し、実行中は切り替えません。
+        application.Initialize(
+            instance,
+            settings.graphics.renderingApi);
         // Game Moduleが存在するのに互換性などで読めなかった場合、Sceneを
         // 続けて表示すると「背景だけで止まった」ように見えます。配布ゲーム
         // では起動を止め、既にApplicationが記録した具体的な理由を画面へ

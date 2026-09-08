@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### 描画API設定
+
+- Project SettingsのGraphicsへ`Auto` / `DirectX 11` / `DirectX 12 Experimental`の選択を追加。既定は従来どおりDirectX 11で、変更は次回起動時に反映する。
+- DirectX 12は未実装のため、安全にDirectX 11へフォールバックする。将来のD3D11 / D3D12バックエンド分離に備えて起動時の選択経路を追加。
+- `GraphicsSettings`のABI変更に伴い、Game Module APIを17へ更新。
+
 ### ファイル名の統一
 
 - サンプルのアニメーションとPrefabを英語ファイル名へ変更し、`.meta`のGUIDを維持して参照を更新。
@@ -25,7 +31,7 @@
 - 配布ゲームの起動判定、Script終了時の解放、Scene設定のリセット、EventBusの例外復帰を修正。
 - BGMパネル、UIコンポーネントのInspector、描画用空間索引、実行時サービス、CLIのScene／Prefabコマンドを分離。
 - 責務分割に伴う公開クラスのレイアウト変更でGame Module APIを14から15へ更新し、
-  物理と描画の時刻同期で現在の16へ更新。
+  物理と描画の時刻同期で16、描画API設定で現在の17へ更新。
 - MSVC／Ninjaのヘッダー依存検出を修正。ローカライズされた出力と既存ビルドの依存情報再取得に対応。
 - Web入力の登録解除・例外処理・ログを改善し、SDK構成、ライセンス同梱、Windows／Webの回帰検査を整備。
 

@@ -34,6 +34,9 @@ namespace LamaPon
         Application& operator=(const Application&) = delete;
 
         LAMAPON_API void Initialize(HINSTANCE instance);
+        LAMAPON_API void Initialize(
+            HINSTANCE instance,
+            RenderingApi requestedApi);
         LAMAPON_API void AttachLayer(
             std::unique_ptr<ApplicationLayer> layer);
         // 最初のシーンを読み込み終えるまで起動ロゴを表示します。

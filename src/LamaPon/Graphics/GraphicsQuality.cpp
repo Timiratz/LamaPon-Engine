@@ -169,6 +169,13 @@ namespace LamaPon
             settings.renderingPath =
                 RenderingPath::ForwardPlus;
         }
+        if (settings.renderingApi != RenderingApi::Auto
+            && settings.renderingApi != RenderingApi::DirectX11
+            && settings.renderingApi
+                != RenderingApi::DirectX12Experimental)
+        {
+            settings.renderingApi = RenderingApi::DirectX11;
+        }
         return settings;
     }
 
@@ -202,6 +209,39 @@ namespace LamaPon
         if (name == "Custom") return GraphicsQualityPreset::Custom;
         throw std::invalid_argument(
             "Unknown graphics quality preset.");
+    }
+
+    std::string_view RenderingApiName(
+        const RenderingApi api) noexcept
+    {
+        switch (api)
+        {
+        case RenderingApi::Auto:
+            return "Auto";
+        case RenderingApi::DirectX11:
+            return "DirectX11";
+        case RenderingApi::DirectX12Experimental:
+            return "DirectX12Experimental";
+        }
+        return "DirectX11";
+    }
+
+    RenderingApi RenderingApiFromName(
+        const std::string_view name) noexcept
+    {
+        if (name == "Auto")
+        {
+            return RenderingApi::Auto;
+        }
+        if (name == "DirectX11")
+        {
+            return RenderingApi::DirectX11;
+        }
+        if (name == "DirectX12Experimental")
+        {
+            return RenderingApi::DirectX12Experimental;
+        }
+        return RenderingApi::DirectX11;
     }
 
     std::string_view RenderingPathName(

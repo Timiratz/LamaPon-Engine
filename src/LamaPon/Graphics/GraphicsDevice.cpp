@@ -282,6 +282,42 @@ namespace LamaPon
         const std::uint32_t width,
         const std::uint32_t height)
     {
+        Initialize(
+            window,
+            width,
+            height,
+            RenderingApi::DirectX11);
+    }
+
+    void GraphicsDevice::Initialize(
+        const HWND window,
+        const std::uint32_t width,
+        const std::uint32_t height,
+        RenderingApi requestedApi)
+    {
+        // TODO: D3D12Backendを追加したら、ここでrequestedApiに応じて
+        // D3D11Backend / D3D12Backendを選択する。未実装の間は既存の
+        // DirectX 11経路だけを使い、設定だけで起動不能にしない。
+        switch (requestedApi)
+        {
+        case RenderingApi::Auto:
+        case RenderingApi::DirectX11:
+            break;
+        case RenderingApi::DirectX12Experimental:
+            Logger::Instance().Warning(
+                "DirectX 12 Experimentalは未実装のため、"
+                "DirectX 11へフォールバックして起動します。");
+            break;
+        default:
+            Logger::Instance().Warning(
+                "不明なRendering APIが指定されたため、"
+                "DirectX 11へフォールバックして起動します。");
+            requestedApi = RenderingApi::DirectX11;
+            break;
+        }
+        m_startupRenderingApi = requestedApi;
+        m_graphicsSettings.renderingApi = requestedApi;
+
         m_width = std::max(width, 1u);
         m_height = std::max(height, 1u);
         m_uiWidth = m_width;
@@ -2142,8 +2178,10 @@ namespace LamaPon
     void GraphicsDevice::ApplyQualityPreset(
         const GraphicsQualityPreset preset)
     {
-        SetGraphicsSettings(
-            GraphicsSettingsForPreset(preset));
+        auto settings = GraphicsSettingsForPreset(preset);
+        settings.renderingApi =
+            m_graphicsSettings.renderingApi;
+        SetGraphicsSettings(settings);
     }
 
     float GraphicsDevice::AspectRatio() const noexcept

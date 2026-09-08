@@ -13,9 +13,9 @@ namespace LamaPon
     // Game ModuleとRuntimeのABIを識別します。公開構造体のレイアウトや
     // 公開関数のシグネチャを変更した場合は、この値も更新してください。
     // GameModuleHostは完全一致を要求し、互換性のないDLLを読み込みません。
-    // API 16ではSceneの物理時計を専用クラスへ移し、Sceneのレイアウトが
-    // 変わったため、ゲーム用DLLの再ビルドが必要です。
-    inline constexpr std::uint32_t GameModuleApiVersion = 16;
+    // API 17ではGraphicsSettingsへRenderingApiを追加して構造体の
+    // レイアウトが変わったため、ゲーム用DLLの再ビルドが必要です。
+    inline constexpr std::uint32_t GameModuleApiVersion = 17;
 
     using NativeScriptCreateFunction = void* (*)(
         GameObject* owner,

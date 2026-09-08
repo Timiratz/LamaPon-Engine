@@ -173,6 +173,11 @@ namespace LamaPon
         GraphicsDevice& operator=(const GraphicsDevice&) = delete;
 
         void Initialize(HWND window, std::uint32_t width, std::uint32_t height);
+        void Initialize(
+            HWND window,
+            std::uint32_t width,
+            std::uint32_t height,
+            RenderingApi requestedApi);
         void Resize(std::uint32_t width, std::uint32_t height);
 
         // Initialize前に呼ぶと、GPUの代わりにWARP（CPUラスタライザ）
@@ -317,6 +322,21 @@ namespace LamaPon
             Settings() const noexcept
         {
             return m_graphicsSettings;
+        }
+        // 現在の実装が実際に使用している描画APIです。要求された設定は
+        // Settings().renderingApi に保持しますが、未実装のAPIへは
+        // 切り替えずDirectX 11で安全に起動します。
+        [[nodiscard]] RenderingApi
+            ActiveRenderingApi() const noexcept
+        {
+            return RenderingApi::DirectX11;
+        }
+        // Initialize時に選択された設定です。実行中の設定変更では
+        // 書き換えず、再起動が必要かどうかの判定に使います。
+        [[nodiscard]] RenderingApi
+            StartupRenderingApi() const noexcept
+        {
+            return m_startupRenderingApi;
         }
         [[nodiscard]] const FrameStatistics&
             FrameStats() const noexcept
@@ -700,5 +720,8 @@ namespace LamaPon
         GraphicsMemoryStatistics m_memoryStatistics;
         std::chrono::steady_clock::time_point
             m_lastMemoryStatisticsSample{};
+        // 公開クラスの既存メンバー配置を保つため末尾へ追加します。
+        RenderingApi m_startupRenderingApi{
+            RenderingApi::DirectX11 };
     };
 }

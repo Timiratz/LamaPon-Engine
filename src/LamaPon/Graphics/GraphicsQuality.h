@@ -29,6 +29,13 @@ namespace LamaPon
         ForwardPlus
     };
 
+    enum class RenderingApi
+    {
+        Auto,
+        DirectX11,
+        DirectX12Experimental
+    };
+
     struct GraphicsSettings final
     {
         GraphicsQualityPreset preset{
@@ -87,6 +94,10 @@ namespace LamaPon
         // 自動LODの見た目優先度。1.0が基準で、小さいほど早く
         // 低LODへ切り替わり、大きいほど高LODを長く保ちます。
         float automaticLodQuality{ 1.0f };
+        // 描画APIの切り替えは再起動後に行います。既存の
+        // DirectX 11動作と位置指定の初期化を保つため、末尾で
+        // DirectX 11を既定にします。
+        RenderingApi renderingApi{ RenderingApi::DirectX11 };
     };
 
     [[nodiscard]] GraphicsSettings
@@ -101,6 +112,12 @@ namespace LamaPon
     [[nodiscard]] GraphicsQualityPreset
         GraphicsQualityPresetFromName(
             std::string_view name);
+    [[nodiscard]] std::string_view
+        RenderingApiName(
+            RenderingApi api) noexcept;
+    [[nodiscard]] RenderingApi
+        RenderingApiFromName(
+            std::string_view name) noexcept;
     [[nodiscard]] std::string_view
         RenderingPathName(
             RenderingPath path) noexcept;

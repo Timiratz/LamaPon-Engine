@@ -2039,8 +2039,15 @@ namespace
         LamaPon::GraphicsDevice::SetEnableDebugLayer(
             request.value("d3dDebug", false));
         const HWND window = CreateHiddenWindow(width, height);
+        static_cast<void>(
+            LamaPon::Logger::Instance().SetFilePath(
+                directory / L"runtime.log"));
         LamaPon::GraphicsDevice graphics;
-        graphics.Initialize(window, width, height);
+        graphics.Initialize(
+            window,
+            width,
+            height,
+            settings.graphics.renderingApi);
         graphics.Assets().SetAssetRoot(projectRoot / L"assets");
         auto graphicsSettings = settings.graphics;
         graphicsSettings.vSyncEnabled = false;
@@ -2048,9 +2055,6 @@ namespace
         graphics.SetAsyncShaderCompilationEnabled(false);
         graphics.Input().SetActions(settings.inputActions);
         LamaPon::SetActivePhysicsSettings(settings.physics);
-        static_cast<void>(
-            LamaPon::Logger::Instance().SetFilePath(
-                directory / L"runtime.log"));
 
         LamaPon::GameModuleHost gameModule;
         const auto gameModulePath = projectRoot
@@ -4311,7 +4315,11 @@ namespace
         const HWND window =
             CreateHiddenWindow(width, height);
         LamaPon::GraphicsDevice graphics;
-        graphics.Initialize(window, width, height);
+        graphics.Initialize(
+            window,
+            width,
+            height,
+            settings.graphics.renderingApi);
         graphics.Assets().SetAssetRoot(
             projectRoot / L"assets");
 
