@@ -765,10 +765,6 @@ namespace LamaPon
         // 今フレームの描画で使うプローブ一覧（毎フレーム集め直し）。
         std::vector<ReflectionProbeComponent*>
             m_frameReflectionProbes;
-        // ベイク用の共有キューブマップ等（実体はScene.cpp）。
-        struct ReflectionProbeBakeResources;
-        std::unique_ptr<ReflectionProbeBakeResources>
-            m_probeBakeResources;
         // ベイク中の再帰描画でプローブ自身が映り込まないように。
         bool m_bakingReflectionProbes{};
         // SkyboxのIBL畳み込みのディスクキャッシュ鍵。パスが変わった

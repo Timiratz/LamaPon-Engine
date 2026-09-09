@@ -9,6 +9,9 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
+#include <memory>
+#include <optional>
 
 namespace LamaPon
 {
@@ -23,6 +26,11 @@ namespace LamaPon
             ID3D11DeviceContext* context,
             AssetManager& assets,
             const std::filesystem::path& shaderPath);
+        ~EnvironmentRenderer();
+
+        EnvironmentRenderer(const EnvironmentRenderer&) = delete;
+        EnvironmentRenderer& operator=(
+            const EnvironmentRenderer&) = delete;
 
         // 空に描く太陽。朝昼夜モード（SkySettings::sunDriven）の
         // ときにSceneが渡します。
@@ -252,14 +260,6 @@ namespace LamaPon
         // 呼び出し側が設定済みの描画先とviewportを変えずにコピーします。
         void CopyToBoundRenderTarget(
             ID3D11ShaderResourceView* source);
-        // 左右反転コピー（リフレクションプローブのベイク用。
-        // 理由はLamaPonEnvironment.hlslのPSCopyMirrorXを参照）。
-        void CopyMirroredX(
-            ID3D11ShaderResourceView* source,
-            ID3D11RenderTargetView* destination,
-            std::uint32_t destinationWidth,
-            std::uint32_t destinationHeight);
-
         // IBLの事前フィルタ結果（split-sum近似）。
         struct PrefilteredEnvironment final
         {
@@ -299,13 +299,26 @@ namespace LamaPon
                     && irradiance != nullptr;
             }
         };
-        // includeSpecular=falseでスペキュラの畳み込みを飛ばします
-        // （照度しか使わないGIベイク用。resultのspecularは空になり、
-        // IsValid()は偽になるので、irradianceだけを見てください）。
+        // リフレクションプローブとGIが共有するキューブ面ベイクです。
+        // callbackは0..5の各面について同期的に1回ずつ呼ばれ、その間は
+        // HDRの面描画だけを行ってください。同じrendererへのBake再入は
+        // logic_errorになります。描画先の作成・clear・左右反転コピー・
+        // 畳み込み・readbackはこのD3D11描画島の内部で完結します。
+        static constexpr std::uint32_t ProbeBakeFaceSize = 128;
+        using ProbeFaceRenderer =
+            std::function<void(std::uint32_t face)>;
+
+        // 複数プローブを処理する前に共有資源を作ります。失敗を一括して
+        // 扱いたい呼び出し側向けで、各Bake関数も未準備なら作成します。
+        void PrepareProbeBake();
         [[nodiscard]] OwnedPrefilteredEnvironment
-            CreatePrefilteredEnvironment(
-                ID3D11ShaderResourceView* source,
-                bool includeSpecular = true);
+            BakeReflectionProbe(
+                const ProbeFaceRenderer& renderFace,
+                std::optional<std::uint64_t> cacheKey =
+                    std::nullopt);
+        [[nodiscard]] std::optional<std::array<float, 12>>
+            BakeIrradianceProbe(
+                const ProbeFaceRenderer& renderFace);
 
         // SSRのHi-Z用の深度ピラミッドを作ります（ミップ0で深度→
         // ビュー距離、以降は2x2の最小値）。RenderTargetが持っている
@@ -317,6 +330,24 @@ namespace LamaPon
             float projectionW);
 
     private:
+        // includeSpecular=falseでスペキュラの畳み込みを飛ばします
+        // （照度しか使わないGIベイク用）。
+        [[nodiscard]] OwnedPrefilteredEnvironment
+            CreatePrefilteredEnvironment(
+                ID3D11ShaderResourceView* source,
+                bool includeSpecular = true);
+        void RenderProbeCube(
+            const ProbeFaceRenderer& renderFace);
+        [[nodiscard]] bool ProjectIrradianceToSh(
+            ID3D11ShaderResourceView* irradiance,
+            std::array<float, 12>& coefficients);
+        // 左右反転コピー（理由はLamaPonEnvironment.hlslの
+        // PSCopyMirrorXを参照）。
+        void CopyMirroredX(
+            ID3D11ShaderResourceView* source,
+            ID3D11RenderTargetView* destination,
+            std::uint32_t destinationWidth,
+            std::uint32_t destinationHeight);
         void BuildPrefilteredEnvironment(
             ID3D11ShaderResourceView* source,
             std::uint64_t cacheKey);
@@ -483,6 +514,9 @@ namespace LamaPon
 
         ID3D11Device* m_device{};
         ID3D11DeviceContext* m_context{};
+        struct ProbeBakeResources;
+        std::unique_ptr<ProbeBakeResources> m_probeBakeResources;
+        bool m_probeBakeActive{};
         // 事前フィルタのキャッシュ（ソースが変わったら再生成）。
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
             m_prefilterSource;

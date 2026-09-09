@@ -18,8 +18,9 @@
 - 方向・スポット・ポイント影の資源作成と描画先操作を共通Backend契約へ移し、シーンからD3D11 Contextの受け渡しを削減。
 - Forward+のクラスタライト更新を共通Backend契約へ移し、通常のシーン描画からD3D11 Contextの受け渡しを削減。
 - primary描画先とviewportの退避・復元をopaqueな共通Backend契約へ移し、レンダーテクスチャとベイク処理からD3D11 output stateの操作を削減。
+- リフレクションプローブとGIの6面ベイクを`EnvironmentRenderer`の同期workflowへ集約し、SceneからD3D11の面ターゲット生成・clear・反転コピー・畳み込み・SH readbackを分離。
 - 車両パラメータープレビューのモデル送信を`EditorModelPreviewRenderer`へ分離し、DirectXTK11のContext / CommonStates / BasicEffect操作をD3D11実装内へ隔離。
-- `GraphicsSettings`と`GraphicsDevice`のABI変更、および共通Backend契約の拡張に伴い、Game Module APIを26へ更新。
+- `GraphicsSettings`、`GraphicsDevice`、`Scene`、`EnvironmentRenderer`のABI変更、および共通Backend契約の拡張に伴い、Game Module APIを27へ更新。
 
 ### ファイル名の統一
 
@@ -48,8 +49,8 @@
   バックバッファ契約の追加で19、オフスクリーン描画先契約の追加で20、
   オフスクリーン深度操作の追加で21、カラー履歴操作の追加で22、
   自動露出の輝度readback契約の追加で23、影マップ操作の追加で24、
-  クラスタライト更新契約の追加で25、描画先状態契約の追加で
-  現在の26へ更新。
+  クラスタライト更新契約の追加で25、描画先状態契約の追加で26、
+  環境ベイクworkflowの集約で現在の27へ更新。
 - MSVC／Ninjaのヘッダー依存検出を修正。ローカライズされた出力と既存ビルドの依存情報再取得に対応。
 - Web入力の登録解除・例外処理・ログを改善し、SDK構成、ライセンス同梱、Windows／Webの回帰検査を整備。
 

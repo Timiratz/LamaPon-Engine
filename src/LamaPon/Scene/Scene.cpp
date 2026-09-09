@@ -1461,169 +1461,6 @@ namespace LamaPon
     {
     }
 
-    // リフレクションプローブのベイクに使う共有リソースです。
-    // 各プローブを同じキューブへ描画し、事前フィルターで個別の結果を
-    // 生成するため、キューブ本体は1組を共有します。
-    struct Scene::ReflectionProbeBakeResources final
-    {
-        static constexpr std::uint32_t FaceSize = 128;
-
-        Microsoft::WRL::ComPtr<ID3D11Texture2D>
-            cubeTexture;
-        std::array<
-            Microsoft::WRL::ComPtr<
-                ID3D11RenderTargetView>,
-            6> faceTargets;
-        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
-            cubeShaderResourceView;
-        Microsoft::WRL::ComPtr<ID3D11Texture2D>
-            depthTexture;
-        Microsoft::WRL::ComPtr<ID3D11DepthStencilView>
-            depthView;
-        // 面ごとの描画先（2D）。エンジンの右手系のまま描き、
-        // キューブ面へは左右反転コピーで書き込みます（射影行列で
-        // 鏡像にすると巻き方向が反転してカリングが崩れるため）。
-        Microsoft::WRL::ComPtr<ID3D11Texture2D>
-            scratchTexture;
-        Microsoft::WRL::ComPtr<ID3D11RenderTargetView>
-            scratchTarget;
-        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
-            scratchShaderResourceView;
-
-        explicit ReflectionProbeBakeResources(
-            ID3D11Device* const device)
-        {
-            const auto throwIfFailed =
-                [](const HRESULT result,
-                    const char* operation)
-                {
-                    if (FAILED(result))
-                    {
-                        throw std::runtime_error(
-                            std::string(operation)
-                            + " failed");
-                    }
-                };
-
-            D3D11_TEXTURE2D_DESC cubeDescription{};
-            cubeDescription.Width = FaceSize;
-            cubeDescription.Height = FaceSize;
-            cubeDescription.MipLevels = 1;
-            cubeDescription.ArraySize = 6;
-            cubeDescription.Format =
-                DXGI_FORMAT_R16G16B16A16_FLOAT;
-            cubeDescription.SampleDesc.Count = 1;
-            cubeDescription.Usage = D3D11_USAGE_DEFAULT;
-            cubeDescription.BindFlags =
-                D3D11_BIND_SHADER_RESOURCE
-                | D3D11_BIND_RENDER_TARGET;
-            cubeDescription.MiscFlags =
-                D3D11_RESOURCE_MISC_TEXTURECUBE;
-            throwIfFailed(
-                device->CreateTexture2D(
-                    &cubeDescription,
-                    nullptr,
-                    cubeTexture.ReleaseAndGetAddressOf()),
-                "CreateTexture2D(probe cube)");
-
-            for (std::uint32_t face = 0; face < 6; ++face)
-            {
-                D3D11_RENDER_TARGET_VIEW_DESC
-                    targetDescription{};
-                targetDescription.Format =
-                    cubeDescription.Format;
-                targetDescription.ViewDimension =
-                    D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
-                targetDescription.Texture2DArray
-                    .FirstArraySlice = face;
-                targetDescription.Texture2DArray
-                    .ArraySize = 1;
-                throwIfFailed(
-                    device->CreateRenderTargetView(
-                        cubeTexture.Get(),
-                        &targetDescription,
-                        faceTargets[face]
-                            .ReleaseAndGetAddressOf()),
-                    "CreateRenderTargetView(probe face)");
-            }
-
-            D3D11_SHADER_RESOURCE_VIEW_DESC
-                viewDescription{};
-            viewDescription.Format =
-                cubeDescription.Format;
-            viewDescription.ViewDimension =
-                D3D11_SRV_DIMENSION_TEXTURECUBE;
-            viewDescription.TextureCube.MipLevels = 1;
-            throwIfFailed(
-                device->CreateShaderResourceView(
-                    cubeTexture.Get(),
-                    &viewDescription,
-                    cubeShaderResourceView
-                        .ReleaseAndGetAddressOf()),
-                "CreateShaderResourceView(probe cube)");
-
-            D3D11_TEXTURE2D_DESC depthDescription{};
-            depthDescription.Width = FaceSize;
-            depthDescription.Height = FaceSize;
-            depthDescription.MipLevels = 1;
-            depthDescription.ArraySize = 1;
-            depthDescription.Format =
-                DXGI_FORMAT_D24_UNORM_S8_UINT;
-            depthDescription.SampleDesc.Count = 1;
-            depthDescription.Usage = D3D11_USAGE_DEFAULT;
-            depthDescription.BindFlags =
-                D3D11_BIND_DEPTH_STENCIL;
-            throwIfFailed(
-                device->CreateTexture2D(
-                    &depthDescription,
-                    nullptr,
-                    depthTexture
-                        .ReleaseAndGetAddressOf()),
-                "CreateTexture2D(probe depth)");
-            throwIfFailed(
-                device->CreateDepthStencilView(
-                    depthTexture.Get(),
-                    nullptr,
-                    depthView.ReleaseAndGetAddressOf()),
-                "CreateDepthStencilView(probe depth)");
-
-            D3D11_TEXTURE2D_DESC scratchDescription{};
-            scratchDescription.Width = FaceSize;
-            scratchDescription.Height = FaceSize;
-            scratchDescription.MipLevels = 1;
-            scratchDescription.ArraySize = 1;
-            scratchDescription.Format =
-                DXGI_FORMAT_R16G16B16A16_FLOAT;
-            scratchDescription.SampleDesc.Count = 1;
-            scratchDescription.Usage =
-                D3D11_USAGE_DEFAULT;
-            scratchDescription.BindFlags =
-                D3D11_BIND_SHADER_RESOURCE
-                | D3D11_BIND_RENDER_TARGET;
-            throwIfFailed(
-                device->CreateTexture2D(
-                    &scratchDescription,
-                    nullptr,
-                    scratchTexture
-                        .ReleaseAndGetAddressOf()),
-                "CreateTexture2D(probe scratch)");
-            throwIfFailed(
-                device->CreateRenderTargetView(
-                    scratchTexture.Get(),
-                    nullptr,
-                    scratchTarget
-                        .ReleaseAndGetAddressOf()),
-                "CreateRenderTargetView(probe scratch)");
-            throwIfFailed(
-                device->CreateShaderResourceView(
-                    scratchTexture.Get(),
-                    nullptr,
-                    scratchShaderResourceView
-                        .ReleaseAndGetAddressOf()),
-                "CreateShaderResourceView(probe scratch)");
-        }
-    };
-
     Scene::~Scene() = default;
 
     GameObject& Scene::CreateGameObject(std::string name)
@@ -7713,8 +7550,8 @@ namespace LamaPon
                                 ->CurrentScenePath()
                             : std::filesystem::path{},
                         *probe,
-                        ReflectionProbeBakeResources::
-                            FaceSize));
+                        EnvironmentRenderer::
+                            ProbeBakeFaceSize));
                 if (restored.IsValid())
                 {
                     probe->SetBakedEnvironment(
@@ -7731,12 +7568,7 @@ namespace LamaPon
 
         try
         {
-            if (!m_probeBakeResources)
-            {
-                m_probeBakeResources = std::make_unique<
-                    ReflectionProbeBakeResources>(
-                    m_graphics.Device());
-            }
+            m_graphics.Environment().PrepareProbeBake();
         }
         catch (const std::exception& exception)
         {
@@ -7753,8 +7585,6 @@ namespace LamaPon
                 + exception.what());
             return;
         }
-
-        auto* const context = m_graphics.Context();
 
         // 現在の描画先を退避します（フレーム途中で呼ばれるため）。
         auto previousOutputState =
@@ -7803,96 +7633,41 @@ namespace LamaPon
                             probe->Range() * 4.0f,
                             100.0f));
 
-                D3D11_VIEWPORT viewport{};
-                viewport.Width = static_cast<float>(
-                    ReflectionProbeBakeResources::
-                        FaceSize);
-                viewport.Height = viewport.Width;
-                viewport.MaxDepth = 1.0f;
-
-                for (std::uint32_t face = 0;
-                    face < 6u;
-                    ++face)
-                {
-                    ID3D11RenderTargetView* targets[]{
-                        m_probeBakeResources
-                            ->scratchTarget.Get()
-                    };
-                    context->OMSetRenderTargets(
-                        1,
-                        targets,
-                        m_probeBakeResources
-                            ->depthView.Get());
-                    context->RSSetViewports(
-                        1, &viewport);
-                    constexpr float clearColor[4]{};
-                    context->ClearRenderTargetView(
-                        targets[0], clearColor);
-                    context->ClearDepthStencilView(
-                        m_probeBakeResources
-                            ->depthView.Get(),
-                        D3D11_CLEAR_DEPTH
-                            | D3D11_CLEAR_STENCIL,
-                        1.0f,
-                        0);
-
-                    const auto faceView =
-                        DirectX::XMMatrixLookToRH(
-                            DirectX::XMLoadFloat3(&eye),
-                            DirectX::XMLoadFloat3(
-                                &FaceDirections[face]),
-                            DirectX::XMLoadFloat3(
-                                &FaceUps[face]));
-                    // ポスト処理なしのHDRリニアで焼きます
-                    // （IBLはトーンマップ前の値が正）。
-                    RenderWithMatrices(
-                        faceView,
-                        faceProjection,
-                        false,
-                        false);
-
-                    // 左右反転してキューブ面へ書き込みます。
-                    m_graphics.Environment().CopyMirroredX(
-                        m_probeBakeResources
-                            ->scratchShaderResourceView
-                            .Get(),
-                        m_probeBakeResources
-                            ->faceTargets[face].Get(),
-                        ReflectionProbeBakeResources::
-                            FaceSize,
-                        ReflectionProbeBakeResources::
-                            FaceSize);
-                }
-
-                // 事前フィルタはこのキューブをSRV（t1）として読む
-                // ので、先に描画先から外します。最後の面のRTVが
-                // 着いたままだと、同じリソースのRTV/SRV同時バインド
-                // をD3D11が検出してSRVをnullにし、積分結果が黒く
-                // なるためです。
-                context->OMSetRenderTargets(
-                    0, nullptr, nullptr);
-                auto baked = m_graphics.Environment()
-                    .CreatePrefilteredEnvironment(
-                        m_probeBakeResources
-                            ->cubeShaderResourceView
-                            .Get());
                 // シーン由来のプローブは結果をディスクへ残し、
                 // 次にシーンを開いたとき復元できるようにします。
-                if (probe->IsLoadedFromScene())
-                {
-                    EnvironmentCache::Store(
+                const auto cacheKey = probe->IsLoadedFromScene()
+                    ? std::optional<std::uint64_t>{
                         ProbeEnvironmentCacheKey(
                             m_sceneManager != nullptr
                                 ? m_sceneManager
                                     ->CurrentScenePath()
                                 : std::filesystem::path{},
                             *probe,
-                            ReflectionProbeBakeResources::
-                                FaceSize),
-                        m_graphics.Device(),
-                        context,
-                        baked);
-                }
+                            EnvironmentRenderer::
+                                ProbeBakeFaceSize) }
+                    : std::nullopt;
+                auto baked = m_graphics.Environment()
+                    .BakeReflectionProbe(
+                        [this,
+                         &eye,
+                         &faceProjection](const std::uint32_t face)
+                        {
+                            const auto faceView =
+                                DirectX::XMMatrixLookToRH(
+                                    DirectX::XMLoadFloat3(&eye),
+                                    DirectX::XMLoadFloat3(
+                                        &FaceDirections[face]),
+                                    DirectX::XMLoadFloat3(
+                                        &FaceUps[face]));
+                            // ポスト処理なしのHDRリニアで焼きます
+                            // （IBLはトーンマップ前の値が正）。
+                            RenderWithMatrices(
+                                faceView,
+                                faceProjection,
+                                false,
+                                false);
+                        },
+                        cacheKey);
                 probe->SetBakedEnvironment(
                     std::move(baked));
             }
@@ -8022,185 +7797,6 @@ namespace LamaPon
             / static_cast<float>(total);
     }
 
-    namespace
-    {
-        // 16pxの照度キューブを読み戻してL1球面調和へ射影します。
-        // 出力は12個のfloat（RGB各チャンネルの x,y,z,定数項）。
-        //
-        // 係数は「関数の当てはめ」です。E(方向)をY00とY1mへ射影し、
-        // そのまま再構成すると
-        //   定数項 = (1/4π)ΣE・ω、軸の項 = (3/4π)ΣE・軸・ω
-        // になります（一様なEなら定数項=E、軸の項=0になるのが
-        // 検算です）。
-        [[nodiscard]] bool ProjectIrradianceToSh(
-            ID3D11Device* const device,
-            ID3D11DeviceContext* const context,
-            ID3D11ShaderResourceView* const irradiance,
-            float* const outCoefficients)
-        {
-            using Microsoft::WRL::ComPtr;
-            if (irradiance == nullptr)
-            {
-                return false;
-            }
-            ComPtr<ID3D11Resource> resource;
-            irradiance->GetResource(
-                resource.ReleaseAndGetAddressOf());
-            ComPtr<ID3D11Texture2D> texture;
-            if (FAILED(resource.As(&texture)))
-            {
-                return false;
-            }
-            D3D11_TEXTURE2D_DESC description{};
-            texture->GetDesc(&description);
-            if (description.Format
-                    != DXGI_FORMAT_R16G16B16A16_FLOAT
-                || description.ArraySize != 6)
-            {
-                return false;
-            }
-            D3D11_TEXTURE2D_DESC staging = description;
-            staging.Usage = D3D11_USAGE_STAGING;
-            staging.BindFlags = 0;
-            staging.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-            staging.MiscFlags = 0;
-            ComPtr<ID3D11Texture2D> copy;
-            if (FAILED(device->CreateTexture2D(
-                &staging,
-                nullptr,
-                copy.ReleaseAndGetAddressOf())))
-            {
-                return false;
-            }
-            context->CopyResource(copy.Get(), texture.Get());
-
-            const std::uint32_t edge = description.Width;
-            double sums[12]{};
-            for (std::uint32_t face = 0; face < 6; ++face)
-            {
-                const UINT subresource = D3D11CalcSubresource(
-                    0, face, description.MipLevels);
-                D3D11_MAPPED_SUBRESOURCE mapped{};
-                if (FAILED(context->Map(
-                    copy.Get(),
-                    subresource,
-                    D3D11_MAP_READ,
-                    0,
-                    &mapped)))
-                {
-                    return false;
-                }
-                for (std::uint32_t y = 0; y < edge; ++y)
-                {
-                    const auto* row =
-                        reinterpret_cast<
-                            const DirectX::PackedVector::
-                                HALF*>(
-                            static_cast<const std::uint8_t*>(
-                                mapped.pData)
-                            + y * mapped.RowPitch);
-                    for (std::uint32_t x = 0;
-                        x < edge;
-                        ++x)
-                    {
-                        // テクセル中心の方向。シェーダーの
-                        // CubeDirection（LamaPonEnvironment.hlsl）と
-                        // 同じ式です。ここが食い違うと間接光の
-                        // 向きが狂います。
-                        const float uc =
-                            (static_cast<float>(x) + 0.5f)
-                                / edge * 2.0f
-                            - 1.0f;
-                        const float vc =
-                            (static_cast<float>(y) + 0.5f)
-                                / edge * 2.0f
-                            - 1.0f;
-                        DirectX::XMFLOAT3 direction{};
-                        switch (face)
-                        {
-                        case 0:
-                            direction = { 1.0f, -vc, -uc };
-                            break;
-                        case 1:
-                            direction = { -1.0f, -vc, uc };
-                            break;
-                        case 2:
-                            direction = { uc, 1.0f, vc };
-                            break;
-                        case 3:
-                            direction = { uc, -1.0f, -vc };
-                            break;
-                        case 4:
-                            direction = { uc, -vc, 1.0f };
-                            break;
-                        default:
-                            direction = { -uc, -vc, -1.0f };
-                            break;
-                        }
-                        const float lengthSquared =
-                            direction.x * direction.x
-                            + direction.y * direction.y
-                            + direction.z * direction.z;
-                        const float length =
-                            std::sqrt(lengthSquared);
-                        // キューブ1テクセルの立体角。面上の面積
-                        // (2/N)^2 を距離の3乗で割ったものです。
-                        const float solidAngle =
-                            4.0f / (edge * edge)
-                            / (lengthSquared * length);
-                        const float nx =
-                            direction.x / length;
-                        const float ny =
-                            direction.y / length;
-                        const float nz =
-                            direction.z / length;
-                        for (int channel = 0;
-                            channel < 3;
-                            ++channel)
-                        {
-                            const float value =
-                                DirectX::PackedVector::
-                                    XMConvertHalfToFloat(
-                                        row[x * 4
-                                            + channel]);
-                            const double weighted =
-                                static_cast<double>(value)
-                                * solidAngle;
-                            double* base =
-                                sums + channel * 4;
-                            base[0] += weighted * nx;
-                            base[1] += weighted * ny;
-                            base[2] += weighted * nz;
-                            base[3] += weighted;
-                        }
-                    }
-                }
-                context->Unmap(copy.Get(), subresource);
-            }
-            constexpr double AxisScale =
-                3.0 / (4.0 * 3.14159265358979323846);
-            constexpr double ConstantScale =
-                1.0 / (4.0 * 3.14159265358979323846);
-            for (int channel = 0; channel < 3; ++channel)
-            {
-                outCoefficients[channel * 4 + 0] =
-                    static_cast<float>(
-                        sums[channel * 4 + 0] * AxisScale);
-                outCoefficients[channel * 4 + 1] =
-                    static_cast<float>(
-                        sums[channel * 4 + 1] * AxisScale);
-                outCoefficients[channel * 4 + 2] =
-                    static_cast<float>(
-                        sums[channel * 4 + 2] * AxisScale);
-                outCoefficients[channel * 4 + 3] =
-                    static_cast<float>(
-                        sums[channel * 4 + 3]
-                        * ConstantScale);
-            }
-            return true;
-        }
-    }
-
     void Scene::ProcessBakedGlobalIlluminationBake()
     {
         if (!m_bakedGiBaking
@@ -8223,12 +7819,7 @@ namespace LamaPon
 
         try
         {
-            if (!m_probeBakeResources)
-            {
-                m_probeBakeResources = std::make_unique<
-                    ReflectionProbeBakeResources>(
-                    m_graphics.Device());
-            }
+            m_graphics.Environment().PrepareProbeBake();
         }
         catch (const std::exception& exception)
         {
@@ -8239,8 +7830,6 @@ namespace LamaPon
                 + exception.what());
             return;
         }
-
-        auto* const context = m_graphics.Context();
 
         // 現在の描画先を退避します（フレーム途中で呼ばれるため）。
         auto previousOutputState =
@@ -8289,12 +7878,6 @@ namespace LamaPon
                     1.0f,
                     0.1f,
                     farPlane);
-
-            D3D11_VIEWPORT viewport{};
-            viewport.Width = static_cast<float>(
-                ReflectionProbeBakeResources::FaceSize);
-            viewport.Height = viewport.Width;
-            viewport.MaxDepth = 1.0f;
 
             const std::size_t endProbe = std::min(
                 m_bakedGiNextProbe + ProbesPerFrame,
@@ -8347,78 +7930,39 @@ namespace LamaPon
                                 shape.resolutionZ)
                 };
 
-                for (std::uint32_t face = 0;
-                    face < 6u;
-                    ++face)
-                {
-                    ID3D11RenderTargetView* targets[]{
-                        m_probeBakeResources
-                            ->scratchTarget.Get()
-                    };
-                    context->OMSetRenderTargets(
-                        1,
-                        targets,
-                        m_probeBakeResources
-                            ->depthView.Get());
-                    context->RSSetViewports(1, &viewport);
-                    constexpr float clearColor[4]{};
-                    context->ClearRenderTargetView(
-                        targets[0], clearColor);
-                    context->ClearDepthStencilView(
-                        m_probeBakeResources
-                            ->depthView.Get(),
-                        D3D11_CLEAR_DEPTH
-                            | D3D11_CLEAR_STENCIL,
-                        1.0f,
-                        0);
-                    const auto faceView =
-                        DirectX::XMMatrixLookToRH(
-                            DirectX::XMLoadFloat3(&eye),
-                            DirectX::XMLoadFloat3(
-                                &FaceDirections[face]),
-                            DirectX::XMLoadFloat3(
-                                &FaceUps[face]));
-                    // プローブベイクと同じくポスト処理なしの
-                    // HDRリニアで焼きます。
-                    RenderWithMatrices(
-                        faceView,
-                        faceProjection,
-                        false,
-                        false);
-                    m_graphics.Environment().CopyMirroredX(
-                        m_probeBakeResources
-                            ->scratchShaderResourceView
-                            .Get(),
-                        m_probeBakeResources
-                            ->faceTargets[face].Get(),
-                        ReflectionProbeBakeResources::
-                            FaceSize,
-                        ReflectionProbeBakeResources::
-                            FaceSize);
-                }
-                // 畳み込みはこのキューブをSRVとして読むので、
-                // 先に描画先から外します（プローブベイクと同じ罠）。
-                context->OMSetRenderTargets(
-                    0, nullptr, nullptr);
-                // スペキュラは使わないので照度だけ畳み込みます。
-                auto irradianceOnly =
+                const auto coefficients =
                     m_graphics.Environment()
-                        .CreatePrefilteredEnvironment(
-                            m_probeBakeResources
-                                ->cubeShaderResourceView
-                                .Get(),
-                            false);
-                if (irradianceOnly.irradiance == nullptr
-                    || !ProjectIrradianceToSh(
-                        m_graphics.Device(),
-                        context,
-                        irradianceOnly.irradiance.Get(),
-                        m_bakedGiWorking.data()
-                            + index * 12))
+                        .BakeIrradianceProbe(
+                            [this,
+                             &eye,
+                             &faceProjection](
+                                const std::uint32_t face)
+                            {
+                                const auto faceView =
+                                    DirectX::XMMatrixLookToRH(
+                                        DirectX::XMLoadFloat3(
+                                            &eye),
+                                        DirectX::XMLoadFloat3(
+                                            &FaceDirections[face]),
+                                        DirectX::XMLoadFloat3(
+                                            &FaceUps[face]));
+                                // プローブベイクと同じくポスト処理なしの
+                                // HDRリニアで焼きます。
+                                RenderWithMatrices(
+                                    faceView,
+                                    faceProjection,
+                                    false,
+                                    false);
+                            });
+                if (!coefficients)
                 {
                     throw std::runtime_error(
                         "GI probe readback failed.");
                 }
+                std::copy(
+                    coefficients->begin(),
+                    coefficients->end(),
+                    m_bakedGiWorking.data() + index * 12);
             }
         }
         catch (const std::exception& exception)
