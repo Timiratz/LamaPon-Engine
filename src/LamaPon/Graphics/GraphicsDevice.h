@@ -412,6 +412,12 @@ namespace LamaPon
             RenderTarget& target,
             const AutoExposureSettings& settings,
             float deltaSeconds);
+        // 影マップの指定スライスへ描画を開始し、終了時に元の描画先へ
+        // 戻します。無効な影、範囲外、再入、Begin前のEndは何もしません。
+        void BeginShadowMap(
+            ShadowMap& shadowMap,
+            std::uint32_t cascadeIndex);
+        void EndShadowMap(ShadowMap& shadowMap);
 
         // 既存のD3D11描画コード向け互換facadeです。Backend共通interfaceへ
         // D3D11型を持ち込まず、段階的なrenderer移行までここで転送します。

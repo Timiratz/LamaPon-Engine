@@ -78,6 +78,16 @@ namespace LamaPon
                 RenderTarget& target) override;
         void CaptureOffscreenTargetLuminance(
             RenderTarget& target) override;
+        void InitializeShadowMap(
+            ShadowMap& shadowMap,
+            std::uint32_t resolution,
+            std::uint32_t cascadeCount,
+            bool cube) override;
+        void BeginShadowMap(
+            ShadowMap& shadowMap,
+            std::uint32_t cascadeIndex) override;
+        void EndShadowMap(
+            ShadowMap& shadowMap) override;
 
         // 既存のDirectX 11描画経路へ貸し出す非所有ポインターです。
         // GraphicsDeviceは移行期間中、従来のDevice/Context APIを

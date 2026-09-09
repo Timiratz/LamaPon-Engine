@@ -15,8 +15,9 @@
 - 深度プリパスのbindとSSR用深度コピーを共通Backend契約へ移し、呼び出し側からD3D11 Contextの受け渡しを削減。
 - SSRとTAAのカラー履歴コピーを共通Backend契約へ移し、シーンとポスト処理からD3D11 Contextの受け渡しを削減。
 - 自動露出の非同期輝度readbackと次回用転送を共通Backend契約へ移し、ポスト処理からD3D11 Contextの受け渡しを削減。
+- 方向・スポット・ポイント影の資源作成と描画先操作を共通Backend契約へ移し、シーンからD3D11 Contextの受け渡しを削減。
 - 車両パラメータープレビューのモデル送信を`EditorModelPreviewRenderer`へ分離し、DirectXTK11のContext / CommonStates / BasicEffect操作をD3D11実装内へ隔離。
-- `GraphicsSettings`と`GraphicsDevice`のABI変更、および共通Backend契約の拡張に伴い、Game Module APIを23へ更新。
+- `GraphicsSettings`と`GraphicsDevice`のABI変更、および共通Backend契約の拡張に伴い、Game Module APIを24へ更新。
 
 ### ファイル名の統一
 
@@ -44,7 +45,8 @@
   物理と描画の時刻同期で16、描画API設定で17、Backend分離で18、
   バックバッファ契約の追加で19、オフスクリーン描画先契約の追加で20、
   オフスクリーン深度操作の追加で21、カラー履歴操作の追加で22、
-  自動露出の輝度readback契約の追加で現在の23へ更新。
+  自動露出の輝度readback契約の追加で23、影マップ操作の追加で
+  現在の24へ更新。
 - MSVC／Ninjaのヘッダー依存検出を修正。ローカライズされた出力と既存ビルドの依存情報再取得に対応。
 - Web入力の登録解除・例外処理・ログを改善し、SDK構成、ライセンス同梱、Windows／Webの回帰検査を整備。
 

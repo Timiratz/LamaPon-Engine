@@ -1,5 +1,6 @@
 #include "LamaPon/Graphics/GraphicsBackend.h"
 #include "LamaPon/Graphics/RenderTarget.h"
+#include "LamaPon/Graphics/ShadowMap.h"
 
 #include <iostream>
 #include <stdexcept>
@@ -84,6 +85,30 @@ int main()
             "DirectX 11 backend must report the DirectX 11 API");
         Require(!backend->IsInitialized(),
             "A newly created backend must not initialize graphics resources");
+
+        LamaPon::ShadowMap shadowMap;
+        RequireThrowsExactly<std::logic_error>(
+            [&]
+            {
+                backend->InitializeShadowMap(
+                    shadowMap,
+                    1,
+                    1,
+                    false);
+            },
+            "Initializing a shadow map requires an initialized backend");
+        RequireThrowsExactly<std::logic_error>(
+            [&]
+            {
+                backend->BeginShadowMap(shadowMap, 0);
+            },
+            "Beginning a shadow map requires an initialized backend");
+        RequireThrowsExactly<std::logic_error>(
+            [&]
+            {
+                backend->EndShadowMap(shadowMap);
+            },
+            "Ending a shadow map requires an initialized backend");
 
         LamaPon::RenderTarget offscreenTarget;
         constexpr float clearColor[]{

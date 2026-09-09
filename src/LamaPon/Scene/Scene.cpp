@@ -6457,8 +6457,8 @@ namespace LamaPon
                         cascade.view,
                         cascade.projection,
                         visibility.lodHidden);
-                shadowMap.Begin(
-                    m_graphics.Context(),
+                m_graphics.BeginShadowMap(
+                    shadowMap,
                     static_cast<std::uint32_t>(
                         cascadeIndex));
                 try
@@ -6480,10 +6480,10 @@ namespace LamaPon
                 }
                 catch (...)
                 {
-                    shadowMap.End(m_graphics.Context());
+                    m_graphics.EndShadowMap(shadowMap);
                     throw;
                 }
-                shadowMap.End(m_graphics.Context());
+                m_graphics.EndShadowMap(shadowMap);
             }
 
             auto& shadow =
@@ -6680,8 +6680,8 @@ namespace LamaPon
                             shadowProjection,
                             visibility.lodHidden);
 
-                    spotShadowMap.Begin(
-                        m_graphics.Context(),
+                    m_graphics.BeginShadowMap(
+                        spotShadowMap,
                         static_cast<std::uint32_t>(slot));
                     try
                     {
@@ -6704,12 +6704,12 @@ namespace LamaPon
                     }
                     catch (...)
                     {
-                        spotShadowMap.End(
-                            m_graphics.Context());
+                        m_graphics.EndShadowMap(
+                            spotShadowMap);
                         throw;
                     }
-                    spotShadowMap.End(
-                        m_graphics.Context());
+                    m_graphics.EndShadowMap(
+                        spotShadowMap);
 
                     auto& destination =
                         lighting.spotShadows[slot];
@@ -6825,8 +6825,8 @@ namespace LamaPon
                             faceView,
                             faceProjection,
                             visibility.lodHidden);
-                    pointShadowMap.Begin(
-                        m_graphics.Context(),
+                    m_graphics.BeginShadowMap(
+                        pointShadowMap,
                         face);
                     try
                     {
@@ -6849,12 +6849,12 @@ namespace LamaPon
                     }
                     catch (...)
                     {
-                        pointShadowMap.End(
-                            m_graphics.Context());
+                        m_graphics.EndShadowMap(
+                            pointShadowMap);
                         throw;
                     }
-                    pointShadowMap.End(
-                        m_graphics.Context());
+                    m_graphics.EndShadowMap(
+                        pointShadowMap);
                 }
                 auto& destination = lighting.pointShadow;
                 destination.texture =

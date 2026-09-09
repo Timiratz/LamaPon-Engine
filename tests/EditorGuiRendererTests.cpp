@@ -5,6 +5,7 @@
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Graphics/LitMaterial.h"
 #include "LamaPon/Graphics/RenderTarget.h"
+#include "LamaPon/Graphics/ShadowMap.h"
 
 #include <Windows.h>
 #include <SpriteBatch.h>
@@ -308,6 +309,12 @@ namespace
                 && graphics.RenderingApiFallback()
                     == LamaPon::RenderingApiFallbackReason::NotImplemented,
             "Editor GUI smoke test requires the DirectX 11 fallback");
+
+        // ShadowMap::Begin/Endが従来から持つsilent no-opを、
+        // Backend経由でも維持します。
+        LamaPon::ShadowMap emptyShadowMap;
+        graphics.BeginShadowMap(emptyShadowMap, 0);
+        graphics.EndShadowMap(emptyShadowMap);
 
         constexpr float displayColor[]{
             0.1f, 0.85f, 0.2f, 1.0f };
@@ -860,6 +867,7 @@ int main()
     try
     {
         LamaPon::GraphicsDevice graphics;
+        LamaPon::ShadowMap shadowMap;
         LamaPon::RenderTarget offscreenTarget;
         constexpr float offscreenClear[]{
             0.0f, 0.0f, 0.0f, 1.0f };
@@ -870,6 +878,18 @@ int main()
             13.0f, 14.0f, 15.0f, 16.0f };
         LamaPon::AutoExposureSettings autoExposureSettings{};
         autoExposureSettings.enabled = true;
+        RequireThrowsExactly<std::logic_error>(
+            [&]
+            {
+                graphics.BeginShadowMap(shadowMap, 0);
+            },
+            "Beginning a shadow map requires an initialized device");
+        RequireThrowsExactly<std::logic_error>(
+            [&]
+            {
+                graphics.EndShadowMap(shadowMap);
+            },
+            "Ending a shadow map requires an initialized device");
         RequireThrowsExactly<std::logic_error>(
             [&]
             {

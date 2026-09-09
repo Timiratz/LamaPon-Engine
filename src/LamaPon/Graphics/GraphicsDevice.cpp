@@ -355,6 +355,30 @@ namespace LamaPon
         return exposureStops;
     }
 
+    void GraphicsDevice::BeginShadowMap(
+        ShadowMap& shadowMap,
+        const std::uint32_t cascadeIndex)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "BeginShadowMap requires an initialized device.");
+        }
+
+        m_backend->BeginShadowMap(shadowMap, cascadeIndex);
+    }
+
+    void GraphicsDevice::EndShadowMap(ShadowMap& shadowMap)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "EndShadowMap requires an initialized device.");
+        }
+
+        m_backend->EndShadowMap(shadowMap);
+    }
+
     struct GraphicsDevice::MaterialShaderEntry final
     {
         std::unique_ptr<LitEffect> effect;
@@ -614,23 +638,25 @@ namespace LamaPon
         m_pointShadowMap = std::make_unique<ShadowMap>();
         if (m_graphicsSettings.shadowsEnabled)
         {
-            m_shadowMap->Initialize(
-                Device(),
+            m_backend->InitializeShadowMap(
+                *m_shadowMap,
                 m_graphicsSettings.shadowResolution,
-                m_graphicsSettings.shadowCascadeLimit);
+                m_graphicsSettings.shadowCascadeLimit,
+                false);
             // スポット/ポイントはカスケードより解像度を落とします。
             const std::uint32_t localShadowResolution =
                 std::max(
                     m_graphicsSettings.shadowResolution
                         / 2u,
                     256u);
-            m_spotShadowMap->Initialize(
-                Device(),
+            m_backend->InitializeShadowMap(
+                *m_spotShadowMap,
                 localShadowResolution,
                 static_cast<std::uint32_t>(
-                    MaximumSpotShadows));
-            m_pointShadowMap->Initialize(
-                Device(),
+                    MaximumSpotShadows),
+                false);
+            m_backend->InitializeShadowMap(
+                *m_pointShadowMap,
                 localShadowResolution,
                 6u,
                 true);
@@ -2033,22 +2059,24 @@ namespace LamaPon
                 std::make_unique<ShadowMap>();
             if (m_graphicsSettings.shadowsEnabled)
             {
-                m_shadowMap->Initialize(
-                    Device(),
+                m_backend->InitializeShadowMap(
+                    *m_shadowMap,
                     m_graphicsSettings.shadowResolution,
-                    m_graphicsSettings.shadowCascadeLimit);
+                    m_graphicsSettings.shadowCascadeLimit,
+                    false);
                 const std::uint32_t
                     localShadowResolution = std::max(
                         m_graphicsSettings
                             .shadowResolution / 2u,
                         256u);
-                m_spotShadowMap->Initialize(
-                    Device(),
+                m_backend->InitializeShadowMap(
+                    *m_spotShadowMap,
                     localShadowResolution,
                     static_cast<std::uint32_t>(
-                        MaximumSpotShadows));
-                m_pointShadowMap->Initialize(
-                    Device(),
+                        MaximumSpotShadows),
+                    false);
+                m_backend->InitializeShadowMap(
+                    *m_pointShadowMap,
                     localShadowResolution,
                     6u,
                     true);

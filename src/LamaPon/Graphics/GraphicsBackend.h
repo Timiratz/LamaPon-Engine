@@ -15,6 +15,7 @@ namespace DirectX
 namespace LamaPon
 {
     class RenderTarget;
+    class ShadowMap;
 
     enum class RenderingApiFallbackReason
     {
@@ -148,6 +149,21 @@ namespace LamaPon
         // 控えます。描画先のbind状態は変更しません。
         virtual void CaptureOffscreenTargetLuminance(
             RenderTarget& target) = 0;
+        // 影用の深度配列（cube=trueでは6面のTextureCube）を作ります。
+        virtual void InitializeShadowMap(
+            ShadowMap& shadowMap,
+            std::uint32_t resolution,
+            std::uint32_t cascadeCount,
+            bool cube) = 0;
+        // 指定した影スライスを描画先へ設定して深度をclearします。
+        // 無効な影、範囲外のスライス、描画中の再入では何もしません。
+        virtual void BeginShadowMap(
+            ShadowMap& shadowMap,
+            std::uint32_t cascadeIndex) = 0;
+        // BeginShadowMap前の描画先とviewportを復元します。
+        // Begin前に呼ばれた場合は何もしません。
+        virtual void EndShadowMap(
+            ShadowMap& shadowMap) = 0;
     };
 
     // activeApiはSelectGraphicsBackendで解決済みの値を渡します。

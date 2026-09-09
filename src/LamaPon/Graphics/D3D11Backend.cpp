@@ -2,6 +2,7 @@
 
 #include "LamaPon/Core/Log.h"
 #include "LamaPon/Graphics/RenderTarget.h"
+#include "LamaPon/Graphics/ShadowMap.h"
 
 // IDXGIFactory5（ティアリング許可の問い合わせ）。d3d11.hが引く
 // dxgi.hには入っていません。
@@ -545,6 +546,62 @@ namespace LamaPon
         }
 
         target.CaptureAutoExposureLuminance(m_context.Get());
+    }
+
+    void D3D11Backend::InitializeShadowMap(
+        ShadowMap& shadowMap,
+        const std::uint32_t resolution,
+        const std::uint32_t cascadeCount,
+        const bool cube)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "InitializeShadowMap requires an initialized backend.");
+        }
+
+        shadowMap.Initialize(
+            m_device.Get(),
+            resolution,
+            cascadeCount,
+            cube);
+    }
+
+    void D3D11Backend::BeginShadowMap(
+        ShadowMap& shadowMap,
+        const std::uint32_t cascadeIndex)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "BeginShadowMap requires an initialized backend.");
+        }
+        if (m_context == nullptr)
+        {
+            throw std::logic_error(
+                "BeginShadowMap requires an available "
+                "DirectX 11 context.");
+        }
+
+        shadowMap.Begin(m_context.Get(), cascadeIndex);
+    }
+
+    void D3D11Backend::EndShadowMap(
+        ShadowMap& shadowMap)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "EndShadowMap requires an initialized backend.");
+        }
+        if (m_context == nullptr)
+        {
+            throw std::logic_error(
+                "EndShadowMap requires an available "
+                "DirectX 11 context.");
+        }
+
+        shadowMap.End(m_context.Get());
     }
 
     void D3D11Backend::BindAndClearBackBuffer(

@@ -8,6 +8,8 @@
 
 namespace LamaPon
 {
+    class D3D11Backend;
+
     class ShadowMap final
     {
     public:
@@ -15,18 +17,6 @@ namespace LamaPon
 
         ShadowMap(const ShadowMap&) = delete;
         ShadowMap& operator=(const ShadowMap&) = delete;
-
-        // cube=trueにするとポイントライト用のキューブ深度マップ
-        // （6スライス、SRVはTextureCube）を作ります。
-        void Initialize(
-            ID3D11Device* device,
-            std::uint32_t resolution = 2048,
-            std::uint32_t cascadeCount = 4,
-            bool cube = false);
-        void Begin(
-            ID3D11DeviceContext* context,
-            std::uint32_t cascadeIndex);
-        void End(ID3D11DeviceContext* context);
 
         [[nodiscard]] ID3D11ShaderResourceView*
             ShaderResourceView() const noexcept
@@ -49,6 +39,20 @@ namespace LamaPon
         }
 
     private:
+        friend class D3D11Backend;
+
+        // API固有の資源作成と描画先操作はD3D11Backendからだけ
+        // 呼びます。cube=trueではポイントライト用の6面を作ります。
+        void Initialize(
+            ID3D11Device* device,
+            std::uint32_t resolution = 2048,
+            std::uint32_t cascadeCount = 4,
+            bool cube = false);
+        void Begin(
+            ID3D11DeviceContext* context,
+            std::uint32_t cascadeIndex);
+        void End(ID3D11DeviceContext* context);
+
         Microsoft::WRL::ComPtr<ID3D11Texture2D> m_texture;
         std::vector<
             Microsoft::WRL::ComPtr<ID3D11DepthStencilView>>
