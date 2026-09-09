@@ -55,6 +55,23 @@ namespace LamaPon
         bool enableDebugLayer{};
     };
 
+    // Backendが報告するAPI-neutralなGPUメモリ情報です。搭載量と
+    // OS予算を分け、予算APIを利用できない環境ではavailable=falseで
+    // usage/budgetを0のまま返します。
+    struct GraphicsVideoMemoryStatistics final
+    {
+        std::uint64_t dedicatedBytes{};
+        std::uint64_t sharedSystemBytes{};
+        std::uint64_t localUsageBytes{};
+        std::uint64_t localBudgetBytes{};
+        std::uint64_t nonLocalUsageBytes{};
+        std::uint64_t nonLocalBudgetBytes{};
+        bool adapterAvailable{};
+        bool descriptionAvailable{};
+        bool localBudgetAvailable{};
+        bool nonLocalBudgetAvailable{};
+    };
+
     // 一時的に別の描画先へ切り替えた後、元のprimary output bindingへ
     // 戻すためのBackend固有tokenです。全pipeline stateではなく、色の
     // slot 0、深度、先頭viewportだけを保持します。
@@ -199,6 +216,10 @@ namespace LamaPon
             CaptureOutputState() = 0;
         virtual void RestoreOutputState(
             const GraphicsOutputState& state) = 0;
+        // Device型を公開せず、実効adapterの容量と現在のOS予算を
+        // 取得します。性能表示用なので失敗時は空の値へ倒します。
+        [[nodiscard]] virtual GraphicsVideoMemoryStatistics
+            QueryVideoMemoryStatistics() const noexcept = 0;
     };
 
     // activeApiはSelectGraphicsBackendで解決済みの値を渡します。

@@ -8,6 +8,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <typeinfo>
+#include <utility>
 
 namespace
 {
@@ -59,6 +60,9 @@ namespace
 
 static_assert(noexcept(LamaPon::SelectGraphicsBackend(
     LamaPon::RenderingApi::DirectX11)));
+static_assert(noexcept(std::declval<
+    const LamaPon::GraphicsBackend&>()
+        .QueryVideoMemoryStatistics()));
 
 int main()
 {
@@ -93,6 +97,20 @@ int main()
             "DirectX 11 backend must report the DirectX 11 API");
         Require(!backend->IsInitialized(),
             "A newly created backend must not initialize graphics resources");
+        const auto emptyVideoMemory =
+            backend->QueryVideoMemoryStatistics();
+        Require(
+            emptyVideoMemory.dedicatedBytes == 0
+                && emptyVideoMemory.sharedSystemBytes == 0
+                && emptyVideoMemory.localUsageBytes == 0
+                && emptyVideoMemory.localBudgetBytes == 0
+                && emptyVideoMemory.nonLocalUsageBytes == 0
+                && emptyVideoMemory.nonLocalBudgetBytes == 0
+                && !emptyVideoMemory.adapterAvailable
+                && !emptyVideoMemory.descriptionAvailable
+                && !emptyVideoMemory.localBudgetAvailable
+                && !emptyVideoMemory.nonLocalBudgetAvailable,
+            "An uninitialized backend must report empty video memory statistics");
 
         // 移行用facadeは未初期化でも例外や部分的なD3D11資源を
         // 返さず、安全に空の結果へ倒します。

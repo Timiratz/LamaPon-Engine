@@ -13,9 +13,9 @@ namespace LamaPon
     // Game ModuleとRuntimeのABIを識別します。公開構造体のレイアウトや
     // 公開関数のシグネチャを変更した場合は、この値も更新してください。
     // GameModuleHostは完全一致を要求し、互換性のないDLLを読み込みません。
-    // API 29では例外安全なGpuProfiler::SectionScopeを追加したため、
+    // API 30ではBackend共通のGPUメモリ統計契約を追加したため、
     // ゲーム用DLLの再ビルドが必要です。
-    inline constexpr std::uint32_t GameModuleApiVersion = 29;
+    inline constexpr std::uint32_t GameModuleApiVersion = 30;
 
     using NativeScriptCreateFunction = void* (*)(
         GameObject* owner,

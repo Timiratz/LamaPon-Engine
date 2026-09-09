@@ -26,10 +26,6 @@
 #include <CommonStates.h>
 #include <SpriteBatch.h>
 
-// IDXGIAdapter3（DXGIメモリ予算）。d3d11.hが引くdxgi.hには
-// 入っていません。
-#include <dxgi1_5.h>
-
 #include <psapi.h>
 
 #include <algorithm>
@@ -2087,63 +2083,39 @@ namespace LamaPon
                     system.ullTotalPhys - system.ullAvailPhys;
             }
 
-            Microsoft::WRL::ComPtr<IDXGIDevice> dxgiDevice;
-            Microsoft::WRL::ComPtr<IDXGIAdapter> adapter;
-            if (Device() == nullptr
-                || FAILED(Device()->QueryInterface(
-                    IID_PPV_ARGS(
-                        dxgiDevice.GetAddressOf())))
-                || FAILED(dxgiDevice->GetAdapter(
-                    adapter.GetAddressOf()))
-                || !adapter)
+            if (!m_backend)
             {
                 return;
             }
-
-            DXGI_ADAPTER_DESC description{};
-            if (SUCCEEDED(adapter->GetDesc(&description)))
+            const auto video =
+                m_backend->QueryVideoMemoryStatistics();
+            if (!video.adapterAvailable)
+            {
+                return;
+            }
+            if (video.descriptionAvailable)
             {
                 m_memoryStatistics.dedicatedVideoMemoryBytes =
-                    static_cast<std::uint64_t>(
-                        description.DedicatedVideoMemory);
+                    video.dedicatedBytes;
                 m_memoryStatistics.sharedSystemMemoryBytes =
-                    static_cast<std::uint64_t>(
-                        description.SharedSystemMemory);
+                    video.sharedSystemBytes;
             }
-
-            Microsoft::WRL::ComPtr<IDXGIAdapter3> adapter3;
-            if (FAILED(adapter.As(&adapter3)) || !adapter3)
-            {
-                m_memoryStatistics.videoMemoryBudgetAvailable = false;
-                return;
-            }
-            DXGI_QUERY_VIDEO_MEMORY_INFO local{};
-            DXGI_QUERY_VIDEO_MEMORY_INFO nonLocal{};
-            const bool hasLocal = SUCCEEDED(
-                adapter3->QueryVideoMemoryInfo(
-                    0,
-                    DXGI_MEMORY_SEGMENT_GROUP_LOCAL,
-                    &local));
-            const bool hasNonLocal = SUCCEEDED(
-                adapter3->QueryVideoMemoryInfo(
-                    0,
-                    DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL,
-                    &nonLocal));
             m_memoryStatistics.videoMemoryBudgetAvailable =
-                hasLocal || hasNonLocal;
-            if (hasLocal)
+                video.localBudgetAvailable
+                || video.nonLocalBudgetAvailable;
+            if (video.localBudgetAvailable)
             {
                 m_memoryStatistics.localVideoMemoryUsageBytes =
-                    local.CurrentUsage;
+                    video.localUsageBytes;
                 m_memoryStatistics.localVideoMemoryBudgetBytes =
-                    local.Budget;
+                    video.localBudgetBytes;
             }
-            if (hasNonLocal)
+            if (video.nonLocalBudgetAvailable)
             {
                 m_memoryStatistics.nonLocalVideoMemoryUsageBytes =
-                    nonLocal.CurrentUsage;
+                    video.nonLocalUsageBytes;
                 m_memoryStatistics.nonLocalVideoMemoryBudgetBytes =
-                    nonLocal.Budget;
+                    video.nonLocalBudgetBytes;
             }
         }
         catch (...)

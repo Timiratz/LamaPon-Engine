@@ -21,8 +21,9 @@
 - リフレクションプローブとGIの6面ベイクを`EnvironmentRenderer`の同期workflowへ集約し、SceneからD3D11の面ターゲット生成・clear・反転コピー・畳み込み・SH readbackを分離。
 - 環境キャッシュ復元と焼き込みGIの3D texture生成を`GraphicsDevice`のD3D11互換facadeへ集約し、SceneからDirectX 11 Deviceの直接利用を除去。不正なGI形状はbase64 decode前に安全に拒否する。
 - 一時描画先・UI viewport・GPU計測区間をscope guardで復元し、レンダーテクスチャ／reflection probe／GI bakeの描画例外後もprimary outputと再入状態を維持する。
+- GPUメモリ容量・予算のDXGI adapter照会を共通Backend契約へ移し、`GraphicsDevice`の性能統計からD3D11 Deviceへの直接依存を除去。
 - 車両パラメータープレビューのモデル送信を`EditorModelPreviewRenderer`へ分離し、DirectXTK11のContext / CommonStates / BasicEffect操作をD3D11実装内へ隔離。
-- `GraphicsSettings`、`GraphicsDevice`、`Scene`、`EnvironmentRenderer`、`GpuProfiler`のABI変更、および共通Backend契約の拡張に伴い、Game Module APIを29へ更新。
+- `GraphicsSettings`、`GraphicsDevice`、`Scene`、`EnvironmentRenderer`、`GpuProfiler`のABI変更、および共通Backend契約の拡張に伴い、Game Module APIを30へ更新。
 
 ### ファイル名の統一
 
@@ -53,7 +54,7 @@
   自動露出の輝度readback契約の追加で23、影マップ操作の追加で24、
   クラスタライト更新契約の追加で25、描画先状態契約の追加で26、
   環境ベイクworkflowの集約で27、環境資源facadeの追加で28、
-  GPU計測scopeの追加で現在の29へ更新。
+  GPU計測scopeの追加で29、GPUメモリ統計契約の追加で現在の30へ更新。
 - MSVC／Ninjaのヘッダー依存検出を修正。ローカライズされた出力と既存ビルドの依存情報再取得に対応。
 - Web入力の登録解除・例外処理・ログを改善し、SDK構成、ライセンス同梱、Windows／Webの回帰検査を整備。
 

@@ -718,6 +718,70 @@ namespace LamaPon
         }
     }
 
+    GraphicsVideoMemoryStatistics
+        D3D11Backend::QueryVideoMemoryStatistics() const noexcept
+    {
+        GraphicsVideoMemoryStatistics statistics;
+        if (!m_device)
+        {
+            return statistics;
+        }
+
+        Microsoft::WRL::ComPtr<IDXGIDevice> dxgiDevice;
+        Microsoft::WRL::ComPtr<IDXGIAdapter> adapter;
+        if (FAILED(m_device.As(&dxgiDevice))
+            || !dxgiDevice
+            || FAILED(dxgiDevice->GetAdapter(
+                adapter.GetAddressOf()))
+            || !adapter)
+        {
+            return statistics;
+        }
+        statistics.adapterAvailable = true;
+
+        DXGI_ADAPTER_DESC description{};
+        if (SUCCEEDED(adapter->GetDesc(&description)))
+        {
+            statistics.descriptionAvailable = true;
+            statistics.dedicatedBytes =
+                static_cast<std::uint64_t>(
+                    description.DedicatedVideoMemory);
+            statistics.sharedSystemBytes =
+                static_cast<std::uint64_t>(
+                    description.SharedSystemMemory);
+        }
+
+        Microsoft::WRL::ComPtr<IDXGIAdapter3> adapter3;
+        if (FAILED(adapter.As(&adapter3)) || !adapter3)
+        {
+            return statistics;
+        }
+
+        DXGI_QUERY_VIDEO_MEMORY_INFO local{};
+        DXGI_QUERY_VIDEO_MEMORY_INFO nonLocal{};
+        statistics.localBudgetAvailable = SUCCEEDED(
+            adapter3->QueryVideoMemoryInfo(
+                0,
+                DXGI_MEMORY_SEGMENT_GROUP_LOCAL,
+                &local));
+        statistics.nonLocalBudgetAvailable = SUCCEEDED(
+            adapter3->QueryVideoMemoryInfo(
+                0,
+                DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL,
+                &nonLocal));
+        if (statistics.localBudgetAvailable)
+        {
+            statistics.localUsageBytes = local.CurrentUsage;
+            statistics.localBudgetBytes = local.Budget;
+        }
+        if (statistics.nonLocalBudgetAvailable)
+        {
+            statistics.nonLocalUsageBytes = nonLocal.CurrentUsage;
+            statistics.nonLocalBudgetBytes = nonLocal.Budget;
+        }
+        return statistics;
+    }
+
     void D3D11Backend::BindAndClearBackBuffer(
         const float clearColor[4])
     {
