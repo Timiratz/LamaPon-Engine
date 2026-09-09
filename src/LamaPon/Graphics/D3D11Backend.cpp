@@ -439,6 +439,62 @@ namespace LamaPon
         target.CaptureDepthForReflections(m_context.Get());
     }
 
+    void D3D11Backend::CaptureOffscreenTargetColorHistory(
+        RenderTarget& target,
+        const DirectX::XMFLOAT4X4& viewProjection)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "CaptureOffscreenTargetColorHistory requires an "
+                "initialized backend.");
+        }
+        if (!target.IsValid())
+        {
+            throw std::invalid_argument(
+                "CaptureOffscreenTargetColorHistory requires a valid "
+                "target.");
+        }
+        if (m_context == nullptr)
+        {
+            throw std::logic_error(
+                "CaptureOffscreenTargetColorHistory requires an "
+                "available DirectX 11 context.");
+        }
+
+        target.CaptureColorHistory(
+            m_context.Get(),
+            viewProjection);
+    }
+
+    void D3D11Backend::CaptureOffscreenTargetTemporalHistory(
+        RenderTarget& target,
+        const DirectX::XMFLOAT4X4& viewProjection)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "CaptureOffscreenTargetTemporalHistory requires an "
+                "initialized backend.");
+        }
+        if (!target.IsValid())
+        {
+            throw std::invalid_argument(
+                "CaptureOffscreenTargetTemporalHistory requires a valid "
+                "target.");
+        }
+        if (m_context == nullptr)
+        {
+            throw std::logic_error(
+                "CaptureOffscreenTargetTemporalHistory requires an "
+                "available DirectX 11 context.");
+        }
+
+        target.CaptureTemporalHistory(
+            m_context.Get(),
+            viewProjection);
+    }
+
     void D3D11Backend::BindAndClearBackBuffer(
         const float clearColor[4])
     {

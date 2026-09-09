@@ -682,6 +682,23 @@ namespace LamaPon
         m_historyValid = true;
     }
 
+    void RenderTarget::CaptureTemporalHistory(
+        ID3D11DeviceContext* const context,
+        const DirectX::XMFLOAT4X4& viewProjection)
+    {
+        if (context == nullptr
+            || m_temporalHistoryTexture == nullptr
+            || m_colorTexture == nullptr)
+        {
+            return;
+        }
+        context->CopyResource(
+            m_temporalHistoryTexture.Get(),
+            m_colorTexture.Get());
+        m_temporalHistoryViewProjection = viewProjection;
+        m_temporalHistoryValid = true;
+    }
+
     void RenderTarget::CopyToDisplay(
         ID3D11DeviceContext* context) const
     {
@@ -861,7 +878,6 @@ namespace LamaPon
 
     void RenderTarget::ApplyTemporalAntiAliasing(
         EnvironmentRenderer& renderer,
-        ID3D11DeviceContext* const context,
         const TemporalAntiAliasingSettings& settings,
         const EnvironmentRenderer::TemporalInputs& inputs)
     {
@@ -898,21 +914,6 @@ namespace LamaPon
             std::swap(
                 m_shaderResourceView,
                 m_postShaderResourceView);
-        }
-
-        // 解決した画像を次フレームの履歴へ保存します。
-        // 初回も現在の画像を保存し、次フレームから履歴を利用できる
-        // 状態にします。
-        if (context != nullptr
-            && m_temporalHistoryTexture != nullptr
-            && m_colorTexture != nullptr)
-        {
-            context->CopyResource(
-                m_temporalHistoryTexture.Get(),
-                m_colorTexture.Get());
-            m_temporalHistoryViewProjection =
-                inputs.viewProjection;
-            m_temporalHistoryValid = true;
         }
     }
 

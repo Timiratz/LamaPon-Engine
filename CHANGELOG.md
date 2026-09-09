@@ -13,8 +13,9 @@
 - Editorのオフスクリーン描画先操作を`GraphicsDevice`の共通入口へ集約し、ViewportとプレビューからD3D11 Device / Contextの受け渡しを削減。
 - オフスクリーン描画先の作成・bind・clear・表示用確定を共通Backend契約へ移し、`RenderTarget`のD3D11直呼びAPIをBackend内部へ限定。
 - 深度プリパスのbindとSSR用深度コピーを共通Backend契約へ移し、呼び出し側からD3D11 Contextの受け渡しを削減。
+- SSRとTAAのカラー履歴コピーを共通Backend契約へ移し、シーンとポスト処理からD3D11 Contextの受け渡しを削減。
 - 車両パラメータープレビューのモデル送信を`EditorModelPreviewRenderer`へ分離し、DirectXTK11のContext / CommonStates / BasicEffect操作をD3D11実装内へ隔離。
-- `GraphicsSettings`と`GraphicsDevice`のABI変更、および共通Backend契約の拡張に伴い、Game Module APIを21へ更新。
+- `GraphicsSettings`と`GraphicsDevice`のABI変更、および共通Backend契約の拡張に伴い、Game Module APIを22へ更新。
 
 ### ファイル名の統一
 
@@ -41,7 +42,7 @@
 - 責務分割に伴う公開クラスのレイアウト変更でGame Module APIを14から15へ更新し、
   物理と描画の時刻同期で16、描画API設定で17、Backend分離で18、
   バックバッファ契約の追加で19、オフスクリーン描画先契約の追加で20、
-  オフスクリーン深度操作の追加で現在の21へ更新。
+  オフスクリーン深度操作の追加で21、カラー履歴操作の追加で現在の22へ更新。
 - MSVC／Ninjaのヘッダー依存検出を修正。ローカライズされた出力と既存ビルドの依存情報再取得に対応。
 - Web入力の登録解除・例外処理・ログを改善し、SDK構成、ライセンス同梱、Windows／Webの回帰検査を整備。
 

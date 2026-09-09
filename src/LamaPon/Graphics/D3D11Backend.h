@@ -67,6 +67,12 @@ namespace LamaPon
             RenderTarget& target) override;
         void CaptureOffscreenTargetDepth(
             RenderTarget& target) override;
+        void CaptureOffscreenTargetColorHistory(
+            RenderTarget& target,
+            const DirectX::XMFLOAT4X4& viewProjection) override;
+        void CaptureOffscreenTargetTemporalHistory(
+            RenderTarget& target,
+            const DirectX::XMFLOAT4X4& viewProjection) override;
 
         // 既存のDirectX 11描画経路へ貸し出す非所有ポインターです。
         // GraphicsDeviceは移行期間中、従来のDevice/Context APIを

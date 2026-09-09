@@ -88,6 +88,11 @@ int main()
         LamaPon::RenderTarget offscreenTarget;
         constexpr float clearColor[]{
             0.0f, 0.0f, 0.0f, 1.0f };
+        const DirectX::XMFLOAT4X4 historyViewProjection{
+            1.0f, 2.0f, 3.0f, 4.0f,
+            5.0f, 6.0f, 7.0f, 8.0f,
+            9.0f, 10.0f, 11.0f, 12.0f,
+            13.0f, 14.0f, 15.0f, 16.0f };
         RequireThrowsExactly<std::logic_error>(
             [&]
             {
@@ -126,6 +131,22 @@ int main()
                     offscreenTarget);
             },
             "Capturing offscreen depth requires an initialized backend");
+        RequireThrowsExactly<std::logic_error>(
+            [&]
+            {
+                backend->CaptureOffscreenTargetColorHistory(
+                    offscreenTarget,
+                    historyViewProjection);
+            },
+            "Capturing offscreen color history requires an initialized backend");
+        RequireThrowsExactly<std::logic_error>(
+            [&]
+            {
+                backend->CaptureOffscreenTargetTemporalHistory(
+                    offscreenTarget,
+                    historyViewProjection);
+            },
+            "Capturing offscreen temporal history requires an initialized backend");
         RequireThrowsExactly<std::logic_error>(
             [&]
             {

@@ -394,6 +394,16 @@ namespace LamaPon
         // 現在の深度をtarget内のshader-readableなコピーへ控えます。
         // 描画先のbind状態は変更しません。
         void CaptureOffscreenTargetDepth(RenderTarget& target);
+        // 現在のHDRカラーと行列をSSRの次フレーム用履歴へ控えます。
+        // 現在フレームが旧履歴を読み終えた後に呼んでください。
+        void CaptureOffscreenTargetColorHistory(
+            RenderTarget& target,
+            const DirectX::XMFLOAT4X4& viewProjection);
+        // TAAで解決した現在のカラーと、ずらし無しの行列を
+        // 次フレーム用履歴へ控えます。
+        void CaptureOffscreenTargetTemporalHistory(
+            RenderTarget& target,
+            const DirectX::XMFLOAT4X4& viewProjection);
 
         // 既存のD3D11描画コード向け互換facadeです。Backend共通interfaceへ
         // D3D11型を持ち込まず、段階的なrenderer移行までここで転送します。

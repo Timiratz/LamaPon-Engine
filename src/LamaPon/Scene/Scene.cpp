@@ -7471,8 +7471,8 @@ namespace LamaPon
             DirectX::XMStoreFloat4x4(
                 &storedViewProjection,
                 view * projection);
-            target->CaptureColorHistory(
-                m_graphics.Context(),
+            m_graphics.CaptureOffscreenTargetColorHistory(
+                *target,
                 storedViewProjection);
         }
 

@@ -273,6 +273,50 @@ namespace LamaPon
         m_backend->CaptureOffscreenTargetDepth(target);
     }
 
+    void GraphicsDevice::CaptureOffscreenTargetColorHistory(
+        RenderTarget& target,
+        const DirectX::XMFLOAT4X4& viewProjection)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "CaptureOffscreenTargetColorHistory requires an "
+                "initialized device.");
+        }
+        if (!target.IsValid())
+        {
+            throw std::invalid_argument(
+                "CaptureOffscreenTargetColorHistory requires a valid "
+                "target.");
+        }
+
+        m_backend->CaptureOffscreenTargetColorHistory(
+            target,
+            viewProjection);
+    }
+
+    void GraphicsDevice::CaptureOffscreenTargetTemporalHistory(
+        RenderTarget& target,
+        const DirectX::XMFLOAT4X4& viewProjection)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "CaptureOffscreenTargetTemporalHistory requires an "
+                "initialized device.");
+        }
+        if (!target.IsValid())
+        {
+            throw std::invalid_argument(
+                "CaptureOffscreenTargetTemporalHistory requires a valid "
+                "target.");
+        }
+
+        m_backend->CaptureOffscreenTargetTemporalHistory(
+            target,
+            viewProjection);
+    }
+
     struct GraphicsDevice::MaterialShaderEntry final
     {
         std::unique_ptr<LitEffect> effect;

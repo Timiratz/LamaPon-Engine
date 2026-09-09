@@ -310,6 +310,11 @@ namespace
 
         constexpr float displayColor[]{
             0.1f, 0.85f, 0.2f, 1.0f };
+        const DirectX::XMFLOAT4X4 historyViewProjection{
+            1.0f, 2.0f, 3.0f, 4.0f,
+            5.0f, 6.0f, 7.0f, 8.0f,
+            9.0f, 10.0f, 11.0f, 12.0f,
+            13.0f, 14.0f, 15.0f, 16.0f };
         LamaPon::RenderTarget emptyOffscreenTarget;
         RequireThrows<std::invalid_argument>(
             [&]
@@ -340,6 +345,22 @@ namespace
                     emptyOffscreenTarget);
             },
             "Capturing an empty offscreen depth target must be rejected");
+        RequireThrowsExactly<std::invalid_argument>(
+            [&]
+            {
+                graphics.CaptureOffscreenTargetColorHistory(
+                    emptyOffscreenTarget,
+                    historyViewProjection);
+            },
+            "Capturing color history from an empty offscreen target must be rejected");
+        RequireThrowsExactly<std::invalid_argument>(
+            [&]
+            {
+                graphics.CaptureOffscreenTargetTemporalHistory(
+                    emptyOffscreenTarget,
+                    historyViewProjection);
+            },
+            "Capturing temporal history from an empty offscreen target must be rejected");
         RequireThrows<std::invalid_argument>(
             [&]
             {
@@ -471,6 +492,58 @@ namespace
             { 6.0f, 0.0f },
             { 2.0f, 4.0f },
             rightColor);
+
+        // 履歴用コピーは現在の描画色を変えません。両履歴を控えた後に
+        // publishし、下のImGui画像に対する左・中央・右の画素検証で
+        // 描画済みの内容が保たれていることも確認します。
+        Require(
+            displayTarget.ColorHistoryShaderResourceView() == nullptr,
+            "Color history must be unavailable before its first capture");
+        graphics.CaptureOffscreenTargetColorHistory(
+            displayTarget,
+            historyViewProjection);
+        graphics.CaptureOffscreenTargetTemporalHistory(
+            displayTarget,
+            historyViewProjection);
+        Require(
+            displayTarget.ColorHistoryShaderResourceView() != nullptr,
+            "Color history must become available after capture");
+        const auto& storedHistoryViewProjection =
+            displayTarget.ColorHistoryViewProjection();
+        Require(
+            storedHistoryViewProjection._11
+                    == historyViewProjection._11
+                && storedHistoryViewProjection._12
+                    == historyViewProjection._12
+                && storedHistoryViewProjection._13
+                    == historyViewProjection._13
+                && storedHistoryViewProjection._14
+                    == historyViewProjection._14
+                && storedHistoryViewProjection._21
+                    == historyViewProjection._21
+                && storedHistoryViewProjection._22
+                    == historyViewProjection._22
+                && storedHistoryViewProjection._23
+                    == historyViewProjection._23
+                && storedHistoryViewProjection._24
+                    == historyViewProjection._24
+                && storedHistoryViewProjection._31
+                    == historyViewProjection._31
+                && storedHistoryViewProjection._32
+                    == historyViewProjection._32
+                && storedHistoryViewProjection._33
+                    == historyViewProjection._33
+                && storedHistoryViewProjection._34
+                    == historyViewProjection._34
+                && storedHistoryViewProjection._41
+                    == historyViewProjection._41
+                && storedHistoryViewProjection._42
+                    == historyViewProjection._42
+                && storedHistoryViewProjection._43
+                    == historyViewProjection._43
+                && storedHistoryViewProjection._44
+                    == historyViewProjection._44,
+            "Color history capture must preserve its view-projection matrix");
         graphics.PublishOffscreenTarget(displayTarget);
 
         RequireThrows<std::logic_error>(
@@ -777,6 +850,11 @@ int main()
         LamaPon::RenderTarget offscreenTarget;
         constexpr float offscreenClear[]{
             0.0f, 0.0f, 0.0f, 1.0f };
+        const DirectX::XMFLOAT4X4 historyViewProjection{
+            1.0f, 2.0f, 3.0f, 4.0f,
+            5.0f, 6.0f, 7.0f, 8.0f,
+            9.0f, 10.0f, 11.0f, 12.0f,
+            13.0f, 14.0f, 15.0f, 16.0f };
         RequireThrowsExactly<std::logic_error>(
             [&]
             {
@@ -821,6 +899,22 @@ int main()
                     offscreenTarget);
             },
             "Capturing offscreen depth requires an initialized device");
+        RequireThrowsExactly<std::logic_error>(
+            [&]
+            {
+                graphics.CaptureOffscreenTargetColorHistory(
+                    offscreenTarget,
+                    historyViewProjection);
+            },
+            "Capturing offscreen color history requires an initialized device");
+        RequireThrowsExactly<std::logic_error>(
+            [&]
+            {
+                graphics.CaptureOffscreenTargetTemporalHistory(
+                    offscreenTarget,
+                    historyViewProjection);
+            },
+            "Capturing offscreen temporal history requires an initialized device");
         const auto modelPreviewRenderer =
             LamaPon::CreateEditorModelPreviewRenderer(
                 LamaPon::RenderingApi::DirectX11,

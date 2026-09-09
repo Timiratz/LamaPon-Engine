@@ -199,9 +199,18 @@ namespace LamaPon
         // さらに滲んで輪郭が二重になります。
         target.ApplyTemporalAntiAliasing(
             graphics.Environment(),
-            graphics.Context(),
             frame.temporal.settings,
             frame.temporal.inputs);
+        // 最初のフレームは混ぜる履歴が無くても、次のフレーム用の
+        // 履歴は作る必要があります。そのため適用結果ではなく設定の
+        // enabledだけで判定します。また、後続のHDR処理が乗る前の
+        // この位置で控え、TAAが解決した色だけを履歴に残します。
+        if (frame.temporal.settings.enabled)
+        {
+            graphics.CaptureOffscreenTargetTemporalHistory(
+                target,
+                frame.temporal.inputs.viewProjection);
+        }
 
         // ボリュメトリックライト（光の筋）は、深度と影を読むうえに
         // 光を足す処理なので、Bloomより前・HDRのうちにかけます。

@@ -45,16 +45,14 @@ namespace LamaPon
             EnvironmentRenderer& renderer,
             const ScreenSpaceLensFlareSettings& settings);
         // TAA（時間的アンチエイリアス）。今のフレームと前フレームの
-        // 結果を混ぜ、結果を次フレームの履歴として控えます。
-        // ポスト処理の先頭（Bloomより前）で呼んでください。
+        // 結果を混ぜる解決処理だけを行います。ポスト処理の先頭
+        // （Bloomより前）で呼んでください。
         //
-        // 履歴がまだ無い最初のフレームは混ぜずに、今の絵を履歴として
-        // 控えるだけです。
-        // contextは解決した絵を履歴へ控えるのに使います
-        // （EnvironmentRendererは自分の分しか持っていないため）。
+        // 履歴がまだ無い最初のフレームは混ぜません。有効時は
+        // 呼び出し直後にGraphicsDevice::CaptureOffscreenTargetTemporalHistory()
+        // を呼び、解決結果を次フレームへ控えてください。
         void ApplyTemporalAntiAliasing(
             EnvironmentRenderer& renderer,
-            ID3D11DeviceContext* context,
             const TemporalAntiAliasingSettings& settings,
             const EnvironmentRenderer::TemporalInputs&
                 inputs);
@@ -146,16 +144,6 @@ namespace LamaPon
         {
             return m_shaderResourceView.Get();
         }
-        // 今のカラーを「前フレームのカラー」として控えます。SSRが
-        // 次のフレームでこれを読みます（今描いている絵は完成前なので
-        // 読めないため）。viewProjectionは今のフレームの行列で、
-        // 当たった点をこの絵の画面座標へ戻すのに使います。
-        //
-        // 呼ぶのはLitパスが終わった後・ポスト処理の前です。順番を
-        // 逆にすると、まだ読んでいない履歴を潰してしまいます。
-        void CaptureColorHistory(
-            ID3D11DeviceContext* context,
-            const DirectX::XMFLOAT4X4& viewProjection);
         // 履歴がまだ無い最初のフレームではnullptrを返します。
         [[nodiscard]] ID3D11ShaderResourceView*
             ColorHistoryShaderResourceView()
@@ -278,6 +266,16 @@ namespace LamaPon
         // 描画先のbind状態は変更しません。
         void CaptureDepthForReflections(
             ID3D11DeviceContext* context) const;
+        // 今のカラーをSSRが次フレームで読む履歴へ控え、
+        // その画像を描いた行列もビューごとに保存します。
+        void CaptureColorHistory(
+            ID3D11DeviceContext* context,
+            const DirectX::XMFLOAT4X4& viewProjection);
+        // TAAで解決したカラーを次フレームの履歴へ控え、
+        // 再投影に使うずらし無しの行列も保存します。
+        void CaptureTemporalHistory(
+            ID3D11DeviceContext* context,
+            const DirectX::XMFLOAT4X4& viewProjection);
 
         Microsoft::WRL::ComPtr<ID3D11Texture2D> m_colorTexture;
         Microsoft::WRL::ComPtr<ID3D11RenderTargetView> m_renderTargetView;

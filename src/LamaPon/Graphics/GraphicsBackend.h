@@ -6,6 +6,11 @@
 #include <memory>
 #include <vector>
 
+namespace DirectX
+{
+    struct XMFLOAT4X4;
+}
+
 namespace LamaPon
 {
     class RenderTarget;
@@ -120,6 +125,18 @@ namespace LamaPon
         // 描画先のbind状態は変更しません。
         virtual void CaptureOffscreenTargetDepth(
             RenderTarget& target) = 0;
+        // 現在のHDRカラーを、SSRが次フレームで読む履歴へ控えます。
+        // viewProjectionは控えた画像を描いたときの行列です。
+        // 描画先のbind状態は変更しません。
+        virtual void CaptureOffscreenTargetColorHistory(
+            RenderTarget& target,
+            const DirectX::XMFLOAT4X4& viewProjection) = 0;
+        // 現在のTAA解決結果を次フレームの履歴へ控えます。
+        // viewProjectionは再投影に使うずらし無しの行列です。
+        // 描画先のbind状態は変更しません。
+        virtual void CaptureOffscreenTargetTemporalHistory(
+            RenderTarget& target,
+            const DirectX::XMFLOAT4X4& viewProjection) = 0;
     };
 
     // activeApiはSelectGraphicsBackendで解決済みの値を渡します。
