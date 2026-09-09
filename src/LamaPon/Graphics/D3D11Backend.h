@@ -101,6 +101,8 @@ namespace LamaPon
             const GraphicsOutputState& state) override;
         [[nodiscard]] GraphicsVideoMemoryStatistics
             QueryVideoMemoryStatistics() const noexcept override;
+        [[nodiscard]] std::unique_ptr<DebugDrawingBackend>
+            CreateDebugDrawingBackend() override;
 
         // 既存のDirectX 11描画経路へ貸し出す非所有ポインターです。
         // GraphicsDeviceは移行期間中、従来のDevice/Context APIを

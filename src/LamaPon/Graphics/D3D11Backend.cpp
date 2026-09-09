@@ -2,8 +2,14 @@
 
 #include "LamaPon/Core/Log.h"
 #include "LamaPon/Graphics/ClusteredLights.h"
+#include "LamaPon/Graphics/DebugRenderer.h"
 #include "LamaPon/Graphics/RenderTarget.h"
 #include "LamaPon/Graphics/ShadowMap.h"
+
+#include <CommonStates.h>
+#include <Effects.h>
+#include <PrimitiveBatch.h>
+#include <VertexTypes.h>
 
 // IDXGIFactory5（ティアリング許可の問い合わせ）。d3d11.hが引く
 // dxgi.hには入っていません。
@@ -31,6 +37,97 @@ namespace
             depthTarget;
         D3D11_VIEWPORT viewport{};
         bool hasViewport{};
+    };
+
+    class D3D11DebugDrawingBackend final
+        : public LamaPon::DebugDrawingBackend
+    {
+    public:
+        D3D11DebugDrawingBackend(
+            ID3D11Device* const device,
+            ID3D11DeviceContext* const context)
+            : m_context(context)
+            , m_effect(std::make_unique<DirectX::BasicEffect>(device))
+            , m_states(std::make_unique<DirectX::CommonStates>(device))
+            , m_batch(std::make_unique<DirectX::PrimitiveBatch<
+                DirectX::VertexPositionColor>>(context))
+        {
+            if (device == nullptr || context == nullptr)
+            {
+                throw std::invalid_argument(
+                    "D3D11 debug drawing requires a device and context.");
+            }
+            m_effect->SetVertexColorEnabled(true);
+
+            const void* shaderByteCode{};
+            std::size_t byteCodeLength{};
+            m_effect->GetVertexShaderBytecode(
+                &shaderByteCode,
+                &byteCodeLength);
+            const HRESULT result = device->CreateInputLayout(
+                DirectX::VertexPositionColor::InputElements,
+                DirectX::VertexPositionColor::InputElementCount,
+                shaderByteCode,
+                byteCodeLength,
+                m_inputLayout.ReleaseAndGetAddressOf());
+            if (FAILED(result))
+            {
+                throw std::runtime_error(
+                    "Failed to create debug renderer input layout.");
+            }
+        }
+
+        void DrawLines(
+            const std::span<const LamaPon::DebugLine> lines,
+            const DirectX::XMFLOAT4X4& view,
+            const DirectX::XMFLOAT4X4& projection) override
+        {
+            if (lines.empty())
+            {
+                return;
+            }
+
+            // 直前の2D/UI等が残した状態に依存せず、補助線を常に
+            // 手前へ描くという従来のDebugRenderer契約を維持します。
+            m_context->OMSetBlendState(
+                m_states->NonPremultiplied(),
+                nullptr,
+                0xFFFFFFFF);
+            m_context->OMSetDepthStencilState(
+                m_states->DepthNone(),
+                0);
+            m_context->RSSetState(m_states->CullNone());
+
+            m_effect->SetWorld(DirectX::XMMatrixIdentity());
+            m_effect->SetView(DirectX::XMLoadFloat4x4(&view));
+            m_effect->SetProjection(
+                DirectX::XMLoadFloat4x4(&projection));
+            m_effect->Apply(m_context.Get());
+            m_context->IASetInputLayout(m_inputLayout.Get());
+
+            m_batch->Begin();
+            for (const auto& line : lines)
+            {
+                m_batch->DrawLine(
+                    DirectX::VertexPositionColor{
+                        line.start,
+                        line.color
+                    },
+                    DirectX::VertexPositionColor{
+                        line.end,
+                        line.color
+                    });
+            }
+            m_batch->End();
+        }
+
+    private:
+        Microsoft::WRL::ComPtr<ID3D11DeviceContext> m_context;
+        std::unique_ptr<DirectX::BasicEffect> m_effect;
+        std::unique_ptr<DirectX::CommonStates> m_states;
+        std::unique_ptr<DirectX::PrimitiveBatch<
+            DirectX::VertexPositionColor>> m_batch;
+        Microsoft::WRL::ComPtr<ID3D11InputLayout> m_inputLayout;
     };
 
     void ThrowIfFailed(
@@ -780,6 +877,19 @@ namespace LamaPon
             statistics.nonLocalBudgetBytes = nonLocal.Budget;
         }
         return statistics;
+    }
+
+    std::unique_ptr<DebugDrawingBackend>
+        D3D11Backend::CreateDebugDrawingBackend()
+    {
+        if (!IsInitialized() || m_context == nullptr)
+        {
+            throw std::logic_error(
+                "CreateDebugDrawingBackend requires an initialized backend.");
+        }
+        return std::make_unique<D3D11DebugDrawingBackend>(
+            m_device.Get(),
+            m_context.Get());
     }
 
     void D3D11Backend::BindAndClearBackBuffer(

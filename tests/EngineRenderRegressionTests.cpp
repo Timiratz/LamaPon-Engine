@@ -8,6 +8,7 @@
 // レンダーテクスチャの解像度を確認するため、RenderTargetの実体が必要です
 // （LamaPon.hはGraphicsDevice経由の前方宣言しか持ちません）。
 #include "LamaPon/Graphics/EnvironmentCache.h"
+#include "LamaPon/Graphics/DebugRenderer.h"
 #include "LamaPon/Graphics/PngWriter.h"
 #include "LamaPon/Graphics/RenderPipeline.h"
 #include "LamaPon/Graphics/RenderTarget.h"
@@ -377,6 +378,44 @@ int main(const int argumentCount, char** arguments)
                 && graphics.MemoryStats().processPrivateBytes > 0
                 && graphics.MemoryStats().systemPhysicalTotalBytes > 0,
             "runtime RAM statistics must be available");
+
+        // 共通DebugRendererが生成した線分を、実効D3D11 Backendの
+        // sinkがバックバッファへ送れることをWARPの実画素で確認します。
+        Stage("debug-drawing-backend");
+        constexpr float debugClear[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+        constexpr std::array debugLine{
+            DirectX::XMFLOAT3{ -0.75f, 0.0f, 0.0f },
+            DirectX::XMFLOAT3{ 0.75f, 0.0f, 0.0f }
+        };
+        graphics.BeginFrame(debugClear);
+        graphics.Debug().DrawLines(
+            debugLine,
+            DirectX::XMVectorSet(1.0f, 0.0f, 0.0f, 1.0f),
+            DirectX::XMMatrixIdentity(),
+            DirectX::XMMatrixIdentity());
+        std::uint32_t debugWidth{};
+        std::uint32_t debugHeight{};
+        const auto debugPixels = graphics.CaptureBackBuffer(
+            debugWidth,
+            debugHeight);
+        graphics.EndFrame();
+        std::size_t redLinePixels{};
+        for (std::size_t offset = 0;
+            offset + 2u < debugPixels.size();
+            offset += 4u)
+        {
+            if (debugPixels[offset] > 180u
+                && debugPixels[offset + 1u] < 60u
+                && debugPixels[offset + 2u] < 60u)
+            {
+                ++redLinePixels;
+            }
+        }
+        Require(
+            debugWidth == Width
+                && debugHeight == Height
+                && redLinePixels > Width / 4u,
+            "Debug drawing backend must rasterize the submitted line");
 
         // 検証を単純にするため後処理と垂直同期を切ります。
         auto settings = graphics.Settings();

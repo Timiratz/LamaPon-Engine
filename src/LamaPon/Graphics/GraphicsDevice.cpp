@@ -750,8 +750,7 @@ namespace LamaPon
         m_services->Initialize(Device(), Context(), window,
             m_graphicsSettings.runtimeTextureCompression);
         m_debugRenderer = std::make_unique<DebugRenderer>(
-            Device(),
-            Context());
+            m_backend->CreateDebugDrawingBackend());
         m_shadowMap = std::make_unique<ShadowMap>();
         m_spotShadowMap = std::make_unique<ShadowMap>();
         m_pointShadowMap = std::make_unique<ShadowMap>();

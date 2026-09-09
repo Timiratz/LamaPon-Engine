@@ -15,6 +15,7 @@ namespace DirectX
 namespace LamaPon
 {
     class ClusteredLights;
+    class DebugDrawingBackend;
     class RenderTarget;
     class ShadowMap;
     struct LightingState;
@@ -220,6 +221,10 @@ namespace LamaPon
         // 取得します。性能表示用なので失敗時は空の値へ倒します。
         [[nodiscard]] virtual GraphicsVideoMemoryStatistics
             QueryVideoMemoryStatistics() const noexcept = 0;
+        // Collider、grid、gizmo等が生成した共通線分を描くsinkです。
+        // Backendが初期化済みの間だけ生成し、Backendより先に破棄します。
+        [[nodiscard]] virtual std::unique_ptr<DebugDrawingBackend>
+            CreateDebugDrawingBackend() = 0;
     };
 
     // activeApiはSelectGraphicsBackendで解決済みの値を渡します。
