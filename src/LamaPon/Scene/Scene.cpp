@@ -7145,8 +7145,7 @@ namespace LamaPon
             {
                 m_graphics.Gpu().BeginSection(
                     "ライトカリング");
-                m_graphics.Clusters().Update(
-                    m_graphics.Context(),
+                m_graphics.UpdateClusteredLights(
                     lighting,
                     view,
                     projection,

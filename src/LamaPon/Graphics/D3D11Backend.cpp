@@ -1,6 +1,7 @@
 #include "LamaPon/Graphics/D3D11Backend.h"
 
 #include "LamaPon/Core/Log.h"
+#include "LamaPon/Graphics/ClusteredLights.h"
 #include "LamaPon/Graphics/RenderTarget.h"
 #include "LamaPon/Graphics/ShadowMap.h"
 
@@ -602,6 +603,38 @@ namespace LamaPon
         }
 
         shadowMap.End(m_context.Get());
+    }
+
+    void D3D11Backend::UpdateClusteredLights(
+        ClusteredLights& clusteredLights,
+        LightingState& lighting,
+        const DirectX::XMFLOAT4X4& view,
+        const DirectX::XMFLOAT4X4& projection,
+        const std::uint32_t width,
+        const std::uint32_t height)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "UpdateClusteredLights requires an initialized backend.");
+        }
+        if (m_context == nullptr)
+        {
+            throw std::logic_error(
+                "UpdateClusteredLights requires an available "
+                "DirectX 11 context.");
+        }
+
+        const auto viewMatrix = DirectX::XMLoadFloat4x4(&view);
+        const auto projectionMatrix =
+            DirectX::XMLoadFloat4x4(&projection);
+        clusteredLights.Update(
+            m_context.Get(),
+            lighting,
+            viewMatrix,
+            projectionMatrix,
+            width,
+            height);
     }
 
     void D3D11Backend::BindAndClearBackBuffer(

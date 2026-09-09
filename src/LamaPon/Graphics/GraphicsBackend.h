@@ -14,8 +14,10 @@ namespace DirectX
 
 namespace LamaPon
 {
+    class ClusteredLights;
     class RenderTarget;
     class ShadowMap;
+    struct LightingState;
 
     enum class RenderingApiFallbackReason
     {
@@ -164,6 +166,16 @@ namespace LamaPon
         // Begin前に呼ばれた場合は何もしません。
         virtual void EndShadowMap(
             ShadowMap& shadowMap) = 0;
+        // Forward+用のライト一覧をGPUへ送り、クラスタごとの番号表を
+        // lightingへ設定します。ClusteredLightsの資源表現は現時点では
+        // D3D11のままで、将来Backend別の資源へ置き換えるための操作境界です。
+        virtual void UpdateClusteredLights(
+            ClusteredLights& clusteredLights,
+            LightingState& lighting,
+            const DirectX::XMFLOAT4X4& view,
+            const DirectX::XMFLOAT4X4& projection,
+            std::uint32_t width,
+            std::uint32_t height) = 0;
     };
 
     // activeApiはSelectGraphicsBackendで解決済みの値を渡します。

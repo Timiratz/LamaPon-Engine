@@ -88,6 +88,13 @@ namespace LamaPon
             std::uint32_t cascadeIndex) override;
         void EndShadowMap(
             ShadowMap& shadowMap) override;
+        void UpdateClusteredLights(
+            ClusteredLights& clusteredLights,
+            LightingState& lighting,
+            const DirectX::XMFLOAT4X4& view,
+            const DirectX::XMFLOAT4X4& projection,
+            std::uint32_t width,
+            std::uint32_t height) override;
 
         // 既存のDirectX 11描画経路へ貸し出す非所有ポインターです。
         // GraphicsDeviceは移行期間中、従来のDevice/Context APIを

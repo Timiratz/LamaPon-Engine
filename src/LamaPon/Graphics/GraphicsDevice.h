@@ -418,6 +418,14 @@ namespace LamaPon
             ShadowMap& shadowMap,
             std::uint32_t cascadeIndex);
         void EndShadowMap(ShadowMap& shadowMap);
+        // Forward+のライトカリングを実効Backendへ委譲します。
+        // width/heightは描画先のピクセルサイズです。
+        void UpdateClusteredLights(
+            LightingState& lighting,
+            DirectX::FXMMATRIX view,
+            DirectX::CXMMATRIX projection,
+            std::uint32_t width,
+            std::uint32_t height);
 
         // 既存のD3D11描画コード向け互換facadeです。Backend共通interfaceへ
         // D3D11型を持ち込まず、段階的なrenderer移行までここで転送します。

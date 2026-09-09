@@ -12,6 +12,7 @@
 namespace LamaPon
 {
     class AssetManager;
+    class D3D11Backend;
 
     // クラスタライトカリング（Forward+）。
     //
@@ -47,12 +48,11 @@ namespace LamaPon
         ClusteredLights& operator=(
             const ClusteredLights&) = delete;
 
-        // ライト一覧をGPUへ送り、カリングを実行して、lightingへ
-        // バインド情報（SRVと定数）を書き込みます。
-        // width/heightは描画先のピクセルサイズ（Litシェーダーが
-        // ピクセル座標からクラスタを引くのに使います）。
-        // 射影が透視でない（正射影＝2Dシーン）場合や、ライトが
-        // 0灯の場合はclustered.enabledをfalseにします。
+    private:
+        friend class D3D11Backend;
+
+        // D3D11 Contextを使う更新処理は具象Backendだけが呼びます。
+        // 射影が透視でない場合やライトが0灯の場合は無効化します。
         void Update(
             ID3D11DeviceContext* context,
             LightingState& lighting,
@@ -61,7 +61,6 @@ namespace LamaPon
             std::uint32_t width,
             std::uint32_t height);
 
-    private:
         Microsoft::WRL::ComPtr<ID3D11ComputeShader>
             m_cullingShader;
         Microsoft::WRL::ComPtr<ID3D11Buffer>

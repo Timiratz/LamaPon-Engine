@@ -316,6 +316,23 @@ namespace
         graphics.BeginShadowMap(emptyShadowMap, 0);
         graphics.EndShadowMap(emptyShadowMap);
 
+        // ライトが無いフレームは、前回値を残さず無効へ戻します。
+        LamaPon::LightingState emptyClusteredLighting;
+        emptyClusteredLighting.clustered.enabled = true;
+        emptyClusteredLighting.clustered.lightCount = 123u;
+        const auto emptyClusteredIdentity =
+            DirectX::XMMatrixIdentity();
+        graphics.UpdateClusteredLights(
+            emptyClusteredLighting,
+            emptyClusteredIdentity,
+            emptyClusteredIdentity,
+            Width,
+            Height);
+        Require(
+            !emptyClusteredLighting.clustered.enabled
+                && emptyClusteredLighting.clustered.lightCount == 0u,
+            "Empty clustered lighting must clear the previous result");
+
         constexpr float displayColor[]{
             0.1f, 0.85f, 0.2f, 1.0f };
         const DirectX::XMFLOAT4X4 historyViewProjection{
@@ -869,6 +886,9 @@ int main()
         LamaPon::GraphicsDevice graphics;
         LamaPon::ShadowMap shadowMap;
         LamaPon::RenderTarget offscreenTarget;
+        LamaPon::LightingState clusteredLighting;
+        const auto clusteredIdentity =
+            DirectX::XMMatrixIdentity();
         constexpr float offscreenClear[]{
             0.0f, 0.0f, 0.0f, 1.0f };
         const DirectX::XMFLOAT4X4 historyViewProjection{
@@ -890,6 +910,17 @@ int main()
                 graphics.EndShadowMap(shadowMap);
             },
             "Ending a shadow map requires an initialized device");
+        RequireThrowsExactly<std::logic_error>(
+            [&]
+            {
+                graphics.UpdateClusteredLights(
+                    clusteredLighting,
+                    clusteredIdentity,
+                    clusteredIdentity,
+                    1,
+                    1);
+            },
+            "Updating clustered lights requires an initialized device");
         RequireThrowsExactly<std::logic_error>(
             [&]
             {

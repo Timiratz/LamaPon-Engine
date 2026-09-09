@@ -379,6 +379,34 @@ namespace LamaPon
         m_backend->EndShadowMap(shadowMap);
     }
 
+    void GraphicsDevice::UpdateClusteredLights(
+        LightingState& lighting,
+        DirectX::FXMMATRIX view,
+        DirectX::CXMMATRIX projection,
+        const std::uint32_t width,
+        const std::uint32_t height)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "UpdateClusteredLights requires an initialized device.");
+        }
+
+        // 既存どおり、更新の直前に初回だけシェーダーと資源を作ります。
+        auto& clusteredLights = Clusters();
+        DirectX::XMFLOAT4X4 viewValues{};
+        DirectX::XMFLOAT4X4 projectionValues{};
+        DirectX::XMStoreFloat4x4(&viewValues, view);
+        DirectX::XMStoreFloat4x4(&projectionValues, projection);
+        m_backend->UpdateClusteredLights(
+            clusteredLights,
+            lighting,
+            viewValues,
+            projectionValues,
+            width,
+            height);
+    }
+
     struct GraphicsDevice::MaterialShaderEntry final
     {
         std::unique_ptr<LitEffect> effect;
