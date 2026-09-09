@@ -53,7 +53,6 @@
 // 自動露出の順応に実時間（timeScale非依存）が要ります。
 #include "LamaPon/Core/Time.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
-#include "LamaPon/Graphics/ClusteredLights.h"
 #include "LamaPon/Graphics/EnvironmentCache.h"
 #include "LamaPon/Graphics/EnvironmentRenderer.h"
 #include "LamaPon/Graphics/RenderPipeline.h"
@@ -6121,20 +6120,8 @@ namespace LamaPon
             m_graphics.UIWidth();
         const std::uint32_t previousUIHeight =
             m_graphics.UIHeight();
-        auto* context = m_graphics.Context();
-        Microsoft::WRL::ComPtr<
-            ID3D11RenderTargetView> previousTargetView;
-        Microsoft::WRL::ComPtr<
-            ID3D11DepthStencilView> previousDepthView;
-        context->OMGetRenderTargets(
-            1,
-            previousTargetView.GetAddressOf(),
-            previousDepthView.GetAddressOf());
-        UINT previousViewportCount = 1;
-        D3D11_VIEWPORT previousViewport{};
-        context->RSGetViewports(
-            &previousViewportCount,
-            &previousViewport);
+        auto previousOutputState =
+            m_graphics.CaptureOutputState();
 
         m_graphics.Gpu().BeginSection(
             "レンダーテクスチャ");
@@ -6188,16 +6175,8 @@ namespace LamaPon
         m_graphics.SetUIViewportSize(
             previousUIWidth,
             previousUIHeight);
-        context->OMSetRenderTargets(
-            1,
-            previousTargetView.GetAddressOf(),
-            previousDepthView.Get());
-        if (previousViewportCount > 0)
-        {
-            context->RSSetViewports(
-                1,
-                &previousViewport);
-        }
+        m_graphics.RestoreOutputState(
+            *previousOutputState);
     }
 
     void Scene::RenderMainCamera(
@@ -7778,19 +7757,8 @@ namespace LamaPon
         auto* const context = m_graphics.Context();
 
         // 現在の描画先を退避します（フレーム途中で呼ばれるため）。
-        Microsoft::WRL::ComPtr<ID3D11RenderTargetView>
-            previousTarget;
-        Microsoft::WRL::ComPtr<ID3D11DepthStencilView>
-            previousDepth;
-        context->OMGetRenderTargets(
-            1,
-            previousTarget.ReleaseAndGetAddressOf(),
-            previousDepth.ReleaseAndGetAddressOf());
-        D3D11_VIEWPORT previousViewport{};
-        UINT previousViewportCount = 1;
-        context->RSGetViewports(
-            &previousViewportCount,
-            &previousViewport);
+        auto previousOutputState =
+            m_graphics.CaptureOutputState();
 
         // D3D標準のキューブ面向き（左手系）。ポイント影と同じ
         // 並びで、ワールド方向ベクトルでのサンプリングと一致します。
@@ -7939,15 +7907,8 @@ namespace LamaPon
         m_graphics.Gpu().EndSection();
 
         // 描画先を戻します。
-        context->OMSetRenderTargets(
-            1,
-            previousTarget.GetAddressOf(),
-            previousDepth.Get());
-        if (previousViewportCount > 0)
-        {
-            context->RSSetViewports(
-                1, &previousViewport);
-        }
+        m_graphics.RestoreOutputState(
+            *previousOutputState);
     }
 
 
@@ -8282,19 +8243,8 @@ namespace LamaPon
         auto* const context = m_graphics.Context();
 
         // 現在の描画先を退避します（フレーム途中で呼ばれるため）。
-        Microsoft::WRL::ComPtr<ID3D11RenderTargetView>
-            previousTarget;
-        Microsoft::WRL::ComPtr<ID3D11DepthStencilView>
-            previousDepth;
-        context->OMGetRenderTargets(
-            1,
-            previousTarget.ReleaseAndGetAddressOf(),
-            previousDepth.ReleaseAndGetAddressOf());
-        D3D11_VIEWPORT previousViewport{};
-        UINT previousViewportCount = 1;
-        context->RSGetViewports(
-            &previousViewportCount,
-            &previousViewport);
+        auto previousOutputState =
+            m_graphics.CaptureOutputState();
 
         // プローブベイクと同じ面の並び（D3D標準のキューブ面）。
         static constexpr DirectX::XMFLOAT3 FaceDirections[6]{
@@ -8479,29 +8429,16 @@ namespace LamaPon
             Logger::Instance().Warning(
                 std::string{ "GIベイクに失敗しました: " }
                 + exception.what());
-            context->OMSetRenderTargets(
-                1,
-                previousTarget.GetAddressOf(),
-                previousDepth.Get());
-            if (previousViewportCount > 0)
-            {
-                context->RSSetViewports(
-                    1, &previousViewport);
-            }
+            m_graphics.RestoreOutputState(
+                *previousOutputState);
             return;
         }
         m_bakingReflectionProbes = false;
         m_graphics.Gpu().EndSection();
 
         // 描画先を戻します。
-        context->OMSetRenderTargets(
-            1,
-            previousTarget.GetAddressOf(),
-            previousDepth.Get());
-        if (previousViewportCount > 0)
-        {
-            context->RSSetViewports(1, &previousViewport);
-        }
+        m_graphics.RestoreOutputState(
+            *previousOutputState);
 
         if (m_bakedGiNextProbe < total)
         {

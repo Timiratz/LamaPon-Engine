@@ -95,6 +95,10 @@ namespace LamaPon
             const DirectX::XMFLOAT4X4& projection,
             std::uint32_t width,
             std::uint32_t height) override;
+        [[nodiscard]] std::unique_ptr<GraphicsOutputState>
+            CaptureOutputState() override;
+        void RestoreOutputState(
+            const GraphicsOutputState& state) override;
 
         // 既存のDirectX 11描画経路へ貸し出す非所有ポインターです。
         // GraphicsDeviceは移行期間中、従来のDevice/Context APIを

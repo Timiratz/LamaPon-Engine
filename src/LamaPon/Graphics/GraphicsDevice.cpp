@@ -407,6 +407,30 @@ namespace LamaPon
             height);
     }
 
+    std::unique_ptr<GraphicsOutputState>
+        GraphicsDevice::CaptureOutputState()
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "CaptureOutputState requires an initialized device.");
+        }
+
+        return m_backend->CaptureOutputState();
+    }
+
+    void GraphicsDevice::RestoreOutputState(
+        const GraphicsOutputState& state)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "RestoreOutputState requires an initialized device.");
+        }
+
+        m_backend->RestoreOutputState(state);
+    }
+
     struct GraphicsDevice::MaterialShaderEntry final
     {
         std::unique_ptr<LitEffect> effect;

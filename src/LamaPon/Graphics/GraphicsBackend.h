@@ -55,6 +55,22 @@ namespace LamaPon
         bool enableDebugLayer{};
     };
 
+    // 一時的に別の描画先へ切り替えた後、元のprimary output bindingへ
+    // 戻すためのBackend固有tokenです。全pipeline stateではなく、色の
+    // slot 0、深度、先頭viewportだけを保持します。
+    class GraphicsOutputState
+    {
+    public:
+        virtual ~GraphicsOutputState() = default;
+
+        GraphicsOutputState(const GraphicsOutputState&) = delete;
+        GraphicsOutputState& operator=(
+            const GraphicsOutputState&) = delete;
+
+    protected:
+        GraphicsOutputState() = default;
+    };
+
     // SwapChainを持つ描画Backendの最小共通契約です。DeviceやContext、
     // RenderTargetViewなどのAPI固有型は具象Backendだけが公開します。
     class GraphicsBackend
@@ -176,6 +192,13 @@ namespace LamaPon
             const DirectX::XMFLOAT4X4& projection,
             std::uint32_t width,
             std::uint32_t height) = 0;
+        // 現在のprimary output bindingを同じBackendで復元するtokenとして
+        // 控えます。資源解放やResizeをまたがず、同じ描画区間で使います。
+        // D3D12 Backendではgetterではなく論理bind状態から実装します。
+        [[nodiscard]] virtual std::unique_ptr<GraphicsOutputState>
+            CaptureOutputState() = 0;
+        virtual void RestoreOutputState(
+            const GraphicsOutputState& state) = 0;
     };
 
     // activeApiはSelectGraphicsBackendで解決済みの値を渡します。

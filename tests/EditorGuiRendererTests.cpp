@@ -23,6 +23,11 @@
 
 namespace
 {
+    class TestGraphicsOutputState final
+        : public LamaPon::GraphicsOutputState
+    {
+    };
+
     void Require(const bool condition, const char* message)
     {
         if (!condition) throw std::runtime_error(message);
@@ -309,6 +314,14 @@ namespace
                 && graphics.RenderingApiFallback()
                     == LamaPon::RenderingApiFallbackReason::NotImplemented,
             "Editor GUI smoke test requires the DirectX 11 fallback");
+        TestGraphicsOutputState foreignOutputState;
+        RequireThrowsExactly<std::invalid_argument>(
+            [&]
+            {
+                graphics.RestoreOutputState(
+                    foreignOutputState);
+            },
+            "Output state from another backend must be rejected");
 
         // ShadowMap::Begin/Endが従来から持つsilent no-opを、
         // Backend経由でも維持します。
@@ -655,6 +668,62 @@ namespace
         constexpr float clearColor[]{
             0.05f, 0.1f, 0.15f, 1.0f };
         graphics.BeginFrame(clearColor);
+        Microsoft::WRL::ComPtr<ID3D11RenderTargetView>
+            expectedRenderTarget;
+        Microsoft::WRL::ComPtr<ID3D11DepthStencilView>
+            expectedDepthTarget;
+        graphics.Context()->OMGetRenderTargets(
+            1,
+            expectedRenderTarget.ReleaseAndGetAddressOf(),
+            expectedDepthTarget.ReleaseAndGetAddressOf());
+        D3D11_VIEWPORT expectedViewport{};
+        UINT expectedViewportCount = 1;
+        graphics.Context()->RSGetViewports(
+            &expectedViewportCount,
+            &expectedViewport);
+        auto backBufferOutputState =
+            graphics.CaptureOutputState();
+        graphics.BeginOffscreenTarget(
+            diversionTarget,
+            diversionColor);
+        graphics.RestoreOutputState(
+            *backBufferOutputState);
+        Microsoft::WRL::ComPtr<ID3D11RenderTargetView>
+            restoredRenderTarget;
+        Microsoft::WRL::ComPtr<ID3D11DepthStencilView>
+            restoredDepthTarget;
+        graphics.Context()->OMGetRenderTargets(
+            1,
+            restoredRenderTarget.ReleaseAndGetAddressOf(),
+            restoredDepthTarget.ReleaseAndGetAddressOf());
+        D3D11_VIEWPORT restoredViewport{};
+        UINT restoredViewportCount = 1;
+        graphics.Context()->RSGetViewports(
+            &restoredViewportCount,
+            &restoredViewport);
+        Require(
+            expectedRenderTarget.Get() != nullptr
+                && expectedDepthTarget.Get() != nullptr
+                && expectedViewportCount == 1
+                && restoredRenderTarget.Get()
+                    == expectedRenderTarget.Get()
+                && restoredDepthTarget.Get()
+                    == expectedDepthTarget.Get()
+                && restoredViewportCount
+                    == expectedViewportCount
+                && restoredViewport.TopLeftX
+                    == expectedViewport.TopLeftX
+                && restoredViewport.TopLeftY
+                    == expectedViewport.TopLeftY
+                && restoredViewport.Width
+                    == expectedViewport.Width
+                && restoredViewport.Height
+                    == expectedViewport.Height
+                && restoredViewport.MinDepth
+                    == expectedViewport.MinDepth
+                && restoredViewport.MaxDepth
+                    == expectedViewport.MaxDepth,
+            "Output state restore must recover targets and viewport");
         renderer->RenderDrawData(ImGui::GetDrawData());
         std::uint32_t capturedWidth{};
         std::uint32_t capturedHeight{};
@@ -887,6 +956,7 @@ int main()
         LamaPon::ShadowMap shadowMap;
         LamaPon::RenderTarget offscreenTarget;
         LamaPon::LightingState clusteredLighting;
+        TestGraphicsOutputState foreignOutputState;
         const auto clusteredIdentity =
             DirectX::XMMatrixIdentity();
         constexpr float offscreenClear[]{
@@ -921,6 +991,20 @@ int main()
                     1);
             },
             "Updating clustered lights requires an initialized device");
+        RequireThrowsExactly<std::logic_error>(
+            [&]
+            {
+                static_cast<void>(
+                    graphics.CaptureOutputState());
+            },
+            "Capturing output state requires an initialized device");
+        RequireThrowsExactly<std::logic_error>(
+            [&]
+            {
+                graphics.RestoreOutputState(
+                    foreignOutputState);
+            },
+            "Restoring output state requires an initialized device");
         RequireThrowsExactly<std::logic_error>(
             [&]
             {

@@ -426,6 +426,12 @@ namespace LamaPon
             DirectX::CXMMATRIX projection,
             std::uint32_t width,
             std::uint32_t height);
+        // 一時描画の前にprimary output bindingを控え、同じ描画区間で
+        // 復元します。tokenは取得元のGraphicsDeviceだけで使えます。
+        [[nodiscard]] std::unique_ptr<GraphicsOutputState>
+            CaptureOutputState();
+        void RestoreOutputState(
+            const GraphicsOutputState& state);
 
         // 既存のD3D11描画コード向け互換facadeです。Backend共通interfaceへ
         // D3D11型を持ち込まず、段階的なrenderer移行までここで転送します。

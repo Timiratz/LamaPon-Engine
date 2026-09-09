@@ -20,6 +20,19 @@
 
 namespace
 {
+    class D3D11OutputState final
+        : public LamaPon::GraphicsOutputState
+    {
+    public:
+        Microsoft::WRL::ComPtr<ID3D11Device> ownerDevice;
+        Microsoft::WRL::ComPtr<ID3D11RenderTargetView>
+            renderTarget;
+        Microsoft::WRL::ComPtr<ID3D11DepthStencilView>
+            depthTarget;
+        D3D11_VIEWPORT viewport{};
+        bool hasViewport{};
+    };
+
     void ThrowIfFailed(
         const HRESULT result,
         const char* operation)
@@ -635,6 +648,74 @@ namespace LamaPon
             projectionMatrix,
             width,
             height);
+    }
+
+    std::unique_ptr<GraphicsOutputState>
+        D3D11Backend::CaptureOutputState()
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "CaptureOutputState requires an initialized backend.");
+        }
+        if (m_context == nullptr)
+        {
+            throw std::logic_error(
+                "CaptureOutputState requires an available "
+                "DirectX 11 context.");
+        }
+
+        auto state = std::make_unique<D3D11OutputState>();
+        state->ownerDevice = m_device;
+        m_context->OMGetRenderTargets(
+            1,
+            state->renderTarget.ReleaseAndGetAddressOf(),
+            state->depthTarget.ReleaseAndGetAddressOf());
+        UINT viewportCount = 1;
+        m_context->RSGetViewports(
+            &viewportCount,
+            &state->viewport);
+        state->hasViewport = viewportCount > 0;
+        return state;
+    }
+
+    void D3D11Backend::RestoreOutputState(
+        const GraphicsOutputState& state)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "RestoreOutputState requires an initialized backend.");
+        }
+        if (m_context == nullptr)
+        {
+            throw std::logic_error(
+                "RestoreOutputState requires an available "
+                "DirectX 11 context.");
+        }
+
+        const auto* const d3d11State =
+            dynamic_cast<const D3D11OutputState*>(&state);
+        if (d3d11State == nullptr
+            || d3d11State->ownerDevice.Get() != m_device.Get())
+        {
+            throw std::invalid_argument(
+                "RestoreOutputState requires a state captured by this "
+                "backend.");
+        }
+
+        ID3D11RenderTargetView* renderTargets[]{
+            d3d11State->renderTarget.Get() };
+        m_context->OMSetRenderTargets(
+            1,
+            renderTargets,
+            d3d11State->depthTarget.Get());
+        if (d3d11State->hasViewport)
+        {
+            m_context->RSSetViewports(
+                1,
+                &d3d11State->viewport);
+        }
     }
 
     void D3D11Backend::BindAndClearBackBuffer(

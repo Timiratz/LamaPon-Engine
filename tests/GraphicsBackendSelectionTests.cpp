@@ -8,6 +8,11 @@
 
 namespace
 {
+    class TestGraphicsOutputState final
+        : public LamaPon::GraphicsOutputState
+    {
+    };
+
     void Require(const bool condition, const char* message)
     {
         if (!condition) throw std::runtime_error(message);
@@ -85,6 +90,21 @@ int main()
             "DirectX 11 backend must report the DirectX 11 API");
         Require(!backend->IsInitialized(),
             "A newly created backend must not initialize graphics resources");
+
+        TestGraphicsOutputState outputState;
+        RequireThrowsExactly<std::logic_error>(
+            [&]
+            {
+                static_cast<void>(
+                    backend->CaptureOutputState());
+            },
+            "Capturing output state requires an initialized backend");
+        RequireThrowsExactly<std::logic_error>(
+            [&]
+            {
+                backend->RestoreOutputState(outputState);
+            },
+            "Restoring output state requires an initialized backend");
 
         LamaPon::ShadowMap shadowMap;
         RequireThrowsExactly<std::logic_error>(
