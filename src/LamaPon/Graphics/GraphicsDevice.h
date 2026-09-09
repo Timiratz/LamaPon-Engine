@@ -1,5 +1,6 @@
 #pragma once
 
+#include "LamaPon/Graphics/EnvironmentRenderer.h"
 #include "LamaPon/Graphics/GpuProfiler.h"
 #include "LamaPon/Graphics/GraphicsBackend.h"
 #include "LamaPon/Graphics/Lighting.h"
@@ -16,6 +17,7 @@
 #include <filesystem>
 #include <future>
 #include <memory>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -75,7 +77,6 @@ namespace LamaPon
     class AudioSystem;
     class ClusteredLights;
     class DebugRenderer;
-    class EnvironmentRenderer;
     class InputSystem;
     class LitEffect;
     class SpriteEffect;
@@ -457,6 +458,21 @@ namespace LamaPon
             return m_gpuProfiler;
         }
         [[nodiscard]] EnvironmentRenderer& Environment() const;
+        // 環境資源の表現はまだD3D11ですが、SceneがDevice / Contextを
+        // 直接扱わないよう、復元・生成操作をこのfacadeへ集約します。
+        // 将来はBackend固有のopaque environment handleへ置き換えます。
+        [[nodiscard]] EnvironmentRenderer::OwnedPrefilteredEnvironment
+            TryLoadCachedEnvironment(std::uint64_t key) const;
+        // [R, G, B] x probe x RGBAのfp16係数から、RGB別の
+        // RGBA16F Texture3Dを3枚作ります。失敗時は全emptyです。
+        [[nodiscard]] std::array<Microsoft::WRL::ComPtr<
+            ID3D11ShaderResourceView>, 3>
+            UploadBakedGlobalIllumination(
+            std::uint32_t width,
+            std::uint32_t height,
+            std::uint32_t depth,
+            std::span<const std::uint16_t> coefficients)
+                const noexcept;
         // クラスタライトカリング（Forward+）。初回アクセス時に
         // Compute Shaderをコンパイルして作ります。
         [[nodiscard]] ClusteredLights& Clusters() const;

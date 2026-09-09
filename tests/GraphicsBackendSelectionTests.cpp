@@ -1,7 +1,10 @@
 #include "LamaPon/Graphics/GraphicsBackend.h"
+#include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Graphics/RenderTarget.h"
 #include "LamaPon/Graphics/ShadowMap.h"
 
+#include <array>
+#include <cstdint>
 #include <iostream>
 #include <stdexcept>
 #include <typeinfo>
@@ -90,6 +93,25 @@ int main()
             "DirectX 11 backend must report the DirectX 11 API");
         Require(!backend->IsInitialized(),
             "A newly created backend must not initialize graphics resources");
+
+        // 移行用facadeは未初期化でも例外や部分的なD3D11資源を
+        // 返さず、安全に空の結果へ倒します。
+        LamaPon::GraphicsDevice graphics;
+        Require(
+            !graphics.TryLoadCachedEnvironment(0).IsValid(),
+            "Environment cache restore must fail safely without a device");
+        const std::array<std::uint16_t, 12> coefficients{};
+        const auto bakedGiViews =
+            graphics.UploadBakedGlobalIllumination(
+                1,
+                1,
+                1,
+                coefficients);
+        Require(
+            bakedGiViews[0] == nullptr
+                && bakedGiViews[1] == nullptr
+                && bakedGiViews[2] == nullptr,
+            "Baked GI upload must return an empty result without a device");
 
         TestGraphicsOutputState outputState;
         RequireThrowsExactly<std::logic_error>(

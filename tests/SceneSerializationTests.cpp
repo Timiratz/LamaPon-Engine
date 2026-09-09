@@ -217,6 +217,83 @@ int RunTest(const std::string_view suite)
     try
     {
         LamaPon::GraphicsDevice graphics;
+        if (suite == "serialization")
+        {
+            // 焼き込みGIの復元はGPUを初期化せず検証できます。上限内の
+            // 最大形は受理し、不正な形は既存の有効結果を壊しません。
+            LamaPon::Scene bakedGiRestoreScene(graphics);
+            LamaPon::BakedGlobalIlluminationSettings acceptedShape;
+            acceptedShape.resolutionX = 64;
+            acceptedShape.resolutionY = 32;
+            acceptedShape.resolutionZ = 16;
+            std::vector<std::uint16_t> acceptedPayload(
+                LamaPon::BakedGlobalIlluminationMaximumProbeCount
+                    * LamaPon::
+                        BakedGlobalIlluminationCoefficientsPerProbe,
+                0x3c00);
+            bakedGiRestoreScene.RestoreBakedGlobalIllumination(
+                acceptedShape,
+                acceptedPayload);
+            Require(
+                bakedGiRestoreScene.HasBakedGlobalIllumination()
+                    && bakedGiRestoreScene
+                        .BakedGlobalIlluminationBakedShape()
+                        .resolutionX == 64
+                    && bakedGiRestoreScene
+                        .BakedGlobalIlluminationPayload()
+                        == acceptedPayload,
+                "The maximum valid baked GI payload was rejected.");
+
+            auto invalidAxisShape = acceptedShape;
+            invalidAxisShape.resolutionX = 65;
+            invalidAxisShape.resolutionY = 1;
+            invalidAxisShape.resolutionZ = 1;
+            bakedGiRestoreScene.RestoreBakedGlobalIllumination(
+                invalidAxisShape,
+                std::vector<std::uint16_t>(
+                    65 * LamaPon::
+                        BakedGlobalIlluminationCoefficientsPerProbe));
+
+            auto excessiveProbeShape = acceptedShape;
+            excessiveProbeShape.resolutionX = 64;
+            excessiveProbeShape.resolutionY = 27;
+            excessiveProbeShape.resolutionZ = 19;
+            bakedGiRestoreScene.RestoreBakedGlobalIllumination(
+                excessiveProbeShape,
+                std::vector<std::uint16_t>(
+                    64 * 27 * 19 * LamaPon::
+                        BakedGlobalIlluminationCoefficientsPerProbe));
+            Require(
+                bakedGiRestoreScene
+                        .BakedGlobalIlluminationBakedShape()
+                        .resolutionX == 64
+                    && bakedGiRestoreScene
+                        .BakedGlobalIlluminationBakedShape()
+                        .resolutionY == 32
+                    && bakedGiRestoreScene
+                        .BakedGlobalIlluminationPayload()
+                        == acceptedPayload,
+                "Invalid baked GI data replaced a valid payload.");
+
+            // JSON経路でも形をbase64 decode前に拒否します。1560 byte分の
+            // 文字列は旧実装なら65点のpayloadとして受理されていました。
+            LamaPon::Scene emptyScene(graphics);
+            auto invalidBakedGiDocument = nlohmann::json::parse(
+                emptyScene.SerializeToJson());
+            auto& bakedGi =
+                invalidBakedGiDocument["environment"]
+                    ["bakedGlobalIllumination"];
+            bakedGi["bakedResolution"] = { 65, 1, 1 };
+            bakedGi["data"] = std::string(2080, 'A');
+            LamaPon::Scene invalidBakedGiScene(graphics);
+            invalidBakedGiScene.LoadFromJson(
+                invalidBakedGiDocument.dump());
+            Require(
+                !invalidBakedGiScene
+                    .HasBakedGlobalIllumination(),
+                "An invalid baked GI resolution was restored from JSON.");
+        }
+
         LamaPon::Scene source(graphics);
         source.SetAmbientLightColor(
             DirectX::XMFLOAT3{ 0.25f, 0.35f, 0.45f });

@@ -7542,16 +7542,16 @@ namespace LamaPon
                 && !probe->RestoreAttempted())
             {
                 probe->MarkRestoreAttempted();
-                auto restored = EnvironmentCache::TryLoad(
-                    m_graphics.Device(),
-                    ProbeEnvironmentCacheKey(
-                        m_sceneManager != nullptr
-                            ? m_sceneManager
-                                ->CurrentScenePath()
-                            : std::filesystem::path{},
-                        *probe,
-                        EnvironmentRenderer::
-                            ProbeBakeFaceSize));
+                auto restored =
+                    m_graphics.TryLoadCachedEnvironment(
+                        ProbeEnvironmentCacheKey(
+                            m_sceneManager != nullptr
+                                ? m_sceneManager
+                                    ->CurrentScenePath()
+                                : std::filesystem::path{},
+                            *probe,
+                            EnvironmentRenderer::
+                                ProbeBakeFaceSize));
                 if (restored.IsValid())
                 {
                     probe->SetBakedEnvironment(
@@ -7701,16 +7701,22 @@ namespace LamaPon
         // 各軸64まで・合計32768点まで。上限が無いと、桁を1つ
         // 打ち間違えただけでベイクが何時間も終わらなくなります。
         m_bakedGiSettings.resolutionX = std::clamp(
-            m_bakedGiSettings.resolutionX, 1u, 64u);
+            m_bakedGiSettings.resolutionX,
+            1u,
+            BakedGlobalIlluminationMaximumAxisResolution);
         m_bakedGiSettings.resolutionY = std::clamp(
-            m_bakedGiSettings.resolutionY, 1u, 64u);
+            m_bakedGiSettings.resolutionY,
+            1u,
+            BakedGlobalIlluminationMaximumAxisResolution);
         m_bakedGiSettings.resolutionZ = std::clamp(
-            m_bakedGiSettings.resolutionZ, 1u, 64u);
+            m_bakedGiSettings.resolutionZ,
+            1u,
+            BakedGlobalIlluminationMaximumAxisResolution);
         while (static_cast<std::uint64_t>(
                 m_bakedGiSettings.resolutionX)
             * m_bakedGiSettings.resolutionY
             * m_bakedGiSettings.resolutionZ
-            > 32768u)
+            > BakedGlobalIlluminationMaximumProbeCount)
         {
             // どれか一番大きい軸を半分にして上限へ収めます。
             auto* largest = &m_bakedGiSettings.resolutionX;
@@ -7744,7 +7750,10 @@ namespace LamaPon
         }
         try
         {
-            m_bakedGiWorking.assign(total * 12, 0.0f);
+            m_bakedGiWorking.assign(
+                total
+                    * BakedGlobalIlluminationCoefficientsPerProbe,
+                0.0f);
         }
         catch (...)
         {
@@ -7761,11 +7770,15 @@ namespace LamaPon
         // シーン読み込みからの復元。サイズが形と合わないデータは
         // 受け取りません（壊れたファイルより「GIなし」のほうが
         // ましです）。
-        const std::size_t total =
-            static_cast<std::size_t>(shape.resolutionX)
-            * shape.resolutionY
-            * shape.resolutionZ;
-        if (total == 0 || payload.size() != total * 12)
+        const auto probeCount =
+            BakedGlobalIlluminationProbeCount(
+                shape.resolutionX,
+                shape.resolutionY,
+                shape.resolutionZ);
+        if (!probeCount.has_value()
+            || payload.size()
+                != *probeCount
+                    * BakedGlobalIlluminationCoefficientsPerProbe)
         {
             return;
         }
@@ -8034,57 +8047,12 @@ namespace LamaPon
         m_bakedGiTexturesDirty = false;
         m_bakedGiViews = {};
         const auto& shape = m_bakedGiBakedShape;
-        const std::size_t total =
-            static_cast<std::size_t>(shape.resolutionX)
-            * shape.resolutionY
-            * shape.resolutionZ;
-        if (total == 0 || m_bakedGiData.size() != total * 12)
-        {
-            return;
-        }
-        auto* const device = m_graphics.Device();
-        for (int channel = 0; channel < 3; ++channel)
-        {
-            D3D11_TEXTURE3D_DESC description{};
-            description.Width = shape.resolutionX;
-            description.Height = shape.resolutionY;
-            description.Depth = shape.resolutionZ;
-            description.MipLevels = 1;
-            description.Format =
-                DXGI_FORMAT_R16G16B16A16_FLOAT;
-            description.Usage = D3D11_USAGE_IMMUTABLE;
-            description.BindFlags =
-                D3D11_BIND_SHADER_RESOURCE;
-            D3D11_SUBRESOURCE_DATA initialData{};
-            initialData.pSysMem =
-                m_bakedGiData.data()
-                + static_cast<std::size_t>(channel)
-                    * total * 4;
-            initialData.SysMemPitch =
-                shape.resolutionX * 8;
-            initialData.SysMemSlicePitch =
-                shape.resolutionX
-                * shape.resolutionY * 8;
-            Microsoft::WRL::ComPtr<ID3D11Texture3D> texture;
-            if (FAILED(device->CreateTexture3D(
-                &description,
-                &initialData,
-                texture.ReleaseAndGetAddressOf())))
-            {
-                m_bakedGiViews = {};
-                return;
-            }
-            if (FAILED(device->CreateShaderResourceView(
-                texture.Get(),
-                nullptr,
-                m_bakedGiViews[
-                    static_cast<std::size_t>(channel)]
-                    .ReleaseAndGetAddressOf())))
-            {
-                m_bakedGiViews = {};
-                return;
-            }
-        }
+        m_bakedGiViews =
+            m_graphics.UploadBakedGlobalIllumination(
+                shape.resolutionX,
+                shape.resolutionY,
+                shape.resolutionZ,
+                m_bakedGiData);
     }
 
     LightingState Scene::BuildLightingState() const noexcept

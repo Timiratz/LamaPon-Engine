@@ -13,10 +13,10 @@ namespace LamaPon
     // Game ModuleとRuntimeのABIを識別します。公開構造体のレイアウトや
     // 公開関数のシグネチャを変更した場合は、この値も更新してください。
     // GameModuleHostは完全一致を要求し、互換性のないDLLを読み込みません。
-    // API 27ではリフレクションプローブとGIの6面ベイク資源をSceneから
-    // EnvironmentRendererへ移し、同期的なベイクworkflowへ集約したため、
-    // ゲーム用DLLの再ビルドが必要です。
-    inline constexpr std::uint32_t GameModuleApiVersion = 27;
+    // API 28では環境キャッシュ復元とGI texture uploadを
+    // GraphicsDeviceの移行用facadeへ集約したため、ゲーム用DLLの
+    // 再ビルドが必要です。
+    inline constexpr std::uint32_t GameModuleApiVersion = 28;
 
     using NativeScriptCreateFunction = void* (*)(
         GameObject* owner,

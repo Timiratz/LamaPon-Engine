@@ -3,8 +3,10 @@
 #include <DirectXMath.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 
 namespace LamaPon
 {
@@ -389,6 +391,44 @@ namespace LamaPon
         // 間接光の強さ（1で焼いたまま）。
         float intensity{ 1.0f };
     };
+
+    inline constexpr std::uint32_t
+        BakedGlobalIlluminationMaximumAxisResolution = 64;
+    inline constexpr std::size_t
+        BakedGlobalIlluminationMaximumProbeCount = 32768;
+    inline constexpr std::size_t
+        BakedGlobalIlluminationCoefficientsPerProbe = 12;
+
+    // JSON復元・CPU payload・GPU uploadが同じ上限を使うための
+    // 共通検査です。不正な形は値を返しません。
+    [[nodiscard]] inline constexpr std::optional<std::size_t>
+        BakedGlobalIlluminationProbeCount(
+            const std::uint32_t resolutionX,
+            const std::uint32_t resolutionY,
+            const std::uint32_t resolutionZ) noexcept
+    {
+        if (resolutionX == 0
+            || resolutionX
+                > BakedGlobalIlluminationMaximumAxisResolution
+            || resolutionY == 0
+            || resolutionY
+                > BakedGlobalIlluminationMaximumAxisResolution
+            || resolutionZ == 0
+            || resolutionZ
+                > BakedGlobalIlluminationMaximumAxisResolution)
+        {
+            return std::nullopt;
+        }
+        const auto count =
+            static_cast<std::uint64_t>(resolutionX)
+            * resolutionY
+            * resolutionZ;
+        if (count > BakedGlobalIlluminationMaximumProbeCount)
+        {
+            return std::nullopt;
+        }
+        return static_cast<std::size_t>(count);
+    }
 
     struct ColorGradingSettings final
     {

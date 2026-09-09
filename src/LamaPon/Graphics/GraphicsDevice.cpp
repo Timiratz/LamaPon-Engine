@@ -8,6 +8,7 @@
 #include "LamaPon/Graphics/ClusteredLights.h"
 #include "LamaPon/Graphics/D3D11Backend.h"
 #include "LamaPon/Graphics/DebugRenderer.h"
+#include "LamaPon/Graphics/EnvironmentCache.h"
 #include "LamaPon/Graphics/EnvironmentRenderer.h"
 #include "LamaPon/Graphics/LitEffect.h"
 #include "LamaPon/Graphics/RenderPipeline.h"
@@ -155,6 +156,76 @@ namespace LamaPon
         return backend != nullptr
             ? backend->Context()
             : nullptr;
+    }
+
+    EnvironmentRenderer::OwnedPrefilteredEnvironment
+        GraphicsDevice::TryLoadCachedEnvironment(
+            const std::uint64_t key) const
+    {
+        return EnvironmentCache::TryLoad(Device(), key);
+    }
+
+    std::array<Microsoft::WRL::ComPtr<
+        ID3D11ShaderResourceView>, 3>
+        GraphicsDevice::UploadBakedGlobalIllumination(
+        const std::uint32_t width,
+        const std::uint32_t height,
+        const std::uint32_t depth,
+        const std::span<const std::uint16_t> coefficients) const noexcept
+    {
+        std::array<Microsoft::WRL::ComPtr<
+            ID3D11ShaderResourceView>, 3> createdViews;
+        auto* const device = Device();
+        const auto probeCount =
+            BakedGlobalIlluminationProbeCount(
+                width,
+                height,
+                depth);
+        if (device == nullptr || !probeCount.has_value()
+            || coefficients.size()
+                != *probeCount
+                    * BakedGlobalIlluminationCoefficientsPerProbe)
+        {
+            return createdViews;
+        }
+
+        for (std::size_t channel = 0;
+            channel < createdViews.size();
+            ++channel)
+        {
+            D3D11_TEXTURE3D_DESC description{};
+            description.Width = width;
+            description.Height = height;
+            description.Depth = depth;
+            description.MipLevels = 1;
+            description.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+            description.Usage = D3D11_USAGE_IMMUTABLE;
+            description.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+            D3D11_SUBRESOURCE_DATA initialData{};
+            initialData.pSysMem = coefficients.data()
+                + channel * *probeCount * 4;
+            initialData.SysMemPitch = width * 8;
+            initialData.SysMemSlicePitch = width * height * 8;
+
+            Microsoft::WRL::ComPtr<ID3D11Texture3D> texture;
+            if (FAILED(device->CreateTexture3D(
+                &description,
+                &initialData,
+                texture.ReleaseAndGetAddressOf())))
+            {
+                return {};
+            }
+            if (FAILED(device->CreateShaderResourceView(
+                texture.Get(),
+                nullptr,
+                createdViews[channel].ReleaseAndGetAddressOf())))
+            {
+                return {};
+            }
+        }
+
+        return createdViews;
     }
 
     void GraphicsDevice::ResizeOffscreenTarget(
