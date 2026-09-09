@@ -1942,8 +1942,10 @@ namespace LamaPon
             // UIはトーンマッピングとFXAAの後に描き、元画像の色と輪郭を保つ。
             m_scene.Render2D();
             // エディターの補助表示はUIより手前に保つ。
-            m_graphics.Gpu().BeginSection(
-                "エディター補助表示");
+            GpuProfiler::SectionScope helperOverlaySection{
+                m_graphics.Gpu(),
+                "エディター補助表示"
+            };
             m_graphics.BindOffscreenTarget(
                 m_sceneRenderTarget);
             if (m_gridVisible)
@@ -1980,7 +1982,7 @@ namespace LamaPon
             // よらず、ImGuiには常に最終結果を見せるため）。
             m_graphics.PublishOffscreenTarget(
                 m_sceneRenderTarget);
-            m_graphics.Gpu().EndSection();
+            helperOverlaySection.End();
 
             const auto* selected =
                 m_scene.FindGameObject(m_selectedObjectId);
@@ -2056,9 +2058,12 @@ namespace LamaPon
         // エディターのUI自体もGPUを使います。ビューポートの絵と
         // 分けて出さないと、GPU合計との差がどこから来たのか
         // 判断できません（パネルの枚数で普通に数ms動きます）。
-        m_graphics.Gpu().BeginSection("エディターUI");
+        GpuProfiler::SectionScope editorUiSection{
+            m_graphics.Gpu(),
+            "エディターUI"
+        };
         m_editorGuiRenderer->RenderDrawData(ImGui::GetDrawData());
-        m_graphics.Gpu().EndSection();
+        editorUiSection.End();
 
         // スクリーンショットモード: UIがバックバッファへ描かれた
         // この時点（Presentの前）で撮ります。

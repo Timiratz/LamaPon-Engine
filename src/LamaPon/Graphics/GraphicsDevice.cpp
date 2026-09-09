@@ -1445,7 +1445,10 @@ namespace LamaPon
             {
                 ApplyQueuedScreenEffects(target, point);
             });
-        m_gpuProfiler.BeginSection("画面へ転送");
+        GpuProfiler::SectionScope transferSection{
+            m_gpuProfiler,
+            "画面へ転送"
+        };
         // バックバッファの実体はBackendだけが扱います。Renderer側は
         // bind済みの出力先へ最終画像を描くため、D3D11のRTVを取得しません。
         auto& environment = Environment();
@@ -1456,7 +1459,6 @@ namespace LamaPon
             m_backend->BindBackBuffer();
             environment.CopyToBoundRenderTarget(source);
         }
-        m_gpuProfiler.EndSection();
     }
 
     void GraphicsDevice::ApplyQueuedScreenEffects(
@@ -1791,14 +1793,17 @@ namespace LamaPon
                 : WhiteTexture();
         }
 
-        m_gpuProfiler.BeginSection("Compute");
+        GpuProfiler::SectionScope computeSection{
+            m_gpuProfiler,
+            "Compute"
+        };
         entry->effect->Dispatch(
             inputs,
             target.DisplayUnorderedAccessView(),
             target.Width(),
             target.Height(),
             request.customParameters);
-        m_gpuProfiler.EndSection();
+        computeSection.End();
         return true;
     }
 

@@ -23,6 +23,7 @@
 - 一時描画先・UI viewport・GPU計測区間をscope guardで復元し、レンダーテクスチャ／reflection probe／GI bakeの描画例外後もprimary outputと再入状態を維持する。
 - GPUメモリ容量・予算のDXGI adapter照会を共通Backend契約へ移し、`GraphicsDevice`の性能統計からD3D11 Deviceへの直接依存を除去。
 - Collider・grid・gizmo等の形状生成を共通`DebugRenderer`へ残し、線分のGPU送信だけをBackend生成のD3D11 sinkへ分離。
+- エディター補助表示・UI・最終画面転送・Computeに残っていたGPU計測区間もscope guard化し、例外後のprofiler stackを維持。
 - 車両パラメータープレビューのモデル送信を`EditorModelPreviewRenderer`へ分離し、DirectXTK11のContext / CommonStates / BasicEffect操作をD3D11実装内へ隔離。
 - `GraphicsSettings`、`GraphicsDevice`、`Scene`、`EnvironmentRenderer`、`GpuProfiler`、`DebugRenderer`のABI変更、および共通Backend契約の拡張に伴い、Game Module APIを31へ更新。
 
