@@ -1,6 +1,7 @@
 #include "LamaPon/Editor/EditorGuiRenderer.h"
 #include "LamaPon/Editor/EditorModelPreviewRenderer.h"
 #include "LamaPon/Assets/AssetManager.h"
+#include "LamaPon/Graphics/EnvironmentSettings.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Graphics/LitMaterial.h"
 #include "LamaPon/Graphics/RenderTarget.h"
@@ -315,6 +316,8 @@ namespace
             5.0f, 6.0f, 7.0f, 8.0f,
             9.0f, 10.0f, 11.0f, 12.0f,
             13.0f, 14.0f, 15.0f, 16.0f };
+        LamaPon::AutoExposureSettings autoExposureSettings{};
+        autoExposureSettings.enabled = true;
         LamaPon::RenderTarget emptyOffscreenTarget;
         RequireThrows<std::invalid_argument>(
             [&]
@@ -361,6 +364,16 @@ namespace
                     historyViewProjection);
             },
             "Capturing temporal history from an empty offscreen target must be rejected");
+        RequireThrowsExactly<std::invalid_argument>(
+            [&]
+            {
+                static_cast<void>(
+                    graphics.UpdateOffscreenTargetAutoExposure(
+                        emptyOffscreenTarget,
+                        autoExposureSettings,
+                        1.0f / 60.0f));
+            },
+            "Updating auto exposure for an empty offscreen target must be rejected");
         RequireThrows<std::invalid_argument>(
             [&]
             {
@@ -855,6 +868,8 @@ int main()
             5.0f, 6.0f, 7.0f, 8.0f,
             9.0f, 10.0f, 11.0f, 12.0f,
             13.0f, 14.0f, 15.0f, 16.0f };
+        LamaPon::AutoExposureSettings autoExposureSettings{};
+        autoExposureSettings.enabled = true;
         RequireThrowsExactly<std::logic_error>(
             [&]
             {
@@ -915,6 +930,16 @@ int main()
                     historyViewProjection);
             },
             "Capturing offscreen temporal history requires an initialized device");
+        RequireThrowsExactly<std::logic_error>(
+            [&]
+            {
+                static_cast<void>(
+                    graphics.UpdateOffscreenTargetAutoExposure(
+                        offscreenTarget,
+                        autoExposureSettings,
+                        1.0f / 60.0f));
+            },
+            "Updating offscreen auto exposure requires an initialized device");
         const auto modelPreviewRenderer =
             LamaPon::CreateEditorModelPreviewRenderer(
                 LamaPon::RenderingApi::DirectX11,

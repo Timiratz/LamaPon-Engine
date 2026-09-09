@@ -317,6 +317,44 @@ namespace LamaPon
             viewProjection);
     }
 
+    float GraphicsDevice::UpdateOffscreenTargetAutoExposure(
+        RenderTarget& target,
+        const AutoExposureSettings& settings,
+        const float deltaSeconds)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "UpdateOffscreenTargetAutoExposure requires an "
+                "initialized device.");
+        }
+        if (!target.IsValid())
+        {
+            throw std::invalid_argument(
+                "UpdateOffscreenTargetAutoExposure requires a valid "
+                "target.");
+        }
+
+        std::optional<float> measuredLuminance;
+        if (settings.enabled)
+        {
+            measuredLuminance =
+                m_backend->TryReadOffscreenTargetLuminance(target);
+        }
+
+        const float exposureStops = target.UpdateAutoExposure(
+            Environment(),
+            measuredLuminance,
+            settings,
+            deltaSeconds);
+
+        if (settings.enabled)
+        {
+            m_backend->CaptureOffscreenTargetLuminance(target);
+        }
+        return exposureStops;
+    }
+
     struct GraphicsDevice::MaterialShaderEntry final
     {
         std::unique_ptr<LitEffect> effect;

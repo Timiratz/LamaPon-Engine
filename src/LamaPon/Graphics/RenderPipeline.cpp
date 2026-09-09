@@ -290,9 +290,8 @@ namespace LamaPon
             && settings.autoExposureEnabled;
         auto effectiveColorGrading = frame.colorGrading;
         effectiveColorGrading.autoExposureStops =
-            target.UpdateAutoExposure(
-                graphics.Environment(),
-                graphics.Context(),
+            graphics.UpdateOffscreenTargetAutoExposure(
+                target,
                 effectiveAutoExposure,
                 frame.autoExposure.deltaSeconds);
 

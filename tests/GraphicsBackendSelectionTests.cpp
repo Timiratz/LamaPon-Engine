@@ -150,6 +150,21 @@ int main()
         RequireThrowsExactly<std::logic_error>(
             [&]
             {
+                static_cast<void>(
+                    backend->TryReadOffscreenTargetLuminance(
+                        offscreenTarget));
+            },
+            "Reading offscreen luminance requires an initialized backend");
+        RequireThrowsExactly<std::logic_error>(
+            [&]
+            {
+                backend->CaptureOffscreenTargetLuminance(
+                    offscreenTarget);
+            },
+            "Capturing offscreen luminance requires an initialized backend");
+        RequireThrowsExactly<std::logic_error>(
+            [&]
+            {
                 backend->PublishOffscreenTarget(
                     offscreenTarget);
             },

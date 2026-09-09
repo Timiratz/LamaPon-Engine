@@ -13,10 +13,10 @@ namespace LamaPon
     // Game ModuleとRuntimeのABIを識別します。公開構造体のレイアウトや
     // 公開関数のシグネチャを変更した場合は、この値も更新してください。
     // GameModuleHostは完全一致を要求し、互換性のないDLLを読み込みません。
-    // API 22ではSSR / TAAのカラー履歴操作をGraphicsBackendの
-    // 公開virtual契約へ追加し、RenderTargetのD3D11 Context直呼び
-    // APIをさらに内部化したため、ゲーム用DLLの再ビルドが必要です。
-    inline constexpr std::uint32_t GameModuleApiVersion = 22;
+    // API 23では自動露出の非同期輝度readbackと次回用転送を
+    // GraphicsBackendの公開virtual契約へ追加し、RenderTargetの
+    // D3D11 Context直呼びAPIを内部化したため再ビルドが必要です。
+    inline constexpr std::uint32_t GameModuleApiVersion = 23;
 
     using NativeScriptCreateFunction = void* (*)(
         GameObject* owner,

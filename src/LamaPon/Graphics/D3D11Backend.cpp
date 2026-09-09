@@ -495,6 +495,58 @@ namespace LamaPon
             viewProjection);
     }
 
+    std::optional<float>
+        D3D11Backend::TryReadOffscreenTargetLuminance(
+            RenderTarget& target)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "TryReadOffscreenTargetLuminance requires an "
+                "initialized backend.");
+        }
+        if (!target.IsValid())
+        {
+            throw std::invalid_argument(
+                "TryReadOffscreenTargetLuminance requires a valid "
+                "target.");
+        }
+        if (m_context == nullptr)
+        {
+            throw std::logic_error(
+                "TryReadOffscreenTargetLuminance requires an "
+                "available DirectX 11 context.");
+        }
+
+        return target.TryReadAutoExposureLuminance(
+            m_context.Get());
+    }
+
+    void D3D11Backend::CaptureOffscreenTargetLuminance(
+        RenderTarget& target)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "CaptureOffscreenTargetLuminance requires an "
+                "initialized backend.");
+        }
+        if (!target.IsValid())
+        {
+            throw std::invalid_argument(
+                "CaptureOffscreenTargetLuminance requires a valid "
+                "target.");
+        }
+        if (m_context == nullptr)
+        {
+            throw std::logic_error(
+                "CaptureOffscreenTargetLuminance requires an "
+                "available DirectX 11 context.");
+        }
+
+        target.CaptureAutoExposureLuminance(m_context.Get());
+    }
+
     void D3D11Backend::BindAndClearBackBuffer(
         const float clearColor[4])
     {

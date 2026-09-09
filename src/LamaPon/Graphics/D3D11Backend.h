@@ -73,6 +73,11 @@ namespace LamaPon
         void CaptureOffscreenTargetTemporalHistory(
             RenderTarget& target,
             const DirectX::XMFLOAT4X4& viewProjection) override;
+        [[nodiscard]] std::optional<float>
+            TryReadOffscreenTargetLuminance(
+                RenderTarget& target) override;
+        void CaptureOffscreenTargetLuminance(
+            RenderTarget& target) override;
 
         // 既存のDirectX 11描画経路へ貸し出す非所有ポインターです。
         // GraphicsDeviceは移行期間中、従来のDevice/Context APIを

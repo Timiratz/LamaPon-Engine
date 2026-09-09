@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace DirectX
@@ -137,6 +138,16 @@ namespace LamaPon
         virtual void CaptureOffscreenTargetTemporalHistory(
             RenderTarget& target,
             const DirectX::XMFLOAT4X4& viewProjection) = 0;
+        // 前フレームに控えた画面全体の平均輝度を、GPUを待たずに
+        // 読みます。初回または転送が未完了ならnulloptを返します。
+        // 値はGPU上の格納形式ではなく、線形空間の輝度です。
+        [[nodiscard]] virtual std::optional<float>
+            TryReadOffscreenTargetLuminance(
+                RenderTarget& target) = 0;
+        // 現在の輝度測定結果を、次フレームの非同期読み出し用に
+        // 控えます。描画先のbind状態は変更しません。
+        virtual void CaptureOffscreenTargetLuminance(
+            RenderTarget& target) = 0;
     };
 
     // activeApiはSelectGraphicsBackendで解決済みの値を渡します。

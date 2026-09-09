@@ -1057,12 +1057,11 @@ namespace LamaPon
 
     float RenderTarget::UpdateAutoExposure(
         EnvironmentRenderer& renderer,
-        ID3D11DeviceContext* const context,
+        const std::optional<float> measuredLuminance,
         const AutoExposureSettings& settings,
         const float deltaSeconds)
     {
         if (!IsValid()
-            || context == nullptr
             || m_luminanceTexture == nullptr
             || m_luminanceStagingTexture == nullptr
             || m_luminanceMipLevels == 0)
@@ -1087,61 +1086,39 @@ namespace LamaPon
             settings.maximumLuminance,
             minimumLuminance);
 
-        // 前フレームの測定結果を読みます。GPUの完了を待たず、結果が
-        // 未完成ならそのフレームの更新を見送ります。
-        if (m_luminanceStagingReady)
+        // Backendが非同期に読めた前フレームの測定結果を使います。
+        // 未完成ならそのフレームの順応更新だけを見送ります。
+        if (measuredLuminance.has_value())
         {
-            D3D11_MAPPED_SUBRESOURCE mapped{};
-            const HRESULT mapResult = context->Map(
-                m_luminanceStagingTexture.Get(),
-                0,
-                D3D11_MAP_READ,
-                D3D11_MAP_FLAG_DO_NOT_WAIT,
-                &mapped);
-            if (SUCCEEDED(mapResult) && mapped.pData != nullptr)
+            const float measured = std::clamp(
+                *measuredLuminance,
+                minimumLuminance,
+                maximumLuminance);
+            if (m_adaptedLuminance <= 0.0f)
             {
-                const auto* const halfValues =
-                    static_cast<
-                        const DirectX::PackedVector::HALF*>(
-                            mapped.pData);
-                const float averageLogLuminance =
-                    DirectX::PackedVector::XMConvertHalfToFloat(
-                        halfValues[0]);
-                context->Unmap(
-                    m_luminanceStagingTexture.Get(),
-                    0);
-
-                // 対数平均なので戻してから使います。
-                const float measured = std::clamp(
-                    std::exp(averageLogLuminance),
-                    minimumLuminance,
-                    maximumLuminance);
-                if (m_adaptedLuminance <= 0.0f)
-                {
-                    // 初回は測定値を直接採用し、起動直後の
-                    // 不要な露出変化を避けます。
-                    m_adaptedLuminance = measured;
-                }
-                else
-                {
-                    // 明所と暗所で異なる順応速度を適用します。
-                    const float speed = measured > m_adaptedLuminance
-                        ? std::max(settings.speedToBright, 0.0f)
-                        : std::max(settings.speedToDark, 0.0f);
-                    // 指数補間により順応時間をフレームレートから分離し、
-                    // 大きなdeltaTimeでも行き過ぎを防ぎます。
-                    const float blend = speed > 0.0f
-                        ? 1.0f - std::exp(
-                            -std::max(deltaSeconds, 0.0f) * speed)
-                        : 0.0f;
-                    m_adaptedLuminance +=
-                        (measured - m_adaptedLuminance) * blend;
-                }
-                // 露出は段数（exp2で効く）なのでlog2で渡します。
-                m_autoExposureStops = std::log2(
-                    std::max(settings.keyValue, 0.0001f)
-                    / std::max(m_adaptedLuminance, 0.0001f));
+                // 初回は測定値を直接採用し、起動直後の
+                // 不要な露出変化を避けます。
+                m_adaptedLuminance = measured;
             }
+            else
+            {
+                // 明所と暗所で異なる順応速度を適用します。
+                const float speed = measured > m_adaptedLuminance
+                    ? std::max(settings.speedToBright, 0.0f)
+                    : std::max(settings.speedToDark, 0.0f);
+                // 指数補間により順応時間をフレームレートから分離し、
+                // 大きなdeltaTimeでも行き過ぎを防ぎます。
+                const float blend = speed > 0.0f
+                    ? 1.0f - std::exp(
+                        -std::max(deltaSeconds, 0.0f) * speed)
+                    : 0.0f;
+                m_adaptedLuminance +=
+                    (measured - m_adaptedLuminance) * blend;
+            }
+            // 露出は段数（exp2で効く）なのでlog2で渡します。
+            m_autoExposureStops = std::log2(
+                std::max(settings.keyValue, 0.0001f)
+                / std::max(m_adaptedLuminance, 0.0001f));
         }
 
         // 現在のフレームを測定し、結果を次のフレームで読みます。
@@ -1151,7 +1128,57 @@ namespace LamaPon
             m_luminanceShaderResourceView.Get(),
             m_luminanceWidth,
             m_luminanceHeight);
-        // いちばん小さいミップ（1x1）だけをCPUの読める場所へ移します。
+        return m_autoExposureStops;
+    }
+
+    std::optional<float>
+        RenderTarget::TryReadAutoExposureLuminance(
+            ID3D11DeviceContext* const context)
+    {
+        if (context == nullptr
+            || !m_luminanceStagingReady
+            || m_luminanceStagingTexture == nullptr)
+        {
+            return std::nullopt;
+        }
+
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        const HRESULT mapResult = context->Map(
+            m_luminanceStagingTexture.Get(),
+            0,
+            D3D11_MAP_READ,
+            D3D11_MAP_FLAG_DO_NOT_WAIT,
+            &mapped);
+        if (FAILED(mapResult) || mapped.pData == nullptr)
+        {
+            return std::nullopt;
+        }
+
+        const auto* const halfValues =
+            static_cast<const DirectX::PackedVector::HALF*>(
+                mapped.pData);
+        const float averageLogLuminance =
+            DirectX::PackedVector::XMConvertHalfToFloat(
+                halfValues[0]);
+        context->Unmap(m_luminanceStagingTexture.Get(), 0);
+        // 輝度シェーダーは対数平均を格納するため、Backendの共通契約へ
+        // 渡す前に線形空間へ戻します。
+        return std::exp(averageLogLuminance);
+    }
+
+    void RenderTarget::CaptureAutoExposureLuminance(
+        ID3D11DeviceContext* const context)
+    {
+        if (context == nullptr
+            || m_luminanceTexture == nullptr
+            || m_luminanceStagingTexture == nullptr
+            || m_luminanceMipLevels == 0)
+        {
+            return;
+        }
+
+        // いちばん小さいミップ（1x1、RGBA16Fの8バイト）だけを
+        // 次フレームでCPUから読めるstaging資源へ控えます。
         context->CopySubresourceRegion(
             m_luminanceStagingTexture.Get(),
             0,
@@ -1162,7 +1189,6 @@ namespace LamaPon
             m_luminanceMipLevels - 1,
             nullptr);
         m_luminanceStagingReady = true;
-        return m_autoExposureStops;
     }
 
     bool RenderTarget::ResolveAmbientOcclusion(

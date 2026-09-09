@@ -83,6 +83,7 @@ namespace LamaPon
     class RenderTarget;
     class ScreenEffect;
     class ComputeEffect;
+    struct AutoExposureSettings;
     struct BloomSettings;
     struct ScreenSpaceLensFlareSettings;
     struct ColorGradingSettings;
@@ -404,6 +405,13 @@ namespace LamaPon
         void CaptureOffscreenTargetTemporalHistory(
             RenderTarget& target,
             const DirectX::XMFLOAT4X4& viewProjection);
+        // トーンマップ前のHDRから画面全体の明るさを測り、露出への
+        // 補正（段数）を返します。前フレームの非同期readback、CPU側の
+        // 順応、現在フレームの測定と次回用転送をこの順で行います。
+        [[nodiscard]] float UpdateOffscreenTargetAutoExposure(
+            RenderTarget& target,
+            const AutoExposureSettings& settings,
+            float deltaSeconds);
 
         // 既存のD3D11描画コード向け互換facadeです。Backend共通interfaceへ
         // D3D11型を持ち込まず、段階的なrenderer移行までここで転送します。

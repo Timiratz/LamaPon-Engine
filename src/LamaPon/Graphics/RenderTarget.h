@@ -10,12 +10,14 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace LamaPon
 {
     class D3D11Backend;
     class EnvironmentRenderer;
+    class GraphicsDevice;
     class ScreenEffect;
     struct AmbientOcclusionSettings;
     struct BloomSettings;
@@ -84,19 +86,6 @@ namespace LamaPon
             const DirectX::XMFLOAT4X4& inverseViewProjection,
             const DirectX::XMFLOAT4X4& viewProjection,
             std::uint32_t sampleCount);
-        // 自動露出。トーンマップ前のHDRの明るさを測り、露出への補正
-        // （段数）を返します。返った値をColorGradingSettingsの露出へ
-        // 足してからApplyToneMappingを呼んでください。
-        //
-        // 測定はGPU、順応の計算はCPUです。読み出すのは1x1ミップの
-        // 4バイトだけで、しかも1フレーム遅れで読みます（同じ
-        // フレームで読むとGPUの完了待ちで必ず止まります）。目の順応
-        // 自体が時間をかける表現なので、1フレームの遅れは見えません。
-        [[nodiscard]] float UpdateAutoExposure(
-            EnvironmentRenderer& renderer,
-            ID3D11DeviceContext* context,
-            const AutoExposureSettings& settings,
-            float deltaSeconds);
         // 順応した平均輝度（0なら未測定）。エディターの表示用です。
         [[nodiscard]] float AdaptedLuminance() const noexcept
         {
@@ -243,6 +232,9 @@ namespace LamaPon
         // 共通facadeからD3D11Backendを経由してだけ呼びます。D3D11型を
         // 使用する旧経路をprivateにし、呼び出し側の迂回を防ぎます。
         friend class D3D11Backend;
+        // 自動露出のreadbackと次回用転送はGraphicsDeviceがBackendの
+        // 前後で順序付けるため、高水準の更新処理も直接公開しません。
+        friend class GraphicsDevice;
 
         void Resize(
             ID3D11Device* device,
@@ -276,6 +268,23 @@ namespace LamaPon
         void CaptureTemporalHistory(
             ID3D11DeviceContext* context,
             const DirectX::XMFLOAT4X4& viewProjection);
+        // 前フレームの測定値からCPU側の順応を進め、現在のHDRを
+        // 輝度テクスチャへ描きます。readbackと次回用転送の順序は
+        // GraphicsDeviceが管理します。
+        [[nodiscard]] float UpdateAutoExposure(
+            EnvironmentRenderer& renderer,
+            std::optional<float> measuredLuminance,
+            const AutoExposureSettings& settings,
+            float deltaSeconds);
+        // D3D11の1x1 readbackを待たずに試します。値はhalfで格納した
+        // 対数平均から線形輝度へ戻して返します。
+        [[nodiscard]] std::optional<float>
+            TryReadAutoExposureLuminance(
+                ID3D11DeviceContext* context);
+        // 現在の最小輝度mip（RGBA16F、8バイト）を次フレーム用の
+        // staging textureへ転送します。
+        void CaptureAutoExposureLuminance(
+            ID3D11DeviceContext* context);
 
         Microsoft::WRL::ComPtr<ID3D11Texture2D> m_colorTexture;
         Microsoft::WRL::ComPtr<ID3D11RenderTargetView> m_renderTargetView;
