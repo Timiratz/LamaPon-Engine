@@ -16,6 +16,7 @@ namespace LamaPon
 {
     class ClusteredLights;
     class DebugDrawingBackend;
+    class GpuProfilerBackend;
     class RenderTarget;
     class ShadowMap;
     struct LightingState;
@@ -225,6 +226,11 @@ namespace LamaPon
         // Backendが初期化済みの間だけ生成し、Backendより先に破棄します。
         [[nodiscard]] virtual std::unique_ptr<DebugDrawingBackend>
             CreateDebugDrawingBackend() = 0;
+        // GPU計測driverはBackendが所有し、初期化済みの間だけ
+        // facadeへ貸し出します。未初期化時はnullptrです。
+        // 既存virtualのslotを維持するため、新しい契約は末尾へ追加します。
+        [[nodiscard]] virtual GpuProfilerBackend*
+            ProfilerBackend() noexcept = 0;
     };
 
     // activeApiはSelectGraphicsBackendで解決済みの値を渡します。

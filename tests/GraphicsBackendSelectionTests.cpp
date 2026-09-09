@@ -1,5 +1,6 @@
 #include "LamaPon/Graphics/GraphicsBackend.h"
 #include "LamaPon/Graphics/DebugRenderer.h"
+#include "LamaPon/Graphics/GpuProfiler.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Graphics/RenderTarget.h"
 #include "LamaPon/Graphics/ShadowMap.h"
@@ -8,6 +9,8 @@
 #include <cstdint>
 #include <iostream>
 #include <stdexcept>
+#include <string>
+#include <string_view>
 #include <typeinfo>
 #include <utility>
 #include <vector>
@@ -38,6 +41,78 @@ namespace
         std::vector<LamaPon::DebugLine> lastLines;
         DirectX::XMFLOAT4X4 lastView{};
         DirectX::XMFLOAT4X4 lastProjection{};
+    };
+
+    class RecordingGpuProfilerBackend final
+        : public LamaPon::GpuProfilerBackend
+    {
+    public:
+        [[nodiscard]] bool
+            IsSupported() const noexcept override
+        {
+            return supported;
+        }
+
+        void OpenFrame() override
+        {
+            ++openFrameCalls;
+        }
+
+        [[nodiscard]] bool BeginSection(
+            const std::string_view name,
+            const std::uint32_t depth) override
+        {
+            ++beginSectionCalls;
+            sectionNames.emplace_back(name);
+            sectionDepths.push_back(depth);
+            return acceptSections;
+        }
+
+        void EndSection() noexcept override
+        {
+            ++endSectionCalls;
+        }
+
+        void CloseFrame() override
+        {
+            endSectionCallsObservedAtClose = endSectionCalls;
+            ++closeFrameCalls;
+        }
+
+        [[nodiscard]] const std::vector<LamaPon::GpuSectionTime>&
+            LatestSections() const noexcept override
+        {
+            return latestSections;
+        }
+
+        [[nodiscard]] float
+            LatestFrameMilliseconds() const noexcept override
+        {
+            return latestFrameMilliseconds;
+        }
+
+        [[nodiscard]] const LamaPon::GpuPipelineStatistics&
+            LatestPipelineStatistics() const noexcept override
+        {
+            return latestPipelineStatistics;
+        }
+
+        bool supported{ true };
+        bool acceptSections{ true };
+        std::size_t openFrameCalls{};
+        std::size_t beginSectionCalls{};
+        std::size_t endSectionCalls{};
+        std::size_t endSectionCallsObservedAtClose{};
+        std::size_t closeFrameCalls{};
+        std::vector<std::string> sectionNames;
+        std::vector<std::uint32_t> sectionDepths;
+        std::vector<LamaPon::GpuSectionTime> latestSections{
+            { "resolved", 1.25f, 0u }
+        };
+        float latestFrameMilliseconds{ 2.5f };
+        LamaPon::GpuPipelineStatistics latestPipelineStatistics{
+            1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, true
+        };
     };
 
     void Require(const bool condition, const char* message)
@@ -86,6 +161,9 @@ static_assert(noexcept(LamaPon::SelectGraphicsBackend(
 static_assert(noexcept(std::declval<
     const LamaPon::GraphicsBackend&>()
         .QueryVideoMemoryStatistics()));
+static_assert(noexcept(std::declval<
+    LamaPon::GraphicsBackend&>()
+        .ProfilerBackend()));
 
 int main()
 {
@@ -112,6 +190,154 @@ int main()
             LamaPon::RenderingApi::DirectX11,
             LamaPon::RenderingApiFallbackReason::UnknownApi);
 
+        // 共通facadeはAPI固有driverが未接続でも安全で、
+        // 接続後は入れ子深度と確定結果だけを中継します。
+        LamaPon::GpuProfiler profiler;
+        Require(!profiler.IsSupported(),
+            "A detached GPU profiler facade must be unsupported");
+        profiler.OpenFrame();
+        profiler.BeginSection("detached");
+        profiler.EndSection();
+        profiler.CloseFrame();
+        Require(
+            profiler.LatestSections().empty()
+                && profiler.LatestFrameMilliseconds() == 0.0f
+                && !profiler.LatestPipelineStatistics().valid,
+            "A detached GPU profiler facade must expose empty results");
+
+        RecordingGpuProfilerBackend unsupportedProfilerBackend;
+        unsupportedProfilerBackend.supported = false;
+        profiler.Attach(&unsupportedProfilerBackend);
+        profiler.OpenFrame();
+        profiler.BeginSection("unsupported");
+        profiler.EndSection();
+        profiler.CloseFrame();
+        Require(
+            unsupportedProfilerBackend.openFrameCalls == 0u
+                && unsupportedProfilerBackend.beginSectionCalls == 0u
+                && unsupportedProfilerBackend.endSectionCalls == 0u
+                && unsupportedProfilerBackend.closeFrameCalls == 0u
+                && profiler.LatestSections().empty()
+                && profiler.LatestFrameMilliseconds() == 0.0f
+                && !profiler.LatestPipelineStatistics().valid,
+            "An unsupported GPU profiler backend must remain a safe no-op");
+
+        RecordingGpuProfilerBackend profilerBackend;
+        profiler.Attach(&profilerBackend);
+        Require(profiler.IsSupported(),
+            "The facade must expose backend support");
+        Require(
+            profiler.LatestSections().size() == 1u
+                && profiler.LatestSections().front().name == "resolved"
+                && profiler.LatestSections().front().milliseconds == 1.25f
+                && profiler.LatestFrameMilliseconds() == 2.5f
+                && profiler.LatestPipelineStatistics()
+                    .computeShaderInvocations == 8u
+                && profiler.LatestPipelineStatistics().valid,
+            "The facade must forward resolved backend statistics");
+        {
+            LamaPon::GpuProfiler::SectionScope outer{
+                profiler,
+                "outer"
+            };
+            Require(outer.InitialDepth() == 0u,
+                "The first profiler scope must begin at depth zero");
+            profiler.BeginSection("inner");
+        }
+        Require(
+            profilerBackend.sectionNames
+                == std::vector<std::string>{ "outer", "inner" }
+                && profilerBackend.sectionDepths
+                    == std::vector<std::uint32_t>{ 0u, 1u }
+                && profilerBackend.endSectionCalls == 2u,
+            "A scope must unwind its nested sections through the backend");
+
+        const auto endsBeforeManualScope =
+            profilerBackend.endSectionCalls;
+        {
+            LamaPon::GpuProfiler::SectionScope manualScope{
+                profiler,
+                "manual"
+            };
+            manualScope.End();
+            manualScope.End();
+        }
+        Require(
+            profilerBackend.endSectionCalls
+                == endsBeforeManualScope + 1u,
+            "Explicitly ending a profiler scope must be idempotent");
+
+        profilerBackend.acceptSections = false;
+        const auto endsBeforeRejectedSection =
+            profilerBackend.endSectionCalls;
+        {
+            LamaPon::GpuProfiler::SectionScope rejected{
+                profiler,
+                "rejected"
+            };
+            Require(rejected.InitialDepth() == 0u,
+                "A rejected section must not retain an old depth");
+        }
+        profilerBackend.acceptSections = true;
+        {
+            LamaPon::GpuProfiler::SectionScope afterRejected{
+                profiler,
+                "after rejected"
+            };
+            Require(afterRejected.InitialDepth() == 0u,
+                "A rejected section must not increment facade depth");
+        }
+        Require(
+            profilerBackend.endSectionCalls
+                == endsBeforeRejectedSection + 1u,
+            "Only accepted profiler sections may be ended");
+
+        profiler.BeginSection("close outer");
+        profiler.BeginSection("close inner");
+        const auto endsBeforeClose = profilerBackend.endSectionCalls;
+        profiler.CloseFrame();
+        Require(
+            profilerBackend.endSectionCalls
+                == endsBeforeClose + 2u
+                && profilerBackend.closeFrameCalls == 1u
+                && profilerBackend.endSectionCallsObservedAtClose
+                    == profilerBackend.endSectionCalls,
+            "Closing a frame must end every open section before the backend frame");
+
+        LamaPon::GpuProfiler::SectionScope staleScope{
+            profiler,
+            "detach open"
+        };
+        const auto endsBeforeDetach = profilerBackend.endSectionCalls;
+        profiler.Detach();
+        Require(
+            profilerBackend.endSectionCalls == endsBeforeDetach + 1u
+                && !profiler.IsSupported()
+                && profiler.LatestSections().empty(),
+            "Detaching must unwind open sections and clear facade results");
+        RecordingGpuProfilerBackend replacementProfilerBackend;
+        replacementProfilerBackend.latestSections.front().name =
+            "replacement";
+        profiler.Attach(&replacementProfilerBackend);
+        {
+            LamaPon::GpuProfiler::SectionScope replacementScope{
+                profiler,
+                "replacement scope"
+            };
+            Require(replacementScope.InitialDepth() == 0u,
+                "Attaching a new profiler backend must reset section depth");
+            staleScope.End();
+            Require(
+                replacementProfilerBackend.endSectionCalls == 0u,
+                "A stale scope must not close sections on a replacement backend");
+        }
+        Require(
+            profiler.LatestSections().front().name == "replacement"
+                && replacementProfilerBackend.sectionDepths.front() == 0u
+                && replacementProfilerBackend.endSectionCalls == 1u,
+            "A replacement profiler backend must not inherit old state");
+        profiler.Detach();
+
         auto backend = LamaPon::CreateGraphicsBackend(
             LamaPon::RenderingApi::DirectX11);
         Require(backend != nullptr,
@@ -120,6 +346,9 @@ int main()
             "DirectX 11 backend must report the DirectX 11 API");
         Require(!backend->IsInitialized(),
             "A newly created backend must not initialize graphics resources");
+        Require(
+            backend->ProfilerBackend() == nullptr,
+            "An uninitialized backend must not expose a profiler driver");
         const auto emptyVideoMemory =
             backend->QueryVideoMemoryStatistics();
         Require(

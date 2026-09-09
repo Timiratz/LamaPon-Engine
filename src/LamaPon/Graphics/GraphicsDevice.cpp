@@ -611,6 +611,8 @@ namespace LamaPon
 
     void GraphicsDevice::Shutdown() noexcept
     {
+        // Backend所有のGPU計測driverより先に非所有参照を外します。
+        m_gpuProfiler.Detach();
         if (m_backend)
         {
             // BackendのDevice/Contextを借りている高レベル資源より先に
@@ -708,6 +710,9 @@ namespace LamaPon
         m_uiHeight = m_height;
         m_sprite2DOffset = {};
 
+        // 同じGraphicsDeviceを再初期化する場合も、旧Backendを
+        // 破棄する前にprofilerの非所有参照を外します。
+        m_gpuProfiler.Detach();
         m_backend = CreateGraphicsBackend(
             selection.activeApi);
         m_backend->Initialize(GraphicsBackendCreateInfo{
@@ -717,6 +722,8 @@ namespace LamaPon
             s_preferWarpAdapter,
             s_enableDebugLayer
         });
+        m_gpuProfiler.Attach(
+            m_backend->ProfilerBackend());
 
         RefreshMemoryStatistics(true);
         // エディター外でもFPS制限の状態を確認できるよう、ログへ記録します。
@@ -781,9 +788,6 @@ namespace LamaPon
         }
         m_sceneCompositionTarget =
             std::make_unique<RenderTarget>();
-        m_gpuProfiler.Initialize(
-            Device(),
-            Context());
     }
 
     void GraphicsDevice::Resize(const std::uint32_t width, const std::uint32_t height)

@@ -3,6 +3,7 @@
 #include "LamaPon/Core/Log.h"
 #include "LamaPon/Graphics/ClusteredLights.h"
 #include "LamaPon/Graphics/DebugRenderer.h"
+#include "LamaPon/Graphics/GpuProfiler.h"
 #include "LamaPon/Graphics/RenderTarget.h"
 #include "LamaPon/Graphics/ShadowMap.h"
 
@@ -168,6 +169,8 @@ namespace
 
 namespace LamaPon
 {
+    D3D11Backend::D3D11Backend() = default;
+
     D3D11Backend::~D3D11Backend()
     {
         PrepareForResourceRelease();
@@ -334,6 +337,9 @@ namespace LamaPon
 
         LogSelectedAdapter();
         CreateSizeDependentResources(width, height);
+        m_gpuProfilerBackend = CreateProfilerBackend(
+            m_device.Get(),
+            m_context.Get());
     }
 
     void D3D11Backend::PrepareForResourceRelease() noexcept
@@ -347,6 +353,7 @@ namespace LamaPon
 
     void D3D11Backend::Shutdown() noexcept
     {
+        m_gpuProfilerBackend.reset();
         m_infoQueue.Reset();
         m_depthStencilView.Reset();
         m_depthTexture.Reset();
@@ -890,6 +897,12 @@ namespace LamaPon
         return std::make_unique<D3D11DebugDrawingBackend>(
             m_device.Get(),
             m_context.Get());
+    }
+
+    GpuProfilerBackend*
+        D3D11Backend::ProfilerBackend() noexcept
+    {
+        return m_gpuProfilerBackend.get();
     }
 
     void D3D11Backend::BindAndClearBackBuffer(

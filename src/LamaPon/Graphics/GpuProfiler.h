@@ -1,9 +1,5 @@
 #pragma once
 
-#include <d3d11.h>
-#include <wrl/client.h>
-
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -12,37 +8,73 @@
 
 namespace LamaPon
 {
-    // D3D11のタイムスタンプクエリでGPUの区間時間を計測します。
-    // 結果の読み出しはGPUに追いつかれないよう数フレーム遅らせる
-    // ため、表示される値は直近の「確定した」フレームのものです。
-    // クエリ作成に失敗した環境では自動的に無効になります。
+    // CPU側のオブジェクト数ではなく、LOD・カリング・
+    // インスタンシングを通過してGPUへ届いた実仕事量です。
+    struct GpuPipelineStatistics final
+    {
+        std::uint64_t inputAssemblerVertices{};
+        std::uint64_t inputAssemblerPrimitives{};
+        std::uint64_t vertexShaderInvocations{};
+        std::uint64_t pixelShaderInvocations{};
+        std::uint64_t hullShaderInvocations{};
+        std::uint64_t domainShaderInvocations{};
+        std::uint64_t geometryShaderInvocations{};
+        std::uint64_t computeShaderInvocations{};
+        bool valid{};
+    };
+
+    struct GpuSectionTime final
+    {
+        std::string name;
+        float milliseconds{};
+        // 入れ子の深さ（0が最上位）。区間は入れ子にできるので、
+        // 一覧をそのまま足すと内側が二重に数えられます。
+        // GPU全体との比較は depth==0 だけを足してください。
+        std::uint32_t depth{};
+    };
+
+    // API固有のtimestamp/query実装です。GraphicsBackendが所有し、
+    // GpuProfilerが非所有ポインターで参照します。呼び出し側に
+    // Device / Context等のAPI固有型は公開しません。
+    class GpuProfilerBackend
+    {
+    public:
+        virtual ~GpuProfilerBackend() = default;
+
+        GpuProfilerBackend() = default;
+        GpuProfilerBackend(const GpuProfilerBackend&) = delete;
+        GpuProfilerBackend& operator=(
+            const GpuProfilerBackend&) = delete;
+
+        [[nodiscard]] virtual bool
+            IsSupported() const noexcept = 0;
+        virtual void OpenFrame() = 0;
+        // 計測を開始できたときだけtrue。depthはfacadeが
+        // 管理する論理的な入れ子深度です。
+        [[nodiscard]] virtual bool BeginSection(
+            std::string_view name,
+            std::uint32_t depth) = 0;
+        virtual void EndSection() noexcept = 0;
+        virtual void CloseFrame() = 0;
+
+        [[nodiscard]] virtual const std::vector<GpuSectionTime>&
+            LatestSections() const noexcept = 0;
+        [[nodiscard]] virtual float
+            LatestFrameMilliseconds() const noexcept = 0;
+        [[nodiscard]] virtual const GpuPipelineStatistics&
+            LatestPipelineStatistics() const noexcept = 0;
+    };
+
+    // GPU計測のAPI非依存facadeです。表示や描画パイプラインは
+    // この型だけを使い、timestamp/queryの詳細は選択中の
+    // GraphicsBackendが差し込みます。未接続・非対応時は安全な
+    // no-opと空の結果へ倒れます。
     class GpuProfiler final
     {
     public:
-        // CPU側のオブジェクト数ではなく、LOD・カリング・
-        // インスタンシングを通過してGPUへ届いた実仕事量です。
-        struct PipelineStatistics final
-        {
-            std::uint64_t inputAssemblerVertices{};
-            std::uint64_t inputAssemblerPrimitives{};
-            std::uint64_t vertexShaderInvocations{};
-            std::uint64_t pixelShaderInvocations{};
-            std::uint64_t hullShaderInvocations{};
-            std::uint64_t domainShaderInvocations{};
-            std::uint64_t geometryShaderInvocations{};
-            std::uint64_t computeShaderInvocations{};
-            bool valid{};
-        };
-
-        struct SectionTime final
-        {
-            std::string name;
-            float milliseconds{};
-            // 入れ子の深さ（0が最上位）。区間は入れ子にできるので、
-            // 一覧をそのまま足すと内側が二重に数えられます。
-            // GPU全体との比較は depth==0 だけを足してください。
-            std::uint32_t depth{};
-        };
+        // 従来の公開型名はaliasで維持します。
+        using PipelineStatistics = GpuPipelineStatistics;
+        using SectionTime = GpuSectionTime;
 
         // 例外で内側の描画処理が中断されても、構築時より後に開始した
         // 区間をすべて閉じます。単純なEndSection 1回では、内側の
@@ -67,11 +99,13 @@ namespace LamaPon
         private:
             GpuProfiler* m_profiler{};
             std::size_t m_initialDepth{};
+            std::uint64_t m_generation{};
         };
 
-        void Initialize(
-            ID3D11Device* device,
-            ID3D11DeviceContext* context);
+        // backendの寿命はこのfacadeより長く保ち、backendを破棄する
+        // 前にDetachします。nullptrは未接続状態として扱います。
+        void Attach(GpuProfilerBackend* backend) noexcept;
+        void Detach() noexcept;
 
         // フレームの計測を開始します（開始済みなら何もしません）。
         void OpenFrame();
@@ -82,69 +116,23 @@ namespace LamaPon
         // 取り込みます。
         void CloseFrame();
 
-        [[nodiscard]] bool IsSupported() const noexcept
-        {
-            return m_supported;
-        }
+        [[nodiscard]] bool IsSupported() const noexcept;
         // 直近の確定フレームの区間一覧。
         [[nodiscard]] const std::vector<SectionTime>&
-            LatestSections() const noexcept
-        {
-            return m_latestSections;
-        }
+            LatestSections() const noexcept;
         // 直近の確定フレームのGPU全体時間（ミリ秒）。
         [[nodiscard]] float
-            LatestFrameMilliseconds() const noexcept
-        {
-            return m_latestFrameMilliseconds;
-        }
+            LatestFrameMilliseconds() const noexcept;
         [[nodiscard]] const PipelineStatistics&
-            LatestPipelineStatistics() const noexcept
-        {
-            return m_latestPipelineStatistics;
-        }
+            LatestPipelineStatistics() const noexcept;
 
     private:
-        struct SectionQueries final
-        {
-            std::string name;
-            Microsoft::WRL::ComPtr<ID3D11Query> begin;
-            Microsoft::WRL::ComPtr<ID3D11Query> end;
-            std::uint32_t depth{};
-        };
-
-        struct FrameQueries final
-        {
-            Microsoft::WRL::ComPtr<ID3D11Query> disjoint;
-            Microsoft::WRL::ComPtr<ID3D11Query>
-                frameBegin;
-            Microsoft::WRL::ComPtr<ID3D11Query> frameEnd;
-            Microsoft::WRL::ComPtr<ID3D11Query>
-                pipelineStatistics;
-            std::vector<SectionQueries> sections;
-            // 今フレームで使った区間数（クエリはプール再利用）。
-            std::size_t usedSections{};
-            bool open{};
-            bool pending{};
-        };
-
-        [[nodiscard]] Microsoft::WRL::ComPtr<ID3D11Query>
-            CreateTimestampQuery() const;
         void EndSectionsToDepth(std::size_t depth) noexcept;
-        void PollPendingFrames();
 
-        // 読み出し遅延用のリングバッファ。
-        static constexpr std::size_t FrameCount = 4;
-        std::array<FrameQueries, FrameCount> m_frames;
-        std::size_t m_writeIndex{};
-        std::vector<std::size_t> m_sectionStack;
-
-        ID3D11Device* m_device{};
-        ID3D11DeviceContext* m_context{};
-        bool m_supported{};
-
-        std::vector<SectionTime> m_latestSections;
-        float m_latestFrameMilliseconds{};
-        PipelineStatistics m_latestPipelineStatistics;
+        GpuProfilerBackend* m_backend{};
+        std::size_t m_sectionDepth{};
+        // detach / reattachをまたぐ古いSectionScopeが、新しい
+        // backendの区間を閉じないようにする世代番号です。
+        std::uint64_t m_generation{};
     };
 }

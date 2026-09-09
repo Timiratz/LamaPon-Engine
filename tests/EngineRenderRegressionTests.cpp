@@ -387,12 +387,27 @@ int main(const int argumentCount, char** arguments)
             DirectX::XMFLOAT3{ -0.75f, 0.0f, 0.0f },
             DirectX::XMFLOAT3{ 0.75f, 0.0f, 0.0f }
         };
+        Require(
+            graphics.Gpu().IsSupported(),
+            "The D3D11 backend must attach its GPU profiler driver");
+        const auto drawProfiledDebugLine = [&]
+        {
+            LamaPon::GpuProfiler::SectionScope outerSection{
+                graphics.Gpu(),
+                "D3D11 profiler outer"
+            };
+            LamaPon::GpuProfiler::SectionScope innerSection{
+                graphics.Gpu(),
+                "D3D11 profiler inner"
+            };
+            graphics.Debug().DrawLines(
+                debugLine,
+                DirectX::XMVectorSet(1.0f, 0.0f, 0.0f, 1.0f),
+                DirectX::XMMatrixIdentity(),
+                DirectX::XMMatrixIdentity());
+        };
         graphics.BeginFrame(debugClear);
-        graphics.Debug().DrawLines(
-            debugLine,
-            DirectX::XMVectorSet(1.0f, 0.0f, 0.0f, 1.0f),
-            DirectX::XMMatrixIdentity(),
-            DirectX::XMMatrixIdentity());
+        drawProfiledDebugLine();
         std::uint32_t debugWidth{};
         std::uint32_t debugHeight{};
         const auto debugPixels = graphics.CaptureBackBuffer(
@@ -416,6 +431,39 @@ int main(const int argumentCount, char** arguments)
                 && debugHeight == Height
                 && redLinePixels > Width / 4u,
             "Debug drawing backend must rasterize the submitted line");
+
+        // 2フレーム目のblocking captureが前フレームのGPU完了を待つため、
+        // そのEndFrameでring bufferからquery結果を決定的に回収できます。
+        graphics.BeginFrame(debugClear);
+        drawProfiledDebugLine();
+        std::uint32_t profilerProbeWidth{};
+        std::uint32_t profilerProbeHeight{};
+        static_cast<void>(graphics.CaptureBackBuffer(
+            profilerProbeWidth,
+            profilerProbeHeight));
+        graphics.EndFrame();
+        bool foundOuterSection{};
+        bool foundInnerSection{};
+        for (const auto& section : graphics.Gpu().LatestSections())
+        {
+            Require(
+                std::isfinite(section.milliseconds)
+                    && section.milliseconds >= 0.0f,
+                "D3D11 profiler sections must report finite durations");
+            foundOuterSection = foundOuterSection
+                || (section.name == "D3D11 profiler outer"
+                    && section.depth == 0u);
+            foundInnerSection = foundInnerSection
+                || (section.name == "D3D11 profiler inner"
+                    && section.depth == 1u);
+        }
+        Require(
+            foundOuterSection
+                && foundInnerSection
+                && std::isfinite(
+                    graphics.Gpu().LatestFrameMilliseconds())
+                && graphics.Gpu().LatestFrameMilliseconds() >= 0.0f,
+            "D3D11 profiler backend must resolve nested timestamp queries");
 
         // 検証を単純にするため後処理と垂直同期を切ります。
         auto settings = graphics.Settings();

@@ -13,7 +13,7 @@ namespace LamaPon
     class D3D11Backend final : public GraphicsBackend
     {
     public:
-        D3D11Backend() = default;
+        D3D11Backend();
         ~D3D11Backend() override;
 
         D3D11Backend(const D3D11Backend&) = delete;
@@ -103,6 +103,8 @@ namespace LamaPon
             QueryVideoMemoryStatistics() const noexcept override;
         [[nodiscard]] std::unique_ptr<DebugDrawingBackend>
             CreateDebugDrawingBackend() override;
+        [[nodiscard]] GpuProfilerBackend*
+            ProfilerBackend() noexcept override;
 
         // 既存のDirectX 11描画経路へ貸し出す非所有ポインターです。
         // GraphicsDeviceは移行期間中、従来のDevice/Context APIを
@@ -123,6 +125,10 @@ namespace LamaPon
             std::uint32_t width,
             std::uint32_t height);
         void LogSelectedAdapter() const;
+        [[nodiscard]] static std::unique_ptr<GpuProfilerBackend>
+            CreateProfilerBackend(
+                ID3D11Device* device,
+                ID3D11DeviceContext* context);
 
         Microsoft::WRL::ComPtr<ID3D11Device> m_device;
         Microsoft::WRL::ComPtr<ID3D11DeviceContext> m_context;
@@ -136,5 +142,7 @@ namespace LamaPon
         bool m_tearingAllowed{};
         Microsoft::WRL::ComPtr<ID3D11InfoQueue> m_infoQueue;
         std::uint64_t m_debugMessagesLogged{};
+        // Device / Contextより先に破棄されるよう末尾で所有します。
+        std::unique_ptr<GpuProfilerBackend> m_gpuProfilerBackend;
     };
 }
