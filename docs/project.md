@@ -150,6 +150,7 @@ GPUが無い・正しく動かない環境（仮想マシン、リモートデ�
 - 初期ウィンドウ解像度
 - 起動シーン
 - ビューポート設定（フライ操作／オービット操作プリセット、回転・パン・ズーム感度、Y軸反転）
+- Rendering API（Auto／DirectX 11／DirectX 12 Experimental）
 - グラフィック品質プリセット
 - 描画方式（Forward+／Forward。[詳細](graphics.md#描画方式rendering-path)）
 - 描画スケール、Shadow解像度／Cascade上限
@@ -161,6 +162,9 @@ GPUが無い・正しく動かない環境（仮想マシン、リモートデ�
 - 外部スクリプトエディター（`.cpp`／`.hlsl`を開くときに使うエディター）
 - Inspectorの小数点桁数
 - ビルドプロファイル（Windows／Web）と書き出し先の設定画面への入口
+
+Rendering APIの既定はDirectX 11です。変更は実行中に切り替わらず、エディターまたはゲームの再起動後に反映されます。
+DirectX 12 Experimentalは現在未実装のため、選択してもDirectX 11バックエンドへ安全にフォールバックします。
 
 タグを登録すると、InspectorのTag欄がドロップダウン選択になり、Scene／Prefab読み込み時に未登録タグの使用をConsoleへ警告します。
 一覧が空の間は従来通り検査なしで動作します。
