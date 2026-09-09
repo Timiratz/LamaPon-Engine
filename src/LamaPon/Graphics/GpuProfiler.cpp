@@ -2,6 +2,30 @@
 
 namespace LamaPon
 {
+    GpuProfiler::SectionScope::SectionScope(
+        GpuProfiler& profiler,
+        const std::string_view name)
+        : m_profiler(&profiler)
+        , m_initialDepth(profiler.m_sectionStack.size())
+    {
+        profiler.BeginSection(name);
+    }
+
+    GpuProfiler::SectionScope::~SectionScope() noexcept
+    {
+        End();
+    }
+
+    void GpuProfiler::SectionScope::End() noexcept
+    {
+        if (m_profiler == nullptr)
+        {
+            return;
+        }
+        m_profiler->EndSectionsToDepth(m_initialDepth);
+        m_profiler = nullptr;
+    }
+
     void GpuProfiler::Initialize(
         ID3D11Device* const device,
         ID3D11DeviceContext* const context)
@@ -135,6 +159,24 @@ namespace LamaPon
         m_sectionStack.pop_back();
         m_context->End(
             frame.sections[index].end.Get());
+    }
+
+    void GpuProfiler::EndSectionsToDepth(
+        const std::size_t depth) noexcept
+    {
+        if (depth >= m_sectionStack.size())
+        {
+            return;
+        }
+        if (!m_supported)
+        {
+            m_sectionStack.resize(depth);
+            return;
+        }
+        while (m_sectionStack.size() > depth)
+        {
+            EndSection();
+        }
     }
 
     void GpuProfiler::CloseFrame()

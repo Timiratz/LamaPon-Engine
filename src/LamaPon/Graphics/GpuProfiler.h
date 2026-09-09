@@ -44,6 +44,31 @@ namespace LamaPon
             std::uint32_t depth{};
         };
 
+        // 例外で内側の描画処理が中断されても、構築時より後に開始した
+        // 区間をすべて閉じます。単純なEndSection 1回では、内側の
+        // 区間だけを閉じて外側を残すため、深さをtokenとして使います。
+        class SectionScope final
+        {
+        public:
+            SectionScope(
+                GpuProfiler& profiler,
+                std::string_view name);
+            ~SectionScope() noexcept;
+
+            void End() noexcept;
+            [[nodiscard]] std::size_t InitialDepth() const noexcept
+            {
+                return m_initialDepth;
+            }
+
+            SectionScope(const SectionScope&) = delete;
+            SectionScope& operator=(const SectionScope&) = delete;
+
+        private:
+            GpuProfiler* m_profiler{};
+            std::size_t m_initialDepth{};
+        };
+
         void Initialize(
             ID3D11Device* device,
             ID3D11DeviceContext* context);
@@ -105,6 +130,7 @@ namespace LamaPon
 
         [[nodiscard]] Microsoft::WRL::ComPtr<ID3D11Query>
             CreateTimestampQuery() const;
+        void EndSectionsToDepth(std::size_t depth) noexcept;
         void PollPendingFrames();
 
         // 読み出し遅延用のリングバッファ。

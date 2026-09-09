@@ -95,7 +95,17 @@ namespace
 
         ~BooleanStateScope()
         {
+            Restore();
+        }
+
+        void Restore() noexcept
+        {
+            if (!m_active)
+            {
+                return;
+            }
             m_target = m_previous;
+            m_active = false;
         }
 
         BooleanStateScope(
@@ -106,6 +116,86 @@ namespace
     private:
         bool& m_target;
         bool m_previous;
+        bool m_active{ true };
+    };
+
+    class GraphicsOutputStateScope final
+    {
+    public:
+        explicit GraphicsOutputStateScope(
+            LamaPon::GraphicsDevice& graphics)
+            : m_graphics(graphics)
+            , m_state(graphics.CaptureOutputState())
+        {
+        }
+
+        ~GraphicsOutputStateScope() noexcept
+        {
+            try
+            {
+                Restore();
+            }
+            catch (...)
+            {
+                // 例外処理中は元の描画失敗を優先します。
+            }
+        }
+
+        void Restore()
+        {
+            if (!m_state)
+            {
+                return;
+            }
+            m_graphics.RestoreOutputState(*m_state);
+            m_state.reset();
+        }
+
+        GraphicsOutputStateScope(
+            const GraphicsOutputStateScope&) = delete;
+        GraphicsOutputStateScope& operator=(
+            const GraphicsOutputStateScope&) = delete;
+
+    private:
+        LamaPon::GraphicsDevice& m_graphics;
+        std::unique_ptr<LamaPon::GraphicsOutputState> m_state;
+    };
+
+    class UIViewportSizeScope final
+    {
+    public:
+        explicit UIViewportSizeScope(
+            LamaPon::GraphicsDevice& graphics) noexcept
+            : m_graphics(graphics)
+            , m_width(graphics.UIWidth())
+            , m_height(graphics.UIHeight())
+        {
+        }
+
+        ~UIViewportSizeScope()
+        {
+            Restore();
+        }
+
+        void Restore() noexcept
+        {
+            if (!m_active)
+            {
+                return;
+            }
+            m_graphics.SetUIViewportSize(m_width, m_height);
+            m_active = false;
+        }
+
+        UIViewportSizeScope(const UIViewportSizeScope&) = delete;
+        UIViewportSizeScope& operator=(
+            const UIViewportSizeScope&) = delete;
+
+    private:
+        LamaPon::GraphicsDevice& m_graphics;
+        std::uint32_t m_width{};
+        std::uint32_t m_height{};
+        bool m_active{ true };
     };
 
     struct Contact final
@@ -5953,15 +6043,12 @@ namespace LamaPon
         // 描画先とUI基準サイズを書き換えるので、元の値へ戻します。
         // 復元を忘れると、この後のメインカメラの描画が最後の
         // レンダーテクスチャへ流れ込みます。
-        const std::uint32_t previousUIWidth =
-            m_graphics.UIWidth();
-        const std::uint32_t previousUIHeight =
-            m_graphics.UIHeight();
-        auto previousOutputState =
-            m_graphics.CaptureOutputState();
-
-        m_graphics.Gpu().BeginSection(
-            "レンダーテクスチャ");
+        GraphicsOutputStateScope outputStateScope{ m_graphics };
+        UIViewportSizeScope uiViewportScope{ m_graphics };
+        GpuProfiler::SectionScope gpuSectionScope{
+            m_graphics.Gpu(),
+            "レンダーテクスチャ"
+        };
         for (auto* camera : targetCameras)
         {
             auto& target =
@@ -6007,13 +6094,9 @@ namespace LamaPon
             // コピーしてから参照側に渡します。
             m_graphics.PublishOffscreenTarget(target);
         }
-        m_graphics.Gpu().EndSection();
-
-        m_graphics.SetUIViewportSize(
-            previousUIWidth,
-            previousUIHeight);
-        m_graphics.RestoreOutputState(
-            *previousOutputState);
+        gpuSectionScope.End();
+        uiViewportScope.Restore();
+        outputStateScope.Restore();
     }
 
     void Scene::RenderMainCamera(
@@ -6057,7 +6140,10 @@ namespace LamaPon
             m_renderingInterpolatedTransforms,
             true
         };
-        m_graphics.Gpu().BeginSection("2D／UI");
+        GpuProfiler::SectionScope gpuSectionScope{
+            m_graphics.Gpu(),
+            "2D／UI"
+        };
         auto& spriteBatch = m_graphics.BeginSprites();
         RenderSprites2D(
             m_gameObjects,
@@ -6065,7 +6151,6 @@ namespace LamaPon
             spriteBatch,
             m_graphics.WhiteTexture());
         m_graphics.EndSprites();
-        m_graphics.Gpu().EndSection();
     }
 
     void Scene::RenderWithMatrices(
@@ -6208,19 +6293,19 @@ namespace LamaPon
         struct DepthOnlyPassScope final
         {
             GraphicsDevice& graphics;
+            GpuProfiler::SectionScope gpuSection;
             DepthOnlyPassScope(
                 GraphicsDevice& device,
-                const char* gpuSectionName) noexcept
+                const char* gpuSectionName)
                 : graphics(device)
+                , gpuSection(device.Gpu(), gpuSectionName)
             {
                 graphics.SetDepthPass(
                     DepthPassKind::Shadow);
-                graphics.Gpu().BeginSection(
-                    gpuSectionName);
             }
             ~DepthOnlyPassScope() noexcept
             {
-                graphics.Gpu().EndSection();
+                gpuSection.End();
                 graphics.SetDepthPass(
                     DepthPassKind::None);
             }
@@ -6959,8 +7044,10 @@ namespace LamaPon
 
             try
             {
-                m_graphics.Gpu().BeginSection(
-                    "ライトカリング");
+                GpuProfiler::SectionScope gpuSectionScope{
+                    m_graphics.Gpu(),
+                    "ライトカリング"
+                };
                 m_graphics.UpdateClusteredLights(
                     lighting,
                     view,
@@ -6971,11 +7058,9 @@ namespace LamaPon
                     target != nullptr
                         ? target->Height()
                         : m_graphics.RenderHeight());
-                m_graphics.Gpu().EndSection();
             }
             catch (const std::exception& exception)
             {
-                m_graphics.Gpu().EndSection();
                 // シェーダーを使用できない環境では16灯までの描画経路へ
                 // 切り替え、同じ初期化を毎フレーム再試行しません。
                 m_clusteredLightingUnavailable = true;
@@ -6990,22 +7075,29 @@ namespace LamaPon
         }
 
         m_graphics.SetLightingState(lighting);
-        m_graphics.Gpu().BeginSection("スカイ");
-        EnvironmentRenderer::SkySun skySun{};
-        const bool hasSkySun =
-            m_sky.sunDriven
-            && ResolveSkySun(
-                skySun.directionToSun,
-                skySun.color,
-                skySun.angularRadius);
-        m_graphics.Environment().DrawSky(
-            view,
-            projection,
-            ResolvedSky(),
-            skyCubemap,
-            hasSkySun ? &skySun : nullptr);
-        m_graphics.Gpu().EndSection();
-        m_graphics.Gpu().BeginSection("3D描画");
+        {
+            GpuProfiler::SectionScope gpuSectionScope{
+                m_graphics.Gpu(),
+                "スカイ"
+            };
+            EnvironmentRenderer::SkySun skySun{};
+            const bool hasSkySun =
+                m_sky.sunDriven
+                && ResolveSkySun(
+                    skySun.directionToSun,
+                    skySun.color,
+                    skySun.angularRadius);
+            m_graphics.Environment().DrawSky(
+                view,
+                projection,
+                ResolvedSky(),
+                skyCubemap,
+                hasSkySun ? &skySun : nullptr);
+        }
+        GpuProfiler::SectionScope renderSectionScope{
+            m_graphics.Gpu(),
+            "3D描画"
+        };
 
         m_visibilityStats.modelInstanceBatchCount = 0;
         m_visibilityStats.modelInstancedRendererCount = 0;
@@ -7215,7 +7307,7 @@ namespace LamaPon
                 gameObject->RenderDebug3D(m_graphics, view, projection);
             }
         }
-        m_graphics.Gpu().EndSection();
+        renderSectionScope.End();
 
         // TAAへ渡す行列。ワールド復元にはずらし込みの逆行列を使い
         // （深度と噛み合わせるため）、次フレームの参照用にはずらしを
@@ -7587,8 +7679,7 @@ namespace LamaPon
         }
 
         // 現在の描画先を退避します（フレーム途中で呼ばれるため）。
-        auto previousOutputState =
-            m_graphics.CaptureOutputState();
+        GraphicsOutputStateScope outputStateScope{ m_graphics };
 
         // D3D標準のキューブ面向き（左手系）。ポイント影と同じ
         // 並びで、ワールド方向ベクトルでのサンプリングと一致します。
@@ -7610,8 +7701,14 @@ namespace LamaPon
             { 0.0f, 1.0f, 0.0f }
         };
 
-        m_graphics.Gpu().BeginSection("プローブベイク");
-        m_bakingReflectionProbes = true;
+        GpuProfiler::SectionScope gpuSectionScope{
+            m_graphics.Gpu(),
+            "プローブベイク"
+        };
+        BooleanStateScope bakingScope{
+            m_bakingReflectionProbes,
+            true
+        };
         try
         {
             for (auto* probe : pending)
@@ -7674,16 +7771,12 @@ namespace LamaPon
         }
         catch (...)
         {
-            m_bakingReflectionProbes = false;
-            m_graphics.Gpu().EndSection();
+            // 描画先・計測区間・再入フラグはscope guardが戻します。
             throw;
         }
-        m_bakingReflectionProbes = false;
-        m_graphics.Gpu().EndSection();
-
-        // 描画先を戻します。
-        m_graphics.RestoreOutputState(
-            *previousOutputState);
+        bakingScope.Restore();
+        gpuSectionScope.End();
+        outputStateScope.Restore();
     }
 
 
@@ -7845,8 +7938,7 @@ namespace LamaPon
         }
 
         // 現在の描画先を退避します（フレーム途中で呼ばれるため）。
-        auto previousOutputState =
-            m_graphics.CaptureOutputState();
+        GraphicsOutputStateScope outputStateScope{ m_graphics };
 
         // プローブベイクと同じ面の並び（D3D標準のキューブ面）。
         static constexpr DirectX::XMFLOAT3 FaceDirections[6]{
@@ -7871,11 +7963,17 @@ namespace LamaPon
         // 上限の目安です）。
         constexpr std::size_t ProbesPerFrame = 8;
 
-        m_graphics.Gpu().BeginSection("GIベイク");
+        GpuProfiler::SectionScope gpuSectionScope{
+            m_graphics.Gpu(),
+            "GIベイク"
+        };
         // ベイク中の描画が自分（焼きかけのGI）やプローブを読まない
         // よう、プローブベイクと同じ再入ガードを立てます。焼き込みは
         // 常に「GIなしの絵」から作られる＝1バウンスで確定します。
-        m_bakingReflectionProbes = true;
+        BooleanStateScope bakingScope{
+            m_bakingReflectionProbes,
+            true
+        };
         try
         {
             const float farPlane = std::max(
@@ -7980,22 +8078,22 @@ namespace LamaPon
         }
         catch (const std::exception& exception)
         {
-            m_bakingReflectionProbes = false;
-            m_graphics.Gpu().EndSection();
             m_bakedGiBaking = false;
             Logger::Instance().Warning(
                 std::string{ "GIベイクに失敗しました: " }
                 + exception.what());
-            m_graphics.RestoreOutputState(
-                *previousOutputState);
             return;
         }
-        m_bakingReflectionProbes = false;
-        m_graphics.Gpu().EndSection();
-
-        // 描画先を戻します。
-        m_graphics.RestoreOutputState(
-            *previousOutputState);
+        catch (...)
+        {
+            m_bakedGiBaking = false;
+            Logger::Instance().Warning(
+                "GIベイクに失敗しました: 不明な描画エラー");
+            return;
+        }
+        bakingScope.Restore();
+        gpuSectionScope.End();
+        outputStateScope.Restore();
 
         if (m_bakedGiNextProbe < total)
         {

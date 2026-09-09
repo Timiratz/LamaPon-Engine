@@ -7,29 +7,6 @@
 
 namespace
 {
-    // GPU区間のRAII。途中でreturnしても閉じ忘れないようにします。
-    struct GpuSectionScope final
-    {
-        LamaPon::GraphicsDevice& graphics;
-
-        GpuSectionScope(
-            LamaPon::GraphicsDevice& device,
-            const char* const name) noexcept
-            : graphics(device)
-        {
-            graphics.Gpu().BeginSection(name);
-        }
-
-        ~GpuSectionScope() noexcept
-        {
-            graphics.Gpu().EndSection();
-        }
-
-        GpuSectionScope(const GpuSectionScope&) = delete;
-        GpuSectionScope& operator=(
-            const GpuSectionScope&) = delete;
-    };
-
     // 深度専用パスのRAII。例外が出ても必ず元へ戻します。
     struct DepthPassScope final
     {
@@ -128,15 +105,17 @@ namespace LamaPon
         // 深度だけを描画先にして、不透明ジオメトリをもう1回描きます。
         // ピクセルシェーダーが外れるので、自作Shaderのオブジェクトも
         // そのまま安全に深度へ載ります。
-        graphics.Gpu().BeginSection("深度プリパス");
-        graphics.BindOffscreenTargetDepthOnly(target);
         {
+            GpuProfiler::SectionScope section{
+                graphics.Gpu(),
+                "深度プリパス"
+            };
+            graphics.BindOffscreenTargetDepthOnly(target);
             const DepthPassScope depthScope{
                 graphics,
                 DepthPassKind::Prepass };
             drawDepthOnly();
         }
-        graphics.Gpu().EndSection();
         result.depthAvailable = true;
 
         if (!occlusionWanted)
@@ -147,14 +126,18 @@ namespace LamaPon
 
         // 深度から遮蔽を求めます（半解像度＋深度を見るブラー）。
         // 結果はtargetの中に残り、カラーには触りません。
-        graphics.Gpu().BeginSection("SSAO");
-        result.ambientOcclusionResolved =
-            target.ResolveAmbientOcclusion(
-                graphics.Environment(),
-                ambientOcclusion,
-                projection,
-                settings.ambientOcclusionSampleCount);
-        graphics.Gpu().EndSection();
+        {
+            GpuProfiler::SectionScope section{
+                graphics.Gpu(),
+                "SSAO"
+            };
+            result.ambientOcclusionResolved =
+                target.ResolveAmbientOcclusion(
+                    graphics.Environment(),
+                    ambientOcclusion,
+                    projection,
+                    settings.ambientOcclusionSampleCount);
+        }
         return result;
     }
 
@@ -171,8 +154,8 @@ namespace LamaPon
 
         // 5つの描画経路が通る位置で計測し、エディタービューポートの
         // Bloom、トーンマップ、FXAAもGPU時間の内訳へ含めます。
-        const GpuSectionScope postScope{
-            graphics,
+        const GpuProfiler::SectionScope postScope{
+            graphics.Gpu(),
             "ポスト処理" };
 
         const auto& settings = graphics.Settings();
