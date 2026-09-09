@@ -8,6 +8,8 @@
 
 namespace LamaPon
 {
+    class RenderTarget;
+
     enum class RenderingApiFallbackReason
     {
         None,
@@ -89,6 +91,26 @@ namespace LamaPon
         // Initializeが成功したBackendに対して呼びます。
         // 既存virtualのslotを維持するため、新しい契約は末尾へ追加します。
         virtual void BindBackBuffer() = 0;
+
+        // API固有のDevice / Contextを呼び出し側へ渡さず、オフスクリーン
+        // 描画先の基本操作を行います。RenderTargetの資源表現は現時点では
+        // D3D11のままで、将来Backend別の資源へ置き換えるための操作境界です。
+        // targetの所有権は移さず、各呼び出しの間だけ参照します。
+        // 既存virtualのslotを維持するため、新しい契約は末尾へ追加します。
+        virtual void ResizeOffscreenTarget(
+            RenderTarget& target,
+            std::uint32_t width,
+            std::uint32_t height) = 0;
+        // targetを描画先へ設定し、色と深度をclearColorで初期化します。
+        virtual void BeginOffscreenTarget(
+            RenderTarget& target,
+            const float clearColor[4]) = 0;
+        // 内容を消さず、targetを描画先へ戻します。
+        virtual void BindOffscreenTarget(
+            RenderTarget& target) = 0;
+        // 完成画像を表示専用資源へ確定します。描画先は変更しません。
+        virtual void PublishOffscreenTarget(
+            RenderTarget& target) = 0;
     };
 
     // activeApiはSelectGraphicsBackendで解決済みの値を渡します。

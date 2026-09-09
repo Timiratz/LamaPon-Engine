@@ -7054,8 +7054,8 @@ int main(const int argumentCount, char** arguments)
                         const int batch,
                         const int sampleCount)
                 {
-                    benchTarget.Resize(
-                        graphics.Device(),
+                    graphics.ResizeOffscreenTarget(
+                        benchTarget,
                         width,
                         height);
                     constexpr float benchClear[]{
@@ -7065,9 +7065,8 @@ int main(const int argumentCount, char** arguments)
                         graphics.SetUIViewportSize(
                             width,
                             height);
-                        benchTarget.Bind(graphics.Context());
-                        benchTarget.Clear(
-                            graphics.Context(),
+                        graphics.BeginOffscreenTarget(
+                            benchTarget,
                             benchClear);
                         if (gamePath)
                         {
@@ -7092,8 +7091,8 @@ int main(const int argumentCount, char** arguments)
                             benchTarget,
                             scene.PostProcessFrameData());
                         scene.Render2D();
-                        benchTarget.CopyToDisplay(
-                            graphics.Context());
+                        graphics.PublishOffscreenTarget(
+                            benchTarget);
                     };
 
                     // 1周目はシェーダーのバリアント切り替え等で

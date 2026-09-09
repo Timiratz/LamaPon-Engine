@@ -14,6 +14,7 @@
 
 namespace LamaPon
 {
+    class D3D11Backend;
     class EnvironmentRenderer;
     class ScreenEffect;
     struct AmbientOcclusionSettings;
@@ -33,13 +34,10 @@ namespace LamaPon
         RenderTarget(const RenderTarget&) = delete;
         RenderTarget& operator=(const RenderTarget&) = delete;
 
-        void Resize(ID3D11Device* device, std::uint32_t width, std::uint32_t height);
-        void Bind(ID3D11DeviceContext* context) const;
         // 深度だけを描画先にします（深度プリパス用）。カラーを
         // 割り当てないので、ピクセルシェーダーを外した描画がそのまま
         // 深度書き込みだけになります。
         void BindDepthOnly(ID3D11DeviceContext* context) const;
-        void Clear(ID3D11DeviceContext* context, const float color[4]) const;
         void ApplyBloom(
             EnvironmentRenderer& renderer,
             const BloomSettings& settings);
@@ -152,12 +150,6 @@ namespace LamaPon
         {
             return m_shaderResourceView.Get();
         }
-        // 完成した画像を表示専用テクスチャへコピーします。ポスト処理は
-        // 内部テクスチャの交換（swap）で進むため、フレーム途中で取得した
-        // SRVはswap回数によって別のテクスチャを指すことがあります。
-        // ImGui等での表示は、描画完了時にこれを呼んだ上で常に
-        // DisplayShaderResourceView()を使ってください。
-        void CopyToDisplay(ID3D11DeviceContext* context) const;
         // 今のカラーを「前フレームのカラー」として控えます。SSRが
         // 次のフレームでこれを読みます（今描いている絵は完成前なので
         // 読めないため）。viewProjectionは今のフレームの行列で、
@@ -266,6 +258,26 @@ namespace LamaPon
         [[nodiscard]] bool IsValid() const noexcept { return m_renderTargetView != nullptr; }
 
     private:
+        // 基本的な資源作成・bind・clear・publishはGraphicsDeviceの
+        // 共通facadeからD3D11Backendを経由してだけ呼びます。D3D11型を
+        // 使用する旧経路をprivateにし、呼び出し側の迂回を防ぎます。
+        friend class D3D11Backend;
+
+        void Resize(
+            ID3D11Device* device,
+            std::uint32_t width,
+            std::uint32_t height);
+        void Bind(ID3D11DeviceContext* context) const;
+        void Clear(
+            ID3D11DeviceContext* context,
+            const float color[4]) const;
+        // 完成した画像を表示専用テクスチャへコピーします。ポスト処理は
+        // 内部テクスチャの交換（swap）で進むため、フレーム途中で取得した
+        // SRVはswap回数によって別のテクスチャを指すことがあります。
+        // ImGui等での表示は、描画完了時にこれを呼んだ上で常に
+        // DisplayShaderResourceView()を使ってください。
+        void CopyToDisplay(ID3D11DeviceContext* context) const;
+
         Microsoft::WRL::ComPtr<ID3D11Texture2D> m_colorTexture;
         Microsoft::WRL::ComPtr<ID3D11RenderTargetView> m_renderTargetView;
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_shaderResourceView;

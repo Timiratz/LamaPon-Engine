@@ -6156,7 +6156,6 @@ namespace LamaPon
             m_graphics.SetUIViewportSize(
                 target.Width(),
                 target.Height());
-            target.Bind(m_graphics.Context());
             const auto& clearColor =
                 camera->TargetClearColor();
             const float clear[4]{
@@ -6165,8 +6164,8 @@ namespace LamaPon
                 clearColor.z,
                 clearColor.w
             };
-            target.Clear(
-                m_graphics.Context(),
+            m_graphics.BeginOffscreenTarget(
+                target,
                 clear);
             RenderWithMatrices(
                 camera->ViewMatrix(),
@@ -6182,8 +6181,7 @@ namespace LamaPon
                 PostProcessFrameData());
             // ポスト処理でテクスチャを入れ替えるため、表示用へ
             // コピーしてから参照側に渡します。
-            target.CopyToDisplay(
-                m_graphics.Context());
+            m_graphics.PublishOffscreenTarget(target);
         }
         m_graphics.Gpu().EndSection();
 
@@ -6986,7 +6984,7 @@ namespace LamaPon
             }
             // プリパスとSSAOで描画先が変わっているので、カラーへ
             // 戻します（深度は消さずにそのまま使います）。
-            target->Bind(m_graphics.Context());
+            m_graphics.BindOffscreenTarget(*target);
         }
 
         // キューブマップスカイとIBL（環境反射）。

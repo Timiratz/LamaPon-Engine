@@ -35,7 +35,8 @@ namespace LamaPon
     // ambientOcclusionResolvedがtrueならAOをLitEffectへ渡せます。
     // depthAvailableはSSR用の深度が利用可能かを示し、SSAO無効時も
     // trueになり得ます。どちらも不要な場合は両方falseです。
-    // 呼び出し後はtarget.Bind()でメインパスの描画先を復元します。
+    // 呼び出し後はGraphicsDevice::BindOffscreenTarget()でメインパスの
+    // 描画先を復元します。
     // projectionにはこれから描く画面の射影行列を渡します。
     struct DepthPrepassResult final
     {

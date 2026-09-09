@@ -52,6 +52,17 @@ namespace LamaPon
             return m_tearingAllowed;
         }
         void BindBackBuffer() override;
+        void ResizeOffscreenTarget(
+            RenderTarget& target,
+            std::uint32_t width,
+            std::uint32_t height) override;
+        void BeginOffscreenTarget(
+            RenderTarget& target,
+            const float clearColor[4]) override;
+        void BindOffscreenTarget(
+            RenderTarget& target) override;
+        void PublishOffscreenTarget(
+            RenderTarget& target) override;
 
         // 既存のDirectX 11描画経路へ貸し出す非所有ポインターです。
         // GraphicsDeviceは移行期間中、従来のDevice/Context APIを

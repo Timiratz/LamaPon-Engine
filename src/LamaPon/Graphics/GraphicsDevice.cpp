@@ -167,16 +167,8 @@ namespace LamaPon
             throw std::logic_error(
                 "ResizeOffscreenTarget requires an initialized device.");
         }
-        auto* const device = Device();
-        if (device == nullptr)
-        {
-            throw std::logic_error(
-                "ResizeOffscreenTarget requires an available DirectX 11 device.");
-        }
 
-        // TODO: RenderTargetがBackend別の資源を持つ段階では、ここで
-        // ActiveRenderingApiに対応する生成経路へ振り分けます。
-        target.Resize(device, width, height);
+        m_backend->ResizeOffscreenTarget(target, width, height);
         if (!target.IsValid())
         {
             throw std::logic_error(
@@ -203,15 +195,8 @@ namespace LamaPon
             throw std::invalid_argument(
                 "BeginOffscreenTarget requires a valid target.");
         }
-        auto* const context = Context();
-        if (context == nullptr)
-        {
-            throw std::logic_error(
-                "BeginOffscreenTarget requires an available DirectX 11 context.");
-        }
 
-        target.Bind(context);
-        target.Clear(context, clearColor);
+        m_backend->BeginOffscreenTarget(target, clearColor);
     }
 
     void GraphicsDevice::BindOffscreenTarget(
@@ -227,14 +212,9 @@ namespace LamaPon
             throw std::invalid_argument(
                 "BindOffscreenTarget requires a valid target.");
         }
-        auto* const context = Context();
-        if (context == nullptr)
-        {
-            throw std::logic_error(
-                "BindOffscreenTarget requires an available DirectX 11 context.");
-        }
 
-        target.Bind(context);
+        m_backend->BindOffscreenTarget(
+            target);
     }
 
     void GraphicsDevice::PublishOffscreenTarget(
@@ -250,16 +230,11 @@ namespace LamaPon
             throw std::invalid_argument(
                 "PublishOffscreenTarget requires a valid target.");
         }
-        auto* const context = Context();
-        if (context == nullptr)
-        {
-            throw std::logic_error(
-                "PublishOffscreenTarget requires an available DirectX 11 context.");
-        }
 
         // CopyToDisplayは描画先を変更しません。バックバッファへの復帰は
         // BeginFrameなど、既存のフレーム制御側に任せます。
-        target.CopyToDisplay(context);
+        m_backend->PublishOffscreenTarget(
+            target);
     }
 
     struct GraphicsDevice::MaterialShaderEntry final

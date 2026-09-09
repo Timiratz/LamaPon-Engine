@@ -1,6 +1,7 @@
 #include "LamaPon/Graphics/D3D11Backend.h"
 
 #include "LamaPon/Core/Log.h"
+#include "LamaPon/Graphics/RenderTarget.h"
 
 // IDXGIFactory5（ティアリング許可の問い合わせ）。d3d11.hが引く
 // dxgi.hには入っていません。
@@ -291,6 +292,103 @@ namespace LamaPon
             renderTargets,
             nullptr);
         m_context->RSSetViewports(1, &m_viewport);
+    }
+
+    void D3D11Backend::ResizeOffscreenTarget(
+        RenderTarget& target,
+        const std::uint32_t width,
+        const std::uint32_t height)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "ResizeOffscreenTarget requires an initialized backend.");
+        }
+
+        target.Resize(m_device.Get(), width, height);
+        if (!target.IsValid())
+        {
+            throw std::logic_error(
+                "ResizeOffscreenTarget failed to create a valid target.");
+        }
+    }
+
+    void D3D11Backend::BeginOffscreenTarget(
+        RenderTarget& target,
+        const float clearColor[4])
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "BeginOffscreenTarget requires an initialized backend.");
+        }
+        if (clearColor == nullptr)
+        {
+            throw std::invalid_argument(
+                "BeginOffscreenTarget requires a clear color.");
+        }
+        if (!target.IsValid())
+        {
+            throw std::invalid_argument(
+                "BeginOffscreenTarget requires a valid target.");
+        }
+        if (m_context == nullptr)
+        {
+            throw std::logic_error(
+                "BeginOffscreenTarget requires an available DirectX 11 "
+                "context.");
+        }
+
+        target.Bind(m_context.Get());
+        target.Clear(m_context.Get(), clearColor);
+    }
+
+    void D3D11Backend::BindOffscreenTarget(
+        RenderTarget& target)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "BindOffscreenTarget requires an initialized backend.");
+        }
+        if (!target.IsValid())
+        {
+            throw std::invalid_argument(
+                "BindOffscreenTarget requires a valid target.");
+        }
+        if (m_context == nullptr)
+        {
+            throw std::logic_error(
+                "BindOffscreenTarget requires an available DirectX 11 "
+                "context.");
+        }
+
+        target.Bind(m_context.Get());
+    }
+
+    void D3D11Backend::PublishOffscreenTarget(
+        RenderTarget& target)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "PublishOffscreenTarget requires an initialized backend.");
+        }
+        if (!target.IsValid())
+        {
+            throw std::invalid_argument(
+                "PublishOffscreenTarget requires a valid target.");
+        }
+        if (m_context == nullptr)
+        {
+            throw std::logic_error(
+                "PublishOffscreenTarget requires an available DirectX 11 "
+                "context.");
+        }
+
+        // CopyToDisplayは描画先を変更しません。バックバッファへの復帰は
+        // BeginFrameなど、既存のフレーム制御側に任せます。
+        target.CopyToDisplay(m_context.Get());
     }
 
     void D3D11Backend::BindAndClearBackBuffer(
