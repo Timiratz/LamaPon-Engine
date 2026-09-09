@@ -1,6 +1,8 @@
 #include "LamaPon/Editor/EditorGuiRenderer.h"
+#include "LamaPon/Editor/EditorModelPreviewRenderer.h"
 #include "LamaPon/Assets/AssetManager.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
+#include "LamaPon/Graphics/LitMaterial.h"
 #include "LamaPon/Graphics/RenderTarget.h"
 
 #include <Windows.h>
@@ -11,6 +13,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <iostream>
 #include <stdexcept>
 #include <typeinfo>
@@ -65,6 +68,26 @@ namespace
         {
             const auto renderer =
                 LamaPon::CreateEditorGuiRenderer(activeApi);
+            static_cast<void>(renderer);
+        }
+        catch (const std::logic_error&)
+        {
+            return;
+        }
+        throw std::runtime_error(message);
+    }
+
+    void RequireModelPreviewFactoryRejected(
+        const LamaPon::RenderingApi activeApi,
+        LamaPon::GraphicsDevice& graphics,
+        const char* message)
+    {
+        try
+        {
+            const auto renderer =
+                LamaPon::CreateEditorModelPreviewRenderer(
+                    activeApi,
+                    graphics);
             static_cast<void>(renderer);
         }
         catch (const std::logic_error&)
@@ -314,6 +337,15 @@ namespace
         ImGuiContextScope imguiContext;
         auto renderer = LamaPon::CreateEditorGuiRenderer(
             graphics.ActiveRenderingApi());
+        auto modelPreviewRenderer =
+            LamaPon::CreateEditorModelPreviewRenderer(
+                graphics.ActiveRenderingApi(),
+                graphics);
+        Require(
+            modelPreviewRenderer != nullptr
+                && modelPreviewRenderer->Api()
+                    == LamaPon::RenderingApi::DirectX11,
+            "The active API must create the DirectX 11 model preview renderer");
 
         constexpr std::array<std::uint8_t, 4> assetColor{
             224u, 48u, 32u, 255u };
@@ -498,6 +530,125 @@ namespace
             { 13u, 51u, 230u },
             "Binding must restore and publishing must expose the offscreen target");
 
+        LamaPon::ModelAsset emptyModel;
+        const LamaPon::LitMaterial previewMaterial{
+            DirectX::XMFLOAT4{
+                0.15f, 0.82f, 1.0f, 1.0f },
+            {},
+            {},
+            0.8f };
+        const auto identity = DirectX::XMMatrixIdentity();
+        RequireThrowsExactly<std::invalid_argument>(
+            [&]
+            {
+                modelPreviewRenderer->DrawModel(
+                    emptyModel,
+                    identity,
+                    identity,
+                    identity,
+                    previewMaterial,
+                    true);
+            },
+            "The model preview renderer must reject an empty model asset");
+
+        const auto modelPath =
+            std::filesystem::path(LAMAPON_TEST_ASSET_DIR)
+            / "models"
+            / "arrow.cmo";
+        const auto model = graphics.Assets().LoadModel(modelPath);
+        Require(
+            model != nullptr
+                && model->model != nullptr
+                && model->hasLocalBounds,
+            "The checked-in static preview model must load with bounds");
+
+        const auto& bounds = model->localBounds;
+        const DirectX::XMFLOAT3 modelCenter{
+            (bounds.minimum.x + bounds.maximum.x) * 0.5f,
+            (bounds.minimum.y + bounds.maximum.y) * 0.5f,
+            (bounds.minimum.z + bounds.maximum.z) * 0.5f };
+        const float modelSpan = std::max({
+            bounds.maximum.x - bounds.minimum.x,
+            bounds.maximum.y - bounds.minimum.y,
+            bounds.maximum.z - bounds.minimum.z,
+            0.1f });
+        const float modelDistance = modelSpan * 3.0f + 1.0f;
+        const auto modelFocus = DirectX::XMLoadFloat3(&modelCenter);
+        const auto modelView = DirectX::XMMatrixLookAtLH(
+            DirectX::XMVectorSet(
+                modelCenter.x + modelDistance,
+                modelCenter.y + modelDistance * 0.75f,
+                modelCenter.z - modelDistance,
+                1.0f),
+            modelFocus,
+            DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f));
+        const auto modelProjection = DirectX::XMMatrixOrthographicLH(
+            modelSpan * 2.2f,
+            modelSpan * 2.2f,
+            0.01f,
+            modelDistance * 4.0f);
+
+        LamaPon::RenderTarget modelTarget;
+        graphics.ResizeOffscreenTarget(modelTarget, 64, 64);
+        constexpr float modelClear[]{
+            0.035f, 0.045f, 0.06f, 1.0f };
+        graphics.BeginOffscreenTarget(modelTarget, modelClear);
+        modelPreviewRenderer->DrawModel(
+            *model,
+            identity,
+            modelView,
+            modelProjection,
+            previewMaterial,
+            true);
+        graphics.PublishOffscreenTarget(modelTarget);
+
+        renderer->NewFrame();
+        ImGui::NewFrame();
+        const auto modelTextureReference =
+            renderer->DisplayTextureReference(modelTarget);
+        DrawImageWindow(
+            "Model preview",
+            ImVec2{ 28.0f, 8.0f },
+            modelTextureReference);
+        ImGui::Render();
+
+        graphics.BeginFrame(clearColor);
+        renderer->RenderDrawData(ImGui::GetDrawData());
+        const auto modelPixels = graphics.CaptureBackBuffer(
+            capturedWidth,
+            capturedHeight);
+        graphics.EndFrame();
+
+        std::size_t modelPixelCount{};
+        constexpr std::array<int, 3> expectedModelClear{
+            9, 11, 15 };
+        for (std::uint32_t y = 10; y < 54; ++y)
+        {
+            for (std::uint32_t x = 30; x < 66; ++x)
+            {
+                const auto offset =
+                    (static_cast<std::size_t>(y) * Width + x)
+                    * 4u;
+                const int difference =
+                    std::abs(
+                        static_cast<int>(modelPixels[offset])
+                        - expectedModelClear[0])
+                    + std::abs(
+                        static_cast<int>(modelPixels[offset + 1u])
+                        - expectedModelClear[1])
+                    + std::abs(
+                        static_cast<int>(modelPixels[offset + 2u])
+                        - expectedModelClear[2]);
+                if (difference > 20)
+                {
+                    ++modelPixelCount;
+                }
+            }
+        }
+        Require(
+            modelPixelCount >= 8u,
+            "The DirectX 11 model preview renderer must draw the static model");
+
         auto* const ownerContext = ImGui::GetCurrentContext();
         auto* const alternateContext = ImGui::CreateContext();
         ImGui::SetCurrentContext(alternateContext);
@@ -581,6 +732,42 @@ int main()
                     offscreenTarget);
             },
             "Publishing an offscreen target requires an initialized device");
+        const auto modelPreviewRenderer =
+            LamaPon::CreateEditorModelPreviewRenderer(
+                LamaPon::RenderingApi::DirectX11,
+                graphics);
+        Require(
+            modelPreviewRenderer != nullptr
+                && modelPreviewRenderer->Api()
+                    == LamaPon::RenderingApi::DirectX11,
+            "DirectX 11 model preview factory must return a renderer");
+        const LamaPon::ModelAsset emptyModel;
+        const LamaPon::LitMaterial previewMaterial;
+        const auto identity = DirectX::XMMatrixIdentity();
+        RequireThrowsExactly<std::logic_error>(
+            [&]
+            {
+                modelPreviewRenderer->DrawModel(
+                    emptyModel,
+                    identity,
+                    identity,
+                    identity,
+                    previewMaterial,
+                    true);
+            },
+            "Model preview drawing requires an initialized graphics device");
+        RequireModelPreviewFactoryRejected(
+            LamaPon::RenderingApi::Auto,
+            graphics,
+            "Model preview factory must reject unresolved Auto");
+        RequireModelPreviewFactoryRejected(
+            LamaPon::RenderingApi::DirectX12Experimental,
+            graphics,
+            "Model preview factory must reject unimplemented DirectX 12");
+        RequireModelPreviewFactoryRejected(
+            static_cast<LamaPon::RenderingApi>(-1),
+            graphics,
+            "Model preview factory must reject an unknown rendering API");
         const auto renderer = LamaPon::CreateEditorGuiRenderer(
             LamaPon::RenderingApi::DirectX11);
         Require(renderer != nullptr,

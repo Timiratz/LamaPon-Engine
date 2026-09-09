@@ -4,14 +4,12 @@
 #include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Editor/EditorGuiRenderer.h"
 #include "LamaPon/Editor/EditorLayerShared.h"
+#include "LamaPon/Editor/EditorModelPreviewRenderer.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Graphics/LitMaterial.h"
 #include "LamaPon/Graphics/RenderTarget.h"
-#include "LamaPon/Graphics/SkeletalModel.h"
 
 #include <Windows.h>
-#include <Effects.h>
-#include <Model.h>
 #include <imgui.h>
 #include <nlohmann/json.hpp>
 
@@ -241,6 +239,7 @@ namespace LamaPon
 
     void VehicleParametersPanel::Draw(
         EditorGuiRenderer& guiRenderer,
+        EditorModelPreviewRenderer& modelPreviewRenderer,
         const std::string& title,
         bool& open,
         const std::function<void()>& onSaved)
@@ -588,7 +587,9 @@ namespace LamaPon
                     std::max({ sizeX, sizeY, sizeZ }) * 3.0f
                     + 1.0f;
 
-                const auto renderWireframe = [this](
+                const auto renderWireframe = [
+                    this,
+                    &modelPreviewRenderer](
                     RenderTarget& target,
                     const DirectX::XMMATRIX& view,
                     const DirectX::XMMATRIX& projection)
@@ -607,47 +608,13 @@ namespace LamaPon
                         {},
                         0.8f
                     };
-                    if (m_state.previewModel->skeletalModel)
-                    {
-                        m_state.previewModel->skeletalModel->Draw(
-                            m_graphics.Context(),
-                            m_graphics.States(),
-                            m_graphics.Lighting(),
-                            DirectX::XMMatrixIdentity(),
-                            view,
-                            projection,
-                            nullptr,
-                            0.0f,
-                            true,
-                            &material);
-                    }
-                    else if (m_state.previewModel->model)
-                    {
-                        m_state.previewModel->model->UpdateEffects(
-                            [](DirectX::IEffect* effect)
-                            {
-                                if (auto* const basic =
-                                        dynamic_cast<
-                                            DirectX::BasicEffect*>(
-                                                effect))
-                                {
-                                    basic->SetTextureEnabled(false);
-                                    basic->SetDiffuseColor(
-                                        DirectX::XMVectorSet(
-                                            0.15f,
-                                            0.82f,
-                                            1.0f,
-                                            1.0f));
-                                }
-                            });
-                        m_state.previewModel->model->Draw(
-                            m_graphics.Context(),
-                            m_graphics.States(),
-                            DirectX::XMMatrixIdentity(),
-                            view,
-                            projection,
-                            true);
-                    }
+                    modelPreviewRenderer.DrawModel(
+                        *m_state.previewModel,
+                        DirectX::XMMatrixIdentity(),
+                        view,
+                        projection,
+                        material,
+                        true);
                     m_graphics.PublishOffscreenTarget(target);
                 };
 

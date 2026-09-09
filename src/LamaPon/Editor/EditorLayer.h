@@ -39,6 +39,7 @@ namespace LamaPon
 {
     class BgmLoopPanel;
     class EditorGuiRenderer;
+    class EditorModelPreviewRenderer;
     class GameExportDialog;
     class GraphicsDevice;
     class PlayerPrefs;
@@ -1118,6 +1119,8 @@ namespace LamaPon
         void ReapplyRemoteMousePosition();
         inline static bool s_normalModeRestartRequested{};
         bool m_win32Initialized{};
+        std::unique_ptr<EditorModelPreviewRenderer>
+            m_editorModelPreviewRenderer;
         std::unique_ptr<EditorGuiRenderer> m_editorGuiRenderer;
         bool m_projectSettingsDialogRequested{};
         bool m_helpCenterRequested{};

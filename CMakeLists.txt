@@ -437,6 +437,10 @@ set(LAMAPON_EDITOR_SOURCES
     src/LamaPon/Editor/EditorGuiRenderer.h
     src/LamaPon/Editor/D3D11EditorGuiRenderer.cpp
     src/LamaPon/Editor/D3D11EditorGuiRenderer.h
+    src/LamaPon/Editor/EditorModelPreviewRenderer.cpp
+    src/LamaPon/Editor/EditorModelPreviewRenderer.h
+    src/LamaPon/Editor/D3D11EditorModelPreviewRenderer.cpp
+    src/LamaPon/Editor/D3D11EditorModelPreviewRenderer.h
     src/LamaPon/Editor/EditorLayer.cpp
     src/LamaPon/Editor/EditorLayer.h
     src/LamaPon/Editor/EditorLayerAnimationTools.cpp
@@ -889,6 +893,8 @@ if(BUILD_TESTING)
         tests/EditorGuiRendererTests.cpp)
     target_link_libraries(LamaPonEditorGuiRendererTests
         PRIVATE LamaPonEditor DearImGui)
+    target_compile_definitions(LamaPonEditorGuiRendererTests PRIVATE
+        LAMAPON_TEST_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets")
     target_compile_options(LamaPonEditorGuiRendererTests PRIVATE
         $<$<CXX_COMPILER_ID:MSVC>:/W4>
         $<$<CXX_COMPILER_ID:MSVC>:/permissive->

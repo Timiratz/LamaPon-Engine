@@ -1,6 +1,7 @@
 #include "LamaPon/Editor/BgmLoopPanel.h"
 #include "LamaPon/Editor/EditorLayer.h"
 #include "LamaPon/Editor/EditorGuiRenderer.h"
+#include "LamaPon/Editor/EditorModelPreviewRenderer.h"
 #include "LamaPon/Editor/GameExportDialog.h"
 #include "LamaPon/Editor/VehicleParametersPanel.h"
 
@@ -273,6 +274,10 @@ namespace LamaPon
         {
             m_editorGuiRenderer = CreateEditorGuiRenderer(
                 graphics.ActiveRenderingApi());
+            m_editorModelPreviewRenderer =
+                CreateEditorModelPreviewRenderer(
+                    graphics.ActiveRenderingApi(),
+                    graphics);
             m_editorGuiRenderer->Initialize(graphics);
         }
         catch (...)
@@ -2639,6 +2644,7 @@ namespace LamaPon
         }
         m_vehicleParametersPanel->Draw(
             *m_editorGuiRenderer,
+            *m_editorModelPreviewRenderer,
             panel.title,
             panel.open,
             [&]

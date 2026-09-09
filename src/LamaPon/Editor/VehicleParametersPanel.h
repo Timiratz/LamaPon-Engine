@@ -11,6 +11,7 @@ namespace LamaPon
 {
     class AssetManager;
     class EditorGuiRenderer;
+    class EditorModelPreviewRenderer;
     class GraphicsDevice;
     class RenderTarget;
     struct ModelAsset;
@@ -36,6 +37,7 @@ namespace LamaPon
 
         void Draw(
             EditorGuiRenderer& guiRenderer,
+            EditorModelPreviewRenderer& modelPreviewRenderer,
             const std::string& title,
             bool& open,
             const std::function<void()>& onSaved);
