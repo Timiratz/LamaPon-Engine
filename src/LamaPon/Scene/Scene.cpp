@@ -6932,8 +6932,8 @@ namespace LamaPon
                     reflection.texture = history;
                     // 深度はコピーを読みます（本体はDSVとして
                     // 刺さっているためSRVにできません）。
-                    target->CaptureDepthForReflections(
-                        m_graphics.Context());
+                    m_graphics.CaptureOffscreenTargetDepth(
+                        *target);
                     // Hi-Z: 深度を「距離のminミップピラミッド」へ
                     // 直します。シェーダーはこれを読んで、何も無い
                     // 空間を大股で飛びます。

@@ -34,10 +34,6 @@ namespace LamaPon
         RenderTarget(const RenderTarget&) = delete;
         RenderTarget& operator=(const RenderTarget&) = delete;
 
-        // 深度だけを描画先にします（深度プリパス用）。カラーを
-        // 割り当てないので、ピクセルシェーダーを外した描画がそのまま
-        // 深度書き込みだけになります。
-        void BindDepthOnly(ID3D11DeviceContext* context) const;
         void ApplyBloom(
             EnvironmentRenderer& renderer,
             const BloomSettings& settings);
@@ -174,12 +170,9 @@ namespace LamaPon
         {
             return m_historyViewProjection;
         }
-        // Litパス中に深度を読みたいときは、こちらのコピーを使い
-        // ます。深度そのものはDSVとして刺さっているため、同じ
-        // リソースをSRVとしても読むことはできません（D3D11が
-        // SRVを黙ってnullにします）。
-        void CaptureDepthForReflections(
-            ID3D11DeviceContext* context) const;
+        // Litパス中に深度を読むSSR用のコピーです。深度そのものは
+        // DSVとして刺さっているため、同じリソースをSRVとしても
+        // 読むことはできません（D3D11がSRVを黙ってnullにします）。
         [[nodiscard]] ID3D11ShaderResourceView*
             DepthCopyShaderResourceView() const noexcept
         {
@@ -277,6 +270,14 @@ namespace LamaPon
         // ImGui等での表示は、描画完了時にこれを呼んだ上で常に
         // DisplayShaderResourceView()を使ってください。
         void CopyToDisplay(ID3D11DeviceContext* context) const;
+        // 深度だけを描画先にします（深度プリパス用）。カラーを
+        // 割り当てないので、ピクセルシェーダーを外した描画がそのまま
+        // 深度書き込みだけになります。深度はclearしません。
+        void BindDepthOnly(ID3D11DeviceContext* context) const;
+        // 現在の深度をSSRがLitパス中に読むコピーへ控えます。
+        // 描画先のbind状態は変更しません。
+        void CaptureDepthForReflections(
+            ID3D11DeviceContext* context) const;
 
         Microsoft::WRL::ComPtr<ID3D11Texture2D> m_colorTexture;
         Microsoft::WRL::ComPtr<ID3D11RenderTargetView> m_renderTargetView;

@@ -329,6 +329,20 @@ namespace
         RequireThrows<std::invalid_argument>(
             [&]
             {
+                graphics.BindOffscreenTargetDepthOnly(
+                    emptyOffscreenTarget);
+            },
+            "Binding an empty offscreen depth target must be rejected");
+        RequireThrows<std::invalid_argument>(
+            [&]
+            {
+                graphics.CaptureOffscreenTargetDepth(
+                    emptyOffscreenTarget);
+            },
+            "Capturing an empty offscreen depth target must be rejected");
+        RequireThrows<std::invalid_argument>(
+            [&]
+            {
                 graphics.PublishOffscreenTarget(
                     emptyOffscreenTarget);
             },
@@ -373,6 +387,67 @@ namespace
             "Beginning an offscreen target with no clear color must be rejected");
 
         graphics.BeginOffscreenTarget(displayTarget, displayColor);
+        // 深度専用bindはカラーRTVを外し、同じターゲットのDSVと
+        // viewportだけを設定します。また、直前のLit描画で残り得る
+        // t0〜t15を解除して、深度を次の描画先として安全に使える状態へ
+        // 戻します。
+        std::array<ID3D11ShaderResourceView*, 16> testResources{};
+        testResources.fill(graphics.WhiteTexture());
+        graphics.Context()->PSSetShaderResources(
+            0,
+            static_cast<UINT>(testResources.size()),
+            testResources.data());
+        graphics.BindOffscreenTargetDepthOnly(displayTarget);
+
+        Microsoft::WRL::ComPtr<ID3D11RenderTargetView>
+            depthOnlyColorTarget;
+        Microsoft::WRL::ComPtr<ID3D11DepthStencilView>
+            depthOnlyDepthTarget;
+        graphics.Context()->OMGetRenderTargets(
+            1,
+            depthOnlyColorTarget.ReleaseAndGetAddressOf(),
+            depthOnlyDepthTarget.ReleaseAndGetAddressOf());
+        Require(
+            depthOnlyColorTarget.Get() == nullptr
+                && depthOnlyDepthTarget.Get() != nullptr,
+            "Depth-only binding must keep a depth target without a color target");
+
+        D3D11_VIEWPORT depthOnlyViewport{};
+        UINT depthOnlyViewportCount = 1;
+        graphics.Context()->RSGetViewports(
+            &depthOnlyViewportCount,
+            &depthOnlyViewport);
+        Require(
+            depthOnlyViewportCount == 1
+                && depthOnlyViewport.Width == 8.0f
+                && depthOnlyViewport.Height == 4.0f,
+            "Depth-only binding must apply the offscreen target viewport");
+
+        std::array<ID3D11ShaderResourceView*, 16>
+            boundResources{};
+        graphics.Context()->PSGetShaderResources(
+            0,
+            static_cast<UINT>(boundResources.size()),
+            boundResources.data());
+        bool allResourcesUnbound = true;
+        for (auto*& resource : boundResources)
+        {
+            if (resource != nullptr)
+            {
+                allResourcesUnbound = false;
+                resource->Release();
+                resource = nullptr;
+            }
+        }
+        Require(
+            allResourcesUnbound,
+            "Depth-only binding must unbind pixel shader resources t0 through t15");
+
+        // SSRと同じ順序で、DSVが刺さっている深度を読取用資源へ控えます。
+        // この操作と深度専用bindはいずれも描画内容を消さないため、カラーへ
+        // 戻した後の既存画素検証がそのまま境界の回帰検証になります。
+        graphics.CaptureOffscreenTargetDepth(displayTarget);
+        graphics.BindOffscreenTarget(displayTarget);
         constexpr DirectX::XMFLOAT4 leftColor{
             0.9f, 0.1f, 0.05f, 1.0f };
         DrawSolidRectangle(
@@ -732,6 +807,20 @@ int main()
                     offscreenTarget);
             },
             "Publishing an offscreen target requires an initialized device");
+        RequireThrowsExactly<std::logic_error>(
+            [&]
+            {
+                graphics.BindOffscreenTargetDepthOnly(
+                    offscreenTarget);
+            },
+            "Binding an offscreen depth target requires an initialized device");
+        RequireThrowsExactly<std::logic_error>(
+            [&]
+            {
+                graphics.CaptureOffscreenTargetDepth(
+                    offscreenTarget);
+            },
+            "Capturing offscreen depth requires an initialized device");
         const auto modelPreviewRenderer =
             LamaPon::CreateEditorModelPreviewRenderer(
                 LamaPon::RenderingApi::DirectX11,

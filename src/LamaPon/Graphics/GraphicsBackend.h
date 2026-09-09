@@ -111,6 +111,15 @@ namespace LamaPon
         // 完成画像を表示専用資源へ確定します。描画先は変更しません。
         virtual void PublishOffscreenTarget(
             RenderTarget& target) = 0;
+        // カラーを割り当てず、targetの深度だけを描画先にします。
+        // 深度はclearせず、描画先の復元も行いません。
+        // 既存virtualのslotを維持するため、新しい契約は末尾へ追加します。
+        virtual void BindOffscreenTargetDepthOnly(
+            RenderTarget& target) = 0;
+        // 現在の深度をtarget内のshader-readableなコピーへ控えます。
+        // 描画先のbind状態は変更しません。
+        virtual void CaptureOffscreenTargetDepth(
+            RenderTarget& target) = 0;
     };
 
     // activeApiはSelectGraphicsBackendで解決済みの値を渡します。

@@ -115,6 +115,20 @@ int main()
         RequireThrowsExactly<std::logic_error>(
             [&]
             {
+                backend->BindOffscreenTargetDepthOnly(
+                    offscreenTarget);
+            },
+            "Binding an offscreen depth target requires an initialized backend");
+        RequireThrowsExactly<std::logic_error>(
+            [&]
+            {
+                backend->CaptureOffscreenTargetDepth(
+                    offscreenTarget);
+            },
+            "Capturing offscreen depth requires an initialized backend");
+        RequireThrowsExactly<std::logic_error>(
+            [&]
+            {
                 backend->PublishOffscreenTarget(
                     offscreenTarget);
             },

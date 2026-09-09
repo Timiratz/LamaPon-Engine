@@ -391,6 +391,54 @@ namespace LamaPon
         target.CopyToDisplay(m_context.Get());
     }
 
+    void D3D11Backend::BindOffscreenTargetDepthOnly(
+        RenderTarget& target)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "BindOffscreenTargetDepthOnly requires an initialized "
+                "backend.");
+        }
+        if (!target.IsValid())
+        {
+            throw std::invalid_argument(
+                "BindOffscreenTargetDepthOnly requires a valid target.");
+        }
+        if (m_context == nullptr)
+        {
+            throw std::logic_error(
+                "BindOffscreenTargetDepthOnly requires an available "
+                "DirectX 11 context.");
+        }
+
+        target.BindDepthOnly(m_context.Get());
+    }
+
+    void D3D11Backend::CaptureOffscreenTargetDepth(
+        RenderTarget& target)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "CaptureOffscreenTargetDepth requires an initialized "
+                "backend.");
+        }
+        if (!target.IsValid())
+        {
+            throw std::invalid_argument(
+                "CaptureOffscreenTargetDepth requires a valid target.");
+        }
+        if (m_context == nullptr)
+        {
+            throw std::logic_error(
+                "CaptureOffscreenTargetDepth requires an available "
+                "DirectX 11 context.");
+        }
+
+        target.CaptureDepthForReflections(m_context.Get());
+    }
+
     void D3D11Backend::BindAndClearBackBuffer(
         const float clearColor[4])
     {

@@ -388,6 +388,12 @@ namespace LamaPon
         // 完成画像を表示専用資源へ確定します。targetのunbindや
         // バックバッファへの復帰は行わず、呼び出し側の描画順を保ちます。
         void PublishOffscreenTarget(RenderTarget& target);
+        // カラーを割り当てず、targetの深度だけを描画先にします。
+        // 深度はclearせず、描画先の復元も行いません。
+        void BindOffscreenTargetDepthOnly(RenderTarget& target);
+        // 現在の深度をtarget内のshader-readableなコピーへ控えます。
+        // 描画先のbind状態は変更しません。
+        void CaptureOffscreenTargetDepth(RenderTarget& target);
 
         // 既存のD3D11描画コード向け互換facadeです。Backend共通interfaceへ
         // D3D11型を持ち込まず、段階的なrenderer移行までここで転送します。

@@ -129,7 +129,7 @@ namespace LamaPon
         // ピクセルシェーダーが外れるので、自作Shaderのオブジェクトも
         // そのまま安全に深度へ載ります。
         graphics.Gpu().BeginSection("深度プリパス");
-        target.BindDepthOnly(graphics.Context());
+        graphics.BindOffscreenTargetDepthOnly(target);
         {
             const DepthPassScope depthScope{
                 graphics,

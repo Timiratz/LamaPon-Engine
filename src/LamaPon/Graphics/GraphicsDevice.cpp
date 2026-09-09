@@ -237,6 +237,42 @@ namespace LamaPon
             target);
     }
 
+    void GraphicsDevice::BindOffscreenTargetDepthOnly(
+        RenderTarget& target)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "BindOffscreenTargetDepthOnly requires an initialized "
+                "device.");
+        }
+        if (!target.IsValid())
+        {
+            throw std::invalid_argument(
+                "BindOffscreenTargetDepthOnly requires a valid target.");
+        }
+
+        m_backend->BindOffscreenTargetDepthOnly(target);
+    }
+
+    void GraphicsDevice::CaptureOffscreenTargetDepth(
+        RenderTarget& target)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "CaptureOffscreenTargetDepth requires an initialized "
+                "device.");
+        }
+        if (!target.IsValid())
+        {
+            throw std::invalid_argument(
+                "CaptureOffscreenTargetDepth requires a valid target.");
+        }
+
+        m_backend->CaptureOffscreenTargetDepth(target);
+    }
+
     struct GraphicsDevice::MaterialShaderEntry final
     {
         std::unique_ptr<LitEffect> effect;

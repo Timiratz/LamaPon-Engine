@@ -13,10 +13,10 @@ namespace LamaPon
     // Game ModuleとRuntimeのABIを識別します。公開構造体のレイアウトや
     // 公開関数のシグネチャを変更した場合は、この値も更新してください。
     // GameModuleHostは完全一致を要求し、互換性のないDLLを読み込みません。
-    // API 20ではオフスクリーン描画先の基本操作をGraphicsBackendの
-    // 公開virtual契約へ追加し、RenderTargetのD3D11直呼びAPIを内部化
-    // したため、ゲーム用DLLの再ビルドが必要です。
-    inline constexpr std::uint32_t GameModuleApiVersion = 20;
+    // API 21ではオフスクリーン描画先の深度操作をGraphicsBackendの
+    // 公開virtual契約へ追加し、RenderTargetのD3D11直呼びAPIをさらに
+    // 内部化したため、ゲーム用DLLの再ビルドが必要です。
+    inline constexpr std::uint32_t GameModuleApiVersion = 21;
 
     using NativeScriptCreateFunction = void* (*)(
         GameObject* owner,
