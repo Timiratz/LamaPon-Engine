@@ -273,6 +273,7 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Graphics/GraphicsDevice.h
     src/LamaPon/Graphics/D3D11Backend.cpp
     src/LamaPon/Graphics/D3D11Backend.h
+    src/LamaPon/Graphics/D3D11GpuProfilerBackend.cpp
     src/LamaPon/Graphics/Lighting.cpp
     src/LamaPon/Graphics/Lighting.h
     src/LamaPon/Graphics/LitEffect.cpp
