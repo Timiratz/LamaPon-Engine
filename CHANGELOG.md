@@ -41,6 +41,7 @@
 - Graphics Backend停止前に、AssetManagerの非同期モデル準備とmaterial shaderの暖機を明示的に完了させる。再初期化失敗時もAudioは保持する。
 - モデル準備の新規受付を終了境界で閉じ、進行中のworkerと結果回収をjoinする。再初期化後はAsset root・upload/cache予算・Input action設定を復元する。`AssetManager` / `RuntimeServices`のABI変更に伴い、Game Module APIを37へ更新。
 - Device / ContextやD3D11 resource resolverなどの互換facade実装を`GraphicsDeviceD3D11.cpp`へ分離し、共通の`GraphicsDevice`実装からD3D11 Backend型への直接依存を除去。
+- オフスクリーン描画先、名前付きRenderTexture、Scene最終合成の実装を`GraphicsDeviceComposition.cpp`へ分離し、Backend選択・寿命管理と画面合成の責務を切り分け。
 
 ### ファイル名の統一
 
