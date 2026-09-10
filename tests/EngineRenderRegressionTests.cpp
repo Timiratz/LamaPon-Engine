@@ -647,6 +647,268 @@ int main(const int argumentCount, char** arguments)
                     litTextures),
                 "A LitEffect owned by another GraphicsDevice was accepted");
 
+            // LightingStateのproducerをneutral handleへ移す前提として、
+            // Texture2D以外の既存D3D11 SRVも同じ世代・所有契約へ載せます。
+            Stage("d3d11-generic-view-import");
+            constexpr std::array structuredValues{
+                DirectX::XMFLOAT4{ 1.0f, 2.0f, 3.0f, 4.0f },
+                DirectX::XMFLOAT4{ 5.0f, 6.0f, 7.0f, 8.0f }
+            };
+            D3D11_BUFFER_DESC structuredDescription{};
+            structuredDescription.ByteWidth =
+                static_cast<UINT>(sizeof(structuredValues));
+            structuredDescription.Usage = D3D11_USAGE_IMMUTABLE;
+            structuredDescription.BindFlags =
+                D3D11_BIND_SHADER_RESOURCE;
+            structuredDescription.MiscFlags =
+                D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+            structuredDescription.StructureByteStride =
+                static_cast<UINT>(sizeof(DirectX::XMFLOAT4));
+            D3D11_SUBRESOURCE_DATA structuredInitialData{};
+            structuredInitialData.pSysMem = structuredValues.data();
+            Microsoft::WRL::ComPtr<ID3D11Buffer> structuredBuffer;
+            Require(
+                SUCCEEDED(foreignBackend.Device()->CreateBuffer(
+                    &structuredDescription,
+                    &structuredInitialData,
+                    structuredBuffer.ReleaseAndGetAddressOf())),
+                "The structured-buffer import fixture could not be created");
+            D3D11_SHADER_RESOURCE_VIEW_DESC structuredViewDescription{};
+            structuredViewDescription.Format = DXGI_FORMAT_UNKNOWN;
+            structuredViewDescription.ViewDimension =
+                D3D11_SRV_DIMENSION_BUFFER;
+            structuredViewDescription.Buffer.FirstElement = 0;
+            structuredViewDescription.Buffer.NumElements =
+                static_cast<UINT>(structuredValues.size());
+            Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
+                structuredView;
+            Require(
+                SUCCEEDED(foreignBackend.Device()->CreateShaderResourceView(
+                    structuredBuffer.Get(),
+                    &structuredViewDescription,
+                    structuredView.ReleaseAndGetAddressOf())),
+                "The structured-buffer SRV fixture could not be created");
+
+            constexpr std::array<std::uint32_t, 8> volumePixels{
+                0xff0000ffu, 0xff00ff00u,
+                0xffff0000u, 0xffffffffu,
+                0xff808080u, 0xff00ffffu,
+                0xffff00ffu, 0xffffff00u
+            };
+            D3D11_TEXTURE3D_DESC volumeDescription{};
+            volumeDescription.Width = 2;
+            volumeDescription.Height = 2;
+            volumeDescription.Depth = 2;
+            volumeDescription.MipLevels = 1;
+            volumeDescription.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            volumeDescription.Usage = D3D11_USAGE_IMMUTABLE;
+            volumeDescription.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            D3D11_SUBRESOURCE_DATA volumeInitialData{};
+            volumeInitialData.pSysMem = volumePixels.data();
+            volumeInitialData.SysMemPitch =
+                volumeDescription.Width
+                * static_cast<UINT>(sizeof(std::uint32_t));
+            volumeInitialData.SysMemSlicePitch =
+                volumeInitialData.SysMemPitch * volumeDescription.Height;
+            Microsoft::WRL::ComPtr<ID3D11Texture3D> volumeTexture;
+            Require(
+                SUCCEEDED(foreignBackend.Device()->CreateTexture3D(
+                    &volumeDescription,
+                    &volumeInitialData,
+                    volumeTexture.ReleaseAndGetAddressOf())),
+                "The Texture3D import fixture could not be created");
+            D3D11_SHADER_RESOURCE_VIEW_DESC volumeViewDescription{};
+            volumeViewDescription.Format = volumeDescription.Format;
+            volumeViewDescription.ViewDimension =
+                D3D11_SRV_DIMENSION_TEXTURE3D;
+            volumeViewDescription.Texture3D.MostDetailedMip = 0;
+            volumeViewDescription.Texture3D.MipLevels = 1;
+            Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> volumeView;
+            Require(
+                SUCCEEDED(foreignBackend.Device()->CreateShaderResourceView(
+                    volumeTexture.Get(),
+                    &volumeViewDescription,
+                    volumeView.ReleaseAndGetAddressOf())),
+                "The Texture3D SRV fixture could not be created");
+
+            auto* const structuredViewIdentity = structuredView.Get();
+            auto* const volumeViewIdentity = volumeView.Get();
+            const auto structuredHandle =
+                foreignBackend.ImportShaderResourceViewHandle(
+                    structuredView.Get());
+            const auto volumeHandle =
+                foreignBackend.ImportShaderResourceViewHandle(
+                    volumeView.Get());
+            auto* const nativeTexture2DView =
+                foreignBackend.ResolveShaderResourceView(
+                    invalidLitTextures.customTextures.back());
+            const auto texture2DHandle =
+                foreignBackend.ImportShaderResourceViewHandle(
+                    nativeTexture2DView);
+            Require(
+                structuredHandle.Kind()
+                        == LamaPon::GraphicsViewKind::ShaderResource
+                    && volumeHandle.Kind()
+                        == LamaPon::GraphicsViewKind::ShaderResource
+                    && texture2DHandle.Kind()
+                        == LamaPon::GraphicsViewKind::ShaderResource
+                    && LamaPon::Detail::GraphicsResourceHandleAccess::
+                        BufferResource(structuredHandle) != nullptr
+                    && LamaPon::Detail::GraphicsResourceHandleAccess::
+                        TextureResource(structuredHandle) == nullptr
+                    && LamaPon::Detail::GraphicsResourceHandleAccess::
+                        TextureResource(volumeHandle) != nullptr
+                    && LamaPon::Detail::GraphicsResourceHandleAccess::
+                        BufferResource(volumeHandle) == nullptr
+                    && LamaPon::Detail::GraphicsResourceHandleAccess::
+                        TextureResource(texture2DHandle) != nullptr
+                    && LamaPon::Detail::GraphicsResourceHandleAccess::
+                        BufferResource(texture2DHandle) == nullptr,
+                "Generic SRV imports did not retain their resource kinds");
+
+            bool nullViewRejected{};
+            try
+            {
+                static_cast<void>(
+                    foreignBackend.ImportShaderResourceViewHandle(nullptr));
+            }
+            catch (const std::invalid_argument&)
+            {
+                nullViewRejected = true;
+            }
+            Require(
+                nullViewRejected,
+                "A null native shader-resource view was imported");
+
+            structuredView.Reset();
+            structuredBuffer.Reset();
+            volumeView.Reset();
+            volumeTexture.Reset();
+            Require(
+                foreignBackend.ResolveShaderResourceView(
+                    structuredHandle) == structuredViewIdentity
+                    && foreignBackend.ResolveShaderResourceView(
+                        volumeHandle) == volumeViewIdentity
+                    && foreignBackend.ResolveShaderResourceView(
+                        texture2DHandle) == nativeTexture2DView,
+                "Imported SRV handles did not keep their native views alive");
+
+            constexpr UINT GenericViewSlot =
+                D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT - 2;
+            const std::array importedViews{
+                structuredHandle,
+                volumeHandle
+            };
+            Require(
+                foreignBackend.TryBindPixelShaderResources(
+                    GenericViewSlot,
+                    importedViews,
+                    {}),
+                "Generic SRV handles could not be bound");
+            Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
+                boundStructuredView;
+            Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
+                boundVolumeView;
+            foreignBackend.Context()->PSGetShaderResources(
+                GenericViewSlot,
+                1,
+                boundStructuredView.ReleaseAndGetAddressOf());
+            foreignBackend.Context()->PSGetShaderResources(
+                GenericViewSlot + 1,
+                1,
+                boundVolumeView.ReleaseAndGetAddressOf());
+            Require(
+                boundStructuredView.Get() == structuredViewIdentity
+                    && boundVolumeView.Get() == volumeViewIdentity,
+                "Generic SRV handles were bound to the wrong native views");
+            const std::array<LamaPon::GraphicsViewHandle, 2>
+                emptyImportedViews{};
+            Require(
+                foreignBackend.TryBindPixelShaderResources(
+                    GenericViewSlot,
+                    emptyImportedViews,
+                    {}),
+                "Generic SRV cleanup was rejected");
+            boundStructuredView.Reset();
+            boundVolumeView.Reset();
+
+            // Texture1Dはまだ共通resource契約が無いため、安全に拒否します。
+            D3D11_TEXTURE1D_DESC unsupportedDescription{};
+            unsupportedDescription.Width = 1;
+            unsupportedDescription.MipLevels = 1;
+            unsupportedDescription.ArraySize = 1;
+            unsupportedDescription.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            unsupportedDescription.Usage = D3D11_USAGE_DEFAULT;
+            unsupportedDescription.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            Microsoft::WRL::ComPtr<ID3D11Texture1D> unsupportedTexture;
+            Require(
+                SUCCEEDED(foreignBackend.Device()->CreateTexture1D(
+                    &unsupportedDescription,
+                    nullptr,
+                    unsupportedTexture.ReleaseAndGetAddressOf())),
+                "The unsupported SRV fixture could not be created");
+            Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
+                unsupportedView;
+            Require(
+                SUCCEEDED(foreignBackend.Device()->CreateShaderResourceView(
+                    unsupportedTexture.Get(),
+                    nullptr,
+                    unsupportedView.ReleaseAndGetAddressOf())),
+                "The unsupported Texture1D SRV could not be created");
+            bool unsupportedRejected{};
+            try
+            {
+                static_cast<void>(
+                    foreignBackend.ImportShaderResourceViewHandle(
+                        unsupportedView.Get()));
+            }
+            catch (const std::invalid_argument&)
+            {
+                unsupportedRejected = true;
+            }
+            Require(
+                unsupportedRejected,
+                "An unsupported Texture1D SRV was imported");
+
+            // 再初期化後もhandleの破棄は安全ですが、古い世代のnative
+            // viewとして解決・再取り込みすることはできません。
+            Microsoft::WRL::ComPtr<ID3D11Device> importedViewDevice =
+                foreignBackend.Device();
+            foreignBackend.Initialize({
+                foreignWindow,
+                Width,
+                Height,
+                true,
+                false
+            });
+            bool staleHandleRejected{};
+            try
+            {
+                static_cast<void>(
+                    foreignBackend.ResolveShaderResourceView(
+                        structuredHandle));
+            }
+            catch (const std::invalid_argument&)
+            {
+                staleHandleRejected = true;
+            }
+            bool staleNativeViewRejected{};
+            try
+            {
+                static_cast<void>(
+                    foreignBackend.ImportShaderResourceViewHandle(
+                        structuredViewIdentity));
+            }
+            catch (const std::invalid_argument&)
+            {
+                staleNativeViewRejected = true;
+            }
+            Require(
+                importedViewDevice.Get() != foreignBackend.Device()
+                    && staleHandleRejected
+                    && staleNativeViewRejected,
+                "A stale generic SRV crossed a backend generation boundary");
+
             // ParticleSystemから分離した共通serviceがneutral handleだけで
             // D3D11へ描画し、従来と同じ主要stateへ戻すことを固定します。
             Stage("particle-render-service");

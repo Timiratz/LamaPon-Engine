@@ -160,12 +160,18 @@ namespace LamaPon
                 const GraphicsViewHandle& view) const;
         [[nodiscard]] ID3D11Buffer* ResolveBuffer(
             const GraphicsBufferHandle& buffer) const;
-        // DDS / DirectXTK11など、移行途中のloaderが生成したnative SRVを
-        // 現在のBackend世代へ取り込みます。返したviewはtextureを強所有し、
-        // 入力COM pointerの所有権は移しません。
+        // DDS / DirectXTK11など、移行途中のloaderが生成したTexture2D
+        // native SRVを現在のBackend世代へ取り込みます。返したviewは
+        // textureを強所有し、入力COM pointerの所有権は移しません。
         [[nodiscard]] std::pair<
             GraphicsTextureHandle,
             GraphicsViewHandle> ImportShaderResourceView(
+                ID3D11ShaderResourceView* view);
+        // Lighting移行中の既存D3D11 SRVをresource種別に応じた中立handle
+        // へ取り込みます。Texture2D / TextureCubeに加え、Texture3Dと
+        // Buffer / StructuredBufferを受け付けます。
+        [[nodiscard]] GraphicsViewHandle
+            ImportShaderResourceViewHandle(
                 ID3D11ShaderResourceView* view);
 
     private:

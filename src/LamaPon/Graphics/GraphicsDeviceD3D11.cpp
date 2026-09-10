@@ -356,8 +356,7 @@ namespace LamaPon
                 "Importing a DirectX 11 shader-resource view requires "
                 "an active DirectX 11 backend.");
         }
-        auto imported = backend->ImportShaderResourceView(view);
-        return std::move(imported.second);
+        return backend->ImportShaderResourceViewHandle(view);
     }
 
     EnvironmentRenderer::OwnedPrefilteredEnvironment

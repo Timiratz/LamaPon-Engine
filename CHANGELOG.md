@@ -74,6 +74,7 @@
 - 非スキニングModelの共通Lit経路を`LitTextureRequest`へ移行し、外部PBR / custom textureとDirectXTK11モデル内蔵textureをBackend世代付きhandleで描画完了まで保持。raw SRVはモデル読込時のprivate import境界に限定。
 - glTF / FBXスキニングモデルの内蔵textureを読込時にneutral handleへ取り込み、外部texture上書きも`LitTextureRequest`へ統一。公開`SkeletalModel::Draw`からraw D3D11 texture引数を除き、`SkeletalPrimitive` / Draw契約変更に伴いGame Module APIを50へ更新。
 - Particle Systemのquad描画をAPI非依存requestと描画サービスへ分離し、ComponentからDirectXTK11のEffect / Batch / InputLayout所有とDevice / Context / CommonStates操作を除去。公開Component layout変更に伴いGame Module APIを51へ更新。
+- 既存D3D11 Shader Resource Viewのneutral handle取り込みをBuffer / StructuredBufferとTexture3Dへ拡張し、Clustered LightingとBaked GIの後続移行に必要な世代・強所有境界を整備。
 
 ### ファイル名の統一
 

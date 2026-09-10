@@ -786,8 +786,8 @@ namespace LamaPon
         [[nodiscard]] ID3D11ShaderResourceView*
             ResolveD3D11ShaderResourceView(
                 const GraphicsViewHandle& view) const;
-        // DirectXTK11 modelに埋め込まれたnative viewを、共通Lit経路が
-        // 保持できるBackend世代付きhandleへ変換するprivate移行shimです。
+        // 移行途中のnative D3D11 viewを、共通描画経路が保持できる
+        // Backend世代付きhandleへ変換するprivate shimです。
         // nullは正常な未設定としてempty handleを返します。
         [[nodiscard]] GraphicsViewHandle
             ImportD3D11ShaderResourceView(

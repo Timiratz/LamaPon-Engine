@@ -65,6 +65,26 @@ namespace
         D3D11_TEXTURE2D_DESC description{};
     };
 
+    // Texture3Dは現段階では既存D3D11資源をneutral viewへ取り込むための
+    // 所有payloadです。共通CreateTexture3D契約は次の段階で追加します。
+    class D3D11Texture3DPayload final
+        : public LamaPon::Detail::GraphicsTexturePayload
+    {
+    public:
+        D3D11Texture3DPayload(
+            std::shared_ptr<LamaPon::Detail::GraphicsResourceDomain> domain,
+            Microsoft::WRL::ComPtr<ID3D11Texture3D> texture,
+            const D3D11_TEXTURE3D_DESC& description)
+            : GraphicsTexturePayload(std::move(domain))
+            , native(std::move(texture))
+            , description(description)
+        {
+        }
+
+        Microsoft::WRL::ComPtr<ID3D11Texture3D> native;
+        D3D11_TEXTURE3D_DESC description{};
+    };
+
     class D3D11BufferPayload final
         : public LamaPon::Detail::GraphicsBufferPayload
     {
@@ -91,6 +111,19 @@ namespace
             std::shared_ptr<LamaPon::Detail::GraphicsResourceDomain> domain,
             const LamaPon::GraphicsViewKind kind,
             LamaPon::GraphicsTextureHandle resource,
+            Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view)
+            : GraphicsViewPayload(
+                std::move(domain),
+                kind,
+                std::move(resource))
+            , native(std::move(view))
+        {
+        }
+
+        D3D11ViewPayload(
+            std::shared_ptr<LamaPon::Detail::GraphicsResourceDomain> domain,
+            const LamaPon::GraphicsViewKind kind,
+            LamaPon::GraphicsBufferHandle resource,
             Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view)
             : GraphicsViewPayload(
                 std::move(domain),
@@ -1625,6 +1658,94 @@ namespace LamaPon
             std::move(textureHandle),
             std::move(viewHandle)
         };
+    }
+
+    GraphicsViewHandle D3D11Backend::ImportShaderResourceViewHandle(
+        ID3D11ShaderResourceView* const view)
+    {
+        if (!IsInitialized() || m_resourceDomain == nullptr)
+        {
+            throw std::logic_error(
+                "ImportShaderResourceViewHandle requires an initialized "
+                "backend.");
+        }
+        if (view == nullptr)
+        {
+            throw std::invalid_argument(
+                "ImportShaderResourceViewHandle requires a native view.");
+        }
+
+        Microsoft::WRL::ComPtr<ID3D11Device> ownerDevice;
+        view->GetDevice(ownerDevice.ReleaseAndGetAddressOf());
+        if (ownerDevice.Get() != m_device.Get())
+        {
+            throw std::invalid_argument(
+                "The native shader-resource view belongs to another "
+                "DirectX 11 device.");
+        }
+
+        Microsoft::WRL::ComPtr<ID3D11Resource> resource;
+        view->GetResource(resource.ReleaseAndGetAddressOf());
+        D3D11_RESOURCE_DIMENSION dimension{};
+        resource->GetType(&dimension);
+        if (dimension == D3D11_RESOURCE_DIMENSION_TEXTURE2D)
+        {
+            auto imported = ImportShaderResourceView(view);
+            return std::move(imported.second);
+        }
+
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> ownedView = view;
+        switch (dimension)
+        {
+        case D3D11_RESOURCE_DIMENSION_BUFFER:
+        {
+            Microsoft::WRL::ComPtr<ID3D11Buffer> buffer;
+            ThrowIfFailed(
+                resource.As(&buffer),
+                "ImportShaderResourceViewHandle(buffer)");
+            D3D11_BUFFER_DESC description{};
+            buffer->GetDesc(&description);
+            auto bufferHandle =
+                Detail::GraphicsResourceHandleAccess::MakeBuffer(
+                    std::make_shared<D3D11BufferPayload>(
+                        m_resourceDomain,
+                        std::move(buffer),
+                        description.ByteWidth));
+            return Detail::GraphicsResourceHandleAccess::MakeView(
+                std::make_shared<D3D11ViewPayload>(
+                    m_resourceDomain,
+                    GraphicsViewKind::ShaderResource,
+                    std::move(bufferHandle),
+                    std::move(ownedView)));
+        }
+        case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
+        {
+            Microsoft::WRL::ComPtr<ID3D11Texture3D> texture;
+            ThrowIfFailed(
+                resource.As(&texture),
+                "ImportShaderResourceViewHandle(texture3D)");
+            D3D11_TEXTURE3D_DESC description{};
+            texture->GetDesc(&description);
+            auto textureHandle =
+                Detail::GraphicsResourceHandleAccess::MakeTexture(
+                    std::make_shared<D3D11Texture3DPayload>(
+                        m_resourceDomain,
+                        std::move(texture),
+                        description));
+            return Detail::GraphicsResourceHandleAccess::MakeView(
+                std::make_shared<D3D11ViewPayload>(
+                    m_resourceDomain,
+                    GraphicsViewKind::ShaderResource,
+                    std::move(textureHandle),
+                    std::move(ownedView)));
+        }
+        case D3D11_RESOURCE_DIMENSION_UNKNOWN:
+        case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
+        default:
+            throw std::invalid_argument(
+                "The native shader-resource view uses an unsupported "
+                "resource dimension.");
+        }
     }
 
     GraphicsViewHandle D3D11Backend::CreateOffscreenDisplayView(
