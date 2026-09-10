@@ -326,6 +326,7 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Graphics/ReflectionProbeEnvironment.h
     src/LamaPon/Graphics/RenderTarget.cpp
     src/LamaPon/Graphics/RenderTarget.h
+    src/LamaPon/Graphics/RenderTargetBackendState.h
     src/LamaPon/Graphics/ScreenEffect.cpp
     src/LamaPon/Graphics/ScreenEffect.h
     src/LamaPon/Graphics/ShaderRenderState.cpp
@@ -1810,6 +1811,7 @@ install(
         PATTERN "GraphicsRenderServices.h" EXCLUDE
         PATTERN "GraphicsDeviceResourceLeaseState.h" EXCLUDE
         PATTERN "GraphicsDeviceShaderState.h" EXCLUDE
+        PATTERN "RenderTargetBackendState.h" EXCLUDE
 )
 install(
     FILES

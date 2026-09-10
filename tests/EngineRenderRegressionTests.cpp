@@ -36,10 +36,12 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <type_traits>
 #include <vector>
 
 namespace
@@ -763,6 +765,45 @@ int main(const int argumentCount, char** arguments)
             "AEBUAmbientOcclusionSettings@2@"
             "AEBUXMFLOAT4X4@DirectX@@I@Z"
         };
+        constexpr std::array Api63RenderTargetSymbols{
+            "??0RenderTarget@LamaPon@@QEAA@XZ",
+            "??1RenderTarget@LamaPon@@QEAA@XZ",
+            "?AdaptedLuminance@RenderTarget@LamaPon@@QEBAMXZ",
+            "?AutoExposureStops@RenderTarget@LamaPon@@QEBAMXZ",
+            "?AmbientOcclusionViewHandle@RenderTarget@LamaPon@@"
+                "QEBA?AVGraphicsViewHandle@2@XZ",
+            "?CurrentColorViewHandle@RenderTarget@LamaPon@@"
+                "QEBA?AVGraphicsViewHandle@2@XZ",
+            "?ColorHistoryViewHandle@RenderTarget@LamaPon@@"
+                "QEBA?AVGraphicsViewHandle@2@XZ",
+            "?TemporalHistoryViewHandle@RenderTarget@LamaPon@@"
+                "QEBA?AVGraphicsViewHandle@2@XZ",
+            "?DepthViewHandle@RenderTarget@LamaPon@@"
+                "QEBA?AVGraphicsViewHandle@2@XZ",
+            "?ReflectionDepthPyramidViewHandle@RenderTarget@LamaPon@@"
+                "QEBA?AVGraphicsViewHandle@2@XZ",
+            "?DisplayViewHandle@RenderTarget@LamaPon@@"
+                "QEBA?AVGraphicsViewHandle@2@XZ",
+            "?ColorHistoryViewProjection@RenderTarget@LamaPon@@"
+                "QEBAAEBUXMFLOAT4X4@DirectX@@XZ",
+            "?DepthCopyShaderResourceView@RenderTarget@LamaPon@@"
+                "QEBAPEAUID3D11ShaderResourceView@@XZ",
+            "?ReflectionDepthPyramidMipCount@RenderTarget@LamaPon@@"
+                "QEBAIXZ",
+            "?ReflectionDepthPyramidMipTarget@RenderTarget@LamaPon@@"
+                "QEBAPEAUID3D11RenderTargetView@@I@Z",
+            "?ReflectionDepthPyramidMipView@RenderTarget@LamaPon@@"
+                "QEBAPEAUID3D11ShaderResourceView@@I@Z",
+            "?SetComputeWritable@RenderTarget@LamaPon@@QEAAX_N@Z",
+            "?DisplayUnorderedAccessView@RenderTarget@LamaPon@@"
+                "QEBAPEAUID3D11UnorderedAccessView@@XZ",
+            "?DisplayTexture@RenderTarget@LamaPon@@"
+                "QEBAPEAUID3D11Texture2D@@XZ",
+            "?Width@RenderTarget@LamaPon@@QEBAIXZ",
+            "?Height@RenderTarget@LamaPon@@QEBAIXZ",
+            "?AspectRatio@RenderTarget@LamaPon@@QEBAMXZ",
+            "?IsValid@RenderTarget@LamaPon@@QEBA_NXZ"
+        };
         const auto runtimeModule = GetModuleHandleW(
             L"LamaPonRuntime.dll");
         Require(
@@ -852,12 +893,171 @@ int main(const int argumentCount, char** arguments)
                     runtimeModule,
                     LegacyDisplayViewSymbol) != nullptr,
             "An API 62 RenderTarget color-view export alias is missing");
+        for (const auto* const symbol : Api63RenderTargetSymbols)
+        {
+            Require(
+                GetProcAddress(runtimeModule, symbol) != nullptr,
+                "An API 63 opaque RenderTarget export is missing");
+        }
         using LegacyEnvironmentAccessor =
             LamaPon::EnvironmentRenderer* (__fastcall*)(
                 const LamaPon::GraphicsDevice*);
         const auto legacyEnvironmentAccessor =
             reinterpret_cast<LegacyEnvironmentAccessor>(
                 legacyEnvironmentAccessorAddress);
+
+        static_assert(
+            std::is_nothrow_default_constructible_v<
+                LamaPon::RenderTarget>);
+        static_assert(
+            std::is_nothrow_destructible_v<LamaPon::RenderTarget>);
+        static_assert(!std::is_copy_constructible_v<LamaPon::RenderTarget>);
+        static_assert(!std::is_move_constructible_v<LamaPon::RenderTarget>);
+        static_assert(
+            sizeof(LamaPon::RenderTarget) <= 128,
+            "RenderTarget leaked native backend state into its public layout");
+        Stage("render-target-opaque-state");
+        {
+            LamaPon::RenderTarget opaqueTarget;
+            const auto* const historyProjectionAddress =
+                &opaqueTarget.ColorHistoryViewProjection();
+            opaqueTarget.SetComputeWritable(true);
+            Require(
+                !opaqueTarget.IsValid()
+                    && opaqueTarget.Width() == 0u
+                    && opaqueTarget.Height() == 0u
+                    && opaqueTarget.AspectRatio() == 0.0f
+                    && !opaqueTarget.CurrentColorViewHandle()
+                    && !opaqueTarget.DisplayViewHandle()
+                    && !opaqueTarget.DepthViewHandle()
+                    && !opaqueTarget.AmbientOcclusionViewHandle()
+                    && !opaqueTarget.ColorHistoryViewHandle()
+                    && !opaqueTarget.TemporalHistoryViewHandle()
+                    && !opaqueTarget
+                        .ReflectionDepthPyramidViewHandle()
+                    && opaqueTarget.ReflectionDepthPyramidMipCount()
+                        == 0u
+                    && opaqueTarget.AdaptedLuminance() == 0.0f
+                    && opaqueTarget.AutoExposureStops() == 0.0f
+                    && opaqueTarget.DepthCopyShaderResourceView()
+                        == nullptr
+                    && opaqueTarget.ReflectionDepthPyramidMipTarget(0)
+                        == nullptr
+                    && opaqueTarget.ReflectionDepthPyramidMipView(0)
+                        == nullptr
+                    && opaqueTarget.DisplayUnorderedAccessView()
+                        == nullptr
+                    && opaqueTarget.DisplayTexture() == nullptr
+                    && historyProjectionAddress
+                        == &opaqueTarget.ColorHistoryViewProjection(),
+                "A default opaque RenderTarget changed its empty semantics");
+
+            bool initialResizeRejected{};
+            try
+            {
+                graphics.ResizeOffscreenTarget(
+                    opaqueTarget,
+                    D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION + 1u,
+                    1u);
+            }
+            catch (const std::exception&)
+            {
+                initialResizeRejected = true;
+            }
+            Require(
+                initialResizeRejected
+                    && !opaqueTarget.IsValid()
+                    && opaqueTarget.Width() == 0u
+                    && opaqueTarget.Height() == 0u
+                    && !opaqueTarget.CurrentColorViewHandle()
+                    && !opaqueTarget.DisplayViewHandle()
+                    && historyProjectionAddress
+                        == &opaqueTarget.ColorHistoryViewProjection(),
+                "A failed first resize published a partial backend state");
+
+            graphics.ResizeOffscreenTarget(opaqueTarget, 4u, 4u);
+            DirectX::XMFLOAT4X4 opaqueHistory{};
+            opaqueHistory._11 = 2.0f;
+            opaqueHistory._22 = 3.0f;
+            opaqueHistory._33 = 4.0f;
+            opaqueHistory._44 = 1.0f;
+            graphics.CaptureOffscreenTargetColorHistory(
+                opaqueTarget,
+                opaqueHistory);
+            Require(
+                opaqueTarget.IsValid()
+                    && opaqueTarget.Width() == 4u
+                    && opaqueTarget.Height() == 4u
+                    && opaqueTarget.CurrentColorViewHandle()
+                    && opaqueTarget.DisplayViewHandle()
+                    && opaqueTarget.DisplayUnorderedAccessView()
+                        != nullptr
+                    && opaqueTarget.DisplayTexture() != nullptr
+                    && opaqueTarget.ColorHistoryViewHandle()
+                    && historyProjectionAddress
+                        == &opaqueTarget.ColorHistoryViewProjection()
+                    && historyProjectionAddress->_11 == 2.0f
+                    && historyProjectionAddress->_22 == 3.0f
+                    && historyProjectionAddress->_33 == 4.0f
+                    && historyProjectionAddress->_44 == 1.0f,
+                "A committed D3D11 state lost pre-resize options or the "
+                "stable history projection reference");
+            const auto opaqueCurrentView =
+                opaqueTarget.CurrentColorViewHandle();
+            const auto opaqueDisplayView =
+                opaqueTarget.DisplayViewHandle();
+            const auto opaqueHistoryView =
+                opaqueTarget.ColorHistoryViewHandle();
+            auto* const opaqueDisplayUav =
+                opaqueTarget.DisplayUnorderedAccessView();
+            bool replacementResizeRejected{};
+            try
+            {
+                graphics.ResizeOffscreenTarget(
+                    opaqueTarget,
+                    D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION + 1u,
+                    1u);
+            }
+            catch (const std::exception&)
+            {
+                replacementResizeRejected = true;
+            }
+            Require(
+                replacementResizeRejected
+                    && opaqueTarget.IsValid()
+                    && opaqueTarget.Width() == 4u
+                    && opaqueTarget.Height() == 4u
+                    && opaqueTarget.CurrentColorViewHandle()
+                        == opaqueCurrentView
+                    && opaqueTarget.DisplayViewHandle()
+                        == opaqueDisplayView
+                    && opaqueTarget.ColorHistoryViewHandle()
+                        == opaqueHistoryView
+                    && opaqueTarget.DisplayUnorderedAccessView()
+                        == opaqueDisplayUav
+                    && historyProjectionAddress->_11 == 2.0f
+                    && historyProjectionAddress->_22 == 3.0f
+                    && historyProjectionAddress->_33 == 4.0f
+                    && historyProjectionAddress->_44 == 1.0f,
+                "A failed replacement changed the last complete opaque "
+                "state or its history");
+            graphics.ResizeOffscreenTarget(opaqueTarget, 8u, 8u);
+            Require(
+                opaqueTarget.IsValid()
+                    && opaqueTarget.Width() == 8u
+                    && opaqueTarget.Height() == 8u
+                    && !opaqueTarget.ColorHistoryViewHandle()
+                    && opaqueTarget.DisplayUnorderedAccessView()
+                        != nullptr
+                    && historyProjectionAddress
+                        == &opaqueTarget.ColorHistoryViewProjection()
+                    && historyProjectionAddress->_11 == 2.0f
+                    && historyProjectionAddress->_22 == 3.0f
+                    && historyProjectionAddress->_33 == 4.0f
+                    && historyProjectionAddress->_44 == 1.0f,
+                "Replacing an opaque backend state invalidated the stable "
+                "history projection reference or pre-resize options");
+        }
         Stage("asset-root");
         graphics.Assets().SetAssetRoot(
             LAMAPON_TEST_ASSET_DIR);
@@ -2178,6 +2378,10 @@ int main(const int argumentCount, char** arguments)
                 litTextures),
             "The valid neutral Lit baseline could not be restored");
         const HWND foreignWindow = CreateHiddenWindow();
+        std::unique_ptr<LamaPon::RenderTarget>
+            retainedBackendLifetimeTarget;
+        LamaPon::GraphicsViewHandle retainedBackendLifetimeView;
+        ID3D11Texture2D* retainedBackendLifetimeTexture{};
         {
             LamaPon::D3D11Backend foreignBackend;
             foreignBackend.Initialize({
@@ -2311,6 +2515,134 @@ int main(const int argumentCount, char** arguments)
                     screenLighting),
                 "The screen-space lighting baseline could not be restored");
             litEffect.Apply(graphics.Context());
+
+            // Resizeだけが別Backendのtargetを引き取れる境界です。それ以外の
+            // 操作はforeign native資源をcontextへ渡す前に全て拒否します。
+            const auto ownedTargetCurrent =
+                screenLightingTarget.CurrentColorViewHandle();
+            const auto ownedTargetDisplay =
+                screenLightingTarget.DisplayViewHandle();
+            const auto ownedTargetDepth =
+                screenLightingTarget.DepthViewHandle();
+            const auto ownedTargetHistory =
+                screenLightingTarget.ColorHistoryViewHandle();
+            const auto ownedHistoryProjection =
+                screenLightingTarget.ColorHistoryViewProjection();
+            const auto requireForeignTargetRejected =
+                [&](auto&& operation, const char* const message)
+                {
+                    bool rejected{};
+                    try
+                    {
+                        operation();
+                    }
+                    catch (const std::invalid_argument&)
+                    {
+                        rejected = true;
+                    }
+                    const auto& projection =
+                        screenLightingTarget
+                            .ColorHistoryViewProjection();
+                    Require(
+                        rejected
+                            && screenLightingTarget
+                                .CurrentColorViewHandle()
+                                == ownedTargetCurrent
+                            && screenLightingTarget.DisplayViewHandle()
+                                == ownedTargetDisplay
+                            && screenLightingTarget.DepthViewHandle()
+                                == ownedTargetDepth
+                            && screenLightingTarget
+                                .ColorHistoryViewHandle()
+                                == ownedTargetHistory
+                            && projection._11
+                                == ownedHistoryProjection._11
+                            && projection._22
+                                == ownedHistoryProjection._22
+                            && projection._33
+                                == ownedHistoryProjection._33
+                            && projection._44
+                                == ownedHistoryProjection._44,
+                        message);
+                };
+            const float foreignClearColor[4]{};
+            requireForeignTargetRejected(
+                [&]
+                {
+                    foreignBackend.BeginOffscreenTarget(
+                        screenLightingTarget,
+                        foreignClearColor);
+                },
+                "BeginOffscreenTarget accepted a foreign target");
+            requireForeignTargetRejected(
+                [&]
+                {
+                    foreignBackend.BindOffscreenTarget(
+                        screenLightingTarget);
+                },
+                "BindOffscreenTarget accepted a foreign target");
+            requireForeignTargetRejected(
+                [&]
+                {
+                    foreignBackend.PublishOffscreenTarget(
+                        screenLightingTarget);
+                },
+                "PublishOffscreenTarget accepted a foreign target");
+            requireForeignTargetRejected(
+                [&]
+                {
+                    foreignBackend.BindOffscreenTargetDepthOnly(
+                        screenLightingTarget);
+                },
+                "BindOffscreenTargetDepthOnly accepted a foreign target");
+            requireForeignTargetRejected(
+                [&]
+                {
+                    foreignBackend.CaptureOffscreenTargetDepth(
+                        screenLightingTarget);
+                },
+                "CaptureOffscreenTargetDepth accepted a foreign target");
+            requireForeignTargetRejected(
+                [&]
+                {
+                    foreignBackend.CaptureOffscreenTargetColorHistory(
+                        screenLightingTarget,
+                        temporalIdentity);
+                },
+                "Color-history capture accepted a foreign target");
+            requireForeignTargetRejected(
+                [&]
+                {
+                    foreignBackend.CaptureOffscreenTargetTemporalHistory(
+                        screenLightingTarget,
+                        temporalIdentity);
+                },
+                "Temporal-history capture accepted a foreign target");
+            requireForeignTargetRejected(
+                [&]
+                {
+                    static_cast<void>(
+                        foreignBackend
+                            .TryReadOffscreenTargetLuminance(
+                                screenLightingTarget));
+                },
+                "Luminance readback accepted a foreign target");
+            requireForeignTargetRejected(
+                [&]
+                {
+                    foreignBackend.CaptureOffscreenTargetLuminance(
+                        screenLightingTarget);
+                },
+                "Luminance capture accepted a foreign target");
+            requireForeignTargetRejected(
+                [&]
+                {
+                    static_cast<void>(
+                        foreignBackend.CreateOffscreenDisplayView(
+                            screenLightingTarget));
+                },
+                "Display-view creation accepted a foreign target");
+
             LamaPon::RenderTarget foreignScreenTarget;
             foreignBackend.ResizeOffscreenTarget(
                 foreignScreenTarget,
@@ -3059,7 +3391,33 @@ int main(const int argumentCount, char** arguments)
             Require(
                 foreignBackend.IsViewCurrent(staleGenerationView),
                 "A live backend rejected its own neutral view");
+
+            retainedBackendLifetimeTarget =
+                std::make_unique<LamaPon::RenderTarget>();
+            foreignBackend.ResizeOffscreenTarget(
+                *retainedBackendLifetimeTarget,
+                4u,
+                4u);
+            retainedBackendLifetimeView =
+                retainedBackendLifetimeTarget->DisplayViewHandle();
+            retainedBackendLifetimeTexture =
+                retainedBackendLifetimeTarget->DisplayTexture();
+            Require(
+                retainedBackendLifetimeTarget->IsValid()
+                    && retainedBackendLifetimeView
+                    && retainedBackendLifetimeTexture != nullptr,
+                "The backend-lifetime RenderTarget was not initialized");
         }
+        Require(
+            retainedBackendLifetimeTarget != nullptr
+                && retainedBackendLifetimeTarget->IsValid()
+                && retainedBackendLifetimeTarget->DisplayViewHandle()
+                    == retainedBackendLifetimeView
+                && retainedBackendLifetimeTarget->DisplayTexture()
+                    == retainedBackendLifetimeTexture,
+            "Destroying a backend invalidated an independently owned "
+            "RenderTarget state");
+        retainedBackendLifetimeTarget.reset();
         DestroyWindow(foreignWindow);
 
         // AssetManager::LoadModelを経由せず公開Importerを直接使う旧経路も、
@@ -4091,6 +4449,16 @@ int main(const int argumentCount, char** arguments)
                 && graphics.RenderTextureViewHandle("minimap")
                     == minimapViewHandle,
             "Reacquiring the same render texture size must preserve handle identity.");
+        const auto minimapCurrentViewHandle =
+            sameSizeMinimap.CurrentColorViewHandle();
+        const auto minimapDepthViewHandle =
+            sameSizeMinimap.DepthViewHandle();
+        const auto minimapAmbientOcclusionViewHandle =
+            sameSizeMinimap.AmbientOcclusionViewHandle();
+        const auto minimapReflectionDepthViewHandle =
+            sameSizeMinimap.ReflectionDepthPyramidViewHandle();
+        const auto minimapMipCount =
+            sameSizeMinimap.ReflectionDepthPyramidMipCount();
         bool oversizedResizeRejected = false;
         try
         {
@@ -4107,16 +4475,25 @@ int main(const int argumentCount, char** arguments)
             oversizedResizeRejected
                 && graphics.FindRenderTexture("minimap")
                     == &sameSizeMinimap
-                && !sameSizeMinimap.IsValid()
-                && !sameSizeMinimap.CurrentColorViewHandle()
-                && !sameSizeMinimap.DisplayViewHandle()
-                && !sameSizeMinimap.DepthViewHandle()
-                && !sameSizeMinimap.AmbientOcclusionViewHandle()
-                && !sameSizeMinimap
-                    .ReflectionDepthPyramidViewHandle()
-                && !graphics.RenderTextureViewHandle("minimap"),
-            "A failed named target resize must invalidate every published "
-            "view without removing the target object.");
+                && sameSizeMinimap.IsValid()
+                && sameSizeMinimap.Width() == RenderTextureSize
+                && sameSizeMinimap.Height() == RenderTextureSize
+                && sameSizeMinimap.CurrentColorViewHandle()
+                    == minimapCurrentViewHandle
+                && sameSizeMinimap.DisplayViewHandle()
+                    == minimapViewHandle
+                && sameSizeMinimap.DepthViewHandle()
+                    == minimapDepthViewHandle
+                && sameSizeMinimap.AmbientOcclusionViewHandle()
+                    == minimapAmbientOcclusionViewHandle
+                && sameSizeMinimap.ReflectionDepthPyramidViewHandle()
+                    == minimapReflectionDepthViewHandle
+                && sameSizeMinimap.ReflectionDepthPyramidMipCount()
+                    == minimapMipCount
+                && graphics.RenderTextureViewHandle("minimap")
+                    == minimapViewHandle,
+            "A failed named target resize must preserve the last complete "
+            "backend state and every published view.");
         auto& recoveredMinimap =
             graphics.AcquireRenderTexture(
                 "minimap",
@@ -4133,10 +4510,12 @@ int main(const int argumentCount, char** arguments)
                 && recoveredMinimapViewHandle
                 && recoveredMinimapViewHandle
                     == recoveredMinimap.DisplayViewHandle()
-                && recoveredMinimapViewHandle != minimapViewHandle
+                && recoveredMinimapViewHandle == minimapViewHandle
                 && recoveredMinimapRawView != nullptr
-                && recoveredMinimap.CurrentColorViewHandle(),
-            "A failed named target resize must recover on the next acquire.");
+                && recoveredMinimap.CurrentColorViewHandle()
+                    == minimapCurrentViewHandle,
+            "A same-size acquire after a failed resize must keep the last "
+            "complete backend state.");
         // レンダーテクスチャにもスカイとシーンのカラーグレーディング
         // （トーンマップ・ビネット）がかかるため、サブカメラの
         // クリア色がそのままピクセルへ出てくるわけではありません。
@@ -4241,6 +4620,10 @@ int main(const int argumentCount, char** arguments)
                     computeDisplayHandle) != nullptr,
             "A compute output must expose its display surface through the "
             "neutral handle registry.");
+        const auto computeCurrentHandle =
+            computeDisplayTarget.CurrentColorViewHandle();
+        auto* const computeDisplayUav =
+            computeDisplayTarget.DisplayUnorderedAccessView();
         bool oversizedComputeResizeRejected{};
         try
         {
@@ -4255,13 +4638,17 @@ int main(const int argumentCount, char** arguments)
         }
         Require(
             oversizedComputeResizeRejected
-                && !computeDisplayTarget.IsValid()
-                && !computeDisplayTarget.CurrentColorViewHandle()
-                && !computeDisplayTarget.DisplayViewHandle()
+                && computeDisplayTarget.IsValid()
+                && computeDisplayTarget.Width() == 16u
+                && computeDisplayTarget.Height() == 16u
+                && computeDisplayTarget.CurrentColorViewHandle()
+                    == computeCurrentHandle
+                && computeDisplayTarget.DisplayViewHandle()
+                    == computeDisplayHandle
                 && computeDisplayTarget.DisplayUnorderedAccessView()
-                    == nullptr,
-            "A failed compute-target resize retained a partial output "
-            "surface or stale unordered-access view.");
+                    == computeDisplayUav,
+            "A failed compute-target resize must preserve the last complete "
+            "output state and unordered-access view.");
         Require(
             graphics.ReleaseRenderTexture(
                 "neutral-compute-display")

@@ -5,6 +5,7 @@
 #include "LamaPon/Graphics/DebugRenderer.h"
 #include "LamaPon/Graphics/GpuProfiler.h"
 #include "LamaPon/Graphics/RenderTarget.h"
+#include "LamaPon/Graphics/RenderTargetBackendState.h"
 #include "LamaPon/Graphics/ShadowMap.h"
 
 #include <CommonStates.h>
@@ -421,6 +422,21 @@ namespace
         }
     }
 
+    void RequireCurrentOffscreenTarget(
+        const LamaPon::D3D11Backend& backend,
+        const LamaPon::RenderTarget& target,
+        const char* const operation)
+    {
+        if (!target.IsValid()
+            || !backend.IsViewCurrent(
+                target.CurrentColorViewHandle()))
+        {
+            throw std::invalid_argument(
+                std::string(operation)
+                + " requires a target owned by this backend.");
+        }
+    }
+
     // この環境でティアリング許可を利用できるか。対応が無い
     // Windowsや仮想GPUではIDXGIFactory5を取得できないためfalseです。
     [[nodiscard]] bool QueryTearingSupport()
@@ -706,91 +722,63 @@ namespace LamaPon
                 "ResizeOffscreenTarget requires an initialized backend.");
         }
 
-        try
-        {
-            target.Resize(m_device.Get(), width, height);
-        }
-        catch (...)
-        {
-            // Resizeは途中までdisplay資源を作ってから後段で失敗する
-            // 場合があります。invalid targetから部分的な表示面を公開
-            // しないよう、外から参照できるoutputをまとめて破棄します。
-            target.m_currentColorView.Reset();
-            target.m_postColorView.Reset();
-            target.m_displayView.Reset();
-            target.m_displayUnorderedAccessView.Reset();
-            target.m_displayShaderResourceView.Reset();
-            target.m_displayColorTexture.Reset();
-            target.m_initialized = false;
-            throw;
-        }
-        if (!target.IsValid())
-        {
-            throw std::logic_error(
-                "ResizeOffscreenTarget failed to create a valid target.");
-        }
-        if (target.m_currentColorView
-            && target.m_postColorView
-            && target.m_displayView
-            && target.m_ambientOcclusionView
-            && target.m_colorHistoryView
-            && target.m_reflectionDepthPyramidViewHandle
-            && target.m_depthView
-            && target.m_temporalHistoryView)
+        const std::uint32_t requestedWidth = std::max(width, 1u);
+        const std::uint32_t requestedHeight = std::max(height, 1u);
+        const auto* const existing = dynamic_cast<
+            const Detail::D3D11RenderTargetState*>(
+                target.m_backendState.get());
+        if (existing != nullptr
+            && existing->IsValid()
+            && existing->m_ownerDevice.Get() == m_device.Get()
+            && existing->m_width == requestedWidth
+            && existing->m_height == requestedHeight
+            && existing->m_computeWritable == target.m_computeWritable
+            && IsViewCurrent(existing->m_currentColorView)
+            && IsViewCurrent(existing->m_postColorView)
+            && IsViewCurrent(existing->m_displayView)
+            && IsViewCurrent(existing->m_ambientOcclusionView)
+            && IsViewCurrent(existing->m_colorHistoryView)
+            && IsViewCurrent(
+                existing->m_reflectionDepthPyramidViewHandle)
+            && IsViewCurrent(existing->m_depthView)
+            && IsViewCurrent(existing->m_temporalHistoryView))
         {
             return;
         }
 
-        try
+        // native資源と8本のneutral viewを一時stateへ全て作り、完成した
+        // 世代だけを公開します。途中失敗時は既存stateをそのまま保ちます。
+        auto pending =
+            std::make_unique<Detail::D3D11RenderTargetState>();
+        pending->m_computeWritable = target.m_computeWritable;
+        pending->Resize(m_device.Get(), width, height);
+        if (!pending->IsValid())
         {
-            // Resizeが作った8本をすべて取り込めた後にだけ公開handleを
-            // 更新し、途中失敗で新旧resourceを混在させません。
-            auto currentColorView = ImportShaderResourceViewHandle(
-                target.m_shaderResourceView.Get());
-            auto postColorView = ImportShaderResourceViewHandle(
-                target.m_postShaderResourceView.Get());
-            auto displayView = ImportShaderResourceViewHandle(
-                target.m_displayShaderResourceView.Get());
-            auto ambientOcclusionView =
-                ImportShaderResourceViewHandle(
-                    target.m_occlusionBlurShaderResourceView.Get());
-            auto colorHistoryView = ImportShaderResourceViewHandle(
-                target.m_historyShaderResourceView.Get());
-            auto reflectionDepthView = ImportShaderResourceViewHandle(
-                target.m_reflectionDepthPyramidView.Get());
-            auto depthView = ImportShaderResourceViewHandle(
-                target.m_depthShaderResourceView.Get());
-            auto temporalHistoryView = ImportShaderResourceViewHandle(
-                target.m_temporalHistoryShaderResourceView.Get());
+            throw std::logic_error(
+                "ResizeOffscreenTarget failed to create a valid target.");
+        }
 
-            target.m_currentColorView = std::move(currentColorView);
-            target.m_postColorView = std::move(postColorView);
-            target.m_displayView = std::move(displayView);
-            target.m_ambientOcclusionView =
-                std::move(ambientOcclusionView);
-            target.m_colorHistoryView = std::move(colorHistoryView);
-            target.m_reflectionDepthPyramidViewHandle =
-                std::move(reflectionDepthView);
-            target.m_depthView = std::move(depthView);
-            target.m_temporalHistoryView =
-                std::move(temporalHistoryView);
-        }
-        catch (...)
-        {
-            target.m_currentColorView.Reset();
-            target.m_postColorView.Reset();
-            target.m_displayView.Reset();
-            target.m_displayUnorderedAccessView.Reset();
-            target.m_displayShaderResourceView.Reset();
-            target.m_displayColorTexture.Reset();
-            target.m_ambientOcclusionView.Reset();
-            target.m_colorHistoryView.Reset();
-            target.m_reflectionDepthPyramidViewHandle.Reset();
-            target.m_depthView.Reset();
-            target.m_temporalHistoryView.Reset();
-            target.m_initialized = false;
-            throw;
-        }
+        pending->m_currentColorView = ImportShaderResourceViewHandle(
+            pending->m_shaderResourceView.Get());
+        pending->m_postColorView = ImportShaderResourceViewHandle(
+            pending->m_postShaderResourceView.Get());
+        pending->m_displayView = ImportShaderResourceViewHandle(
+            pending->m_displayShaderResourceView.Get());
+        pending->m_ambientOcclusionView =
+            ImportShaderResourceViewHandle(
+                pending->m_occlusionBlurShaderResourceView.Get());
+        pending->m_colorHistoryView = ImportShaderResourceViewHandle(
+            pending->m_historyShaderResourceView.Get());
+        pending->m_reflectionDepthPyramidViewHandle =
+            ImportShaderResourceViewHandle(
+                pending->m_reflectionDepthPyramidView.Get());
+        pending->m_depthView = ImportShaderResourceViewHandle(
+            pending->m_depthShaderResourceView.Get());
+        pending->m_temporalHistoryView =
+            ImportShaderResourceViewHandle(
+                pending->m_temporalHistoryShaderResourceView.Get());
+
+        target.m_backendState = std::move(pending);
     }
 
     void D3D11Backend::BeginOffscreenTarget(
@@ -807,11 +795,10 @@ namespace LamaPon
             throw std::invalid_argument(
                 "BeginOffscreenTarget requires a clear color.");
         }
-        if (!target.IsValid())
-        {
-            throw std::invalid_argument(
-                "BeginOffscreenTarget requires a valid target.");
-        }
+        RequireCurrentOffscreenTarget(
+            *this,
+            target,
+            "BeginOffscreenTarget");
         if (m_context == nullptr)
         {
             throw std::logic_error(
@@ -831,11 +818,10 @@ namespace LamaPon
             throw std::logic_error(
                 "BindOffscreenTarget requires an initialized backend.");
         }
-        if (!target.IsValid())
-        {
-            throw std::invalid_argument(
-                "BindOffscreenTarget requires a valid target.");
-        }
+        RequireCurrentOffscreenTarget(
+            *this,
+            target,
+            "BindOffscreenTarget");
         if (m_context == nullptr)
         {
             throw std::logic_error(
@@ -854,13 +840,11 @@ namespace LamaPon
             throw std::logic_error(
                 "PublishOffscreenTarget requires an initialized backend.");
         }
-        if (!target.IsValid())
-        {
-            throw std::invalid_argument(
-                "PublishOffscreenTarget requires a valid target.");
-        }
-        if (!IsViewCurrent(target.CurrentColorViewHandle())
-            || !IsViewCurrent(target.DisplayViewHandle()))
+        RequireCurrentOffscreenTarget(
+            *this,
+            target,
+            "PublishOffscreenTarget");
+        if (!IsViewCurrent(target.DisplayViewHandle()))
         {
             throw std::invalid_argument(
                 "PublishOffscreenTarget requires a target owned by this "
@@ -887,11 +871,10 @@ namespace LamaPon
                 "BindOffscreenTargetDepthOnly requires an initialized "
                 "backend.");
         }
-        if (!target.IsValid())
-        {
-            throw std::invalid_argument(
-                "BindOffscreenTargetDepthOnly requires a valid target.");
-        }
+        RequireCurrentOffscreenTarget(
+            *this,
+            target,
+            "BindOffscreenTargetDepthOnly");
         if (m_context == nullptr)
         {
             throw std::logic_error(
@@ -911,11 +894,10 @@ namespace LamaPon
                 "CaptureOffscreenTargetDepth requires an initialized "
                 "backend.");
         }
-        if (!target.IsValid())
-        {
-            throw std::invalid_argument(
-                "CaptureOffscreenTargetDepth requires a valid target.");
-        }
+        RequireCurrentOffscreenTarget(
+            *this,
+            target,
+            "CaptureOffscreenTargetDepth");
         if (m_context == nullptr)
         {
             throw std::logic_error(
@@ -936,12 +918,10 @@ namespace LamaPon
                 "CaptureOffscreenTargetColorHistory requires an "
                 "initialized backend.");
         }
-        if (!target.IsValid())
-        {
-            throw std::invalid_argument(
-                "CaptureOffscreenTargetColorHistory requires a valid "
-                "target.");
-        }
+        RequireCurrentOffscreenTarget(
+            *this,
+            target,
+            "CaptureOffscreenTargetColorHistory");
         if (m_context == nullptr)
         {
             throw std::logic_error(
@@ -964,12 +944,10 @@ namespace LamaPon
                 "CaptureOffscreenTargetTemporalHistory requires an "
                 "initialized backend.");
         }
-        if (!target.IsValid())
-        {
-            throw std::invalid_argument(
-                "CaptureOffscreenTargetTemporalHistory requires a valid "
-                "target.");
-        }
+        RequireCurrentOffscreenTarget(
+            *this,
+            target,
+            "CaptureOffscreenTargetTemporalHistory");
         if (m_context == nullptr)
         {
             throw std::logic_error(
@@ -992,12 +970,10 @@ namespace LamaPon
                 "TryReadOffscreenTargetLuminance requires an "
                 "initialized backend.");
         }
-        if (!target.IsValid())
-        {
-            throw std::invalid_argument(
-                "TryReadOffscreenTargetLuminance requires a valid "
-                "target.");
-        }
+        RequireCurrentOffscreenTarget(
+            *this,
+            target,
+            "TryReadOffscreenTargetLuminance");
         if (m_context == nullptr)
         {
             throw std::logic_error(
@@ -1018,12 +994,10 @@ namespace LamaPon
                 "CaptureOffscreenTargetLuminance requires an "
                 "initialized backend.");
         }
-        if (!target.IsValid())
-        {
-            throw std::invalid_argument(
-                "CaptureOffscreenTargetLuminance requires a valid "
-                "target.");
-        }
+        RequireCurrentOffscreenTarget(
+            *this,
+            target,
+            "CaptureOffscreenTargetLuminance");
         if (m_context == nullptr)
         {
             throw std::logic_error(

@@ -401,9 +401,9 @@ namespace LamaPon
 
         [[nodiscard]] bool IsInitialized() const noexcept;
         // API固有のDevice / Contextを呼び出し側へ渡さず、オフスクリーン
-        // 描画先を操作するための移行境界です。現在のRenderTargetは
-        // DirectX 11資源を持ちますが、将来はこの境界の内側でBackendに
-        // 対応する資源を選びます。
+        // 描画先を操作するための共通境界です。RenderTargetの具象資源は
+        // この境界の内側でactive Backendに対応するopaque stateへ
+        // 生成・差し替えられます。
         void ResizeOffscreenTarget(
             RenderTarget& target,
             std::uint32_t width,

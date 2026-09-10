@@ -141,8 +141,8 @@ namespace LamaPon
         virtual void BindBackBuffer() = 0;
 
         // API固有のDevice / Contextを呼び出し側へ渡さず、オフスクリーン
-        // 描画先の基本操作を行います。RenderTargetの資源表現は現時点では
-        // D3D11のままで、将来Backend別の資源へ置き換えるための操作境界です。
+        // 描画先の基本操作を行います。RenderTargetの具象資源はopaqueな
+        // Backend stateが所有し、この入口がBackend別stateの生成境界です。
         // targetの所有権は移さず、各呼び出しの間だけ参照します。
         // 既存virtualのslotを維持するため、新しい契約は末尾へ追加します。
         virtual void ResizeOffscreenTarget(
