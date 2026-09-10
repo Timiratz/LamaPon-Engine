@@ -185,6 +185,27 @@ namespace
             reinterpret_cast<std::uintptr_t>(view));
     }
 
+    struct BoundVertexBuffer final
+    {
+        Microsoft::WRL::ComPtr<ID3D11Buffer> buffer;
+        UINT stride{};
+        UINT offset{};
+    };
+
+    [[nodiscard]] BoundVertexBuffer CaptureBoundVertexBuffer(
+        LamaPon::GraphicsDevice& graphics,
+        const UINT slot)
+    {
+        BoundVertexBuffer result;
+        graphics.Context()->IAGetVertexBuffers(
+            slot,
+            1,
+            result.buffer.ReleaseAndGetAddressOf(),
+            &result.stride,
+            &result.offset);
+        return result;
+    }
+
     void PublishSolidTexture(
         LamaPon::TextureAsset& asset,
         LamaPon::GraphicsDevice& graphics,
@@ -814,6 +835,20 @@ namespace
             std::span{ instanceData });
         const auto previousInstanceBuffer =
             graphics.AcquireInstanceBufferHandle(instanceBytes);
+        const auto reusedPreviousInstanceBuffer =
+            graphics.AcquireInstanceBufferHandle(instanceBytes);
+        constexpr UINT InstanceBufferTestSlot =
+            D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT - 1;
+        constexpr UINT InstanceBufferTestStride =
+            sizeof(instanceData);
+        graphics.BindVertexBuffer(
+            previousInstanceBuffer,
+            InstanceBufferTestSlot,
+            InstanceBufferTestStride);
+        const auto previousBoundInstanceBuffer =
+            CaptureBoundVertexBuffer(
+                graphics,
+                InstanceBufferTestSlot);
         Require(
             previousWhiteTexture
                 && previousWhiteView
@@ -822,12 +857,40 @@ namespace
                 && previousInstanceBuffer
                 && graphics.ResolveD3D11ShaderResourceView(
                     previousWhiteView) == graphics.WhiteTexture()
-                && graphics.ResolveD3D11Buffer(
-                    previousInstanceBuffer)
-                    == graphics.AcquireInstanceBuffer(
-                        instanceData.data(),
-                        sizeof(instanceData)),
-            "Neutral and DirectX 11 compatibility resources diverged");
+                && reusedPreviousInstanceBuffer
+                    == previousInstanceBuffer
+                && previousBoundInstanceBuffer.buffer
+                && previousBoundInstanceBuffer.stride
+                    == InstanceBufferTestStride
+                && previousBoundInstanceBuffer.offset == 0,
+            "Neutral graphics resources were not reused and bound correctly");
+        RequireThrowsExactly<std::invalid_argument>(
+            [&]
+            {
+                graphics.BindVertexBuffer(
+                    {},
+                    InstanceBufferTestSlot,
+                    InstanceBufferTestStride);
+            },
+            "An empty vertex buffer handle was accepted");
+        RequireThrowsExactly<std::invalid_argument>(
+            [&]
+            {
+                graphics.BindVertexBuffer(
+                    previousInstanceBuffer,
+                    InstanceBufferTestSlot,
+                    0);
+            },
+            "A zero vertex buffer stride was accepted");
+        RequireThrowsExactly<std::invalid_argument>(
+            [&]
+            {
+                graphics.BindVertexBuffer(
+                    previousInstanceBuffer,
+                    D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT,
+                    InstanceBufferTestStride);
+            },
+            "An out-of-range vertex buffer slot was accepted");
         const LamaPon::TextureResourceSnapshot
             incompleteNeutralResources{
                 previousWhiteTexture,
@@ -905,27 +968,37 @@ namespace
         RequireThrowsExactly<std::invalid_argument>(
             [&]
             {
-                static_cast<void>(
-                    graphics.ResolveD3D11Buffer(
-                        previousInstanceBuffer));
+                graphics.BindVertexBuffer(
+                    previousInstanceBuffer,
+                    InstanceBufferTestSlot,
+                    InstanceBufferTestStride);
             },
             "A buffer from the previous backend generation was accepted");
 
         const auto rebuiltInstanceHandle =
             graphics.AcquireInstanceBufferHandle(instanceBytes);
-        auto* const rebuiltInstanceBuffer =
-            graphics.ResolveD3D11Buffer(rebuiltInstanceHandle);
+        const auto reusedRebuiltInstanceHandle =
+            graphics.AcquireInstanceBufferHandle(instanceBytes);
+        graphics.BindVertexBuffer(
+            rebuiltInstanceHandle,
+            InstanceBufferTestSlot,
+            InstanceBufferTestStride);
+        const auto rebuiltBoundInstanceBuffer =
+            CaptureBoundVertexBuffer(
+                graphics,
+                InstanceBufferTestSlot);
         Require(
             rebuiltInstanceHandle
                 && rebuiltInstanceHandle != previousInstanceBuffer
+                && reusedRebuiltInstanceHandle
+                    == rebuiltInstanceHandle
                 && graphics.WhiteTextureHandle()
                     != previousWhiteTexture
                 && graphics.WhiteTextureViewHandle()
                     != previousWhiteView
-                && rebuiltInstanceBuffer != nullptr
-                && graphics.AcquireInstanceBuffer(
-                    instanceData.data(),
-                    sizeof(instanceData)) == rebuiltInstanceBuffer,
+                && rebuiltBoundInstanceBuffer.buffer
+                && rebuiltBoundInstanceBuffer.buffer.Get()
+                    != previousBoundInstanceBuffer.buffer.Get(),
             "GraphicsDevice reinitialization did not rebuild neutral resources");
 
         std::vector<std::byte> grownInstanceData(
@@ -933,14 +1006,34 @@ namespace
             std::byte{ 0x2a });
         const auto grownInstanceHandle =
             graphics.AcquireInstanceBufferHandle(grownInstanceData);
-        auto* const grownInstanceBuffer =
-            graphics.ResolveD3D11Buffer(grownInstanceHandle);
+        graphics.BindVertexBuffer(
+            grownInstanceHandle,
+            InstanceBufferTestSlot,
+            InstanceBufferTestStride);
+        const auto grownBoundInstanceBuffer =
+            CaptureBoundVertexBuffer(
+                graphics,
+                InstanceBufferTestSlot);
+        graphics.BindVertexBuffer(
+            rebuiltInstanceHandle,
+            InstanceBufferTestSlot,
+            InstanceBufferTestStride);
+        const auto retainedRebuiltInstanceBuffer =
+            CaptureBoundVertexBuffer(
+                graphics,
+                InstanceBufferTestSlot);
+        graphics.BindVertexBuffer(
+            grownInstanceHandle,
+            InstanceBufferTestSlot,
+            InstanceBufferTestStride);
         Require(
             grownInstanceHandle
                 && grownInstanceHandle != rebuiltInstanceHandle
-                && grownInstanceBuffer != nullptr
-                && graphics.ResolveD3D11Buffer(
-                    rebuiltInstanceHandle) == rebuiltInstanceBuffer,
+                && grownBoundInstanceBuffer.buffer
+                && grownBoundInstanceBuffer.buffer.Get()
+                    != rebuiltBoundInstanceBuffer.buffer.Get()
+                && retainedRebuiltInstanceBuffer.buffer.Get()
+                    == rebuiltBoundInstanceBuffer.buffer.Get(),
             "Growing a neutral buffer invalidated an externally held handle");
 
         // API非依存texture契約のinitial upload、mip範囲view、後続update、
@@ -1305,7 +1398,7 @@ namespace
             whiteDevice.ReleaseAndGetAddressOf());
         graphics.AdditiveBlendPreservingAlpha()->GetDevice(
             blendDevice.ReleaseAndGetAddressOf());
-        grownInstanceBuffer->GetDevice(
+        grownBoundInstanceBuffer.buffer->GetDevice(
             instanceDevice.ReleaseAndGetAddressOf());
         Require(
             whiteDevice.Get() == graphics.Device()

@@ -237,15 +237,18 @@ namespace LamaPon
         // 再初期化をleaseで拒否し、destructorで描画終了を試みます。
         [[nodiscard]] SpriteRenderPass BeginSpritePass(
             const SpritePassDescription& description = {});
-        // インスタンス描画用の共有ダイナミック頂点バッファへ
-        // データを書き込み、そのバッファを返します（スロット1用）。
-        [[nodiscard]] ID3D11Buffer* AcquireInstanceBuffer(
-            const void* data,
-            std::size_t bytes);
-        // 同じ更新経路のAPI非依存handle版です。copyして保持できますが、
+        // インスタンス描画用の共有ダイナミック頂点バッファを
+        // 更新し、API非依存handleで返します。copyして保持できますが、
         // 再初期化前のhandleは新しいBackendではnative解決できません。
         [[nodiscard]] GraphicsBufferHandle AcquireInstanceBufferHandle(
             std::span<const std::byte> data);
+        // handleのAPI固有実体を公開せず、vertex bufferとして
+        // 指定slotへbindします。empty / stale handleは拒否します。
+        void BindVertexBuffer(
+            const GraphicsBufferHandle& buffer,
+            std::uint32_t slot,
+            std::uint32_t stride,
+            std::uint32_t offset = 0);
         // 深度だけを書くパスに切り替えます。レンダラーはライティングと
         // ピクセルシェーダーを省いた描画を行います。
         // 種別を分けているのは、メインビューの深度プリパスだけは
@@ -473,8 +476,6 @@ namespace LamaPon
             TryResolveD3D11ShaderResourceView(
                 const TextureResourceSnapshot& resources)
                 const noexcept;
-        [[nodiscard]] ID3D11Buffer* ResolveD3D11Buffer(
-            const GraphicsBufferHandle& buffer) const;
         // API非依存resource操作をactive Backendへ転送します。
         [[nodiscard]] GraphicsTextureHandle CreateTexture2D(
             const GraphicsTexture2DDescription& description,
@@ -752,6 +753,14 @@ namespace LamaPon
         [[nodiscard]] ID3D11ShaderResourceView*
             RenderTextureView(
                 const std::string& name) const noexcept;
+        // API 43のGame Moduleが旧公開名を解決してからAPI不一致を
+        // 案内できるよう、raw buffer入口のシンボルだけを
+        // 1互換期間残すprivate shimです。
+        [[nodiscard]] ID3D11Buffer* AcquireInstanceBuffer(
+            const void* data,
+            std::size_t bytes);
+        [[nodiscard]] ID3D11Buffer* ResolveD3D11Buffer(
+            const GraphicsBufferHandle& buffer) const;
         [[nodiscard]] std::uint64_t BeginD3D11SpritePass(
             const SpritePassDescription& description,
             bool neutralOwner,

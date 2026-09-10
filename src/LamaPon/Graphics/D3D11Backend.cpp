@@ -1419,6 +1419,39 @@ namespace LamaPon
         return true;
     }
 
+    void D3D11Backend::BindVertexBuffer(
+        const GraphicsBufferHandle& buffer,
+        const std::uint32_t slot,
+        const std::uint32_t stride,
+        const std::uint32_t offset)
+    {
+        if (!IsInitialized()
+            || m_context == nullptr
+            || m_resourceDomain == nullptr)
+        {
+            throw std::logic_error(
+                "BindVertexBuffer requires an initialized backend.");
+        }
+        if (!buffer
+            || slot >= D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT
+            || stride == 0)
+        {
+            throw std::invalid_argument(
+                "BindVertexBuffer requires a non-empty buffer, a valid "
+                "slot, and a non-zero stride.");
+        }
+
+        auto* const nativeBuffer = ResolveBuffer(buffer);
+        const UINT nativeStride = stride;
+        const UINT nativeOffset = offset;
+        m_context->IASetVertexBuffers(
+            static_cast<UINT>(slot),
+            1,
+            &nativeBuffer,
+            &nativeStride,
+            &nativeOffset);
+    }
+
     ID3D11ShaderResourceView* D3D11Backend::ResolveShaderResourceView(
         const GraphicsViewHandle& view) const
     {

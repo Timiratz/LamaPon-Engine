@@ -280,6 +280,15 @@ namespace LamaPon
         [[nodiscard]] virtual GraphicsViewHandle
             CreateOffscreenDisplayView(
                 const RenderTarget& target) = 0;
+
+        // API固有のbuffer実体を公開せず、現在の入力アセンブラへ
+        // vertex bufferを1本bindします。既存virtualのslotを維持する
+        // ため、新しい契約は末尾へ追加します。
+        virtual void BindVertexBuffer(
+            const GraphicsBufferHandle& buffer,
+            std::uint32_t slot,
+            std::uint32_t stride,
+            std::uint32_t offset) = 0;
     };
 
     // activeApiはSelectGraphicsBackendで解決済みの値を渡します。

@@ -370,6 +370,16 @@ int main()
                     backend->CreateDebugDrawingBackend());
             },
             "Creating debug drawing resources requires an initialized backend");
+        RequireThrowsExactly<std::logic_error>(
+            [&]
+            {
+                backend->BindVertexBuffer(
+                    {},
+                    0,
+                    0,
+                    0);
+            },
+            "Binding a vertex buffer requires an initialized backend");
 
         RequireThrowsExactly<std::invalid_argument>(
             []

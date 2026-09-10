@@ -25,6 +25,7 @@
 #include <functional>
 #include <limits>
 #include <numbers>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -2611,11 +2612,10 @@ namespace LamaPon
                     data.color = primitive.baseColor;
                     instances.push_back(data);
                 }
-                auto* instanceBuffer =
-                    m_graphics->AcquireInstanceBuffer(
-                        instances.data(),
-                        instances.size() * sizeof(InstanceData));
-                if (instanceBuffer == nullptr)
+                const auto instanceBuffer =
+                    m_graphics->AcquireInstanceBufferHandle(
+                        std::as_bytes(std::span{ instances }));
+                if (!instanceBuffer)
                 {
                     effect.SetInstancingEnabled(false);
                     return false;
@@ -2679,20 +2679,21 @@ namespace LamaPon
                         ? m_states->CullNone()
                         : m_states->CullClockwise());
                 ID3D11Buffer* vertexBuffers[]{
-                    primitive.vertexBuffer.Get(),
-                    instanceBuffer
+                    primitive.vertexBuffer.Get()
                 };
-                const UINT strides[]{
-                    vertexStride,
-                    sizeof(InstanceData)
-                };
-                constexpr UINT offsets[]{ 0, 0 };
+                const UINT strides[]{ vertexStride };
+                constexpr UINT offsets[]{ 0 };
                 context->IASetVertexBuffers(
                     0,
-                    2,
+                    1,
                     vertexBuffers,
                     strides,
                     offsets);
+                m_graphics->BindVertexBuffer(
+                    instanceBuffer,
+                    1,
+                    static_cast<std::uint32_t>(
+                        sizeof(InstanceData)));
                 context->IASetIndexBuffer(
                     indexBuffer,
                     DXGI_FORMAT_R32_UINT,

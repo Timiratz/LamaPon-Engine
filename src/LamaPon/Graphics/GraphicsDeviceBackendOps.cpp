@@ -184,6 +184,24 @@ namespace LamaPon
         return m_instanceBuffer;
     }
 
+    void GraphicsDevice::BindVertexBuffer(
+        const GraphicsBufferHandle& buffer,
+        const std::uint32_t slot,
+        const std::uint32_t stride,
+        const std::uint32_t offset)
+    {
+        if (m_backend == nullptr)
+        {
+            throw std::logic_error(
+                "BindVertexBuffer requires an initialized graphics backend.");
+        }
+        m_backend->BindVertexBuffer(
+            buffer,
+            slot,
+            stride,
+            offset);
+    }
+
     void GraphicsDevice::EndFrame()
     {
         // Presentより前に流します。デバイスを失う描画があった場合、

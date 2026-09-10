@@ -20,6 +20,7 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <span>
 #include <stdexcept>
 #include <utility>
 
@@ -1419,11 +1420,10 @@ namespace LamaPon
             instances.push_back(data);
         }
 
-        auto* instanceBuffer =
-            m_graphics->AcquireInstanceBuffer(
-                instances.data(),
-                instances.size() * sizeof(InstanceData));
-        if (instanceBuffer == nullptr)
+        const auto instanceBuffer =
+            m_graphics->AcquireInstanceBufferHandle(
+                std::as_bytes(std::span{ instances }));
+        if (!instanceBuffer)
         {
             return;
         }
@@ -1465,7 +1465,6 @@ namespace LamaPon
         // 集まりで、たいてい近くに固まっているため）。
         ApplyReflectionProbe();
         m_effect->SetInstancingEnabled(true);
-        auto* context = m_graphics->Context();
         // バッチキーにはShaderが含まれるため、バッチ内の宣言は同じです。
         // 描画状態はバッチごとに1回だけ適用します。
         const auto& renderState = m_effect->RenderState();
@@ -1478,18 +1477,13 @@ namespace LamaPon
                 : m_material.BaseColor().w < 1.0f,
             false,
             0,
-            [this, context, instanceBuffer, &renderState]
+            [this, instanceBuffer, &renderState]
             {
-                ID3D11Buffer* buffers[]{ instanceBuffer };
-                const UINT strides[]{
-                    sizeof(InstanceData) };
-                const UINT offsets[]{ 0 };
-                context->IASetVertexBuffers(
+                m_graphics->BindVertexBuffer(
+                    instanceBuffer,
                     1,
-                    1,
-                    buffers,
-                    strides,
-                    offsets);
+                    static_cast<std::uint32_t>(
+                        sizeof(InstanceData)));
                 if (renderState.declared)
                 {
                     ApplyShaderRenderState(renderState);

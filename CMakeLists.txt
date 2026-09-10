@@ -498,7 +498,7 @@ add_library(LamaPon::Runtime ALIAS LamaPonRuntime)
 add_library(LamaPon ALIAS LamaPonRuntime)
 
 # MSVCはC++ memberのaccess指定をdecorated nameに含めます。
-# 旧public SpriteBatch facadeをprivate化してもAPI 41 Game Moduleが
+# 旧public D3D11 facadeをprivate化しても直前APIのGame Moduleが
 # LoadLibrary後のAPI不一致案内へ到達できるよう、対応環境の
 # MSVC x64でのみ旧public名をprivate shimへaliasします。
 if(MSVC
