@@ -201,6 +201,36 @@ namespace LamaPon
         }
     }
 
+    ID3D11ShaderResourceView*
+        GraphicsDevice::TryResolveD3D11ShaderResourceView(
+            const TextureResourceSnapshot& resources)
+            const noexcept
+    {
+        if (resources.shaderResourceView)
+        {
+            // handleが存在するsnapshotでは、これが別Backend世代なら必ず
+            // nullptrへ倒します。旧raw mirrorを誤ってbindしてはいけません。
+            return TryResolveD3D11ShaderResourceView(
+                resources.shaderResourceView);
+        }
+        if (resources.texture)
+        {
+            // neutral textureだけが存在する不完全snapshotもlegacy扱いには
+            // しません。raw mirrorへのfallbackは両handleが空の旧経路だけです。
+            return nullptr;
+        }
+
+        auto* const legacy =
+            resources.d3d11ShaderResourceView.Get();
+        if (legacy == nullptr)
+        {
+            return nullptr;
+        }
+        Microsoft::WRL::ComPtr<ID3D11Device> owner;
+        legacy->GetDevice(owner.ReleaseAndGetAddressOf());
+        return owner.Get() == Device() ? legacy : nullptr;
+    }
+
     ID3D11Buffer* GraphicsDevice::ResolveD3D11Buffer(
         const GraphicsBufferHandle& buffer) const
     {
@@ -772,6 +802,7 @@ namespace LamaPon
         {
             m_services->Shutdown();
         }
+        m_spriteTexturePins.clear();
         m_commonStates.reset();
         m_spriteBatch.reset();
         m_whiteTextureView.Reset();
@@ -1001,11 +1032,29 @@ namespace LamaPon
 
     DirectX::SpriteBatch& GraphicsDevice::BeginSprites()
     {
+        m_spriteTexturePins.clear();
         m_uiScissorStack.clear();
         m_spriteBatch->Begin(
             DirectX::SpriteSortMode_Deferred,
             m_commonStates->NonPremultiplied());
         return *m_spriteBatch;
+    }
+
+    ID3D11ShaderResourceView*
+        GraphicsDevice::PinD3D11TextureForSpriteBatch(
+            std::shared_ptr<const TextureResourceSnapshot> resources)
+    {
+        if (resources == nullptr)
+        {
+            return nullptr;
+        }
+        auto* const view =
+            TryResolveD3D11ShaderResourceView(*resources);
+        if (view != nullptr)
+        {
+            m_spriteTexturePins.emplace_back(std::move(resources));
+        }
+        return view;
     }
 
     DirectX::SpriteBatch& GraphicsDevice::BeginSprites(
@@ -1016,6 +1065,7 @@ namespace LamaPon
         std::string* error,
         const Sprite2DLighting* lighting)
     {
+        m_spriteTexturePins.clear();
         if (generation != nullptr)
         {
             *generation = 0;
@@ -1295,6 +1345,7 @@ namespace LamaPon
     void GraphicsDevice::EndSprites()
     {
         m_spriteBatch->End();
+        m_spriteTexturePins.clear();
         m_uiScissorStack.clear();
     }
 
@@ -1666,15 +1717,29 @@ namespace LamaPon
             {
                 continue;
             }
-            const std::array<ID3D11ShaderResourceView*, 2>
-                auxiliaryViews{
-                    queued.auxiliaryTextures[0]
-                        ? queued.auxiliaryTextures[0]->view.Get()
-                        : WhiteTexture(),
-                    queued.auxiliaryTextures[1]
-                        ? queued.auxiliaryTextures[1]->view.Get()
-                        : WhiteTexture()
-                };
+            std::array<std::shared_ptr<
+                const TextureResourceSnapshot>, 2>
+                auxiliaryResources{};
+            std::array<ID3D11ShaderResourceView*, 2>
+                auxiliaryViews{};
+            for (std::size_t index = 0;
+                index < auxiliaryViews.size();
+                ++index)
+            {
+                const auto& asset =
+                    queued.auxiliaryTextures[index];
+                auxiliaryResources[index] = asset != nullptr
+                    ? asset->resources.Acquire()
+                    : nullptr;
+                auto* const resolved =
+                    auxiliaryResources[index] != nullptr
+                    ? TryResolveD3D11ShaderResourceView(
+                        *auxiliaryResources[index])
+                    : nullptr;
+                auxiliaryViews[index] = resolved != nullptr
+                    ? resolved
+                    : WhiteTexture();
+            }
             target.ApplyScreenEffect(
                 *queued.effect,
                 auxiliaryViews,
@@ -1935,6 +2000,9 @@ namespace LamaPon
             return false;
         }
 
+        std::array<std::shared_ptr<
+            const TextureResourceSnapshot>, 2>
+            inputResources{};
         std::array<ID3D11ShaderResourceView*, 2> inputs{};
         for (std::size_t index = 0;
             index < request.inputTextures.size();
@@ -1947,8 +2015,15 @@ namespace LamaPon
             }
             const auto texture = Assets().LoadTexture(
                 request.inputTextures[index]);
-            inputs[index] = texture
-                ? texture->view.Get()
+            inputResources[index] = texture != nullptr
+                ? texture->resources.Acquire()
+                : nullptr;
+            auto* const resolved = inputResources[index] != nullptr
+                ? TryResolveD3D11ShaderResourceView(
+                    *inputResources[index])
+                : nullptr;
+            inputs[index] = resolved != nullptr
+                ? resolved
                 : WhiteTexture();
         }
 
@@ -2123,11 +2198,17 @@ namespace LamaPon
             "Yu Gothic UI",
             30.0f,
             layout);
-        if (text && text->view)
+        const auto textResources = text != nullptr
+            ? text->resources.Acquire()
+            : nullptr;
+        auto* const textView = textResources != nullptr
+            ? TryResolveD3D11ShaderResourceView(*textResources)
+            : nullptr;
+        if (textView != nullptr)
         {
             // 白で生成した文字テクスチャへ描画時の色を掛けます。
             sprites.Draw(
-                text->view.Get(),
+                textView,
                 XMFLOAT2{
                     (static_cast<float>(canvasWidth)
                         - static_cast<float>(
@@ -2163,7 +2244,15 @@ namespace LamaPon
         {
             return;
         }
-        if (!logo || !logo->view || logo->width == 0 || logo->height == 0)
+        const auto logoResources = logo != nullptr
+            ? logo->resources.Acquire()
+            : nullptr;
+        auto* const logoView = logoResources != nullptr
+            ? TryResolveD3D11ShaderResourceView(*logoResources)
+            : nullptr;
+        if (logoView == nullptr
+            || logo->width == 0
+            || logo->height == 0)
         {
             return;
         }
@@ -2194,7 +2283,7 @@ namespace LamaPon
         auto& sprites = BeginSprites();
         const DirectX::XMFLOAT4 white{ 1.0f, 1.0f, 1.0f, 1.0f };
         sprites.Draw(
-            logo->view.Get(),
+            logoView,
             DirectX::XMFLOAT2{ x, y },
             nullptr,
             DirectX::XMLoadFloat4(&white),

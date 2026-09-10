@@ -563,9 +563,16 @@ namespace
         const auto describe =
             [](const LamaPon::TextureAsset& texture)
             {
+                const auto resources =
+                    texture.resources.Acquire();
+                Require(
+                    resources != nullptr
+                        && resources->d3d11ShaderResourceView
+                            != nullptr,
+                    "texture resource snapshot must contain a view");
                 Microsoft::WRL::ComPtr<ID3D11Resource>
                     resource;
-                texture.view->GetResource(
+                resources->d3d11ShaderResourceView->GetResource(
                     resource.ReleaseAndGetAddressOf());
                 Microsoft::WRL::ComPtr<ID3D11Texture2D>
                     texture2D;
@@ -602,6 +609,52 @@ namespace
             describe(*alphaTexture).Format
                 == DXGI_FORMAT_BC3_UNORM,
             "transparent PNG must compress to BC3");
+
+        // Bindingをcopyしても同じ公開slotを参照し、publish前に取得した
+        // snapshotはpublish後も内容が変化せず生存することを確認します。
+        LamaPon::TextureResourceBinding binding;
+        auto opaqueResources =
+            opaqueTexture->resources.Acquire();
+        const auto alphaResources =
+            alphaTexture->resources.Acquire();
+        Require(
+            opaqueResources != nullptr
+                && alphaResources != nullptr
+                && opaqueResources->d3d11ShaderResourceView
+                    != nullptr
+                && alphaResources->d3d11ShaderResourceView
+                    != nullptr,
+            "loaded textures must publish resource snapshots");
+        binding.Publish(*opaqueResources);
+        auto copiedBinding = binding;
+        auto heldSnapshot = binding.Acquire();
+        Require(
+            heldSnapshot != nullptr
+                && heldSnapshot
+                    ->d3d11ShaderResourceView != nullptr,
+            "the binding must expose its published snapshot");
+        auto* const heldView =
+            heldSnapshot->d3d11ShaderResourceView.Get();
+        copiedBinding.Publish(*alphaResources);
+        const auto publishedThroughCopy = binding.Acquire();
+        Require(
+            publishedThroughCopy != nullptr
+                && publishedThroughCopy
+                    ->d3d11ShaderResourceView.Get()
+                    == alphaResources
+                        ->d3d11ShaderResourceView.Get(),
+            "a copied binding must publish through the shared slot");
+        Require(
+            heldSnapshot != nullptr
+                && heldSnapshot
+                    ->d3d11ShaderResourceView.Get()
+                    == heldView
+                && heldView
+                    == opaqueResources
+                        ->d3d11ShaderResourceView.Get(),
+            "a previously acquired snapshot must survive a later publish");
+        heldSnapshot.reset();
+        opaqueResources.reset();
 
         // プリフェッチでワーカースレッド側からGPUテクスチャ
         // まで作成されることを確認します。
@@ -1078,8 +1131,12 @@ namespace
         assets.SetProgressiveUploadThreshold(1);
 
         const auto texture = assets.LoadTexture(L"big.png");
+        auto placeholderResources =
+            texture->resources.Acquire();
         Require(
-            texture->view != nullptr,
+            placeholderResources != nullptr
+                && placeholderResources
+                    ->d3d11ShaderResourceView != nullptr,
             "a placeholder view must exist immediately");
         Require(
             texture->width == 64 && texture->height == 64,
@@ -1090,11 +1147,22 @@ namespace
 
         // 1バイト予算でも最低1レベルは進み、SRVが実テクスチャへ
         // 切り替わります（前進保証）。
-        const auto placeholderView = texture->view;
+        auto* const placeholderView =
+            placeholderResources
+                ->d3d11ShaderResourceView.Get();
         assets.PumpTextureUploads(1);
+        auto uploadedResources =
+            texture->resources.Acquire();
         Require(
-            texture->view != placeholderView,
+            uploadedResources != nullptr
+                && uploadedResources
+                    ->d3d11ShaderResourceView.Get()
+                    != placeholderView,
             "the first pump must swap in the real texture");
+        // 比較後は旧snapshotを解放し、残りのupload中に古いGPU resourceの
+        // 寿命をこのテスト自身が延ばさないようにします。
+        placeholderResources.reset();
+        uploadedResources.reset();
         Require(
             assets.PendingTextureUploadCount() == 1,
             "a tiny budget must leave the upload unfinished");
@@ -1111,8 +1179,16 @@ namespace
             "the upload queue must drain");
 
         // 完了後のSRVは全ミップ（64x64は7レベル）を参照します。
+        const auto completedResources =
+            texture->resources.Acquire();
+        Require(
+            completedResources != nullptr
+                && completedResources
+                    ->d3d11ShaderResourceView != nullptr,
+            "the completed upload must publish a texture view");
         D3D11_SHADER_RESOURCE_VIEW_DESC viewDescription{};
-        texture->view->GetDesc(&viewDescription);
+        completedResources->d3d11ShaderResourceView->GetDesc(
+            &viewDescription);
         Require(
             viewDescription.ViewDimension
                     == D3D11_SRV_DIMENSION_TEXTURE2D

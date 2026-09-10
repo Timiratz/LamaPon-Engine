@@ -50,19 +50,57 @@ namespace LamaPon
     class GraphicsBackend;
     class SkeletalModel;
 
+    namespace Detail
+    {
+        class TextureResourceSlot;
+    }
+
+    // Textureとそのviewは必ず同じ世代の組として公開します。取得側は
+    // shared_ptrを描画完了まで保持し、段階uploadやBackend再生成と競合しても
+    // 途中でresourceが破棄されないようにします。
+    struct TextureResourceSnapshot final
+    {
+        GraphicsTextureHandle texture;
+        GraphicsViewHandle shaderResourceView;
+        // Backendを経由しない既存tool/test向けの移行用mirrorです。
+        // shaderResourceViewが空でない場合はhandle側を正とします。
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
+            d3d11ShaderResourceView;
+    };
+
+    // copy後も同じ公開slotを参照するcopyable pimplです。atomicの実装詳細を
+    // Game Module向け公開ABIへ露出させません。
+    class TextureResourceBinding final
+    {
+    public:
+        TextureResourceBinding();
+        ~TextureResourceBinding();
+        TextureResourceBinding(
+            const TextureResourceBinding&) noexcept;
+        TextureResourceBinding(
+            TextureResourceBinding&&) noexcept;
+        TextureResourceBinding& operator=(
+            const TextureResourceBinding&) noexcept;
+        TextureResourceBinding& operator=(
+            TextureResourceBinding&&) noexcept;
+
+        [[nodiscard]] std::shared_ptr<
+            const TextureResourceSnapshot> Acquire() const noexcept;
+        void Publish(TextureResourceSnapshot snapshot);
+
+    private:
+        std::shared_ptr<Detail::TextureResourceSlot> m_slot;
+    };
+
     struct TextureAsset final
     {
-        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view;
+        TextureResourceBinding resources;
         std::uint32_t width{};
         std::uint32_t height{};
         std::filesystem::path sourcePath;
         // DDSキューブマップとして読み込まれた場合true
         // （SRVはTextureCube）。
         bool isCube{};
-        // API非依存の所有権本体です。viewはDirectX 11移行期間の
-        // compatibility mirrorで、両方とも同じnative viewを指します。
-        GraphicsTextureHandle textureHandle;
-        GraphicsViewHandle viewHandle;
     };
 
     struct ModelAsset final
@@ -81,11 +119,9 @@ namespace LamaPon
 
     struct TextTextureAsset final
     {
-        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view;
+        TextureResourceBinding resources;
         std::uint32_t width{};
         std::uint32_t height{};
-        GraphicsTextureHandle textureHandle;
-        GraphicsViewHandle viewHandle;
     };
 
     struct AssetPrefetchReport final

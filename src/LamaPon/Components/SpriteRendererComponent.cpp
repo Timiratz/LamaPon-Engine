@@ -274,12 +274,21 @@ namespace LamaPon
             sourceHeight * pivot.y
         };
 
+        auto* textureView = whiteTexture;
+        if (m_texture && m_graphics != nullptr)
+        {
+            if (auto* const resolved =
+                    m_graphics->PinD3D11TextureForSpriteBatch(
+                        m_texture->resources.Acquire()))
+            {
+                textureView = resolved;
+            }
+        }
+
         spriteBatch.Draw(
             renderTextureView != nullptr
                 ? renderTextureView
-                : (m_texture
-                    ? m_texture->view.Get()
-                    : whiteTexture),
+                : textureView,
             position,
             hasSourceRect ? &source : nullptr,
             XMLoadFloat4(&premultipliedColor),

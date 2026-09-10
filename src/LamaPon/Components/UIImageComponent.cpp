@@ -128,9 +128,16 @@ namespace LamaPon
             Premultiply(m_color);
         const auto color =
             XMLoadFloat4(&premultiplied);
-        auto* view = m_texture
-            ? m_texture->view.Get()
-            : whiteTexture;
+        auto* view = whiteTexture;
+        if (m_texture && m_graphics != nullptr)
+        {
+            if (auto* const resolved =
+                    m_graphics->PinD3D11TextureForSpriteBatch(
+                        m_texture->resources.Acquire()))
+            {
+                view = resolved;
+            }
+        }
         float textureWidth = m_texture
             ? static_cast<float>(m_texture->width)
             : 1.0f;

@@ -12,6 +12,7 @@
 #include <imgui.h>
 
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -19,6 +20,7 @@
 #include <iostream>
 #include <span>
 #include <stdexcept>
+#include <thread>
 #include <typeinfo>
 #include <vector>
 
@@ -115,42 +117,50 @@ namespace
             reinterpret_cast<std::uintptr_t>(view));
     }
 
+    void PublishSolidTexture(
+        LamaPon::TextureAsset& asset,
+        LamaPon::GraphicsDevice& graphics,
+        const std::array<std::uint8_t, 4>& color)
+    {
+        const std::array initialData{
+            LamaPon::GraphicsTextureSubresourceData{
+                std::as_bytes(std::span{ color }),
+                static_cast<std::uint32_t>(color.size()),
+                static_cast<std::uint32_t>(color.size())
+            }
+        };
+        auto texture = graphics.CreateTexture2D(
+            LamaPon::GraphicsTexture2DDescription{
+                1,
+                1,
+                1,
+                LamaPon::GraphicsTextureFormat::Rgba8Unorm,
+                LamaPon::GraphicsTextureUpdateMode::Immutable
+            },
+            initialData);
+        auto view = graphics.CreateShaderResourceView(
+            texture,
+            LamaPon::GraphicsTextureViewDescription{ 0, 1 });
+        auto* const d3d11View =
+            graphics.ResolveD3D11ShaderResourceView(view);
+        Require(d3d11View != nullptr,
+            "Editor GUI test texture view creation failed");
+
+        LamaPon::TextureResourceSnapshot resources;
+        resources.texture = std::move(texture);
+        resources.shaderResourceView = std::move(view);
+        resources.d3d11ShaderResourceView = d3d11View;
+        asset.resources.Publish(std::move(resources));
+        asset.width = 1;
+        asset.height = 1;
+    }
+
     [[nodiscard]] LamaPon::TextureAsset CreateSolidTexture(
         LamaPon::GraphicsDevice& graphics,
         const std::array<std::uint8_t, 4>& color)
     {
-        D3D11_TEXTURE2D_DESC description{};
-        description.Width = 1;
-        description.Height = 1;
-        description.MipLevels = 1;
-        description.ArraySize = 1;
-        description.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        description.SampleDesc.Count = 1;
-        description.Usage = D3D11_USAGE_IMMUTABLE;
-        description.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-
-        const D3D11_SUBRESOURCE_DATA initialData{
-            color.data(),
-            static_cast<UINT>(color.size()),
-            0
-        };
-        Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
-        Require(
-            SUCCEEDED(graphics.Device()->CreateTexture2D(
-                &description,
-                &initialData,
-                texture.ReleaseAndGetAddressOf())),
-            "Editor GUI test texture creation failed");
-
         LamaPon::TextureAsset asset;
-        asset.width = 1;
-        asset.height = 1;
-        Require(
-            SUCCEEDED(graphics.Device()->CreateShaderResourceView(
-                texture.Get(),
-                nullptr,
-                asset.view.ReleaseAndGetAddressOf())),
-            "Editor GUI test texture view creation failed");
+        PublishSolidTexture(asset, graphics, color);
         return asset;
     }
 
@@ -347,6 +357,12 @@ namespace
             graphics.WhiteTextureHandle();
         const auto previousWhiteView =
             graphics.WhiteTextureViewHandle();
+        const LamaPon::TextureResourceSnapshot
+            previousWhiteResources{
+                previousWhiteTexture,
+                previousWhiteView,
+                graphics.WhiteTexture()
+            };
         const std::array<float, 4> instanceData{
             1.0f, 2.0f, 3.0f, 4.0f };
         const auto instanceBytes = std::as_bytes(
@@ -367,6 +383,16 @@ namespace
                         instanceData.data(),
                         sizeof(instanceData)),
             "Neutral and DirectX 11 compatibility resources diverged");
+        const LamaPon::TextureResourceSnapshot
+            incompleteNeutralResources{
+                previousWhiteTexture,
+                {},
+                graphics.WhiteTexture()
+            };
+        Require(
+            graphics.TryResolveD3D11ShaderResourceView(
+                incompleteNeutralResources) == nullptr,
+            "An incomplete neutral snapshot fell back to its raw D3D11 view");
         graphics.Initialize(
             window.Get(),
             Width,
@@ -400,6 +426,10 @@ namespace
             graphics.TryResolveD3D11ShaderResourceView(
                 previousWhiteView) == nullptr,
             "The non-throwing shader view resolver accepted a stale handle");
+        Require(
+            graphics.TryResolveD3D11ShaderResourceView(
+                previousWhiteResources) == nullptr,
+            "A stale texture snapshot fell back to its old raw D3D11 view");
         RequireThrowsExactly<std::invalid_argument>(
             [&]
             {
@@ -582,61 +612,169 @@ namespace
         auto& assets = graphics.Assets();
         const auto builtInTexture = assets.LoadTexture(
             L"builtin/circle");
+        const auto builtInResources =
+            builtInTexture->resources.Acquire();
         Require(
-            builtInTexture->textureHandle
-                && builtInTexture->viewHandle
-                && builtInTexture->view != nullptr
+            builtInResources != nullptr
+                && builtInResources->texture
+                && builtInResources->shaderResourceView
+                && builtInResources->d3d11ShaderResourceView != nullptr
                 && graphics.ResolveD3D11ShaderResourceView(
-                    builtInTexture->viewHandle)
-                    == builtInTexture->view.Get(),
+                    builtInResources->shaderResourceView)
+                    == builtInResources->d3d11ShaderResourceView.Get(),
             "Built-in texture handles diverged from the D3D11 mirror");
         const auto textTexture = assets.LoadTextTexture(
             "Rendering API",
             "Yu Gothic UI",
             18.0f);
+        const auto textResources =
+            textTexture->resources.Acquire();
         Require(
-            textTexture->textureHandle
-                && textTexture->viewHandle
-                && textTexture->view != nullptr
+            textResources != nullptr
+                && textResources->texture
+                && textResources->shaderResourceView
+                && textResources->d3d11ShaderResourceView != nullptr
                 && graphics.ResolveD3D11ShaderResourceView(
-                    textTexture->viewHandle)
-                    == textTexture->view.Get(),
+                    textResources->shaderResourceView)
+                    == textResources->d3d11ShaderResourceView.Get(),
             "Text texture handles diverged from the D3D11 mirror");
+
+        // writerがA/Bを繰り返し公開している間も、readerにはtexture・view・
+        // compatibility mirrorが必ず同じ世代の組として見えることを確認します。
+        LamaPon::TextureResourceBinding concurrentBinding;
+        const auto resourcesA = *builtInResources;
+        const auto resourcesB = *textResources;
+        concurrentBinding.Publish(resourcesA);
+        std::atomic_int concurrentPhase{};
+        std::atomic_bool writerFinished{};
+        std::atomic_bool coherentSnapshots{ true };
+        const auto matchesSnapshot =
+            [](const std::shared_ptr<
+                    const LamaPon::TextureResourceSnapshot>& current,
+                const LamaPon::TextureResourceSnapshot& expected)
+            {
+                return current != nullptr
+                    && current->texture == expected.texture
+                    && current->shaderResourceView
+                        == expected.shaderResourceView
+                    && current->d3d11ShaderResourceView.Get()
+                        == expected.d3d11ShaderResourceView.Get();
+            };
+        std::thread snapshotWriter(
+            [&]
+            {
+                // 最初のB/Aはreaderのackを待ち、別threadで両世代を必ず
+                // 観測させます。その後は同期せずpublishを繰り返します。
+                concurrentBinding.Publish(resourcesB);
+                concurrentPhase.store(1, std::memory_order_release);
+                while (concurrentPhase.load(std::memory_order_acquire) < 2)
+                {
+                    std::this_thread::yield();
+                }
+                concurrentBinding.Publish(resourcesA);
+                concurrentPhase.store(3, std::memory_order_release);
+                while (concurrentPhase.load(std::memory_order_acquire) < 5)
+                {
+                    std::this_thread::yield();
+                }
+                for (int index = 0; index < 20000; ++index)
+                {
+                    concurrentBinding.Publish(
+                        (index & 1) == 0
+                            ? resourcesA
+                            : resourcesB);
+                }
+                writerFinished.store(true, std::memory_order_release);
+            });
+        std::thread snapshotReader(
+            [&]
+            {
+                while (concurrentPhase.load(std::memory_order_acquire) < 1)
+                {
+                    std::this_thread::yield();
+                }
+                if (!matchesSnapshot(
+                    concurrentBinding.Acquire(),
+                    resourcesB))
+                {
+                    coherentSnapshots.store(false);
+                }
+                concurrentPhase.store(2, std::memory_order_release);
+                while (concurrentPhase.load(std::memory_order_acquire) < 3)
+                {
+                    std::this_thread::yield();
+                }
+                if (!matchesSnapshot(
+                    concurrentBinding.Acquire(),
+                    resourcesA))
+                {
+                    coherentSnapshots.store(false);
+                }
+                concurrentPhase.store(5, std::memory_order_release);
+                while (!writerFinished.load(std::memory_order_acquire))
+                {
+                    const auto current = concurrentBinding.Acquire();
+                    if (!matchesSnapshot(current, resourcesA)
+                        && !matchesSnapshot(current, resourcesB))
+                    {
+                        coherentSnapshots.store(
+                            false,
+                            std::memory_order_relaxed);
+                        break;
+                    }
+                }
+            });
+        snapshotWriter.join();
+        snapshotReader.join();
+        Require(
+            coherentSnapshots.load(std::memory_order_relaxed),
+            "Concurrent texture publication exposed a torn snapshot");
 
         const auto ddsTexture = assets.LoadTexture(
             std::filesystem::path{ LAMAPON_TEST_ASSET_DIR }
                 / L"models/arrow.fbm_arrow.dds");
+        const auto ddsResources =
+            ddsTexture->resources.Acquire();
         Require(
-            ddsTexture->textureHandle
-                && ddsTexture->viewHandle
-                && ddsTexture->view != nullptr
+            ddsResources != nullptr
+                && ddsResources->texture
+                && ddsResources->shaderResourceView
+                && ddsResources->d3d11ShaderResourceView != nullptr
                 && graphics.ResolveD3D11ShaderResourceView(
-                    ddsTexture->viewHandle)
-                    == ddsTexture->view.Get(),
+                    ddsResources->shaderResourceView)
+                    == ddsResources->d3d11ShaderResourceView.Get(),
             "DDS import did not enter the active backend generation");
 
         assets.SetProgressiveUploadThreshold(1);
         const auto progressiveTexture = assets.LoadTexture(
             std::filesystem::path{ LAMAPON_TEST_ASSET_DIR }
                 / L"textures/LamaPonEngineLogo.png");
+        const auto placeholderResources =
+            progressiveTexture->resources.Acquire();
+        Require(placeholderResources != nullptr,
+            "Progressive loading did not publish a resource snapshot");
         const auto placeholderTextureHandle =
-            progressiveTexture->textureHandle;
+            placeholderResources->texture;
         const auto placeholderViewHandle =
-            progressiveTexture->viewHandle;
+            placeholderResources->shaderResourceView;
         Require(
             placeholderTextureHandle
                 && placeholderViewHandle
                 && assets.PendingTextureUploadCount() == 1u,
             "Backend-aware progressive loading did not publish a placeholder");
         assets.PumpTextureUploads(1);
+        const auto firstProgressiveResources =
+            progressiveTexture->resources.Acquire();
         Require(
-            progressiveTexture->textureHandle
+            firstProgressiveResources != nullptr
+                && firstProgressiveResources->texture
                     != placeholderTextureHandle
-                && progressiveTexture->viewHandle
+                && firstProgressiveResources->shaderResourceView
                     != placeholderViewHandle
                 && graphics.ResolveD3D11ShaderResourceView(
-                    progressiveTexture->viewHandle)
-                    == progressiveTexture->view.Get()
+                    firstProgressiveResources->shaderResourceView)
+                    == firstProgressiveResources
+                        ->d3d11ShaderResourceView.Get()
                 && graphics.ResolveD3D11ShaderResourceView(
                     placeholderViewHandle) != nullptr,
             "The first progressive upload did not transactionally publish "
@@ -648,13 +786,17 @@ namespace
         {
             assets.PumpTextureUploads(1u << 30);
         }
+        const auto finalProgressiveResources =
+            progressiveTexture->resources.Acquire();
         Require(
             assets.PendingTextureUploadCount() == 0
-                && progressiveTexture->textureHandle
+                && finalProgressiveResources != nullptr
+                && finalProgressiveResources->texture
                     != placeholderTextureHandle
                 && graphics.ResolveD3D11ShaderResourceView(
-                    progressiveTexture->viewHandle)
-                    == progressiveTexture->view.Get(),
+                    finalProgressiveResources->shaderResourceView)
+                    == finalProgressiveResources
+                        ->d3d11ShaderResourceView.Get(),
             "Backend-aware progressive loading did not publish its final view");
         assets.SetProgressiveUploadThreshold(
             LamaPon::AssetManager::DefaultProgressiveUploadThreshold);
@@ -1024,10 +1166,21 @@ namespace
             renderer->TextureReference(textureAsset);
         const auto displayTextureReference =
             renderer->DisplayTextureReference(displayTarget);
-        Require(
-            assetTextureReference.GetTexID()
-                == ExpectedTextureId(textureAsset.view.Get()),
-            "Asset texture reference must contain its DirectX 11 SRV");
+        ID3D11ShaderResourceView* originalAssetView{};
+        {
+            const auto assetResources =
+                textureAsset.resources.Acquire();
+            Require(assetResources != nullptr,
+                "The editor GUI test asset must publish a resource snapshot");
+            originalAssetView =
+                graphics.TryResolveD3D11ShaderResourceView(
+                    *assetResources);
+            Require(
+                originalAssetView != nullptr
+                    && assetTextureReference.GetTexID()
+                        == ExpectedTextureId(originalAssetView),
+                "Asset texture reference must contain its DirectX 11 SRV");
+        }
         Require(
             displayTextureReference.GetTexID()
                 == ExpectedTextureId(
@@ -1048,6 +1201,23 @@ namespace
             ImVec2{ 52.0f, 8.0f },
             displayTextureReference);
         ImGui::Render();
+
+        // ImGui draw commands retain only the numeric texture ID. Replacing
+        // the asset snapshot after command construction must not invalidate
+        // that SRV before RenderDrawData consumes the commands.
+        constexpr std::array<std::uint8_t, 4> replacementAssetColor{
+            32u, 208u, 96u, 255u };
+        PublishSolidTexture(
+            textureAsset,
+            graphics,
+            replacementAssetColor);
+        const auto replacementResources =
+            textureAsset.resources.Acquire();
+        Require(
+            replacementResources != nullptr
+                && graphics.TryResolveD3D11ShaderResourceView(
+                    *replacementResources) != originalAssetView,
+            "Replacing an asset snapshot must publish a distinct SRV");
 
         constexpr float clearColor[]{
             0.05f, 0.1f, 0.15f, 1.0f };
@@ -1167,6 +1337,49 @@ namespace
             32u,
             { 13u, 51u, 230u },
             "Binding must restore and publishing must expose the offscreen target");
+
+        // SpriteBatchもDrawをEndまで遅延します。Draw登録後にassetの
+        // snapshotを差し替えても、登録時のviewがEndSpritesまで生存し、
+        // その色で描かれることを確認します。
+        auto deferredTextureAsset =
+            CreateSolidTexture(graphics, assetColor);
+        graphics.BeginFrame(clearColor);
+        auto& deferredSprites = graphics.BeginSprites();
+        auto* const deferredView =
+            graphics.PinD3D11TextureForSpriteBatch(
+                deferredTextureAsset.resources.Acquire());
+        Require(deferredView != nullptr,
+            "SpriteBatch texture pin must resolve an asset view");
+        const DirectX::XMFLOAT4 opaqueWhite{
+            1.0f, 1.0f, 1.0f, 1.0f };
+        deferredSprites.Draw(
+            deferredView,
+            DirectX::XMFLOAT2{},
+            nullptr,
+            DirectX::XMLoadFloat4(&opaqueWhite),
+            0.0f,
+            DirectX::XMFLOAT2{},
+            DirectX::XMFLOAT2{ 16.0f, 16.0f });
+        PublishSolidTexture(
+            deferredTextureAsset,
+            graphics,
+            replacementAssetColor);
+        graphics.EndSprites();
+        std::uint32_t deferredWidth{};
+        std::uint32_t deferredHeight{};
+        const auto deferredPixels = graphics.CaptureBackBuffer(
+            deferredWidth,
+            deferredHeight);
+        graphics.EndFrame();
+        Require(
+            deferredWidth == Width && deferredHeight == Height,
+            "SpriteBatch pin test must capture the active back buffer");
+        RequirePixelNear(
+            deferredPixels,
+            8u,
+            8u,
+            { assetColor[0], assetColor[1], assetColor[2] },
+            "SpriteBatch must retain the texture snapshot until EndSprites");
 
         LamaPon::ModelAsset emptyModel;
         const LamaPon::LitMaterial previewMaterial{

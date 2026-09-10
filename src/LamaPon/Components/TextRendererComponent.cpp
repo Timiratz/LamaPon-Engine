@@ -205,8 +205,16 @@ namespace LamaPon
         // 文字テクスチャは白で焼いてあるので、色はここで掛けます
         // （こうすると色を変えてもテクスチャは作り直しになりません＝
         // フェードのような演出ができます）。
+        auto* const textureView = m_graphics != nullptr
+            ? m_graphics->PinD3D11TextureForSpriteBatch(
+                m_texture->resources.Acquire())
+            : nullptr;
+        if (textureView == nullptr)
+        {
+            return;
+        }
         spriteBatch.Draw(
-            m_texture->view.Get(),
+            textureView,
             position,
             nullptr,
             PremultipliedTextColor(m_color),

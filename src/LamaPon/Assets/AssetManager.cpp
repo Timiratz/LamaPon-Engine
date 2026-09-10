@@ -292,9 +292,25 @@ namespace
         // resolverを含む失敗し得る処理を先に終え、assetへは完成した一式だけを
         // 公開します。DirectX 12ではcompatibility viewは空になります。
         auto compatibility = ResolveCompatibilityView(backend, view);
-        asset.textureHandle = std::move(texture);
-        asset.viewHandle = std::move(view);
-        asset.view = std::move(compatibility);
+        asset.resources.Publish(
+            LamaPon::TextureResourceSnapshot{
+                std::move(texture),
+                std::move(view),
+                std::move(compatibility)
+            });
+    }
+
+    template <typename Asset>
+    void PublishLegacyTextureView(
+        Asset& asset,
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view)
+    {
+        asset.resources.Publish(
+            LamaPon::TextureResourceSnapshot{
+                {},
+                {},
+                std::move(view)
+            });
     }
 
     template <typename Asset>
@@ -524,18 +540,84 @@ namespace
         viewDescription.ViewDimension =
             D3D11_SRV_DIMENSION_TEXTURE2D;
         viewDescription.Texture2D.MipLevels = 1;
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view;
         ThrowIfFailed(
             device->CreateShaderResourceView(
                 texture.Get(),
                 &viewDescription,
-                asset->view.ReleaseAndGetAddressOf()),
+                view.ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateShaderResourceView(built-in)");
+        PublishLegacyTextureView(*asset, std::move(view));
         return asset;
     }
 }
 
 namespace LamaPon
 {
+    namespace Detail
+    {
+        class TextureResourceSlot final
+        {
+        public:
+            TextureResourceSlot()
+                : current(
+                    std::make_shared<const TextureResourceSnapshot>())
+            {
+            }
+
+            std::atomic<std::shared_ptr<const TextureResourceSnapshot>>
+                current;
+        };
+    }
+
+    TextureResourceBinding::TextureResourceBinding()
+        : m_slot(std::make_shared<Detail::TextureResourceSlot>())
+    {
+    }
+
+    TextureResourceBinding::~TextureResourceBinding() = default;
+
+    TextureResourceBinding::TextureResourceBinding(
+        const TextureResourceBinding&) noexcept = default;
+
+    TextureResourceBinding::TextureResourceBinding(
+        TextureResourceBinding&& other) noexcept
+        : m_slot(other.m_slot)
+    {
+    }
+
+    TextureResourceBinding& TextureResourceBinding::operator=(
+        const TextureResourceBinding&) noexcept = default;
+
+    TextureResourceBinding& TextureResourceBinding::operator=(
+        TextureResourceBinding&& other) noexcept
+    {
+        m_slot = other.m_slot;
+        return *this;
+    }
+
+    std::shared_ptr<const TextureResourceSnapshot>
+        TextureResourceBinding::Acquire() const noexcept
+    {
+        return m_slot != nullptr
+            ? m_slot->current.load(std::memory_order_acquire)
+            : nullptr;
+    }
+
+    void TextureResourceBinding::Publish(
+        TextureResourceSnapshot snapshot)
+    {
+        auto published = std::make_shared<const TextureResourceSnapshot>(
+            std::move(snapshot));
+        if (m_slot == nullptr)
+        {
+            m_slot = std::make_shared<Detail::TextureResourceSlot>();
+        }
+        m_slot->current.store(
+            std::move(published),
+            std::memory_order_release);
+    }
+
     AssetManager::AssetManager(
         ID3D11Device* const device,
         ID3D11DeviceContext* const context)
@@ -1108,25 +1190,32 @@ namespace LamaPon
             // DDSはコンテキストなし（=ミップ自動生成なし）で
             // 読み込むため、フリースレッドなデバイスだけで完結
             // します。
+            Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
+                loadedView;
             ThrowIfFailed(
                 DirectX::CreateDDSTextureFromMemory(
                     m_device,
                     bytes.data(),
                     bytes.size(),
                     nullptr,
-                    texture->view
-                        .ReleaseAndGetAddressOf()),
+                    loadedView.ReleaseAndGetAddressOf()),
                 resolvedPath);
             if (auto* const d3d11 = AsD3D11Backend(m_backend))
             {
                 auto [textureHandle, viewHandle] =
                     d3d11->ImportShaderResourceView(
-                        texture->view.Get());
+                        loadedView.Get());
                 PublishTextureResources(
                     *texture,
                     m_backend,
                     std::move(textureHandle),
                     std::move(viewHandle));
+            }
+            else
+            {
+                PublishLegacyTextureView(
+                    *texture,
+                    std::move(loadedView));
             }
         }
         else
@@ -1224,12 +1313,14 @@ namespace LamaPon
                         TextureLoader::CreateUploadableTexture(
                             m_device,
                             prepared);
-                    texture->view = TextureLoader::CreateTexture(
-                        m_device,
-                        std::vector<TextureLoader::CpuImage>{
-                            std::move(placeholder)
-                        },
-                        false);
+                    PublishLegacyTextureView(
+                        *texture,
+                        TextureLoader::CreateTexture(
+                            m_device,
+                            std::vector<TextureLoader::CpuImage>{
+                                std::move(placeholder)
+                            },
+                            false));
                 }
 
                 const auto lastLevel =
@@ -1262,19 +1353,25 @@ namespace LamaPon
             }
             else
             {
-                texture->view = TextureLoader::CreateTexture(
-                    m_device,
-                    prepared);
+                PublishLegacyTextureView(
+                    *texture,
+                    TextureLoader::CreateTexture(
+                        m_device,
+                        prepared));
             }
         }
 
         // DDSとlegacy D3D11経路はnative metadataを保持し得ます。通常の
         // WIC textureは上でprepared dataから設定済みであり、将来の
         // D3D12 backendではcompatibility viewが空でも安全です。
-        if (texture->view)
+        const auto resources = texture->resources.Acquire();
+        const auto compatibilityView = resources != nullptr
+            ? resources->d3d11ShaderResourceView
+            : nullptr;
+        if (compatibilityView)
         {
             Microsoft::WRL::ComPtr<ID3D11Resource> resource;
-            texture->view->GetResource(
+            compatibilityView->GetResource(
                 resource.ReleaseAndGetAddressOf());
 
             Microsoft::WRL::ComPtr<ID3D11Texture2D> texture2D;
@@ -1422,15 +1519,12 @@ namespace LamaPon
                 }
             }
 
-            if (pending.textureHandle)
-            {
-                pending.asset->textureHandle =
-                    pending.textureHandle;
-                pending.asset->viewHandle =
-                    std::move(nextView);
-            }
-            pending.asset->view =
-                std::move(nextCompatibilityView);
+            pending.asset->resources.Publish(
+                TextureResourceSnapshot{
+                    pending.textureHandle,
+                    std::move(nextView),
+                    std::move(nextCompatibilityView)
+                });
             for (auto levelIndex = pending.nextLevel;
                 levelIndex > nextLevelAfterBatch;
                 --levelIndex)
@@ -2362,12 +2456,14 @@ namespace LamaPon
                     &initialData,
                     texture.ReleaseAndGetAddressOf()),
                 "ID3D11Device::CreateTexture2D(text)");
+            Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view;
             ThrowIfFailed(
                 m_device->CreateShaderResourceView(
                     texture.Get(),
                     nullptr,
-                    asset->view.ReleaseAndGetAddressOf()),
+                    view.ReleaseAndGetAddressOf()),
                 "ID3D11Device::CreateShaderResourceView(text)");
+            PublishLegacyTextureView(*asset, std::move(view));
         }
 
         // 文字テクスチャは「文字列ごとに1枚」なので、スコアや残り時間

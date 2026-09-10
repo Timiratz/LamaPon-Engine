@@ -2,6 +2,11 @@
 
 #include "LamaPon/Editor/EditorGuiRenderer.h"
 
+#include <d3d11.h>
+#include <wrl/client.h>
+
+#include <vector>
+
 struct ImGuiContext;
 
 namespace LamaPon
@@ -41,7 +46,10 @@ namespace LamaPon
     private:
         void RequireCurrentContext() const;
 
+        GraphicsDevice* m_graphics{};
         ImGuiContext* m_imguiContext{};
+        std::vector<Microsoft::WRL::ComPtr<
+            ID3D11ShaderResourceView>> m_frameTexturePins;
         bool m_initialized{};
     };
 }

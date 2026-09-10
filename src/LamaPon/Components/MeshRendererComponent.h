@@ -28,6 +28,7 @@ namespace LamaPon
     class AssetManager;
     class LitEffect;
     struct TextureAsset;
+    struct TextureResourceSnapshot;
 
     enum class PrimitiveShape
     {
@@ -310,10 +311,9 @@ namespace LamaPon
         void ApplyShaderRenderState(
             const ShaderRenderState& state) const;
         void ApplyCullModeOverride() const;
-        // 追加テクスチャのSRVを、未設定はnullptrで並べて返します。
-        [[nodiscard]] std::array<
-            ID3D11ShaderResourceView*,
-            LitMaterial::CustomTextureCount>
+        // 追加テクスチャのSRVと、その所有snapshotを同じ組で返します。
+        struct ResolvedCustomTextureViews;
+        [[nodiscard]] ResolvedCustomTextureViews
             ResolveCustomTextureViews() const noexcept;
         void ApplyMaterial(const LitMaterial& material);
         void RefreshShader(bool forceReload);

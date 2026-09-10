@@ -335,10 +335,18 @@ namespace LamaPon
                 ? static_cast<float>(
                     m_texture->height)
                 : 1.0f;
+        auto* textureView = whiteTexture;
+        if (m_texture && m_graphics != nullptr)
+        {
+            if (auto* const resolved =
+                    m_graphics->PinD3D11TextureForSpriteBatch(
+                        m_texture->resources.Acquire()))
+            {
+                textureView = resolved;
+            }
+        }
         spriteBatch.Draw(
-            m_texture
-                ? m_texture->view.Get()
-                : whiteTexture,
+            textureView,
             rect.minimum,
             nullptr,
             XMLoadFloat4(
@@ -352,6 +360,14 @@ namespace LamaPon
 
         if (m_textTexture)
         {
+            auto* const textTextureView = m_graphics != nullptr
+                ? m_graphics->PinD3D11TextureForSpriteBatch(
+                    m_textTexture->resources.Acquire())
+                : nullptr;
+            if (textTextureView == nullptr)
+            {
+                return;
+            }
             const XMFLOAT2 labelScale{
                 size.x / static_cast<float>(
                     m_textTexture->width),
@@ -360,7 +376,7 @@ namespace LamaPon
             };
             // 文字テクスチャは白で焼いてあるので色はここで掛けます。
             spriteBatch.Draw(
-                m_textTexture->view.Get(),
+                textTextureView,
                 rect.minimum,
                 nullptr,
                 PremultipliedTextColor(m_textColor),

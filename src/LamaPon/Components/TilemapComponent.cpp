@@ -230,6 +230,17 @@ namespace LamaPon
                 * worldScaleY
         };
 
+        auto* textureView = whiteTexture;
+        if (m_texture && m_graphics != nullptr)
+        {
+            if (auto* const resolved =
+                    m_graphics->PinD3D11TextureForSpriteBatch(
+                        m_texture->resources.Acquire()))
+            {
+                textureView = resolved;
+            }
+        }
+
         for (const auto& [coordinate, tileIndex] :
             m_cells)
         {
@@ -289,9 +300,7 @@ namespace LamaPon
             }
 
             spriteBatch.Draw(
-                m_texture
-                    ? m_texture->view.Get()
-                    : whiteTexture,
+                textureView,
                 position,
                 source,
                 XMLoadFloat4(

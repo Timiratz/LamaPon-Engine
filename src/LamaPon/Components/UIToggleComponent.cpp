@@ -234,15 +234,20 @@ namespace LamaPon
 
         if (m_textTexture)
         {
+            auto* const textTextureView = m_graphics != nullptr
+                ? m_graphics->PinD3D11TextureForSpriteBatch(
+                    m_textTexture->resources.Acquire())
+                : nullptr;
             const float labelLeft =
                 rect.minimum.x + boxSize
                 + boxSize * 0.25f;
             const float labelWidth =
                 rect.maximum.x - labelLeft;
-            if (labelWidth > 0.0f)
+            if (textTextureView != nullptr
+                && labelWidth > 0.0f)
             {
                 spriteBatch.Draw(
-                    m_textTexture->view.Get(),
+                    textTextureView,
                     XMFLOAT2{
                         labelLeft,
                         rect.minimum.y },

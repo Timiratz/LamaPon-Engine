@@ -40,6 +40,7 @@ namespace LamaPon
     class SkeletalModel;
     struct ModelAsset;
     struct TextureAsset;
+    struct TextureResourceSnapshot;
     struct SkeletalPoseSample;
 
     struct AnimationEventNotification final
@@ -419,10 +420,9 @@ namespace LamaPon
         // Shaderが宣言した描画状態（合成・深度・カリング）を適用します。
         void ApplyShaderRenderState(
             const ShaderRenderState& state) const;
-        // 追加テクスチャのSRVを、未設定はnullptrで並べて返します。
-        [[nodiscard]] std::array<
-            ID3D11ShaderResourceView*,
-            LitMaterial::CustomTextureCount>
+        // 追加テクスチャのSRVと、その所有snapshotを同じ組で返します。
+        struct ResolvedCustomTextureViews;
+        [[nodiscard]] ResolvedCustomTextureViews
             ResolveCustomTextureViews() const noexcept;
         struct CommonLitResources;
 

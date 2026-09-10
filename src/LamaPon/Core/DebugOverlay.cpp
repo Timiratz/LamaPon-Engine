@@ -234,8 +234,15 @@ namespace LamaPon
         float y = 6.0f + Padding;
         for (const auto& line : textures)
         {
+            auto* const view =
+                graphics.PinD3D11TextureForSpriteBatch(
+                    line.texture->resources.Acquire());
+            if (view == nullptr)
+            {
+                continue;
+            }
             sprites.Draw(
-                line.texture->view.Get(),
+                view,
                 XMFLOAT2{ 6.0f + Padding, y },
                 nullptr,
                 PremultipliedTextColor(line.color));

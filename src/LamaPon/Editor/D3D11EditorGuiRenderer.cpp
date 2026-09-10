@@ -59,6 +59,7 @@ namespace LamaPon
             throw std::runtime_error(
                 "Failed to initialize the DirectX 11 Dear ImGui renderer.");
         }
+        m_graphics = &graphics;
         m_imguiContext = imguiContext;
         m_initialized = true;
     }
@@ -66,6 +67,10 @@ namespace LamaPon
     void D3D11EditorGuiRenderer::NewFrame()
     {
         RequireCurrentContext();
+        // ImGui texture IDs are raw DirectX 11 SRV pointers. Keep every SRV
+        // referenced while building a frame alive until that draw data has
+        // been consumed; the next NewFrame marks that boundary.
+        m_frameTexturePins.clear();
         ImGui_ImplDX11_NewFrame();
     }
 
@@ -73,14 +78,20 @@ namespace LamaPon
         const TextureAsset& texture)
     {
         RequireCurrentContext();
-        auto* const view = texture.view.Get();
+        const auto resources = texture.resources.Acquire();
+        auto* const view = resources != nullptr
+            ? m_graphics->TryResolveD3D11ShaderResourceView(
+                *resources)
+            : nullptr;
         if (view == nullptr)
         {
             throw std::invalid_argument(
                 "The editor GUI texture asset has no DirectX 11 shader "
                 "resource view.");
         }
-        return MakeD3D11TextureReference(view);
+        m_frameTexturePins.emplace_back(view);
+        return MakeD3D11TextureReference(
+            m_frameTexturePins.back().Get());
     }
 
     ImTextureRef D3D11EditorGuiRenderer::DisplayTextureReference(
@@ -94,7 +105,9 @@ namespace LamaPon
                 "The editor GUI render target has no DirectX 11 display "
                 "shader resource view.");
         }
-        return MakeD3D11TextureReference(view);
+        m_frameTexturePins.emplace_back(view);
+        return MakeD3D11TextureReference(
+            m_frameTexturePins.back().Get());
     }
 
     void D3D11EditorGuiRenderer::RenderDrawData(
@@ -128,6 +141,8 @@ namespace LamaPon
     {
         if (!m_initialized)
         {
+            m_frameTexturePins.clear();
+            m_graphics = nullptr;
             return;
         }
 
@@ -136,11 +151,13 @@ namespace LamaPon
         {
             ImGui::SetCurrentContext(m_imguiContext);
         }
+        m_frameTexturePins.clear();
         ImGui_ImplDX11_Shutdown();
         if (previousContext != m_imguiContext)
         {
             ImGui::SetCurrentContext(previousContext);
         }
+        m_graphics = nullptr;
         m_imguiContext = nullptr;
         m_initialized = false;
     }

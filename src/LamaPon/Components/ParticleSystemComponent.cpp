@@ -768,9 +768,25 @@ namespace LamaPon
         m_effect->SetView(view);
         m_effect->SetProjection(
             projection);
+        const auto textureResources = m_texture
+            ? m_texture->resources.Acquire()
+            : nullptr;
+        const auto auxiliaryTextureResources =
+            m_auxiliaryTexture
+                ? m_auxiliaryTexture->resources.Acquire()
+                : nullptr;
+        auto* const textureView = textureResources
+            ? m_graphics->TryResolveD3D11ShaderResourceView(
+                *textureResources)
+            : nullptr;
+        auto* const auxiliaryTextureView =
+            auxiliaryTextureResources
+                ? m_graphics->TryResolveD3D11ShaderResourceView(
+                    *auxiliaryTextureResources)
+                : nullptr;
         m_effect->SetTexture(
-            m_texture
-                ? m_texture->view.Get()
+            textureView != nullptr
+                ? textureView
                 : m_graphics->
                     WhiteTexture());
         m_effect->Apply(context);
@@ -789,11 +805,11 @@ namespace LamaPon
             if (customShaderApplied)
             {
                 ID3D11ShaderResourceView* resources[]{
-                    m_texture
-                        ? m_texture->view.Get()
+                    textureView != nullptr
+                        ? textureView
                         : m_graphics->WhiteTexture(),
-                    m_auxiliaryTexture
-                        ? m_auxiliaryTexture->view.Get()
+                    auxiliaryTextureView != nullptr
+                        ? auxiliaryTextureView
                         : m_graphics->WhiteTexture()
                 };
                 context->PSSetShaderResources(

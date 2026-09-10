@@ -72,7 +72,16 @@ namespace
     // 読み込み済みテクスチャとマテリアル値から、Effectへ渡す
     // PBRマップ一式を組み立てます。未設定はnullptrのままにして、
     // シェーダー側では「マップなし」として扱わせます。
-    LamaPon::LitEffect::PbrTextures BuildPbrTextures(
+    struct ResolvedPbrTextures final
+    {
+        std::array<std::shared_ptr<
+            const LamaPon::TextureResourceSnapshot>, 4>
+            snapshots;
+        LamaPon::LitEffect::PbrTextures values{};
+    };
+
+    ResolvedPbrTextures BuildPbrTextures(
+        const LamaPon::GraphicsDevice& graphics,
         const std::shared_ptr<
             const LamaPon::TextureAsset>& roughness,
         const std::shared_ptr<
@@ -83,23 +92,34 @@ namespace
             const LamaPon::TextureAsset>& emissive,
         const LamaPon::LitMaterial& material) noexcept
     {
-        LamaPon::LitEffect::PbrTextures textures{};
-        textures.roughness = roughness
-            ? roughness->view.Get()
-            : nullptr;
-        textures.metallic = metallic
-            ? metallic->view.Get()
-            : nullptr;
-        textures.occlusion = occlusion
-            ? occlusion->view.Get()
-            : nullptr;
-        textures.emissive = emissive
-            ? emissive->view.Get()
-            : nullptr;
-        textures.occlusionStrength =
+        ResolvedPbrTextures resolved{};
+        const std::array assets{
+            roughness,
+            metallic,
+            occlusion,
+            emissive
+        };
+        std::array<ID3D11ShaderResourceView*, 4> views{};
+        for (std::size_t index = 0;
+            index < assets.size();
+            ++index)
+        {
+            resolved.snapshots[index] = assets[index]
+                ? assets[index]->resources.Acquire()
+                : nullptr;
+            views[index] = resolved.snapshots[index]
+                ? graphics.TryResolveD3D11ShaderResourceView(
+                    *resolved.snapshots[index])
+                : nullptr;
+        }
+        resolved.values.roughness = views[0];
+        resolved.values.metallic = views[1];
+        resolved.values.occlusion = views[2];
+        resolved.values.emissive = views[3];
+        resolved.values.occlusionStrength =
             material.OcclusionStrength();
-        textures.emissiveFactor = material.EmissiveColor();
-        return textures;
+        resolved.values.emissiveFactor = material.EmissiveColor();
+        return resolved;
     }
 
     float SpecularPowerFromRoughness(const float roughness) noexcept
@@ -249,24 +269,34 @@ namespace LamaPon
         }
     }
 
-    std::array<
-        ID3D11ShaderResourceView*,
-        LitMaterial::CustomTextureCount>
-        ModelRendererComponent::ResolveCustomTextureViews() const noexcept
+    struct ModelRendererComponent::ResolvedCustomTextureViews final
     {
-        // 未設定の枠はnullptrにします（LitEffect側で白へ差し替え）。
+        std::array<
+            std::shared_ptr<const TextureResourceSnapshot>,
+            LitMaterial::CustomTextureCount> snapshots;
         std::array<
             ID3D11ShaderResourceView*,
             LitMaterial::CustomTextureCount> views{};
+    };
+
+    ModelRendererComponent::ResolvedCustomTextureViews
+        ModelRendererComponent::ResolveCustomTextureViews() const noexcept
+    {
+        // 未設定の枠はnullptrにします（LitEffect側で白へ差し替え）。
+        ResolvedCustomTextureViews resolved{};
         for (std::size_t index = 0;
-            index < views.size();
+            index < resolved.views.size();
             ++index)
         {
-            views[index] = m_customTextures[index]
-                ? m_customTextures[index]->view.Get()
+            resolved.snapshots[index] = m_customTextures[index]
+                ? m_customTextures[index]->resources.Acquire()
+                : nullptr;
+            resolved.views[index] = resolved.snapshots[index]
+                ? m_graphics->TryResolveD3D11ShaderResourceView(
+                    *resolved.snapshots[index])
                 : nullptr;
         }
-        return views;
+        return resolved;
     }
 
     struct ModelRendererComponent::CommonLitResources final
@@ -1699,7 +1729,14 @@ namespace LamaPon
             }
             // マテリアル上書き時にモデル自身のPBRマップより優先させる
             // 一式。上書きが無ければDraw側で無視されます。
+            const auto albedoResources = m_albedoTexture
+                ? m_albedoTexture->resources.Acquire()
+                : nullptr;
+            const auto normalResources = m_normalTexture
+                ? m_normalTexture->resources.Acquire()
+                : nullptr;
             const auto overridePbrTextures = BuildPbrTextures(
+                *m_graphics,
                 m_roughnessTexture,
                 m_metallicTexture,
                 m_occlusionTexture,
@@ -1718,13 +1755,15 @@ namespace LamaPon
                 m_materialOverrideEnabled
                     ? &m_material
                     : nullptr,
-                m_albedoTexture
-                    ? m_albedoTexture->view.Get()
+                albedoResources
+                    ? m_graphics->TryResolveD3D11ShaderResourceView(
+                        *albedoResources)
                     : nullptr,
-                m_normalTexture
-                    ? m_normalTexture->view.Get()
+                normalResources
+                    ? m_graphics->TryResolveD3D11ShaderResourceView(
+                        *normalResources)
                     : nullptr,
-                &overridePbrTextures,
+                &overridePbrTextures.values,
                 blendClip,
                 m_nextAnimationTime,
                 blendAmount,
@@ -1751,8 +1790,22 @@ namespace LamaPon
             return;
         }
 
+        const auto albedoResources = m_albedoTexture
+            ? m_albedoTexture->resources.Acquire()
+            : nullptr;
+        const auto normalResources = m_normalTexture
+            ? m_normalTexture->resources.Acquire()
+            : nullptr;
+        auto* const albedoView = albedoResources
+            ? m_graphics->TryResolveD3D11ShaderResourceView(
+                *albedoResources)
+            : nullptr;
+        auto* const normalView = normalResources
+            ? m_graphics->TryResolveD3D11ShaderResourceView(
+                *normalResources)
+            : nullptr;
         m_model->model->UpdateEffects(
-            [this](DirectX::IEffect* effect)
+            [this, albedoView, normalView](DirectX::IEffect* effect)
             {
                 if (m_materialOverrideEnabled)
                 {
@@ -1765,13 +1818,6 @@ namespace LamaPon
                     const auto specularColor =
                         SpecularColorFromRoughness(
                             m_material.Roughness());
-                    auto* const albedo = m_albedoTexture
-                        ? m_albedoTexture->view.Get()
-                        : nullptr;
-                    auto* const normal = m_normalTexture
-                        ? m_normalTexture->view.Get()
-                        : nullptr;
-
                     if (auto* normalMap =
                         dynamic_cast<DirectX::NormalMapEffect*>(
                             effect))
@@ -1782,13 +1828,13 @@ namespace LamaPon
                             specularColor);
                         normalMap->SetSpecularPower(
                             specularPower);
-                        if (albedo != nullptr)
+                        if (albedoView != nullptr)
                         {
-                            normalMap->SetTexture(albedo);
+                            normalMap->SetTexture(albedoView);
                         }
-                        if (normal != nullptr)
+                        if (normalView != nullptr)
                         {
-                            normalMap->SetNormalTexture(normal);
+                            normalMap->SetNormalTexture(normalView);
                         }
                     }
                     else if (auto* basic =
@@ -1798,10 +1844,10 @@ namespace LamaPon
                         basic->SetAlpha(alpha);
                         basic->SetSpecularColor(specularColor);
                         basic->SetSpecularPower(specularPower);
-                        if (albedo != nullptr)
+                        if (albedoView != nullptr)
                         {
                             basic->SetTextureEnabled(true);
-                            basic->SetTexture(albedo);
+                            basic->SetTexture(albedoView);
                         }
                     }
                     else if (auto* skinned =
@@ -1813,9 +1859,9 @@ namespace LamaPon
                             specularColor);
                         skinned->SetSpecularPower(
                             specularPower);
-                        if (albedo != nullptr)
+                        if (albedoView != nullptr)
                         {
-                            skinned->SetTexture(albedo);
+                            skinned->SetTexture(albedoView);
                         }
                     }
                     else if (auto* dgsl =
@@ -1825,10 +1871,10 @@ namespace LamaPon
                         dgsl->SetAlpha(alpha);
                         dgsl->SetSpecularColor(specularColor);
                         dgsl->SetSpecularPower(specularPower);
-                        if (albedo != nullptr)
+                        if (albedoView != nullptr)
                         {
                             dgsl->SetTextureEnabled(true);
-                            dgsl->SetTexture(albedo);
+                            dgsl->SetTexture(albedoView);
                         }
                     }
                     else if (auto* alphaTest =
@@ -1837,9 +1883,9 @@ namespace LamaPon
                     {
                         alphaTest->SetDiffuseColor(color);
                         alphaTest->SetAlpha(alpha);
-                        if (albedo != nullptr)
+                        if (albedoView != nullptr)
                         {
-                            alphaTest->SetTexture(albedo);
+                            alphaTest->SetTexture(albedoView);
                         }
                     }
                     else if (auto* dualTexture =
@@ -1848,9 +1894,9 @@ namespace LamaPon
                     {
                         dualTexture->SetDiffuseColor(color);
                         dualTexture->SetAlpha(alpha);
-                        if (albedo != nullptr)
+                        if (albedoView != nullptr)
                         {
-                            dualTexture->SetTexture(albedo);
+                            dualTexture->SetTexture(albedoView);
                         }
                     }
                     else if (auto* environment =
@@ -1860,9 +1906,9 @@ namespace LamaPon
                     {
                         environment->SetDiffuseColor(color);
                         environment->SetAlpha(alpha);
-                        if (albedo != nullptr)
+                        if (albedoView != nullptr)
                         {
-                            environment->SetTexture(albedo);
+                            environment->SetTexture(albedoView);
                         }
                     }
                 }
@@ -2950,6 +2996,29 @@ namespace LamaPon
             && effect.HasOccludedPass()
             && m_material.CustomParameter(4).w > 0.0f;
 
+        const auto albedoResources = m_albedoTexture
+            ? m_albedoTexture->resources.Acquire()
+            : nullptr;
+        const auto normalResources = m_normalTexture
+            ? m_normalTexture->resources.Acquire()
+            : nullptr;
+        auto* const albedoView = albedoResources
+            ? m_graphics->TryResolveD3D11ShaderResourceView(
+                *albedoResources)
+            : nullptr;
+        auto* const normalView = normalResources
+            ? m_graphics->TryResolveD3D11ShaderResourceView(
+                *normalResources)
+            : nullptr;
+        const auto pbrTextures = BuildPbrTextures(
+            *m_graphics,
+            m_roughnessTexture,
+            m_metallicTexture,
+            m_occlusionTexture,
+            m_emissiveTexture,
+            m_material);
+        const auto customTextures = ResolveCustomTextureViews();
+
         for (const bool alphaPass : { false, true })
         {
             for (const auto& mesh : model.meshes)
@@ -3003,22 +3072,17 @@ namespace LamaPon
                         continue;
                     }
                     effect.SetTextures(
-                        m_albedoTexture
-                            ? m_albedoTexture->view.Get()
+                        albedoResources
+                            ? albedoView
                             : (part.embeddedAlbedoTexture
                                 ? part.embeddedAlbedoTexture.Get()
                                 : m_graphics->WhiteTexture()),
-                        m_normalTexture
-                            ? m_normalTexture->view.Get()
+                        normalResources
+                            ? normalView
                             : part.embeddedNormalTexture.Get(),
-                        BuildPbrTextures(
-                            m_roughnessTexture,
-                            m_metallicTexture,
-                            m_occlusionTexture,
-                            m_emissiveTexture,
-                            m_material));
+                        pbrTextures.values);
                     effect.SetCustomTextures(
-                        ResolveCustomTextureViews());
+                        customTextures.views);
                     if (m_preserveEmbeddedMaterialColor)
                     {
                         // 上書き色をTintとして扱い、CMO/SDKMESH内の

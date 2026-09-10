@@ -6890,6 +6890,8 @@ namespace LamaPon
 
         // キューブマップスカイとIBL（環境反射）。
         ID3D11ShaderResourceView* skyCubemap{};
+        std::shared_ptr<const TextureResourceSnapshot>
+            skyResources;
         if (m_sky.enabled
             && !m_sky.cubemapPath.empty()
             && m_graphics.IsInitialized())
@@ -6901,7 +6903,11 @@ namespace LamaPon
                             m_sky.cubemapPath);
                     texture != nullptr && texture->isCube)
                 {
-                    skyCubemap = texture->view.Get();
+                    skyResources = texture->resources.Acquire();
+                    skyCubemap = skyResources != nullptr
+                        ? m_graphics.TryResolveD3D11ShaderResourceView(
+                            *skyResources)
+                        : nullptr;
                 }
             }
             catch (...)

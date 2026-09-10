@@ -245,6 +245,16 @@ namespace LamaPon
         const float textureHeight = m_texture
             ? static_cast<float>(m_texture->height)
             : 1.0f;
+        auto* textureView = whiteTexture;
+        if (m_texture)
+        {
+            if (auto* const resolved =
+                    m_graphics->PinD3D11TextureForSpriteBatch(
+                        m_texture->resources.Acquire()))
+            {
+                textureView = resolved;
+            }
+        }
         for (const auto& particle : m_particles)
         {
             const float normalizedAge = std::clamp(
@@ -275,9 +285,7 @@ namespace LamaPon
                 color.w
             };
             spriteBatch.Draw(
-                m_texture
-                    ? m_texture->view.Get()
-                    : whiteTexture,
+                textureView,
                 XMFLOAT2{
                     particle.position.x + offset.x,
                     particle.position.y + offset.y },

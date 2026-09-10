@@ -7814,13 +7814,24 @@ int main(const int argumentCount, char** arguments)
                     compressedNormalPath,
                     LamaPon::TextureLoader::TextureUsage::
                         NormalMap);
+            const auto compressedResources =
+                compressedAsset != nullptr
+                    ? compressedAsset->resources.Acquire()
+                    : nullptr;
+            auto* const compressedView =
+                compressedResources != nullptr
+                    ? graphics
+                        .TryResolveD3D11ShaderResourceView(
+                            *compressedResources)
+                    : nullptr;
             Require(
                 compressedAsset != nullptr
-                    && compressedAsset->view != nullptr,
+                    && compressedResources != nullptr
+                    && compressedView != nullptr,
                 "the compressed normal map must load");
             Microsoft::WRL::ComPtr<ID3D11Resource>
                 compressedResource;
-            compressedAsset->view->GetResource(
+            compressedView->GetResource(
                 compressedResource.GetAddressOf());
             Microsoft::WRL::ComPtr<ID3D11Texture2D>
                 compressedTexture;

@@ -319,14 +319,20 @@ namespace LamaPon
                 : m_textColor);
         if (texture)
         {
+            auto* const textureView = m_graphics != nullptr
+                ? m_graphics->PinD3D11TextureForSpriteBatch(
+                    texture->resources.Acquire())
+                : nullptr;
             const float textWidth =
                 size.x - padding * 2.0f;
             const float textHeight =
                 size.y - padding * 2.0f;
-            if (textWidth > 0.0f && textHeight > 0.0f)
+            if (textureView != nullptr
+                && textWidth > 0.0f
+                && textHeight > 0.0f)
             {
                 spriteBatch.Draw(
-                    texture->view.Get(),
+                    textureView,
                     XMFLOAT2{
                         rect.minimum.x + padding,
                         rect.minimum.y + padding },

@@ -84,6 +84,7 @@ namespace LamaPon
     class RenderTarget;
     class ScreenEffect;
     class ComputeEffect;
+    struct TextureResourceSnapshot;
     struct AutoExposureSettings;
     struct BloomSettings;
     struct ScreenSpaceLensFlareSettings;
@@ -219,6 +220,13 @@ namespace LamaPon
 
         void BeginFrame(const float clearColor[4]);
         DirectX::SpriteBatch& BeginSprites();
+        // SpriteBatchはDeferredなので、Drawへ渡すnative viewをEndSpritesまで
+        // snapshotごと保持します。2D/UI componentはraw resolverではなく
+        // この経路を使ってください。
+        [[nodiscard]] ID3D11ShaderResourceView*
+            PinD3D11TextureForSpriteBatch(
+                std::shared_ptr<const TextureResourceSnapshot>
+                    resources);
         // lightingを渡すと、組み込みの2D照明Shaderが読む灯り一覧を
         // b1の専用バッファへ載せます。CustomParameters（8本しかなく、
         // 自作Shaderの持ち物）を使わないので16灯まで扱えます。
@@ -470,6 +478,12 @@ namespace LamaPon
         [[nodiscard]] ID3D11ShaderResourceView*
             TryResolveD3D11ShaderResourceView(
                 const GraphicsViewHandle& view) const noexcept;
+        // Texture assetの単一snapshotを解決します。neutral handleがある場合は
+        // それを正とし、stale handleからlegacy raw pointerへはfallbackしません。
+        [[nodiscard]] ID3D11ShaderResourceView*
+            TryResolveD3D11ShaderResourceView(
+                const TextureResourceSnapshot& resources)
+                const noexcept;
         [[nodiscard]] ID3D11Buffer* ResolveD3D11Buffer(
             const GraphicsBufferHandle& buffer) const;
         // API非依存resource操作をactive Backendへ転送します。
@@ -723,6 +737,8 @@ namespace LamaPon
         GraphicsTextureHandle m_whiteTexture;
         GraphicsViewHandle m_whiteTextureView;
         std::unique_ptr<DirectX::SpriteBatch> m_spriteBatch;
+        std::vector<std::shared_ptr<const TextureResourceSnapshot>>
+            m_spriteTexturePins;
         std::unique_ptr<DirectX::CommonStates> m_commonStates;
         mutable Microsoft::WRL::ComPtr<ID3D11BlendState>
             m_additiveBlendPreservingAlpha;

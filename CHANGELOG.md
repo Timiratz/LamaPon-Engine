@@ -33,6 +33,8 @@
 - `GraphicsSettings`、`GraphicsDevice`、`Scene`、`EnvironmentRenderer`、`GpuProfiler`、`DebugRenderer`のABI変更、および共通Backend契約の拡張に伴い、Game Module APIを32へ更新。
 - 描画resource handle契約と`GraphicsDevice` / `GraphicsBackend`のABI変更に伴い、Game Module APIを33へ更新。SDK反映後はゲーム用DLLの再ビルドが必要。
 - texture resource契約と`TextureAsset` / `AssetManager` / `RuntimeServices`のABI変更に伴い、Game Module APIを34へ更新。SDK反映後はゲーム用DLLの再ビルドが必要。
+- Texture/Viewを単一の不変snapshotとしてatomicに公開し、段階upload中も同じ世代のresourceだけを描画する。ImGuiとSpriteBatchは遅延描画完了までresourceを保持する。
+- `TextureAsset` / `TextTextureAsset`のresource公開ABI変更に伴い、Game Module APIを35へ更新。SDK反映後はゲーム用DLLの再ビルドが必要。
 
 ### ファイル名の統一
 
@@ -65,7 +67,8 @@
   環境ベイクworkflowの集約で27、環境資源facadeの追加で28、
   GPU計測scopeの追加で29、GPUメモリ統計契約の追加で30、
   Debug描画sinkの分離で31、GPU計測driverの分離で32、
-  描画resource handle契約の追加で33、texture resource境界の追加で現在の34へ更新。
+  描画resource handle契約の追加で33、texture resource境界の追加で34、
+  texture snapshot公開の追加で現在の35へ更新。
 - MSVC／Ninjaのヘッダー依存検出を修正。ローカライズされた出力と既存ビルドの依存情報再取得に対応。
 - Web入力の登録解除・例外処理・ログを改善し、SDK構成、ライセンス同梱、Windows／Webの回帰検査を整備。
 
