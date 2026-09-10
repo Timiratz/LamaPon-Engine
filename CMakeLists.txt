@@ -274,6 +274,7 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Graphics/GraphicsDevice.h
     src/LamaPon/Graphics/GraphicsDeviceApiResources.h
     src/LamaPon/Graphics/GraphicsDeviceShaderState.h
+    src/LamaPon/Graphics/GraphicsDeviceShaderEffectsD3D11.cpp
     src/LamaPon/Graphics/GraphicsDeviceBackendOps.cpp
     src/LamaPon/Graphics/GraphicsDeviceBuiltInEffectsD3D11.cpp
     src/LamaPon/Graphics/GraphicsDeviceComposition.cpp

@@ -47,6 +47,7 @@
 - SpriteBatchの基本開始・終了、UIシザー、起動画面描画を`GraphicsDeviceSpriteD3D11.cpp`へ分離し、共通Device実装からD3D11 Spriteフロントエンドの責務を切り出し。
 - 環境・クラスタ・Litとエラー代替用の組み込みEffect生成を`GraphicsDeviceBuiltInEffectsD3D11.cpp`へ分離し、D3D11 Shader資源の生成責務を集約。
 - Material、Sprite、Screen、Compute Shaderキャッシュの内部状態型をSDK非公開の`GraphicsDeviceShaderState.h`へ集約し、Device寿命管理とShader実装を別翻訳単位へ分けられる境界を追加。
+- カスタムSprite、Material、Screen、Compute Shaderの読み込み・再読み込み・実行を`GraphicsDeviceShaderEffectsD3D11.cpp`へ分離し、共通Device本体をBackend寿命と設定管理へ縮小。
 - `GraphicsDevice`の公開レイアウト変更に伴い、Game Module APIを38へ更新。SDK反映後はゲーム用DLLの再ビルドが必要。
 
 ### ファイル名の統一
