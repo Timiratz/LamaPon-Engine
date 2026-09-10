@@ -2228,7 +2228,8 @@ namespace
         Require(
             displayTextureReference.GetTexID()
                 == ExpectedTextureId(
-                    displayTarget.DisplayShaderResourceView()),
+                    graphics.TryResolveD3D11ShaderResourceView(
+                        displayTarget.DisplayViewHandle())),
             "Display texture reference must contain its DirectX 11 SRV");
 
         ImGui::SetNextWindowPos(ImVec2(4.0f, 4.0f));

@@ -274,9 +274,9 @@ namespace LamaPon
                 const GraphicsTextureHandle& texture,
                 const GraphicsTextureViewDescription& description) = 0;
 
-        // 名前付きoffscreen targetの表示面を、API非依存handleとして
-        // 保持するための境界です。既存virtualのslotを維持するため、
-        // 新しい契約は常に末尾へ追加します。
+        // API 39で追加した互換slotです。現在はRenderTarget自身が表示
+        // handleを所有するため、そのhandleをBackend世代検証して返します。
+        // vtable互換のためslot自体は維持します。
         [[nodiscard]] virtual GraphicsViewHandle
             CreateOffscreenDisplayView(
                 const RenderTarget& target) = 0;

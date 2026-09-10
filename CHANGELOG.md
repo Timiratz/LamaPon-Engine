@@ -85,6 +85,7 @@
 - TAAの履歴カラーと深度入力を世代付きneutral handleへ移行。RenderTarget生成時に他の画面空間viewと一括取込し、TAA描画前にBackend世代・RGBA16F履歴・R24深度の形式と寸法を検証。公開layout変更に伴いGame Module APIを59へ更新。
 - Sky描画のcubemapをneutral viewで受けるGraphicsDevice facadeを追加し、stale・foreign・2D viewはprocedural Skyへ安全にフォールバック。SSR深度ピラミッドとGI probeベイクもDevice境界へ集約し、Sceneからraw D3D11参照と`EnvironmentRenderer`直接依存を除去。旧raw入口はprivate互換shimとし、Game Module APIを60へ更新。
 - TAAとボリュメトリックライトのScene入力をAPI非依存型へ移し、target固有の履歴・深度・前フレーム状態は`RenderTarget`内部で注入。全ポスト処理を専用D3D11 island内の`GraphicsDevice` facade経由に統一し、`RenderPipeline`から`EnvironmentRenderer`直接依存を除去。Deviceのraw renderer取得口とRenderTargetの旧post-process入口はprivate互換shimへ移行し、公開frame layout変更に伴いGame Module APIを61へ更新。
+- `RenderTarget`の現在カラーと表示確定面を世代付きneutral handleとして公開し、全ポスト処理のping-pongでnative資源と同時に更新。名前付きRenderTextureとEditor GUIも同一handleを使う経路へ統一し、旧raw getterはprivate互換shimへ移行。公開layout変更に伴いGame Module APIを62へ更新。
 
 ### ファイル名の統一
 

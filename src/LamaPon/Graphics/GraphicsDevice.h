@@ -820,6 +820,10 @@ namespace LamaPon
         // API 60以前のraw renderer取得口はbinary互換shimとして残し、
         // engine内部のneutral facadeだけが使用します。
         [[nodiscard]] EnvironmentRenderer& Environment() const;
+        // Scene compositionの現在カラーを既定出力へ転送します。native
+        // view解決とD3D11 copy shaderは実装側の描画島に閉じ込めます。
+        void CopyOffscreenTargetToBackBuffer(
+            const RenderTarget& target);
 
         // 組み込みシェーダーの組み立てに失敗した時刻とエラーを保持します。
         struct BuiltInFailure final

@@ -719,6 +719,12 @@ int main(const int argumentCount, char** arguments)
         constexpr char LegacyEnvironmentAccessorSymbol[] =
             "?Environment@GraphicsDevice@LamaPon@@"
             "QEBAAEAVEnvironmentRenderer@2@XZ";
+        constexpr char LegacyCurrentColorViewSymbol[] =
+            "?ShaderResourceView@RenderTarget@LamaPon@@"
+            "QEBAPEAUID3D11ShaderResourceView@@XZ";
+        constexpr char LegacyDisplayViewSymbol[] =
+            "?DisplayShaderResourceView@RenderTarget@LamaPon@@"
+            "QEBAPEAUID3D11ShaderResourceView@@XZ";
         constexpr std::array LegacyRenderTargetPostProcessSymbols{
             "?ApplyBloom@RenderTarget@LamaPon@@"
             "QEAAXAEAVEnvironmentRenderer@2@AEBUBloomSettings@2@@Z",
@@ -838,6 +844,14 @@ int main(const int argumentCount, char** arguments)
                 GetProcAddress(runtimeModule, symbol) != nullptr,
                 "An API 61 RenderTarget post-process export alias is missing");
         }
+        Require(
+            GetProcAddress(
+                runtimeModule,
+                LegacyCurrentColorViewSymbol) != nullptr
+                && GetProcAddress(
+                    runtimeModule,
+                    LegacyDisplayViewSymbol) != nullptr,
+            "An API 62 RenderTarget color-view export alias is missing");
         using LegacyEnvironmentAccessor =
             LamaPon::EnvironmentRenderer* (__fastcall*)(
                 const LamaPon::GraphicsDevice*);
@@ -1563,27 +1577,63 @@ int main(const int argumentCount, char** arguments)
                 directionalShadow.cascadeCount);
         volumetricInputs.shadowResolution =
             shadowLighting.directionalShadowResolution;
-        auto* const volumetricSource =
-            volumetricTarget.ShaderResourceView();
+        const auto volumetricSource =
+            volumetricTarget.CurrentColorViewHandle();
+        const auto volumetricDisplay =
+            volumetricTarget.DisplayViewHandle();
+        auto* const volumetricNativeSource =
+            graphics.TryResolveD3D11ShaderResourceView(
+                volumetricSource);
+        auto* const volumetricNativeDisplay =
+            graphics.TryResolveD3D11ShaderResourceView(
+                volumetricDisplay);
+        Require(
+            volumetricSource
+                && volumetricDisplay
+                && graphics.IsGraphicsViewCurrent(volumetricSource)
+                && graphics.IsGraphicsViewCurrent(volumetricDisplay)
+                && volumetricNativeSource != nullptr
+                && volumetricNativeDisplay != nullptr
+                && volumetricNativeSource != volumetricNativeDisplay,
+            "RenderTarget did not publish distinct current and display "
+            "color views");
         graphics.ApplyOffscreenTargetVolumetricLight(
             volumetricTarget,
             volumetricSettings,
             volumetricInputs);
         Require(
-            volumetricTarget.ShaderResourceView() != volumetricSource,
-            "Valid neutral volumetric inputs were not applied");
+            volumetricTarget.CurrentColorViewHandle()
+                    != volumetricSource
+                && volumetricTarget.DisplayViewHandle()
+                    == volumetricDisplay
+                && graphics.TryResolveD3D11ShaderResourceView(
+                    volumetricTarget.CurrentColorViewHandle())
+                    != volumetricNativeSource
+                && graphics.TryResolveD3D11ShaderResourceView(
+                    volumetricTarget.DisplayViewHandle())
+                    == volumetricNativeDisplay,
+            "Valid neutral volumetric inputs did not swap only the current "
+            "color view");
         auto invalidVolumetricInputs = volumetricInputs;
         invalidVolumetricInputs.cascadeShadow.Reset();
-        auto* const resolvedVolumetricSource =
-            volumetricTarget.ShaderResourceView();
+        const auto resolvedVolumetricSource =
+            volumetricTarget.CurrentColorViewHandle();
         graphics.ApplyOffscreenTargetVolumetricLight(
             volumetricTarget,
             volumetricSettings,
             invalidVolumetricInputs);
         Require(
-            volumetricTarget.ShaderResourceView()
+            volumetricTarget.CurrentColorViewHandle()
                 == resolvedVolumetricSource,
             "Invalid neutral volumetric inputs changed the target");
+        graphics.ApplyOffscreenTargetFXAA(volumetricTarget);
+        Require(
+            volumetricTarget.CurrentColorViewHandle()
+                    == volumetricSource
+                && volumetricTarget.DisplayViewHandle()
+                    == volumetricDisplay,
+            "Two post-process swaps did not restore the original current "
+            "color identity while preserving the display view");
 
         // TAAの履歴と深度もRenderTargetがneutral handleで所有し、
         // D3D11描画島が同じBackend世代・期待形式・画面寸法をまとめて
@@ -1627,14 +1677,14 @@ int main(const int argumentCount, char** arguments)
         LamaPon::TemporalAntiAliasingInputs temporalInputs;
         temporalInputs.inverseViewProjection = temporalIdentity;
         temporalInputs.viewProjection = temporalIdentity;
-        auto* const temporalSource =
-            temporalTarget.ShaderResourceView();
+        const auto temporalSource =
+            temporalTarget.CurrentColorViewHandle();
         graphics.ApplyOffscreenTargetTemporalAntiAliasing(
             temporalTarget,
             temporalSettings,
             temporalInputs);
         Require(
-            temporalTarget.ShaderResourceView() != temporalSource,
+            temporalTarget.CurrentColorViewHandle() != temporalSource,
             "Valid neutral TAA inputs were not applied by RenderTarget");
 
         D3D11_TEXTURE2D_DESC temporalOutputDescription{};
@@ -1683,9 +1733,16 @@ int main(const int argumentCount, char** arguments)
         Require(
             legacyEnvironment != nullptr,
             "The legacy Environment accessor returned null");
+        auto* const temporalNativeSource =
+            graphics.TryResolveD3D11ShaderResourceView(
+                temporalTarget.CurrentColorViewHandle());
+        Require(
+            temporalNativeSource != nullptr,
+            "The neutral current color view did not resolve for the D3D11 "
+            "compatibility renderer");
         Require(
             legacyEnvironment->ApplyTemporalAntiAliasing(
-                temporalTarget.ShaderResourceView(),
+                temporalNativeSource,
                 temporalOutputTarget.Get(),
                 Width,
                 Height,
@@ -1698,7 +1755,7 @@ int main(const int argumentCount, char** arguments)
         incompleteTemporalInputs.history.Reset();
         Require(
             !legacyEnvironment->ApplyTemporalAntiAliasing(
-                temporalTarget.ShaderResourceView(),
+                temporalNativeSource,
                 temporalOutputTarget.Get(),
                 Width,
                 Height,
@@ -1709,7 +1766,7 @@ int main(const int argumentCount, char** arguments)
         invalidTemporalHistory.history = litViews[0];
         Require(
             !legacyEnvironment->ApplyTemporalAntiAliasing(
-                temporalTarget.ShaderResourceView(),
+                temporalNativeSource,
                 temporalOutputTarget.Get(),
                 Width,
                 Height,
@@ -1720,7 +1777,7 @@ int main(const int argumentCount, char** arguments)
         invalidTemporalDepth.depth = temporalHistoryView;
         Require(
             !legacyEnvironment->ApplyTemporalAntiAliasing(
-                temporalTarget.ShaderResourceView(),
+                temporalNativeSource,
                 temporalOutputTarget.Get(),
                 Width,
                 Height,
@@ -2282,8 +2339,28 @@ int main(const int argumentCount, char** arguments)
                 "A foreign RenderTarget did not publish its TAA history view");
             LamaPon::BloomSettings foreignTargetBloom;
             foreignTargetBloom.enabled = true;
-            auto* const foreignTargetSource =
-                foreignScreenTarget.ShaderResourceView();
+            const auto foreignTargetSource =
+                foreignScreenTarget.CurrentColorViewHandle();
+            const auto foreignTargetDisplay =
+                foreignScreenTarget.DisplayViewHandle();
+            bool foreignPublishRejected{};
+            try
+            {
+                graphics.PublishOffscreenTarget(
+                    foreignScreenTarget);
+            }
+            catch (const std::invalid_argument&)
+            {
+                foreignPublishRejected = true;
+            }
+            Require(
+                foreignPublishRejected
+                    && foreignScreenTarget.CurrentColorViewHandle()
+                        == foreignTargetSource
+                    && foreignScreenTarget.DisplayViewHandle()
+                        == foreignTargetDisplay,
+                "PublishOffscreenTarget accepted or changed a foreign "
+                "RenderTarget");
             bool foreignTargetRejected{};
             try
             {
@@ -2297,14 +2374,14 @@ int main(const int argumentCount, char** arguments)
             }
             Require(
                 foreignTargetRejected
-                    && foreignScreenTarget.ShaderResourceView()
+                    && foreignScreenTarget.CurrentColorViewHandle()
                         == foreignTargetSource,
                 "The post-process facade accepted a foreign RenderTarget");
             auto mixedTemporalInputs = directTemporalInputs;
             mixedTemporalInputs.history = foreignTemporalHistoryView;
             Require(
                 !legacyEnvironment->ApplyTemporalAntiAliasing(
-                    temporalTarget.ShaderResourceView(),
+                    temporalNativeSource,
                     temporalOutputTarget.Get(),
                     Width,
                     Height,
@@ -2433,14 +2510,14 @@ int main(const int argumentCount, char** arguments)
             auto foreignVolumetricInputs = volumetricInputs;
             foreignVolumetricInputs.cascadeShadow =
                 foreignShadowMap.ViewHandle();
-            auto* const foreignVolumetricSource =
-                volumetricTarget.ShaderResourceView();
+            const auto foreignVolumetricSource =
+                volumetricTarget.CurrentColorViewHandle();
             graphics.ApplyOffscreenTargetVolumetricLight(
                 volumetricTarget,
                 volumetricSettings,
                 foreignVolumetricInputs);
             Require(
-                volumetricTarget.ShaderResourceView()
+                volumetricTarget.CurrentColorViewHandle()
                     == foreignVolumetricSource,
                 "Foreign neutral volumetric inputs changed the target");
 
@@ -3997,13 +4074,13 @@ int main(const int argumentCount, char** arguments)
                 == LamaPon::GraphicsViewKind::ShaderResource,
             "The render texture display handle must be a shader-resource view.");
         auto* const minimapRawView =
-            minimapTarget->DisplayShaderResourceView();
+            graphics.TryResolveD3D11ShaderResourceView(
+                minimapTarget->DisplayViewHandle());
         Require(
-            minimapRawView != nullptr
-                && graphics.TryResolveD3D11ShaderResourceView(
-                    minimapViewHandle)
-                    == minimapRawView,
-            "The neutral display handle must resolve to the target display view.");
+            minimapViewHandle == minimapTarget->DisplayViewHandle()
+                && minimapRawView != nullptr,
+            "The named render texture must expose the target's neutral "
+            "display view directly.");
         auto& sameSizeMinimap =
             graphics.AcquireRenderTexture(
                 "minimap",
@@ -4031,9 +4108,15 @@ int main(const int argumentCount, char** arguments)
                 && graphics.FindRenderTexture("minimap")
                     == &sameSizeMinimap
                 && !sameSizeMinimap.IsValid()
+                && !sameSizeMinimap.CurrentColorViewHandle()
+                && !sameSizeMinimap.DisplayViewHandle()
+                && !sameSizeMinimap.DepthViewHandle()
+                && !sameSizeMinimap.AmbientOcclusionViewHandle()
+                && !sameSizeMinimap
+                    .ReflectionDepthPyramidViewHandle()
                 && !graphics.RenderTextureViewHandle("minimap"),
-            "A failed named target resize must preserve the object while "
-            "invalidating its current views.");
+            "A failed named target resize must invalidate every published "
+            "view without removing the target object.");
         auto& recoveredMinimap =
             graphics.AcquireRenderTexture(
                 "minimap",
@@ -4042,16 +4125,17 @@ int main(const int argumentCount, char** arguments)
         const auto recoveredMinimapViewHandle =
             graphics.RenderTextureViewHandle("minimap");
         auto* const recoveredMinimapRawView =
-            recoveredMinimap.DisplayShaderResourceView();
+            graphics.TryResolveD3D11ShaderResourceView(
+                recoveredMinimap.DisplayViewHandle());
         Require(
             &recoveredMinimap == &sameSizeMinimap
                 && recoveredMinimap.IsValid()
                 && recoveredMinimapViewHandle
+                && recoveredMinimapViewHandle
+                    == recoveredMinimap.DisplayViewHandle()
                 && recoveredMinimapViewHandle != minimapViewHandle
                 && recoveredMinimapRawView != nullptr
-                && graphics.TryResolveD3D11ShaderResourceView(
-                    recoveredMinimapViewHandle)
-                    == recoveredMinimapRawView,
+                && recoveredMinimap.CurrentColorViewHandle(),
             "A failed named target resize must recover on the next acquire.");
         // レンダーテクスチャにもスカイとシーンのカラーグレーディング
         // （トーンマップ・ビネット）がかかるため、サブカメラの
@@ -4103,18 +4187,19 @@ int main(const int argumentCount, char** arguments)
         const auto resizedMinimapViewHandle =
             graphics.RenderTextureViewHandle("minimap");
         auto* const resizedMinimapRawView =
-            sameSizeMinimap.DisplayShaderResourceView();
+            graphics.TryResolveD3D11ShaderResourceView(
+                sameSizeMinimap.DisplayViewHandle());
         Require(
             sameSizeMinimap.Width() == ResizedRenderTextureSize
                 && sameSizeMinimap.Height()
                     == ResizedRenderTextureSize
                 && resizedMinimapViewHandle
                 && resizedMinimapViewHandle
+                    == sameSizeMinimap.DisplayViewHandle()
+                && resizedMinimapViewHandle
                     != recoveredMinimapViewHandle
                 && resizedMinimapRawView != nullptr
-                && graphics.TryResolveD3D11ShaderResourceView(
-                    resizedMinimapViewHandle)
-                    == resizedMinimapRawView,
+                && sameSizeMinimap.CurrentColorViewHandle(),
             "Resizing a named target directly must refresh its display handle.");
         Require(
             graphics.ReleaseRenderTexture("minimap")
@@ -4150,12 +4235,33 @@ int main(const int argumentCount, char** arguments)
                     != nullptr
                 && computeDisplayHandle.Kind()
                     == LamaPon::GraphicsViewKind::ShaderResource
+                && computeDisplayHandle
+                    == computeDisplayTarget.DisplayViewHandle()
                 && graphics.TryResolveD3D11ShaderResourceView(
-                    computeDisplayHandle)
-                    == computeDisplayTarget
-                        .DisplayShaderResourceView(),
+                    computeDisplayHandle) != nullptr,
             "A compute output must expose its display surface through the "
             "neutral handle registry.");
+        bool oversizedComputeResizeRejected{};
+        try
+        {
+            graphics.ResizeOffscreenTarget(
+                computeDisplayTarget,
+                D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION + 1u,
+                1u);
+        }
+        catch (const std::exception&)
+        {
+            oversizedComputeResizeRejected = true;
+        }
+        Require(
+            oversizedComputeResizeRejected
+                && !computeDisplayTarget.IsValid()
+                && !computeDisplayTarget.CurrentColorViewHandle()
+                && !computeDisplayTarget.DisplayViewHandle()
+                && computeDisplayTarget.DisplayUnorderedAccessView()
+                    == nullptr,
+            "A failed compute-target resize retained a partial output "
+            "surface or stale unordered-access view.");
         Require(
             graphics.ReleaseRenderTexture(
                 "neutral-compute-display")

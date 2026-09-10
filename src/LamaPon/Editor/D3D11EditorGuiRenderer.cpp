@@ -103,7 +103,9 @@ namespace LamaPon
         const RenderTarget& target)
     {
         RequireCurrentContext();
-        auto* const view = target.DisplayShaderResourceView();
+        auto* const view =
+            m_graphics->TryResolveD3D11ShaderResourceView(
+                target.DisplayViewHandle());
         if (view == nullptr)
         {
             throw std::invalid_argument(

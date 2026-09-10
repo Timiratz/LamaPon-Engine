@@ -7,8 +7,6 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
-#include <string>
-#include <unordered_map>
 #include <vector>
 
 namespace DirectX
@@ -92,8 +90,6 @@ namespace LamaPon
 
             void Reset() noexcept;
 
-            std::unordered_map<std::string, GraphicsViewHandle>
-                namedRenderTextureViews;
             std::unique_ptr<GraphicsRenderServices> renderServices;
             std::unique_ptr<GraphicsDeviceD3D11Resources> d3d11;
         };

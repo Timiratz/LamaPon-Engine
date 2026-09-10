@@ -28,6 +28,18 @@ namespace
 namespace LamaPon
 {
     ID3D11ShaderResourceView*
+        RenderTarget::ShaderResourceView() const noexcept
+    {
+        return m_shaderResourceView.Get();
+    }
+
+    ID3D11ShaderResourceView*
+        RenderTarget::DisplayShaderResourceView() const noexcept
+    {
+        return m_displayShaderResourceView.Get();
+    }
+
+    ID3D11ShaderResourceView*
         RenderTarget::AmbientOcclusionShaderResourceView()
         const noexcept
     {
@@ -73,6 +85,9 @@ namespace LamaPon
 
         m_initialized = false;
         m_ownerDevice.Reset();
+        m_currentColorView.Reset();
+        m_postColorView.Reset();
+        m_displayView.Reset();
         m_ambientOcclusionView.Reset();
         m_colorHistoryView.Reset();
         m_reflectionDepthPyramidViewHandle.Reset();
@@ -86,6 +101,7 @@ namespace LamaPon
         m_postShaderResourceView.Reset();
         m_displayColorTexture.Reset();
         m_displayShaderResourceView.Reset();
+        m_displayUnorderedAccessView.Reset();
         m_depthTexture.Reset();
         m_depthStencilView.Reset();
         m_depthShaderResourceView.Reset();
@@ -511,7 +527,6 @@ namespace LamaPon
                 nullptr,
                 m_displayShaderResourceView.ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateShaderResourceView(display)");
-        m_displayUnorderedAccessView.Reset();
         if (m_computeWritable)
         {
             D3D11_UNORDERED_ACCESS_VIEW_DESC accessView{};
@@ -798,6 +813,14 @@ namespace LamaPon
             / static_cast<float>(std::max(m_height, 1u));
     }
 
+    void RenderTarget::SwapPostProcessBuffers() noexcept
+    {
+        std::swap(m_colorTexture, m_postColorTexture);
+        std::swap(m_renderTargetView, m_postRenderTargetView);
+        std::swap(m_shaderResourceView, m_postShaderResourceView);
+        std::swap(m_currentColorView, m_postColorView);
+    }
+
     void RenderTarget::ApplyBloom(
         EnvironmentRenderer& renderer,
         const BloomSettings& settings)
@@ -812,15 +835,7 @@ namespace LamaPon
             m_width,
             m_height,
             settings);
-        std::swap(
-            m_colorTexture,
-            m_postColorTexture);
-        std::swap(
-            m_renderTargetView,
-            m_postRenderTargetView);
-        std::swap(
-            m_shaderResourceView,
-            m_postShaderResourceView);
+        SwapPostProcessBuffers();
     }
 
     void RenderTarget::ApplyScreenOutline(
@@ -844,15 +859,7 @@ namespace LamaPon
             m_height,
             settings,
             projection);
-        std::swap(
-            m_colorTexture,
-            m_postColorTexture);
-        std::swap(
-            m_renderTargetView,
-            m_postRenderTargetView);
-        std::swap(
-            m_shaderResourceView,
-            m_postShaderResourceView);
+        SwapPostProcessBuffers();
     }
 
     void RenderTarget::ApplyScreenSpaceLensFlare(
@@ -881,15 +888,7 @@ namespace LamaPon
             m_height,
             settings,
             renderer.LastLensFlareStreakResource());
-        std::swap(
-            m_colorTexture,
-            m_postColorTexture);
-        std::swap(
-            m_renderTargetView,
-            m_postRenderTargetView);
-        std::swap(
-            m_shaderResourceView,
-            m_postShaderResourceView);
+        SwapPostProcessBuffers();
     }
 
     void RenderTarget::ApplyFXAA(
@@ -904,15 +903,7 @@ namespace LamaPon
             m_postRenderTargetView.Get(),
             m_width,
             m_height);
-        std::swap(
-            m_colorTexture,
-            m_postColorTexture);
-        std::swap(
-            m_renderTargetView,
-            m_postRenderTargetView);
-        std::swap(
-            m_shaderResourceView,
-            m_postShaderResourceView);
+        SwapPostProcessBuffers();
     }
 
     void RenderTarget::ApplyTemporalAntiAliasing(
@@ -946,13 +937,7 @@ namespace LamaPon
                 settings,
                 resolved))
         {
-            std::swap(m_colorTexture, m_postColorTexture);
-            std::swap(
-                m_renderTargetView,
-                m_postRenderTargetView);
-            std::swap(
-                m_shaderResourceView,
-                m_postShaderResourceView);
+            SwapPostProcessBuffers();
         }
     }
 
@@ -981,15 +966,7 @@ namespace LamaPon
         {
             return;
         }
-        std::swap(
-            m_colorTexture,
-            m_postColorTexture);
-        std::swap(
-            m_renderTargetView,
-            m_postRenderTargetView);
-        std::swap(
-            m_shaderResourceView,
-            m_postShaderResourceView);
+        SwapPostProcessBuffers();
     }
 
     void RenderTarget::ApplyDepthOfField(
@@ -1031,15 +1008,7 @@ namespace LamaPon
         {
             return;
         }
-        std::swap(
-            m_colorTexture,
-            m_postColorTexture);
-        std::swap(
-            m_renderTargetView,
-            m_postRenderTargetView);
-        std::swap(
-            m_shaderResourceView,
-            m_postShaderResourceView);
+        SwapPostProcessBuffers();
     }
 
     void RenderTarget::ApplyMotionBlur(
@@ -1079,13 +1048,7 @@ namespace LamaPon
                 settings,
                 inputs))
         {
-            std::swap(m_colorTexture, m_postColorTexture);
-            std::swap(
-                m_renderTargetView,
-                m_postRenderTargetView);
-            std::swap(
-                m_shaderResourceView,
-                m_postShaderResourceView);
+            SwapPostProcessBuffers();
         }
 
         // エフェクトを適用しなかった初回も行列を保存し、
@@ -1295,15 +1258,7 @@ namespace LamaPon
             m_width,
             m_height,
             parameters);
-        std::swap(
-            m_colorTexture,
-            m_postColorTexture);
-        std::swap(
-            m_renderTargetView,
-            m_postRenderTargetView);
-        std::swap(
-            m_shaderResourceView,
-            m_postShaderResourceView);
+        SwapPostProcessBuffers();
     }
 
     void RenderTarget::ApplyToneMapping(
@@ -1320,14 +1275,6 @@ namespace LamaPon
             m_width,
             m_height,
             settings);
-        std::swap(
-            m_colorTexture,
-            m_postColorTexture);
-        std::swap(
-            m_renderTargetView,
-            m_postRenderTargetView);
-        std::swap(
-            m_shaderResourceView,
-            m_postShaderResourceView);
+        SwapPostProcessBuffers();
     }
 }

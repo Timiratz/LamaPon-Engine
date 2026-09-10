@@ -52,9 +52,13 @@ namespace LamaPon
         {
             return m_ambientOcclusionView;
         }
-        [[nodiscard]] ID3D11ShaderResourceView* ShaderResourceView() const noexcept
+        // ポスト処理のping-pong後も、現在のカラーを指すviewです。
+        // 戻り値はBackend資源を強所有するため、呼び出し中にtargetが
+        // resizeされても取得時点のresource自体は安全に保持されます。
+        [[nodiscard]] GraphicsViewHandle
+            CurrentColorViewHandle() const noexcept
         {
-            return m_shaderResourceView.Get();
+            return m_currentColorView;
         }
         // 履歴がまだ無い最初のフレームではemptyを返します。
         [[nodiscard]] GraphicsViewHandle
@@ -147,10 +151,13 @@ namespace LamaPon
         {
             return m_displayColorTexture.Get();
         }
-        [[nodiscard]] ID3D11ShaderResourceView*
-            DisplayShaderResourceView() const noexcept
+        // PublishOffscreenTargetで完成画像がコピーされる、ping-pongに
+        // 左右されない表示面です。ImGuiや名前付きRenderTextureは
+        // CurrentColorViewHandleではなくこちらを保持してください。
+        [[nodiscard]] GraphicsViewHandle
+            DisplayViewHandle() const noexcept
         {
-            return m_displayShaderResourceView.Get();
+            return m_displayView;
         }
         [[nodiscard]] std::uint32_t Width() const noexcept { return m_width; }
         [[nodiscard]] std::uint32_t Height() const noexcept { return m_height; }
@@ -168,6 +175,13 @@ namespace LamaPon
         // 自動露出のreadbackと次回用転送はGraphicsDeviceがBackendの
         // 前後で順序付けるため、高水準の更新処理も直接公開しません。
         friend class GraphicsDevice;
+
+        // API 61以前に公開していたraw D3D11 getterです。新規コードは
+        // neutral handleを使い、旧名はprivate互換shimとしてだけ残します。
+        [[nodiscard]] ID3D11ShaderResourceView*
+            ShaderResourceView() const noexcept;
+        [[nodiscard]] ID3D11ShaderResourceView*
+            DisplayShaderResourceView() const noexcept;
 
         // API 60以前のEnvironmentRenderer / raw SRV入口は
         // GraphicsDeviceのneutral facadeだけが呼ぶprivate互換shimです。
@@ -241,7 +255,7 @@ namespace LamaPon
         // 内部テクスチャの交換（swap）で進むため、フレーム途中で取得した
         // SRVはswap回数によって別のテクスチャを指すことがあります。
         // ImGui等での表示は、描画完了時にこれを呼んだ上で常に
-        // DisplayShaderResourceView()を使ってください。
+        // DisplayViewHandle()を使ってください。
         void CopyToDisplay(ID3D11DeviceContext* context) const;
         // 深度だけを描画先にします（深度プリパス用）。カラーを
         // 割り当てないので、ピクセルシェーダーを外した描画がそのまま
@@ -278,15 +292,21 @@ namespace LamaPon
         // staging textureへ転送します。
         void CaptureAutoExposureLuminance(
             ID3D11DeviceContext* context);
+        // native texture / RTV / SRVと公開neutral handleを同じtransactionで
+        // 入れ替え、片方だけが古いping-pong面を指す状態を防ぎます。
+        void SwapPostProcessBuffers() noexcept;
 
         Microsoft::WRL::ComPtr<ID3D11Texture2D> m_colorTexture;
         Microsoft::WRL::ComPtr<ID3D11RenderTargetView> m_renderTargetView;
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_shaderResourceView;
+        GraphicsViewHandle m_currentColorView;
         Microsoft::WRL::ComPtr<ID3D11Texture2D> m_postColorTexture;
         Microsoft::WRL::ComPtr<ID3D11RenderTargetView> m_postRenderTargetView;
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_postShaderResourceView;
+        GraphicsViewHandle m_postColorView;
         Microsoft::WRL::ComPtr<ID3D11Texture2D> m_displayColorTexture;
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_displayShaderResourceView;
+        GraphicsViewHandle m_displayView;
         // Compute Shaderの書き込み先（SetComputeWritable時のみ）。
         Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView>
             m_displayUnorderedAccessView;

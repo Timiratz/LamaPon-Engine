@@ -215,7 +215,6 @@ namespace LamaPon::Detail
 
     void GraphicsDeviceApiResources::Reset() noexcept
     {
-        namedRenderTextureViews.clear();
         // serviceはBackendとD3D11 API資源を参照するため先に破棄します。
         renderServices.reset();
         if (d3d11)
@@ -831,13 +830,8 @@ namespace LamaPon
         GraphicsDevice::RenderTextureView(
             const std::string& name) const noexcept
     {
-        const auto* target = FindRenderTexture(name);
-        if (target == nullptr
-            || !target->IsValid())
-        {
-            return nullptr;
-        }
-        return target->DisplayShaderResourceView();
+        return TryResolveD3D11ShaderResourceView(
+            RenderTextureViewHandle(name));
     }
 
     DirectX::CommonStates& GraphicsDevice::States() const

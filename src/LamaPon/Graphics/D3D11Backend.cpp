@@ -706,33 +706,66 @@ namespace LamaPon
                 "ResizeOffscreenTarget requires an initialized backend.");
         }
 
-        target.Resize(m_device.Get(), width, height);
+        try
+        {
+            target.Resize(m_device.Get(), width, height);
+        }
+        catch (...)
+        {
+            // Resizeは途中までdisplay資源を作ってから後段で失敗する
+            // 場合があります。invalid targetから部分的な表示面を公開
+            // しないよう、外から参照できるoutputをまとめて破棄します。
+            target.m_currentColorView.Reset();
+            target.m_postColorView.Reset();
+            target.m_displayView.Reset();
+            target.m_displayUnorderedAccessView.Reset();
+            target.m_displayShaderResourceView.Reset();
+            target.m_displayColorTexture.Reset();
+            target.m_initialized = false;
+            throw;
+        }
         if (!target.IsValid())
         {
             throw std::logic_error(
                 "ResizeOffscreenTarget failed to create a valid target.");
         }
-        if (!target.m_ambientOcclusionView
-            || !target.m_colorHistoryView
-            || !target.m_reflectionDepthPyramidViewHandle
-            || !target.m_depthView
-            || !target.m_temporalHistoryView)
+        if (target.m_currentColorView
+            && target.m_postColorView
+            && target.m_displayView
+            && target.m_ambientOcclusionView
+            && target.m_colorHistoryView
+            && target.m_reflectionDepthPyramidViewHandle
+            && target.m_depthView
+            && target.m_temporalHistoryView)
         {
-            // Resizeが作った5本をすべて取り込めた後にだけ公開handleを
+            return;
+        }
+
+        try
+        {
+            // Resizeが作った8本をすべて取り込めた後にだけ公開handleを
             // 更新し、途中失敗で新旧resourceを混在させません。
+            auto currentColorView = ImportShaderResourceViewHandle(
+                target.m_shaderResourceView.Get());
+            auto postColorView = ImportShaderResourceViewHandle(
+                target.m_postShaderResourceView.Get());
+            auto displayView = ImportShaderResourceViewHandle(
+                target.m_displayShaderResourceView.Get());
             auto ambientOcclusionView =
                 ImportShaderResourceViewHandle(
                     target.m_occlusionBlurShaderResourceView.Get());
             auto colorHistoryView = ImportShaderResourceViewHandle(
                 target.m_historyShaderResourceView.Get());
-            auto reflectionDepthView =
-                ImportShaderResourceViewHandle(
-                    target.m_reflectionDepthPyramidView.Get());
+            auto reflectionDepthView = ImportShaderResourceViewHandle(
+                target.m_reflectionDepthPyramidView.Get());
             auto depthView = ImportShaderResourceViewHandle(
                 target.m_depthShaderResourceView.Get());
-            auto temporalHistoryView =
-                ImportShaderResourceViewHandle(
-                    target.m_temporalHistoryShaderResourceView.Get());
+            auto temporalHistoryView = ImportShaderResourceViewHandle(
+                target.m_temporalHistoryShaderResourceView.Get());
+
+            target.m_currentColorView = std::move(currentColorView);
+            target.m_postColorView = std::move(postColorView);
+            target.m_displayView = std::move(displayView);
             target.m_ambientOcclusionView =
                 std::move(ambientOcclusionView);
             target.m_colorHistoryView = std::move(colorHistoryView);
@@ -741,6 +774,22 @@ namespace LamaPon
             target.m_depthView = std::move(depthView);
             target.m_temporalHistoryView =
                 std::move(temporalHistoryView);
+        }
+        catch (...)
+        {
+            target.m_currentColorView.Reset();
+            target.m_postColorView.Reset();
+            target.m_displayView.Reset();
+            target.m_displayUnorderedAccessView.Reset();
+            target.m_displayShaderResourceView.Reset();
+            target.m_displayColorTexture.Reset();
+            target.m_ambientOcclusionView.Reset();
+            target.m_colorHistoryView.Reset();
+            target.m_reflectionDepthPyramidViewHandle.Reset();
+            target.m_depthView.Reset();
+            target.m_temporalHistoryView.Reset();
+            target.m_initialized = false;
+            throw;
         }
     }
 
@@ -809,6 +858,13 @@ namespace LamaPon
         {
             throw std::invalid_argument(
                 "PublishOffscreenTarget requires a valid target.");
+        }
+        if (!IsViewCurrent(target.CurrentColorViewHandle())
+            || !IsViewCurrent(target.DisplayViewHandle()))
+        {
+            throw std::invalid_argument(
+                "PublishOffscreenTarget requires a target owned by this "
+                "backend.");
         }
         if (m_context == nullptr)
         {
@@ -2023,17 +2079,16 @@ namespace LamaPon
                 "CreateOffscreenDisplayView requires an initialized backend.");
         }
 
-        auto* const displayView =
-            target.DisplayShaderResourceView();
-        if (!target.IsValid() || displayView == nullptr)
+        const auto displayView = target.DisplayViewHandle();
+        if (!target.IsValid()
+            || !displayView
+            || !IsViewCurrent(displayView))
         {
             throw std::invalid_argument(
                 "CreateOffscreenDisplayView requires a valid offscreen "
                 "target display view.");
         }
-
-        auto imported = ImportShaderResourceView(displayView);
-        return std::move(imported.second);
+        return displayView;
     }
 
     void D3D11Backend::BindAndClearBackBuffer(

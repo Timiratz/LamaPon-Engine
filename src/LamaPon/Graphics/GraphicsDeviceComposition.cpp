@@ -1,10 +1,8 @@
 #include "LamaPon/Graphics/GraphicsDevice.h"
 
-#include "LamaPon/Graphics/EnvironmentRenderer.h"
 #include "LamaPon/Graphics/EnvironmentSettings.h"
 #include "LamaPon/Graphics/GpuProfiler.h"
 #include "LamaPon/Graphics/GraphicsBackend.h"
-#include "LamaPon/Graphics/GraphicsDeviceApiResources.h"
 #include "LamaPon/Graphics/RenderPipeline.h"
 #include "LamaPon/Graphics/RenderTarget.h"
 
@@ -14,7 +12,6 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
-#include <utility>
 #include <vector>
 
 namespace LamaPon
@@ -30,70 +27,16 @@ namespace LamaPon
                 "ResizeOffscreenTarget requires an initialized device.");
         }
 
-        auto namedEntry = m_renderTextures.end();
-        for (auto entry = m_renderTextures.begin();
-            entry != m_renderTextures.end();
-            ++entry)
+        m_backend->ResizeOffscreenTarget(target, width, height);
+        if (!target.IsValid()
+            || !IsGraphicsViewCurrent(
+                target.CurrentColorViewHandle())
+            || !IsGraphicsViewCurrent(
+                target.DisplayViewHandle()))
         {
-            if (entry->second.get() == &target)
-            {
-                namedEntry = entry;
-                break;
-            }
-        }
-
-        const std::uint32_t safeWidth = std::max(width, 1u);
-        const std::uint32_t safeHeight = std::max(height, 1u);
-        const bool targetNeedsRebuild =
-            !target.IsValid()
-            || target.Width() != safeWidth
-            || target.Height() != safeHeight;
-        if (namedEntry != m_renderTextures.end()
-            && targetNeedsRebuild
-            && m_apiResources)
-        {
-            m_apiResources->namedRenderTextureViews.erase(
-                namedEntry->first);
-        }
-
-        try
-        {
-            m_backend->ResizeOffscreenTarget(target, width, height);
-            if (!target.IsValid())
-            {
-                throw std::logic_error(
-                    "ResizeOffscreenTarget failed to create a valid target.");
-            }
-
-            if (namedEntry != m_renderTextures.end())
-            {
-                if (!m_apiResources)
-                {
-                    throw std::logic_error(
-                        "Render texture API resources are not initialized.");
-                }
-                const auto& name = namedEntry->first;
-                if (!m_apiResources->namedRenderTextureViews.contains(name))
-                {
-                    auto view =
-                        m_backend->CreateOffscreenDisplayView(target);
-                    m_apiResources->namedRenderTextureViews.emplace(
-                        name,
-                        std::move(view));
-                }
-            }
-        }
-        catch (...)
-        {
-            if (namedEntry != m_renderTextures.end())
-            {
-                if (m_apiResources)
-                {
-                    m_apiResources->namedRenderTextureViews.erase(
-                        namedEntry->first);
-                }
-            }
-            throw;
+            throw std::logic_error(
+                "ResizeOffscreenTarget failed to publish current color "
+                "and display views.");
         }
     }
 
@@ -150,6 +93,15 @@ namespace LamaPon
         {
             throw std::invalid_argument(
                 "PublishOffscreenTarget requires a valid target.");
+        }
+        if (!IsGraphicsViewCurrent(
+                target.CurrentColorViewHandle())
+            || !IsGraphicsViewCurrent(
+                target.DisplayViewHandle()))
+        {
+            throw std::invalid_argument(
+                "PublishOffscreenTarget requires a target owned by the "
+                "active backend.");
         }
 
         // CopyToDisplayは描画先を変更しません。バックバッファへの復帰は
@@ -304,10 +256,6 @@ namespace LamaPon
         }
         catch (...)
         {
-            if (m_apiResources)
-            {
-                m_apiResources->namedRenderTextureViews.erase(name);
-            }
             if (createdTarget)
             {
                 m_renderTextures.erase(name);
@@ -347,10 +295,6 @@ namespace LamaPon
         }
         catch (...)
         {
-            if (m_apiResources)
-            {
-                m_apiResources->namedRenderTextureViews.erase(name);
-            }
             if (createdTarget)
             {
                 m_renderTextures.erase(name);
@@ -373,33 +317,25 @@ namespace LamaPon
     GraphicsViewHandle GraphicsDevice::RenderTextureViewHandle(
         const std::string& name) const noexcept
     {
-        if (!m_apiResources)
+        const auto* const target = FindRenderTexture(name);
+        if (target == nullptr || !target->IsValid())
         {
             return {};
         }
-        const auto entry =
-            m_apiResources->namedRenderTextureViews.find(name);
-        return entry != m_apiResources->namedRenderTextureViews.end()
-            ? entry->second
+        auto view = target->DisplayViewHandle();
+        return IsGraphicsViewCurrent(view)
+            ? view
             : GraphicsViewHandle{};
     }
 
     bool GraphicsDevice::ReleaseRenderTexture(
         const std::string& name)
     {
-        if (m_apiResources)
-        {
-            m_apiResources->namedRenderTextureViews.erase(name);
-        }
         return m_renderTextures.erase(name) > 0;
     }
 
     void GraphicsDevice::ClearRenderTextures() noexcept
     {
-        if (m_apiResources)
-        {
-            m_apiResources->namedRenderTextureViews.clear();
-        }
         m_renderTextures.clear();
     }
 
@@ -502,15 +438,9 @@ namespace LamaPon
             m_gpuProfiler,
             "画面へ転送"
         };
-        // バックバッファの実体はBackendだけが扱います。Renderer側は
-        // bind済みの出力先へ最終画像を描くため、D3D11のRTVを取得しません。
-        auto& environment = Environment();
-        auto* const source = m_sceneCompositionTarget->
-            ShaderResourceView();
-        if (source != nullptr)
-        {
-            m_backend->BindBackBuffer();
-            environment.CopyToBoundRenderTarget(source);
-        }
+        // current colorのnative view解決はD3D11 bridge内へ閉じ込め、
+        // 共通compositionはRenderTargetだけを渡します。
+        CopyOffscreenTargetToBackBuffer(
+            *m_sceneCompositionTarget);
     }
 }

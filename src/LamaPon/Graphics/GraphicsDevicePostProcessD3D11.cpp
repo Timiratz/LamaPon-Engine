@@ -2,6 +2,7 @@
 
 #include "LamaPon/Graphics/EnvironmentRenderer.h"
 #include "LamaPon/Graphics/EnvironmentSettings.h"
+#include "LamaPon/Graphics/GraphicsBackend.h"
 #include "LamaPon/Graphics/RenderTarget.h"
 
 #include <stdexcept>
@@ -21,6 +22,8 @@ namespace
                 + " requires an initialized device.");
         }
         if (!target.IsValid()
+            || !graphics.IsGraphicsViewCurrent(
+                target.CurrentColorViewHandle())
             || !graphics.IsGraphicsViewCurrent(
                 target.DepthViewHandle()))
         {
@@ -60,6 +63,27 @@ namespace
 
 namespace LamaPon
 {
+    void GraphicsDevice::CopyOffscreenTargetToBackBuffer(
+        const RenderTarget& target)
+    {
+        RequireCurrentOffscreenTarget(
+            *this,
+            target,
+            "CopyOffscreenTargetToBackBuffer");
+        auto& environment = Environment();
+        auto* const source = TryResolveD3D11ShaderResourceView(
+            target.CurrentColorViewHandle());
+        if (source == nullptr)
+        {
+            throw std::invalid_argument(
+                "CopyOffscreenTargetToBackBuffer requires a resolvable "
+                "current color view.");
+        }
+
+        m_backend->BindBackBuffer();
+        environment.CopyToBoundRenderTarget(source);
+    }
+
     bool GraphicsDevice::ResolveOffscreenTargetAmbientOcclusion(
         RenderTarget& target,
         const AmbientOcclusionSettings& settings,
