@@ -8,6 +8,7 @@
 #include "LamaPon/Graphics/ClusteredLights.h"
 #include "LamaPon/Graphics/DebugRenderer.h"
 #include "LamaPon/Graphics/EnvironmentRenderer.h"
+#include "LamaPon/Graphics/GraphicsDeviceApiResources.h"
 #include "LamaPon/Graphics/LitEffect.h"
 #include "LamaPon/Graphics/RenderPipeline.h"
 #include "LamaPon/Graphics/RenderTarget.h"
@@ -36,17 +37,6 @@
 
 namespace
 {
-    void ThrowIfFailed(const HRESULT result, const char* operation)
-    {
-        if (FAILED(result))
-        {
-            throw std::runtime_error(
-                std::string(operation)
-                + " failed with HRESULT "
-                + std::to_string(static_cast<unsigned long>(result)));
-        }
-    }
-
     // コンパイル失敗時にソースを読み、原因に対応する診断を追加します。
     [[nodiscard]] std::string DescribeShaderFailure(
         LamaPon::AssetManager& assets,
@@ -289,9 +279,6 @@ namespace LamaPon
         m_spotShadowMap.reset();
         m_pointShadowMap.reset();
         m_instanceBuffer.Reset();
-        m_additiveBlendPreservingAlpha.Reset();
-        m_uiScissorRasterizer.Reset();
-        m_uiScissorStack.clear();
         m_depthPass = DepthPassKind::None;
         m_skinnedMaterialShaders.clear();
         m_materialShaders.clear();
@@ -324,9 +311,7 @@ namespace LamaPon
         {
             m_services->Shutdown();
         }
-        m_spriteTexturePins.clear();
-        m_commonStates.reset();
-        m_spriteBatch.reset();
+        ResetApiResources();
         m_whiteTextureView.Reset();
         m_whiteTexture.Reset();
         m_lightingState = {};
@@ -472,26 +457,7 @@ namespace LamaPon
                 "モニターのリフレッシュレートがFPSの上限になります。");
         }
         CreateWhiteTexture();
-        m_spriteBatch =
-            std::make_unique<DirectX::SpriteBatch>(Context());
-        m_commonStates =
-            std::make_unique<DirectX::CommonStates>(Device());
-        {
-            // UIクリッピング（ScrollView等）用のシザー有効
-            // ラスタライザ。
-            D3D11_RASTERIZER_DESC scissorDescription{};
-            scissorDescription.FillMode =
-                D3D11_FILL_SOLID;
-            scissorDescription.CullMode = D3D11_CULL_NONE;
-            scissorDescription.DepthClipEnable = TRUE;
-            scissorDescription.ScissorEnable = TRUE;
-            ThrowIfFailed(
-                Device()->CreateRasterizerState(
-                    &scissorDescription,
-                    m_uiScissorRasterizer
-                        .ReleaseAndGetAddressOf()),
-                "ID3D11Device::CreateRasterizerState");
-        }
+        CreateApiResources(m_backend->Api());
         m_services->Initialize(Device(), Context(), window,
             m_graphicsSettings.runtimeTextureCompression,
             *m_backend);
@@ -531,12 +497,13 @@ namespace LamaPon
 
     DirectX::SpriteBatch& GraphicsDevice::BeginSprites()
     {
-        m_spriteTexturePins.clear();
-        m_uiScissorStack.clear();
-        m_spriteBatch->Begin(
+        auto& resources = RequireD3D11ApiResources();
+        resources.spriteTexturePins.clear();
+        resources.uiScissorStack.clear();
+        resources.spriteBatch->Begin(
             DirectX::SpriteSortMode_Deferred,
-            m_commonStates->NonPremultiplied());
-        return *m_spriteBatch;
+            resources.commonStates->NonPremultiplied());
+        return *resources.spriteBatch;
     }
 
     DirectX::SpriteBatch& GraphicsDevice::BeginSprites(
@@ -547,7 +514,8 @@ namespace LamaPon
         std::string* error,
         const Sprite2DLighting* lighting)
     {
-        m_spriteTexturePins.clear();
+        auto& resources = RequireD3D11ApiResources();
+        resources.spriteTexturePins.clear();
         if (generation != nullptr)
         {
             *generation = 0;
@@ -655,9 +623,9 @@ namespace LamaPon
                     placeholder->SetParameters(
                         customParameters);
                     placeholder->SetLights(Sprite2DLighting{});
-                    m_spriteBatch->Begin(
+                    resources.spriteBatch->Begin(
                         DirectX::SpriteSortMode_Deferred,
-                        m_commonStates->NonPremultiplied(),
+                        resources.commonStates->NonPremultiplied(),
                         nullptr,
                         nullptr,
                         nullptr,
@@ -665,7 +633,7 @@ namespace LamaPon
                         {
                             placeholder->Apply();
                         });
-                    return *m_spriteBatch;
+                    return *resources.spriteBatch;
                 }
             }
             return BeginSprites();
@@ -680,9 +648,9 @@ namespace LamaPon
                 ? *lighting
                 : Sprite2DLighting{});
         auto* effect = entry->effect.get();
-        m_spriteBatch->Begin(
+        resources.spriteBatch->Begin(
             DirectX::SpriteSortMode_Deferred,
-            m_commonStates->NonPremultiplied(),
+            resources.commonStates->NonPremultiplied(),
             nullptr,
             nullptr,
             nullptr,
@@ -690,7 +658,7 @@ namespace LamaPon
             {
                 effect->Apply();
             });
-        return *m_spriteBatch;
+        return *resources.spriteBatch;
     }
 
     bool GraphicsDevice::ApplyCustomPixelShader(
@@ -826,9 +794,10 @@ namespace LamaPon
 
     void GraphicsDevice::EndSprites()
     {
-        m_spriteBatch->End();
-        m_spriteTexturePins.clear();
-        m_uiScissorStack.clear();
+        auto& resources = RequireD3D11ApiResources();
+        resources.spriteBatch->End();
+        resources.spriteTexturePins.clear();
+        resources.uiScissorStack.clear();
     }
 
     void GraphicsDevice::PushUIScissor(
@@ -837,6 +806,7 @@ namespace LamaPon
         const float maximumX,
         const float maximumY)
     {
+        auto& resources = RequireD3D11ApiResources();
         D3D11_RECT scissor{
             static_cast<LONG>(
                 std::max(minimumX, 0.0f)),
@@ -847,9 +817,9 @@ namespace LamaPon
             static_cast<LONG>(
                 std::max(maximumY, 0.0f)) };
         // 入れ子は交差矩形にします。
-        if (!m_uiScissorStack.empty())
+        if (!resources.uiScissorStack.empty())
         {
-            const auto& outer = m_uiScissorStack.back();
+            const auto& outer = resources.uiScissorStack.back();
             scissor.left =
                 std::max(scissor.left, outer.left);
             scissor.top =
@@ -863,43 +833,44 @@ namespace LamaPon
             std::max(scissor.right, scissor.left);
         scissor.bottom =
             std::max(scissor.bottom, scissor.top);
-        m_uiScissorStack.push_back(scissor);
+        resources.uiScissorStack.push_back(scissor);
 
         // 進行中のバッチを確定してからシザー状態へ切り替えます。
-        m_spriteBatch->End();
+        resources.spriteBatch->End();
         Context()->RSSetScissorRects(1, &scissor);
-        m_spriteBatch->Begin(
+        resources.spriteBatch->Begin(
             DirectX::SpriteSortMode_Deferred,
-            m_commonStates->NonPremultiplied(),
+            resources.commonStates->NonPremultiplied(),
             nullptr,
             nullptr,
-            m_uiScissorRasterizer.Get());
+            resources.uiScissorRasterizer.Get());
     }
 
     void GraphicsDevice::PopUIScissor()
     {
-        if (m_uiScissorStack.empty())
+        auto& resources = RequireD3D11ApiResources();
+        if (resources.uiScissorStack.empty())
         {
             return;
         }
-        m_uiScissorStack.pop_back();
-        m_spriteBatch->End();
-        if (m_uiScissorStack.empty())
+        resources.uiScissorStack.pop_back();
+        resources.spriteBatch->End();
+        if (resources.uiScissorStack.empty())
         {
-            m_spriteBatch->Begin(
+            resources.spriteBatch->Begin(
                 DirectX::SpriteSortMode_Deferred,
-                m_commonStates->NonPremultiplied());
+                resources.commonStates->NonPremultiplied());
             return;
         }
         Context()->RSSetScissorRects(
             1,
-            &m_uiScissorStack.back());
-        m_spriteBatch->Begin(
+            &resources.uiScissorStack.back());
+        resources.spriteBatch->Begin(
             DirectX::SpriteSortMode_Deferred,
-            m_commonStates->NonPremultiplied(),
+            resources.commonStates->NonPremultiplied(),
             nullptr,
             nullptr,
-            m_uiScissorRasterizer.Get());
+            resources.uiScissorRasterizer.Get());
     }
 
     void GraphicsDevice::ApplyQueuedScreenEffects(

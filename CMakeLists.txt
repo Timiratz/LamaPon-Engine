@@ -272,6 +272,7 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Graphics/GraphicsResource.h
     src/LamaPon/Graphics/GraphicsDevice.cpp
     src/LamaPon/Graphics/GraphicsDevice.h
+    src/LamaPon/Graphics/GraphicsDeviceApiResources.h
     src/LamaPon/Graphics/GraphicsDeviceBackendOps.cpp
     src/LamaPon/Graphics/GraphicsDeviceComposition.cpp
     src/LamaPon/Graphics/GraphicsDeviceD3D11.cpp
@@ -1780,6 +1781,7 @@ install(
         PATTERN "Crypto.h" EXCLUDE
         PATTERN "AssetPacker.h" EXCLUDE
         PATTERN "AssetArchive.h" EXCLUDE
+        PATTERN "GraphicsDeviceApiResources.h" EXCLUDE
 )
 install(
     FILES

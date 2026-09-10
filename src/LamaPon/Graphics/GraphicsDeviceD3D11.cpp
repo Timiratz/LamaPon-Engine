@@ -4,20 +4,35 @@
 #include "LamaPon/Graphics/D3D11Backend.h"
 #include "LamaPon/Graphics/EnvironmentCache.h"
 #include "LamaPon/Graphics/EnvironmentSettings.h"
+#include "LamaPon/Graphics/GraphicsDeviceApiResources.h"
 #include "LamaPon/Graphics/RenderTarget.h"
 #include "LamaPon/Graphics/ShaderRenderState.h"
 
 #include <CommonStates.h>
+#include <SpriteBatch.h>
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace
 {
+    void ThrowIfFailed(const HRESULT result, const char* operation)
+    {
+        if (FAILED(result))
+        {
+            throw std::runtime_error(
+                std::string(operation)
+                + " failed with HRESULT "
+                + std::to_string(static_cast<unsigned long>(result)));
+        }
+    }
+
     [[nodiscard]] LamaPon::D3D11Backend*
         AsD3D11Backend(
             LamaPon::GraphicsBackend* const backend) noexcept
@@ -26,8 +41,168 @@ namespace
     }
 }
 
+namespace LamaPon::Detail
+{
+    GraphicsDeviceD3D11Resources::GraphicsDeviceD3D11Resources(
+        ID3D11Device* const device,
+        ID3D11DeviceContext* const context)
+        : spriteBatch(
+            std::make_unique<DirectX::SpriteBatch>(context))
+        , commonStates(
+            std::make_unique<DirectX::CommonStates>(device))
+    {
+        // UIクリッピング（ScrollView等）用のシザー有効
+        // ラスタライザ。
+        D3D11_RASTERIZER_DESC scissorDescription{};
+        scissorDescription.FillMode =
+            D3D11_FILL_SOLID;
+        scissorDescription.CullMode = D3D11_CULL_NONE;
+        scissorDescription.DepthClipEnable = TRUE;
+        scissorDescription.ScissorEnable = TRUE;
+        ThrowIfFailed(
+            device->CreateRasterizerState(
+                &scissorDescription,
+                uiScissorRasterizer.ReleaseAndGetAddressOf()),
+            "ID3D11Device::CreateRasterizerState");
+    }
+
+    GraphicsDeviceD3D11Resources::~GraphicsDeviceD3D11Resources()
+    {
+        Reset();
+    }
+
+    void GraphicsDeviceD3D11Resources::Reset() noexcept
+    {
+        additiveBlendPreservingAlpha.Reset();
+        uiScissorRasterizer.Reset();
+        uiScissorStack.clear();
+        spriteTexturePins.clear();
+        commonStates.reset();
+        spriteBatch.reset();
+    }
+
+    GraphicsDeviceApiResources::GraphicsDeviceApiResources() = default;
+
+    GraphicsDeviceApiResources::~GraphicsDeviceApiResources()
+    {
+        Reset();
+    }
+
+    void GraphicsDeviceApiResources::Reset() noexcept
+    {
+        if (d3d11)
+        {
+            d3d11->Reset();
+            d3d11.reset();
+        }
+    }
+
+    std::unique_ptr<GraphicsDeviceApiResources>
+        CreateD3D11GraphicsDeviceApiResources(
+            ID3D11Device* const device,
+            ID3D11DeviceContext* const context)
+    {
+        if (device == nullptr || context == nullptr)
+        {
+            throw std::invalid_argument(
+                "DirectX 11 API resources require an initialized device "
+                "and context.");
+        }
+
+        auto resources =
+            std::make_unique<GraphicsDeviceApiResources>();
+        resources->d3d11 =
+            std::make_unique<GraphicsDeviceD3D11Resources>(
+                device,
+                context);
+        return resources;
+    }
+}
+
 namespace LamaPon
 {
+    void GraphicsDevice::CreateApiResources(
+        const RenderingApi activeApi)
+    {
+        if (m_apiResources != nullptr)
+        {
+            throw std::logic_error(
+                "Graphics API resources are already initialized.");
+        }
+        if (m_backend == nullptr
+            || m_backend->Api() != activeApi)
+        {
+            throw std::logic_error(
+                "Graphics API resources require the active backend.");
+        }
+
+        std::unique_ptr<Detail::GraphicsDeviceApiResources>
+            resources;
+        switch (activeApi)
+        {
+        case RenderingApi::DirectX11:
+            resources =
+                Detail::CreateD3D11GraphicsDeviceApiResources(
+                    Device(),
+                    Context());
+            break;
+        case RenderingApi::Auto:
+        case RenderingApi::DirectX12Experimental:
+        default:
+            throw std::logic_error(
+                "API resources for the active rendering API are not "
+                "implemented.");
+        }
+
+        // Factoryが全資源を作り終えてから一度だけ公開します。
+        m_apiResources = std::move(resources);
+    }
+
+    void GraphicsDevice::ResetApiResources() noexcept
+    {
+        if (m_apiResources)
+        {
+            m_apiResources->Reset();
+            m_apiResources.reset();
+        }
+    }
+
+    Detail::GraphicsDeviceD3D11Resources*
+        GraphicsDevice::TryD3D11ApiResources() const noexcept
+    {
+        if (m_backend == nullptr
+            || m_backend->Api() != RenderingApi::DirectX11
+            || m_apiResources == nullptr)
+        {
+            return nullptr;
+        }
+        return m_apiResources->d3d11.get();
+    }
+
+    Detail::GraphicsDeviceD3D11Resources&
+        GraphicsDevice::RequireD3D11ApiResources()
+    {
+        auto* const resources = TryD3D11ApiResources();
+        if (resources == nullptr)
+        {
+            throw std::logic_error(
+                "DirectX 11 API resources are not initialized.");
+        }
+        return *resources;
+    }
+
+    const Detail::GraphicsDeviceD3D11Resources&
+        GraphicsDevice::RequireD3D11ApiResources() const
+    {
+        const auto* const resources = TryD3D11ApiResources();
+        if (resources == nullptr)
+        {
+            throw std::logic_error(
+                "DirectX 11 API resources are not initialized.");
+        }
+        return *resources;
+    }
+
     ID3D11Device* GraphicsDevice::Device() const noexcept
     {
         const auto* const backend =
@@ -231,7 +406,8 @@ namespace LamaPon
             TryResolveD3D11ShaderResourceView(*resources);
         if (view != nullptr)
         {
-            m_spriteTexturePins.emplace_back(std::move(resources));
+            RequireD3D11ApiResources().spriteTexturePins.emplace_back(
+                std::move(resources));
         }
         return view;
     }
@@ -266,21 +442,27 @@ namespace LamaPon
 
     DirectX::CommonStates& GraphicsDevice::States() const
     {
-        if (!m_commonStates)
+        auto* const resources = TryD3D11ApiResources();
+        if (resources == nullptr || !resources->commonStates)
         {
             throw std::logic_error("GraphicsDevice has not been initialized.");
         }
 
-        return *m_commonStates;
+        return *resources->commonStates;
     }
 
     ID3D11BlendState* GraphicsDevice::AdditiveBlendPreservingAlpha() const
     {
-        if (!m_additiveBlendPreservingAlpha)
+        auto* const resources = TryD3D11ApiResources();
+        if (resources == nullptr)
         {
-            m_additiveBlendPreservingAlpha =
+            return nullptr;
+        }
+        if (!resources->additiveBlendPreservingAlpha)
+        {
+            resources->additiveBlendPreservingAlpha =
                 CreateAdditiveBlendPreservingAlpha(Device());
         }
-        return m_additiveBlendPreservingAlpha.Get();
+        return resources->additiveBlendPreservingAlpha.Get();
     }
 }

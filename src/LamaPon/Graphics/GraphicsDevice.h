@@ -34,6 +34,12 @@ namespace DirectX
 
 namespace LamaPon
 {
+    namespace Detail
+    {
+        class GraphicsDeviceApiResources;
+        struct GraphicsDeviceD3D11Resources;
+    }
+
     struct FrameStatistics final
     {
         float framesPerSecond{};
@@ -734,6 +740,14 @@ namespace LamaPon
             std::uint32_t width,
             std::uint32_t height,
             RenderingApi requestedApi);
+        void CreateApiResources(RenderingApi activeApi);
+        void ResetApiResources() noexcept;
+        [[nodiscard]] Detail::GraphicsDeviceD3D11Resources*
+            TryD3D11ApiResources() const noexcept;
+        [[nodiscard]] Detail::GraphicsDeviceD3D11Resources&
+            RequireD3D11ApiResources();
+        [[nodiscard]] const Detail::GraphicsDeviceD3D11Resources&
+            RequireD3D11ApiResources() const;
         void CreateWhiteTexture();
         // 積まれた画面エフェクトを順に適用して待ち行列を空にします。
         // ポスト処理の並びはRunPostProcessが持っているので、その
@@ -755,17 +769,12 @@ namespace LamaPon
         // 現在はD3D11Backendだけを生成し、D3D12はrenderer移行完了まで
         // 選択段階で安全にD3D11へフォールバックします。
         std::unique_ptr<GraphicsBackend> m_backend;
+        // SpriteBatchや固定機能state等のAPI固有資源はprivateなopaque
+        // stateへ集約し、Backendより先に解放します。
+        std::unique_ptr<Detail::GraphicsDeviceApiResources>
+            m_apiResources;
         GraphicsTextureHandle m_whiteTexture;
         GraphicsViewHandle m_whiteTextureView;
-        std::unique_ptr<DirectX::SpriteBatch> m_spriteBatch;
-        std::vector<std::shared_ptr<const TextureResourceSnapshot>>
-            m_spriteTexturePins;
-        std::unique_ptr<DirectX::CommonStates> m_commonStates;
-        mutable Microsoft::WRL::ComPtr<ID3D11BlendState>
-            m_additiveBlendPreservingAlpha;
-        Microsoft::WRL::ComPtr<ID3D11RasterizerState>
-            m_uiScissorRasterizer;
-        std::vector<D3D11_RECT> m_uiScissorStack;
         GraphicsBufferHandle m_instanceBuffer;
         DepthPassKind m_depthPass{ DepthPassKind::None };
         GpuProfiler m_gpuProfiler;

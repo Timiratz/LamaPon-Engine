@@ -11,6 +11,7 @@
 #include "LamaPon/Scene/Scene.h"
 
 #include <Windows.h>
+#include <CommonStates.h>
 #include <SpriteBatch.h>
 #include <imgui.h>
 
@@ -424,6 +425,14 @@ namespace
                 LamaPon::AudioBus::Effects,
                 0.4f);
             preservedAudio->SetSuspended(true);
+            Require(
+                initiallyGuardedGraphics.States().Opaque() != nullptr
+                    && initiallyGuardedGraphics
+                        .AdditiveBlendPreservingAlpha() != nullptr,
+                "Graphics resources were not available before failed reinitialization");
+            Microsoft::WRL::ComPtr<ID3D11Device>
+                deviceBeforeFailedReinitialization =
+                    initiallyGuardedGraphics.Device();
             RequireThrows<std::runtime_error>(
                 [&]
                 {
@@ -436,6 +445,7 @@ namespace
                 "Invalid graphics reinitialization must report a failure");
             Require(
                 !initiallyGuardedGraphics.IsInitialized()
+                    && initiallyGuardedGraphics.Device() == nullptr
                     && &initiallyGuardedGraphics.Audio()
                         == preservedAudio
                     && std::abs(
@@ -452,6 +462,34 @@ namespace
                 Width,
                 Height,
                 LamaPon::RenderingApi::DirectX11);
+            auto* const recoveredOpaque =
+                initiallyGuardedGraphics.States().Opaque();
+            auto* const recoveredAdditive =
+                initiallyGuardedGraphics
+                    .AdditiveBlendPreservingAlpha();
+            Microsoft::WRL::ComPtr<ID3D11Device>
+                recoveredOpaqueDevice;
+            Microsoft::WRL::ComPtr<ID3D11Device>
+                recoveredAdditiveDevice;
+            if (recoveredOpaque != nullptr)
+            {
+                recoveredOpaque->GetDevice(
+                    recoveredOpaqueDevice.ReleaseAndGetAddressOf());
+            }
+            if (recoveredAdditive != nullptr)
+            {
+                recoveredAdditive->GetDevice(
+                    recoveredAdditiveDevice.ReleaseAndGetAddressOf());
+            }
+            Require(
+                initiallyGuardedGraphics.Device() != nullptr
+                    && initiallyGuardedGraphics.Device()
+                        != deviceBeforeFailedReinitialization.Get()
+                    && recoveredOpaqueDevice.Get()
+                        == initiallyGuardedGraphics.Device()
+                    && recoveredAdditiveDevice.Get()
+                        == initiallyGuardedGraphics.Device(),
+                "Graphics recovery did not rebuild DirectX 11 frontend resources");
             Require(
                 &initiallyGuardedGraphics.Audio()
                     == preservedAudio
@@ -533,6 +571,29 @@ namespace
                 && failedGraphics.Context() == nullptr
                 && failedGraphics.TryAssets() == nullptr,
             "Failed graphics initialization retained partial resources");
+
+        {
+            LamaPon::GraphicsDevice fallbackGraphics;
+            fallbackGraphics.Initialize(
+                window.Get(),
+                Width,
+                Height,
+                LamaPon::RenderingApi::DirectX12Experimental);
+            Require(
+                fallbackGraphics.StartupRenderingApi()
+                        == LamaPon::RenderingApi::DirectX12Experimental
+                    && fallbackGraphics.ActiveRenderingApi()
+                        == LamaPon::RenderingApi::DirectX11
+                    && fallbackGraphics.RenderingApiFallback()
+                        == LamaPon::RenderingApiFallbackReason::NotImplemented,
+                "Sprite smoke test requires the DirectX 11 fallback");
+            constexpr float fallbackClearColor[]{
+                0.0f, 0.0f, 0.0f, 1.0f };
+            fallbackGraphics.BeginFrame(fallbackClearColor);
+            fallbackGraphics.BeginSprites();
+            fallbackGraphics.EndSprites();
+            fallbackGraphics.EndFrame();
+        }
 
         LamaPon::GraphicsDevice graphics;
         graphics.Initialize(
@@ -1619,6 +1680,73 @@ namespace
             8u,
             { assetColor[0], assetColor[1], assetColor[2] },
             "SpriteBatch must retain the texture snapshot until EndSprites");
+
+        // 入れ子のUIシザーは外側との交差だけを描画し、余分なPopは
+        // 進行中のSpriteBatchを壊さないことを実画素で確認します。
+        constexpr float scissorClearColor[]{
+            0.0f, 0.0f, 0.0f, 1.0f };
+        const DirectX::XMFLOAT4 scissorRed{
+            1.0f, 0.0f, 0.0f, 1.0f };
+        const DirectX::XMFLOAT4 scissorGreen{
+            0.0f, 1.0f, 0.0f, 1.0f };
+        graphics.BeginFrame(scissorClearColor);
+        auto& scissorSprites = graphics.BeginSprites();
+        const auto drawScissorColor =
+            [&graphics, &scissorSprites](
+                const DirectX::XMFLOAT4& color)
+            {
+                scissorSprites.Draw(
+                    graphics.WhiteTexture(),
+                    DirectX::XMFLOAT2{},
+                    nullptr,
+                    DirectX::XMLoadFloat4(&color),
+                    0.0f,
+                    DirectX::XMFLOAT2{},
+                    DirectX::XMFLOAT2{
+                        static_cast<float>(Width),
+                        static_cast<float>(Height) });
+            };
+        graphics.PushUIScissor(8.0f, 8.0f, 56.0f, 48.0f);
+        drawScissorColor(scissorRed);
+        graphics.PushUIScissor(24.0f, 16.0f, 72.0f, 32.0f);
+        drawScissorColor(scissorGreen);
+        graphics.PopUIScissor();
+        graphics.PopUIScissor();
+        graphics.PopUIScissor();
+        graphics.EndSprites();
+        std::uint32_t scissorWidth{};
+        std::uint32_t scissorHeight{};
+        const auto scissorPixels = graphics.CaptureBackBuffer(
+            scissorWidth,
+            scissorHeight);
+        graphics.EndFrame();
+        Require(
+            scissorWidth == Width && scissorHeight == Height,
+            "Nested UI scissor test must capture the active back buffer");
+        RequirePixelNear(
+            scissorPixels,
+            12u,
+            12u,
+            { 255u, 0u, 0u },
+            "The outer-only scissor region must retain the outer draw");
+        RequirePixelNear(
+            scissorPixels,
+            32u,
+            24u,
+            { 0u, 255u, 0u },
+            "The nested scissor intersection must contain the inner draw");
+        RequirePixelNear(
+            scissorPixels,
+            64u,
+            24u,
+            { 0u, 0u, 0u },
+            "The nested scissor must not draw outside its outer region");
+        RequirePixelNear(
+            scissorPixels,
+            4u,
+            4u,
+            { 0u, 0u, 0u },
+            "The outer UI scissor must preserve pixels outside its bounds");
 
         auto modelPreviewRenderer =
             LamaPon::CreateEditorModelPreviewRenderer(
