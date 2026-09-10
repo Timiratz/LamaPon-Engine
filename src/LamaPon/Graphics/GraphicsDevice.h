@@ -101,8 +101,16 @@ namespace LamaPon
     class ComputeEffect;
     struct TextureResourceSnapshot;
     struct AutoExposureSettings;
+    struct AmbientOcclusionSettings;
     struct BloomSettings;
+    struct ScreenOutlineSettings;
     struct ScreenSpaceLensFlareSettings;
+    struct TemporalAntiAliasingSettings;
+    struct TemporalAntiAliasingInputs;
+    struct VolumetricLightSettings;
+    struct VolumetricLightInputs;
+    struct DepthOfFieldSettings;
+    struct MotionBlurSettings;
     struct ColorGradingSettings;
     struct SceneLoadingScreenSettings;
     struct VolumetricLightFrame;
@@ -427,6 +435,46 @@ namespace LamaPon
         void CaptureOffscreenTargetTemporalHistory(
             RenderTarget& target,
             const DirectX::XMFLOAT4X4& viewProjection);
+        // ポスト処理のD3D11 rendererを公開せず、RenderTargetとneutral
+        // frame入力をactive Backendの描画島へ渡す移行境界です。
+        [[nodiscard]] bool ResolveOffscreenTargetAmbientOcclusion(
+            RenderTarget& target,
+            const AmbientOcclusionSettings& settings,
+            const DirectX::XMFLOAT4X4& projection,
+            std::uint32_t sampleCount);
+        void ApplyOffscreenTargetTemporalAntiAliasing(
+            RenderTarget& target,
+            const TemporalAntiAliasingSettings& settings,
+            const TemporalAntiAliasingInputs& inputs);
+        void ApplyOffscreenTargetVolumetricLight(
+            RenderTarget& target,
+            const VolumetricLightSettings& settings,
+            const VolumetricLightInputs& inputs);
+        void ApplyOffscreenTargetDepthOfField(
+            RenderTarget& target,
+            const DepthOfFieldSettings& settings,
+            const DirectX::XMFLOAT4X4& projection,
+            std::uint32_t sampleCount);
+        void ApplyOffscreenTargetMotionBlur(
+            RenderTarget& target,
+            const MotionBlurSettings& settings,
+            const DirectX::XMFLOAT4X4& inverseViewProjection,
+            const DirectX::XMFLOAT4X4& viewProjection,
+            std::uint32_t sampleCount);
+        void ApplyOffscreenTargetBloom(
+            RenderTarget& target,
+            const BloomSettings& settings);
+        void ApplyOffscreenTargetScreenSpaceLensFlare(
+            RenderTarget& target,
+            const ScreenSpaceLensFlareSettings& settings);
+        void ApplyOffscreenTargetToneMapping(
+            RenderTarget& target,
+            const ColorGradingSettings& settings);
+        void ApplyOffscreenTargetScreenOutline(
+            RenderTarget& target,
+            const ScreenOutlineSettings& settings,
+            const DirectX::XMFLOAT4X4& projection);
+        void ApplyOffscreenTargetFXAA(RenderTarget& target);
         // トーンマップ前のHDRから画面全体の明るさを測り、露出への
         // 補正（段数）を返します。前フレームの非同期readback、CPU側の
         // 順応、現在フレームの測定と次回用転送をこの順で行います。
@@ -518,7 +566,6 @@ namespace LamaPon
         {
             return m_gpuProfiler;
         }
-        [[nodiscard]] EnvironmentRenderer& Environment() const;
         // Sky cubemapをnative SRVへ公開せず、現在のBackend世代に
         // 属するsampleableなTextureCubeかを確認します。
         [[nodiscard]] bool IsSampleableCubeView(
@@ -769,6 +816,10 @@ namespace LamaPon
         friend class ParticleSystemComponent;
         friend class SkeletalModel;
         friend class Detail::SpriteRenderPassState;
+
+        // API 60以前のraw renderer取得口はbinary互換shimとして残し、
+        // engine内部のneutral facadeだけが使用します。
+        [[nodiscard]] EnvironmentRenderer& Environment() const;
 
         // 組み込みシェーダーの組み立てに失敗した時刻とエラーを保持します。
         struct BuiltInFailure final

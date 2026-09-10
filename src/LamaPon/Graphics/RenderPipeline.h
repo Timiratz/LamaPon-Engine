@@ -1,6 +1,6 @@
 #pragma once
 
-#include "LamaPon/Graphics/EnvironmentRenderer.h"
+#include "LamaPon/Graphics/EnvironmentSettings.h"
 
 #include <DirectXMath.h>
 
@@ -59,14 +59,14 @@ namespace LamaPon
     struct VolumetricLightFrame final
     {
         VolumetricLightSettings settings{};
-        EnvironmentRenderer::VolumetricInputs inputs{};
+        VolumetricLightInputs inputs{};
     };
 
     // TAAに必要な、シーン側しか知らない情報（今と前フレームの行列）。
     struct TemporalAntiAliasingFrame final
     {
         TemporalAntiAliasingSettings settings{};
-        EnvironmentRenderer::TemporalInputs inputs{};
+        TemporalAntiAliasingInputs inputs{};
     };
 
     // 被写界深度に必要な、シーン側しか知らない情報。

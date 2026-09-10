@@ -716,6 +716,47 @@ int main(const int argumentCount, char** arguments)
             "?BakeIrradianceProbe@EnvironmentRenderer@LamaPon@@"
             "QEAA?AV?$optional@V?$array@M$0M@@std@@@std@@"
             "AEBV?$function@$$A6AXI@Z@4@@Z";
+        constexpr char LegacyEnvironmentAccessorSymbol[] =
+            "?Environment@GraphicsDevice@LamaPon@@"
+            "QEBAAEAVEnvironmentRenderer@2@XZ";
+        constexpr std::array LegacyRenderTargetPostProcessSymbols{
+            "?ApplyBloom@RenderTarget@LamaPon@@"
+            "QEAAXAEAVEnvironmentRenderer@2@AEBUBloomSettings@2@@Z",
+            "?ApplyDepthOfField@RenderTarget@LamaPon@@"
+            "QEAAXAEAVEnvironmentRenderer@2@"
+            "AEBUDepthOfFieldSettings@2@AEBUXMFLOAT4X4@DirectX@@I@Z",
+            "?ApplyFXAA@RenderTarget@LamaPon@@"
+            "QEAAXAEAVEnvironmentRenderer@2@@Z",
+            "?ApplyMotionBlur@RenderTarget@LamaPon@@"
+            "QEAAXAEAVEnvironmentRenderer@2@AEBUMotionBlurSettings@2@"
+            "AEBUXMFLOAT4X4@DirectX@@2I@Z",
+            "?ApplyScreenEffect@RenderTarget@LamaPon@@"
+            "QEAAXAEAVScreenEffect@2@"
+            "AEBV?$array@PEAUID3D11ShaderResourceView@@$01@std@@"
+            "AEBUXMFLOAT4@DirectX@@2"
+            "AEBV?$array@UXMFLOAT4@DirectX@@$07@5@@Z",
+            "?ApplyScreenOutline@RenderTarget@LamaPon@@"
+            "QEAAXAEAVEnvironmentRenderer@2@"
+            "AEBUScreenOutlineSettings@2@AEBUXMFLOAT4X4@DirectX@@@Z",
+            "?ApplyScreenSpaceLensFlare@RenderTarget@LamaPon@@"
+            "QEAAXAEAVEnvironmentRenderer@2@"
+            "AEBUScreenSpaceLensFlareSettings@2@@Z",
+            "?ApplyTemporalAntiAliasing@RenderTarget@LamaPon@@"
+            "QEAAXAEAVEnvironmentRenderer@2@"
+            "AEBUTemporalAntiAliasingSettings@2@"
+            "AEBUTemporalInputs@32@@Z",
+            "?ApplyToneMapping@RenderTarget@LamaPon@@"
+            "QEAAXAEAVEnvironmentRenderer@2@"
+            "AEBUColorGradingSettings@2@@Z",
+            "?ApplyVolumetricLight@RenderTarget@LamaPon@@"
+            "QEAAXAEAVEnvironmentRenderer@2@"
+            "AEBUVolumetricLightSettings@2@"
+            "AEBUVolumetricInputs@32@@Z",
+            "?ResolveAmbientOcclusion@RenderTarget@LamaPon@@"
+            "QEAA_NAEAVEnvironmentRenderer@2@"
+            "AEBUAmbientOcclusionSettings@2@"
+            "AEBUXMFLOAT4X4@DirectX@@I@Z"
+        };
         const auto runtimeModule = GetModuleHandleW(
             L"LamaPonRuntime.dll");
         Require(
@@ -783,6 +824,26 @@ int main(const int argumentCount, char** arguments)
                     runtimeModule,
                     LegacyIrradianceProbeBakeSymbol) != nullptr,
             "An API 60 EnvironmentRenderer export alias is missing");
+        const auto legacyEnvironmentAccessorAddress =
+            GetProcAddress(
+                runtimeModule,
+                LegacyEnvironmentAccessorSymbol);
+        Require(
+            legacyEnvironmentAccessorAddress != nullptr,
+            "The API 61 Environment accessor export alias is missing");
+        for (const auto* const symbol :
+            LegacyRenderTargetPostProcessSymbols)
+        {
+            Require(
+                GetProcAddress(runtimeModule, symbol) != nullptr,
+                "An API 61 RenderTarget post-process export alias is missing");
+        }
+        using LegacyEnvironmentAccessor =
+            LamaPon::EnvironmentRenderer* (__fastcall*)(
+                const LamaPon::GraphicsDevice*);
+        const auto legacyEnvironmentAccessor =
+            reinterpret_cast<LegacyEnvironmentAccessor>(
+                legacyEnvironmentAccessorAddress);
         Stage("asset-root");
         graphics.Assets().SetAssetRoot(
             LAMAPON_TEST_ASSET_DIR);
@@ -1495,7 +1556,7 @@ int main(const int argumentCount, char** arguments)
             "RenderTarget did not publish its neutral depth view");
         LamaPon::VolumetricLightSettings volumetricSettings;
         volumetricSettings.enabled = true;
-        LamaPon::EnvironmentRenderer::VolumetricInputs volumetricInputs;
+        LamaPon::VolumetricLightInputs volumetricInputs;
         volumetricInputs.cascadeShadow = directionalShadowView;
         volumetricInputs.cascadeCount =
             static_cast<std::uint32_t>(
@@ -1504,8 +1565,8 @@ int main(const int argumentCount, char** arguments)
             shadowLighting.directionalShadowResolution;
         auto* const volumetricSource =
             volumetricTarget.ShaderResourceView();
-        volumetricTarget.ApplyVolumetricLight(
-            graphics.Environment(),
+        graphics.ApplyOffscreenTargetVolumetricLight(
+            volumetricTarget,
             volumetricSettings,
             volumetricInputs);
         Require(
@@ -1515,8 +1576,8 @@ int main(const int argumentCount, char** arguments)
         invalidVolumetricInputs.cascadeShadow.Reset();
         auto* const resolvedVolumetricSource =
             volumetricTarget.ShaderResourceView();
-        volumetricTarget.ApplyVolumetricLight(
-            graphics.Environment(),
+        graphics.ApplyOffscreenTargetVolumetricLight(
+            volumetricTarget,
             volumetricSettings,
             invalidVolumetricInputs);
         Require(
@@ -1563,13 +1624,13 @@ int main(const int argumentCount, char** arguments)
 
         LamaPon::TemporalAntiAliasingSettings temporalSettings;
         temporalSettings.enabled = true;
-        LamaPon::EnvironmentRenderer::TemporalInputs temporalInputs;
+        LamaPon::TemporalAntiAliasingInputs temporalInputs;
         temporalInputs.inverseViewProjection = temporalIdentity;
         temporalInputs.viewProjection = temporalIdentity;
         auto* const temporalSource =
             temporalTarget.ShaderResourceView();
-        temporalTarget.ApplyTemporalAntiAliasing(
-            graphics.Environment(),
+        graphics.ApplyOffscreenTargetTemporalAntiAliasing(
+            temporalTarget,
             temporalSettings,
             temporalInputs);
         Require(
@@ -1602,7 +1663,12 @@ int main(const int argumentCount, char** arguments)
                     temporalOutputTarget.ReleaseAndGetAddressOf())),
             "The neutral TAA validation target could not be created");
 
-        auto directTemporalInputs = temporalInputs;
+        LamaPon::EnvironmentRenderer::TemporalInputs
+            directTemporalInputs;
+        directTemporalInputs.inverseViewProjection =
+            temporalInputs.inverseViewProjection;
+        directTemporalInputs.viewProjection =
+            temporalInputs.viewProjection;
         directTemporalInputs.history = temporalHistoryView;
         directTemporalInputs.depth = temporalDepthView;
         directTemporalInputs.previousViewProjection =
@@ -1612,8 +1678,13 @@ int main(const int argumentCount, char** arguments)
         Require(
             temporalOutputState != nullptr,
             "The TAA renderer output state could not be captured");
+        auto* const legacyEnvironment =
+            legacyEnvironmentAccessor(&graphics);
         Require(
-            graphics.Environment().ApplyTemporalAntiAliasing(
+            legacyEnvironment != nullptr,
+            "The legacy Environment accessor returned null");
+        Require(
+            legacyEnvironment->ApplyTemporalAntiAliasing(
                 temporalTarget.ShaderResourceView(),
                 temporalOutputTarget.Get(),
                 Width,
@@ -1626,7 +1697,7 @@ int main(const int argumentCount, char** arguments)
         auto incompleteTemporalInputs = directTemporalInputs;
         incompleteTemporalInputs.history.Reset();
         Require(
-            !graphics.Environment().ApplyTemporalAntiAliasing(
+            !legacyEnvironment->ApplyTemporalAntiAliasing(
                 temporalTarget.ShaderResourceView(),
                 temporalOutputTarget.Get(),
                 Width,
@@ -1637,7 +1708,7 @@ int main(const int argumentCount, char** arguments)
         auto invalidTemporalHistory = directTemporalInputs;
         invalidTemporalHistory.history = litViews[0];
         Require(
-            !graphics.Environment().ApplyTemporalAntiAliasing(
+            !legacyEnvironment->ApplyTemporalAntiAliasing(
                 temporalTarget.ShaderResourceView(),
                 temporalOutputTarget.Get(),
                 Width,
@@ -1648,7 +1719,7 @@ int main(const int argumentCount, char** arguments)
         auto invalidTemporalDepth = directTemporalInputs;
         invalidTemporalDepth.depth = temporalHistoryView;
         Require(
-            !graphics.Environment().ApplyTemporalAntiAliasing(
+            !legacyEnvironment->ApplyTemporalAntiAliasing(
                 temporalTarget.ShaderResourceView(),
                 temporalOutputTarget.Get(),
                 Width,
@@ -2209,10 +2280,30 @@ int main(const int argumentCount, char** arguments)
                     && foreignBackend.ResolveShaderResourceView(
                         foreignTemporalHistoryView) != nullptr,
                 "A foreign RenderTarget did not publish its TAA history view");
+            LamaPon::BloomSettings foreignTargetBloom;
+            foreignTargetBloom.enabled = true;
+            auto* const foreignTargetSource =
+                foreignScreenTarget.ShaderResourceView();
+            bool foreignTargetRejected{};
+            try
+            {
+                graphics.ApplyOffscreenTargetBloom(
+                    foreignScreenTarget,
+                    foreignTargetBloom);
+            }
+            catch (const std::invalid_argument&)
+            {
+                foreignTargetRejected = true;
+            }
+            Require(
+                foreignTargetRejected
+                    && foreignScreenTarget.ShaderResourceView()
+                        == foreignTargetSource,
+                "The post-process facade accepted a foreign RenderTarget");
             auto mixedTemporalInputs = directTemporalInputs;
             mixedTemporalInputs.history = foreignTemporalHistoryView;
             Require(
-                !graphics.Environment().ApplyTemporalAntiAliasing(
+                !legacyEnvironment->ApplyTemporalAntiAliasing(
                     temporalTarget.ShaderResourceView(),
                     temporalOutputTarget.Get(),
                     Width,
@@ -2344,8 +2435,8 @@ int main(const int argumentCount, char** arguments)
                 foreignShadowMap.ViewHandle();
             auto* const foreignVolumetricSource =
                 volumetricTarget.ShaderResourceView();
-            volumetricTarget.ApplyVolumetricLight(
-                graphics.Environment(),
+            graphics.ApplyOffscreenTargetVolumetricLight(
+                volumetricTarget,
                 volumetricSettings,
                 foreignVolumetricInputs);
             Require(

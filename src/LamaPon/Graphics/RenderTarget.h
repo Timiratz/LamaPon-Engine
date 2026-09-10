@@ -37,56 +37,6 @@ namespace LamaPon
         RenderTarget(const RenderTarget&) = delete;
         RenderTarget& operator=(const RenderTarget&) = delete;
 
-        void ApplyBloom(
-            EnvironmentRenderer& renderer,
-            const BloomSettings& settings);
-        void ApplyScreenOutline(
-            EnvironmentRenderer& renderer,
-            const ScreenOutlineSettings& settings,
-            const DirectX::XMFLOAT4X4& projection);
-        void ApplyScreenSpaceLensFlare(
-            EnvironmentRenderer& renderer,
-            const ScreenSpaceLensFlareSettings& settings);
-        // TAA（時間的アンチエイリアス）。今のフレームと前フレームの
-        // 結果を混ぜる解決処理だけを行います。ポスト処理の先頭
-        // （Bloomより前）で呼んでください。
-        //
-        // 履歴がまだ無い最初のフレームは混ぜません。有効時は
-        // 呼び出し直後にGraphicsDevice::CaptureOffscreenTargetTemporalHistory()
-        // を呼び、解決結果を次フレームへ控えてください。
-        void ApplyTemporalAntiAliasing(
-            EnvironmentRenderer& renderer,
-            const TemporalAntiAliasingSettings& settings,
-            const EnvironmentRenderer::TemporalInputs&
-                inputs);
-        // ボリュメトリックライト（光の筋）。深度と影を読むので、
-        // トーンマップより前（HDRのうち）にかけます。
-        void ApplyVolumetricLight(
-            EnvironmentRenderer& renderer,
-            const VolumetricLightSettings& settings,
-            const EnvironmentRenderer::VolumetricInputs&
-                inputs);
-        // 被写界深度（DoF）。深度を読むので、トーンマップより前
-        // （HDRのうち）にかけます。projectionはこのターゲットを
-        // 描いたときの射影行列です（深度をカメラからの距離へ戻すのに
-        // 必要）。半解像度の作業用テクスチャはこのターゲットが
-        // 持っているものを使います。
-        void ApplyDepthOfField(
-            EnvironmentRenderer& renderer,
-            const DepthOfFieldSettings& settings,
-            const DirectX::XMFLOAT4X4& projection,
-            std::uint32_t sampleCount);
-        // モーションブラー（カメラの動きによるブレ）。深度と前フレーム
-        // の行列を使うので、トーンマップより前（HDRのうち）にかけます。
-        // 行列はずらしを含まないものを渡してください。前フレームの
-        // 行列はこのターゲットが自分で覚えます（ビューをまたいで
-        // 共有すると再投影が壊れます）。
-        void ApplyMotionBlur(
-            EnvironmentRenderer& renderer,
-            const MotionBlurSettings& settings,
-            const DirectX::XMFLOAT4X4& inverseViewProjection,
-            const DirectX::XMFLOAT4X4& viewProjection,
-            std::uint32_t sampleCount);
         // 順応した平均輝度（0なら未測定）。エディターの表示用です。
         [[nodiscard]] float AdaptedLuminance() const noexcept
         {
@@ -97,38 +47,11 @@ namespace LamaPon
         {
             return m_autoExposureStops;
         }
-        void ApplyToneMapping(
-            EnvironmentRenderer& renderer,
-            const ColorGradingSettings& settings);
-        void ApplyFXAA(
-            EnvironmentRenderer& renderer);
-        // SSAO。深度プリパスが書いた深度から遮蔽を求め、ブラーまで
-        // 済ませた結果を内部テクスチャへ残します。色には触りません
-        // （Litシェーダーが環境光項へ掛けるため）。
-        // projectionはこのターゲットを描いたときの射影行列（深度を
-        // ビュー空間へ戻すために必要）です。
-        // sampleCountは品質設定から渡す遮蔽の探索回数です。
-        // 戻り値がtrueのときだけAmbientOcclusionViewHandle()が
-        // 有効な内容を指します。
-        [[nodiscard]] bool ResolveAmbientOcclusion(
-            EnvironmentRenderer& renderer,
-            const AmbientOcclusionSettings& settings,
-            const DirectX::XMFLOAT4X4& projection,
-            std::uint32_t sampleCount);
         [[nodiscard]] GraphicsViewHandle
             AmbientOcclusionViewHandle() const noexcept
         {
             return m_ambientOcclusionView;
         }
-        void ApplyScreenEffect(
-            ScreenEffect& effect,
-            const std::array<ID3D11ShaderResourceView*, 2>&
-                auxiliaryTextures,
-            const DirectX::XMFLOAT4& depthParameters,
-            const DirectX::XMFLOAT4& depthUnprojection,
-            const std::array<DirectX::XMFLOAT4, 8>&
-                parameters);
-
         [[nodiscard]] ID3D11ShaderResourceView* ShaderResourceView() const noexcept
         {
             return m_shaderResourceView.Get();
@@ -245,6 +168,54 @@ namespace LamaPon
         // 自動露出のreadbackと次回用転送はGraphicsDeviceがBackendの
         // 前後で順序付けるため、高水準の更新処理も直接公開しません。
         friend class GraphicsDevice;
+
+        // API 60以前のEnvironmentRenderer / raw SRV入口は
+        // GraphicsDeviceのneutral facadeだけが呼ぶprivate互換shimです。
+        void ApplyBloom(
+            EnvironmentRenderer& renderer,
+            const BloomSettings& settings);
+        void ApplyScreenOutline(
+            EnvironmentRenderer& renderer,
+            const ScreenOutlineSettings& settings,
+            const DirectX::XMFLOAT4X4& projection);
+        void ApplyScreenSpaceLensFlare(
+            EnvironmentRenderer& renderer,
+            const ScreenSpaceLensFlareSettings& settings);
+        void ApplyTemporalAntiAliasing(
+            EnvironmentRenderer& renderer,
+            const TemporalAntiAliasingSettings& settings,
+            const EnvironmentRenderer::TemporalInputs& inputs);
+        void ApplyVolumetricLight(
+            EnvironmentRenderer& renderer,
+            const VolumetricLightSettings& settings,
+            const EnvironmentRenderer::VolumetricInputs& inputs);
+        void ApplyDepthOfField(
+            EnvironmentRenderer& renderer,
+            const DepthOfFieldSettings& settings,
+            const DirectX::XMFLOAT4X4& projection,
+            std::uint32_t sampleCount);
+        void ApplyMotionBlur(
+            EnvironmentRenderer& renderer,
+            const MotionBlurSettings& settings,
+            const DirectX::XMFLOAT4X4& inverseViewProjection,
+            const DirectX::XMFLOAT4X4& viewProjection,
+            std::uint32_t sampleCount);
+        void ApplyToneMapping(
+            EnvironmentRenderer& renderer,
+            const ColorGradingSettings& settings);
+        void ApplyFXAA(EnvironmentRenderer& renderer);
+        [[nodiscard]] bool ResolveAmbientOcclusion(
+            EnvironmentRenderer& renderer,
+            const AmbientOcclusionSettings& settings,
+            const DirectX::XMFLOAT4X4& projection,
+            std::uint32_t sampleCount);
+        void ApplyScreenEffect(
+            ScreenEffect& effect,
+            const std::array<ID3D11ShaderResourceView*, 2>&
+                auxiliaryTextures,
+            const DirectX::XMFLOAT4& depthParameters,
+            const DirectX::XMFLOAT4& depthUnprojection,
+            const std::array<DirectX::XMFLOAT4, 8>& parameters);
 
         // API 54以前のGame Moduleが公開名を解決してからAPI不一致を
         // 案内できるよう、旧raw view getterのbinary symbolだけを

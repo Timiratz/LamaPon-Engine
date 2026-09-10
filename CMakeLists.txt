@@ -281,6 +281,7 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Graphics/GraphicsDeviceBuiltInEffectsD3D11.cpp
     src/LamaPon/Graphics/GraphicsDeviceComposition.cpp
     src/LamaPon/Graphics/GraphicsDeviceD3D11.cpp
+    src/LamaPon/Graphics/GraphicsDevicePostProcessD3D11.cpp
     src/LamaPon/Graphics/GraphicsDeviceParticleRendering.cpp
     src/LamaPon/Graphics/GraphicsDeviceSpriteFrontend.cpp
     src/LamaPon/Graphics/GraphicsDeviceSpriteD3D11.cpp

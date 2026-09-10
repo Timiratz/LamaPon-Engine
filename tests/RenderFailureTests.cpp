@@ -265,11 +265,19 @@ int main()
         Stage("initialize");
         graphics.Initialize(window, Width, Height);
         graphics.Assets().SetAssetRoot(root.Path());
+        const auto initializeEnvironment = [&graphics]
+        {
+            const auto identity = DirectX::XMMatrixIdentity();
+            graphics.DrawSky(
+                identity,
+                identity,
+                LamaPon::SkySettings{});
+        };
 
         Stage("first-failure");
         LamaPon::ResetShaderCompileStatistics();
         const auto first =
-            FailureOf([&] { static_cast<void>(graphics.Environment()); });
+            FailureOf(initializeEnvironment);
         Require(
             !first.empty(),
             "a broken built-in shader must still throw");
@@ -285,7 +293,7 @@ int main()
         for (int frame = 0; frame < 5; ++frame)
         {
             const auto repeated =
-                FailureOf([&] { static_cast<void>(graphics.Environment()); });
+                FailureOf(initializeEnvironment);
             Require(
                 repeated == first,
                 "the remembered failure must be returned as-is");
@@ -345,7 +353,7 @@ int main()
         std::this_thread::sleep_for(
             std::chrono::milliseconds(2500));
         const auto recovered =
-            FailureOf([&] { static_cast<void>(graphics.Environment()); });
+            FailureOf(initializeEnvironment);
         Require(
             recovered.empty(),
             "fixing the shader must bring rendering back");

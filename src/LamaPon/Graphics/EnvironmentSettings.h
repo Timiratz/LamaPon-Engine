@@ -1,8 +1,11 @@
 #pragma once
 
+#include "LamaPon/Graphics/GraphicsResource.h"
+
 #include <DirectXMath.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -318,6 +321,15 @@ namespace LamaPon
         float clampTolerance{ 1.0f };
     };
 
+    // TAAへ渡すAPI非依存のフレーム入力です。履歴・深度・前フレーム
+    // 行列はビューごとに異なるため、RenderTargetが自分の状態から
+    // 注入します。Sceneは現在フレームの行列だけを渡します。
+    struct TemporalAntiAliasingInputs final
+    {
+        DirectX::XMFLOAT4X4 inverseViewProjection{};
+        DirectX::XMFLOAT4X4 viewProjection{};
+    };
+
     // SSR（画面空間反射）。濡れた床、磨いた金属、水面に周りの景色を
     // 映します。
     //
@@ -379,6 +391,23 @@ namespace LamaPon
         // 前方散乱の強さ（0〜0.95）。太陽の方を向いたときだけ
         // 明るくなる度合いで、上げるほど指向性が強くなります。
         float scattering{ 0.6f };
+    };
+
+    // ボリュメトリックライトへ渡すAPI非依存のフレーム入力です。
+    // depthはRenderTargetが注入し、cascade shadowだけをSceneから
+    // neutral handleで運びます。
+    struct VolumetricLightInputs final
+    {
+        GraphicsViewHandle cascadeShadow;
+        DirectX::XMFLOAT4X4 inverseViewProjection{};
+        DirectX::XMFLOAT3 cameraPosition{};
+        DirectX::XMFLOAT3 lightDirection{};
+        DirectX::XMFLOAT3 lightColor{ 1.0f, 1.0f, 1.0f };
+        std::array<DirectX::XMFLOAT4X4, 4>
+            cascadeViewProjections{};
+        std::uint32_t cascadeCount{};
+        float shadowBias{ 0.002f };
+        float shadowResolution{ 2048.0f };
     };
 
     // ベイクした間接光（照度ボリューム）。

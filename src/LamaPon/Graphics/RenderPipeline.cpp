@@ -132,8 +132,8 @@ namespace LamaPon
                 "SSAO"
             };
             result.ambientOcclusionResolved =
-                target.ResolveAmbientOcclusion(
-                    graphics.Environment(),
+                graphics.ResolveOffscreenTargetAmbientOcclusion(
+                    target,
                     ambientOcclusion,
                     projection,
                     settings.ambientOcclusionSampleCount);
@@ -180,8 +180,8 @@ namespace LamaPon
         // 完成した色を前提にしているので、混ぜるのは素の絵のうちに
         // 済ませます。Bloomの後で混ぜると、前フレームのBloomが
         // さらに滲んで輪郭が二重になります。
-        target.ApplyTemporalAntiAliasing(
-            graphics.Environment(),
+        graphics.ApplyOffscreenTargetTemporalAntiAliasing(
+            target,
             frame.temporal.settings,
             frame.temporal.inputs);
         // 最初のフレームは混ぜる履歴が無くても、次のフレーム用の
@@ -198,8 +198,8 @@ namespace LamaPon
         // ボリュメトリックライト（光の筋）は、深度と影を読むうえに
         // 光を足す処理なので、Bloomより前・HDRのうちにかけます。
         // これで明るい筋がBloomで滲み、トーンマップも通ります。
-        target.ApplyVolumetricLight(
-            graphics.Environment(),
+        graphics.ApplyOffscreenTargetVolumetricLight(
+            target,
             frame.volumetric.settings,
             frame.volumetric.inputs);
 
@@ -213,8 +213,8 @@ namespace LamaPon
         effectiveDepthOfField.enabled =
             effectiveDepthOfField.enabled
             && settings.depthOfFieldEnabled;
-        target.ApplyDepthOfField(
-            graphics.Environment(),
+        graphics.ApplyOffscreenTargetDepthOfField(
+            target,
             effectiveDepthOfField,
             frame.depthOfField.projection,
             settings.depthOfFieldSampleCount);
@@ -227,8 +227,8 @@ namespace LamaPon
         effectiveMotionBlur.enabled =
             effectiveMotionBlur.enabled
             && settings.motionBlurEnabled;
-        target.ApplyMotionBlur(
-            graphics.Environment(),
+        graphics.ApplyOffscreenTargetMotionBlur(
+            target,
             effectiveMotionBlur,
             frame.motionBlur.inverseViewProjection,
             frame.motionBlur.viewProjection,
@@ -241,8 +241,8 @@ namespace LamaPon
         effectiveBloom.enabled =
             effectiveBloom.enabled
             && settings.bloomEnabled;
-        target.ApplyBloom(
-            graphics.Environment(),
+        graphics.ApplyOffscreenTargetBloom(
+            target,
             effectiveBloom);
 
         // Screen Space Lens FlareはBloom後のHDRへかけます。Bloomの
@@ -252,8 +252,8 @@ namespace LamaPon
         effectiveLensFlare.enabled =
             effectiveLensFlare.enabled
             && settings.screenSpaceLensFlareEnabled;
-        target.ApplyScreenSpaceLensFlare(
-            graphics.Environment(),
+        graphics.ApplyOffscreenTargetScreenSpaceLensFlare(
+            target,
             effectiveLensFlare);
 
         // トーンマップの手前。まだHDRなので、ここで足した明るさも
@@ -278,15 +278,15 @@ namespace LamaPon
                 effectiveAutoExposure,
                 frame.autoExposure.deltaSeconds);
 
-        target.ApplyToneMapping(
-            graphics.Environment(),
+        graphics.ApplyOffscreenTargetToneMapping(
+            target,
             effectiveColorGrading);
 
         // トーンマップ後の画面へ輪郭を重ねます。深度だけを読むので、
         // UIが合成される前に置けば3Dだけへ適用できます。FXAAは最後に
         // かかるため、輪郭線の階段も一緒に平滑化されます。
-        target.ApplyScreenOutline(
-            graphics.Environment(),
+        graphics.ApplyOffscreenTargetScreenOutline(
+            target,
             frame.screenOutline.settings,
             frame.screenOutline.projection);
 
@@ -296,8 +296,7 @@ namespace LamaPon
         // FXAAは輪郭を見て平すので、色が確定した最後にかけます。
         if (settings.antiAliasingEnabled)
         {
-            target.ApplyFXAA(
-                graphics.Environment());
+            graphics.ApplyOffscreenTargetFXAA(target);
         }
     }
 }
