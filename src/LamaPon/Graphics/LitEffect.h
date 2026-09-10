@@ -50,6 +50,7 @@ namespace LamaPon
     };
 
     class AssetManager;
+    class GraphicsDevice;
 
     class LitEffect final : public DirectX::IEffect
     {
@@ -185,6 +186,8 @@ namespace LamaPon
             std::size_t* byteCodeLength) override;
 
     private:
+        friend class GraphicsDevice;
+
         [[nodiscard]] ID3D11SamplerState*
             ActiveMaterialSampler() const noexcept;
         // 法線マップとPBRマップの有効フラグを、実際にバインドされて

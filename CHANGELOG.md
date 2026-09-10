@@ -69,6 +69,7 @@
 - 例外を投げるraw D3D11 SRV resolverを非公開化し、描画時の解決をstale handleを安全に拒否する非throwing経路へ統一。API 45 Game Module用の旧バイナリシンボルをprivate shimとして維持し、Game Module APIを46へ更新。
 - 外部callerのない`Clusters()`と`SpriteErrorPlaceholder()`を非公開化し、API 46 Game Module用の旧バイナリシンボルをprivate shimとして維持。Game Module APIを47へ更新。
 - pixel shaderの連続SRV bindを`GraphicsViewHandle`とfallbackを受けるBackend共通契約へ移し、Particle描画からraw D3D11 SRV解決とbindを除去。公開Backend / Device契約の変更に伴い、Game Module APIを48へ更新。
+- Lit描画のtexture一式を`LitTextureRequest`で強所有するneutral契約へまとめ、Mesh rendererからraw D3D11 SRV解決を除去。公開Device契約の追加に伴い、Game Module APIを49へ更新。
 
 ### ファイル名の統一
 

@@ -27,8 +27,8 @@ namespace LamaPon
     struct Bounds3D;
     class AssetManager;
     class LitEffect;
+    struct LitTextureRequest;
     struct TextureAsset;
-    struct TextureResourceSnapshot;
 
     enum class PrimitiveShape
     {
@@ -311,10 +311,9 @@ namespace LamaPon
         void ApplyShaderRenderState(
             const ShaderRenderState& state) const;
         void ApplyCullModeOverride() const;
-        // 追加テクスチャのSRVと、その所有snapshotを同じ組で返します。
-        struct ResolvedCustomTextureViews;
-        [[nodiscard]] ResolvedCustomTextureViews
-            ResolveCustomTextureViews() const noexcept;
+        // Texture asset群を1回の描画で保持するneutral requestへまとめます。
+        [[nodiscard]] LitTextureRequest
+            BuildLitTextureRequest() const noexcept;
         void ApplyMaterial(const LitMaterial& material);
         void RefreshShader(bool forceReload);
         // 自分の位置を含む一番近いリフレクションプローブがあれば、

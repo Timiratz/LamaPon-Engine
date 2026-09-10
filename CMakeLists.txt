@@ -292,6 +292,7 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Graphics/LitEffect.cpp
     src/LamaPon/Graphics/LitEffect.h
     src/LamaPon/Graphics/LitMaterial.h
+    src/LamaPon/Graphics/LitTextureRequest.h
     src/LamaPon/Graphics/LitMaterialAsset.cpp
     src/LamaPon/Graphics/LitMaterialAsset.h
     src/LamaPon/Graphics/PbrTextures.h

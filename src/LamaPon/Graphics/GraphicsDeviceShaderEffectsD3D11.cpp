@@ -6,6 +6,7 @@
 #include "LamaPon/Graphics/GraphicsDeviceApiResources.h"
 #include "LamaPon/Graphics/GraphicsDeviceShaderState.h"
 #include "LamaPon/Graphics/LitEffect.h"
+#include "LamaPon/Graphics/LitTextureRequest.h"
 #include "LamaPon/Graphics/RenderTarget.h"
 #include "LamaPon/Graphics/ScreenEffect.h"
 #include "LamaPon/Graphics/ShaderCompiler.h"
@@ -820,6 +821,74 @@ namespace LamaPon
         return m_shaderVariants
             .emplace(absolutePath, std::move(declaration))
             .first->second;
+    }
+
+    bool GraphicsDevice::TrySetLitEffectTextures(
+        LitEffect& effect,
+        const LitTextureRequest& request) const noexcept
+    {
+        if (!IsInitialized() || effect.m_context == nullptr)
+        {
+            return false;
+        }
+        Microsoft::WRL::ComPtr<ID3D11Device> effectDevice;
+        effect.m_context->GetDevice(
+            effectDevice.ReleaseAndGetAddressOf());
+        if (effectDevice.Get() != Device())
+        {
+            return false;
+        }
+
+        const auto tryResolve = [this](
+            const GraphicsViewHandle& view,
+            ID3D11ShaderResourceView*& resolved) noexcept
+        {
+            resolved = TryResolveD3D11ShaderResourceView(view);
+            return !view || resolved != nullptr;
+        };
+
+        ID3D11ShaderResourceView* albedo{};
+        ID3D11ShaderResourceView* normal{};
+        PbrTextures pbrTextures{};
+        std::array<
+            ID3D11ShaderResourceView*,
+            LitMaterial::CustomTextureCount> customTextures{};
+        bool valid = tryResolve(request.albedo, albedo)
+            && tryResolve(request.normal, normal)
+            && tryResolve(
+                request.roughness,
+                pbrTextures.roughness)
+            && tryResolve(
+                request.metallic,
+                pbrTextures.metallic)
+            && tryResolve(
+                request.occlusion,
+                pbrTextures.occlusion)
+            && tryResolve(
+                request.emissive,
+                pbrTextures.emissive);
+        for (std::size_t index{};
+            valid && index < customTextures.size();
+            ++index)
+        {
+            valid = tryResolve(
+                request.customTextures[index],
+                customTextures[index]);
+        }
+        if (!valid)
+        {
+            return false;
+        }
+
+        pbrTextures.occlusionStrength =
+            request.occlusionStrength;
+        pbrTextures.emissiveFactor = request.emissiveFactor;
+        effect.SetTextures(
+            albedo,
+            normal,
+            pbrTextures);
+        effect.SetCustomTextures(customTextures);
+        return true;
     }
 
     LitEffect& GraphicsDevice::MaterialShader(

@@ -88,6 +88,7 @@ namespace LamaPon
     class DebugRenderer;
     class InputSystem;
     class LitEffect;
+    struct LitTextureRequest;
     class SpriteEffect;
     class ShadowMap;
     class RenderTarget;
@@ -522,6 +523,19 @@ namespace LamaPon
             std::uint32_t depth,
             std::span<const std::uint16_t> coefficients)
                 const noexcept;
+        // RendererがAPI固有SRVへ触れずにLitEffectへtextureを設定する
+        // 移行用bridgeです。requestは直後の描画が終わるまで保持します。
+        // 別DeviceのEffectまたは不正なnon-empty viewは、Effectを変更せず
+        // falseで拒否します。empty viewは正常な未指定として扱います。
+        [[nodiscard]] bool TrySetLitEffectTextures(
+            LitEffect& effect,
+            const LitTextureRequest& request) const noexcept;
+        bool TrySetLitEffectTextures(
+            LitEffect& effect,
+            LitTextureRequest&& request) const = delete;
+        bool TrySetLitEffectTextures(
+            LitEffect& effect,
+            const LitTextureRequest&& request) const = delete;
         [[nodiscard]] LitEffect& Lit() const;
         // スキニングモデル（glTF/FBX）用のLamaPon Lit。
         // カスタムShader未指定のモデルはSkinnedLitで描画します。

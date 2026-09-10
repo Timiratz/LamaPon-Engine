@@ -9,6 +9,8 @@
 // （LamaPon.hはGraphicsDevice経由の前方宣言しか持ちません）。
 #include "LamaPon/Graphics/EnvironmentCache.h"
 #include "LamaPon/Graphics/DebugRenderer.h"
+#include "LamaPon/Graphics/D3D11Backend.h"
+#include "LamaPon/Graphics/LitEffect.h"
 #include "LamaPon/Graphics/PngWriter.h"
 #include "LamaPon/Graphics/RenderPipeline.h"
 #include "LamaPon/Graphics/RenderTarget.h"
@@ -21,12 +23,14 @@
 #include <wrl/client.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -47,6 +51,44 @@ namespace
         }
     }
 
+    [[nodiscard]] LamaPon::GraphicsViewHandle CreateSolidView(
+        LamaPon::GraphicsDevice& graphics,
+        const std::array<std::uint8_t, 4>& color)
+    {
+        const std::array initialData{
+            LamaPon::GraphicsTextureSubresourceData{
+                std::as_bytes(std::span{ color }),
+                static_cast<std::uint32_t>(color.size()),
+                static_cast<std::uint32_t>(color.size())
+            }
+        };
+        const auto texture = graphics.CreateTexture2D(
+            LamaPon::GraphicsTexture2DDescription{
+                1,
+                1,
+                1,
+                LamaPon::GraphicsTextureFormat::Rgba8Unorm,
+                LamaPon::GraphicsTextureUpdateMode::Immutable
+            },
+            initialData);
+        return graphics.CreateShaderResourceView(
+            texture,
+            LamaPon::GraphicsTextureViewDescription{ 0, 1 });
+    }
+
+    [[nodiscard]] Microsoft::WRL::ComPtr<
+        ID3D11ShaderResourceView> CapturePixelShaderView(
+            LamaPon::GraphicsDevice& graphics,
+            const UINT slot)
+    {
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> result;
+        graphics.Context()->PSGetShaderResources(
+            slot,
+            1,
+            result.ReleaseAndGetAddressOf());
+        return result;
+    }
+
     // 失敗時にどこまで進んだかCTestログで分かるようにします。
     void Stage(const char* name)
     {
@@ -63,9 +105,12 @@ namespace
             GetModuleHandleW(nullptr);
         windowClass.lpszClassName =
             L"LamaPonRenderTests";
-        Require(
-            RegisterClassExW(&windowClass) != 0,
-            "RegisterClassExW failed.");
+        if (RegisterClassExW(&windowClass) == 0)
+        {
+            Require(
+                GetLastError() == ERROR_CLASS_ALREADY_EXISTS,
+                "RegisterClassExW failed.");
+        }
 
         const HWND window = CreateWindowExW(
             0,
@@ -372,6 +417,143 @@ int main(const int argumentCount, char** arguments)
         Stage("asset-root");
         graphics.Assets().SetAssetRoot(
             LAMAPON_TEST_ASSET_DIR);
+
+        // Meshが使うneutral Lit texture requestの全slot対応と、Effectを
+        // 再利用したときのclear、別Backend世代の拒否を直接固定します。
+        Stage("lit-texture-request");
+        std::array<LamaPon::GraphicsViewHandle, 10> litViews;
+        for (std::size_t index{}; index < litViews.size(); ++index)
+        {
+            litViews[index] = CreateSolidView(
+                graphics,
+                {
+                    static_cast<std::uint8_t>(16u + index * 19u),
+                    static_cast<std::uint8_t>(31u + index * 13u),
+                    static_cast<std::uint8_t>(47u + index * 7u),
+                    255u
+                });
+        }
+        LamaPon::LitTextureRequest litTextures;
+        litTextures.albedo = litViews[0];
+        litTextures.normal = litViews[1];
+        litTextures.roughness = litViews[2];
+        litTextures.metallic = litViews[3];
+        litTextures.occlusion = litViews[4];
+        litTextures.emissive = litViews[5];
+        std::copy_n(
+            litViews.begin() + 6,
+            litTextures.customTextures.size(),
+            litTextures.customTextures.begin());
+
+        auto& litEffect = graphics.Lit();
+        const auto identity = DirectX::XMMatrixIdentity();
+        litEffect.SetMatrices(identity, identity, identity);
+        litEffect.SetMaterial(LamaPon::LitMaterial{});
+        litEffect.SetLighting(graphics.Lighting());
+        Require(
+            graphics.TrySetLitEffectTextures(
+                litEffect,
+                litTextures),
+            "A valid neutral Lit texture request was rejected");
+        litEffect.Apply(graphics.Context());
+        constexpr std::array<UINT, 10> LitTextureSlots{
+            0u, 1u, 11u, 12u, 13u, 14u, 7u, 8u, 9u, 10u
+        };
+        for (std::size_t index{}; index < litViews.size(); ++index)
+        {
+            Require(
+                CapturePixelShaderView(
+                    graphics,
+                    LitTextureSlots[index]).Get()
+                    == graphics.TryResolveD3D11ShaderResourceView(
+                        litViews[index]),
+                "A neutral Lit texture was bound to the wrong slot");
+        }
+
+        LamaPon::LitTextureRequest emptyLitTextures;
+        Require(
+            graphics.TrySetLitEffectTextures(
+                litEffect,
+                emptyLitTextures),
+            "An empty neutral Lit texture request was rejected");
+        litEffect.Apply(graphics.Context());
+        const auto litWhite = CapturePixelShaderView(graphics, 0u);
+        const auto litFlatNormal =
+            CapturePixelShaderView(graphics, 1u);
+        Require(
+            litWhite != nullptr
+                && litFlatNormal != nullptr
+                && litFlatNormal.Get() != litWhite.Get(),
+            "Neutral Lit defaults did not bind white and flat normal views");
+        constexpr std::array<UINT, 8> LitWhiteSlots{
+            7u, 8u, 9u, 10u, 11u, 12u, 13u, 14u
+        };
+        for (const auto slot : LitWhiteSlots)
+        {
+            Require(
+                CapturePixelShaderView(graphics, slot).Get()
+                    == litWhite.Get(),
+                "An empty neutral Lit slot retained a previous texture");
+        }
+
+        // 失敗時にEffectが部分更新されないことを、valid requestを
+        // baselineへ戻してからforeign handleで確認します。
+        Require(
+            graphics.TrySetLitEffectTextures(
+                litEffect,
+                litTextures),
+            "The valid neutral Lit baseline could not be restored");
+        const HWND foreignWindow = CreateHiddenWindow();
+        {
+            LamaPon::D3D11Backend foreignBackend;
+            foreignBackend.Initialize({
+                foreignWindow,
+                Width,
+                Height,
+                true,
+                false
+            });
+            auto invalidLitTextures = litTextures;
+            const auto foreignTexture =
+                foreignBackend.CreateSolidRgba8Texture(
+                    { 1u, 2u, 3u, 255u });
+            invalidLitTextures.albedo = CreateSolidView(
+                graphics,
+                { 201u, 202u, 203u, 255u });
+            invalidLitTextures.customTextures.back() =
+                foreignBackend.CreateShaderResourceView(
+                    foreignTexture);
+            Require(
+                !graphics.TrySetLitEffectTextures(
+                    litEffect,
+                    invalidLitTextures),
+                "A foreign Lit texture view was accepted");
+            litEffect.Apply(graphics.Context());
+            for (std::size_t index{};
+                index < litViews.size();
+                ++index)
+            {
+                Require(
+                    CapturePixelShaderView(
+                        graphics,
+                        LitTextureSlots[index]).Get()
+                        == graphics.TryResolveD3D11ShaderResourceView(
+                            litViews[index]),
+                    "A rejected Lit request partially changed the Effect");
+            }
+            LamaPon::LitEffect foreignEffect(
+                foreignBackend.Device(),
+                foreignBackend.Context(),
+                graphics.Assets(),
+                graphics.Assets().ResolvePath(
+                    "shaders/LamaPonLit.hlsl"));
+            Require(
+                !graphics.TrySetLitEffectTextures(
+                    foreignEffect,
+                    litTextures),
+                "A LitEffect owned by another GraphicsDevice was accepted");
+        }
+        DestroyWindow(foreignWindow);
         graphics.RefreshMemoryStatistics(true);
         Require(
             graphics.MemoryStats().processWorkingSetBytes > 0

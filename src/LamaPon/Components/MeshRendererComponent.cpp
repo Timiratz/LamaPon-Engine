@@ -5,6 +5,7 @@
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Graphics/LitEffect.h"
 #include "LamaPon/Graphics/LitMaterialAsset.h"
+#include "LamaPon/Graphics/LitTextureRequest.h"
 #include "LamaPon/Physics/CollisionTypes.h"
 #include "LamaPon/Scene/GameObject.h"
 #include "LamaPon/Scene/Scene.h"
@@ -92,57 +93,18 @@ namespace
             convertedIndices);
     }
 
-    // 読み込み済みテクスチャとマテリアル値から、Effectへ渡す
-    // PBRマップ一式を組み立てます。未設定はnullptrのままにして、
-    // シェーダー側では「マップなし」として扱わせます。
-    struct ResolvedPbrTextures final
+    [[nodiscard]] LamaPon::GraphicsViewHandle AcquireTextureView(
+        const std::shared_ptr<
+            const LamaPon::TextureAsset>& asset) noexcept
     {
-        std::array<std::shared_ptr<
-            const LamaPon::TextureResourceSnapshot>, 4>
-            snapshots;
-        LamaPon::LitEffect::PbrTextures values{};
-    };
-
-    ResolvedPbrTextures BuildPbrTextures(
-        const LamaPon::GraphicsDevice& graphics,
-        const std::shared_ptr<
-            const LamaPon::TextureAsset>& roughness,
-        const std::shared_ptr<
-            const LamaPon::TextureAsset>& metallic,
-        const std::shared_ptr<
-            const LamaPon::TextureAsset>& occlusion,
-        const std::shared_ptr<
-            const LamaPon::TextureAsset>& emissive,
-        const LamaPon::LitMaterial& material) noexcept
-    {
-        ResolvedPbrTextures resolved{};
-        const std::array assets{
-            roughness,
-            metallic,
-            occlusion,
-            emissive
-        };
-        std::array<ID3D11ShaderResourceView*, 4> views{};
-        for (std::size_t index = 0;
-            index < assets.size();
-            ++index)
+        if (asset == nullptr)
         {
-            resolved.snapshots[index] = assets[index]
-                ? assets[index]->resources.Acquire()
-                : nullptr;
-            views[index] = resolved.snapshots[index]
-                ? graphics.TryResolveD3D11ShaderResourceView(
-                    *resolved.snapshots[index])
-                : nullptr;
+            return {};
         }
-        resolved.values.roughness = views[0];
-        resolved.values.metallic = views[1];
-        resolved.values.occlusion = views[2];
-        resolved.values.emissive = views[3];
-        resolved.values.occlusionStrength =
-            material.OcclusionStrength();
-        resolved.values.emissiveFactor = material.EmissiveColor();
-        return resolved;
+        const auto resources = asset->resources.Acquire();
+        return resources != nullptr
+            ? resources->shaderResourceView
+            : LamaPon::GraphicsViewHandle{};
     }
 }
 
@@ -240,34 +202,27 @@ namespace LamaPon
         }
     }
 
-    struct MeshRendererComponent::ResolvedCustomTextureViews final
+    LitTextureRequest
+        MeshRendererComponent::BuildLitTextureRequest() const noexcept
     {
-        std::array<
-            std::shared_ptr<const TextureResourceSnapshot>,
-            LitMaterial::CustomTextureCount> snapshots;
-        std::array<
-            ID3D11ShaderResourceView*,
-            LitMaterial::CustomTextureCount> views{};
-    };
-
-    MeshRendererComponent::ResolvedCustomTextureViews
-        MeshRendererComponent::ResolveCustomTextureViews() const noexcept
-    {
-        // 未設定の枠はnullptrにします（LitEffect側で白へ差し替え）。
-        ResolvedCustomTextureViews resolved{};
+        LitTextureRequest request{};
+        request.albedo = AcquireTextureView(m_albedoTexture);
+        request.normal = AcquireTextureView(m_normalTexture);
+        request.roughness = AcquireTextureView(m_roughnessTexture);
+        request.metallic = AcquireTextureView(m_metallicTexture);
+        request.occlusion = AcquireTextureView(m_occlusionTexture);
+        request.emissive = AcquireTextureView(m_emissiveTexture);
         for (std::size_t index = 0;
-            index < resolved.views.size();
+            index < request.customTextures.size();
             ++index)
         {
-            resolved.snapshots[index] = m_customTextures[index]
-                ? m_customTextures[index]->resources.Acquire()
-                : nullptr;
-            resolved.views[index] = resolved.snapshots[index]
-                ? m_graphics->TryResolveD3D11ShaderResourceView(
-                    *resolved.snapshots[index])
-                : nullptr;
+            request.customTextures[index] =
+                AcquireTextureView(m_customTextures[index]);
         }
-        return resolved;
+        request.occlusionStrength =
+            m_material.OcclusionStrength();
+        request.emissiveFactor = m_material.EmissiveColor();
+        return request;
     }
 
     struct MeshRendererComponent::InputLayoutHolder final
@@ -1169,32 +1124,14 @@ namespace LamaPon
             view,
             projection);
         m_effect->SetMaterial(m_material);
-        const auto albedoResources = m_albedoTexture
-            ? m_albedoTexture->resources.Acquire()
-            : nullptr;
-        const auto normalResources = m_normalTexture
-            ? m_normalTexture->resources.Acquire()
-            : nullptr;
-        const auto pbrTextures = BuildPbrTextures(
-            *m_graphics,
-            m_roughnessTexture,
-            m_metallicTexture,
-            m_occlusionTexture,
-            m_emissiveTexture,
-            m_material);
-        const auto customTextures = ResolveCustomTextureViews();
-        m_effect->SetTextures(
-            albedoResources
-                ? m_graphics->TryResolveD3D11ShaderResourceView(
-                    *albedoResources)
-                : nullptr,
-            normalResources
-                ? m_graphics->TryResolveD3D11ShaderResourceView(
-                    *normalResources)
-                : nullptr,
-            pbrTextures.values);
-        m_effect->SetCustomTextures(
-            customTextures.views);
+        // requestはDrawが完了するまで各view/resourceを強所有します。
+        const auto textures = BuildLitTextureRequest();
+        if (!m_graphics->TrySetLitEffectTextures(
+                *m_effect,
+                textures))
+        {
+            return;
+        }
         m_effect->SetLighting(m_graphics->Lighting());
         ApplyReflectionProbe();
         if (CanDrawTessellatedPatch())
@@ -1433,32 +1370,14 @@ namespace LamaPon
             view,
             projection);
         m_effect->SetMaterial(m_material);
-        const auto albedoResources = m_albedoTexture
-            ? m_albedoTexture->resources.Acquire()
-            : nullptr;
-        const auto normalResources = m_normalTexture
-            ? m_normalTexture->resources.Acquire()
-            : nullptr;
-        const auto pbrTextures = BuildPbrTextures(
-            *m_graphics,
-            m_roughnessTexture,
-            m_metallicTexture,
-            m_occlusionTexture,
-            m_emissiveTexture,
-            m_material);
-        const auto customTextures = ResolveCustomTextureViews();
-        m_effect->SetTextures(
-            albedoResources
-                ? m_graphics->TryResolveD3D11ShaderResourceView(
-                    *albedoResources)
-                : nullptr,
-            normalResources
-                ? m_graphics->TryResolveD3D11ShaderResourceView(
-                    *normalResources)
-                : nullptr,
-            pbrTextures.values);
-        m_effect->SetCustomTextures(
-            customTextures.views);
+        // DrawInstancedが戻るまでneutral handleを保持します。
+        const auto textures = BuildLitTextureRequest();
+        if (!m_graphics->TrySetLitEffectTextures(
+                *m_effect,
+                textures))
+        {
+            return;
+        }
         m_effect->SetLighting(m_graphics->Lighting());
         // インスタンスバッチは1回のDrawなので、代表として自分の
         // 位置のプローブを使います（バッチは同じ形状・マテリアルの
