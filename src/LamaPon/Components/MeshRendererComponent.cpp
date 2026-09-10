@@ -1291,11 +1291,28 @@ namespace LamaPon
         {
             combineBytes(&value, sizeof(value));
         };
+        const auto combineCount =
+            [&combineBytes](const std::size_t value) noexcept
+        {
+            const auto fixedWidth =
+                static_cast<std::uint64_t>(value);
+            combineBytes(&fixedWidth, sizeof(fixedWidth));
+        };
+        const auto combineFloat4 =
+            [&combineFloat](
+                const DirectX::XMFLOAT4& value) noexcept
+        {
+            combineFloat(value.x);
+            combineFloat(value.y);
+            combineFloat(value.z);
+            combineFloat(value.w);
+        };
         const auto combinePath =
-            [&combineBytes](
+            [&combineBytes, &combineCount](
                 const std::filesystem::path& path)
         {
             const auto& native = path.native();
+            combineCount(native.size());
             combineBytes(
                 native.data(),
                 native.size()
@@ -1309,9 +1326,29 @@ namespace LamaPon
         combinePath(m_material.Shader());
         combinePath(m_material.AlbedoTexture());
         combinePath(m_material.NormalTexture());
+        combinePath(m_material.RoughnessTexture());
+        combinePath(m_material.MetallicTexture());
+        combinePath(m_material.OcclusionTexture());
+        combinePath(m_material.EmissiveTexture());
+        for (const auto& texture : m_material.CustomTextures())
+        {
+            combinePath(texture);
+        }
         combineFloat(m_material.Roughness());
         combineFloat(m_material.NormalStrength());
         combineFloat(m_material.Metallic());
+        combineFloat(m_material.OcclusionStrength());
+        const auto& emissive = m_material.EmissiveColor();
+        combineFloat(emissive.x);
+        combineFloat(emissive.y);
+        combineFloat(emissive.z);
+        // 組み込みLitはBaseColorをinstance attributeで受け取ります。
+        // custom shaderはMaterialColorを直接読むこともできるため、
+        // shader側の契約がない色まで代表Meshへまとめないよう分離します。
+        if (!m_material.Shader().empty())
+        {
+            combineFloat4(m_material.BaseColor());
+        }
         const bool alpha =
             m_material.BaseColor().w < 1.0f;
         combineBytes(&alpha, sizeof(alpha));
@@ -1321,7 +1358,21 @@ namespace LamaPon
         for (const auto& parameter :
             m_material.CustomParameters())
         {
-            combineBytes(&parameter, sizeof(parameter));
+            combineFloat4(parameter);
+        }
+        for (const auto& vector : m_material.CustomVectors())
+        {
+            combineFloat4(vector);
+        }
+        const auto& keywords =
+            m_material.ShaderKeywords().Keywords();
+        combineCount(keywords.size());
+        for (const auto& keyword : keywords)
+        {
+            combineCount(keyword.size());
+            combineBytes(
+                keyword.data(),
+                keyword.size());
         }
         return hash;
     }

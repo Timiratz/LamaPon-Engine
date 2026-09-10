@@ -70,6 +70,7 @@
 - 外部callerのない`Clusters()`と`SpriteErrorPlaceholder()`を非公開化し、API 46 Game Module用の旧バイナリシンボルをprivate shimとして維持。Game Module APIを47へ更新。
 - pixel shaderの連続SRV bindを`GraphicsViewHandle`とfallbackを受けるBackend共通契約へ移し、Particle描画からraw D3D11 SRV解決とbindを除去。公開Backend / Device契約の変更に伴い、Game Module APIを48へ更新。
 - Lit描画のtexture一式を`LitTextureRequest`で強所有するneutral契約へまとめ、Mesh rendererからraw D3D11 SRV解決を除去。公開Device契約の追加に伴い、Game Module APIを49へ更新。
+- Meshのinstance batch keyへPBR / custom texture、発光・遮蔽値、custom vector、shader keywordを含め、異なるmaterialが代表Meshのtexture requestで描かれる誤batchを防止。可変長fieldの長さもhashして境界を保持。
 
 ### ファイル名の統一
 

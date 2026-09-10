@@ -785,7 +785,7 @@ int main(const int argumentCount, char** arguments)
             { 2.5f, 0.0f, 0.0f };
         clone.GetTransform().scale =
             { 1.5f, 1.5f, 1.5f };
-        clone.AddComponent<
+        auto& cloneRenderer = clone.AddComponent<
             LamaPon::MeshRendererComponent>(
             LamaPon::PrimitiveShape::Cube,
             DirectX::XMFLOAT4{
@@ -823,6 +823,39 @@ int main(const int argumentCount, char** arguments)
                 Height / 2 + 6,
                 background),
             "Center must return to the clear color.");
+        Require(
+            scene.VisibilityStats().meshInstanceBatchCount == 1u
+                && scene.VisibilityStats()
+                    .meshInstancedRendererCount == 2u,
+            "Matching Mesh materials must share one instance batch.");
+
+        // 代表Meshのmaterialが全instanceへ適用されるため、Lit requestの
+        // 非instance値が違う2体は個別描画へ戻さなければなりません。
+        cloneRenderer.SetOcclusionStrength(0.25f);
+        Stage("frame-instance-material-split");
+        const auto splitMaterialFrame = renderFrame();
+        Require(
+            scene.VisibilityStats().meshInstanceBatchCount == 0u
+                && scene.VisibilityStats()
+                    .meshInstancedRendererCount == 0u,
+            "Different Lit requests were merged into one instance batch.");
+        Require(
+            RegionHasForeground(
+                splitMaterialFrame,
+                Width / 8,
+                Width / 2 - 20,
+                Height / 2 - 20,
+                Height / 2 + 20,
+                background)
+                && RegionHasForeground(
+                    splitMaterialFrame,
+                    Width / 2 + 20,
+                    Width - Width / 8,
+                    Height / 2 - 20,
+                    Height / 2 + 20,
+                    background),
+            "Splitting a material batch must keep both Meshes visible.");
+        cloneRenderer.SetOcclusionStrength(1.0f);
 
         // インスタンシングはGameObject::Render3Dを迂回するため、
         // 無効オブジェクトをバッチへ混ぜると通常経路と違って描画
