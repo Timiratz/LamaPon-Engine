@@ -6344,8 +6344,7 @@ namespace LamaPon
             auto shadowPassLighting = lighting;
             shadowPassLighting.directionalShadow.enabled =
                 false;
-            shadowPassLighting.directionalShadow.texture =
-                nullptr;
+            shadowPassLighting.directionalShadow.texture.Reset();
             m_graphics.SetLightingState(
                 shadowPassLighting);
 
@@ -6409,7 +6408,7 @@ namespace LamaPon
                     cascade.splitDistance;
             }
             shadow.texture =
-                shadowMap.ShaderResourceView();
+                shadowMap.ViewHandle();
             shadow.lightIndex = shadowLightIndex;
             shadow.bias = shadowLight->ShadowBias();
             shadow.normalBias =
@@ -6632,7 +6631,7 @@ namespace LamaPon
                     destination.enabled = true;
                 }
                 lighting.spotShadowTexture =
-                    spotShadowMap.ShaderResourceView();
+                    spotShadowMap.ViewHandle();
             }
         }
 
@@ -6762,7 +6761,7 @@ namespace LamaPon
                 }
                 auto& destination = lighting.pointShadow;
                 destination.texture =
-                    pointShadowMap.ShaderResourceView();
+                    pointShadowMap.ViewHandle();
                 destination.lightIndex =
                     static_cast<std::ptrdiff_t>(
                         pointShadowIndex);

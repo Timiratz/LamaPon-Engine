@@ -23,6 +23,12 @@ namespace
 
 namespace LamaPon
 {
+    ID3D11ShaderResourceView*
+        ShadowMap::ShaderResourceView() const noexcept
+    {
+        return m_shaderResourceView.Get();
+    }
+
     void ShadowMap::Initialize(
         ID3D11Device* device,
         const std::uint32_t resolution,
@@ -34,6 +40,20 @@ namespace LamaPon
             throw std::invalid_argument(
                 "ShadowMap requires a Direct3D device.");
         }
+
+        // 再初期化の途中で失敗しても旧世代と新世代の資源を混在させず、
+        // IsValid()が必ずfalseになる状態から作り直します。
+        m_view.Reset();
+        m_texture.Reset();
+        m_depthStencilViews.clear();
+        m_shaderResourceView.Reset();
+        m_savedRenderTarget.Reset();
+        m_savedDepthStencil.Reset();
+        m_viewport = {};
+        m_savedViewport = {};
+        m_resolution = 0;
+        m_hasSavedViewport = false;
+        m_rendering = false;
 
         m_resolution = std::max(resolution, 1u);
         const auto sliceCount = cube

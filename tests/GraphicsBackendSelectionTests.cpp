@@ -560,6 +560,9 @@ int main()
             "Restoring output state requires an initialized backend");
 
         LamaPon::ShadowMap shadowMap;
+        Require(
+            !shadowMap.IsValid() && !shadowMap.ViewHandle(),
+            "A default shadow map must not expose a neutral view");
         RequireThrowsExactly<std::logic_error>(
             [&]
             {

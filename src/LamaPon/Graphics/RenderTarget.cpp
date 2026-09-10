@@ -50,6 +50,12 @@ namespace LamaPon
         return m_reflectionDepthPyramidView.Get();
     }
 
+    ID3D11ShaderResourceView*
+        RenderTarget::DepthShaderResourceView() const noexcept
+    {
+        return m_depthShaderResourceView.Get();
+    }
+
     void RenderTarget::Resize(
         ID3D11Device* device,
         const std::uint32_t width,
@@ -70,6 +76,7 @@ namespace LamaPon
         m_ambientOcclusionView.Reset();
         m_colorHistoryView.Reset();
         m_reflectionDepthPyramidViewHandle.Reset();
+        m_depthView.Reset();
         m_colorTexture.Reset();
         m_renderTargetView.Reset();
         m_shaderResourceView.Reset();
@@ -962,7 +969,7 @@ namespace LamaPon
         // 深度はこのターゲットが持っているものを使います
         // （呼ぶ側が知らなくて良いように、ここで差し込みます）。
         auto resolved = inputs;
-        resolved.depth = m_depthShaderResourceView.Get();
+        resolved.depth = m_depthView;
         if (!renderer.ApplyVolumetricLight(
                 m_shaderResourceView.Get(),
                 m_postRenderTargetView.Get(),

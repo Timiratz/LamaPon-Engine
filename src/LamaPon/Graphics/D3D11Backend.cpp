@@ -714,9 +714,10 @@ namespace LamaPon
         }
         if (!target.m_ambientOcclusionView
             || !target.m_colorHistoryView
-            || !target.m_reflectionDepthPyramidViewHandle)
+            || !target.m_reflectionDepthPyramidViewHandle
+            || !target.m_depthView)
         {
-            // Resizeが作った3本をすべて取り込めた後にだけ公開handleを
+            // Resizeが作った4本をすべて取り込めた後にだけ公開handleを
             // 更新し、途中失敗で新旧resourceを混在させません。
             auto ambientOcclusionView =
                 ImportShaderResourceViewHandle(
@@ -726,11 +727,14 @@ namespace LamaPon
             auto reflectionDepthView =
                 ImportShaderResourceViewHandle(
                     target.m_reflectionDepthPyramidView.Get());
+            auto depthView = ImportShaderResourceViewHandle(
+                target.m_depthShaderResourceView.Get());
             target.m_ambientOcclusionView =
                 std::move(ambientOcclusionView);
             target.m_colorHistoryView = std::move(colorHistoryView);
             target.m_reflectionDepthPyramidViewHandle =
                 std::move(reflectionDepthView);
+            target.m_depthView = std::move(depthView);
         }
     }
 
@@ -985,6 +989,9 @@ namespace LamaPon
             resolution,
             cascadeCount,
             cube);
+        auto view = ImportShaderResourceViewHandle(
+            shadowMap.m_shaderResourceView.Get());
+        shadowMap.m_view = std::move(view);
     }
 
     void D3D11Backend::BeginShadowMap(
@@ -1003,7 +1010,18 @@ namespace LamaPon
                 "DirectX 11 context.");
         }
 
-        shadowMap.Begin(m_context.Get(), cascadeIndex);
+        try
+        {
+            if (ResolveShaderResourceView(shadowMap.m_view)
+                == shadowMap.m_shaderResourceView.Get())
+            {
+                shadowMap.Begin(m_context.Get(), cascadeIndex);
+            }
+        }
+        catch (const std::invalid_argument&)
+        {
+            // 別Backend世代のmapは無効な入力として何もしません。
+        }
     }
 
     void D3D11Backend::EndShadowMap(
@@ -1021,7 +1039,18 @@ namespace LamaPon
                 "DirectX 11 context.");
         }
 
-        shadowMap.End(m_context.Get());
+        try
+        {
+            if (ResolveShaderResourceView(shadowMap.m_view)
+                == shadowMap.m_shaderResourceView.Get())
+            {
+                shadowMap.End(m_context.Get());
+            }
+        }
+        catch (const std::invalid_argument&)
+        {
+            // Beginと同じく、別Backend世代のmapには触れません。
+        }
     }
 
     void D3D11Backend::UpdateClusteredLights(

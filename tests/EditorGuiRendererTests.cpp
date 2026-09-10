@@ -1959,9 +1959,11 @@ namespace
             displayTarget.AmbientOcclusionViewHandle();
         const auto firstReflectionDepthView =
             displayTarget.ReflectionDepthPyramidViewHandle();
+        const auto firstDepthView = displayTarget.DepthViewHandle();
         Require(
             firstAmbientOcclusionView
                 && firstReflectionDepthView
+                && firstDepthView
                 && !displayTarget.ColorHistoryViewHandle(),
             "Offscreen screen-space views were not published atomically");
         graphics.ResizeOffscreenTarget(displayTarget, 8, 4);
@@ -1975,18 +1977,21 @@ namespace
                     != firstAmbientOcclusionView
                 && displayTarget.ReflectionDepthPyramidViewHandle()
                     != firstReflectionDepthView
+                && displayTarget.DepthViewHandle() != firstDepthView
                 && !displayTarget.ColorHistoryViewHandle(),
             "Offscreen resize retained stale screen-space views");
         const auto resizedAmbientOcclusionView =
             displayTarget.AmbientOcclusionViewHandle();
         const auto resizedReflectionDepthView =
             displayTarget.ReflectionDepthPyramidViewHandle();
+        const auto resizedDepthView = displayTarget.DepthViewHandle();
         graphics.ResizeOffscreenTarget(displayTarget, 8, 4);
         Require(
             displayTarget.AmbientOcclusionViewHandle()
                     == resizedAmbientOcclusionView
                 && displayTarget.ReflectionDepthPyramidViewHandle()
-                    == resizedReflectionDepthView,
+                    == resizedReflectionDepthView
+                && displayTarget.DepthViewHandle() == resizedDepthView,
             "A no-op offscreen resize rebuilt neutral views");
         RequireThrows<std::invalid_argument>(
             [&]

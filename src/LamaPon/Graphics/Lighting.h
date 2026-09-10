@@ -70,7 +70,7 @@ namespace LamaPon
         std::array<
             float,
             MaximumShadowCascades> cascadeSplits{};
-        ID3D11ShaderResourceView* texture{};
+        GraphicsViewHandle texture;
         std::size_t lightIndex{};
         std::size_t cascadeCount{};
         float bias{ 0.0015f };
@@ -95,7 +95,7 @@ namespace LamaPon
 
     struct PointShadowData final
     {
-        ID3D11ShaderResourceView* texture{};
+        GraphicsViewHandle texture;
         // pointLights配列の添字。負なら影なし。
         std::ptrdiff_t lightIndex{ -1 };
         float bias{ 0.002f };
@@ -231,7 +231,7 @@ namespace LamaPon
         std::array<
             SpotShadowData,
             MaximumSpotShadows> spotShadows{};
-        ID3D11ShaderResourceView* spotShadowTexture{};
+        GraphicsViewHandle spotShadowTexture;
         PointShadowData pointShadow;
         EnvironmentMapData environment;
         FogSettings fog;

@@ -3,6 +3,7 @@
 #include "LamaPon/Assets/AssetManager.h"
 #include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Graphics/ClusteredLights.h"
+#include "LamaPon/Graphics/D3D11Backend.h"
 #include "LamaPon/Graphics/EnvironmentRenderer.h"
 #include "LamaPon/Graphics/LitEffect.h"
 #include "LamaPon/Graphics/SpriteEffect.h"
@@ -75,12 +76,15 @@ namespace LamaPon
             m_environmentFailure,
             [this]
             {
-                return std::make_unique<EnvironmentRenderer>(
+                auto renderer = std::make_unique<EnvironmentRenderer>(
                     Device(),
                     Context(),
                     Assets(),
                     Assets().ResolvePath(
                         "shaders/LamaPonEnvironment.hlsl"));
+                renderer->AttachD3D11Backend(
+                    dynamic_cast<D3D11Backend*>(m_backend.get()));
+                return renderer;
             });
     }
 

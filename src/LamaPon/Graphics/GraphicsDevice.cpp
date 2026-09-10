@@ -489,6 +489,15 @@ namespace LamaPon
         }
         if (IsInitialized() && recreateShadows)
         {
+            m_lightingState.directionalShadow.enabled = false;
+            m_lightingState.directionalShadow.texture.Reset();
+            for (auto& spotShadow : m_lightingState.spotShadows)
+            {
+                spotShadow.enabled = false;
+            }
+            m_lightingState.spotShadowTexture.Reset();
+            m_lightingState.pointShadow.enabled = false;
+            m_lightingState.pointShadow.texture.Reset();
             m_shadowMap =
                 std::make_unique<ShadowMap>();
             m_spotShadowMap =

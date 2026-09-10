@@ -976,6 +976,168 @@ namespace LamaPon
             dimension = static_cast<std::uint32_t>(roundedDimension);
             return true;
         };
+        const auto tryResolveShadow = [this](
+            const GraphicsViewHandle& handle,
+            const bool cube,
+            const std::uint32_t minimumSlices,
+            const std::uint32_t maximumSlices,
+            const float expectedResolution,
+            ID3D11ShaderResourceView*& resolved) noexcept
+        {
+            if (!std::isfinite(expectedResolution)
+                || expectedResolution < 1.0f
+                || expectedResolution
+                    > static_cast<float>(
+                        D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION))
+            {
+                return false;
+            }
+            const auto roundedResolution =
+                std::round(expectedResolution);
+            if (std::abs(
+                    static_cast<double>(expectedResolution)
+                        - roundedResolution) > 0.0001)
+            {
+                return false;
+            }
+
+            resolved = TryResolveD3D11ShaderResourceView(handle);
+            if (!handle || resolved == nullptr)
+            {
+                return false;
+            }
+            D3D11_SHADER_RESOURCE_VIEW_DESC viewDescription{};
+            resolved->GetDesc(&viewDescription);
+            if (viewDescription.Format != DXGI_FORMAT_R32_FLOAT)
+            {
+                return false;
+            }
+            if (cube)
+            {
+                if (viewDescription.ViewDimension
+                        != D3D11_SRV_DIMENSION_TEXTURECUBE
+                    || viewDescription.TextureCube.MostDetailedMip != 0
+                    || viewDescription.TextureCube.MipLevels != 1)
+                {
+                    return false;
+                }
+            }
+            else if (viewDescription.ViewDimension
+                    != D3D11_SRV_DIMENSION_TEXTURE2DARRAY
+                || viewDescription.Texture2DArray.MostDetailedMip != 0
+                || viewDescription.Texture2DArray.MipLevels != 1
+                || viewDescription.Texture2DArray.FirstArraySlice != 0
+                || viewDescription.Texture2DArray.ArraySize
+                    < minimumSlices
+                || viewDescription.Texture2DArray.ArraySize
+                    > maximumSlices)
+            {
+                return false;
+            }
+
+            Microsoft::WRL::ComPtr<ID3D11Resource> resource;
+            resolved->GetResource(resource.ReleaseAndGetAddressOf());
+            Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+            if (resource == nullptr || FAILED(resource.As(&texture)))
+            {
+                return false;
+            }
+            D3D11_TEXTURE2D_DESC description{};
+            texture->GetDesc(&description);
+            const auto resolution =
+                static_cast<std::uint32_t>(roundedResolution);
+            const bool isCube = (description.MiscFlags
+                & D3D11_RESOURCE_MISC_TEXTURECUBE) != 0;
+            return description.Width == resolution
+                && description.Height == resolution
+                && description.MipLevels == 1
+                && description.ArraySize >= minimumSlices
+                && description.ArraySize <= maximumSlices
+                && (cube
+                    || description.ArraySize
+                        == viewDescription.Texture2DArray.ArraySize)
+                && description.Format == DXGI_FORMAT_R32_TYPELESS
+                && description.SampleDesc.Count == 1
+                && (description.BindFlags & D3D11_BIND_DEPTH_STENCIL) != 0
+                && (description.BindFlags & D3D11_BIND_SHADER_RESOURCE) != 0
+                && isCube == cube;
+        };
+
+        const auto& directionalShadow = lighting.directionalShadow;
+        if (directionalShadow.enabled)
+        {
+            const auto directionalLightCount = std::min(
+                lighting.directionalLightCount,
+                MaximumDirectionalLights);
+            if (directionalShadow.cascadeCount == 0
+                || directionalShadow.cascadeCount
+                    > MaximumShadowCascades
+                || directionalShadow.lightIndex
+                    >= directionalLightCount
+                || !tryResolveShadow(
+                    directionalShadow.texture,
+                    false,
+                    static_cast<std::uint32_t>(
+                        directionalShadow.cascadeCount),
+                    static_cast<std::uint32_t>(
+                        MaximumShadowCascades),
+                    lighting.directionalShadowResolution,
+                    nativeViews.directionalShadow))
+            {
+                return false;
+            }
+        }
+
+        bool hasSpotShadow{};
+        const auto spotLightCount = std::min(
+            lighting.spotLightCount,
+            MaximumSpotLights);
+        for (const auto& spotShadow : lighting.spotShadows)
+        {
+            if (!spotShadow.enabled)
+            {
+                continue;
+            }
+            if (spotShadow.lightIndex < 0
+                || static_cast<std::size_t>(spotShadow.lightIndex)
+                    >= spotLightCount)
+            {
+                return false;
+            }
+            hasSpotShadow = true;
+        }
+        if (hasSpotShadow
+            && !tryResolveShadow(
+                lighting.spotShadowTexture,
+                false,
+                static_cast<std::uint32_t>(MaximumSpotShadows),
+                static_cast<std::uint32_t>(MaximumSpotShadows),
+                lighting.localShadowResolution,
+                nativeViews.spotShadow))
+        {
+            return false;
+        }
+
+        const auto& pointShadow = lighting.pointShadow;
+        if (pointShadow.enabled)
+        {
+            const auto pointLightCount = std::min(
+                lighting.pointLightCount,
+                MaximumPointLights);
+            if (pointShadow.lightIndex < 0
+                || static_cast<std::size_t>(pointShadow.lightIndex)
+                    >= pointLightCount
+                || !tryResolveShadow(
+                    pointShadow.texture,
+                    true,
+                    6,
+                    6,
+                    lighting.localShadowResolution,
+                    nativeViews.pointShadow))
+            {
+                return false;
+            }
+        }
 
         const auto& screenOcclusion =
             lighting.screenAmbientOcclusion;

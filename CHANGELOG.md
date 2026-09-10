@@ -79,6 +79,7 @@
 - Sceneと`LightingState`のBaked GI所有をneutral viewへ移し、3枚の世代・Texture3D形式を描画直前にまとめて検証するLit bridgeを追加。旧raw uploadはprivate互換shimへ移し、公開layout / API変更に伴いGame Module APIを53へ更新。
 - Forward+の3本のStructuredBuffer viewを`LightingState`でも世代付きneutral handleとして強所有し、Lit bridgeで形式・要素数・Backend世代を一括検証してから反映する構造へ移行。公開layout変更に伴いGame Module APIを54へ更新。
 - RenderTargetのSSAO結果・SSRカラー履歴・Hi-Z深度を世代付きneutral handleとして公開し、`LightingState`からraw D3D11 viewを除去。Resize時の3本一括更新とLit bridgeの形式・寸法・mip検証を追加し、旧raw getterをprivate互換shimへ移行。公開layout変更に伴いGame Module APIを55へ更新。
+- 平行光・スポット・ポイントのShadowMapとボリューメトリック光の深度入力を世代付きneutral handleへ移行。array/cube形状・解像度・ライト番号をGPU反映前に一括検証し、旧raw getterをprivate互換shimへ移行。公開layout変更に伴いGame Module APIを56へ更新。
 
 ### ファイル名の統一
 

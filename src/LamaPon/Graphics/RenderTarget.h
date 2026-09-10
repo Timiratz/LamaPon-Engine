@@ -158,10 +158,10 @@ namespace LamaPon
         // パスからは、コピーを取らずに直接読めます（同時に刺すと
         // D3D11がSRVを黙ってnullにするので、Litパス中は上の
         // コピーの方を使ってください）。
-        [[nodiscard]] ID3D11ShaderResourceView*
-            DepthShaderResourceView() const noexcept
+        [[nodiscard]] GraphicsViewHandle
+            DepthViewHandle() const noexcept
         {
-            return m_depthShaderResourceView.Get();
+            return m_depthView;
         }
         // SSRのHi-Z用の深度ピラミッド（R32F、各ミップが2x2の
         // 最小値）。中身はEnvironmentRendererの
@@ -246,6 +246,8 @@ namespace LamaPon
             ColorHistoryShaderResourceView() const noexcept;
         [[nodiscard]] ID3D11ShaderResourceView*
             ReflectionDepthPyramidShaderResourceView() const noexcept;
+        [[nodiscard]] ID3D11ShaderResourceView*
+            DepthShaderResourceView() const noexcept;
 
         void Resize(
             ID3D11Device* device,
@@ -313,6 +315,7 @@ namespace LamaPon
         Microsoft::WRL::ComPtr<ID3D11DepthStencilView> m_depthStencilView;
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
             m_depthShaderResourceView;
+        GraphicsViewHandle m_depthView;
         // SSAO用（半解像度）。(1)遮蔽を求める先と(2)ブラーの出力先の
         // 2枚を使います。AOは低周波なので半分の解像度で十分で、
         // 計算量が1/4になります。1チャンネルなので1080pでも

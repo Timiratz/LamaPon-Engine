@@ -1,5 +1,7 @@
 #pragma once
 
+#include "LamaPon/Graphics/GraphicsResource.h"
+
 #include <d3d11.h>
 #include <wrl/client.h>
 
@@ -18,10 +20,9 @@ namespace LamaPon
         ShadowMap(const ShadowMap&) = delete;
         ShadowMap& operator=(const ShadowMap&) = delete;
 
-        [[nodiscard]] ID3D11ShaderResourceView*
-            ShaderResourceView() const noexcept
+        [[nodiscard]] GraphicsViewHandle ViewHandle() const noexcept
         {
-            return m_shaderResourceView.Get();
+            return m_view;
         }
         [[nodiscard]] std::uint32_t Resolution() const noexcept
         {
@@ -35,11 +36,17 @@ namespace LamaPon
         [[nodiscard]] bool IsValid() const noexcept
         {
             return !m_depthStencilViews.empty()
-                && m_shaderResourceView != nullptr;
+                && m_shaderResourceView != nullptr
+                && m_view;
         }
 
     private:
         friend class D3D11Backend;
+
+        // API 55以前のGame Moduleが公開名を解決してからAPI不一致を
+        // 案内できるよう、旧raw getterのbinary symbolだけを残します。
+        [[nodiscard]] ID3D11ShaderResourceView*
+            ShaderResourceView() const noexcept;
 
         // API固有の資源作成と描画先操作はD3D11Backendからだけ
         // 呼びます。cube=trueではポイントライト用の6面を作ります。
@@ -59,6 +66,7 @@ namespace LamaPon
             m_depthStencilViews;
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
             m_shaderResourceView;
+        GraphicsViewHandle m_view;
         Microsoft::WRL::ComPtr<ID3D11RenderTargetView>
             m_savedRenderTarget;
         Microsoft::WRL::ComPtr<ID3D11DepthStencilView>

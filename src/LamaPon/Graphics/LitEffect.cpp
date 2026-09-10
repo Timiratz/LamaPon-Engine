@@ -687,7 +687,7 @@ namespace LamaPon
             shadow.strength
         };
         m_shadowTexture = shadow.enabled
-            ? shadow.texture
+            ? views.directionalShadow
             : nullptr;
 
         // スポットライトの影スロットを対応するライトへ紐付けます。
@@ -722,12 +722,12 @@ namespace LamaPon
                 static_cast<float>(slot + 1);
         }
         m_spotShadowTexture =
-            lighting.spotShadowTexture;
+            views.spotShadow;
 
         const auto& pointShadow = lighting.pointShadow;
         const bool pointShadowActive =
             pointShadow.enabled
-            && pointShadow.texture != nullptr
+            && views.pointShadow != nullptr
             && pointShadow.lightIndex >= 0
             && static_cast<std::size_t>(
                 pointShadow.lightIndex)
@@ -742,7 +742,7 @@ namespace LamaPon
             0.0f
         };
         m_pointShadowTexture = pointShadowActive
-            ? pointShadow.texture
+            ? views.pointShadow
             : nullptr;
 
         // PCF用のテクセルサイズ

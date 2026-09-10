@@ -18,6 +18,7 @@
 #include "LamaPon/Graphics/RenderPipeline.h"
 #include "LamaPon/Graphics/RenderTarget.h"
 #include "LamaPon/Graphics/ShaderCompiler.h"
+#include "LamaPon/Graphics/ShadowMap.h"
 #include "LamaPon/Graphics/SkeletalModel.h"
 
 #include <Windows.h>
@@ -450,6 +451,12 @@ int main(const int argumentCount, char** arguments)
         constexpr char LegacyReflectionDepthViewSymbol[] =
             "?ReflectionDepthPyramidShaderResourceView@RenderTarget@LamaPon@@"
             "QEBAPEAUID3D11ShaderResourceView@@XZ";
+        constexpr char LegacyRenderTargetDepthViewSymbol[] =
+            "?DepthShaderResourceView@RenderTarget@LamaPon@@"
+            "QEBAPEAUID3D11ShaderResourceView@@XZ";
+        constexpr char LegacyShadowMapViewSymbol[] =
+            "?ShaderResourceView@ShadowMap@LamaPon@@"
+            "QEBAPEAUID3D11ShaderResourceView@@XZ";
         const auto runtimeModule = GetModuleHandleW(
             L"LamaPonRuntime.dll");
         Require(
@@ -479,6 +486,14 @@ int main(const int argumentCount, char** arguments)
                     runtimeModule,
                     LegacyReflectionDepthViewSymbol) != nullptr,
             "An API 54 RenderTarget screen-space export alias is missing");
+        Require(
+            GetProcAddress(
+                runtimeModule,
+                LegacyRenderTargetDepthViewSymbol) != nullptr
+                && GetProcAddress(
+                    runtimeModule,
+                    LegacyShadowMapViewSymbol) != nullptr,
+            "An API 55 shadow or depth-view export alias is missing");
         Stage("asset-root");
         graphics.Assets().SetAssetRoot(
             LAMAPON_TEST_ASSET_DIR);
@@ -609,6 +624,168 @@ int main(const int argumentCount, char** arguments)
         Require(
             disabledAmbientOcclusionView != nullptr,
             "Disabled SSAO did not bind the Lit white fallback");
+
+        // 3種類の影mapはShadowMapがneutral handleを所有し、Lit bridgeが
+        // array/cube形状とメタデータをまとめて検証します。
+        Stage("lit-neutral-shadow-lighting");
+        const auto directionalShadowView =
+            graphics.Shadows().ViewHandle();
+        const auto spotShadowView =
+            graphics.SpotShadows().ViewHandle();
+        const auto pointShadowView =
+            graphics.PointShadows().ViewHandle();
+        Require(
+            graphics.Shadows().IsValid()
+                && graphics.SpotShadows().IsValid()
+                && graphics.PointShadows().IsValid()
+                && directionalShadowView
+                && spotShadowView
+                && pointShadowView,
+            "Shadow maps did not publish their neutral views");
+
+        LamaPon::LightingState shadowLighting;
+        shadowLighting.directionalLightCount = 1;
+        shadowLighting.spotLightCount = 1;
+        shadowLighting.pointLightCount = 1;
+        auto& directionalShadow = shadowLighting.directionalShadow;
+        directionalShadow.texture = directionalShadowView;
+        directionalShadow.lightIndex = 0;
+        directionalShadow.cascadeCount =
+            graphics.Shadows().CascadeCount();
+        directionalShadow.enabled = true;
+        auto& spotShadow = shadowLighting.spotShadows[0];
+        spotShadow.lightIndex = 0;
+        spotShadow.enabled = true;
+        shadowLighting.spotShadowTexture = spotShadowView;
+        auto& pointShadow = shadowLighting.pointShadow;
+        pointShadow.texture = pointShadowView;
+        pointShadow.lightIndex = 0;
+        pointShadow.enabled = true;
+        shadowLighting.directionalShadowResolution =
+            static_cast<float>(graphics.Shadows().Resolution());
+        shadowLighting.localShadowResolution =
+            static_cast<float>(graphics.SpotShadows().Resolution());
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                shadowLighting),
+            "Valid neutral shadow lighting was rejected");
+        litEffect.Apply(graphics.Context());
+        Require(
+            CapturePixelShaderView(graphics, 2u).Get()
+                    == graphics.TryResolveD3D11ShaderResourceView(
+                        directionalShadowView)
+                && CapturePixelShaderView(graphics, 4u).Get()
+                    == graphics.TryResolveD3D11ShaderResourceView(
+                        spotShadowView)
+                && CapturePixelShaderView(graphics, 5u).Get()
+                    == graphics.TryResolveD3D11ShaderResourceView(
+                        pointShadowView),
+            "Neutral shadow views were bound to the wrong slots");
+
+        auto incompleteShadowLighting = shadowLighting;
+        incompleteShadowLighting.directionalShadow.texture.Reset();
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                incompleteShadowLighting),
+            "An enabled shadow with no neutral view was accepted");
+        auto wrongPointShadowShape = shadowLighting;
+        wrongPointShadowShape.pointShadow.texture = spotShadowView;
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                wrongPointShadowShape),
+            "A Texture2DArray was accepted as a point-shadow cube");
+        auto invalidSpotShadowIndex = shadowLighting;
+        invalidSpotShadowIndex.spotShadows[0].lightIndex = 1;
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                invalidSpotShadowIndex),
+            "A spot shadow with an invalid light index was accepted");
+        auto wrongShadowResolution = shadowLighting;
+        wrongShadowResolution.localShadowResolution += 1.0f;
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                wrongShadowResolution),
+            "Shadow views with mismatched resolution were accepted");
+        litEffect.Apply(graphics.Context());
+        Require(
+            CapturePixelShaderView(graphics, 2u).Get()
+                    == graphics.TryResolveD3D11ShaderResourceView(
+                        directionalShadowView)
+                && CapturePixelShaderView(graphics, 4u).Get()
+                    == graphics.TryResolveD3D11ShaderResourceView(
+                        spotShadowView)
+                && CapturePixelShaderView(graphics, 5u).Get()
+                    == graphics.TryResolveD3D11ShaderResourceView(
+                        pointShadowView),
+            "Rejected neutral shadow lighting partially changed the Effect");
+
+        auto disabledShadowLighting = shadowLighting;
+        disabledShadowLighting.directionalShadow.enabled = false;
+        disabledShadowLighting.spotShadows[0].enabled = false;
+        disabledShadowLighting.pointShadow.enabled = false;
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                disabledShadowLighting),
+            "Disabled neutral shadow lighting was rejected");
+        litEffect.Apply(graphics.Context());
+        Require(
+            CapturePixelShaderView(graphics, 2u) == nullptr
+                && CapturePixelShaderView(graphics, 4u) == nullptr
+                && CapturePixelShaderView(graphics, 5u) == nullptr,
+            "Disabling shadow lighting retained previous bindings");
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                shadowLighting),
+            "The neutral shadow baseline could not be restored");
+
+        // ボリューメトリック光のmain depthとcascade shadowもhandleで
+        // 運び、検証に失敗した場合はping-pong先へ切り替えません。
+        Stage("volumetric-neutral-depth-and-shadow");
+        LamaPon::RenderTarget volumetricTarget;
+        graphics.ResizeOffscreenTarget(
+            volumetricTarget,
+            Width,
+            Height);
+        Require(
+            static_cast<bool>(volumetricTarget.DepthViewHandle()),
+            "RenderTarget did not publish its neutral depth view");
+        LamaPon::VolumetricLightSettings volumetricSettings;
+        volumetricSettings.enabled = true;
+        LamaPon::EnvironmentRenderer::VolumetricInputs volumetricInputs;
+        volumetricInputs.cascadeShadow = directionalShadowView;
+        volumetricInputs.cascadeCount =
+            static_cast<std::uint32_t>(
+                directionalShadow.cascadeCount);
+        volumetricInputs.shadowResolution =
+            shadowLighting.directionalShadowResolution;
+        auto* const volumetricSource =
+            volumetricTarget.ShaderResourceView();
+        volumetricTarget.ApplyVolumetricLight(
+            graphics.Environment(),
+            volumetricSettings,
+            volumetricInputs);
+        Require(
+            volumetricTarget.ShaderResourceView() != volumetricSource,
+            "Valid neutral volumetric inputs were not applied");
+        auto invalidVolumetricInputs = volumetricInputs;
+        invalidVolumetricInputs.cascadeShadow.Reset();
+        auto* const resolvedVolumetricSource =
+            volumetricTarget.ShaderResourceView();
+        volumetricTarget.ApplyVolumetricLight(
+            graphics.Environment(),
+            volumetricSettings,
+            invalidVolumetricInputs);
+        Require(
+            volumetricTarget.ShaderResourceView()
+                == resolvedVolumetricSource,
+            "Invalid neutral volumetric inputs changed the target");
 
         // SSAOとSSRもRenderTargetがneutral handleを所有し、Effectへ
         // 反映する直前に3本まとめて同じBackend世代へ解決します。
@@ -1150,6 +1327,8 @@ int main(const int argumentCount, char** arguments)
                 foreignScreenTarget.ColorHistoryViewHandle();
             const auto foreignReflectionDepthView =
                 foreignScreenTarget.ReflectionDepthPyramidViewHandle();
+            const auto foreignDepthView =
+                foreignScreenTarget.DepthViewHandle();
             auto mixedScreenLighting = screenLighting;
             mixedScreenLighting.screenSpaceReflection.texture =
                 foreignColorHistoryView;
@@ -1180,6 +1359,8 @@ int main(const int argumentCount, char** arguments)
                     && foreignScreenTarget
                         .ReflectionDepthPyramidViewHandle()
                         != foreignReflectionDepthView
+                    && foreignScreenTarget.DepthViewHandle()
+                        != foreignDepthView
                     && !foreignScreenTarget.ColorHistoryViewHandle()
                     && graphics.TryResolveD3D11ShaderResourceView(
                         foreignScreenTarget
@@ -1188,8 +1369,66 @@ int main(const int argumentCount, char** arguments)
                         foreignScreenTarget
                             .ReflectionDepthPyramidViewHandle()) != nullptr
                     && graphics.TryResolveD3D11ShaderResourceView(
-                        foreignColorHistoryView) == nullptr,
+                        foreignScreenTarget.DepthViewHandle()) != nullptr
+                    && graphics.TryResolveD3D11ShaderResourceView(
+                        foreignColorHistoryView) == nullptr
+                    && graphics.TryResolveD3D11ShaderResourceView(
+                        foreignDepthView) == nullptr,
                 "A same-size RenderTarget kept resources from another device");
+
+            LamaPon::ShadowMap foreignShadowMap;
+            foreignBackend.InitializeShadowMap(
+                foreignShadowMap,
+                1,
+                1,
+                false);
+            Require(
+                foreignShadowMap.IsValid()
+                    && foreignBackend.ResolveShaderResourceView(
+                        foreignShadowMap.ViewHandle()) != nullptr,
+                "A foreign shadow map did not publish a neutral view");
+            graphics.BeginShadowMap(foreignShadowMap, 0);
+            graphics.EndShadowMap(foreignShadowMap);
+            Require(
+                graphics.TrySetLitEffectLighting(
+                    litEffect,
+                    shadowLighting),
+                "The neutral shadow baseline could not be restored");
+            litEffect.Apply(graphics.Context());
+            auto mixedShadowLighting = shadowLighting;
+            mixedShadowLighting.directionalShadow.texture =
+                foreignShadowMap.ViewHandle();
+            Require(
+                !graphics.TrySetLitEffectLighting(
+                    litEffect,
+                    mixedShadowLighting),
+                "A foreign-generation shadow view was accepted");
+            litEffect.Apply(graphics.Context());
+            Require(
+                CapturePixelShaderView(graphics, 2u).Get()
+                        == graphics.TryResolveD3D11ShaderResourceView(
+                            directionalShadowView)
+                    && CapturePixelShaderView(graphics, 4u).Get()
+                        == graphics.TryResolveD3D11ShaderResourceView(
+                            spotShadowView)
+                    && CapturePixelShaderView(graphics, 5u).Get()
+                        == graphics.TryResolveD3D11ShaderResourceView(
+                            pointShadowView),
+                "Rejected foreign shadow lighting changed the Effect");
+
+            auto foreignVolumetricInputs = volumetricInputs;
+            foreignVolumetricInputs.cascadeShadow =
+                foreignShadowMap.ViewHandle();
+            auto* const foreignVolumetricSource =
+                volumetricTarget.ShaderResourceView();
+            volumetricTarget.ApplyVolumetricLight(
+                graphics.Environment(),
+                volumetricSettings,
+                foreignVolumetricInputs);
+            Require(
+                volumetricTarget.ShaderResourceView()
+                    == foreignVolumetricSource,
+                "Foreign neutral volumetric inputs changed the target");
             Require(
                 graphics.TrySetLitEffectLighting(
                     litEffect,
@@ -1835,7 +2074,25 @@ int main(const int argumentCount, char** arguments)
         settings.shadowResolution = 512;
         settings.shadowCascadeLimit = 1;
         Stage("settings");
+        graphics.SetLightingState(shadowLighting);
         graphics.SetGraphicsSettings(settings);
+        Require(
+            graphics.Shadows().ViewHandle()
+                    != directionalShadowView
+                && graphics.SpotShadows().ViewHandle()
+                    != spotShadowView
+                && graphics.PointShadows().ViewHandle()
+                    != pointShadowView
+                && graphics.Shadows().IsValid()
+                && graphics.SpotShadows().IsValid()
+                && graphics.PointShadows().IsValid()
+                && !graphics.Lighting().directionalShadow.enabled
+                && !graphics.Lighting().directionalShadow.texture
+                && !graphics.Lighting().spotShadows[0].enabled
+                && !graphics.Lighting().spotShadowTexture
+                && !graphics.Lighting().pointShadow.enabled
+                && !graphics.Lighting().pointShadow.texture,
+            "Shadow recreation retained old neutral handles or lighting state");
         // このテストは1段につき1フレームしか描かないので、非同期
         // コンパイルを入れたままだと「まだ焼けていないので標準Lit」
         // の絵を撮ってしまいます。オフラインの決め打ち描画では

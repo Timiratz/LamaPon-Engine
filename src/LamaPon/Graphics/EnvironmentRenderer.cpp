@@ -1,4 +1,5 @@
 #include "LamaPon/Graphics/EnvironmentRenderer.h"
+#include "LamaPon/Graphics/D3D11Backend.h"
 #include "LamaPon/Graphics/EnvironmentCache.h"
 #include "LamaPon/Graphics/RenderTarget.h"
 #include "LamaPon/Graphics/ShaderCompiler.h"
@@ -1934,9 +1935,111 @@ namespace LamaPon
             || settings.intensity <= 0.0f
             || source == nullptr
             || destination == nullptr
-            || inputs.depth == nullptr
-            || inputs.cascadeShadow == nullptr
-            || inputs.cascadeCount == 0)
+            || inputs.cascadeCount == 0
+            || inputs.cascadeCount > 4u
+            || m_backend == nullptr
+            || !std::isfinite(inputs.shadowResolution)
+            || inputs.shadowResolution < 1.0f
+            || inputs.shadowResolution
+                > static_cast<float>(
+                    D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION))
+        {
+            return false;
+        }
+
+        ID3D11ShaderResourceView* depth{};
+        ID3D11ShaderResourceView* cascadeShadow{};
+        try
+        {
+            depth = m_backend->ResolveShaderResourceView(inputs.depth);
+            cascadeShadow = m_backend->ResolveShaderResourceView(
+                inputs.cascadeShadow);
+        }
+        catch (const std::exception&)
+        {
+            return false;
+        }
+        if (depth == nullptr || cascadeShadow == nullptr)
+        {
+            return false;
+        }
+
+        D3D11_SHADER_RESOURCE_VIEW_DESC depthView{};
+        depth->GetDesc(&depthView);
+        Microsoft::WRL::ComPtr<ID3D11Resource> depthResource;
+        depth->GetResource(depthResource.ReleaseAndGetAddressOf());
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> depthTexture;
+        if (depthView.Format != DXGI_FORMAT_R24_UNORM_X8_TYPELESS
+            || depthView.ViewDimension != D3D11_SRV_DIMENSION_TEXTURE2D
+            || depthView.Texture2D.MostDetailedMip != 0
+            || depthView.Texture2D.MipLevels != 1
+            || depthResource == nullptr
+            || FAILED(depthResource.As(&depthTexture)))
+        {
+            return false;
+        }
+        D3D11_TEXTURE2D_DESC depthDescription{};
+        depthTexture->GetDesc(&depthDescription);
+        if (depthDescription.Width != std::max(width, 1u)
+            || depthDescription.Height != std::max(height, 1u)
+            || depthDescription.MipLevels != 1
+            || depthDescription.ArraySize != 1
+            || depthDescription.Format != DXGI_FORMAT_R24G8_TYPELESS
+            || depthDescription.SampleDesc.Count != 1
+            || (depthDescription.BindFlags
+                & D3D11_BIND_DEPTH_STENCIL) == 0
+            || (depthDescription.BindFlags
+                & D3D11_BIND_SHADER_RESOURCE) == 0)
+        {
+            return false;
+        }
+
+        const auto roundedShadowResolution =
+            std::round(inputs.shadowResolution);
+        if (std::abs(
+                static_cast<double>(inputs.shadowResolution)
+                    - roundedShadowResolution) > 0.0001)
+        {
+            return false;
+        }
+        D3D11_SHADER_RESOURCE_VIEW_DESC shadowView{};
+        cascadeShadow->GetDesc(&shadowView);
+        Microsoft::WRL::ComPtr<ID3D11Resource> shadowResource;
+        cascadeShadow->GetResource(
+            shadowResource.ReleaseAndGetAddressOf());
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> shadowTexture;
+        if (shadowView.Format != DXGI_FORMAT_R32_FLOAT
+            || shadowView.ViewDimension
+                != D3D11_SRV_DIMENSION_TEXTURE2DARRAY
+            || shadowView.Texture2DArray.MostDetailedMip != 0
+            || shadowView.Texture2DArray.MipLevels != 1
+            || shadowView.Texture2DArray.FirstArraySlice != 0
+            || shadowView.Texture2DArray.ArraySize
+                < inputs.cascadeCount
+            || shadowView.Texture2DArray.ArraySize
+                > 4u
+            || shadowResource == nullptr
+            || FAILED(shadowResource.As(&shadowTexture)))
+        {
+            return false;
+        }
+        D3D11_TEXTURE2D_DESC shadowDescription{};
+        shadowTexture->GetDesc(&shadowDescription);
+        const auto shadowResolution =
+            static_cast<std::uint32_t>(roundedShadowResolution);
+        if (shadowDescription.Width != shadowResolution
+            || shadowDescription.Height != shadowResolution
+            || shadowDescription.MipLevels != 1
+            || shadowDescription.ArraySize
+                != shadowView.Texture2DArray.ArraySize
+            || shadowDescription.Format != DXGI_FORMAT_R32_TYPELESS
+            || shadowDescription.SampleDesc.Count != 1
+            || (shadowDescription.MiscFlags
+                & D3D11_RESOURCE_MISC_TEXTURECUBE) != 0
+            || (shadowDescription.BindFlags
+                & D3D11_BIND_DEPTH_STENCIL) == 0
+            || (shadowDescription.BindFlags
+                & D3D11_BIND_SHADER_RESOURCE) == 0)
         {
             return false;
         }
@@ -2013,8 +2116,8 @@ namespace LamaPon
         ID3D11ShaderResourceView* resources[]{
             source,
             nullptr,
-            inputs.depth,
-            inputs.cascadeShadow
+            depth,
+            cascadeShadow
         };
         m_context->PSSetShaderResources(
             0,

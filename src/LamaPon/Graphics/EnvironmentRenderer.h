@@ -1,6 +1,7 @@
 #pragma once
 
 #include "LamaPon/Graphics/EnvironmentSettings.h"
+#include "LamaPon/Graphics/GraphicsResource.h"
 
 #include <DirectXMath.h>
 #include <d3d11.h>
@@ -16,6 +17,8 @@
 namespace LamaPon
 {
     class AssetManager;
+    class D3D11Backend;
+    class GraphicsDevice;
     class RenderTarget;
 
     class EnvironmentRenderer final
@@ -129,8 +132,8 @@ namespace LamaPon
         // 戻り値がtrueなら描画先を入れ替えています。
         struct VolumetricInputs final
         {
-            ID3D11ShaderResourceView* depth{};
-            ID3D11ShaderResourceView* cascadeShadow{};
+            GraphicsViewHandle depth;
+            GraphicsViewHandle cascadeShadow;
             DirectX::XMFLOAT4X4 inverseViewProjection{};
             DirectX::XMFLOAT3 cameraPosition{};
             // 光源から出る向き。
@@ -330,6 +333,15 @@ namespace LamaPon
             float projectionW);
 
     private:
+        friend class GraphicsDevice;
+
+        // EnvironmentRendererはまだD3D11 islandですが、公開constructorの
+        // ABIを変えずにneutral inputの解決先だけを受け取ります。
+        void AttachD3D11Backend(D3D11Backend* backend) noexcept
+        {
+            m_backend = backend;
+        }
+
         // includeSpecular=falseでスペキュラの畳み込みを飛ばします
         // （照度しか使わないGIベイク用）。
         [[nodiscard]] OwnedPrefilteredEnvironment
@@ -514,6 +526,7 @@ namespace LamaPon
 
         ID3D11Device* m_device{};
         ID3D11DeviceContext* m_context{};
+        D3D11Backend* m_backend{};
         struct ProbeBakeResources;
         std::unique_ptr<ProbeBakeResources> m_probeBakeResources;
         bool m_probeBakeActive{};
