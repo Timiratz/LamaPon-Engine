@@ -19,6 +19,19 @@ namespace LamaPon
         // 配布ビルドではfalseのまま使います。ローカル開発用の
         // 127.0.0.1/localhostバックエンドだけをHTTPで試す設定です。
         bool allowInsecureLoopback{};
+
+        // 名前を変えても同じゲームと識別できる安定IDです。
+        // 空の場合はログインできますが、次回起動用の
+        // refresh tokenは端末へ保存しません。
+        std::string gameId;
+
+        // production/stagingなどの接続先を分離し、異なる環境で
+        // 同じrefresh tokenが使われないようにします。
+        std::string environmentId{ "production" };
+
+        // ログイン開始後、認証URLを既定ブラウザーで開きます。
+        // falseでもAuthorizationUrl()から手動で開けます。
+        bool openAuthorizationBrowser{ true };
     };
 
     enum class OnlineAccountState : std::uint8_t
@@ -30,7 +43,11 @@ namespace LamaPon
         PollingAuthorization,
         SignedIn,
         SigningOut,
-        Error
+        Error,
+        // 保存済みrefresh tokenで起動時セッションを復元中。
+        RestoringSession,
+        // 入力を止めずにセッションの期限を更新中。
+        RefreshingSession
     };
 
     // ゲームへ公開してよいプロフィール情報だけを保持します。
@@ -66,6 +83,7 @@ namespace LamaPon
         OnlineServices& operator=(OnlineServices&&) = delete;
 
         // 実行中のログインやサインアウトがある場合はlogic_errorです。
+        // 保存済みrefresh tokenがあれば非同期復元を開始し、
         // 空URLを指定するとUnconfiguredへ戻ります。
         LAMAPON_API void Configure(
             OnlineServiceConfiguration configuration);
@@ -74,8 +92,8 @@ namespace LamaPon
         // ポーリングを開始します。通信自体はワーカースレッド上です。
         LAMAPON_API void Update(float elapsedSeconds);
 
-        // 開始要求を受理したときだけtrueです。ブラウザー起動は後段で
-        // 統合するため、現段階ではAuthorizationUrl()を利用します。
+        // 開始要求を受理したときだけtrueです。自動起動が
+        // 無効または失敗した場合もAuthorizationUrl()を利用できます。
         [[nodiscard]] LAMAPON_API bool BeginDiscordSignIn();
         LAMAPON_API void CancelDiscordSignIn() noexcept;
         LAMAPON_API void SignOut();

@@ -270,6 +270,8 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Online/OnlineServices.cpp
     src/LamaPon/Online/OnlineServices.h
     src/LamaPon/Online/OnlineServicesTesting.h
+    src/LamaPon/Online/WindowsOnlinePlatform.cpp
+    src/LamaPon/Online/WindowsOnlinePlatform.h
     src/LamaPon/Graphics/GpuProfiler.cpp
     src/LamaPon/Graphics/GpuProfiler.h
     src/LamaPon/Graphics/GraphicsDevice.cpp
@@ -513,7 +515,9 @@ target_link_libraries(LamaPonRuntime
         Ufbx
     PRIVATE
         LamaPon::DirectXTKAudio
+        advapi32
         bcrypt
+        crypt32
         dbghelp
         d3d11
         d3dcompiler
@@ -522,6 +526,7 @@ target_link_libraries(LamaPonRuntime
         d2d1
         dwrite
         ole32
+        shell32
         windowscodecs
         winhttp
 )
@@ -1249,6 +1254,28 @@ if(BUILD_TESTING)
         PROPERTIES LABELS "online;state-machine"
     )
 
+    add_executable(LamaPonWindowsOnlinePlatformTests
+        tests/WindowsOnlinePlatformTests.cpp
+    )
+    target_link_libraries(
+        LamaPonWindowsOnlinePlatformTests
+        PRIVATE
+            LamaPonRuntime
+    )
+    target_compile_options(LamaPonWindowsOnlinePlatformTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_test(
+        NAME WindowsOnlineCredentials
+        COMMAND LamaPonWindowsOnlinePlatformTests
+    )
+    set_tests_properties(
+        WindowsOnlineCredentials
+        PROPERTIES LABELS "online;credentials;windows"
+    )
+
     add_executable(LamaPonDocumentMigrationTests
         tests/DocumentMigrationTests.cpp
     )
@@ -1798,6 +1825,7 @@ install(
         PATTERN "AssetArchive.h" EXCLUDE
         PATTERN "DiscordAuth.h" EXCLUDE
         PATTERN "OnlineServicesTesting.h" EXCLUDE
+        PATTERN "WindowsOnlinePlatform.h" EXCLUDE
 )
 install(
     FILES

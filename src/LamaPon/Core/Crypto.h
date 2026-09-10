@@ -1,8 +1,10 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace LamaPon::Crypto
@@ -14,6 +16,52 @@ namespace LamaPon::Crypto
     using AesKey = std::array<std::uint8_t, AesKeySize>;
     using AesIv = std::array<std::uint8_t, AesIvSize>;
     using MacTag = std::array<std::uint8_t, MacSize>;
+
+    enum class CurrentUserProtectionStatus : std::uint8_t
+    {
+        Succeeded,
+        InvalidData,
+        Unavailable
+    };
+
+    struct CurrentUserProtectionResult final
+    {
+        CurrentUserProtectionStatus status{
+            CurrentUserProtectionStatus::Unavailable
+        };
+        std::vector<std::uint8_t> data;
+        // 診断用のWin32エラー番号です。入力や暗号文は含めません。
+        std::uint32_t platformError{};
+
+        [[nodiscard]] bool Succeeded() const noexcept
+        {
+            return status == CurrentUserProtectionStatus::Succeeded;
+        }
+    };
+
+    // Windows DPAPIで現在のWindowsユーザーに結び付けて保護します。
+    // ArchiveKeyを使うSealとは用途が異なり、配布バイナリだけでは
+    // 復号できません。entropyは秘密ではなく、用途やゲームを分離する
+    // 安定したバイト列を呼び出し側から渡します。
+    [[nodiscard]] CurrentUserProtectionResult ProtectForCurrentUser(
+        const std::uint8_t* data,
+        std::size_t size,
+        const std::uint8_t* entropy,
+        std::size_t entropySize);
+    [[nodiscard]] CurrentUserProtectionResult UnprotectForCurrentUser(
+        const std::uint8_t* data,
+        std::size_t size,
+        const std::uint8_t* entropy,
+        std::size_t entropySize);
+
+    // 認証情報を保持していた領域のbest-effort消去です。C++標準
+    // ライブラリ内部に作られた過去のコピーまでは消去できないため、
+    // 呼び出し側でも不要なコピーを作らないことが前提です。
+    void SecureErase(
+        std::uint8_t* data,
+        std::size_t size) noexcept;
+    void SecureErase(std::vector<std::uint8_t>& data) noexcept;
+    void SecureErase(std::string& data) noexcept;
 
     // このバイナリへ焼き込まれている鍵。書き出したゲームでは
     // 「そのゲームだけの鍵」がエクスポーターによって埋め込まれます

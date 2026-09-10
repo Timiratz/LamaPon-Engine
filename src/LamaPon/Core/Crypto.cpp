@@ -2,16 +2,20 @@
 
 #include <Windows.h>
 #include <bcrypt.h>
+#include <dpapi.h>
 
 #include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <cwchar>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 #pragma comment(lib, "bcrypt.lib")
+#pragma comment(lib, "crypt32.lib")
 
 namespace
 {
@@ -24,6 +28,102 @@ namespace
                 + " failed with NTSTATUS "
                 + std::to_string(status));
         }
+    }
+
+    struct LocalDataBlob final
+    {
+        DATA_BLOB value{};
+
+        ~LocalDataBlob()
+        {
+            if (value.pbData != nullptr)
+            {
+                SecureZeroMemory(value.pbData, value.cbData);
+                LocalFree(value.pbData);
+            }
+        }
+    };
+
+    LamaPon::Crypto::CurrentUserProtectionResult RunCurrentUserProtection(
+        const std::uint8_t* data,
+        const std::size_t size,
+        const std::uint8_t* entropy,
+        const std::size_t entropySize,
+        const bool protect)
+    {
+        using LamaPon::Crypto::CurrentUserProtectionResult;
+        using LamaPon::Crypto::CurrentUserProtectionStatus;
+
+        CurrentUserProtectionResult result;
+        if ((size != 0 && data == nullptr)
+            || (entropySize != 0 && entropy == nullptr)
+            || size > std::numeric_limits<DWORD>::max()
+            || entropySize > std::numeric_limits<DWORD>::max())
+        {
+            result.status = protect
+                ? CurrentUserProtectionStatus::Unavailable
+                : CurrentUserProtectionStatus::InvalidData;
+            result.platformError = ERROR_INVALID_PARAMETER;
+            return result;
+        }
+
+        DATA_BLOB input{
+            static_cast<DWORD>(size),
+            const_cast<BYTE*>(
+                reinterpret_cast<const BYTE*>(data))
+        };
+        DATA_BLOB optionalEntropy{
+            static_cast<DWORD>(entropySize),
+            const_cast<BYTE*>(
+                reinterpret_cast<const BYTE*>(entropy))
+        };
+        LocalDataBlob output;
+        LPWSTR description{};
+        const BOOL succeeded = protect
+            ? CryptProtectData(
+                &input,
+                L"LamaPon online session",
+                entropySize == 0 ? nullptr : &optionalEntropy,
+                nullptr,
+                nullptr,
+                CRYPTPROTECT_UI_FORBIDDEN,
+                &output.value)
+            : CryptUnprotectData(
+                &input,
+                &description,
+                entropySize == 0 ? nullptr : &optionalEntropy,
+                nullptr,
+                nullptr,
+                CRYPTPROTECT_UI_FORBIDDEN,
+                &output.value);
+        const DWORD operationError = succeeded == FALSE
+            ? GetLastError()
+            : ERROR_SUCCESS;
+        if (description != nullptr)
+        {
+            const auto bytes = (wcslen(description) + 1)
+                * sizeof(wchar_t);
+            SecureZeroMemory(description, bytes);
+            LocalFree(description);
+        }
+        if (succeeded == FALSE)
+        {
+            result.status = !protect
+                    && operationError == ERROR_INVALID_DATA
+                ? CurrentUserProtectionStatus::InvalidData
+                : CurrentUserProtectionStatus::Unavailable;
+            result.platformError = operationError;
+            return result;
+        }
+
+        if (output.value.cbData != 0)
+        {
+            result.data.assign(
+                output.value.pbData,
+                output.value.pbData + output.value.cbData);
+        }
+        result.status = CurrentUserProtectionStatus::Succeeded;
+        return result;
     }
 
     // 書き出し時にエクスポーターが直接書き換える鍵スロットです
@@ -209,6 +309,59 @@ namespace
 
 namespace LamaPon::Crypto
 {
+    CurrentUserProtectionResult ProtectForCurrentUser(
+        const std::uint8_t* data,
+        const std::size_t size,
+        const std::uint8_t* entropy,
+        const std::size_t entropySize)
+    {
+        return RunCurrentUserProtection(
+            data,
+            size,
+            entropy,
+            entropySize,
+            true);
+    }
+
+    CurrentUserProtectionResult UnprotectForCurrentUser(
+        const std::uint8_t* data,
+        const std::size_t size,
+        const std::uint8_t* entropy,
+        const std::size_t entropySize)
+    {
+        return RunCurrentUserProtection(
+            data,
+            size,
+            entropy,
+            entropySize,
+            false);
+    }
+
+    void SecureErase(
+        std::uint8_t* data,
+        const std::size_t size) noexcept
+    {
+        if (data != nullptr && size != 0)
+        {
+            SecureZeroMemory(data, size);
+        }
+    }
+
+    void SecureErase(std::vector<std::uint8_t>& data) noexcept
+    {
+        SecureErase(data.data(), data.size());
+        data.clear();
+    }
+
+    void SecureErase(std::string& data) noexcept
+    {
+        if (!data.empty())
+        {
+            SecureZeroMemory(data.data(), data.size());
+        }
+        data.clear();
+    }
+
     AesKey ArchiveKey()
     {
         AesKey key{};
