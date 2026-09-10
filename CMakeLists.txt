@@ -265,6 +265,8 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Core/Time.h
     src/LamaPon/Core/Window.cpp
     src/LamaPon/Core/Window.h
+    src/LamaPon/Online/DiscordAuth.cpp
+    src/LamaPon/Online/DiscordAuth.h
     src/LamaPon/Graphics/GpuProfiler.cpp
     src/LamaPon/Graphics/GpuProfiler.h
     src/LamaPon/Graphics/GraphicsDevice.cpp
@@ -1197,6 +1199,29 @@ if(BUILD_TESTING)
     add_test(
         NAME PlayerPrefsAndSaveData
         COMMAND LamaPonPersistenceTests
+    )
+
+    add_executable(LamaPonOnlineAuthTests
+        tests/OnlineAuthTests.cpp
+    )
+    target_link_libraries(
+        LamaPonOnlineAuthTests
+        PRIVATE
+            LamaPonRuntime
+            ws2_32
+    )
+    target_compile_options(LamaPonOnlineAuthTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_test(
+        NAME OnlineAuthenticationProtocol
+        COMMAND LamaPonOnlineAuthTests
+    )
+    set_tests_properties(
+        OnlineAuthenticationProtocol
+        PROPERTIES LABELS "online;authentication"
     )
 
     add_executable(LamaPonDocumentMigrationTests
