@@ -1,6 +1,7 @@
 #pragma once
 
 #include "LamaPon/Core/PlayerPrefs.h"
+#include "LamaPon/Online/OnlineServices.h"
 #include "LamaPon/Scripting/Coroutine.h"
 #include "LamaPon/Scripting/GameModule.h"
 // 初心者向けショートカット（GetComponent/Find/Instantiate等）を
@@ -505,6 +506,79 @@ namespace LamaPon
             Owner().GetScene().Events().Publish(
                 eventName,
                 eventArgs);
+        }
+
+        // Discordログインは非同期です。開始後はUpdate()などから
+        // OnlineState()を確認し、SignedInになったらプロフィールを
+        // 利用します。Scriptのコールバックを保持しないため、
+        // Game ModuleのHot Reload中も安全です。
+        [[nodiscard]] bool SignInWithDiscord() const
+        {
+            auto* online = ActiveOnlineServices();
+            return online != nullptr
+                && online->BeginDiscordSignIn();
+        }
+
+        void CancelDiscordSignIn() const noexcept
+        {
+            if (auto* online = ActiveOnlineServices())
+            {
+                online->CancelDiscordSignIn();
+            }
+        }
+
+        void SignOutOnline() const
+        {
+            if (auto* online = ActiveOnlineServices())
+            {
+                online->SignOut();
+            }
+        }
+
+        [[nodiscard]] OnlineAccountState OnlineState() const noexcept
+        {
+            const auto* online = ActiveOnlineServices();
+            return online != nullptr
+                ? online->State()
+                : OnlineAccountState::Unconfigured;
+        }
+
+        [[nodiscard]] bool IsOnlineSignedIn() const noexcept
+        {
+            const auto* online = ActiveOnlineServices();
+            return online != nullptr && online->IsSignedIn();
+        }
+
+        [[nodiscard]] std::string OnlinePlayerId() const
+        {
+            const auto* online = ActiveOnlineServices();
+            return online != nullptr
+                ? online->Player().playerId
+                : std::string{};
+        }
+
+        [[nodiscard]] std::string OnlinePlayerName() const
+        {
+            const auto* online = ActiveOnlineServices();
+            return online != nullptr
+                ? online->Player().displayName
+                : std::string{};
+        }
+
+        [[nodiscard]] std::string OnlineAuthorizationUrl() const
+        {
+            const auto* online = ActiveOnlineServices();
+            return online != nullptr
+                ? online->AuthorizationUrl()
+                : std::string{};
+        }
+
+        [[nodiscard]] std::string OnlineError() const
+        {
+            const auto* online = ActiveOnlineServices();
+            return online != nullptr
+                ? online->LastError()
+                : std::string{};
         }
 
         // 設定値の保存（アプリを終了しても残ります）

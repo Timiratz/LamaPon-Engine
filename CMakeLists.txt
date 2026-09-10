@@ -267,6 +267,9 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Core/Window.h
     src/LamaPon/Online/DiscordAuth.cpp
     src/LamaPon/Online/DiscordAuth.h
+    src/LamaPon/Online/OnlineServices.cpp
+    src/LamaPon/Online/OnlineServices.h
+    src/LamaPon/Online/OnlineServicesTesting.h
     src/LamaPon/Graphics/GpuProfiler.cpp
     src/LamaPon/Graphics/GpuProfiler.h
     src/LamaPon/Graphics/GraphicsDevice.cpp
@@ -1224,6 +1227,28 @@ if(BUILD_TESTING)
         PROPERTIES LABELS "online;authentication"
     )
 
+    add_executable(LamaPonOnlineServicesTests
+        tests/OnlineServicesTests.cpp
+    )
+    target_link_libraries(
+        LamaPonOnlineServicesTests
+        PRIVATE
+            LamaPonRuntime
+    )
+    target_compile_options(LamaPonOnlineServicesTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_test(
+        NAME OnlineServicesStateMachine
+        COMMAND LamaPonOnlineServicesTests
+    )
+    set_tests_properties(
+        OnlineServicesStateMachine
+        PROPERTIES LABELS "online;state-machine"
+    )
+
     add_executable(LamaPonDocumentMigrationTests
         tests/DocumentMigrationTests.cpp
     )
@@ -1771,6 +1796,8 @@ install(
         PATTERN "Crypto.h" EXCLUDE
         PATTERN "AssetPacker.h" EXCLUDE
         PATTERN "AssetArchive.h" EXCLUDE
+        PATTERN "DiscordAuth.h" EXCLUDE
+        PATTERN "OnlineServicesTesting.h" EXCLUDE
 )
 install(
     FILES

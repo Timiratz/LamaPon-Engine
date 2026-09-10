@@ -80,6 +80,7 @@
 #include "LamaPon/Graphics/ShadowMap.h"
 #include "LamaPon/Graphics/TextLayout.h"
 #include "LamaPon/Input/InputSystem.h"
+#include "LamaPon/Online/OnlineServices.h"
 #include "LamaPon/Physics/Raycast.h"
 #include "LamaPon/Physics/Collision3D.h"
 #include "LamaPon/Physics/CollisionMesh.h"

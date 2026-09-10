@@ -10,6 +10,7 @@
 #include "LamaPon/Core/SaveData.h"
 #include "LamaPon/Core/Time.h"
 #include "LamaPon/Input/InputSystem.h"
+#include "LamaPon/Online/OnlineServices.h"
 #include "LamaPon/Scene/Scene.h"
 #include "LamaPon/Scene/SceneManager.h"
 #include "LamaPon/Scripting/GameModuleHost.h"
@@ -97,6 +98,11 @@ namespace LamaPon
             "LamaPonを終了します。");
         // 先に登録を外します。破棄済みのPlayerPrefsへScriptが
         // 触れないようにするためです。
+        if (m_onlineServices
+            && ActiveOnlineServices() == m_onlineServices.get())
+        {
+            SetActiveOnlineServices(nullptr);
+        }
         SetActivePlayerPrefs(nullptr);
         if (m_playerPrefs
             && m_playerPrefs->IsDirty())
@@ -119,6 +125,7 @@ namespace LamaPon
         m_layer.reset();
         m_scene.reset();
         m_gameModule.reset();
+        m_onlineServices.reset();
         m_saveData.reset();
         m_playerPrefs.reset();
         m_graphics.Shutdown();
@@ -196,9 +203,11 @@ namespace LamaPon
         m_saveData =
             std::make_unique<SaveDataStore>(
                 userData / L"Saves");
+        m_onlineServices = std::make_unique<OnlineServices>();
         // C++ Scriptから設定値を読み書きできるように登録します
         // （Scriptはここを通してハイスコア等を保存します）。
         SetActivePlayerPrefs(m_playerPrefs.get());
+        SetActiveOnlineServices(m_onlineServices.get());
         try
         {
             m_playerPrefs->Load();
@@ -304,6 +313,13 @@ namespace LamaPon
                     Logger::Instance().Warning(
                         std::string{ "音声の更新に失敗しました: " }
                         + exception.what());
+                }
+            }
+            {
+                LAMAPON_PROFILE_SCOPE("Online");
+                if (m_onlineServices)
+                {
+                    m_onlineServices->Update(rawDeltaTime);
                 }
             }
             {
@@ -472,6 +488,16 @@ namespace LamaPon
                 "Application has not been initialized.");
         }
         return *m_saveData;
+    }
+
+    OnlineServices& Application::Online() const
+    {
+        if (!m_onlineServices)
+        {
+            throw std::logic_error(
+                "Application has not been initialized.");
+        }
+        return *m_onlineServices;
     }
 
     InputSystem& Application::Input() const
