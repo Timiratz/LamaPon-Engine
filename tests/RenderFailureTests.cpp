@@ -19,6 +19,7 @@
 
 #include "LamaPon/LamaPon.h"
 
+#include "LamaPon/Graphics/GraphicsDeviceD3D11Access.h"
 #include "LamaPon/Graphics/ShaderCompiler.h"
 
 #include <Windows.h>
@@ -36,6 +37,9 @@
 
 namespace
 {
+    using D3D11Access =
+        LamaPon::Detail::GraphicsDeviceD3D11Access;
+
     constexpr std::uint32_t Width = 64;
     constexpr std::uint32_t Height = 64;
 
@@ -367,7 +371,7 @@ int main()
         };
         graphics.BeginFrame(clearColor);
         const auto primaryOutput =
-            CaptureOutputBinding(graphics.Context());
+            CaptureOutputBinding(D3D11Access::Context(graphics));
 
         LamaPon::Scene probeScene(graphics);
         auto& probeObject =
@@ -395,7 +399,7 @@ int main()
             "reflection probe failure must propagate and remain retryable");
         RequireSameOutputBinding(
             primaryOutput,
-            CaptureOutputBinding(graphics.Context()),
+            CaptureOutputBinding(D3D11Access::Context(graphics)),
             "reflection probe failure leaked its output binding");
 
         const auto reflectionRetry = FailureOf(
@@ -436,7 +440,7 @@ int main()
             "GI bake must fail softly for a non-standard render error");
         RequireSameOutputBinding(
             primaryOutput,
-            CaptureOutputBinding(graphics.Context()),
+            CaptureOutputBinding(D3D11Access::Context(graphics)),
             "GI probe failure leaked its output binding");
 
         probeScene.RequestBakedGlobalIlluminationBake();
@@ -453,7 +457,7 @@ int main()
             "GI probe failure left the shared bake guard active");
         RequireSameOutputBinding(
             primaryOutput,
-            CaptureOutputBinding(graphics.Context()),
+            CaptureOutputBinding(D3D11Access::Context(graphics)),
             "successful probe retry did not restore its output binding");
 
         // レンダーテクスチャも描画先とUI基準サイズを一時変更します。
@@ -483,7 +487,7 @@ int main()
             "render target failure must propagate");
         RequireSameOutputBinding(
             primaryOutput,
-            CaptureOutputBinding(graphics.Context()),
+            CaptureOutputBinding(D3D11Access::Context(graphics)),
             "render target failure leaked its output binding");
         Require(
             graphics.UIWidth() == primaryUIWidth
@@ -497,7 +501,7 @@ int main()
             "render target failure left its re-entry guard active");
         RequireSameOutputBinding(
             primaryOutput,
-            CaptureOutputBinding(graphics.Context()),
+            CaptureOutputBinding(D3D11Access::Context(graphics)),
             "render target retry did not restore its output binding");
         Require(
             graphics.UIWidth() == primaryUIWidth

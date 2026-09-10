@@ -6,6 +6,7 @@
 #include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Core/Profiler.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
+#include "LamaPon/Graphics/GraphicsDeviceD3D11Access.h"
 #include "LamaPon/Graphics/Lighting.h"
 #include "LamaPon/Graphics/LitEffect.h"
 #include "LamaPon/Graphics/LitMaterialAsset.h"
@@ -1420,7 +1421,8 @@ namespace LamaPon
                     &shaderByteCode,
                     &shaderByteCodeSize);
                 const HRESULT result =
-                    m_graphics->Device()->CreateInputLayout(
+                    Detail::GraphicsDeviceD3D11Access::Device(
+                        *m_graphics)->CreateInputLayout(
                         DirectX::
                             VertexPositionNormalTangentColorTextureSkinning::
                                 InputElements,
@@ -1473,8 +1475,8 @@ namespace LamaPon
     {
         m_assets = &graphics.Assets();
         m_graphics = &graphics;
-        m_context = graphics.Context();
-        m_states = &graphics.States();
+        m_context = Detail::GraphicsDeviceD3D11Access::Context(graphics);
+        m_states = &Detail::GraphicsDeviceD3D11Access::States(graphics);
 
         if (!m_materialAssetPath.empty())
         {
@@ -1731,12 +1733,16 @@ namespace LamaPon
             ? m_normalTexture->resources.Acquire()
             : nullptr;
         auto* const albedoView = albedoResources
-            ? m_graphics->TryResolveD3D11ShaderResourceView(
-                *albedoResources)
+            ? Detail::GraphicsDeviceD3D11Access::
+                TryResolveD3D11ShaderResourceView(
+                    *m_graphics,
+                    *albedoResources)
             : nullptr;
         auto* const normalView = normalResources
-            ? m_graphics->TryResolveD3D11ShaderResourceView(
-                *normalResources)
+            ? Detail::GraphicsDeviceD3D11Access::
+                TryResolveD3D11ShaderResourceView(
+                    *m_graphics,
+                    *normalResources)
             : nullptr;
         m_model->model->UpdateEffects(
             [this, albedoView, normalView](DirectX::IEffect* effect)
@@ -2460,7 +2466,8 @@ namespace LamaPon
             {
                 continue;
             }
-            if (FAILED(m_graphics->Device()->CreateInputLayout(
+            if (FAILED(Detail::GraphicsDeviceD3D11Access::Device(
+                    *m_graphics)->CreateInputLayout(
                     elements.data(),
                     static_cast<UINT>(elements.size()),
                     byteCode->GetBufferPointer(),
@@ -2505,7 +2512,8 @@ namespace LamaPon
         static_assert(sizeof(InstanceData) == 80);
         static_assert(sizeof(Vertex) >= 52);
 
-        auto* const context = m_graphics->Context();
+        auto* const context = Detail::GraphicsDeviceD3D11Access::Context(
+            *m_graphics);
         constexpr UINT vertexStride = sizeof(Vertex);
         effect.SetMatrices(
             DirectX::XMMatrixIdentity(),
@@ -2746,8 +2754,12 @@ namespace LamaPon
                 commonPart.part = part.get();
                 try
                 {
+                    auto* const context =
+                        Detail::GraphicsDeviceD3D11Access::Context(
+                            *m_graphics);
                     part->CreateInputLayout(
-                        m_graphics->Device(),
+                        Detail::GraphicsDeviceD3D11Access::Device(
+                            *m_graphics),
                         &effect,
                         commonPart.inputLayout.
                             ReleaseAndGetAddressOf());
@@ -2756,20 +2768,17 @@ namespace LamaPon
                     // 明示的な上書き画像がない場合、カスタムShaderでも
                     // 元モデルの複数マテリアルを失わないようにする。
                     ID3D11ShaderResourceView* emptyViews[2]{};
-                    m_graphics->Context()->
-                        PSSetShaderResources(
-                            0,
-                            2,
-                            emptyViews);
-                    part->effect->Apply(
-                        m_graphics->Context());
+                    context->PSSetShaderResources(
+                        0,
+                        2,
+                        emptyViews);
+                    part->effect->Apply(context);
                     ID3D11ShaderResourceView*
                         embeddedViews[2]{};
-                    m_graphics->Context()->
-                        PSGetShaderResources(
-                            0,
-                            2,
-                            embeddedViews);
+                    context->PSGetShaderResources(
+                        0,
+                        2,
+                        embeddedViews);
                     // PSGetShaderResourcesが加算した参照を先に両方とも
                     // RAIIへ移します。片方のimportが例外になっても、もう
                     // 片方を漏らしません。Partにはnative pointerではなく

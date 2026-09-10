@@ -1,6 +1,7 @@
 #include "LamaPon/Graphics/SkeletalModel.h"
 
 #include "LamaPon/Graphics/GraphicsDevice.h"
+#include "LamaPon/Graphics/GraphicsDeviceD3D11Access.h"
 #include "LamaPon/Graphics/ShaderRenderState.h"
 
 #include "LamaPon/Core/Profiler.h"
@@ -641,7 +642,8 @@ namespace LamaPon
         const std::vector<DirectX::XMFLOAT4X4>* globalPoseOverride,
         const float automaticLodQuality) const
     {
-        auto* const context = graphics.Context();
+        auto* const context =
+            Detail::GraphicsDeviceD3D11Access::Context(graphics);
         if (context == nullptr)
         {
             return;
@@ -651,7 +653,7 @@ namespace LamaPon
         textures.request = textureOverride;
         DrawD3D11(
             context,
-            graphics.States(),
+            Detail::GraphicsDeviceD3D11Access::States(graphics),
             lighting,
             ownerWorld,
             view,
@@ -823,8 +825,10 @@ namespace LamaPon
                 handle = {};
                 return true;
             }
-            if (textures.graphics->TryResolveD3D11ShaderResourceView(
-                    handle)
+            if (Detail::GraphicsDeviceD3D11Access::
+                    TryResolveD3D11ShaderResourceView(
+                        *textures.graphics,
+                        handle)
                 == native)
             {
                 return true;
@@ -972,8 +976,9 @@ namespace LamaPon
                             && textures.request != nullptr
                             && textures.request->albedo)
                         {
-                            texture = textures.graphics
-                                ->TryResolveD3D11ShaderResourceView(
+                            texture = Detail::GraphicsDeviceD3D11Access::
+                                TryResolveD3D11ShaderResourceView(
+                                    *textures.graphics,
                                     textures.request->albedo);
                             if (texture == nullptr)
                             {

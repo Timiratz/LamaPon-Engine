@@ -6,6 +6,7 @@
 #include "LamaPon/Graphics/ComputeEffect.h"
 #include "LamaPon/Graphics/ClusteredLights.h"
 #include "LamaPon/Graphics/GraphicsDeviceApiResources.h"
+#include "LamaPon/Graphics/GraphicsDeviceD3D11Access.h"
 #include "LamaPon/Graphics/GraphicsDeviceShaderState.h"
 #include "LamaPon/Graphics/LitEffect.h"
 #include "LamaPon/Graphics/LitTextureRequest.h"
@@ -76,7 +77,8 @@ namespace
         const std::uint32_t expectedMipLevels,
         ID3D11ShaderResourceView*& resolved) noexcept
     {
-        resolved = graphics.TryResolveD3D11ShaderResourceView(handle);
+        resolved = LamaPon::Detail::GraphicsDeviceD3D11Access::
+            TryResolveD3D11ShaderResourceView(graphics, handle);
         if (!handle || resolved == nullptr)
         {
             return false;

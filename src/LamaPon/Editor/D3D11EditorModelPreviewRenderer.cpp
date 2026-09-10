@@ -2,6 +2,7 @@
 
 #include "LamaPon/Assets/AssetManager.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
+#include "LamaPon/Graphics/GraphicsDeviceD3D11Access.h"
 #include "LamaPon/Graphics/LitMaterial.h"
 #include "LamaPon/Graphics/SkeletalModel.h"
 
@@ -30,7 +31,8 @@ namespace LamaPon
         // Device / Context世代を固定し、初期化前のfactory生成は妨げません。
         const auto resourceLease =
             m_graphics.AcquireResourceLease();
-        auto* const context = m_graphics.Context();
+        auto* const context =
+            Detail::GraphicsDeviceD3D11Access::Context(m_graphics);
         if (context == nullptr)
         {
             throw std::logic_error(
@@ -72,7 +74,7 @@ namespace LamaPon
                 });
             model.model->Draw(
                 context,
-                m_graphics.States(),
+                Detail::GraphicsDeviceD3D11Access::States(m_graphics),
                 world,
                 view,
                 projection,

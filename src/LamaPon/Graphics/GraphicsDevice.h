@@ -40,6 +40,7 @@ namespace LamaPon
     namespace Detail
     {
         class GraphicsDeviceApiResources;
+        class GraphicsDeviceD3D11Access;
         struct GraphicsDeviceD3D11Resources;
     }
 
@@ -466,27 +467,12 @@ namespace LamaPon
         void RestoreOutputState(
             const GraphicsOutputState& state);
 
-        // 既存のD3D11描画コード向け互換facadeです。Backend共通interfaceへ
-        // D3D11型を持ち込まず、段階的なrenderer移行までここで転送します。
-        [[nodiscard]] ID3D11Device* Device() const noexcept;
-        [[nodiscard]] ID3D11DeviceContext* Context() const noexcept;
         // 値で返し、再初期化で内部handleが差し替わっても取得時点のresource
         // snapshotを安全に保持できるようにします。
         [[nodiscard]] GraphicsTextureHandle
             WhiteTextureHandle() const noexcept;
         [[nodiscard]] GraphicsViewHandle
             WhiteTextureViewHandle() const noexcept;
-        // 描画時の互換経路です。empty/stale/別Backendのhandleは例外を
-        // 外へ出さずnullptrへ倒し、旧Device resourceのbindを防ぎます。
-        [[nodiscard]] ID3D11ShaderResourceView*
-            TryResolveD3D11ShaderResourceView(
-                const GraphicsViewHandle& view) const noexcept;
-        // Texture assetの単一snapshotを解決します。neutral handleがある場合は
-        // それを正とし、stale handleからlegacy raw pointerへはfallbackしません。
-        [[nodiscard]] ID3D11ShaderResourceView*
-            TryResolveD3D11ShaderResourceView(
-                const TextureResourceSnapshot& resources)
-                const noexcept;
         // API非依存resource操作をactive Backendへ転送します。
         [[nodiscard]] GraphicsTextureHandle CreateTexture2D(
             const GraphicsTexture2DDescription& description,
@@ -509,13 +495,6 @@ namespace LamaPon
         [[nodiscard]] AssetManager* TryAssets() const noexcept;
         [[nodiscard]] AudioSystem& Audio() const;
         [[nodiscard]] InputSystem& Input() const;
-        [[nodiscard]] DirectX::CommonStates& States() const;
-        // 宣言blend:additive用の純加算ブレンド（RGB: One+One）。
-        // DirectXTKのAdditive（SrcAlpha加重）と違い、書き込み先の
-        // アルファを一切汚さない（Alpha: Zero+One）。シーンバッファの
-        // アルファは後段（被写界深度のCoC等）が意味を持って読むため、
-        // 加算描画がdstA += srcAで積み上げると後段が黒く巻き込まれる。
-        [[nodiscard]] ID3D11BlendState* AdditiveBlendPreservingAlpha() const;
         [[nodiscard]] DebugRenderer& Debug() const;
         // GPU区間計測（タイムスタンプクエリ）。フレームの
         // 開始/終了はBeginFrame/EndFrameが自動で行います。
@@ -747,7 +726,31 @@ namespace LamaPon
         friend class ModelRendererComponent;
         friend class ParticleSystemComponent;
         friend class SkeletalModel;
+        friend class Detail::GraphicsDeviceD3D11Access;
         friend class Detail::SpriteRenderPassState;
+
+        // API 64以前のGame Moduleが旧public名を解決してAPI不一致案内へ
+        // 到達できるよう、D3D11 native accessorの実装をprivate shimとして
+        // 維持します。engine内のD3D11描画島はSDK非公開access bridgeを
+        // 使用し、新しい公開コードはAPI-neutral handle/facadeを使用します。
+        [[nodiscard]] ID3D11Device* Device() const noexcept;
+        [[nodiscard]] ID3D11DeviceContext* Context() const noexcept;
+        [[nodiscard]] DirectX::CommonStates& States() const;
+        // 宣言blend:additive用の純加算ブレンド（RGB: One+One、
+        // Alpha: Zero+One）です。
+        [[nodiscard]] ID3D11BlendState*
+            AdditiveBlendPreservingAlpha() const;
+        // empty/stale/別Backendのhandleは例外を外へ出さずnullptrへ倒し、
+        // 旧Device resourceのbindを防ぎます。
+        [[nodiscard]] ID3D11ShaderResourceView*
+            TryResolveD3D11ShaderResourceView(
+                const GraphicsViewHandle& view) const noexcept;
+        // neutral handleがあるsnapshotではhandle側を正とし、stale handle
+        // からlegacy raw pointerへはfallbackしません。
+        [[nodiscard]] ID3D11ShaderResourceView*
+            TryResolveD3D11ShaderResourceView(
+                const TextureResourceSnapshot& resources)
+                const noexcept;
 
         // API 60以前のraw renderer取得口はbinary互換shimとして残し、
         // engine内部のneutral facadeだけが使用します。

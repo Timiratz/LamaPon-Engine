@@ -12,6 +12,7 @@
 #include "LamaPon/Graphics/DebugRenderer.h"
 #include "LamaPon/Graphics/D3D11Backend.h"
 #include "LamaPon/Graphics/GraphicsDeviceApiResources.h"
+#include "LamaPon/Graphics/GraphicsDeviceD3D11Access.h"
 #include "LamaPon/Graphics/GraphicsRenderServices.h"
 #include "LamaPon/Graphics/LitEffect.h"
 #include "LamaPon/Graphics/PngWriter.h"
@@ -46,6 +47,9 @@
 
 namespace
 {
+    using D3D11Access =
+        LamaPon::Detail::GraphicsDeviceD3D11Access;
+
     constexpr std::uint32_t Width = 320;
     constexpr std::uint32_t Height = 180;
 
@@ -90,7 +94,7 @@ namespace
             const UINT slot)
     {
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> result;
-        graphics.Context()->PSGetShaderResources(
+        D3D11Access::Context(graphics)->PSGetShaderResources(
             slot,
             1,
             result.ReleaseAndGetAddressOf());
@@ -648,8 +652,8 @@ int main(const int argumentCount, char** arguments)
                 == LamaPon::RenderingApiFallbackReason::NotImplemented,
             "DirectX 12 Experimental must report the not-implemented fallback.");
         Require(
-            graphics.Device() != nullptr
-                && graphics.Context() != nullptr,
+            D3D11Access::Device(graphics) != nullptr
+                && D3D11Access::Context(graphics) != nullptr,
             "The DirectX 11 fallback must expose a valid device and context.");
         Stage("skeletal-legacy-export");
         constexpr char LegacySkeletalDrawSymbol[] =
@@ -847,6 +851,22 @@ int main(const int argumentCount, char** arguments)
                 "QEBA?AVGraphicsViewHandle@2@XZ",
             "?Width@GraphicsDevice@LamaPon@@QEBAIXZ"
         };
+        constexpr std::array Api65LegacyD3D11AccessSymbols{
+            "?Device@GraphicsDevice@LamaPon@@"
+                "QEBAPEAUID3D11Device@@XZ",
+            "?Context@GraphicsDevice@LamaPon@@"
+                "QEBAPEAUID3D11DeviceContext@@XZ",
+            "?States@GraphicsDevice@LamaPon@@"
+                "QEBAAEAVCommonStates@DX11@DirectX@@XZ",
+            "?AdditiveBlendPreservingAlpha@GraphicsDevice@LamaPon@@"
+                "QEBAPEAUID3D11BlendState@@XZ",
+            "?TryResolveD3D11ShaderResourceView@GraphicsDevice@LamaPon@@"
+                "QEBAPEAUID3D11ShaderResourceView@@"
+                "AEBVGraphicsViewHandle@2@@Z",
+            "?TryResolveD3D11ShaderResourceView@GraphicsDevice@LamaPon@@"
+                "QEBAPEAUID3D11ShaderResourceView@@"
+                "AEBUTextureResourceSnapshot@2@@Z"
+        };
         const auto runtimeModule = GetModuleHandleW(
             L"LamaPonRuntime.dll");
         Require(
@@ -947,6 +967,12 @@ int main(const int argumentCount, char** arguments)
             Require(
                 GetProcAddress(runtimeModule, symbol) != nullptr,
                 "An API 64 opaque GraphicsDevice export is missing");
+        }
+        for (const auto* const symbol : Api65LegacyD3D11AccessSymbols)
+        {
+            Require(
+                GetProcAddress(runtimeModule, symbol) != nullptr,
+                "An API 65 D3D11 compatibility export alias is missing");
         }
         using LegacyEnvironmentAccessor =
             LamaPon::EnvironmentRenderer* (__fastcall*)(
@@ -1156,7 +1182,7 @@ int main(const int argumentCount, char** arguments)
                 {
                     foundSkeletalTexture = true;
                     Require(
-                        graphics.TryResolveD3D11ShaderResourceView(
+                        D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                             *neutralViews[index])
                             == nativeViews[index],
                         "A skeletal neutral texture resolved to another view");
@@ -1218,7 +1244,7 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 litTextures),
             "A valid neutral Lit texture request was rejected");
-        litEffect.Apply(graphics.Context());
+        litEffect.Apply(D3D11Access::Context(graphics));
         constexpr std::array<UINT, 10> LitTextureSlots{
             0u, 1u, 11u, 12u, 13u, 14u, 7u, 8u, 9u, 10u
         };
@@ -1228,7 +1254,7 @@ int main(const int argumentCount, char** arguments)
                 CapturePixelShaderView(
                     graphics,
                     LitTextureSlots[index]).Get()
-                    == graphics.TryResolveD3D11ShaderResourceView(
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         litViews[index]),
                 "A neutral Lit texture was bound to the wrong slot");
         }
@@ -1283,16 +1309,16 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 shadowLighting),
             "Valid neutral shadow lighting was rejected");
-        litEffect.Apply(graphics.Context());
+        litEffect.Apply(D3D11Access::Context(graphics));
         Require(
             CapturePixelShaderView(graphics, 2u).Get()
-                    == graphics.TryResolveD3D11ShaderResourceView(
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         directionalShadowView)
                 && CapturePixelShaderView(graphics, 4u).Get()
-                    == graphics.TryResolveD3D11ShaderResourceView(
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         spotShadowView)
                 && CapturePixelShaderView(graphics, 5u).Get()
-                    == graphics.TryResolveD3D11ShaderResourceView(
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         pointShadowView),
             "Neutral shadow views were bound to the wrong slots");
 
@@ -1324,16 +1350,16 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 wrongShadowResolution),
             "Shadow views with mismatched resolution were accepted");
-        litEffect.Apply(graphics.Context());
+        litEffect.Apply(D3D11Access::Context(graphics));
         Require(
             CapturePixelShaderView(graphics, 2u).Get()
-                    == graphics.TryResolveD3D11ShaderResourceView(
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         directionalShadowView)
                 && CapturePixelShaderView(graphics, 4u).Get()
-                    == graphics.TryResolveD3D11ShaderResourceView(
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         spotShadowView)
                 && CapturePixelShaderView(graphics, 5u).Get()
-                    == graphics.TryResolveD3D11ShaderResourceView(
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         pointShadowView),
             "Rejected neutral shadow lighting partially changed the Effect");
 
@@ -1346,7 +1372,7 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 disabledShadowLighting),
             "Disabled neutral shadow lighting was rejected");
-        litEffect.Apply(graphics.Context());
+        litEffect.Apply(D3D11Access::Context(graphics));
         Require(
             CapturePixelShaderView(graphics, 2u) == nullptr
                 && CapturePixelShaderView(graphics, 4u) == nullptr
@@ -1413,7 +1439,7 @@ int main(const int argumentCount, char** arguments)
             "A Texture2D did not fall back to the procedural Sky");
 
         const auto baselinePrefilterPipeline =
-            PrefilterPipelineState::Capture(graphics.Context());
+            PrefilterPipelineState::Capture(D3D11Access::Context(graphics));
         D3D11_TEXTURE2D_DESC sentinelTargetDescription{};
         sentinelTargetDescription.Width = Width;
         sentinelTargetDescription.Height = Height;
@@ -1425,14 +1451,14 @@ int main(const int argumentCount, char** arguments)
         sentinelTargetDescription.BindFlags = D3D11_BIND_RENDER_TARGET;
         Microsoft::WRL::ComPtr<ID3D11Texture2D> sentinelTargetTexture;
         Require(
-            SUCCEEDED(graphics.Device()->CreateTexture2D(
+            SUCCEEDED(D3D11Access::Device(graphics)->CreateTexture2D(
                 &sentinelTargetDescription,
                 nullptr,
                 sentinelTargetTexture.ReleaseAndGetAddressOf())),
             "The IBL pipeline-state sentinel texture could not be created");
         Microsoft::WRL::ComPtr<ID3D11RenderTargetView> sentinelTarget;
         Require(
-            SUCCEEDED(graphics.Device()->CreateRenderTargetView(
+            SUCCEEDED(D3D11Access::Device(graphics)->CreateRenderTargetView(
                 sentinelTargetTexture.Get(),
                 nullptr,
                 sentinelTarget.ReleaseAndGetAddressOf())),
@@ -1441,7 +1467,7 @@ int main(const int argumentCount, char** arguments)
             baselinePrefilterPipeline.targets[0].Get(),
             sentinelTarget.Get()
         };
-        graphics.Context()->OMSetRenderTargets(
+        D3D11Access::Context(graphics)->OMSetRenderTargets(
             static_cast<UINT>(std::size(sentinelTargets)),
             sentinelTargets,
             baselinePrefilterPipeline.depth.Get());
@@ -1463,19 +1489,19 @@ int main(const int argumentCount, char** arguments)
                 0.1f,
                 0.9f }
         };
-        graphics.Context()->RSSetViewports(
+        D3D11Access::Context(graphics)->RSSetViewports(
             static_cast<UINT>(std::size(sentinelViewports)),
             sentinelViewports);
-        graphics.Context()->IASetPrimitiveTopology(
+        D3D11Access::Context(graphics)->IASetPrimitiveTopology(
             D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
         const auto sentinelPrefilterPipeline =
-            PrefilterPipelineState::Capture(graphics.Context());
+            PrefilterPipelineState::Capture(D3D11Access::Context(graphics));
         const auto prefilteredEnvironment =
             graphics.TryGetPrefilteredEnvironmentViews(
                 pointShadowView);
         const bool retainedPrefilterPipeline =
-            sentinelPrefilterPipeline.Matches(graphics.Context());
-        baselinePrefilterPipeline.Restore(graphics.Context());
+            sentinelPrefilterPipeline.Matches(D3D11Access::Context(graphics));
+        baselinePrefilterPipeline.Restore(D3D11Access::Context(graphics));
         Require(
             retainedPrefilterPipeline,
             "Sky IBL prefiltering did not restore the D3D11 pipeline state");
@@ -1513,7 +1539,7 @@ int main(const int argumentCount, char** arguments)
             const std::uint32_t mipLevels)
         {
             auto* const view =
-                graphics.TryResolveD3D11ShaderResourceView(handle);
+                D3D11Access::TryResolveD3D11ShaderResourceView(graphics, handle);
             Require(
                 view != nullptr,
                 "A neutral IBL view could not be resolved");
@@ -1564,10 +1590,10 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 environmentLighting),
             "A source-only neutral environment was rejected");
-        litEffect.Apply(graphics.Context());
+        litEffect.Apply(D3D11Access::Context(graphics));
         Require(
             CapturePixelShaderView(graphics, 3u).Get()
-                    == graphics.TryResolveD3D11ShaderResourceView(
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         prefilteredEnvironment.specular)
                 && CapturePixelShaderView(graphics, 6u) == nullptr,
             "A source-only environment did not use its cube fallback");
@@ -1581,13 +1607,13 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 environmentLighting),
             "A valid neutral prefiltered environment was rejected");
-        litEffect.Apply(graphics.Context());
+        litEffect.Apply(D3D11Access::Context(graphics));
         Require(
             CapturePixelShaderView(graphics, 3u).Get()
-                    == graphics.TryResolveD3D11ShaderResourceView(
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         prefilteredEnvironment.specular)
                 && CapturePixelShaderView(graphics, 6u).Get()
-                    == graphics.TryResolveD3D11ShaderResourceView(
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         prefilteredEnvironment.irradiance),
             "Neutral IBL views were bound to the wrong slots");
 
@@ -1650,17 +1676,17 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 environmentLighting),
             "The neutral environment baseline could not be restored");
-        litEffect.Apply(graphics.Context());
+        litEffect.Apply(D3D11Access::Context(graphics));
         static_cast<void>(graphics.TrySetLitEffectLighting(
             litEffect,
             incompleteEnvironment));
-        litEffect.Apply(graphics.Context());
+        litEffect.Apply(D3D11Access::Context(graphics));
         Require(
             CapturePixelShaderView(graphics, 3u).Get()
-                    == graphics.TryResolveD3D11ShaderResourceView(
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         prefilteredEnvironment.specular)
                 && CapturePixelShaderView(graphics, 6u).Get()
-                    == graphics.TryResolveD3D11ShaderResourceView(
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         prefilteredEnvironment.irradiance),
             "Rejected neutral IBL lighting partially changed the Effect");
 
@@ -1673,7 +1699,7 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 disabledEnvironment),
             "Disabled environment state resolved stale resource handles");
-        litEffect.Apply(graphics.Context());
+        litEffect.Apply(D3D11Access::Context(graphics));
         Require(
             CapturePixelShaderView(graphics, 3u) == nullptr
                 && CapturePixelShaderView(graphics, 6u) == nullptr,
@@ -1706,13 +1732,13 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 reflectionProbe),
             "A valid neutral Reflection Probe was rejected");
-        litEffect.Apply(graphics.Context());
+        litEffect.Apply(D3D11Access::Context(graphics));
         Require(
             CapturePixelShaderView(graphics, 3u).Get()
-                    == graphics.TryResolveD3D11ShaderResourceView(
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         prefilteredEnvironment.specular)
                 && CapturePixelShaderView(graphics, 6u).Get()
-                    == graphics.TryResolveD3D11ShaderResourceView(
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         prefilteredEnvironment.irradiance)
                 && CapturePixelShaderView(graphics, 19u) == nullptr
                 && CapturePixelShaderView(graphics, 20u) == nullptr,
@@ -1735,13 +1761,13 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 blendedReflectionProbe),
             "A valid blended neutral Reflection Probe was rejected");
-        litEffect.Apply(graphics.Context());
+        litEffect.Apply(D3D11Access::Context(graphics));
         Require(
             CapturePixelShaderView(graphics, 19u).Get()
-                    == graphics.TryResolveD3D11ShaderResourceView(
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         prefilteredEnvironment.specular)
                 && CapturePixelShaderView(graphics, 20u).Get()
-                    == graphics.TryResolveD3D11ShaderResourceView(
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         prefilteredEnvironment.irradiance),
             "Neutral secondary Reflection Probe views used the wrong slots");
 
@@ -1776,13 +1802,13 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 nonFiniteReflectionProbe),
             "A non-finite Reflection Probe was accepted");
-        litEffect.Apply(graphics.Context());
+        litEffect.Apply(D3D11Access::Context(graphics));
         Require(
             CapturePixelShaderView(graphics, 19u).Get()
-                    == graphics.TryResolveD3D11ShaderResourceView(
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         prefilteredEnvironment.specular)
                 && CapturePixelShaderView(graphics, 20u).Get()
-                    == graphics.TryResolveD3D11ShaderResourceView(
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         prefilteredEnvironment.irradiance),
             "A rejected Reflection Probe partially changed the Effect");
 
@@ -1795,7 +1821,7 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 disabledSecondaryProbe),
             "Disabled secondary Probe handles were unnecessarily resolved");
-        litEffect.Apply(graphics.Context());
+        litEffect.Apply(D3D11Access::Context(graphics));
         Require(
             CapturePixelShaderView(graphics, 19u) == nullptr
                 && CapturePixelShaderView(graphics, 20u) == nullptr,
@@ -1831,10 +1857,10 @@ int main(const int argumentCount, char** arguments)
         const auto volumetricDisplay =
             volumetricTarget.DisplayViewHandle();
         auto* const volumetricNativeSource =
-            graphics.TryResolveD3D11ShaderResourceView(
+            D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                 volumetricSource);
         auto* const volumetricNativeDisplay =
-            graphics.TryResolveD3D11ShaderResourceView(
+            D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                 volumetricDisplay);
         Require(
             volumetricSource
@@ -1855,10 +1881,10 @@ int main(const int argumentCount, char** arguments)
                     != volumetricSource
                 && volumetricTarget.DisplayViewHandle()
                     == volumetricDisplay
-                && graphics.TryResolveD3D11ShaderResourceView(
+                && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                     volumetricTarget.CurrentColorViewHandle())
                     != volumetricNativeSource
-                && graphics.TryResolveD3D11ShaderResourceView(
+                && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                     volumetricTarget.DisplayViewHandle())
                     == volumetricNativeDisplay,
             "Valid neutral volumetric inputs did not swap only the current "
@@ -1915,9 +1941,9 @@ int main(const int argumentCount, char** arguments)
                     temporalHistoryView)
                 && graphics.IsGraphicsViewCurrent(
                     temporalDepthView)
-                && graphics.TryResolveD3D11ShaderResourceView(
+                && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                     temporalHistoryView) != nullptr
-                && graphics.TryResolveD3D11ShaderResourceView(
+                && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                     temporalDepthView) != nullptr,
             "RenderTarget did not publish current neutral TAA views");
 
@@ -1952,11 +1978,11 @@ int main(const int argumentCount, char** arguments)
         Microsoft::WRL::ComPtr<ID3D11RenderTargetView>
             temporalOutputTarget;
         Require(
-            SUCCEEDED(graphics.Device()->CreateTexture2D(
+            SUCCEEDED(D3D11Access::Device(graphics)->CreateTexture2D(
                 &temporalOutputDescription,
                 nullptr,
                 temporalOutputTexture.ReleaseAndGetAddressOf()))
-                && SUCCEEDED(graphics.Device()->CreateRenderTargetView(
+                && SUCCEEDED(D3D11Access::Device(graphics)->CreateRenderTargetView(
                     temporalOutputTexture.Get(),
                     nullptr,
                     temporalOutputTarget.ReleaseAndGetAddressOf())),
@@ -1983,7 +2009,7 @@ int main(const int argumentCount, char** arguments)
             legacyEnvironment != nullptr,
             "The legacy Environment accessor returned null");
         auto* const temporalNativeSource =
-            graphics.TryResolveD3D11ShaderResourceView(
+            D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                 temporalTarget.CurrentColorViewHandle());
         Require(
             temporalNativeSource != nullptr,
@@ -2063,11 +2089,11 @@ int main(const int argumentCount, char** arguments)
             screenLightingTarget.ReflectionDepthPyramidViewHandle();
         Require(
             colorHistoryView
-                && graphics.TryResolveD3D11ShaderResourceView(
+                && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                     ambientOcclusionView) != nullptr
-                && graphics.TryResolveD3D11ShaderResourceView(
+                && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                     colorHistoryView) != nullptr
-                && graphics.TryResolveD3D11ShaderResourceView(
+                && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                     reflectionDepthView) != nullptr,
             "A RenderTarget screen-space view could not be resolved");
 
@@ -2098,16 +2124,16 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 screenLighting),
             "Valid neutral screen-space lighting was rejected");
-        litEffect.Apply(graphics.Context());
+        litEffect.Apply(D3D11Access::Context(graphics));
         Require(
             CapturePixelShaderView(graphics, 15u).Get()
-                    == graphics.TryResolveD3D11ShaderResourceView(
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         ambientOcclusionView)
                 && CapturePixelShaderView(graphics, 21u).Get()
-                    == graphics.TryResolveD3D11ShaderResourceView(
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         colorHistoryView)
                 && CapturePixelShaderView(graphics, 22u).Get()
-                    == graphics.TryResolveD3D11ShaderResourceView(
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         reflectionDepthView),
             "Neutral screen-space lighting was bound to the wrong slot");
 
@@ -2142,16 +2168,16 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 wrongAmbientOcclusionSize),
             "SSAO with mismatched dimensions was accepted");
-        litEffect.Apply(graphics.Context());
+        litEffect.Apply(D3D11Access::Context(graphics));
         Require(
             CapturePixelShaderView(graphics, 15u).Get()
-                    == graphics.TryResolveD3D11ShaderResourceView(
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         ambientOcclusionView)
                 && CapturePixelShaderView(graphics, 21u).Get()
-                    == graphics.TryResolveD3D11ShaderResourceView(
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         colorHistoryView)
                 && CapturePixelShaderView(graphics, 22u).Get()
-                    == graphics.TryResolveD3D11ShaderResourceView(
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         reflectionDepthView),
             "Rejected screen-space lighting partially changed the Effect");
 
@@ -2163,7 +2189,7 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 disabledScreenLighting),
             "Disabled neutral screen-space lighting was rejected");
-        litEffect.Apply(graphics.Context());
+        litEffect.Apply(D3D11Access::Context(graphics));
         Require(
             CapturePixelShaderView(graphics, 15u).Get()
                     == disabledAmbientOcclusionView.Get()
@@ -2213,7 +2239,7 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 clusteredLighting),
             "Valid neutral clustered lighting was rejected");
-        litEffect.Apply(graphics.Context());
+        litEffect.Apply(D3D11Access::Context(graphics));
         for (std::size_t index{};
             index < clusteredViews.size();
             ++index)
@@ -2222,7 +2248,7 @@ int main(const int argumentCount, char** arguments)
                 CapturePixelShaderView(
                     graphics,
                     static_cast<UINT>(16u + index)).Get()
-                    == graphics.TryResolveD3D11ShaderResourceView(
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         clusteredViews[index]),
                 "A neutral clustered-lighting view was bound to the wrong slot");
         }
@@ -2264,7 +2290,7 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 invalidClusteredMetadata),
             "Invalid clustered-lighting metadata was accepted");
-        litEffect.Apply(graphics.Context());
+        litEffect.Apply(D3D11Access::Context(graphics));
         for (std::size_t index{};
             index < clusteredViews.size();
             ++index)
@@ -2273,7 +2299,7 @@ int main(const int argumentCount, char** arguments)
                 CapturePixelShaderView(
                     graphics,
                     static_cast<UINT>(16u + index)).Get()
-                    == graphics.TryResolveD3D11ShaderResourceView(
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         clusteredViews[index]),
                 "Rejected clustered lighting partially changed the Effect");
         }
@@ -2285,7 +2311,7 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 disabledClusteredLighting),
             "Disabled neutral clustered lighting was rejected");
-        litEffect.Apply(graphics.Context());
+        litEffect.Apply(D3D11Access::Context(graphics));
         Require(
             CapturePixelShaderView(graphics, 16u) == nullptr
                 && CapturePixelShaderView(graphics, 17u) == nullptr
@@ -2326,14 +2352,14 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 bakedGiLighting),
             "A valid neutral Baked GI triplet was rejected");
-        litEffect.Apply(graphics.Context());
+        litEffect.Apply(D3D11Access::Context(graphics));
         for (std::size_t index{}; index < bakedGiViews.size(); ++index)
         {
             Require(
                 CapturePixelShaderView(
                     graphics,
                     static_cast<UINT>(23u + index)).Get()
-                    == graphics.TryResolveD3D11ShaderResourceView(
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         bakedGiViews[index]),
                 "A neutral Baked GI view was bound to the wrong slot");
         }
@@ -2362,14 +2388,14 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 wrongResolutionBakedGiLighting),
             "A Baked GI volume with mismatched resolution was accepted");
-        litEffect.Apply(graphics.Context());
+        litEffect.Apply(D3D11Access::Context(graphics));
         for (std::size_t index{}; index < bakedGiViews.size(); ++index)
         {
             Require(
                 CapturePixelShaderView(
                     graphics,
                     static_cast<UINT>(23u + index)).Get()
-                    == graphics.TryResolveD3D11ShaderResourceView(
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         bakedGiViews[index]),
                 "A rejected Baked GI triplet partially changed the Effect");
         }
@@ -2381,7 +2407,7 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 disabledBakedGiLighting),
             "A disabled neutral Baked GI state was rejected");
-        litEffect.Apply(graphics.Context());
+        litEffect.Apply(D3D11Access::Context(graphics));
         Require(
             CapturePixelShaderView(graphics, 23u) == nullptr
                 && CapturePixelShaderView(graphics, 24u) == nullptr
@@ -2399,7 +2425,7 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 emptyLitTextures),
             "An empty neutral Lit texture request was rejected");
-        litEffect.Apply(graphics.Context());
+        litEffect.Apply(D3D11Access::Context(graphics));
         const auto litWhite = CapturePixelShaderView(graphics, 0u);
         const auto litFlatNormal =
             CapturePixelShaderView(graphics, 1u);
@@ -2455,7 +2481,7 @@ int main(const int argumentCount, char** arguments)
                     litEffect,
                     invalidLitTextures),
                 "A foreign Lit texture view was accepted");
-            litEffect.Apply(graphics.Context());
+            litEffect.Apply(D3D11Access::Context(graphics));
             for (std::size_t index{};
                 index < litViews.size();
                 ++index)
@@ -2464,7 +2490,7 @@ int main(const int argumentCount, char** arguments)
                     CapturePixelShaderView(
                         graphics,
                         LitTextureSlots[index]).Get()
-                        == graphics.TryResolveD3D11ShaderResourceView(
+                        == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                             litViews[index]),
                     "A rejected Lit request partially changed the Effect");
             }
@@ -2511,7 +2537,7 @@ int main(const int argumentCount, char** arguments)
                     litEffect,
                     mixedBakedGiLighting),
                 "A mixed-generation Baked GI triplet was accepted");
-            litEffect.Apply(graphics.Context());
+            litEffect.Apply(D3D11Access::Context(graphics));
             for (std::size_t index{};
                 index < bakedGiViews.size();
                 ++index)
@@ -2520,7 +2546,7 @@ int main(const int argumentCount, char** arguments)
                     CapturePixelShaderView(
                         graphics,
                         static_cast<UINT>(23u + index)).Get()
-                        == graphics.TryResolveD3D11ShaderResourceView(
+                        == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                             bakedGiViews[index]),
                     "A rejected mixed Baked GI triplet changed the Effect");
             }
@@ -2535,7 +2561,7 @@ int main(const int argumentCount, char** arguments)
                     litEffect,
                     clusteredLighting),
                 "The clustered-lighting baseline could not be restored");
-            litEffect.Apply(graphics.Context());
+            litEffect.Apply(D3D11Access::Context(graphics));
             auto mixedClusteredLighting = clusteredLighting;
             mixedClusteredLighting.clustered.lightIndices =
                 invalidLitTextures.customTextures.back();
@@ -2544,7 +2570,7 @@ int main(const int argumentCount, char** arguments)
                     litEffect,
                     mixedClusteredLighting),
                 "A mixed-generation clustered-lighting set was accepted");
-            litEffect.Apply(graphics.Context());
+            litEffect.Apply(D3D11Access::Context(graphics));
             for (std::size_t index{};
                 index < clusteredViews.size();
                 ++index)
@@ -2553,7 +2579,7 @@ int main(const int argumentCount, char** arguments)
                     CapturePixelShaderView(
                         graphics,
                         static_cast<UINT>(16u + index)).Get()
-                        == graphics.TryResolveD3D11ShaderResourceView(
+                        == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                             clusteredViews[index]),
                     "Rejected mixed clustered lighting changed the Effect");
             }
@@ -2563,7 +2589,7 @@ int main(const int argumentCount, char** arguments)
                     litEffect,
                     screenLighting),
                 "The screen-space lighting baseline could not be restored");
-            litEffect.Apply(graphics.Context());
+            litEffect.Apply(D3D11Access::Context(graphics));
 
             // Resizeだけが別Backendのtargetを引き取れる境界です。それ以外の
             // 操作はforeign native資源をcontextへ渡す前に全て拒否します。
@@ -2777,16 +2803,16 @@ int main(const int argumentCount, char** arguments)
                     litEffect,
                     mixedScreenLighting),
                 "A mixed-generation screen-space view set was accepted");
-            litEffect.Apply(graphics.Context());
+            litEffect.Apply(D3D11Access::Context(graphics));
             Require(
                 CapturePixelShaderView(graphics, 15u).Get()
-                        == graphics.TryResolveD3D11ShaderResourceView(
+                        == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                             ambientOcclusionView)
                     && CapturePixelShaderView(graphics, 21u).Get()
-                        == graphics.TryResolveD3D11ShaderResourceView(
+                        == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                             colorHistoryView)
                     && CapturePixelShaderView(graphics, 22u).Get()
-                        == graphics.TryResolveD3D11ShaderResourceView(
+                        == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                             reflectionDepthView),
                 "Rejected mixed screen-space lighting changed the Effect");
             graphics.ResizeOffscreenTarget(
@@ -2803,17 +2829,17 @@ int main(const int argumentCount, char** arguments)
                         != foreignDepthView
                     && !foreignScreenTarget.ColorHistoryViewHandle()
                     && !foreignScreenTarget.TemporalHistoryViewHandle()
-                    && graphics.TryResolveD3D11ShaderResourceView(
+                    && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         foreignScreenTarget
                             .AmbientOcclusionViewHandle()) != nullptr
-                    && graphics.TryResolveD3D11ShaderResourceView(
+                    && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         foreignScreenTarget
                             .ReflectionDepthPyramidViewHandle()) != nullptr
-                    && graphics.TryResolveD3D11ShaderResourceView(
+                    && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         foreignScreenTarget.DepthViewHandle()) != nullptr
-                    && graphics.TryResolveD3D11ShaderResourceView(
+                    && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         foreignColorHistoryView) == nullptr
-                    && graphics.TryResolveD3D11ShaderResourceView(
+                    && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         foreignDepthView) == nullptr,
                 "A same-size RenderTarget kept resources from another device");
             graphics.CaptureOffscreenTargetTemporalHistory(
@@ -2825,9 +2851,9 @@ int main(const int argumentCount, char** arguments)
                 replacementTemporalHistoryView
                     && replacementTemporalHistoryView
                         != foreignTemporalHistoryView
-                    && graphics.TryResolveD3D11ShaderResourceView(
+                    && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         replacementTemporalHistoryView) != nullptr
-                    && graphics.TryResolveD3D11ShaderResourceView(
+                    && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         foreignTemporalHistoryView) == nullptr,
                 "RenderTarget did not replace its foreign TAA history view");
 
@@ -2866,7 +2892,7 @@ int main(const int argumentCount, char** arguments)
                     litEffect,
                     shadowLighting),
                 "The neutral shadow baseline could not be restored");
-            litEffect.Apply(graphics.Context());
+            litEffect.Apply(D3D11Access::Context(graphics));
             auto mixedShadowLighting = shadowLighting;
             mixedShadowLighting.directionalShadow.texture =
                 foreignShadowMap.ViewHandle();
@@ -2875,16 +2901,16 @@ int main(const int argumentCount, char** arguments)
                     litEffect,
                     mixedShadowLighting),
                 "A foreign-generation shadow view was accepted");
-            litEffect.Apply(graphics.Context());
+            litEffect.Apply(D3D11Access::Context(graphics));
             Require(
                 CapturePixelShaderView(graphics, 2u).Get()
-                        == graphics.TryResolveD3D11ShaderResourceView(
+                        == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                             directionalShadowView)
                     && CapturePixelShaderView(graphics, 4u).Get()
-                        == graphics.TryResolveD3D11ShaderResourceView(
+                        == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                             spotShadowView)
                     && CapturePixelShaderView(graphics, 5u).Get()
-                        == graphics.TryResolveD3D11ShaderResourceView(
+                        == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                             pointShadowView),
                 "Rejected foreign shadow lighting changed the Effect");
 
@@ -2925,7 +2951,7 @@ int main(const int argumentCount, char** arguments)
                     litEffect,
                     environmentLighting),
                 "The neutral environment baseline could not be restored");
-            litEffect.Apply(graphics.Context());
+            litEffect.Apply(D3D11Access::Context(graphics));
             auto mixedEnvironment = environmentLighting;
             mixedEnvironment.environment.texture =
                 foreignShadowMap.ViewHandle();
@@ -2934,13 +2960,13 @@ int main(const int argumentCount, char** arguments)
                     litEffect,
                     mixedEnvironment),
                 "A foreign-generation environment source was accepted");
-            litEffect.Apply(graphics.Context());
+            litEffect.Apply(D3D11Access::Context(graphics));
             Require(
                 CapturePixelShaderView(graphics, 3u).Get()
-                        == graphics.TryResolveD3D11ShaderResourceView(
+                        == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                             prefilteredEnvironment.specular)
                     && CapturePixelShaderView(graphics, 6u).Get()
-                        == graphics.TryResolveD3D11ShaderResourceView(
+                        == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                             prefilteredEnvironment.irradiance),
                 "Rejected foreign environment changed the Effect");
             auto disabledForeignEnvironment = mixedEnvironment;
@@ -2953,7 +2979,7 @@ int main(const int argumentCount, char** arguments)
                     litEffect,
                     disabledForeignEnvironment),
                 "Disabled foreign environment handles were resolved");
-            litEffect.Apply(graphics.Context());
+            litEffect.Apply(D3D11Access::Context(graphics));
             Require(
                 CapturePixelShaderView(graphics, 3u) == nullptr
                     && CapturePixelShaderView(graphics, 6u) == nullptr,
@@ -2971,7 +2997,7 @@ int main(const int argumentCount, char** arguments)
                         litEffect,
                         reflectionProbe),
                 "The Reflection Probe baseline could not be restored");
-            litEffect.Apply(graphics.Context());
+            litEffect.Apply(D3D11Access::Context(graphics));
             auto mixedReflectionProbe = reflectionProbe;
             mixedReflectionProbe.specular =
                 foreignShadowMap.ViewHandle();
@@ -2980,13 +3006,13 @@ int main(const int argumentCount, char** arguments)
                     litEffect,
                     mixedReflectionProbe),
                 "A foreign-generation Reflection Probe was accepted");
-            litEffect.Apply(graphics.Context());
+            litEffect.Apply(D3D11Access::Context(graphics));
             Require(
                 CapturePixelShaderView(graphics, 3u).Get()
-                        == graphics.TryResolveD3D11ShaderResourceView(
+                        == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                             prefilteredEnvironment.specular)
                     && CapturePixelShaderView(graphics, 6u).Get()
-                        == graphics.TryResolveD3D11ShaderResourceView(
+                        == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                             prefilteredEnvironment.irradiance),
                 "A rejected foreign Reflection Probe changed the Effect");
             Require(
@@ -3009,13 +3035,13 @@ int main(const int argumentCount, char** arguments)
                     litEffect,
                     emptyReflectionProbe),
                 "An empty Probe resolved stale secondary handles");
-            litEffect.Apply(graphics.Context());
+            litEffect.Apply(D3D11Access::Context(graphics));
             Require(
                 CapturePixelShaderView(graphics, 3u).Get()
-                        == graphics.TryResolveD3D11ShaderResourceView(
+                        == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                             prefilteredEnvironment.specular)
                     && CapturePixelShaderView(graphics, 6u).Get()
-                        == graphics.TryResolveD3D11ShaderResourceView(
+                        == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                             prefilteredEnvironment.irradiance)
                     && CapturePixelShaderView(graphics, 19u) == nullptr
                     && CapturePixelShaderView(graphics, 20u) == nullptr,
@@ -3025,7 +3051,7 @@ int main(const int argumentCount, char** arguments)
                     litEffect,
                     clusteredLighting),
                 "The clustered-lighting baseline could not be restored");
-            litEffect.Apply(graphics.Context());
+            litEffect.Apply(D3D11Access::Context(graphics));
 
             // LightingStateのproducerをneutral handleへ移す前提として、
             // Texture2D以外の既存D3D11 SRVも同じ世代・所有契約へ載せます。
@@ -3475,8 +3501,8 @@ int main(const int argumentCount, char** arguments)
         // されるmerge規則まで実際のDraw後のslotで固定します。
         Stage("skeletal-direct-import-compatibility");
         const auto directSkeletal = LamaPon::GltfImporter::Load(
-            graphics.Device(),
-            graphics.Context(),
+            D3D11Access::Device(graphics),
+            D3D11Access::Context(graphics),
             graphics.Assets(),
             std::filesystem::path{ LAMAPON_TEST_ASSET_DIR }
                 / "models"
@@ -3490,15 +3516,15 @@ int main(const int argumentCount, char** arguments)
             "The direct skeletal importer did not expose the legacy-only fixture");
         auto& directPrimitive = directSkeletal->primitives.front();
         directPrimitive.normalTexture =
-            graphics.TryResolveD3D11ShaderResourceView(litViews[1]);
+            D3D11Access::TryResolveD3D11ShaderResourceView(graphics, litViews[1]);
         directPrimitive.roughnessTexture =
-            graphics.TryResolveD3D11ShaderResourceView(litViews[2]);
+            D3D11Access::TryResolveD3D11ShaderResourceView(graphics, litViews[2]);
         directPrimitive.metallicTexture =
-            graphics.TryResolveD3D11ShaderResourceView(litViews[3]);
+            D3D11Access::TryResolveD3D11ShaderResourceView(graphics, litViews[3]);
         directPrimitive.occlusionTexture =
-            graphics.TryResolveD3D11ShaderResourceView(litViews[4]);
+            D3D11Access::TryResolveD3D11ShaderResourceView(graphics, litViews[4]);
         directPrimitive.emissiveTexture =
-            graphics.TryResolveD3D11ShaderResourceView(litViews[5]);
+            D3D11Access::TryResolveD3D11ShaderResourceView(graphics, litViews[5]);
         const auto drawDirectSkeletal =
             [&](const LamaPon::LitMaterial* const material,
                 const LamaPon::LitTextureRequest* const textureRequest)
@@ -3546,7 +3572,7 @@ int main(const int argumentCount, char** arguments)
         {
             Require(
                 *directNeutralViews[index]
-                    && graphics.TryResolveD3D11ShaderResourceView(
+                    && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         *directNeutralViews[index])
                         == directNativeViews[index],
                 "Direct skeletal Draw did not synchronize a legacy texture");
@@ -3587,7 +3613,7 @@ int main(const int argumentCount, char** arguments)
         }
         Require(
             CapturePixelShaderView(graphics, 7u).Get()
-                == graphics.TryResolveD3D11ShaderResourceView(
+                == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                     litViews[6]),
             "Skeletal custom texture override was not bound");
 
@@ -4481,7 +4507,7 @@ int main(const int argumentCount, char** arguments)
                 == LamaPon::GraphicsViewKind::ShaderResource,
             "The render texture display handle must be a shader-resource view.");
         auto* const minimapRawView =
-            graphics.TryResolveD3D11ShaderResourceView(
+            D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                 minimapTarget->DisplayViewHandle());
         Require(
             minimapViewHandle == minimapTarget->DisplayViewHandle()
@@ -4551,7 +4577,7 @@ int main(const int argumentCount, char** arguments)
         const auto recoveredMinimapViewHandle =
             graphics.RenderTextureViewHandle("minimap");
         auto* const recoveredMinimapRawView =
-            graphics.TryResolveD3D11ShaderResourceView(
+            D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                 recoveredMinimap.DisplayViewHandle());
         Require(
             &recoveredMinimap == &sameSizeMinimap
@@ -4615,7 +4641,7 @@ int main(const int argumentCount, char** arguments)
         const auto resizedMinimapViewHandle =
             graphics.RenderTextureViewHandle("minimap");
         auto* const resizedMinimapRawView =
-            graphics.TryResolveD3D11ShaderResourceView(
+            D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                 sameSizeMinimap.DisplayViewHandle());
         Require(
             sameSizeMinimap.Width() == ResizedRenderTextureSize
@@ -4639,12 +4665,12 @@ int main(const int argumentCount, char** arguments)
         Require(
             minimapViewHandle.Kind()
                     == LamaPon::GraphicsViewKind::ShaderResource
-                && graphics.TryResolveD3D11ShaderResourceView(
+                && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                     minimapViewHandle)
                     == minimapRawView
                 && resizedMinimapViewHandle.Kind()
                     == LamaPon::GraphicsViewKind::ShaderResource
-                && graphics.TryResolveD3D11ShaderResourceView(
+                && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                     resizedMinimapViewHandle)
                     == resizedMinimapRawView,
             "A retained display handle must remain safe after registry release.");
@@ -4665,7 +4691,7 @@ int main(const int argumentCount, char** arguments)
                     == LamaPon::GraphicsViewKind::ShaderResource
                 && computeDisplayHandle
                     == computeDisplayTarget.DisplayViewHandle()
-                && graphics.TryResolveD3D11ShaderResourceView(
+                && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                     computeDisplayHandle) != nullptr,
             "A compute output must expose its display surface through the "
             "neutral handle registry.");
@@ -7440,19 +7466,19 @@ int main(const int argumentCount, char** arguments)
                 Microsoft::WRL::ComPtr<ID3D11Texture2D>
                     staging;
                 Require(
-                    SUCCEEDED(graphics.Device()
+                    SUCCEEDED(D3D11Access::Device(graphics)
                         ->CreateTexture2D(
                             &outputDescription,
                             nullptr,
                             staging.GetAddressOf())),
                     "The staging copy of the compute output"
                     " must be created.");
-                graphics.Context()->CopyResource(
+                D3D11Access::Context(graphics)->CopyResource(
                     staging.Get(),
                     computeTarget->DisplayTexture());
                 D3D11_MAPPED_SUBRESOURCE mapped{};
                 Require(
-                    SUCCEEDED(graphics.Context()->Map(
+                    SUCCEEDED(D3D11Access::Context(graphics)->Map(
                         staging.Get(),
                         0,
                         D3D11_MAP_READ,
@@ -7498,7 +7524,7 @@ int main(const int argumentCount, char** arguments)
                     << " right top g=" << rightTop.y
                     << " right bottom g=" << rightBottom.y
                     << std::endl;
-                graphics.Context()->Unmap(staging.Get(), 0);
+                D3D11Access::Context(graphics)->Unmap(staging.Get(), 0);
 
                 Require(
                     std::abs(left.x - computeRed) < 0.01f
@@ -7665,11 +7691,13 @@ int main(const int argumentCount, char** arguments)
                                 bakedEnvironment.specular)
                             && graphics.IsGraphicsViewCurrent(
                                 bakedEnvironment.irradiance)
-                            && graphics
-                                .TryResolveD3D11ShaderResourceView(
+                            && D3D11Access::
+                                TryResolveD3D11ShaderResourceView(
+                                    graphics,
                                     bakedEnvironment.specular) != nullptr
-                            && graphics
-                                .TryResolveD3D11ShaderResourceView(
+                            && D3D11Access::
+                                TryResolveD3D11ShaderResourceView(
+                                    graphics,
                                     bakedEnvironment.irradiance) != nullptr,
                         "Reflection Probe baking did not publish current"
                         " neutral views");
@@ -10576,15 +10604,15 @@ int main(const int argumentCount, char** arguments)
                 D3D11_QUERY_DESC queryDescription{};
                 queryDescription.Query = D3D11_QUERY_EVENT;
                 Require(
-                    SUCCEEDED(graphics.Device()->CreateQuery(
+                    SUCCEEDED(D3D11Access::Device(graphics)->CreateQuery(
                         &queryDescription,
                         fence.ReleaseAndGetAddressOf())),
                     "bench query creation must succeed");
                 const auto waitForGpu = [&]
                 {
-                    graphics.Context()->End(fence.Get());
+                    D3D11Access::Context(graphics)->End(fence.Get());
                     BOOL done = FALSE;
-                    while (graphics.Context()->GetData(
+                    while (D3D11Access::Context(graphics)->GetData(
                             fence.Get(),
                             &done,
                             sizeof(done),
@@ -10617,18 +10645,18 @@ int main(const int argumentCount, char** arguments)
                 pipelineDescription.Query =
                     D3D11_QUERY_PIPELINE_STATISTICS;
                 Require(
-                    SUCCEEDED(graphics.Device()->CreateQuery(
+                    SUCCEEDED(D3D11Access::Device(graphics)->CreateQuery(
                         &disjointDescription,
                         disjointQuery.ReleaseAndGetAddressOf()))
-                        && SUCCEEDED(graphics.Device()->CreateQuery(
+                        && SUCCEEDED(D3D11Access::Device(graphics)->CreateQuery(
                             &timestampDescription,
                             timestampBeginQuery
                                 .ReleaseAndGetAddressOf()))
-                        && SUCCEEDED(graphics.Device()->CreateQuery(
+                        && SUCCEEDED(D3D11Access::Device(graphics)->CreateQuery(
                             &timestampDescription,
                             timestampEndQuery
                                 .ReleaseAndGetAddressOf()))
-                        && SUCCEEDED(graphics.Device()->CreateQuery(
+                        && SUCCEEDED(D3D11Access::Device(graphics)->CreateQuery(
                             &pipelineDescription,
                             pipelineStatisticsQuery
                                 .ReleaseAndGetAddressOf())),
@@ -10705,11 +10733,11 @@ int main(const int argumentCount, char** arguments)
                         sample < sampleCount;
                         ++sample)
                     {
-                        graphics.Context()->Begin(
+                        D3D11Access::Context(graphics)->Begin(
                             disjointQuery.Get());
-                        graphics.Context()->Begin(
+                        D3D11Access::Context(graphics)->Begin(
                             pipelineStatisticsQuery.Get());
-                        graphics.Context()->End(
+                        D3D11Access::Context(graphics)->End(
                             timestampBeginQuery.Get());
                         const auto cpuBegin =
                             std::chrono::steady_clock::now();
@@ -10721,16 +10749,16 @@ int main(const int argumentCount, char** arguments)
                         }
                         const auto cpuEnd =
                             std::chrono::steady_clock::now();
-                        graphics.Context()->End(
+                        D3D11Access::Context(graphics)->End(
                             timestampEndQuery.Get());
-                        graphics.Context()->End(
+                        D3D11Access::Context(graphics)->End(
                             pipelineStatisticsQuery.Get());
-                        graphics.Context()->End(
+                        D3D11Access::Context(graphics)->End(
                             disjointQuery.Get());
 
                         D3D11_QUERY_DATA_TIMESTAMP_DISJOINT
                             disjointData{};
-                        while (graphics.Context()->GetData(
+                        while (D3D11Access::Context(graphics)->GetData(
                                 disjointQuery.Get(),
                                 &disjointData,
                                 sizeof(disjointData),
@@ -10740,12 +10768,12 @@ int main(const int argumentCount, char** arguments)
                         }
                         std::uint64_t gpuBegin{};
                         std::uint64_t gpuEnd{};
-                        while (graphics.Context()->GetData(
+                        while (D3D11Access::Context(graphics)->GetData(
                                 timestampBeginQuery.Get(),
                                 &gpuBegin,
                                 sizeof(gpuBegin),
                                 0) != S_OK
-                            || graphics.Context()->GetData(
+                            || D3D11Access::Context(graphics)->GetData(
                                 timestampEndQuery.Get(),
                                 &gpuEnd,
                                 sizeof(gpuEnd),
@@ -10753,7 +10781,7 @@ int main(const int argumentCount, char** arguments)
                         {
                             std::this_thread::yield();
                         }
-                        while (graphics.Context()->GetData(
+                        while (D3D11Access::Context(graphics)->GetData(
                                 pipelineStatisticsQuery.Get(),
                                 &pipelineStatistics,
                                 sizeof(pipelineStatistics),
@@ -11116,7 +11144,7 @@ int main(const int argumentCount, char** arguments)
                             index * 2654435761u);
                     Microsoft::WRL::ComPtr<ID3D11Texture2D>
                         texture;
-                    if (FAILED(graphics.Device()->CreateTexture2D(
+                    if (FAILED(D3D11Access::Device(graphics)->CreateTexture2D(
                             &textureDescription,
                             &initialTextureData,
                             texture.ReleaseAndGetAddressOf())))
@@ -11125,7 +11153,7 @@ int main(const int argumentCount, char** arguments)
                     }
                     Microsoft::WRL::ComPtr<
                         ID3D11ShaderResourceView> view;
-                    if (FAILED(graphics.Device()->
+                    if (FAILED(D3D11Access::Device(graphics)->
                             CreateShaderResourceView(
                                 texture.Get(),
                                 nullptr,
@@ -11145,14 +11173,14 @@ int main(const int argumentCount, char** arguments)
                     textureDescription;
                 residencyProbeDescription.Usage = D3D11_USAGE_DEFAULT;
                 Require(
-                    SUCCEEDED(graphics.Device()->CreateTexture2D(
+                    SUCCEEDED(D3D11Access::Device(graphics)->CreateTexture2D(
                         &residencyProbeDescription,
                         nullptr,
                         textureResidencyProbe.ReleaseAndGetAddressOf())),
                     "texture memory benchmark residency probe creation must succeed");
                 for (const auto& texture : stressTextures)
                 {
-                    graphics.Context()->CopyResource(
+                    D3D11Access::Context(graphics)->CopyResource(
                         textureResidencyProbe.Get(),
                         texture.Get());
                 }
@@ -11330,8 +11358,9 @@ int main(const int argumentCount, char** arguments)
                     : nullptr;
             auto* const compressedView =
                 compressedResources != nullptr
-                    ? graphics
-                        .TryResolveD3D11ShaderResourceView(
+                    ? D3D11Access::
+                        TryResolveD3D11ShaderResourceView(
+                            graphics,
                             *compressedResources)
                     : nullptr;
             Require(

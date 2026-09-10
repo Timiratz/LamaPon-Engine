@@ -3,6 +3,7 @@
 #include "LamaPon/Assets/AssetManager.h"
 #include "LamaPon/Components/ReflectionProbeComponent.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
+#include "LamaPon/Graphics/GraphicsDeviceD3D11Access.h"
 #include "LamaPon/Graphics/LitEffect.h"
 #include "LamaPon/Graphics/LitMaterialAsset.h"
 #include "LamaPon/Graphics/LitTextureRequest.h"
@@ -113,8 +114,10 @@ namespace LamaPon
     void MeshRendererComponent::ApplyShaderRenderState(
         const ShaderRenderState& state) const
     {
-        auto* context = m_graphics->Context();
-        auto& states = m_graphics->States();
+        auto* context = Detail::GraphicsDeviceD3D11Access::Context(
+            *m_graphics);
+        auto& states = Detail::GraphicsDeviceD3D11Access::States(
+            *m_graphics);
         constexpr float blendFactor[4]{};
         switch (state.blend)
         {
@@ -130,8 +133,8 @@ namespace LamaPon
             // アルファへsrcAを積み上げる。シーンバッファのアルファは
             // 後段が意味を持って読むため、汚さない純加算を使う
             // （ShaderRenderState.hのCreateAdditiveBlendPreservingAlpha参照）。
-            auto* const additive =
-                m_graphics->AdditiveBlendPreservingAlpha();
+            auto* const additive = Detail::GraphicsDeviceD3D11Access::
+                AdditiveBlendPreservingAlpha(*m_graphics);
             context->OMSetBlendState(
                 additive != nullptr ? additive : states.Additive(),
                 blendFactor,
@@ -185,8 +188,10 @@ namespace LamaPon
         {
             return;
         }
-        auto* context = m_graphics->Context();
-        auto& states = m_graphics->States();
+        auto* context = Detail::GraphicsDeviceD3D11Access::Context(
+            *m_graphics);
+        auto& states = Detail::GraphicsDeviceD3D11Access::States(
+            *m_graphics);
         switch (m_cullMode)
         {
         case ShaderCullMode::Front:
@@ -366,7 +371,8 @@ namespace LamaPon
             // GPU作成が失敗した場合は、現在表示中のメッシュとCPU側の
             // データを両方そのまま残す（強い例外保証）。
             primitive = CreateProceduralPrimitive(
-                m_graphics->Context(),
+                Detail::GraphicsDeviceD3D11Access::Context(
+                    *m_graphics),
                 vertices,
                 indices);
         }
@@ -393,7 +399,8 @@ namespace LamaPon
         if (m_graphics != nullptr)
         {
             primitive = CreatePrimitiveShape(
-                m_graphics->Context(),
+                Detail::GraphicsDeviceD3D11Access::Context(
+                    *m_graphics),
                 m_shape);
         }
         m_proceduralVertices.clear();
@@ -721,7 +728,8 @@ namespace LamaPon
         patches->controlPointCount =
             static_cast<UINT>(controlPoints.size());
         const HRESULT result =
-            graphics.Device()->CreateBuffer(
+            Detail::GraphicsDeviceD3D11Access::Device(graphics)
+                ->CreateBuffer(
                 &description,
                 &data,
                 patches->vertexBuffer.ReleaseAndGetAddressOf());
@@ -738,11 +746,11 @@ namespace LamaPon
     {
         m_primitive = HasProceduralMesh()
             ? CreateProceduralPrimitive(
-                graphics.Context(),
+                Detail::GraphicsDeviceD3D11Access::Context(graphics),
                 m_proceduralVertices,
                 m_proceduralIndices)
             : CreatePrimitiveShape(
-                graphics.Context(),
+                Detail::GraphicsDeviceD3D11Access::Context(graphics),
                 m_shape);
     }
 
@@ -761,7 +769,8 @@ namespace LamaPon
 
     void MeshRendererComponent::DrawTessellatedPatch() const
     {
-        auto* context = m_graphics->Context();
+        auto* context = Detail::GraphicsDeviceD3D11Access::Context(
+            *m_graphics);
         const UINT stride =
             sizeof(DirectX::VertexPositionNormalTexture);
         const UINT offset = 0;
@@ -925,7 +934,8 @@ namespace LamaPon
             auto instancedLayout =
                 std::make_unique<InputLayoutHolder>();
             if (SUCCEEDED(
-                m_graphics->Device()->CreateInputLayout(
+                Detail::GraphicsDeviceD3D11Access::Device(*m_graphics)
+                    ->CreateInputLayout(
                     elements.data(),
                     static_cast<UINT>(elements.size()),
                     byteCode->GetBufferPointer(),
@@ -1034,7 +1044,8 @@ namespace LamaPon
         // RAIIで外します。
         const GeometryShaderScope geometryScope{
             m_effect->HasGeometryShader()
-                ? m_graphics->Context()
+                ? Detail::GraphicsDeviceD3D11Access::Context(
+                    *m_graphics)
                 : nullptr
         };
 
@@ -1094,8 +1105,10 @@ namespace LamaPon
                 // 深度と影を書き込める状態へ設定します。
                 // 分割後の三角形の向きは板の指定に依らないので、
                 // 影は両面で書きます。
-                auto* context = m_graphics->Context();
-                auto& states = m_graphics->States();
+                auto* context = Detail::GraphicsDeviceD3D11Access::Context(
+                    *m_graphics);
+                auto& states = Detail::GraphicsDeviceD3D11Access::States(
+                    *m_graphics);
                 constexpr float blendFactor[4]{};
                 context->OMSetBlendState(
                     states.Opaque(),
@@ -1146,8 +1159,10 @@ namespace LamaPon
         ApplyReflectionProbe();
         if (CanDrawTessellatedPatch())
         {
-            auto* context = m_graphics->Context();
-            auto& states = m_graphics->States();
+            auto* context = Detail::GraphicsDeviceD3D11Access::Context(
+                *m_graphics);
+            auto& states = Detail::GraphicsDeviceD3D11Access::States(
+                *m_graphics);
             constexpr float blendFactor[4]{};
             // 描画状態はShaderの宣言（LAMAPON_RENDER_STATE）に
             // 従い、不透明な地形を含む各マテリアルの設定を反映します。
@@ -1198,8 +1213,12 @@ namespace LamaPon
                 false,
                 [this]()
                 {
-                    auto* context = m_graphics->Context();
-                    auto& states = m_graphics->States();
+                    auto* context =
+                        Detail::GraphicsDeviceD3D11Access::Context(
+                            *m_graphics);
+                    auto& states =
+                        Detail::GraphicsDeviceD3D11Access::States(
+                            *m_graphics);
                     constexpr float blendFactor[4]{};
                     context->OMSetBlendState(
                         states.NonPremultiplied(),

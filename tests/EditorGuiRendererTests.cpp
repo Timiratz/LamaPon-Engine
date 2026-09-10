@@ -8,6 +8,7 @@
 #include "LamaPon/Core/DebugOverlay.h"
 #include "LamaPon/Graphics/EnvironmentSettings.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
+#include "LamaPon/Graphics/GraphicsDeviceD3D11Access.h"
 #include "LamaPon/Graphics/LitMaterial.h"
 #include "LamaPon/Graphics/RenderTarget.h"
 #include "LamaPon/Graphics/ShadowMap.h"
@@ -37,6 +38,56 @@
 
 namespace
 {
+    using D3D11Access =
+        LamaPon::Detail::GraphicsDeviceD3D11Access;
+
+    template <typename T>
+    concept HasPublicD3D11Device = requires(const T& graphics)
+    {
+        graphics.Device();
+    };
+
+    template <typename T>
+    concept HasPublicD3D11Context = requires(const T& graphics)
+    {
+        graphics.Context();
+    };
+
+    template <typename T>
+    concept HasPublicD3D11States = requires(const T& graphics)
+    {
+        graphics.States();
+    };
+
+    template <typename T>
+    concept HasPublicD3D11AdditiveBlend = requires(const T& graphics)
+    {
+        graphics.AdditiveBlendPreservingAlpha();
+    };
+
+    template <typename T>
+    concept HasPublicD3D11HandleResolver = requires(
+        const T& graphics,
+        const LamaPon::GraphicsViewHandle& view)
+    {
+        graphics.TryResolveD3D11ShaderResourceView(view);
+    };
+
+    template <typename T>
+    concept HasPublicD3D11SnapshotResolver = requires(
+        const T& graphics,
+        const LamaPon::TextureResourceSnapshot& resources)
+    {
+        graphics.TryResolveD3D11ShaderResourceView(resources);
+    };
+
+    static_assert(!HasPublicD3D11Device<LamaPon::GraphicsDevice>);
+    static_assert(!HasPublicD3D11Context<LamaPon::GraphicsDevice>);
+    static_assert(!HasPublicD3D11States<LamaPon::GraphicsDevice>);
+    static_assert(!HasPublicD3D11AdditiveBlend<LamaPon::GraphicsDevice>);
+    static_assert(!HasPublicD3D11HandleResolver<LamaPon::GraphicsDevice>);
+    static_assert(!HasPublicD3D11SnapshotResolver<LamaPon::GraphicsDevice>);
+
     class TestGraphicsOutputState final
         : public LamaPon::GraphicsOutputState
     {
@@ -197,7 +248,7 @@ namespace
         const UINT slot)
     {
         BoundVertexBuffer result;
-        graphics.Context()->IAGetVertexBuffers(
+        D3D11Access::Context(graphics)->IAGetVertexBuffers(
             slot,
             1,
             result.buffer.ReleaseAndGetAddressOf(),
@@ -212,7 +263,7 @@ namespace
             const UINT slot)
     {
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> result;
-        graphics.Context()->PSGetShaderResources(
+        D3D11Access::Context(graphics)->PSGetShaderResources(
             slot,
             1,
             result.ReleaseAndGetAddressOf());
@@ -244,7 +295,7 @@ namespace
             texture,
             LamaPon::GraphicsTextureViewDescription{ 0, 1 });
         auto* const d3d11View =
-            graphics.TryResolveD3D11ShaderResourceView(view);
+            D3D11Access::TryResolveD3D11ShaderResourceView(graphics, view);
         Require(d3d11View != nullptr,
             "Editor GUI test texture view creation failed");
 
@@ -558,7 +609,7 @@ namespace
                 static_cast<float>(Height),
                 0.0f,
                 1.0f };
-            initiallyGuardedGraphics.Context()->RSSetViewports(
+            D3D11Access::Context(initiallyGuardedGraphics)->RSSetViewports(
                 1,
                 &spritePassViewport);
             LamaPon::SpritePassDescription invalidSpriteDescription;
@@ -648,7 +699,7 @@ namespace
                 initiallyGuardedGraphics);
             Microsoft::WRL::ComPtr<ID3D11Device>
                 initialRendererDevice =
-                    initiallyGuardedGraphics.Device();
+                    D3D11Access::Device(initiallyGuardedGraphics);
             RequireThrowsExactly<std::logic_error>(
                 [&]
                 {
@@ -666,7 +717,7 @@ namespace
                 Height,
                 LamaPon::RenderingApi::DirectX11);
             Require(
-                initiallyGuardedGraphics.Device()
+                D3D11Access::Device(initiallyGuardedGraphics)
                     != initialRendererDevice.Get(),
                 "Editor renderer shutdown did not release its resource lease");
 
@@ -698,13 +749,13 @@ namespace
                 0.4f);
             preservedAudio->SetSuspended(true);
             Require(
-                initiallyGuardedGraphics.States().Opaque() != nullptr
-                    && initiallyGuardedGraphics
-                        .AdditiveBlendPreservingAlpha() != nullptr,
+                D3D11Access::States(initiallyGuardedGraphics).Opaque() != nullptr
+                    && D3D11Access::AdditiveBlendPreservingAlpha(
+                        initiallyGuardedGraphics) != nullptr,
                 "Graphics resources were not available before failed reinitialization");
             Microsoft::WRL::ComPtr<ID3D11Device>
                 deviceBeforeFailedReinitialization =
-                    initiallyGuardedGraphics.Device();
+                    D3D11Access::Device(initiallyGuardedGraphics);
             RequireThrows<std::runtime_error>(
                 [&]
                 {
@@ -717,7 +768,7 @@ namespace
                 "Invalid graphics reinitialization must report a failure");
             Require(
                 !initiallyGuardedGraphics.IsInitialized()
-                    && initiallyGuardedGraphics.Device() == nullptr
+                    && D3D11Access::Device(initiallyGuardedGraphics) == nullptr
                     && &initiallyGuardedGraphics.Audio()
                         == preservedAudio
                     && std::abs(
@@ -736,10 +787,10 @@ namespace
                 Height,
                 LamaPon::RenderingApi::DirectX11);
             auto* const recoveredOpaque =
-                initiallyGuardedGraphics.States().Opaque();
+                D3D11Access::States(initiallyGuardedGraphics).Opaque();
             auto* const recoveredAdditive =
-                initiallyGuardedGraphics
-                    .AdditiveBlendPreservingAlpha();
+                D3D11Access::AdditiveBlendPreservingAlpha(
+                    initiallyGuardedGraphics);
             Microsoft::WRL::ComPtr<ID3D11Device>
                 recoveredOpaqueDevice;
             Microsoft::WRL::ComPtr<ID3D11Device>
@@ -755,13 +806,13 @@ namespace
                     recoveredAdditiveDevice.ReleaseAndGetAddressOf());
             }
             Require(
-                initiallyGuardedGraphics.Device() != nullptr
-                    && initiallyGuardedGraphics.Device()
+                D3D11Access::Device(initiallyGuardedGraphics) != nullptr
+                    && D3D11Access::Device(initiallyGuardedGraphics)
                         != deviceBeforeFailedReinitialization.Get()
                     && recoveredOpaqueDevice.Get()
-                        == initiallyGuardedGraphics.Device()
+                        == D3D11Access::Device(initiallyGuardedGraphics)
                     && recoveredAdditiveDevice.Get()
-                        == initiallyGuardedGraphics.Device()
+                        == D3D11Access::Device(initiallyGuardedGraphics)
                     && hasStableOpaqueStorage(),
                 "Graphics recovery did not rebuild DirectX 11 frontend resources");
             Require(
@@ -798,7 +849,7 @@ namespace
                             - 0.75f) < 0.0001f,
                 "Graphics recovery lost input action configuration");
             preservedAudio->SetSuspended(false);
-            initiallyGuardedGraphics.Context()->RSSetViewports(
+            D3D11Access::Context(initiallyGuardedGraphics)->RSSetViewports(
                 1,
                 &spritePassViewport);
             passPastDeviceLifetime =
@@ -865,8 +916,8 @@ namespace
             "Invalid graphics initialization must report a failure");
         Require(
             !failedGraphics.IsInitialized()
-                && failedGraphics.Device() == nullptr
-                && failedGraphics.Context() == nullptr
+                && D3D11Access::Device(failedGraphics) == nullptr
+                && D3D11Access::Context(failedGraphics) == nullptr
                 && failedGraphics.TryAssets() == nullptr,
             "Failed graphics initialization retained partial resources");
 
@@ -917,17 +968,17 @@ namespace
         // 再初期化した後の描画で旧Device由来の資源が残らないことを
         // このテスト全体で確認します。
         Microsoft::WRL::ComPtr<ID3D11Device> previousDevice =
-            graphics.Device();
+            D3D11Access::Device(graphics);
         const auto previousWhiteTexture =
             graphics.WhiteTextureHandle();
         const auto previousWhiteView =
             graphics.WhiteTextureViewHandle();
         auto* const previousWhiteD3D11View =
-            graphics.TryResolveD3D11ShaderResourceView(
+            D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                 previousWhiteView);
         Require(
             previousWhiteD3D11View != nullptr
-                && graphics.AdditiveBlendPreservingAlpha() != nullptr,
+                && D3D11Access::AdditiveBlendPreservingAlpha(graphics) != nullptr,
             "DirectX 11 compatibility resources were not created");
         constexpr UINT PixelShaderResourceTestSlot =
             D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT - 1;
@@ -983,7 +1034,7 @@ namespace
                 && previousWhiteView.Kind()
                     == LamaPon::GraphicsViewKind::ShaderResource
                 && previousInstanceBuffer
-                && graphics.TryResolveD3D11ShaderResourceView(
+                && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                     previousWhiteView) == previousWhiteD3D11View
                 && reusedPreviousInstanceBuffer
                     == previousInstanceBuffer
@@ -1026,7 +1077,7 @@ namespace
                 previousWhiteD3D11View
             };
         Require(
-            graphics.TryResolveD3D11ShaderResourceView(
+            D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                 incompleteNeutralResources) == nullptr,
             "An incomplete neutral snapshot fell back to its raw D3D11 view");
 
@@ -1048,9 +1099,9 @@ namespace
                 "Graphics reinitialization accepted a live Scene");
             Require(
                 graphics.IsInitialized()
-                    && graphics.Device() == previousDevice.Get()
+                    && D3D11Access::Device(graphics) == previousDevice.Get()
                     && graphics.TryAssets() == previousAssets
-                    && graphics.TryResolveD3D11ShaderResourceView(
+                    && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         previousWhiteView)
                         == previousWhiteD3D11View,
                 "Rejected reinitialization changed the active graphics state");
@@ -1064,7 +1115,7 @@ namespace
         const auto rebuiltWhiteView =
             graphics.WhiteTextureViewHandle();
         auto* const rebuiltWhiteD3D11View =
-            graphics.TryResolveD3D11ShaderResourceView(
+            D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                 rebuiltWhiteView);
         const std::array stalePixelShaderResource{
             previousWhiteView
@@ -1133,8 +1184,8 @@ namespace
                 && graphics.RenderingApiFallback()
                     == LamaPon::RenderingApiFallbackReason::None
                 && rebuiltWhiteD3D11View != nullptr
-                && graphics.AdditiveBlendPreservingAlpha() != nullptr
-                && graphics.Device() != previousDevice.Get(),
+                && D3D11Access::AdditiveBlendPreservingAlpha(graphics) != nullptr
+                && D3D11Access::Device(graphics) != previousDevice.Get(),
             "GraphicsDevice reinitialization did not rebuild DirectX 11 resources");
         Require(
             previousWhiteTexture
@@ -1142,11 +1193,11 @@ namespace
                 && previousInstanceBuffer,
             "Backend shutdown invalidated externally owned handle lifetimes");
         Require(
-            graphics.TryResolveD3D11ShaderResourceView(
+            D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                 previousWhiteView) == nullptr,
             "The non-throwing shader view resolver accepted a stale handle");
         Require(
-            graphics.TryResolveD3D11ShaderResourceView(
+            D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                 previousWhiteResources) == nullptr,
             "A stale texture snapshot fell back to its old raw D3D11 view");
         RequireThrowsExactly<std::invalid_argument>(
@@ -1260,7 +1311,7 @@ namespace
             neutralTexture,
             LamaPon::GraphicsTextureViewDescription{ 1, 1 });
         auto* const nativeSmallestMipView =
-            graphics.TryResolveD3D11ShaderResourceView(smallestMipView);
+            D3D11Access::TryResolveD3D11ShaderResourceView(graphics, smallestMipView);
         Require(
             nativeSmallestMipView != nullptr,
             "The neutral texture mip view did not resolve to D3D11");
@@ -1387,7 +1438,7 @@ namespace
             neutralTexture3D,
             LamaPon::GraphicsTextureViewDescription{ 0, 1 });
         auto* const nativeTexture3DView =
-            graphics.TryResolveD3D11ShaderResourceView(texture3DView);
+            D3D11Access::TryResolveD3D11ShaderResourceView(graphics, texture3DView);
         Require(
             neutralTexture3D
                 && texture3DView
@@ -1431,17 +1482,17 @@ namespace
         stagingTexture3DDescription.MiscFlags = 0;
         Microsoft::WRL::ComPtr<ID3D11Texture3D> stagingTexture3D;
         Require(
-            SUCCEEDED(graphics.Device()->CreateTexture3D(
+            SUCCEEDED(D3D11Access::Device(graphics)->CreateTexture3D(
                 &stagingTexture3DDescription,
                 nullptr,
                 stagingTexture3D.ReleaseAndGetAddressOf())),
             "The Texture3D readback resource could not be created");
-        graphics.Context()->CopyResource(
+        D3D11Access::Context(graphics)->CopyResource(
             stagingTexture3D.Get(),
             nativeTexture3D.Get());
         D3D11_MAPPED_SUBRESOURCE mappedTexture3D{};
         Require(
-            SUCCEEDED(graphics.Context()->Map(
+            SUCCEEDED(D3D11Access::Context(graphics)->Map(
                 stagingTexture3D.Get(),
                 0,
                 D3D11_MAP_READ,
@@ -1470,7 +1521,7 @@ namespace
                 }
             }
         }
-        graphics.Context()->Unmap(stagingTexture3D.Get(), 0);
+        D3D11Access::Context(graphics)->Unmap(stagingTexture3D.Get(), 0);
         Require(
             texture3DContentMatches,
             "The neutral Texture3D upload changed voxel data");
@@ -1509,7 +1560,7 @@ namespace
             depthMipTexture3D,
             LamaPon::GraphicsTextureViewDescription{ 1, 1 });
         auto* const nativeDepthMipView =
-            graphics.TryResolveD3D11ShaderResourceView(depthMipView);
+            D3D11Access::TryResolveD3D11ShaderResourceView(graphics, depthMipView);
         D3D11_SHADER_RESOURCE_VIEW_DESC depthMipViewDescription{};
         if (nativeDepthMipView != nullptr)
         {
@@ -1639,7 +1690,7 @@ namespace
             "An out-of-range neutral Texture3D view was accepted");
         neutralTexture3D.Reset();
         Require(
-            graphics.TryResolveD3D11ShaderResourceView(texture3DView)
+            D3D11Access::TryResolveD3D11ShaderResourceView(graphics, texture3DView)
                 == nativeTexture3DView,
             "A neutral Texture3D view did not retain its texture");
 
@@ -1658,7 +1709,7 @@ namespace
         for (const auto& view : neutralBakedGiViews)
         {
             auto* const nativeView =
-                graphics.TryResolveD3D11ShaderResourceView(view);
+                D3D11Access::TryResolveD3D11ShaderResourceView(graphics, view);
             D3D11_SHADER_RESOURCE_VIEW_DESC description{};
             if (nativeView == nullptr)
             {
@@ -1702,7 +1753,7 @@ namespace
                 && builtInResources->texture
                 && builtInResources->shaderResourceView
                 && builtInResources->d3d11ShaderResourceView != nullptr
-                && graphics.TryResolveD3D11ShaderResourceView(
+                && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                     builtInResources->shaderResourceView)
                     == builtInResources->d3d11ShaderResourceView.Get(),
             "Built-in texture handles diverged from the D3D11 mirror");
@@ -1717,7 +1768,7 @@ namespace
                 && textResources->texture
                 && textResources->shaderResourceView
                 && textResources->d3d11ShaderResourceView != nullptr
-                && graphics.TryResolveD3D11ShaderResourceView(
+                && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                     textResources->shaderResourceView)
                     == textResources->d3d11ShaderResourceView.Get(),
             "Text texture handles diverged from the D3D11 mirror");
@@ -1823,7 +1874,7 @@ namespace
                 && ddsResources->texture
                 && ddsResources->shaderResourceView
                 && ddsResources->d3d11ShaderResourceView != nullptr
-                && graphics.TryResolveD3D11ShaderResourceView(
+                && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                     ddsResources->shaderResourceView)
                     == ddsResources->d3d11ShaderResourceView.Get(),
             "DDS import did not enter the active backend generation");
@@ -1854,11 +1905,11 @@ namespace
                     != placeholderTextureHandle
                 && firstProgressiveResources->shaderResourceView
                     != placeholderViewHandle
-                && graphics.TryResolveD3D11ShaderResourceView(
+                && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                     firstProgressiveResources->shaderResourceView)
                     == firstProgressiveResources
                         ->d3d11ShaderResourceView.Get()
-                && graphics.TryResolveD3D11ShaderResourceView(
+                && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                     placeholderViewHandle) != nullptr,
             "The first progressive upload did not transactionally publish "
             "the final texture generation");
@@ -1876,7 +1927,7 @@ namespace
                 && finalProgressiveResources != nullptr
                 && finalProgressiveResources->texture
                     != placeholderTextureHandle
-                && graphics.TryResolveD3D11ShaderResourceView(
+                && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                     finalProgressiveResources->shaderResourceView)
                     == finalProgressiveResources
                         ->d3d11ShaderResourceView.Get(),
@@ -1914,14 +1965,14 @@ namespace
         Microsoft::WRL::ComPtr<ID3D11Device> instanceDevice;
         rebuiltWhiteD3D11View->GetDevice(
             whiteDevice.ReleaseAndGetAddressOf());
-        graphics.AdditiveBlendPreservingAlpha()->GetDevice(
+        D3D11Access::AdditiveBlendPreservingAlpha(graphics)->GetDevice(
             blendDevice.ReleaseAndGetAddressOf());
         grownBoundInstanceBuffer.buffer->GetDevice(
             instanceDevice.ReleaseAndGetAddressOf());
         Require(
-            whiteDevice.Get() == graphics.Device()
-                && blendDevice.Get() == graphics.Device()
-                && instanceDevice.Get() == graphics.Device(),
+            whiteDevice.Get() == D3D11Access::Device(graphics)
+                && blendDevice.Get() == D3D11Access::Device(graphics)
+                && instanceDevice.Get() == D3D11Access::Device(graphics),
             "Reinitialized compatibility resources belong to the old device");
         TestGraphicsOutputState foreignOutputState;
         RequireThrowsExactly<std::invalid_argument>(
@@ -2099,7 +2150,7 @@ namespace
         // 戻します。
         std::array<ID3D11ShaderResourceView*, 16> testResources{};
         testResources.fill(rebuiltWhiteD3D11View);
-        graphics.Context()->PSSetShaderResources(
+        D3D11Access::Context(graphics)->PSSetShaderResources(
             0,
             static_cast<UINT>(testResources.size()),
             testResources.data());
@@ -2109,7 +2160,7 @@ namespace
             depthOnlyColorTarget;
         Microsoft::WRL::ComPtr<ID3D11DepthStencilView>
             depthOnlyDepthTarget;
-        graphics.Context()->OMGetRenderTargets(
+        D3D11Access::Context(graphics)->OMGetRenderTargets(
             1,
             depthOnlyColorTarget.ReleaseAndGetAddressOf(),
             depthOnlyDepthTarget.ReleaseAndGetAddressOf());
@@ -2120,7 +2171,7 @@ namespace
 
         D3D11_VIEWPORT depthOnlyViewport{};
         UINT depthOnlyViewportCount = 1;
-        graphics.Context()->RSGetViewports(
+        D3D11Access::Context(graphics)->RSGetViewports(
             &depthOnlyViewportCount,
             &depthOnlyViewport);
         Require(
@@ -2131,7 +2182,7 @@ namespace
 
         std::array<ID3D11ShaderResourceView*, 16>
             boundResources{};
-        graphics.Context()->PSGetShaderResources(
+        D3D11Access::Context(graphics)->PSGetShaderResources(
             0,
             static_cast<UINT>(boundResources.size()),
             boundResources.data());
@@ -2194,7 +2245,7 @@ namespace
             displayTarget.ColorHistoryViewHandle();
         Require(
             capturedColorHistory
-                && graphics.TryResolveD3D11ShaderResourceView(
+                && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                     capturedColorHistory) != nullptr,
             "Color history must become available after capture");
         graphics.ResizeOffscreenTarget(displayTarget, 8, 4);
@@ -2259,7 +2310,7 @@ namespace
         Require(renderer->IsInitialized(),
             "DirectX 11 editor GUI renderer initialization failed");
         Microsoft::WRL::ComPtr<ID3D11Device>
-            rendererDevice = graphics.Device();
+            rendererDevice = D3D11Access::Device(graphics);
         RequireThrowsExactly<std::logic_error>(
             [&]
             {
@@ -2271,7 +2322,7 @@ namespace
             },
             "Graphics reinitialization accepted an active editor GUI renderer");
         Require(
-            graphics.Device() == rendererDevice.Get()
+            D3D11Access::Device(graphics) == rendererDevice.Get()
                 && renderer->IsInitialized(),
             "Rejected editor GUI reinitialization changed active state");
 
@@ -2307,7 +2358,7 @@ namespace
             Require(assetResources != nullptr,
                 "The editor GUI test asset must publish a resource snapshot");
             originalAssetView =
-                graphics.TryResolveD3D11ShaderResourceView(
+                D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                     *assetResources);
             Require(
                 originalAssetView != nullptr
@@ -2318,7 +2369,7 @@ namespace
         Require(
             displayTextureReference.GetTexID()
                 == ExpectedTextureId(
-                    graphics.TryResolveD3D11ShaderResourceView(
+                    D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                         displayTarget.DisplayViewHandle())),
             "Display texture reference must contain its DirectX 11 SRV");
 
@@ -2350,7 +2401,7 @@ namespace
             textureAsset.resources.Acquire();
         Require(
             replacementResources != nullptr
-                && graphics.TryResolveD3D11ShaderResourceView(
+                && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                     *replacementResources) != originalAssetView,
             "Replacing an asset snapshot must publish a distinct SRV");
 
@@ -2361,13 +2412,13 @@ namespace
             expectedRenderTarget;
         Microsoft::WRL::ComPtr<ID3D11DepthStencilView>
             expectedDepthTarget;
-        graphics.Context()->OMGetRenderTargets(
+        D3D11Access::Context(graphics)->OMGetRenderTargets(
             1,
             expectedRenderTarget.ReleaseAndGetAddressOf(),
             expectedDepthTarget.ReleaseAndGetAddressOf());
         D3D11_VIEWPORT expectedViewport{};
         UINT expectedViewportCount = 1;
-        graphics.Context()->RSGetViewports(
+        D3D11Access::Context(graphics)->RSGetViewports(
             &expectedViewportCount,
             &expectedViewport);
         auto backBufferOutputState =
@@ -2381,13 +2432,13 @@ namespace
             restoredRenderTarget;
         Microsoft::WRL::ComPtr<ID3D11DepthStencilView>
             restoredDepthTarget;
-        graphics.Context()->OMGetRenderTargets(
+        D3D11Access::Context(graphics)->OMGetRenderTargets(
             1,
             restoredRenderTarget.ReleaseAndGetAddressOf(),
             restoredDepthTarget.ReleaseAndGetAddressOf());
         D3D11_VIEWPORT restoredViewport{};
         UINT restoredViewportCount = 1;
-        graphics.Context()->RSGetViewports(
+        D3D11Access::Context(graphics)->RSGetViewports(
             &restoredViewportCount,
             &restoredViewport);
         Require(

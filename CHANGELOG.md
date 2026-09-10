@@ -6,6 +6,7 @@
 
 - Project SettingsのGraphicsへ`Auto` / `DirectX 11` / `DirectX 12 Experimental`の選択を追加。既定は従来どおりDirectX 11で、変更は次回起動時に反映する。
 - DirectX 12は未実装のため、安全にDirectX 11へフォールバックする。将来のD3D11 / D3D12バックエンド分離に備えて起動時の選択経路を追加。
+- `GraphicsDevice`のnative D3D11 Device / Context / CommonStates / view resolverを非公開化し、D3D11描画島とテストだけがSDK非公開bridgeから利用する境界へ移行。API 64 Game Module向けの旧public binary symbolを維持し、Game Module APIを65へ更新。
 - `GraphicsDevice`の全instance状態をSDK非公開の固定opaque stateへ集約。公開layoutを1ポインタに固定し、将来のBackend追加や内部cache変更でGame Module ABIを繰り返し壊さない境界を追加。公開layout変更に伴いGame Module APIを64へ更新。
 - `RenderTarget`のDirectX 11 texture / view / viewportをSDK非公開のopaque Backend stateへ分離。resizeはnative資源とneutral handleが全て完成してから一括反映し、失敗時は直前の有効な描画先を維持する。公開layout変更に伴いGame Module APIを63へ更新。
 - Device / Context / SwapChainとバックバッファ資源の所有を`D3D11Backend`へ分離し、`GraphicsDevice`をBackend選択の窓口に変更。API固有型を含まない共通Backend契約と、選択結果・フォールバック理由を追加。

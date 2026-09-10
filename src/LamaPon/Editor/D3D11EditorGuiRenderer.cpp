@@ -2,6 +2,7 @@
 
 #include "LamaPon/Assets/AssetManager.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
+#include "LamaPon/Graphics/GraphicsDeviceD3D11Access.h"
 #include "LamaPon/Graphics/RenderTarget.h"
 
 #include <imgui.h>
@@ -49,8 +50,10 @@ namespace LamaPon
         // Device / Contextを読む前に取得し、raw pointerの取得と
         // ImGui初期化の間へBackend transitionが割り込まないようにします。
         auto resourceLease = graphics.AcquireResourceLease();
-        auto* const device = graphics.Device();
-        auto* const context = graphics.Context();
+        auto* const device =
+            Detail::GraphicsDeviceD3D11Access::Device(graphics);
+        auto* const context =
+            Detail::GraphicsDeviceD3D11Access::Context(graphics);
         if (device == nullptr || context == nullptr)
         {
             throw std::invalid_argument(
@@ -85,8 +88,10 @@ namespace LamaPon
         RequireCurrentContext();
         const auto resources = texture.resources.Acquire();
         auto* const view = resources != nullptr
-            ? m_graphics->TryResolveD3D11ShaderResourceView(
-                *resources)
+            ? Detail::GraphicsDeviceD3D11Access::
+                TryResolveD3D11ShaderResourceView(
+                    *m_graphics,
+                    *resources)
             : nullptr;
         if (view == nullptr)
         {
@@ -103,8 +108,9 @@ namespace LamaPon
         const RenderTarget& target)
     {
         RequireCurrentContext();
-        auto* const view =
-            m_graphics->TryResolveD3D11ShaderResourceView(
+        auto* const view = Detail::GraphicsDeviceD3D11Access::
+            TryResolveD3D11ShaderResourceView(
+                *m_graphics,
                 target.DisplayViewHandle());
         if (view == nullptr)
         {
