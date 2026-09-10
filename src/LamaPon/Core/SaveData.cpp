@@ -55,6 +55,12 @@ namespace LamaPon
     {
     }
 
+    void SaveDataStore::Rebind(
+        std::filesystem::path directory) noexcept
+    {
+        m_directory.swap(directory);
+    }
+
     void SaveDataStore::ValidateSlot(
         const std::string_view slot)
     {
@@ -121,6 +127,14 @@ namespace LamaPon
         {
             throw std::runtime_error(
                 "Unsupported save slot: "
+                + PathToUtf8(path));
+        }
+        if (!document.contains("slot")
+            || !document["slot"].is_string()
+            || document["slot"].get<std::string>() != slot)
+        {
+            throw std::runtime_error(
+                "Save slot identity does not match its filename: "
                 + PathToUtf8(path));
         }
         return document["data"].dump();

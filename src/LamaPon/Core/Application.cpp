@@ -103,7 +103,11 @@ namespace LamaPon
         {
             SetActiveOnlineServices(nullptr);
         }
-        SetActivePlayerPrefs(nullptr);
+        if (m_playerPrefs
+            && ActivePlayerPrefs() == m_playerPrefs.get())
+        {
+            SetActivePlayerPrefs(nullptr);
+        }
         if (m_playerPrefs
             && m_playerPrefs->IsDirty())
         {
@@ -214,12 +218,11 @@ namespace LamaPon
         }
         catch (const std::exception& exception)
         {
-            m_playerPrefs->DeleteAll();
             Logger::Instance().Warning(
                 std::string(
                     "PlayerPrefsを読み込めないため、"
-                    "空の設定を使用します: ")
-                + exception.what());
+                    "元ファイルを変更せず空の設定を使用します: ")
+                    + exception.what());
         }
 
         m_gameModule =

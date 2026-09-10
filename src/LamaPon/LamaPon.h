@@ -69,6 +69,7 @@
 #include "LamaPon/Core/ProjectSettings.h"
 #include "LamaPon/Core/Version.h"
 #include "LamaPon/Core/PlayerPrefs.h"
+#include "LamaPon/Core/PersistenceProfiles.h"
 #include "LamaPon/Core/SaveData.h"
 #include "LamaPon/Core/Time.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"

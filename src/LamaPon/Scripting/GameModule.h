@@ -13,10 +13,9 @@ namespace LamaPon
     // Game ModuleとRuntimeのABIを識別します。公開構造体のレイアウトや
     // 公開関数のシグネチャを変更した場合は、この値も更新してください。
     // GameModuleHostは完全一致を要求し、互換性のないDLLを読み込みません。
-    // API 18ではオンライン設定に端末資格情報の名前空間と
-    // ブラウザー起動設定を追加し、公開レイアウトが変わったため、
-    // ゲーム用DLLの再ビルドが必要です。
-    inline constexpr std::uint32_t GameModuleApiVersion = 18;
+    // API 19ではPlayerPrefsとSaveDataへアカウント別保存先の
+    // 切り替えAPIを追加したため、ゲーム用DLLの再ビルドが必要です。
+    inline constexpr std::uint32_t GameModuleApiVersion = 19;
 
     using NativeScriptCreateFunction = void* (*)(
         GameObject* owner,

@@ -14,6 +14,10 @@ namespace LamaPon
         explicit SaveDataStore(
             std::filesystem::path directory);
 
+        // SaveDataStoreは値をキャッシュしないため、保存先の切り替えは
+        // noexceptです。以後の操作だけが新しいディレクトリを使います。
+        void Rebind(std::filesystem::path directory) noexcept;
+
         void SaveJson(
             std::string_view slot,
             std::string_view json);

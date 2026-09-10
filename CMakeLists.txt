@@ -257,6 +257,8 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Core/ProjectMigration.h
     src/LamaPon/Core/PlayerPrefs.cpp
     src/LamaPon/Core/PlayerPrefs.h
+    src/LamaPon/Core/PersistenceProfiles.cpp
+    src/LamaPon/Core/PersistenceProfiles.h
     src/LamaPon/Core/SaveData.cpp
     src/LamaPon/Core/SaveData.h
     src/LamaPon/Core/ProjectSettings.cpp
@@ -1207,6 +1209,28 @@ if(BUILD_TESTING)
     add_test(
         NAME PlayerPrefsAndSaveData
         COMMAND LamaPonPersistenceTests
+    )
+
+    add_executable(LamaPonPersistenceProfileTests
+        tests/PersistenceProfilesTests.cpp
+    )
+    target_link_libraries(
+        LamaPonPersistenceProfileTests
+        PRIVATE
+            LamaPonRuntime
+    )
+    target_compile_options(LamaPonPersistenceProfileTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_test(
+        NAME AccountPersistenceProfiles
+        COMMAND LamaPonPersistenceProfileTests
+    )
+    set_tests_properties(
+        AccountPersistenceProfiles
+        PROPERTIES LABELS "persistence;online;profiles"
     )
 
     add_executable(LamaPonOnlineAuthTests
