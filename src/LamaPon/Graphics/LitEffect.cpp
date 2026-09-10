@@ -550,9 +550,7 @@ namespace LamaPon
 
     void LitEffect::SetLightingD3D11(
         const LightingState& lighting,
-        const std::array<
-            ID3D11ShaderResourceView*,
-            3>& bakedGiViews) noexcept
+        const D3D11LightingViews& views) noexcept
     {
         m_lightingConstants = {};
         m_lightingConstants.ambient = {
@@ -833,9 +831,9 @@ namespace LamaPon
         const auto& clustered = lighting.clustered;
         const bool clusteredActive =
             clustered.enabled
-            && clustered.lights != nullptr
-            && clustered.lightIndices != nullptr
-            && clustered.clusterCounts != nullptr;
+            && views.clustered[0] != nullptr
+            && views.clustered[1] != nullptr
+            && views.clustered[2] != nullptr;
         m_lightingConstants.clusteredParameters = {
             static_cast<float>(
                 ClusteredLights::GridWidth),
@@ -865,12 +863,12 @@ namespace LamaPon
             0.0f
         };
         m_clusterLights =
-            clusteredActive ? clustered.lights : nullptr;
+            clusteredActive ? views.clustered[0] : nullptr;
         m_clusterIndexList = clusteredActive
-            ? clustered.lightIndices
+            ? views.clustered[1]
             : nullptr;
         m_clusterCounts = clusteredActive
-            ? clustered.clusterCounts
+            ? views.clustered[2]
             : nullptr;
 
         const auto& environment = lighting.environment;
@@ -905,9 +903,9 @@ namespace LamaPon
         const auto& bakedGi = lighting.bakedGlobalIllumination;
         const bool bakedGiActive =
             bakedGi.enabled
-            && bakedGiViews[0] != nullptr
-            && bakedGiViews[1] != nullptr
-            && bakedGiViews[2] != nullptr;
+            && views.bakedGlobalIllumination[0] != nullptr
+            && views.bakedGlobalIllumination[1] != nullptr
+            && views.bakedGlobalIllumination[2] != nullptr;
         m_lightingConstants.bakedGiVolumeMinimum = {
             bakedGi.volumeMinimum.x,
             bakedGi.volumeMinimum.y,
@@ -927,13 +925,13 @@ namespace LamaPon
             0.0f
         };
         m_bakedGiRedTexture = bakedGiActive
-            ? bakedGiViews[0]
+            ? views.bakedGlobalIllumination[0]
             : nullptr;
         m_bakedGiGreenTexture = bakedGiActive
-            ? bakedGiViews[1]
+            ? views.bakedGlobalIllumination[1]
             : nullptr;
         m_bakedGiBlueTexture = bakedGiActive
-            ? bakedGiViews[2]
+            ? views.bakedGlobalIllumination[2]
             : nullptr;
 
         // プローブの2個目は前のオブジェクトの分が残らないよう

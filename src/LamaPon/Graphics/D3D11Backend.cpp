@@ -1024,6 +1024,24 @@ namespace LamaPon
                 "DirectX 11 context.");
         }
 
+        if (!clusteredLights.m_lightView
+            || !clusteredLights.m_indexListView
+            || !clusteredLights.m_countView)
+        {
+            // 3本すべてを作れてからownerへ反映し、途中失敗で
+            // LightingStateへ不完全な組み合わせを出さないようにします。
+            auto lightView = ImportShaderResourceViewHandle(
+                clusteredLights.m_lightShaderResourceView.Get());
+            auto indexListView = ImportShaderResourceViewHandle(
+                clusteredLights.m_indexListShaderResourceView.Get());
+            auto countView = ImportShaderResourceViewHandle(
+                clusteredLights.m_countShaderResourceView.Get());
+            clusteredLights.m_lightView = std::move(lightView);
+            clusteredLights.m_indexListView =
+                std::move(indexListView);
+            clusteredLights.m_countView = std::move(countView);
+        }
+
         const auto viewMatrix = DirectX::XMLoadFloat4x4(&view);
         const auto projectionMatrix =
             DirectX::XMLoadFloat4x4(&projection);

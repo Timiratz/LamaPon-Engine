@@ -142,9 +142,9 @@ namespace LamaPon
     // ClusteredLights::Updateが書き込みます。
     struct ClusteredLightingData final
     {
-        ID3D11ShaderResourceView* lights{};
-        ID3D11ShaderResourceView* lightIndices{};
-        ID3D11ShaderResourceView* clusterCounts{};
+        GraphicsViewHandle lights;
+        GraphicsViewHandle lightIndices;
+        GraphicsViewHandle clusterCounts;
         float nearPlane{ 0.1f };
         float farPlane{ 1000.0f };
         // ピクセル座標からクラスタの縦横を求めるための1/幅・1/高さ。

@@ -3,6 +3,7 @@
 #include "LamaPon/Assets/AssetManager.h"
 #include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Graphics/ComputeEffect.h"
+#include "LamaPon/Graphics/ClusteredLights.h"
 #include "LamaPon/Graphics/GraphicsDeviceApiResources.h"
 #include "LamaPon/Graphics/GraphicsDeviceShaderState.h"
 #include "LamaPon/Graphics/LitEffect.h"
@@ -907,7 +908,93 @@ namespace LamaPon
             return false;
         }
 
-        std::array<ID3D11ShaderResourceView*, 3> bakedGiViews{};
+        LitEffect::D3D11LightingViews nativeViews;
+
+        const auto& clustered = lighting.clustered;
+        if (clustered.enabled)
+        {
+            if (clustered.lightCount == 0
+                || clustered.lightCount > MaximumClusteredLights
+                || !std::isfinite(clustered.nearPlane)
+                || !std::isfinite(clustered.farPlane)
+                || !std::isfinite(clustered.inverseWidth)
+                || !std::isfinite(clustered.inverseHeight)
+                || !(clustered.nearPlane > 0.0f)
+                || !(clustered.farPlane > clustered.nearPlane)
+                || !(clustered.inverseWidth > 0.0f)
+                || !(clustered.inverseHeight > 0.0f))
+            {
+                return false;
+            }
+
+            const std::array<const GraphicsViewHandle*, 3> handles{
+                &clustered.lights,
+                &clustered.lightIndices,
+                &clustered.clusterCounts
+            };
+            const std::array<std::uint32_t, 3> expectedStrides{
+                static_cast<std::uint32_t>(sizeof(GpuLight)),
+                static_cast<std::uint32_t>(sizeof(std::uint32_t)),
+                static_cast<std::uint32_t>(sizeof(std::uint32_t))
+            };
+            const std::array<std::uint32_t, 3> expectedElements{
+                static_cast<std::uint32_t>(MaximumClusteredLights),
+                ClusteredLights::ClusterCount
+                    * ClusteredLights::MaximumLightsPerCluster,
+                ClusteredLights::ClusterCount
+            };
+            for (std::size_t index{};
+                index < handles.size();
+                ++index)
+            {
+                const auto& handle = *handles[index];
+                auto* const nativeView =
+                    TryResolveD3D11ShaderResourceView(handle);
+                if (!handle || nativeView == nullptr)
+                {
+                    return false;
+                }
+
+                D3D11_SHADER_RESOURCE_VIEW_DESC viewDescription{};
+                nativeView->GetDesc(&viewDescription);
+                if (viewDescription.ViewDimension
+                        != D3D11_SRV_DIMENSION_BUFFER
+                    || viewDescription.Format != DXGI_FORMAT_UNKNOWN
+                    || viewDescription.Buffer.FirstElement != 0
+                    || viewDescription.Buffer.NumElements
+                        != expectedElements[index])
+                {
+                    return false;
+                }
+
+                Microsoft::WRL::ComPtr<ID3D11Resource> resource;
+                nativeView->GetResource(
+                    resource.ReleaseAndGetAddressOf());
+                Microsoft::WRL::ComPtr<ID3D11Buffer> buffer;
+                if (resource == nullptr
+                    || FAILED(resource.As(&buffer)))
+                {
+                    return false;
+                }
+                D3D11_BUFFER_DESC bufferDescription{};
+                buffer->GetDesc(&bufferDescription);
+                const auto requiredBytes =
+                    static_cast<std::uint64_t>(expectedElements[index])
+                    * expectedStrides[index];
+                if ((bufferDescription.BindFlags
+                        & D3D11_BIND_SHADER_RESOURCE) == 0
+                    || (bufferDescription.MiscFlags
+                        & D3D11_RESOURCE_MISC_BUFFER_STRUCTURED) == 0
+                    || bufferDescription.StructureByteStride
+                        != expectedStrides[index]
+                    || bufferDescription.ByteWidth < requiredBytes)
+                {
+                    return false;
+                }
+                nativeViews.clustered[index] = nativeView;
+            }
+        }
+
         const auto& bakedGi = lighting.bakedGlobalIllumination;
         if (bakedGi.enabled)
         {
@@ -967,7 +1054,8 @@ namespace LamaPon
                 {
                     expectedVolume = volumeDescription;
                 }
-                bakedGiViews[index] = nativeView;
+                nativeViews.bakedGlobalIllumination[index] =
+                    nativeView;
             }
             if (bakedGi.resolution.x
                     != static_cast<float>(expectedVolume.Width)
@@ -980,7 +1068,7 @@ namespace LamaPon
             }
         }
 
-        effect.SetLightingD3D11(lighting, bakedGiViews);
+        effect.SetLightingD3D11(lighting, nativeViews);
         return true;
     }
 

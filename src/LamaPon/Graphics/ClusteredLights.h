@@ -69,6 +69,9 @@ namespace LamaPon
         Microsoft::WRL::ComPtr<ID3D11Buffer> m_lightBuffer;
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
             m_lightShaderResourceView;
+        // LightingStateへ渡すBackend世代付きの強所有viewです。
+        // D3D11Backendが初回Update時に3本まとめて取り込みます。
+        GraphicsViewHandle m_lightView;
         // クラスタごとの番号表と灯数（GPUが書き込み）。
         Microsoft::WRL::ComPtr<ID3D11Buffer>
             m_indexListBuffer;
@@ -76,11 +79,13 @@ namespace LamaPon
             m_indexListUnorderedView;
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
             m_indexListShaderResourceView;
+        GraphicsViewHandle m_indexListView;
         Microsoft::WRL::ComPtr<ID3D11Buffer>
             m_countBuffer;
         Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView>
             m_countUnorderedView;
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
             m_countShaderResourceView;
+        GraphicsViewHandle m_countView;
     };
 }

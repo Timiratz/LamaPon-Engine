@@ -190,13 +190,21 @@ namespace LamaPon
 
         // API 52のGame ModuleをLoadLibraryしてAPI不一致案内へ到達する
         // ためのprivate shimです。旧raw SkeletalModel::Drawも1互換期間
-        // この入口を使い、Baked GIは安全に無効として扱います。
+        // この入口を使い、neutral化済みのlighting resourceは安全に
+        // 無効として扱います。
         void SetLighting(const LightingState& lighting) noexcept;
+        // neutral LightingStateを検証・解決した後にだけ渡すD3D11 view群。
+        // 今後ほかのlighting resourceを移すときもこのtransactionへ
+        // 追加し、Effectを部分更新しないようにします。
+        struct D3D11LightingViews final
+        {
+            std::array<ID3D11ShaderResourceView*, 3> clustered{};
+            std::array<ID3D11ShaderResourceView*, 3>
+                bakedGlobalIllumination{};
+        };
         void SetLightingD3D11(
             const LightingState& lighting,
-            const std::array<
-                ID3D11ShaderResourceView*,
-                3>& bakedGiViews) noexcept;
+            const D3D11LightingViews& views) noexcept;
 
         [[nodiscard]] ID3D11SamplerState*
             ActiveMaterialSampler() const noexcept;

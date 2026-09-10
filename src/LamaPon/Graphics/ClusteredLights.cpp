@@ -320,11 +320,11 @@ namespace LamaPon
         context->CSSetShader(nullptr, nullptr, 0);
 
         lighting.clustered.lights =
-            m_lightShaderResourceView.Get();
+            m_lightView;
         lighting.clustered.lightIndices =
-            m_indexListShaderResourceView.Get();
+            m_indexListView;
         lighting.clustered.clusterCounts =
-            m_countShaderResourceView.Get();
+            m_countView;
         lighting.clustered.nearPlane = nearPlane;
         lighting.clustered.farPlane = farPlane;
         lighting.clustered.inverseWidth =

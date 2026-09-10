@@ -77,6 +77,7 @@
 - 既存D3D11 Shader Resource Viewのneutral handle取り込みをBuffer / StructuredBufferとTexture3Dへ拡張し、Clustered LightingとBaked GIの後続移行に必要な世代・強所有境界を整備。
 - API非依存のimmutable Texture3D生成とRGBA16F formatを追加し、Baked GI係数を3個の世代付き`GraphicsViewHandle`としてアップロードできる新経路を追加。旧raw戻り値は互換shimとして維持し、公開Backend / Device契約の変更に伴いGame Module APIを52へ更新。
 - Sceneと`LightingState`のBaked GI所有をneutral viewへ移し、3枚の世代・Texture3D形式を描画直前にまとめて検証するLit bridgeを追加。旧raw uploadはprivate互換shimへ移し、公開layout / API変更に伴いGame Module APIを53へ更新。
+- Forward+の3本のStructuredBuffer viewを`LightingState`でも世代付きneutral handleとして強所有し、Lit bridgeで形式・要素数・Backend世代を一括検証してから反映する構造へ移行。公開layout変更に伴いGame Module APIを54へ更新。
 
 ### ファイル名の統一
 

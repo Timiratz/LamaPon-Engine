@@ -542,8 +542,8 @@ namespace LamaPon
         bool TrySetLitEffectTextures(
             LitEffect& effect,
             const LitTextureRequest&& request) const = delete;
-        // LightingState内のneutral Baked GI viewを描画API固有viewへ
-        // 3枚まとめて解決してからEffectへ反映します。lightingは直後の
+        // LightingState内のneutral viewを描画API固有viewへすべて
+        // 解決・検証してからEffectへ一括反映します。lightingは直後の
         // 描画が終わるまで各viewを保持してください。不正な組み合わせや
         // 別DeviceのEffectでは何も変更せずfalseを返します。
         [[nodiscard]] bool TrySetLitEffectLighting(

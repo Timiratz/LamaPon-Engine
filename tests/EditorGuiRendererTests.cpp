@@ -1862,7 +1862,10 @@ namespace
             Height);
         Require(
             !emptyClusteredLighting.clustered.enabled
-                && emptyClusteredLighting.clustered.lightCount == 0u,
+                && emptyClusteredLighting.clustered.lightCount == 0u
+                && !emptyClusteredLighting.clustered.lights
+                && !emptyClusteredLighting.clustered.lightIndices
+                && !emptyClusteredLighting.clustered.clusterCounts,
             "Empty clustered lighting must clear the previous result");
 
         constexpr float displayColor[]{

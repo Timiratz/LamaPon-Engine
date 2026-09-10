@@ -585,6 +585,127 @@ int main(const int argumentCount, char** arguments)
                 "A neutral Lit texture was bound to the wrong slot");
         }
 
+        // Forward+の3本のStructuredBufferもLightingStateがneutral
+        // handleで強所有し、Effect反映前にall-or-noneで解決します。
+        Stage("lit-neutral-clustered-lighting");
+        LamaPon::LightingState clusteredLighting;
+        clusteredLighting.clusteredLights.emplace_back();
+        const auto clusteredView = DirectX::XMMatrixIdentity();
+        const auto clusteredProjection =
+            DirectX::XMMatrixPerspectiveFovRH(
+                DirectX::XM_PIDIV4,
+                static_cast<float>(Width)
+                    / static_cast<float>(Height),
+                0.1f,
+                100.0f);
+        graphics.UpdateClusteredLights(
+            clusteredLighting,
+            clusteredView,
+            clusteredProjection,
+            Width,
+            Height);
+        auto& clustered = clusteredLighting.clustered;
+        const std::array clusteredViews{
+            clustered.lights,
+            clustered.lightIndices,
+            clustered.clusterCounts
+        };
+        Require(
+            clustered.enabled
+                && clustered.lightCount == 1u
+                && clusteredViews[0]
+                && clusteredViews[1]
+                && clusteredViews[2],
+            "Clustered lighting did not publish three neutral views");
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                clusteredLighting),
+            "Valid neutral clustered lighting was rejected");
+        litEffect.Apply(graphics.Context());
+        for (std::size_t index{};
+            index < clusteredViews.size();
+            ++index)
+        {
+            Require(
+                CapturePixelShaderView(
+                    graphics,
+                    static_cast<UINT>(16u + index)).Get()
+                    == graphics.TryResolveD3D11ShaderResourceView(
+                        clusteredViews[index]),
+                "A neutral clustered-lighting view was bound to the wrong slot");
+        }
+
+        graphics.UpdateClusteredLights(
+            clusteredLighting,
+            clusteredView,
+            clusteredProjection,
+            Width,
+            Height);
+        Require(
+            clusteredLighting.clustered.lights
+                    == clusteredViews[0]
+                && clusteredLighting.clustered.lightIndices
+                    == clusteredViews[1]
+                && clusteredLighting.clustered.clusterCounts
+                    == clusteredViews[2],
+            "Clustered lighting rebuilt neutral wrappers every frame");
+
+        auto incompleteClusteredLighting = clusteredLighting;
+        incompleteClusteredLighting.clustered.clusterCounts.Reset();
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                incompleteClusteredLighting),
+            "An incomplete clustered-lighting view set was accepted");
+        auto wrongDimensionClusteredLighting = clusteredLighting;
+        wrongDimensionClusteredLighting.clustered.lightIndices =
+            litViews[0];
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                wrongDimensionClusteredLighting),
+            "A Texture2D was accepted as a clustered-lighting buffer");
+        auto invalidClusteredMetadata = clusteredLighting;
+        invalidClusteredMetadata.clustered.lightCount = 0;
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                invalidClusteredMetadata),
+            "Invalid clustered-lighting metadata was accepted");
+        litEffect.Apply(graphics.Context());
+        for (std::size_t index{};
+            index < clusteredViews.size();
+            ++index)
+        {
+            Require(
+                CapturePixelShaderView(
+                    graphics,
+                    static_cast<UINT>(16u + index)).Get()
+                    == graphics.TryResolveD3D11ShaderResourceView(
+                        clusteredViews[index]),
+                "Rejected clustered lighting partially changed the Effect");
+        }
+
+        auto disabledClusteredLighting = clusteredLighting;
+        disabledClusteredLighting.clustered.enabled = false;
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                disabledClusteredLighting),
+            "Disabled neutral clustered lighting was rejected");
+        litEffect.Apply(graphics.Context());
+        Require(
+            CapturePixelShaderView(graphics, 16u) == nullptr
+                && CapturePixelShaderView(graphics, 17u) == nullptr
+                && CapturePixelShaderView(graphics, 18u) == nullptr,
+            "Disabling clustered lighting retained previous bindings");
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                clusteredLighting),
+            "The neutral clustered-lighting baseline could not be restored");
+
         // Baked GIはLightingStateでも3枚のneutral handleを強所有し、
         // D3D11への解決はEffect反映直前にtransactionalに行います。
         Stage("lit-neutral-baked-gi");
@@ -813,6 +934,34 @@ int main(const int argumentCount, char** arguments)
                     foreignEffect,
                     bakedGiLighting),
                 "Baked GI lighting accepted an Effect from another device");
+
+            Require(
+                graphics.TrySetLitEffectLighting(
+                    litEffect,
+                    clusteredLighting),
+                "The clustered-lighting baseline could not be restored");
+            litEffect.Apply(graphics.Context());
+            auto mixedClusteredLighting = clusteredLighting;
+            mixedClusteredLighting.clustered.lightIndices =
+                invalidLitTextures.customTextures.back();
+            Require(
+                !graphics.TrySetLitEffectLighting(
+                    litEffect,
+                    mixedClusteredLighting),
+                "A mixed-generation clustered-lighting set was accepted");
+            litEffect.Apply(graphics.Context());
+            for (std::size_t index{};
+                index < clusteredViews.size();
+                ++index)
+            {
+                Require(
+                    CapturePixelShaderView(
+                        graphics,
+                        static_cast<UINT>(16u + index)).Get()
+                        == graphics.TryResolveD3D11ShaderResourceView(
+                            clusteredViews[index]),
+                    "Rejected mixed clustered lighting changed the Effect");
+            }
 
             // LightingStateのproducerをneutral handleへ移す前提として、
             // Texture2D以外の既存D3D11 SRVも同じ世代・所有契約へ載せます。
