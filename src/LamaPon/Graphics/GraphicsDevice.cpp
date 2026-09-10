@@ -118,125 +118,6 @@ namespace LamaPon
             && m_backend->IsInitialized();
     }
 
-    GraphicsTextureHandle GraphicsDevice::CreateTexture2D(
-        const GraphicsTexture2DDescription& description,
-        const std::span<const GraphicsTextureSubresourceData>
-            initialData)
-    {
-        if (m_backend == nullptr)
-        {
-            throw std::logic_error(
-                "CreateTexture2D requires an initialized graphics backend.");
-        }
-        return m_backend->CreateTexture2D(
-            description,
-            initialData);
-    }
-
-    void GraphicsDevice::UpdateTexture2D(
-        const GraphicsTextureHandle& texture,
-        const std::uint32_t mipLevel,
-        const GraphicsTextureSubresourceData& data)
-    {
-        if (m_backend == nullptr)
-        {
-            throw std::logic_error(
-                "UpdateTexture2D requires an initialized graphics backend.");
-        }
-        m_backend->UpdateTexture2D(texture, mipLevel, data);
-    }
-
-    GraphicsViewHandle GraphicsDevice::CreateShaderResourceView(
-        const GraphicsTextureHandle& texture,
-        const GraphicsTextureViewDescription& description)
-    {
-        if (m_backend == nullptr)
-        {
-            throw std::logic_error(
-                "CreateShaderResourceView requires an initialized graphics "
-                "backend.");
-        }
-        return m_backend->CreateShaderResourceView(
-            texture,
-            description);
-    }
-
-    void GraphicsDevice::BeginShadowMap(
-        ShadowMap& shadowMap,
-        const std::uint32_t cascadeIndex)
-    {
-        if (!IsInitialized())
-        {
-            throw std::logic_error(
-                "BeginShadowMap requires an initialized device.");
-        }
-
-        m_backend->BeginShadowMap(shadowMap, cascadeIndex);
-    }
-
-    void GraphicsDevice::EndShadowMap(ShadowMap& shadowMap)
-    {
-        if (!IsInitialized())
-        {
-            throw std::logic_error(
-                "EndShadowMap requires an initialized device.");
-        }
-
-        m_backend->EndShadowMap(shadowMap);
-    }
-
-    void GraphicsDevice::UpdateClusteredLights(
-        LightingState& lighting,
-        DirectX::FXMMATRIX view,
-        DirectX::CXMMATRIX projection,
-        const std::uint32_t width,
-        const std::uint32_t height)
-    {
-        if (!IsInitialized())
-        {
-            throw std::logic_error(
-                "UpdateClusteredLights requires an initialized device.");
-        }
-
-        // 既存どおり、更新の直前に初回だけシェーダーと資源を作ります。
-        auto& clusteredLights = Clusters();
-        DirectX::XMFLOAT4X4 viewValues{};
-        DirectX::XMFLOAT4X4 projectionValues{};
-        DirectX::XMStoreFloat4x4(&viewValues, view);
-        DirectX::XMStoreFloat4x4(&projectionValues, projection);
-        m_backend->UpdateClusteredLights(
-            clusteredLights,
-            lighting,
-            viewValues,
-            projectionValues,
-            width,
-            height);
-    }
-
-    std::unique_ptr<GraphicsOutputState>
-        GraphicsDevice::CaptureOutputState()
-    {
-        if (!IsInitialized())
-        {
-            throw std::logic_error(
-                "CaptureOutputState requires an initialized device.");
-        }
-
-        return m_backend->CaptureOutputState();
-    }
-
-    void GraphicsDevice::RestoreOutputState(
-        const GraphicsOutputState& state)
-    {
-        if (!IsInitialized())
-        {
-            throw std::logic_error(
-                "RestoreOutputState requires an initialized device.");
-        }
-
-        m_backend->RestoreOutputState(state);
-    }
-
     struct GraphicsDevice::MaterialShaderEntry final
     {
         std::unique_ptr<LitEffect> effect;
@@ -648,37 +529,6 @@ namespace LamaPon
             std::make_unique<RenderTarget>();
     }
 
-    void GraphicsDevice::Resize(const std::uint32_t width, const std::uint32_t height)
-    {
-        if (!IsInitialized() || width == 0 || height == 0)
-        {
-            return;
-        }
-
-        m_width = width;
-        m_height = height;
-        m_uiWidth = width;
-        m_uiHeight = height;
-
-        m_backend->Resize(m_width, m_height);
-    }
-
-    void GraphicsDevice::BeginFrame(const float clearColor[4])
-    {
-        m_gpuProfiler.OpenFrame();
-        RefreshMemoryStatistics();
-        // 大きいテクスチャの段階アップロードを予算内で進めます
-        // （メインスレッドのフレーム先頭が唯一の転送ポイント）。
-        if (auto* assets = TryAssets())
-        {
-            assets->PumpTextureUploads();
-            assets->PumpModelUploads();
-        }
-        m_uiWidth = m_width;
-        m_uiHeight = m_height;
-        m_backend->BindAndClearBackBuffer(clearColor);
-    }
-
     DirectX::SpriteBatch& GraphicsDevice::BeginSprites()
     {
         m_spriteTexturePins.clear();
@@ -1050,45 +900,6 @@ namespace LamaPon
             nullptr,
             nullptr,
             m_uiScissorRasterizer.Get());
-    }
-
-    GraphicsBufferHandle GraphicsDevice::AcquireInstanceBufferHandle(
-        const std::span<const std::byte> data)
-    {
-        if (data.empty() || !IsInitialized())
-        {
-            return {};
-        }
-        if (!m_backend->UpdateDynamicVertexBuffer(
-                m_instanceBuffer,
-                data))
-        {
-            return {};
-        }
-        return m_instanceBuffer;
-    }
-
-    void GraphicsDevice::EndFrame()
-    {
-        // Presentより前に流します。デバイスを失う描画があった場合、
-        // その理由はこのメッセージ側に出ていることが多いためです。
-        m_backend->DrainDebugMessages();
-        m_gpuProfiler.CloseFrame();
-        m_backend->Present(
-            m_graphicsSettings.vSyncEnabled);
-    }
-
-    std::vector<std::uint8_t>
-        GraphicsDevice::CaptureBackBuffer(
-            std::uint32_t& width,
-            std::uint32_t& height) const
-    {
-        if (!IsInitialized())
-        {
-            throw std::logic_error(
-                "CaptureBackBuffer requires an initialized device.");
-        }
-        return m_backend->CaptureBackBuffer(width, height);
     }
 
     void GraphicsDevice::ApplyQueuedScreenEffects(
