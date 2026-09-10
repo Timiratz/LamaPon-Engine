@@ -7,6 +7,7 @@
 
 // レンダーテクスチャの解像度を確認するため、RenderTargetの実体が必要です
 // （LamaPon.hはGraphicsDevice経由の前方宣言しか持ちません）。
+#include "LamaPon/Assets/GltfImporter.h"
 #include "LamaPon/Graphics/EnvironmentCache.h"
 #include "LamaPon/Graphics/DebugRenderer.h"
 #include "LamaPon/Graphics/D3D11Backend.h"
@@ -15,6 +16,7 @@
 #include "LamaPon/Graphics/RenderPipeline.h"
 #include "LamaPon/Graphics/RenderTarget.h"
 #include "LamaPon/Graphics/ShaderCompiler.h"
+#include "LamaPon/Graphics/SkeletalModel.h"
 
 #include <Windows.h>
 #include <objbase.h>
@@ -30,6 +32,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -414,9 +417,98 @@ int main(const int argumentCount, char** arguments)
             graphics.Device() != nullptr
                 && graphics.Context() != nullptr,
             "The DirectX 11 fallback must expose a valid device and context.");
+        Stage("skeletal-legacy-export");
+        constexpr char LegacySkeletalDrawSymbol[] =
+            "?Draw@SkeletalModel@LamaPon@@QEBAX"
+            "PEAUID3D11DeviceContext@@"
+            "AEAVCommonStates@DX11@DirectX@@"
+            "AEBULightingState@2@UXMMATRIX@6@AEBU86@4"
+            "PEBUSkeletalAnimationClip@2@M_N"
+            "PEBVLitMaterial@2@"
+            "PEAUID3D11ShaderResourceView@@8"
+            "PEBUPbrTextures@2@5MM"
+            "PEBV?$vector@USkeletalPoseSample@LamaPon@@"
+            "V?$allocator@USkeletalPoseSample@LamaPon@@@std@@@std@@"
+            "_KPEAVLitEffect@2@PEAUID3D11InputLayout@@6"
+            "PEBV?$vector@UXMFLOAT4X4@DirectX@@"
+            "V?$allocator@UXMFLOAT4X4@DirectX@@@std@@@std@@M@Z";
+        const auto runtimeModule = GetModuleHandleW(
+            L"LamaPonRuntime.dll");
+        Require(
+            runtimeModule != nullptr
+                && GetProcAddress(
+                    runtimeModule,
+                    LegacySkeletalDrawSymbol) != nullptr,
+            "The API 49 SkeletalModel::Draw export alias is missing");
         Stage("asset-root");
         graphics.Assets().SetAssetRoot(
             LAMAPON_TEST_ASSET_DIR);
+
+        // runtimeのAssetManagerを通ったglTF/FBX primitiveは、従来の
+        // DirectXTK11 viewと同じ内容をBackend世代付きhandleでも
+        // 保持します。Importer単体のraw互換経路とはここで区別します。
+        Stage("skeletal-neutral-textures");
+        const auto skeletalAsset = graphics.Assets().LoadModel(
+            std::filesystem::path{ "models" }
+                / "TexturedRiggedSimple.gltf");
+        Require(
+            skeletalAsset != nullptr
+                && skeletalAsset->skeletalModel != nullptr
+                && !skeletalAsset->skeletalModel->primitives.empty(),
+            "The skeletal neutral-texture fixture could not be loaded");
+        bool foundSkeletalTexture{};
+        for (const auto& primitive :
+            skeletalAsset->skeletalModel->primitives)
+        {
+            const std::array<ID3D11ShaderResourceView*, 6> nativeViews{
+                primitive.texture.Get(),
+                primitive.normalTexture.Get(),
+                primitive.roughnessTexture.Get(),
+                primitive.metallicTexture.Get(),
+                primitive.occlusionTexture.Get(),
+                primitive.emissiveTexture.Get()
+            };
+            const std::array<const LamaPon::GraphicsViewHandle*, 6>
+                neutralViews{
+                    &primitive.embeddedTextures.albedo,
+                    &primitive.embeddedTextures.normal,
+                    &primitive.embeddedTextures.roughness,
+                    &primitive.embeddedTextures.metallic,
+                    &primitive.embeddedTextures.occlusion,
+                    &primitive.embeddedTextures.emissive
+                };
+            for (std::size_t index{};
+                index < nativeViews.size();
+                ++index)
+            {
+                Require(
+                    static_cast<bool>(*neutralViews[index])
+                        == (nativeViews[index] != nullptr),
+                    "A skeletal embedded texture lost its neutral mirror");
+                if (nativeViews[index] != nullptr)
+                {
+                    foundSkeletalTexture = true;
+                    Require(
+                        graphics.TryResolveD3D11ShaderResourceView(
+                            *neutralViews[index])
+                            == nativeViews[index],
+                        "A skeletal neutral texture resolved to another view");
+                }
+            }
+            Require(
+                primitive.embeddedTextures.occlusionStrength
+                    == primitive.occlusionStrength
+                    && primitive.embeddedTextures.emissiveFactor.x
+                        == primitive.emissiveFactor.x
+                    && primitive.embeddedTextures.emissiveFactor.y
+                        == primitive.emissiveFactor.y
+                    && primitive.embeddedTextures.emissiveFactor.z
+                        == primitive.emissiveFactor.z,
+                "Skeletal embedded texture metadata was not mirrored");
+        }
+        Require(
+            foundSkeletalTexture,
+            "The skeletal neutral-texture fixture has no texture to test");
 
         // Meshが使うneutral Lit texture requestの全slot対応と、Effectを
         // 再利用したときのclear、別Backend世代の拒否を直接固定します。
@@ -554,6 +646,129 @@ int main(const int argumentCount, char** arguments)
                 "A LitEffect owned by another GraphicsDevice was accepted");
         }
         DestroyWindow(foreignWindow);
+
+        // AssetManager::LoadModelを経由せず公開Importerを直接使う旧経路も、
+        // 初回の中立Drawでraw viewをBackend handleへ同期します。外部
+        // materialのempty albedo/normalは内蔵を継承し、empty PBRはclear
+        // されるmerge規則まで実際のDraw後のslotで固定します。
+        Stage("skeletal-direct-import-compatibility");
+        const auto directSkeletal = LamaPon::GltfImporter::Load(
+            graphics.Device(),
+            graphics.Context(),
+            graphics.Assets(),
+            std::filesystem::path{ LAMAPON_TEST_ASSET_DIR }
+                / "models"
+                / "TexturedRiggedSimple.gltf");
+        Require(
+            directSkeletal != nullptr
+                && !directSkeletal->primitives.empty()
+                && directSkeletal->primitives.front().texture != nullptr
+                && !directSkeletal->primitives.front()
+                    .embeddedTextures.albedo,
+            "The direct skeletal importer did not expose the legacy-only fixture");
+        auto& directPrimitive = directSkeletal->primitives.front();
+        directPrimitive.normalTexture =
+            graphics.TryResolveD3D11ShaderResourceView(litViews[1]);
+        directPrimitive.roughnessTexture =
+            graphics.TryResolveD3D11ShaderResourceView(litViews[2]);
+        directPrimitive.metallicTexture =
+            graphics.TryResolveD3D11ShaderResourceView(litViews[3]);
+        directPrimitive.occlusionTexture =
+            graphics.TryResolveD3D11ShaderResourceView(litViews[4]);
+        directPrimitive.emissiveTexture =
+            graphics.TryResolveD3D11ShaderResourceView(litViews[5]);
+        const auto drawDirectSkeletal =
+            [&](const LamaPon::LitMaterial* const material,
+                const LamaPon::LitTextureRequest* const textureRequest)
+        {
+            directSkeletal->Draw(
+                graphics,
+                graphics.Lighting(),
+                identity,
+                identity,
+                identity,
+                nullptr,
+                0.0f,
+                false,
+                material,
+                textureRequest,
+                nullptr,
+                0.0f,
+                0.0f,
+                nullptr,
+                std::numeric_limits<std::size_t>::max(),
+                &litEffect);
+        };
+        drawDirectSkeletal(nullptr, nullptr);
+        const std::array<ID3D11ShaderResourceView*, 6>
+            directNativeViews{
+                directPrimitive.texture.Get(),
+                directPrimitive.normalTexture.Get(),
+                directPrimitive.roughnessTexture.Get(),
+                directPrimitive.metallicTexture.Get(),
+                directPrimitive.occlusionTexture.Get(),
+                directPrimitive.emissiveTexture.Get()
+            };
+        const std::array<const LamaPon::GraphicsViewHandle*, 6>
+            directNeutralViews{
+                &directPrimitive.embeddedTextures.albedo,
+                &directPrimitive.embeddedTextures.normal,
+                &directPrimitive.embeddedTextures.roughness,
+                &directPrimitive.embeddedTextures.metallic,
+                &directPrimitive.embeddedTextures.occlusion,
+                &directPrimitive.embeddedTextures.emissive
+            };
+        for (std::size_t index{};
+            index < directNativeViews.size();
+            ++index)
+        {
+            Require(
+                *directNeutralViews[index]
+                    && graphics.TryResolveD3D11ShaderResourceView(
+                        *directNeutralViews[index])
+                        == directNativeViews[index],
+                "Direct skeletal Draw did not synchronize a legacy texture");
+        }
+        Require(
+            CapturePixelShaderView(graphics, 0u).Get()
+                    == directNativeViews[0]
+                && CapturePixelShaderView(graphics, 1u).Get()
+                    == directNativeViews[1],
+            "Direct skeletal Draw lost inherited albedo or normal texture");
+
+        directPrimitive.roughnessTexture.Reset();
+        drawDirectSkeletal(nullptr, nullptr);
+        Require(
+            !directPrimitive.embeddedTextures.roughness
+                && CapturePixelShaderView(graphics, 11u).Get()
+                    == litWhite.Get(),
+            "Resetting a legacy skeletal texture did not clear its neutral cache");
+
+        LamaPon::LitMaterial skeletalOverrideMaterial;
+        LamaPon::LitTextureRequest skeletalOverrideTextures;
+        skeletalOverrideTextures.customTextures.front() = litViews[6];
+        drawDirectSkeletal(
+            &skeletalOverrideMaterial,
+            &skeletalOverrideTextures);
+        Require(
+            CapturePixelShaderView(graphics, 0u).Get()
+                    == directNativeViews[0]
+                && CapturePixelShaderView(graphics, 1u).Get()
+                    == directNativeViews[1],
+            "Empty skeletal albedo/normal overrides did not inherit embedded textures");
+        for (const auto slot : { 11u, 12u, 13u, 14u })
+        {
+            Require(
+                CapturePixelShaderView(graphics, slot).Get()
+                    == litWhite.Get(),
+                "Empty skeletal PBR override retained an embedded texture");
+        }
+        Require(
+            CapturePixelShaderView(graphics, 7u).Get()
+                == graphics.TryResolveD3D11ShaderResourceView(
+                    litViews[6]),
+            "Skeletal custom texture override was not bound");
+
         graphics.RefreshMemoryStatistics(true);
         Require(
             graphics.MemoryStats().processWorkingSetBytes > 0

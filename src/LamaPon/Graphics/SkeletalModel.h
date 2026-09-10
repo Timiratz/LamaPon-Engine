@@ -1,5 +1,6 @@
 #pragma once
 
+#include "LamaPon/Graphics/LitTextureRequest.h"
 #include "LamaPon/Graphics/PbrTextures.h"
 #include "LamaPon/Physics/CollisionTypes.h"
 
@@ -27,6 +28,7 @@ namespace DirectX
 
 namespace LamaPon
 {
+    class GraphicsDevice;
     class LitMaterial;
     class LitEffect;
     struct LightingState;
@@ -145,6 +147,12 @@ namespace LamaPon
         // 発光マップ。発光色は emissiveFactor と掛け算されます。
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
             emissiveTexture;
+        // LamaPon Lit経路が使うAPI非依存mirrorです。移行中は上の
+        // DirectXTK11用SRVも保持し、AssetManagerが同じresourceから
+        // 両方を構築します。
+        // 公開Importerを直接使った旧構築経路では初回Draw時にraw mirror
+        // から補完するため、論理的constな描画内でcacheを更新できます。
+        mutable LitTextureRequest embeddedTextures;
         std::shared_ptr<DirectX::SkinnedEffect> effect;
         std::shared_ptr<DirectX::SkinnedDGSLEffect> cutoutEffect;
         DirectX::XMFLOAT4 baseColor{ 1.0f, 1.0f, 1.0f, 1.0f };
@@ -212,8 +220,7 @@ namespace LamaPon
                 std::numeric_limits<std::size_t>::max());
 
         void Draw(
-            ID3D11DeviceContext* context,
-            DirectX::CommonStates& states,
+            GraphicsDevice& graphics,
             const LightingState& lighting,
             DirectX::FXMMATRIX ownerWorld,
             DirectX::CXMMATRIX view,
@@ -222,11 +229,10 @@ namespace LamaPon
             float time,
             bool wireframe,
             const LitMaterial* materialOverride = nullptr,
-            ID3D11ShaderResourceView* albedoOverride = nullptr,
-            ID3D11ShaderResourceView* normalOverride = nullptr,
-            // マテリアル上書き時に、モデル自身のPBRマップの代わりに
-            // 使う一式（LitMaterialが正になります）。
-            const PbrTextures* pbrOverride = nullptr,
+            // マテリアル上書き時にモデル自身のtextureより優先する
+            // API非依存request。albedo/normalのemptyはモデル内蔵を継承し、
+            // PBR mapのemptyは明示的な「mapなし」として扱います。
+            const LitTextureRequest* textureOverride = nullptr,
             const SkeletalAnimationClip* blendClip = nullptr,
             float blendTime = 0.0f,
             float blendAmount = 0.0f,
@@ -247,6 +253,60 @@ namespace LamaPon
             float automaticLodQuality = 1.0f) const;
 
     private:
+        struct TextureInputs;
+        void DrawD3D11(
+            ID3D11DeviceContext* context,
+            DirectX::CommonStates& states,
+            const LightingState& lighting,
+            DirectX::FXMMATRIX ownerWorld,
+            DirectX::CXMMATRIX view,
+            DirectX::CXMMATRIX projection,
+            const SkeletalAnimationClip* clip,
+            float time,
+            bool wireframe,
+            const LitMaterial* materialOverride,
+            const TextureInputs& textures,
+            const SkeletalAnimationClip* blendClip,
+            float blendTime,
+            float blendAmount,
+            const std::vector<SkeletalPoseSample>* weightedSamples,
+            std::size_t removeRootMotionNode,
+            LitEffect* customEffect,
+            ID3D11InputLayout* customInputLayout,
+            bool depthOnly,
+            const std::vector<DirectX::XMFLOAT4X4>*
+                globalPoseOverride,
+            float automaticLodQuality) const;
+
+        // API 49のGame Moduleが旧公開名を解決してからAPI不一致を
+        // 案内できるよう、raw texture引数を持つ旧署名を1互換期間だけ
+        // private shimとして残します。
+        void Draw(
+            ID3D11DeviceContext* context,
+            DirectX::CommonStates& states,
+            const LightingState& lighting,
+            DirectX::FXMMATRIX ownerWorld,
+            DirectX::CXMMATRIX view,
+            DirectX::CXMMATRIX projection,
+            const SkeletalAnimationClip* clip,
+            float time,
+            bool wireframe,
+            const LitMaterial* materialOverride,
+            ID3D11ShaderResourceView* albedoOverride,
+            ID3D11ShaderResourceView* normalOverride,
+            const PbrTextures* pbrOverride,
+            const SkeletalAnimationClip* blendClip,
+            float blendTime,
+            float blendAmount,
+            const std::vector<SkeletalPoseSample>* weightedSamples,
+            std::size_t removeRootMotionNode,
+            LitEffect* customEffect,
+            ID3D11InputLayout* customInputLayout,
+            bool depthOnly,
+            const std::vector<DirectX::XMFLOAT4X4>*
+                globalPoseOverride,
+            float automaticLodQuality) const;
+
         // 宣言blend:additive用の純加算ブレンド（アルファ保存）。
         // 初回のDrawでcontextのデバイスから作る（詳細は
         // ShaderRenderState.hのCreateAdditiveBlendPreservingAlpha）。

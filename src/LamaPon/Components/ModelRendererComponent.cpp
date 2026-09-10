@@ -85,59 +85,6 @@ namespace
         return effect;
     }
 
-    // 読み込み済みテクスチャとマテリアル値から、Effectへ渡す
-    // PBRマップ一式を組み立てます。未設定はnullptrのままにして、
-    // シェーダー側では「マップなし」として扱わせます。
-    struct ResolvedPbrTextures final
-    {
-        std::array<std::shared_ptr<
-            const LamaPon::TextureResourceSnapshot>, 4>
-            snapshots;
-        LamaPon::LitEffect::PbrTextures values{};
-    };
-
-    ResolvedPbrTextures BuildPbrTextures(
-        const LamaPon::GraphicsDevice& graphics,
-        const std::shared_ptr<
-            const LamaPon::TextureAsset>& roughness,
-        const std::shared_ptr<
-            const LamaPon::TextureAsset>& metallic,
-        const std::shared_ptr<
-            const LamaPon::TextureAsset>& occlusion,
-        const std::shared_ptr<
-            const LamaPon::TextureAsset>& emissive,
-        const LamaPon::LitMaterial& material) noexcept
-    {
-        ResolvedPbrTextures resolved{};
-        const std::array assets{
-            roughness,
-            metallic,
-            occlusion,
-            emissive
-        };
-        std::array<ID3D11ShaderResourceView*, 4> views{};
-        for (std::size_t index = 0;
-            index < assets.size();
-            ++index)
-        {
-            resolved.snapshots[index] = assets[index]
-                ? assets[index]->resources.Acquire()
-                : nullptr;
-            views[index] = resolved.snapshots[index]
-                ? graphics.TryResolveD3D11ShaderResourceView(
-                    *resolved.snapshots[index])
-                : nullptr;
-        }
-        resolved.values.roughness = views[0];
-        resolved.values.metallic = views[1];
-        resolved.values.occlusion = views[2];
-        resolved.values.emissive = views[3];
-        resolved.values.occlusionStrength =
-            material.OcclusionStrength();
-        resolved.values.emissiveFactor = material.EmissiveColor();
-        return resolved;
-    }
-
     float SpecularPowerFromRoughness(const float roughness) noexcept
     {
         const float squared = roughness * roughness;
@@ -1732,24 +1679,12 @@ namespace LamaPon
                 m_cachedPoseFrame = poseFrame;
                 m_cachedPoseModel = poseModel;
             }
-            // マテリアル上書き時にモデル自身のPBRマップより優先させる
-            // 一式。上書きが無ければDraw側で無視されます。
-            const auto albedoResources = m_albedoTexture
-                ? m_albedoTexture->resources.Acquire()
-                : nullptr;
-            const auto normalResources = m_normalTexture
-                ? m_normalTexture->resources.Acquire()
-                : nullptr;
-            const auto overridePbrTextures = BuildPbrTextures(
-                *m_graphics,
-                m_roughnessTexture,
-                m_metallicTexture,
-                m_occlusionTexture,
-                m_emissiveTexture,
-                m_material);
+            // マテリアル上書き中だけ外部texture requestを正とします。
+            // albedo/normalのemptyはモデル内蔵を継承し、PBR/customの
+            // emptyはマップ無しとして扱うmergeをDraw側で行います。
+            const auto textureOverride = BuildLitTextureRequest();
             m_model->skeletalModel->Draw(
-                m_context,
-                *m_states,
+                *m_graphics,
                 m_graphics->Lighting(),
                 Owner().WorldMatrix(),
                 view,
@@ -1760,15 +1695,9 @@ namespace LamaPon
                 m_materialOverrideEnabled
                     ? &m_material
                     : nullptr,
-                albedoResources
-                    ? m_graphics->TryResolveD3D11ShaderResourceView(
-                        *albedoResources)
+                m_materialOverrideEnabled
+                    ? &textureOverride
                     : nullptr,
-                normalResources
-                    ? m_graphics->TryResolveD3D11ShaderResourceView(
-                        *normalResources)
-                    : nullptr,
-                &overridePbrTextures.values,
                 blendClip,
                 m_nextAnimationTime,
                 blendAmount,

@@ -696,6 +696,7 @@ namespace LamaPon
     private:
         friend class Application;
         friend class ModelRendererComponent;
+        friend class SkeletalModel;
         friend class Detail::SpriteRenderPassState;
 
         // 組み込みシェーダーの組み立てに失敗した時刻とエラーを保持します。

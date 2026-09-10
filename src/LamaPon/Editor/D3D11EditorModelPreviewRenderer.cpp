@@ -46,8 +46,7 @@ namespace LamaPon
         if (model.skeletalModel)
         {
             model.skeletalModel->Draw(
-                context,
-                m_graphics.States(),
+                m_graphics,
                 m_graphics.Lighting(),
                 world,
                 view,

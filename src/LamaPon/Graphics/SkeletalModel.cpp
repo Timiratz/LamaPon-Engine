@@ -1,5 +1,6 @@
 #include "LamaPon/Graphics/SkeletalModel.h"
 
+#include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Graphics/ShaderRenderState.h"
 
 #include "LamaPon/Core/Profiler.h"
@@ -336,6 +337,15 @@ namespace
 
 namespace LamaPon
 {
+    struct SkeletalModel::TextureInputs final
+    {
+        GraphicsDevice* graphics{};
+        const LitTextureRequest* request{};
+        ID3D11ShaderResourceView* legacyAlbedo{};
+        ID3D11ShaderResourceView* legacyNormal{};
+        const PbrTextures* legacyPbr{};
+    };
+
     std::size_t SkeletalModel::SelectAutomaticLod(
         DirectX::FXMMATRIX ownerWorld,
         DirectX::CXMMATRIX view,
@@ -610,6 +620,60 @@ namespace LamaPon
     }
 
     void SkeletalModel::Draw(
+        GraphicsDevice& graphics,
+        const LightingState& lighting,
+        DirectX::FXMMATRIX ownerWorld,
+        DirectX::CXMMATRIX view,
+        DirectX::CXMMATRIX projection,
+        const SkeletalAnimationClip* clip,
+        const float time,
+        const bool wireframe,
+        const LitMaterial* materialOverride,
+        const LitTextureRequest* textureOverride,
+        const SkeletalAnimationClip* blendClip,
+        const float blendTime,
+        const float blendAmount,
+        const std::vector<SkeletalPoseSample>* weightedSamples,
+        const std::size_t removeRootMotionNode,
+        LitEffect* customEffect,
+        ID3D11InputLayout* customInputLayout,
+        const bool depthOnly,
+        const std::vector<DirectX::XMFLOAT4X4>* globalPoseOverride,
+        const float automaticLodQuality) const
+    {
+        auto* const context = graphics.Context();
+        if (context == nullptr)
+        {
+            return;
+        }
+        TextureInputs textures{};
+        textures.graphics = &graphics;
+        textures.request = textureOverride;
+        DrawD3D11(
+            context,
+            graphics.States(),
+            lighting,
+            ownerWorld,
+            view,
+            projection,
+            clip,
+            time,
+            wireframe,
+            materialOverride,
+            textures,
+            blendClip,
+            blendTime,
+            blendAmount,
+            weightedSamples,
+            removeRootMotionNode,
+            customEffect,
+            customInputLayout,
+            depthOnly,
+            globalPoseOverride,
+            automaticLodQuality);
+    }
+
+    void SkeletalModel::Draw(
         ID3D11DeviceContext* context,
         DirectX::CommonStates& states,
         const LightingState& lighting,
@@ -635,6 +699,57 @@ namespace LamaPon
         const bool depthOnly,
         const std::vector<DirectX::XMFLOAT4X4>*
             globalPoseOverride,
+        const float automaticLodQuality) const
+    {
+        TextureInputs textures{};
+        textures.legacyAlbedo = albedoOverride;
+        textures.legacyNormal = normalOverride;
+        textures.legacyPbr = pbrOverride;
+        DrawD3D11(
+            context,
+            states,
+            lighting,
+            ownerWorld,
+            view,
+            projection,
+            clip,
+            time,
+            wireframe,
+            materialOverride,
+            textures,
+            blendClip,
+            blendTime,
+            blendAmount,
+            weightedSamples,
+            removeRootMotionNode,
+            customEffect,
+            customInputLayout,
+            depthOnly,
+            globalPoseOverride,
+            automaticLodQuality);
+    }
+
+    void SkeletalModel::DrawD3D11(
+        ID3D11DeviceContext* context,
+        DirectX::CommonStates& states,
+        const LightingState& lighting,
+        DirectX::FXMMATRIX ownerWorld,
+        DirectX::CXMMATRIX view,
+        DirectX::CXMMATRIX projection,
+        const SkeletalAnimationClip* clip,
+        const float time,
+        const bool wireframe,
+        const LitMaterial* materialOverride,
+        const TextureInputs& textures,
+        const SkeletalAnimationClip* blendClip,
+        const float blendTime,
+        const float blendAmount,
+        const std::vector<SkeletalPoseSample>* weightedSamples,
+        const std::size_t removeRootMotionNode,
+        LitEffect* customEffect,
+        ID3D11InputLayout* customInputLayout,
+        const bool depthOnly,
+        const std::vector<DirectX::XMFLOAT4X4>* globalPoseOverride,
         const float automaticLodQuality) const
     {
         using namespace DirectX;
@@ -692,6 +807,41 @@ namespace LamaPon
             view,
             projection,
             automaticLodQuality);
+        const auto mirrorLegacyTexture =
+            [&textures](
+                GraphicsViewHandle& handle,
+                ID3D11ShaderResourceView* const native) noexcept
+        {
+            if (textures.graphics == nullptr)
+            {
+                return true;
+            }
+            if (native == nullptr)
+            {
+                // legacy fieldの明示resetもneutral cacheへ反映し、以前の
+                // textureを描き続けないようにします。
+                handle = {};
+                return true;
+            }
+            if (textures.graphics->TryResolveD3D11ShaderResourceView(
+                    handle)
+                == native)
+            {
+                return true;
+            }
+            try
+            {
+                handle = textures.graphics
+                    ->ImportD3D11ShaderResourceView(native);
+                return true;
+            }
+            catch (...)
+            {
+                // 別Device由来のlegacy viewなどは、異なるneutral viewへ
+                // 黙ってfallbackせず、このprimitiveを描画しません。
+                return false;
+            }
+        };
 
         LAMAPON_PROFILE_SCOPE("SkeletalModel.Primitives");
         for (const bool alphaPass : { false, true })
@@ -812,13 +962,105 @@ namespace LamaPon
                 {
                     color = materialOverride->BaseColor();
                     roughness = materialOverride->Roughness();
-                    if (albedoOverride != nullptr)
+                    if (textures.graphics != nullptr)
                     {
-                        texture = albedoOverride;
+                        // DirectXTK互換描画でも公開境界はneutral requestに
+                        // 揃えます。non-empty handleを解決できない場合は、
+                        // 埋め込みtextureや前回bindingへ黙って倒さず、この
+                        // primitiveを描きません。
+                        if (!useCustom
+                            && textures.request != nullptr
+                            && textures.request->albedo)
+                        {
+                            texture = textures.graphics
+                                ->TryResolveD3D11ShaderResourceView(
+                                    textures.request->albedo);
+                            if (texture == nullptr)
+                            {
+                                continue;
+                            }
+                        }
                     }
-                    if (normalOverride != nullptr)
+                    else
                     {
-                        normalTexture = normalOverride;
+                        if (textures.legacyAlbedo != nullptr)
+                        {
+                            texture = textures.legacyAlbedo;
+                        }
+                        if (textures.legacyNormal != nullptr)
+                        {
+                            normalTexture = textures.legacyNormal;
+                        }
+                    }
+                }
+
+                // LitEffectはnative viewを非所有で保持するため、このrequestは
+                // ApplyOccluded / ApplyOutline / 通常Drawのすべてが終わるまで
+                // primitive loop scopeで保持します。
+                LitTextureRequest effectiveTextures;
+                if (useCustom && textures.graphics != nullptr)
+                {
+                    // AssetManagerを経由せず公開glTF/FBX Importerを直接
+                    // 使ったAPI 49以前のモデルも、初回だけ現在のBackend
+                    // 世代へ取り込みます。raw fieldが差し替えられた場合も
+                    // identity比較でcacheを更新します。
+                    auto& embedded = primitive.embeddedTextures;
+                    if (!mirrorLegacyTexture(
+                            embedded.albedo,
+                            primitive.texture.Get())
+                        || !mirrorLegacyTexture(
+                            embedded.normal,
+                            primitive.normalTexture.Get())
+                        || !mirrorLegacyTexture(
+                            embedded.roughness,
+                            primitive.roughnessTexture.Get())
+                        || !mirrorLegacyTexture(
+                            embedded.metallic,
+                            primitive.metallicTexture.Get())
+                        || !mirrorLegacyTexture(
+                            embedded.occlusion,
+                            primitive.occlusionTexture.Get())
+                        || !mirrorLegacyTexture(
+                            embedded.emissive,
+                            primitive.emissiveTexture.Get()))
+                    {
+                        continue;
+                    }
+                    embedded.occlusionStrength =
+                        primitive.occlusionStrength;
+                    embedded.emissiveFactor =
+                        primitive.emissiveFactor;
+                    effectiveTextures = embedded;
+                    if (materialOverride != nullptr
+                        && textures.request != nullptr)
+                    {
+                        // albedo/normalの未指定はモデル内蔵を継承します。
+                        // PBR mapは従来のpbrOverrideと同様、emptyも含め
+                        // 外部materialを正として一式を置き換えます。
+                        if (textures.request->albedo)
+                        {
+                            effectiveTextures.albedo =
+                                textures.request->albedo;
+                        }
+                        if (textures.request->normal)
+                        {
+                            effectiveTextures.normal =
+                                textures.request->normal;
+                        }
+                        effectiveTextures.roughness =
+                            textures.request->roughness;
+                        effectiveTextures.metallic =
+                            textures.request->metallic;
+                        effectiveTextures.occlusion =
+                            textures.request->occlusion;
+                        effectiveTextures.emissive =
+                            textures.request->emissive;
+                        effectiveTextures.customTextures =
+                            textures.request->customTextures;
+                        effectiveTextures.occlusionStrength =
+                            textures.request->occlusionStrength;
+                        effectiveTextures.emissiveFactor =
+                            textures.request->emissiveFactor;
                     }
                 }
 
@@ -881,34 +1123,48 @@ namespace LamaPon
                         customEffect->SetMaterial(
                             primitiveMaterial);
                     }
-                    // マテリアル上書き中はLitMaterialのPBRマップが
-                    // 正になります（色や粗さと同じ扱い）。上書きが
-                    // 無ければモデル自身のマップを使います。
-                    PbrTextures pbrTextures{};
-                    if (materialOverride != nullptr
-                        && pbrOverride != nullptr)
+                    if (textures.graphics != nullptr)
                     {
-                        pbrTextures = *pbrOverride;
+                        if (!textures.graphics->TrySetLitEffectTextures(
+                                *customEffect,
+                                effectiveTextures))
+                        {
+                            // stale / 異種 / 別Backend世代のhandleで前の
+                            // primitiveのtextureを再利用しないよう、描画を
+                            // 行わず次のprimitiveへ進みます。
+                            continue;
+                        }
                     }
                     else
                     {
-                        pbrTextures.roughness =
-                            primitive.roughnessTexture.Get();
-                        pbrTextures.metallic =
-                            primitive.metallicTexture.Get();
-                        pbrTextures.occlusion =
-                            primitive.occlusionTexture.Get();
-                        pbrTextures.emissive =
-                            primitive.emissiveTexture.Get();
-                        pbrTextures.occlusionStrength =
-                            primitive.occlusionStrength;
-                        pbrTextures.emissiveFactor =
-                            primitive.emissiveFactor;
+                        // API 49互換shimはraw texture引数の意味をそのまま
+                        // 維持します。
+                        PbrTextures pbrTextures{};
+                        if (materialOverride != nullptr
+                            && textures.legacyPbr != nullptr)
+                        {
+                            pbrTextures = *textures.legacyPbr;
+                        }
+                        else
+                        {
+                            pbrTextures.roughness =
+                                primitive.roughnessTexture.Get();
+                            pbrTextures.metallic =
+                                primitive.metallicTexture.Get();
+                            pbrTextures.occlusion =
+                                primitive.occlusionTexture.Get();
+                            pbrTextures.emissive =
+                                primitive.emissiveTexture.Get();
+                            pbrTextures.occlusionStrength =
+                                primitive.occlusionStrength;
+                            pbrTextures.emissiveFactor =
+                                primitive.emissiveFactor;
+                        }
+                        customEffect->SetTextures(
+                            texture,
+                            normalTexture,
+                            pbrTextures);
                     }
-                    customEffect->SetTextures(
-                        texture,
-                        normalTexture,
-                        pbrTextures);
                     customEffect->SetLighting(lighting);
                 }
                 else if (useCutout)

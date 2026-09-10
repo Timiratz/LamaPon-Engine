@@ -33,6 +33,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -200,6 +201,61 @@ namespace
         LamaPon::GraphicsBackend* const backend) noexcept
     {
         return dynamic_cast<LamaPon::D3D11Backend*>(backend);
+    }
+
+    void ImportSkeletalTextureViews(
+        LamaPon::SkeletalModel& model,
+        LamaPon::GraphicsBackend* const backend)
+    {
+        auto* const d3d11 = AsD3D11Backend(backend);
+        if (d3d11 == nullptr)
+        {
+            return;
+        }
+
+        // glTFではroughnessとmetallicが同じSRVを共有するなど、複数の
+        // primitive/slotが同じnative viewを参照します。1回だけBackend
+        // 世代へ取り込み、同じ強所有handleをcopyして共有します。
+        std::unordered_map<
+            ID3D11ShaderResourceView*,
+            LamaPon::GraphicsViewHandle> importedViews;
+        const auto importView =
+            [d3d11, &importedViews](
+                ID3D11ShaderResourceView* const native)
+            -> LamaPon::GraphicsViewHandle
+        {
+            if (native == nullptr)
+            {
+                return {};
+            }
+            if (const auto found = importedViews.find(native);
+                found != importedViews.end())
+            {
+                return found->second;
+            }
+            auto imported = d3d11->ImportShaderResourceView(native);
+            auto view = std::move(imported.second);
+            importedViews.emplace(native, view);
+            return view;
+        };
+
+        for (auto& primitive : model.primitives)
+        {
+            auto& textures = primitive.embeddedTextures;
+            textures.albedo = importView(primitive.texture.Get());
+            textures.normal = importView(primitive.normalTexture.Get());
+            textures.roughness = importView(
+                primitive.roughnessTexture.Get());
+            textures.metallic = importView(
+                primitive.metallicTexture.Get());
+            textures.occlusion = importView(
+                primitive.occlusionTexture.Get());
+            textures.emissive = importView(
+                primitive.emissiveTexture.Get());
+            textures.occlusionStrength =
+                primitive.occlusionStrength;
+            textures.emissiveFactor = primitive.emissiveFactor;
+        }
     }
 
     [[nodiscard]] LamaPon::GraphicsTextureFormat ToGraphicsTextureFormat(
@@ -2333,6 +2389,13 @@ namespace LamaPon
         {
             throw std::runtime_error(
                 "Unsupported model format: " + LamaPon::PathToUtf8(resolvedPath.extension()));
+        }
+
+        if (skeletalModel)
+        {
+            ImportSkeletalTextureViews(
+                *skeletalModel,
+                m_backend);
         }
 
         auto asset = std::make_shared<ModelAsset>();
