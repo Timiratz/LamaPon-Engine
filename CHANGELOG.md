@@ -49,6 +49,7 @@
 - Material、Sprite、Screen、Compute Shaderキャッシュの内部状態型をSDK非公開の`GraphicsDeviceShaderState.h`へ集約し、Device寿命管理とShader実装を別翻訳単位へ分けられる境界を追加。
 - カスタムSprite、Material、Screen、Compute Shaderの読み込み・再読み込み・実行を`GraphicsDeviceShaderEffectsD3D11.cpp`へ分離し、共通Device本体をBackend寿命と設定管理へ縮小。
 - 名前付きRenderTextureの安定表示面をAPI非依存`GraphicsViewHandle`として公開し、同サイズではidentityを維持、resize・解放・再初期化では安全に世代を更新するsidecar cacheを追加。RenderTargetの途中初期化は無効状態として再試行する。
+- Light2DとSprite描画request・pass設定をD3D11非依存の`SpriteRendering.h`へ分離し、次段階のBackend中立Sprite描画経路で共有できる公開型を追加。
 - `GraphicsDevice`の公開レイアウト変更に伴い、Game Module APIを38へ更新。SDK反映後はゲーム用DLLの再ビルドが必要。
 - `GraphicsBackend`の表示handle契約、`GraphicsDevice`の公開API、`RenderTarget`の完成状態追加に伴い、Game Module APIを39へ更新。SDK反映後はゲーム用DLLの再ビルドが必要。
 

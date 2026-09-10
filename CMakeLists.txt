@@ -332,6 +332,7 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Graphics/ShaderVariants.h
     src/LamaPon/Graphics/SpriteEffect.cpp
     src/LamaPon/Graphics/SpriteEffect.h
+    src/LamaPon/Graphics/SpriteRendering.h
     src/LamaPon/Graphics/SkeletalModel.cpp
     src/LamaPon/Graphics/SkeletalModel.h
     src/LamaPon/Graphics/TextLayout.h

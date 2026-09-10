@@ -1,3 +1,5 @@
+#include "LamaPon/Graphics/SpriteRendering.h"
+
 #include "LamaPon/Graphics/GraphicsResource.h"
 
 #include <iostream>
