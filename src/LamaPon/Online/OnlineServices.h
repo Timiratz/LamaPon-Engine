@@ -63,6 +63,7 @@ namespace LamaPon
 
     namespace Detail
     {
+        class OnlinePersistenceAccess;
         class OnlineServicesTestAccess;
     }
 
@@ -117,6 +118,7 @@ namespace LamaPon
             std::unique_ptr<Implementation> implementation);
 
         friend class Detail::OnlineServicesTestAccess;
+        friend class Detail::OnlinePersistenceAccess;
 
         std::unique_ptr<Implementation> m_implementation;
     };

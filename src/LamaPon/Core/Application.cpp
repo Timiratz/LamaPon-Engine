@@ -10,6 +10,7 @@
 #include "LamaPon/Core/SaveData.h"
 #include "LamaPon/Core/Time.h"
 #include "LamaPon/Input/InputSystem.h"
+#include "LamaPon/Online/OnlinePersistenceCoordinator.h"
 #include "LamaPon/Online/OnlineServices.h"
 #include "LamaPon/Scene/Scene.h"
 #include "LamaPon/Scene/SceneManager.h"
@@ -107,6 +108,26 @@ namespace LamaPon
             && ActivePlayerPrefs() == m_playerPrefs.get())
         {
             SetActivePlayerPrefs(nullptr);
+        }
+        if (m_onlineServices)
+        {
+            static_cast<void>(
+                Detail::OnlinePersistenceAccess::Detach(
+                    *m_onlineServices));
+            // account Save失敗でguestへ即時復帰した場合も、破棄前に
+            // quarantineを少なくとも一度再試行します。
+            Detail::OnlinePersistenceAccess::EndFrame(
+                *m_onlineServices);
+            const auto* const persistence =
+                Detail::OnlinePersistenceAccess::Coordinator(
+                    *m_onlineServices);
+            if (persistence
+                && persistence->HasPendingRecovery())
+            {
+                Logger::Instance().Error(
+                    "アカウントのPlayerPrefsを終了前に保存できませんでした。"
+                    "ゲストデータへは安全に復帰しています。");
+            }
         }
         if (m_playerPrefs
             && m_playerPrefs->IsDirty())
@@ -207,11 +228,6 @@ namespace LamaPon
         m_saveData =
             std::make_unique<SaveDataStore>(
                 userData / L"Saves");
-        m_onlineServices = std::make_unique<OnlineServices>();
-        // C++ Scriptから設定値を読み書きできるように登録します
-        // （Scriptはここを通してハイスコア等を保存します）。
-        SetActivePlayerPrefs(m_playerPrefs.get());
-        SetActiveOnlineServices(m_onlineServices.get());
         try
         {
             m_playerPrefs->Load();
@@ -224,6 +240,17 @@ namespace LamaPon
                     "元ファイルを変更せず空の設定を使用します: ")
                     + exception.what());
         }
+
+        m_onlineServices = std::make_unique<OnlineServices>();
+        Detail::OnlinePersistenceAccess::Attach(
+            *m_onlineServices,
+            *m_playerPrefs,
+            *m_saveData,
+            userData);
+        // C++ Scriptから設定値を読み書きできるように登録します
+        // （Scriptはここを通してハイスコア等を保存します）。
+        SetActivePlayerPrefs(m_playerPrefs.get());
+        SetActiveOnlineServices(m_onlineServices.get());
 
         m_gameModule =
             std::make_unique<GameModuleHost>();
@@ -443,6 +470,14 @@ namespace LamaPon
                     }
                 }
                 m_graphics.EndFrame();
+            }
+
+            // Simulation/Scriptがこのframeでcommitしたlocal saveを、
+            // 次のnetwork dispatchより前にonline同期層へ渡します。
+            if (m_onlineServices)
+            {
+                Detail::OnlinePersistenceAccess::EndFrame(
+                    *m_onlineServices);
             }
 
             const auto cpuEnd =

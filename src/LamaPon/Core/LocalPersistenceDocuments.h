@@ -127,6 +127,11 @@ namespace LamaPon::Detail
         static void SwapPlayerPrefsLoadedState(
             PlayerPrefs& target,
             PlayerPrefs& prepared) noexcept;
+        // ReadPlayerPrefsが返した同一full-byte snapshotから、diskを
+        // 再open/変更せずprepared PlayerPrefs memoryを構築します。
+        static void LoadPlayerPrefsSnapshot(
+            PlayerPrefs& target,
+            const LocalPersistenceDocument& snapshot);
         static void ApplySaveData(
             SaveDataStore& saveData,
             std::string_view slot,

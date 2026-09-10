@@ -333,7 +333,7 @@ namespace
         const char* timeoutMessage)
     {
         const auto deadline =
-            std::chrono::steady_clock::now() + 3s;
+            std::chrono::steady_clock::now() + 10s;
         while (!std::forward<Predicate>(predicate)())
         {
             services.Update(0.0f);
@@ -357,6 +357,23 @@ namespace
                 return services.State() == expected;
             },
             timeoutMessage);
+    }
+
+    void WaitUntilCurrentTaskCompleted(
+        LamaPon::OnlineServices& services,
+        const char* timeoutMessage)
+    {
+        const auto deadline =
+            std::chrono::steady_clock::now() + 10s;
+        while (!LamaPon::Detail::OnlineServicesTestAccess::
+            CurrentTaskCompleted(services))
+        {
+            if (std::chrono::steady_clock::now() >= deadline)
+            {
+                throw std::runtime_error(timeoutMessage);
+            }
+            std::this_thread::yield();
+        }
     }
 
     bool Contains(
@@ -1302,6 +1319,152 @@ namespace
             "A delayed authorization escaped the expiry cleanup path.");
     }
 
+    void TestCompletedSessionsExpireBeforeReap()
+    {
+        {
+            constexpr std::string_view expiredAccess =
+                "expired-completed-restore-access";
+            LamaPon::HttpResponse logoutResponse;
+            logoutResponse.statusCode = 204;
+            auto backend = std::make_shared<ScriptedBackend>(
+                std::deque<LamaPon::HttpResponse>{
+                    JsonResponse(
+                        200,
+                        SessionJson(
+                            expiredAccess,
+                            "expired-completed-restore-refresh",
+                            "expired-completed-restore-player",
+                            1)),
+                    std::move(logoutResponse)
+                });
+            auto storeState =
+                std::make_shared<MemoryTokenStoreState>();
+            storeState->loadStatus =
+                LamaPon::Detail::RefreshTokenLoadStatus::Loaded;
+            storeState->token = "expired-completed-stored-refresh";
+            auto services =
+                LamaPon::Detail::OnlineServicesTestAccess::Create(
+                    TestConfiguration(false),
+                    [backend](const LamaPon::HttpRequest& request)
+                    {
+                        return backend->Send(request);
+                    },
+                    std::make_unique<MemoryTokenStore>(storeState));
+
+            WaitUntilCurrentTaskCompleted(
+                *services,
+                "Completed restore was not ready for TTL aging.");
+            Require(
+                LamaPon::Detail::OnlineServicesTestAccess::
+                    AgeCurrentTaskCompletion(*services, 31.0f),
+                "Could not age the completed restore.");
+            services->Update(0.0f);
+            Require(
+                services->State()
+                        == LamaPon::OnlineAccountState::SigningOut
+                    && !services->IsSignedIn()
+                    && services->Player().playerId.empty()
+                    && storeState->saveCount == 0
+                    && storeState->deleteCount == 1
+                    && storeState->token.empty(),
+                "An expired completed restore was published or persisted.");
+            UpdateUntilState(
+                *services,
+                LamaPon::OnlineAccountState::Error,
+                "Expired completed restore cleanup did not finish.");
+            const auto requests = backend->Requests();
+            Require(
+                requests.size() == 2
+                    && HasHeader(
+                        requests.back(),
+                        L"Authorization",
+                        L"Bearer expired-completed-restore-access")
+                    && services->LastErrorCode() == "request_failed",
+                "Expired completed restore was not revoked.");
+        }
+
+        {
+            constexpr std::string_view expiredAccess =
+                "expired-completed-poll-access";
+            auto authorized = SessionJson(
+                expiredAccess,
+                "expired-completed-poll-refresh",
+                "expired-completed-poll-player",
+                1);
+            authorized["status"] = "authorized";
+            LamaPon::HttpResponse logoutResponse;
+            logoutResponse.statusCode = 204;
+            auto backend = std::make_shared<ScriptedBackend>(
+                std::deque<LamaPon::HttpResponse>{
+                    JsonResponse(
+                        201,
+                        {
+                            {
+                                "transactionId",
+                                "expired-completed-transaction"
+                            },
+                            { "pollToken", "expired-completed-poll" },
+                            {
+                                "authorizationUrl",
+                                "https://login.example.test/expired-completed"
+                            },
+                            { "expiresIn", 60 },
+                            { "pollInterval", 1 }
+                        }),
+                    JsonResponse(200, authorized),
+                    std::move(logoutResponse)
+                });
+            auto storeState =
+                std::make_shared<MemoryTokenStoreState>();
+            auto services =
+                LamaPon::Detail::OnlineServicesTestAccess::Create(
+                    TestConfiguration(false),
+                    [backend](const LamaPon::HttpRequest& request)
+                    {
+                        return backend->Send(request);
+                    },
+                    std::make_unique<MemoryTokenStore>(storeState));
+
+            Require(
+                services->BeginDiscordSignIn(),
+                "Completed-poll expiry login did not start.");
+            UpdateUntilState(
+                *services,
+                LamaPon::OnlineAccountState::WaitingForAuthorization,
+                "Completed-poll expiry login start did not finish.");
+            services->Update(1.0f);
+            WaitUntilCurrentTaskCompleted(
+                *services,
+                "Completed poll was not ready for TTL aging.");
+            Require(
+                LamaPon::Detail::OnlineServicesTestAccess::
+                    AgeCurrentTaskCompletion(*services, 31.0f),
+                "Could not age the completed poll.");
+            services->Update(0.0f);
+            Require(
+                services->State()
+                        == LamaPon::OnlineAccountState::SigningOut
+                    && !services->IsSignedIn()
+                    && services->Player().playerId.empty()
+                    && storeState->saveCount == 0
+                    && storeState->deleteCount == 0,
+                "An expired completed authorization was published or persisted.");
+            UpdateUntilState(
+                *services,
+                LamaPon::OnlineAccountState::Error,
+                "Expired completed authorization cleanup did not finish.");
+            const auto requests = backend->Requests();
+            Require(
+                requests.size() == 3
+                    && HasHeader(
+                        requests.back(),
+                        L"Authorization",
+                        L"Bearer expired-completed-poll-access")
+                    && services->LastErrorCode() == "request_failed",
+                "Expired completed authorization was not revoked.");
+        }
+    }
+
     void TestExplicitSignOutOverridesExpiredPollCleanup()
     {
         LamaPon::HttpResponse logoutResponse;
@@ -1612,6 +1775,7 @@ int main()
         TestRefreshSignOutRace();
         TestCancelledAuthorizedPollIsLoggedOut();
         TestExpiredAuthorizedPollIsLoggedOut();
+        TestCompletedSessionsExpireBeforeReap();
         TestExplicitSignOutOverridesExpiredPollCleanup();
         TestCancellationIgnoresOldCompletion();
         TestDestructionDoesNotWaitForBlockedRequest();

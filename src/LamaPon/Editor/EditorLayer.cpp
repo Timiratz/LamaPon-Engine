@@ -234,6 +234,9 @@ namespace LamaPon
         , m_scene(scene)
         , m_playerPrefs(playerPrefs)
         , m_saveData(saveData)
+        , m_persistencePanelState(
+            playerPrefs.FilePath(),
+            saveData.Directory())
         , m_scenePath(std::move(scenePath))
         , m_engineRoot(std::filesystem::weakly_canonical(
             std::move(engineRoot)))
@@ -4468,6 +4471,10 @@ namespace LamaPon
 
     void EditorLayer::DrawPersistencePanel(bool& open)
     {
+        static_cast<void>(
+            m_persistencePanelState.SynchronizeBinding(
+                m_playerPrefs.FilePath(),
+                m_saveData.Directory()));
         if (!open)
         {
             return;
@@ -4484,12 +4491,21 @@ namespace LamaPon
             ImGui::End();
             return;
         }
+        const bool closeStaleDeleteAllPopup =
+            m_persistencePanelState.CloseDeleteAllPopupRequested();
 
         ImGui::TextWrapped(
             "保存先: %s",
             PathToUtf8(
                 m_playerPrefs.FilePath().
                     parent_path()).c_str());
+        const auto persistenceBindingRevision =
+            m_persistencePanelState.BindingRevision();
+        ImGui::PushID(static_cast<int>(
+            static_cast<std::uint32_t>(persistenceBindingRevision)));
+        ImGui::PushID(static_cast<int>(
+            static_cast<std::uint32_t>(
+                persistenceBindingRevision >> 32u)));
         if (ImGui::Button("PlayerPrefsを保存"))
         {
             try
@@ -4606,8 +4622,8 @@ namespace LamaPon
 
         ImGui::InputText(
             "キー##PlayerPref",
-            m_playerPrefKeyBuffer.data(),
-            m_playerPrefKeyBuffer.size());
+            m_persistencePanelState.playerPrefKey.data(),
+            m_persistencePanelState.playerPrefKey.size());
         constexpr const char* types[]{
             "整数",
             "小数",
@@ -4616,31 +4632,31 @@ namespace LamaPon
         };
         ImGui::Combo(
             "型##PlayerPref",
-            &m_playerPrefType,
+            &m_persistencePanelState.playerPrefType,
             types,
             static_cast<int>(std::size(types)));
-        if (m_playerPrefType == 2)
+        if (m_persistencePanelState.playerPrefType == 2)
         {
             ImGui::Checkbox(
                 "値##PlayerPrefBoolean",
-                &m_playerPrefBoolean);
+                &m_persistencePanelState.playerPrefBoolean);
         }
         else
         {
             ImGui::InputText(
                 "値##PlayerPref",
-                m_playerPrefValueBuffer.data(),
-                m_playerPrefValueBuffer.size());
+                m_persistencePanelState.playerPrefValue.data(),
+                m_persistencePanelState.playerPrefValue.size());
         }
         if (ImGui::Button("追加／更新"))
         {
             try
             {
                 const std::string key(
-                    m_playerPrefKeyBuffer.data());
+                    m_persistencePanelState.playerPrefKey.data());
                 const std::string value(
-                    m_playerPrefValueBuffer.data());
-                switch (m_playerPrefType)
+                    m_persistencePanelState.playerPrefValue.data());
+                switch (m_persistencePanelState.playerPrefType)
                 {
                 case 0:
                     m_playerPrefs.SetInteger(
@@ -4655,7 +4671,7 @@ namespace LamaPon
                 case 2:
                     m_playerPrefs.SetBoolean(
                         key,
-                        m_playerPrefBoolean);
+                        m_persistencePanelState.playerPrefBoolean);
                     break;
                 default:
                     m_playerPrefs.SetString(
@@ -4671,6 +4687,8 @@ namespace LamaPon
                 SetStatus(exception.what(), true);
             }
         }
+        ImGui::PopID();
+        ImGui::PopID();
         ImGui::SameLine();
         if (ImGui::Button("すべて削除"))
         {
@@ -4682,21 +4700,41 @@ namespace LamaPon
                 nullptr,
                 ImGuiWindowFlags_AlwaysAutoResize))
         {
-            ImGui::TextUnformatted(
-                "すべてのPlayerPrefsを削除しますか？");
-            if (ImGui::Button("削除する"))
+            if (closeStaleDeleteAllPopup)
             {
-                m_playerPrefs.DeleteAll();
                 ImGui::CloseCurrentPopup();
+                m_persistencePanelState.
+                    AcknowledgeCloseDeleteAllPopup();
             }
-            ImGui::SameLine();
-            if (ImGui::Button("キャンセル"))
+            else
             {
-                ImGui::CloseCurrentPopup();
+                ImGui::TextUnformatted(
+                    "すべてのPlayerPrefsを削除しますか？");
+                if (ImGui::Button("削除する"))
+                {
+                    m_playerPrefs.DeleteAll();
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("キャンセル"))
+                {
+                    ImGui::CloseCurrentPopup();
+                }
             }
             ImGui::EndPopup();
         }
+        else if (closeStaleDeleteAllPopup
+            && !ImGui::IsPopupOpen("DeleteAllPlayerPrefs"))
+        {
+            // popupが存在しないことを確認できた場合だけsignalを消費します。
+            m_persistencePanelState.AcknowledgeCloseDeleteAllPopup();
+        }
 
+        ImGui::PushID(static_cast<int>(
+            static_cast<std::uint32_t>(persistenceBindingRevision)));
+        ImGui::PushID(static_cast<int>(
+            static_cast<std::uint32_t>(
+                persistenceBindingRevision >> 32u)));
         ImGui::SeparatorText("JSONセーブスロット");
         ImGui::BeginChild(
             "SaveSlotList",
@@ -4707,21 +4745,22 @@ namespace LamaPon
         {
             if (ImGui::Selectable(
                     slot.c_str(),
-                    slot == m_selectedSaveSlot))
+                    slot
+                        == m_persistencePanelState.selectedSaveSlot))
             {
                 try
                 {
-                    m_selectedSaveSlot = slot;
+                    m_persistencePanelState.selectedSaveSlot = slot;
                     strncpy_s(
-                        m_saveSlotBuffer.data(),
-                        m_saveSlotBuffer.size(),
+                        m_persistencePanelState.saveSlot.data(),
+                        m_persistencePanelState.saveSlot.size(),
                         slot.c_str(),
                         _TRUNCATE);
                     const auto json =
                         m_saveData.LoadJson(slot);
                     strncpy_s(
-                        m_saveJsonBuffer.data(),
-                        m_saveJsonBuffer.size(),
+                        m_persistencePanelState.saveJson.data(),
+                        m_persistencePanelState.saveJson.size(),
                         json
                             ? json->c_str()
                             : "{}",
@@ -4738,22 +4777,22 @@ namespace LamaPon
         ImGui::BeginGroup();
         ImGui::InputText(
             "スロット名",
-            m_saveSlotBuffer.data(),
-            m_saveSlotBuffer.size());
+            m_persistencePanelState.saveSlot.data(),
+            m_persistencePanelState.saveSlot.size());
         ImGui::InputTextMultiline(
             "JSON",
-            m_saveJsonBuffer.data(),
-            m_saveJsonBuffer.size(),
+            m_persistencePanelState.saveJson.data(),
+            m_persistencePanelState.saveJson.size(),
             ImVec2{ -1.0f, 92.0f });
         if (ImGui::Button("スロットを保存"))
         {
             try
             {
                 m_saveData.SaveJson(
-                    m_saveSlotBuffer.data(),
-                    m_saveJsonBuffer.data());
-                m_selectedSaveSlot =
-                    m_saveSlotBuffer.data();
+                    m_persistencePanelState.saveSlot.data(),
+                    m_persistencePanelState.saveJson.data());
+                m_persistencePanelState.selectedSaveSlot =
+                    m_persistencePanelState.saveSlot.data();
                 SetStatus(
                     "セーブスロットを保存しました");
             }
@@ -4764,18 +4803,16 @@ namespace LamaPon
         }
         ImGui::SameLine();
         ImGui::BeginDisabled(
-            m_selectedSaveSlot.empty());
+            m_persistencePanelState.selectedSaveSlot.empty());
         if (ImGui::Button("スロットを削除"))
         {
             try
             {
                 m_saveData.DeleteSlot(
-                    m_selectedSaveSlot);
-                m_selectedSaveSlot.clear();
-                m_saveSlotBuffer = {};
-                m_saveJsonBuffer = {
-                    '{', '}', '\0'
-                };
+                    m_persistencePanelState.selectedSaveSlot);
+                m_persistencePanelState.selectedSaveSlot.clear();
+                m_persistencePanelState.saveSlot = {};
+                m_persistencePanelState.saveJson = { '{', '}', '\0' };
                 SetStatus(
                     "セーブスロットを削除しました");
             }
@@ -4786,6 +4823,8 @@ namespace LamaPon
         }
         ImGui::EndDisabled();
         ImGui::EndGroup();
+        ImGui::PopID();
+        ImGui::PopID();
 
         ImGui::End();
     }

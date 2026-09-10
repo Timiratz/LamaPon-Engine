@@ -280,6 +280,8 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Online/CloudSaveJournal.h
     src/LamaPon/Online/OnlineHttpValidation.cpp
     src/LamaPon/Online/OnlineHttpValidation.h
+    src/LamaPon/Online/OnlinePersistenceCoordinator.cpp
+    src/LamaPon/Online/OnlinePersistenceCoordinator.h
     src/LamaPon/Online/OnlineServices.cpp
     src/LamaPon/Online/OnlineServices.h
     src/LamaPon/Online/OnlineServicesTesting.h
@@ -451,6 +453,7 @@ set(LAMAPON_EDITOR_SOURCES
     src/LamaPon/Editor/EditorExtensionRegistry.h
     src/LamaPon/Editor/EditorLayer.cpp
     src/LamaPon/Editor/EditorLayer.h
+    src/LamaPon/Editor/PersistencePanelState.h
     src/LamaPon/Editor/EditorLayerAnimationTools.cpp
     src/LamaPon/Editor/EditorLayerAssets.cpp
     src/LamaPon/Editor/EditorLayerExtensions.cpp
@@ -1356,6 +1359,28 @@ if(BUILD_TESTING)
         PROPERTIES LABELS "online;state-machine"
     )
 
+    add_executable(LamaPonOnlinePersistenceCoordinatorTests
+        tests/OnlinePersistenceCoordinatorTests.cpp
+    )
+    target_link_libraries(
+        LamaPonOnlinePersistenceCoordinatorTests
+        PRIVATE
+            LamaPonRuntime
+    )
+    target_compile_options(LamaPonOnlinePersistenceCoordinatorTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_test(
+        NAME OnlinePersistenceActivation
+        COMMAND LamaPonOnlinePersistenceCoordinatorTests
+    )
+    set_tests_properties(
+        OnlinePersistenceActivation
+        PROPERTIES LABELS "online;persistence;profiles;cloud-save"
+    )
+
     add_executable(LamaPonWindowsOnlinePlatformTests
         tests/WindowsOnlinePlatformTests.cpp
     )
@@ -1931,6 +1956,7 @@ install(
         PATTERN "CloudSaveJournal.h" EXCLUDE
         PATTERN "LocalPersistenceDocuments.h" EXCLUDE
         PATTERN "OnlineHttpValidation.h" EXCLUDE
+        PATTERN "OnlinePersistenceCoordinator.h" EXCLUDE
         PATTERN "SaveSlotValidation.h" EXCLUDE
         PATTERN "OnlineServicesTesting.h" EXCLUDE
         PATTERN "WindowsOnlinePlatform.h" EXCLUDE

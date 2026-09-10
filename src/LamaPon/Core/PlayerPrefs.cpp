@@ -216,6 +216,7 @@ namespace LamaPon
     {
         std::filesystem::path filePath;
         ValueMap values;
+        const void* bindingLeaseOwner{};
         bool dirty{};
         bool loadFailure{};
     };
@@ -248,6 +249,8 @@ namespace LamaPon
             std::make_unique<Implementation>();
         replacement->filePath =
             m_implementation->filePath;
+        replacement->bindingLeaseOwner =
+            m_implementation->bindingLeaseOwner;
         try
         {
             replacement->values =
@@ -278,6 +281,8 @@ namespace LamaPon
             std::make_unique<Implementation>();
         replacement->filePath =
             m_implementation->filePath;
+        replacement->bindingLeaseOwner =
+            m_implementation->bindingLeaseOwner;
         replacement->values =
             ReadValues(replacement->filePath);
         m_implementation.swap(replacement);
@@ -298,6 +303,11 @@ namespace LamaPon
     void PlayerPrefs::Rebind(
         std::filesystem::path filePath)
     {
+        if (m_implementation->bindingLeaseOwner)
+        {
+            throw std::logic_error(
+                "PlayerPrefs binding is owned by online persistence.");
+        }
         if (filePath == m_implementation->filePath)
         {
             return;
@@ -319,6 +329,10 @@ namespace LamaPon
     void PlayerPrefs::RelocateBinding(
         std::filesystem::path filePath) noexcept
     {
+        if (m_implementation->bindingLeaseOwner)
+        {
+            return;
+        }
         m_implementation->filePath.swap(filePath);
     }
 
@@ -326,6 +340,64 @@ namespace LamaPon
         PlayerPrefs& other) noexcept
     {
         m_implementation.swap(other.m_implementation);
+    }
+
+    bool PlayerPrefs::AcquireBindingLease(
+        const void* const owner) noexcept
+    {
+        if (!owner || m_implementation->bindingLeaseOwner)
+        {
+            return false;
+        }
+        m_implementation->bindingLeaseOwner = owner;
+        return true;
+    }
+
+    bool PlayerPrefs::ReleaseBindingLease(
+        const void* const owner) noexcept
+    {
+        if (!owner
+            || m_implementation->bindingLeaseOwner != owner)
+        {
+            return false;
+        }
+        m_implementation->bindingLeaseOwner = nullptr;
+        return true;
+    }
+
+    bool PlayerPrefs::IsBindingLeased() const noexcept
+    {
+        return m_implementation->bindingLeaseOwner != nullptr;
+    }
+
+    bool PlayerPrefs::BindingLeaseOwnedBy(
+        const void* const owner) const noexcept
+    {
+        return owner
+            && m_implementation->bindingLeaseOwner == owner;
+    }
+
+    void PlayerPrefs::LoadValidatedSnapshot(
+        const std::string_view fullDocument,
+        const bool missing)
+    {
+        auto replacement = std::make_unique<Implementation>();
+        replacement->filePath = m_implementation->filePath;
+        replacement->bindingLeaseOwner =
+            m_implementation->bindingLeaseOwner;
+        if (missing)
+        {
+            if (!fullDocument.empty())
+            {
+                throw std::invalid_argument(
+                    "A missing PlayerPrefs snapshot must not contain bytes.");
+            }
+        }
+        else
+        {
+            replacement->values = ReadStrictValues(fullDocument);
+        }
+        m_implementation.swap(replacement);
     }
 
     std::string PlayerPrefs::SerializeToJson() const
@@ -399,6 +471,8 @@ namespace LamaPon
     {
         auto replacement = std::make_unique<Implementation>();
         replacement->filePath = m_implementation->filePath;
+        replacement->bindingLeaseOwner =
+            m_implementation->bindingLeaseOwner;
         replacement->values = ReadStrictValues(fullDocument);
         WriteAtomically(replacement->filePath, fullDocument);
         m_implementation.swap(replacement);
@@ -408,6 +482,8 @@ namespace LamaPon
     {
         auto replacement = std::make_unique<Implementation>();
         replacement->filePath = m_implementation->filePath;
+        replacement->bindingLeaseOwner =
+            m_implementation->bindingLeaseOwner;
         (void)Detail::DurableDeleteLocalDocument(replacement->filePath);
         m_implementation.swap(replacement);
     }

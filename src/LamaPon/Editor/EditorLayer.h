@@ -9,6 +9,7 @@
 #include "LamaPon/Core/Log.h"
 #include "LamaPon/Animation/AnimationClip.h"
 #include "LamaPon/Editor/PackageManager.h"
+#include "LamaPon/Editor/PersistencePanelState.h"
 #include "LamaPon/Editor/ScriptEditorDetection.h"
 #include "LamaPon/Editor/ShaderProperties.h"
 #include "LamaPon/Graphics/RenderTarget.h"
@@ -706,6 +707,7 @@ namespace LamaPon
         Scene& m_scene;
         PlayerPrefs& m_playerPrefs;
         SaveDataStore& m_saveData;
+        Detail::PersistencePanelState m_persistencePanelState;
         std::filesystem::path m_scenePath;
         std::filesystem::path m_engineRoot;
         std::string m_buildConfiguration;
@@ -807,15 +809,6 @@ namespace LamaPon
         std::string m_packageBuildError;
         std::string m_packageBuildIndexEntry;
         std::array<char, 96> m_editorPresetNameBuffer{};
-        std::array<char, 128> m_playerPrefKeyBuffer{};
-        std::array<char, 512> m_playerPrefValueBuffer{};
-        std::array<char, 128> m_saveSlotBuffer{};
-        std::array<char, 4096> m_saveJsonBuffer{
-            '{', '}', '\0'
-        };
-        std::string m_selectedSaveSlot;
-        int m_playerPrefType{};
-        bool m_playerPrefBoolean{};
         std::string m_assetFolderDialogError;
         std::string m_assetFileDialogError;
         std::string m_assetDeleteScanError;

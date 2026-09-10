@@ -5,11 +5,15 @@
 #include <aclapi.h>
 
 #include <algorithm>
+#include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -17,11 +21,64 @@
 
 namespace
 {
+    using namespace std::chrono_literals;
+
     void Require(const bool condition, const char* message)
     {
         if (!condition)
         {
             throw std::runtime_error(message);
+        }
+    }
+
+    struct FileHandle final
+    {
+        HANDLE value{ INVALID_HANDLE_VALUE };
+
+        ~FileHandle()
+        {
+            Close();
+        }
+
+        void Close() noexcept
+        {
+            if (value != INVALID_HANDLE_VALUE)
+            {
+                CloseHandle(value);
+                value = INVALID_HANDLE_VALUE;
+            }
+        }
+    };
+
+    struct SavePause final
+    {
+        std::mutex mutex;
+        std::condition_variable condition;
+        bool entered{};
+        bool released{};
+    };
+
+    void PauseCredentialSaveBeforeReplace(void* const context) noexcept
+    {
+        try
+        {
+            auto& pause = *static_cast<SavePause*>(context);
+            std::unique_lock lock(pause.mutex);
+            if (pause.entered)
+            {
+                return;
+            }
+            pause.entered = true;
+            pause.condition.notify_all();
+            pause.condition.wait(
+                lock,
+                [&pause]
+                {
+                    return pause.released;
+                });
+        }
+        catch (...)
+        {
         }
     }
 
@@ -315,14 +372,286 @@ int main()
             "A truncated credential envelope was accepted.");
 
         OverwriteBytes(credentialPath, originalBytes);
+        constexpr std::string_view candidateToken =
+            "candidate-refresh-token-must-not-be-committed";
+        const auto requireOldCredential = [&](const char* message)
+        {
+            // 新しいinstanceで読み直し、process再起動後もcandidateでは
+            // なく直前のcommitted値だけが見えることを確認します。
+            LamaPon::Detail::WindowsRefreshTokenStore afterRestart(
+                credentialPath,
+                "game-41c81960",
+                "production");
+            const auto afterFailure = afterRestart.Load();
+            Require(
+                afterFailure.Loaded()
+                    && afterFailure.refreshToken == refreshToken
+                    && afterFailure.refreshToken != candidateToken
+                    && !std::filesystem::exists(
+                        credentialPath.wstring() + L".tmp"),
+                message);
+        };
+
+        Require(
+            !store.Save({}).succeeded,
+            "An empty refresh token was accepted.");
+        requireOldCredential(
+            "Invalid Save changed the committed credential.");
         const std::string oversizedToken(8193, 'x');
         Require(
-            !store.Save(oversizedToken).succeeded
-                && store.Load().refreshToken == refreshToken,
+            !store.Save(oversizedToken).succeeded,
             "An oversized token replaced a valid credential.");
+        requireOldCredential(
+            "Oversized Save changed the committed credential.");
+
+        for (const auto [failPoint, message] : {
+                std::pair{
+                    LamaPon::Detail::
+                        WindowsRefreshTokenSaveTestFailPoint::Protection,
+                    "Protection failure changed the committed credential." },
+                std::pair{
+                    LamaPon::Detail::
+                        WindowsRefreshTokenSaveTestFailPoint::TemporaryWrite,
+                    "Temporary-write failure changed the committed credential." },
+                std::pair{
+                    LamaPon::Detail::
+                        WindowsRefreshTokenSaveTestFailPoint::TemporaryAcl,
+                    "Temporary ACL failure changed the committed credential." },
+                std::pair{
+                    LamaPon::Detail::
+                        WindowsRefreshTokenSaveTestFailPoint::Replace,
+                    "Atomic-replace failure changed the committed credential." }
+            })
+        {
+            LamaPon::Detail::SetWindowsRefreshTokenSaveTestFailPoint(
+                failPoint);
+            const auto failed = store.Save(candidateToken);
+            LamaPon::Detail::SetWindowsRefreshTokenSaveTestFailPoint(
+                LamaPon::Detail::
+                    WindowsRefreshTokenSaveTestFailPoint::None);
+            Require(!failed.succeeded, message);
+            requireOldCredential(message);
+        }
+
+        auto lockPath = credentialPath;
+        lockPath += L".lock";
+        std::error_code fixtureError;
+        std::filesystem::remove(lockPath, fixtureError);
+        Require(
+            !fixtureError,
+            "Could not replace the credential lock fixture.");
+        const auto lockVictim = directory / L"lock-hardlink-victim.bin";
+        {
+            std::ofstream output(
+                lockVictim,
+                std::ios::binary | std::ios::trunc);
+            output << "lock-victim-must-not-change";
+            Require(
+                static_cast<bool>(output),
+                "Could not create the credential lock victim.");
+        }
+        const auto lockVictimBytes = ReadBytes(lockVictim);
+        Require(
+            CreateHardLinkW(
+                lockPath.c_str(),
+                lockVictim.c_str(),
+                nullptr) != FALSE,
+            "Could not create the credential lock hard-link fixture.");
+        const auto unsafeLockLoad = store.Load();
+        Require(
+            unsafeLockLoad.status
+                    == LamaPon::Detail::RefreshTokenLoadStatus::Unavailable
+                && ReadBytes(lockVictim) == lockVictimBytes,
+            "A hard-linked credential lock was accepted or modified.");
+        std::filesystem::remove(lockPath, fixtureError);
+        Require(!fixtureError, "Could not remove the unsafe lock fixture.");
+        std::filesystem::remove(lockVictim, fixtureError);
+        Require(!fixtureError, "Could not remove the lock victim fixture.");
+        Require(
+            store.Load().refreshToken == refreshToken,
+            "Credential Load did not recover after removing an unsafe lock.");
+        Require(
+            std::filesystem::is_regular_file(lockPath),
+            "Credential operations did not create a persistent lock file.");
+        RequireRestrictedAcl(lockPath);
+        FileHandle externalLock;
+        externalLock.value = CreateFileW(
+            lockPath.c_str(),
+            GENERIC_READ,
+            0u,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+            nullptr);
+        Require(
+            externalLock.value != INVALID_HANDLE_VALUE,
+            "Could not hold the credential operation lock.");
+        LamaPon::Detail::WindowsRefreshTokenStore blockedStore(
+            credentialPath,
+            "game-41c81960",
+            "production");
+        const auto blockedSave = blockedStore.Save(candidateToken);
+        const auto blockedLoad = blockedStore.Load();
+        const auto blockedDelete = blockedStore.Delete();
+        const auto bytesWhileBlocked = ReadBytes(credentialPath);
+        externalLock.Close();
+        Require(
+            !blockedSave.succeeded
+                && blockedLoad.status
+                    == LamaPon::Detail::RefreshTokenLoadStatus::Unavailable
+                && !blockedDelete.succeeded
+                && bytesWhileBlocked == originalBytes,
+            "A busy credential lock exposed or changed the final token.");
+
+        const auto recoveredLoad = blockedStore.Load();
+        Require(
+            recoveredLoad.Loaded()
+                && recoveredLoad.refreshToken == refreshToken
+                && blockedStore.Save(candidateToken).succeeded
+                && blockedStore.Load().refreshToken == candidateToken
+                && blockedStore.Delete().succeeded
+                && blockedStore.Load().status
+                    == LamaPon::Detail::RefreshTokenLoadStatus::NotFound
+                && blockedStore.Save(refreshToken).succeeded,
+            "Credential operations did not recover after releasing the lock.");
+
+        SavePause pause;
+        LamaPon::Detail::SetWindowsRefreshTokenSaveBeforeReplaceHook(
+            &PauseCredentialSaveBeforeReplace,
+            &pause);
+        LamaPon::Detail::WindowsRefreshTokenStore firstConcurrentStore(
+            credentialPath,
+            "game-41c81960",
+            "production");
+        LamaPon::Detail::WindowsRefreshTokenStore secondConcurrentStore(
+            credentialPath,
+            "game-41c81960",
+            "production");
+        LamaPon::Detail::OnlinePlatformResult firstConcurrentResult;
+        std::thread firstSave(
+            [&]
+            {
+                try
+                {
+                    firstConcurrentResult = firstConcurrentStore.Save(
+                        "first-concurrent-candidate");
+                }
+                catch (...)
+                {
+                }
+            });
+        bool firstReachedReplace{};
+        {
+            std::unique_lock lock(pause.mutex);
+            firstReachedReplace = pause.condition.wait_for(
+                lock,
+                3s,
+                [&pause]
+                {
+                    return pause.entered;
+                });
+        }
+        LamaPon::Detail::OnlinePlatformResult secondConcurrentResult;
+        if (firstReachedReplace)
+        {
+            secondConcurrentResult = secondConcurrentStore.Save(
+                "second-concurrent-candidate");
+        }
+        {
+            std::scoped_lock lock(pause.mutex);
+            pause.released = true;
+        }
+        pause.condition.notify_all();
+        firstSave.join();
+        LamaPon::Detail::SetWindowsRefreshTokenSaveBeforeReplaceHook(
+            nullptr,
+            nullptr);
+        const auto concurrentFinal = store.Load();
+        Require(
+            firstReachedReplace
+                && firstConcurrentResult.succeeded
+                && !secondConcurrentResult.succeeded
+                && concurrentFinal.Loaded()
+                && concurrentFinal.refreshToken
+                    == "first-concurrent-candidate"
+                && store.Save(refreshToken).succeeded,
+            "Concurrent credential stores committed another writer's candidate.");
 
         auto temporaryPath = credentialPath;
         temporaryPath += L".tmp";
+        const auto temporaryVictim =
+            directory / L"temporary-hardlink-victim.bin";
+        {
+            std::ofstream output(
+                temporaryVictim,
+                std::ios::binary | std::ios::trunc);
+            output << "temporary-victim-must-not-change";
+            Require(
+                static_cast<bool>(output),
+                "Could not create the credential temporary victim.");
+        }
+        const auto temporaryVictimBytes = ReadBytes(temporaryVictim);
+        Require(
+            CreateHardLinkW(
+                temporaryPath.c_str(),
+                temporaryVictim.c_str(),
+                nullptr) != FALSE,
+            "Could not create the credential temporary hard-link fixture.");
+        Require(
+            !store.Save(candidateToken).succeeded
+                && ReadBytes(temporaryVictim) == temporaryVictimBytes
+                && store.Load().refreshToken == refreshToken,
+            "A hard-linked credential temporary file was followed or modified.");
+        std::filesystem::remove(temporaryPath, fixtureError);
+        Require(
+            !fixtureError,
+            "Could not remove the unsafe temporary fixture.");
+        std::filesystem::remove(temporaryVictim, fixtureError);
+        Require(
+            !fixtureError,
+            "Could not remove the temporary victim fixture.");
+
+        const auto reparseTarget = directory / L"reparse-target";
+        const auto reparseParent = directory / L"reparse-parent";
+        std::filesystem::create_directories(reparseTarget, fixtureError);
+        Require(
+            !fixtureError,
+            "Could not create the credential reparse target.");
+        LamaPon::Detail::WindowsRefreshTokenStore realParentStore(
+            reparseTarget / L"session.bin",
+            "game-41c81960",
+            "production");
+        Require(
+            realParentStore.Save(refreshToken).succeeded,
+            "Could not prepare the credential reparse target.");
+        constexpr DWORD AllowUnprivilegedCreate = 0x2u;
+        if (CreateSymbolicLinkW(
+                reparseParent.c_str(),
+                reparseTarget.c_str(),
+                SYMBOLIC_LINK_FLAG_DIRECTORY
+                    | AllowUnprivilegedCreate) != FALSE)
+        {
+            LamaPon::Detail::WindowsRefreshTokenStore reparseStore(
+                reparseParent / L"session.bin",
+                "game-41c81960",
+                "production");
+            Require(
+                reparseStore.Load().status
+                        == LamaPon::Detail::RefreshTokenLoadStatus::Unavailable
+                    && !reparseStore.Save(candidateToken).succeeded
+                    && !reparseStore.Delete().succeeded
+                    && realParentStore.Load().refreshToken == refreshToken,
+                "A reparse-point credential parent escaped path isolation.");
+            std::filesystem::remove(reparseParent, fixtureError);
+            Require(
+                !fixtureError,
+                "Could not remove the credential reparse fixture.");
+        }
+        std::filesystem::remove_all(reparseTarget, fixtureError);
+        Require(
+            !fixtureError,
+            "Could not remove the credential reparse target.");
+
         {
             std::ofstream leftover(
                 temporaryPath,

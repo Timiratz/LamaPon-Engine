@@ -1,10 +1,12 @@
 #include "LamaPon/Online/OnlineServices.h"
 
 #include "LamaPon/Online/DiscordAuth.h"
+#include "LamaPon/Online/OnlinePersistenceCoordinator.h"
 #include "LamaPon/Online/OnlineServicesTesting.h"
 #include "LamaPon/Online/WindowsOnlinePlatform.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <mutex>
 #include <stdexcept>
@@ -63,7 +65,10 @@ namespace
             || code == "credential_save_failed"
             || code == "credential_delete_failed"
             || code == "stored_session_invalid"
-            || code == "browser_launch_failed";
+            || code == "browser_launch_failed"
+            || code == "persistence_activation_failed"
+            || code == "account_identity_changed"
+            || code == "account_save_failed";
     }
 
     std::string PublicErrorCode(const std::string_view code)
@@ -122,6 +127,18 @@ namespace
         if (code == "browser_launch_failed")
         {
             return "ブラウザーを開けませんでした。表示されたURLを手動で開いてください。";
+        }
+        if (code == "persistence_activation_failed")
+        {
+            return "アカウントのセーブデータを安全に読み込めませんでした。";
+        }
+        if (code == "account_identity_changed")
+        {
+            return "セッションのアカウント識別が変化したためサインアウトしました。";
+        }
+        if (code == "account_save_failed")
+        {
+            return "アカウントのPlayerPrefsを保存できませんでした。";
         }
         return "オンライン認証に失敗しました。";
     }
@@ -182,8 +199,159 @@ namespace LamaPon
             std::uint64_t generation{};
             std::mutex mutex;
             AsyncResult result;
+            std::shared_ptr<Detail::DiscordAuthClient> cleanupClient;
+            std::chrono::steady_clock::time_point completedAt{};
             bool completed{};
             bool failed{};
+            bool abandoned{};
+
+            [[nodiscard]] static Detail::OnlineSession*
+                RevocableSession(
+                    const TaskKind taskKind,
+                    const bool taskFailed,
+                    AsyncResult& taskResult) noexcept
+            {
+                if (taskFailed)
+                {
+                    return nullptr;
+                }
+                if (taskKind == TaskKind::PollLogin
+                    && taskResult.loginPoll.status
+                        == Detail::DiscordLoginPollStatus::Authorized)
+                {
+                    return &taskResult.loginPoll.session;
+                }
+                if ((taskKind == TaskKind::RestoreSession
+                        || taskKind == TaskKind::RefreshSession)
+                    && taskResult.sessionRefresh.Succeeded())
+                {
+                    return &taskResult.sessionRefresh.session;
+                }
+                return nullptr;
+            }
+
+            static void CleanupAbandonedResult(
+                const TaskKind taskKind,
+                const bool taskFailed,
+                const std::shared_ptr<Detail::DiscordAuthClient>&
+                    authClient,
+                AsyncResult& taskResult) noexcept
+            {
+                auto* const receivedSession = RevocableSession(
+                    taskKind,
+                    taskFailed,
+                    taskResult);
+                if (authClient
+                    && receivedSession
+                    && !receivedSession->accessToken.empty())
+                {
+                    try
+                    {
+                        (void)authClient->Logout(
+                            receivedSession->accessToken);
+                    }
+                    catch (...)
+                    {
+                    }
+                }
+                EraseTransaction(taskResult.loginStart.transaction);
+                EraseSession(taskResult.loginPoll.session);
+                EraseSession(taskResult.sessionRefresh.session);
+            }
+
+            static void DispatchAbandonedCleanup(
+                const TaskKind taskKind,
+                const bool taskFailed,
+                std::shared_ptr<Detail::DiscordAuthClient> authClient,
+                AsyncResult taskResult) noexcept
+            {
+                if (!RevocableSession(
+                        taskKind,
+                        taskFailed,
+                        taskResult))
+                {
+                    CleanupAbandonedResult(
+                        taskKind,
+                        taskFailed,
+                        authClient,
+                        taskResult);
+                    return;
+                }
+
+                std::shared_ptr<AsyncResult> cleanupResult;
+                try
+                {
+                    cleanupResult = std::make_shared<AsyncResult>(
+                        std::move(taskResult));
+                    std::thread cleanupWorker(
+                        [taskKind,
+                            taskFailed,
+                            authClient = std::move(authClient),
+                            cleanupResult]() mutable
+                            noexcept
+                        {
+                            CleanupAbandonedResult(
+                                taskKind,
+                                taskFailed,
+                                authClient,
+                                *cleanupResult);
+                        });
+                    cleanupWorker.detach();
+                }
+                catch (...)
+                {
+                    if (cleanupResult)
+                    {
+                        CleanupAbandonedResult(
+                            taskKind,
+                            true,
+                            authClient,
+                            *cleanupResult);
+                    }
+                    else
+                    {
+                        CleanupAbandonedResult(
+                            taskKind,
+                            true,
+                            authClient,
+                            taskResult);
+                    }
+                }
+            }
+
+            void Abandon() noexcept
+            {
+                AsyncResult completedResult;
+                std::shared_ptr<Detail::DiscordAuthClient>
+                    completedClient;
+                bool dispatchCleanup{};
+                bool taskFailed{};
+                try
+                {
+                    std::scoped_lock lock(mutex);
+                    abandoned = true;
+                    if (completed)
+                    {
+                        completedResult = std::move(result);
+                        completedClient = cleanupClient;
+                        taskFailed = failed;
+                        dispatchCleanup = true;
+                    }
+                }
+                catch (...)
+                {
+                    return;
+                }
+
+                if (dispatchCleanup)
+                {
+                    DispatchAbandonedCleanup(
+                        kind,
+                        taskFailed,
+                        std::move(completedClient),
+                        std::move(completedResult));
+                }
+            }
 
             ~AsyncMailbox()
             {
@@ -212,7 +380,31 @@ namespace LamaPon
             AdvanceGeneration();
             // workerはmailboxと認証clientだけを所有します。ここでは
             // joinせず参照を手放すため、未完了HTTP通信を待ちません。
+            bool credentialDeleteAttempted{};
+            if (localRefreshTokenDeleteFailed)
+            {
+                // SignOut等の同期削除が失敗した後にownerが破棄されても、
+                // 残った資格情報を次回起動へ持ち越さないよう再試行します。
+                (void)DeleteRefreshTokenTracked();
+                credentialDeleteAttempted = true;
+            }
+            if (inFlight)
+            {
+                const auto taskKind = inFlight->kind;
+                if ((taskKind == TaskKind::RestoreSession
+                        || taskKind == TaskKind::RefreshSession)
+                    && state != OnlineAccountState::SigningOut
+                    && !credentialDeleteAttempted)
+                {
+                    // refresh token rotationの成否がowner破棄後まで
+                    // 確定しないため、旧資格情報を同期的にfail-closedで
+                    // 削除します。明示SignOut済みなら二重削除しません。
+                    (void)DeleteRefreshTokenTracked();
+                }
+                inFlight->Abandon();
+            }
             inFlight.reset();
+            DetachAccountPersistence();
             ClearLoginTransaction();
             ClearSession();
             EraseSecret(pendingLogoutAccessToken);
@@ -328,6 +520,19 @@ namespace LamaPon
             }
         }
 
+        [[nodiscard]] bool DeleteRefreshTokenTracked() noexcept
+        {
+            localRefreshTokenDeleteFailed =
+                !DeleteRefreshToken();
+            return !localRefreshTokenDeleteFailed;
+        }
+
+        [[nodiscard]] bool ResolvePendingRefreshTokenDelete() noexcept
+        {
+            return !localRefreshTokenDeleteFailed
+                || DeleteRefreshTokenTracked();
+        }
+
         [[nodiscard]] bool ReplacePendingLogoutAccessToken(
             Detail::OnlineSession& completedSession)
         {
@@ -358,6 +563,7 @@ namespace LamaPon
             auto mailbox = std::make_shared<AsyncMailbox>();
             mailbox->kind = kind;
             mailbox->generation = generation;
+            mailbox->cleanupClient = client;
             inFlight = mailbox;
             try
             {
@@ -375,13 +581,27 @@ namespace LamaPon
                         {
                             failed = true;
                         }
+                        const auto completedAt =
+                            std::chrono::steady_clock::now();
 
+                        bool cleanupAbandoned{};
+                        std::shared_ptr<Detail::DiscordAuthClient>
+                            cleanupClient;
                         try
                         {
                             std::scoped_lock lock(mailbox->mutex);
-                            mailbox->result = std::move(result);
-                            mailbox->failed = failed;
-                            mailbox->completed = true;
+                            if (mailbox->abandoned)
+                            {
+                                cleanupAbandoned = true;
+                                cleanupClient = mailbox->cleanupClient;
+                            }
+                            else
+                            {
+                                mailbox->result = std::move(result);
+                                mailbox->failed = failed;
+                                mailbox->completedAt = completedAt;
+                                mailbox->completed = true;
+                            }
                         }
                         catch (...)
                         {
@@ -391,14 +611,35 @@ namespace LamaPon
                             try
                             {
                                 std::scoped_lock lock(mailbox->mutex);
-                                mailbox->failed = true;
-                                mailbox->completed = true;
+                                if (mailbox->abandoned)
+                                {
+                                    cleanupAbandoned = true;
+                                    cleanupClient =
+                                        mailbox->cleanupClient;
+                                }
+                                else
+                                {
+                                    mailbox->failed = true;
+                                    mailbox->completedAt = completedAt;
+                                    mailbox->completed = true;
+                                }
                             }
                             catch (...)
                             {
                             }
                         }
-                        EraseAsyncResult(result);
+                        if (cleanupAbandoned)
+                        {
+                            AsyncMailbox::CleanupAbandonedResult(
+                                mailbox->kind,
+                                failed,
+                                cleanupClient,
+                                result);
+                        }
+                        else
+                        {
+                            EraseAsyncResult(result);
+                        }
                     });
                 worker.detach();
                 return true;
@@ -542,10 +783,66 @@ namespace LamaPon
             }
         }
 
-        void AdoptSession(Detail::OnlineSession& nextSession)
+        [[nodiscard]] OnlinePlayerProfile MakePublicProfile(
+            const Detail::OnlinePlayerProfile& source) const
         {
-            const bool stored = SaveRefreshToken(
-                nextSession.refreshToken);
+            return {
+                source.playerId,
+                source.displayName,
+                source.avatarUrl,
+                source.linkedProvider
+            };
+        }
+
+        void DetachAccountPersistence() noexcept
+        {
+            if (!persistenceCoordinator)
+            {
+                return;
+            }
+            const auto result =
+                persistenceCoordinator->DetachToGuest();
+            accountPersistenceSaveFailed =
+                result
+                    == Detail::OnlinePersistenceDetachResult::
+                        QuarantinedAccount
+                || accountPersistenceSaveFailed;
+        }
+
+        [[nodiscard]] static float RemainingReceivedSessionSeconds(
+            const Detail::OnlineSession& receivedSession,
+            const std::chrono::steady_clock::time_point
+                completedAt) noexcept
+        {
+            const auto ageSeconds = std::max(
+                0.0,
+                std::chrono::duration<double>(
+                    std::chrono::steady_clock::now()
+                    - completedAt).count());
+            return static_cast<float>(std::max(
+                0.0,
+                static_cast<double>(
+                    receivedSession.expiresInSeconds)
+                    - ageSeconds));
+        }
+
+        [[nodiscard]] bool PublishSession(
+            Detail::OnlineSession& nextSession,
+            OnlinePlayerProfile nextPlayer,
+            const std::chrono::steady_clock::time_point
+                completedAt) noexcept
+        {
+            // HTTP完了後にmain threadが停止・suspendしていた時間もtokenの
+            // 有効時間です。公開直前に再計算し、既に失効したsessionは
+            // 呼出し側のrevoke経路へ返します。
+            const auto remainingSeconds =
+                RemainingReceivedSessionSeconds(
+                    nextSession,
+                    completedAt);
+            if (remainingSeconds <= 0.0f)
+            {
+                return false;
+            }
             ClearSession();
             session.accessToken.swap(nextSession.accessToken);
             session.refreshToken.swap(nextSession.refreshToken);
@@ -554,12 +851,8 @@ namespace LamaPon
                 0);
             session.player = std::move(nextSession.player);
             nextSession.player = {};
-            player.playerId = session.player.playerId;
-            player.displayName = session.player.displayName;
-            player.avatarUrl = session.player.avatarUrl;
-            player.linkedProvider = session.player.linkedProvider;
-            sessionRemainingSeconds = static_cast<float>(
-                session.expiresInSeconds);
+            player = std::move(nextPlayer);
+            sessionRemainingSeconds = remainingSeconds;
             sessionRefreshLeadSeconds = std::clamp(
                 sessionRemainingSeconds * 0.2f,
                 5.0f,
@@ -568,9 +861,175 @@ namespace LamaPon
             ClearLoginTransaction();
             state = OnlineAccountState::SignedIn;
             ClearError();
-            if (!stored)
+            return true;
+        }
+
+        void RejectReceivedSession(
+            Detail::OnlineSession& rejectedSession,
+            const std::string_view code,
+            const bool deleteStoredCredential)
+        {
+            AdvanceGeneration();
+            DetachAccountPersistence();
+            if (deleteStoredCredential)
             {
-                SetFixedError("credential_save_failed");
+                static_cast<void>(DeleteRefreshTokenTracked());
+            }
+
+            ClearLoginTransaction();
+            ClearSession();
+            player = {};
+            EraseSecret(pendingLogoutAccessToken);
+            pendingLogoutAccessToken.swap(
+                rejectedSession.accessToken);
+            EraseSession(rejectedSession);
+            awaitingCancelledTask = false;
+            cancelledPollExpired = false;
+            preserveErrorAfterLogout = true;
+            accountPersistenceSaveFailed = false;
+            SetFixedError(code);
+            state = OnlineAccountState::SigningOut;
+            if (pendingLogoutAccessToken.empty())
+            {
+                CompleteLogout(false);
+                return;
+            }
+            TickPendingLogout();
+        }
+
+        void AdoptInitialSession(
+            Detail::OnlineSession& nextSession,
+            const bool restoring,
+            const std::chrono::steady_clock::time_point
+                completedAt)
+        {
+            if (RemainingReceivedSessionSeconds(
+                    nextSession,
+                    completedAt) <= 0.0f)
+            {
+                RejectReceivedSession(
+                    nextSession,
+                    "request_failed",
+                    restoring);
+                return;
+            }
+            OnlinePlayerProfile nextPlayer;
+            try
+            {
+                nextPlayer = MakePublicProfile(nextSession.player);
+                if (persistenceCoordinator
+                    && persistenceCoordinator->IsNamespaceEnabled())
+                {
+                    auto prepared =
+                        persistenceCoordinator->PrepareAccount(
+                            nextSession.player.playerId);
+                    if (!persistenceCoordinator->CommitPrepared(
+                            std::move(prepared)))
+                    {
+                        throw std::runtime_error(
+                            "Prepared persistence transaction became stale.");
+                    }
+                }
+            }
+            catch (...)
+            {
+                RejectReceivedSession(
+                    nextSession,
+                    "persistence_activation_failed",
+                    restoring);
+                return;
+            }
+
+            if (RemainingReceivedSessionSeconds(
+                    nextSession,
+                    completedAt) <= 0.0f)
+            {
+                RejectReceivedSession(
+                    nextSession,
+                    "request_failed",
+                    restoring);
+                return;
+            }
+
+            // refresh tokenはaccount profileがactiveになった後だけ保存します。
+            // 保存の成否が曖昧な場合はguestへ戻し、store削除とsession失効を
+            // 行って、次回起動に半端なsessionを残しません。
+            if (!SaveRefreshToken(nextSession.refreshToken))
+            {
+                RejectReceivedSession(
+                    nextSession,
+                    "credential_save_failed",
+                    true);
+                return;
+            }
+            if (!PublishSession(
+                    nextSession,
+                    std::move(nextPlayer),
+                    completedAt))
+            {
+                // Save成功後に期限切れとなった場合は、今保存した資格情報も
+                // rollbackして受領sessionを失効します。
+                RejectReceivedSession(
+                    nextSession,
+                    "request_failed",
+                    true);
+            }
+        }
+
+        void AdoptRefreshedSession(
+            Detail::OnlineSession& nextSession,
+            const std::chrono::steady_clock::time_point
+                completedAt)
+        {
+            if (nextSession.player.playerId != session.player.playerId)
+            {
+                RejectReceivedSession(
+                    nextSession,
+                    "account_identity_changed",
+                    true);
+                return;
+            }
+
+            OnlinePlayerProfile nextPlayer;
+            try
+            {
+                nextPlayer = MakePublicProfile(nextSession.player);
+            }
+            catch (...)
+            {
+                RejectReceivedSession(
+                    nextSession,
+                    "request_failed",
+                    true);
+                return;
+            }
+            if (RemainingReceivedSessionSeconds(
+                    nextSession,
+                    completedAt) <= 0.0f)
+            {
+                RejectReceivedSession(
+                    nextSession,
+                    "request_failed",
+                    true);
+                return;
+            }
+            if (!SaveRefreshToken(nextSession.refreshToken))
+            {
+                RejectReceivedSession(
+                    nextSession,
+                    "credential_save_failed",
+                    true);
+                return;
+            }
+            if (!PublishSession(
+                    nextSession,
+                    std::move(nextPlayer),
+                    completedAt))
+            {
+                RejectReceivedSession(
+                    nextSession,
+                    "request_failed",
+                    true);
             }
         }
 
@@ -608,7 +1067,7 @@ namespace LamaPon
 
             case Detail::RefreshTokenLoadStatus::Corrupt:
                 EraseSecret(refreshToken);
-                if (DeleteRefreshToken())
+                if (DeleteRefreshTokenTracked())
                 {
                     SetFixedError("credential_store_corrupt");
                 }
@@ -624,7 +1083,7 @@ namespace LamaPon
 
             if (refreshToken.empty())
             {
-                if (DeleteRefreshToken())
+                if (DeleteRefreshTokenTracked())
                 {
                     SetFixedError("credential_store_corrupt");
                 }
@@ -669,7 +1128,9 @@ namespace LamaPon
         }
 
         void CompleteLoginPoll(
-            Detail::DiscordLoginPollResult& result)
+            Detail::DiscordLoginPollResult& result,
+            const std::chrono::steady_clock::time_point
+                completedAt)
         {
             switch (result.status)
             {
@@ -684,7 +1145,10 @@ namespace LamaPon
                 return;
 
             case Detail::DiscordLoginPollStatus::Authorized:
-                AdoptSession(result.session);
+                AdoptInitialSession(
+                    result.session,
+                    false,
+                    completedAt);
                 return;
 
             case Detail::DiscordLoginPollStatus::Denied:
@@ -703,17 +1167,35 @@ namespace LamaPon
 
         void CompleteSessionRefresh(
             Detail::OnlineSessionResult& result,
-            const bool restoring)
+            const bool restoring,
+            const std::chrono::steady_clock::time_point
+                completedAt)
         {
             if (result.Succeeded())
             {
-                AdoptSession(result.session);
+                if (restoring)
+                {
+                    AdoptInitialSession(
+                        result.session,
+                        true,
+                        completedAt);
+                }
+                else
+                {
+                    AdoptRefreshedSession(
+                        result.session,
+                        completedAt);
+                }
                 return;
             }
 
             if (InvalidRefreshTokenError(result.errorCode))
             {
-                const bool deleted = DeleteRefreshToken();
+                const bool deleted = DeleteRefreshTokenTracked();
+                if (!restoring)
+                {
+                    DetachAccountPersistence();
+                }
                 ClearSession();
                 player = {};
                 state = restoring
@@ -749,6 +1231,7 @@ namespace LamaPon
 
             // セッションは失効していますが、ネットワーク
             // 障害で保存済みtokenを消すと復旧できなくなります。
+            DetachAccountPersistence();
             ClearSession();
             player = {};
             state = OnlineAccountState::Error;
@@ -762,13 +1245,27 @@ namespace LamaPon
             const bool returnToExpiredLoginError =
                 std::exchange(cancelledPollExpired, false);
             const bool deleteFailed =
-                std::exchange(localRefreshTokenDeleteFailed, false);
+                localRefreshTokenDeleteFailed;
+            const bool persistenceSaveFailed =
+                std::exchange(accountPersistenceSaveFailed, false);
+            const bool preserveFailure =
+                std::exchange(preserveErrorAfterLogout, false);
+            if (preserveFailure)
+            {
+                // failed adoptionの主原因をlogout成否で上書きしません。
+                state = OnlineAccountState::Error;
+                return;
+            }
             state = returnToExpiredLoginError
                 ? OnlineAccountState::Error
                 : OnlineAccountState::SignedOut;
             if (deleteFailed)
             {
                 SetFixedError("credential_delete_failed");
+            }
+            else if (persistenceSaveFailed)
+            {
+                SetFixedError("account_save_failed");
             }
             else if (succeeded)
             {
@@ -888,7 +1385,9 @@ namespace LamaPon
 
         void CompleteTask(
             const TaskKind kind,
-            AsyncResult& result)
+            AsyncResult& result,
+            const std::chrono::steady_clock::time_point
+                completedAt)
         {
             switch (kind)
             {
@@ -896,13 +1395,19 @@ namespace LamaPon
                 CompleteLoginStart(result.loginStart);
                 return;
             case TaskKind::PollLogin:
-                CompleteLoginPoll(result.loginPoll);
+                CompleteLoginPoll(result.loginPoll, completedAt);
                 return;
             case TaskKind::RestoreSession:
-                CompleteSessionRefresh(result.sessionRefresh, true);
+                CompleteSessionRefresh(
+                    result.sessionRefresh,
+                    true,
+                    completedAt);
                 return;
             case TaskKind::RefreshSession:
-                CompleteSessionRefresh(result.sessionRefresh, false);
+                CompleteSessionRefresh(
+                    result.sessionRefresh,
+                    false,
+                    completedAt);
                 return;
             case TaskKind::Logout:
                 CompleteLogout(result.logoutSucceeded);
@@ -937,6 +1442,10 @@ namespace LamaPon
                 }
                 else
                 {
+                    // worker例外はserver応答後のparse/allocation失敗も
+                    // 含みrotation成否が曖昧なため、旧資格情報を残しません。
+                    static_cast<void>(DeleteRefreshTokenTracked());
+                    DetachAccountPersistence();
                     ClearSession();
                     player = {};
                     state = OnlineAccountState::Error;
@@ -958,6 +1467,7 @@ namespace LamaPon
             AsyncResult result;
             TaskKind kind{};
             std::uint64_t taskGeneration{};
+            std::chrono::steady_clock::time_point completedAt{};
             bool failed{};
             {
                 std::scoped_lock lock(mailbox->mutex);
@@ -967,6 +1477,7 @@ namespace LamaPon
                 }
                 kind = mailbox->kind;
                 taskGeneration = mailbox->generation;
+                completedAt = mailbox->completedAt;
                 failed = mailbox->failed;
                 result = std::move(mailbox->result);
             }
@@ -983,7 +1494,7 @@ namespace LamaPon
                 {
                     try
                     {
-                        CompleteTask(kind, result);
+                        CompleteTask(kind, result, completedAt);
                     }
                     catch (...)
                     {
@@ -1054,6 +1565,33 @@ namespace LamaPon
             state = OnlineAccountState::PollingAuthorization;
         }
 
+        void ExpireRefreshingSession()
+        {
+            DetachAccountPersistence();
+            // refresh中はserver側でrotation済みか判別できないため、
+            // 旧refresh tokenを次回起動へ残しません。
+            static_cast<void>(DeleteRefreshTokenTracked());
+            awaitingCancelledTask = inFlight != nullptr;
+            cancelledTaskKind = TaskKind::RefreshSession;
+            cancelledPollExpired = false;
+            AdvanceGeneration();
+            EraseSecret(pendingLogoutAccessToken);
+            pendingLogoutAccessToken.swap(session.accessToken);
+            ClearSession();
+            ClearLoginTransaction();
+            player = {};
+            preserveErrorAfterLogout = true;
+            SetFixedError("request_failed");
+            state = OnlineAccountState::SigningOut;
+            if (pendingLogoutAccessToken.empty()
+                && !awaitingCancelledTask)
+            {
+                CompleteLogout(false);
+                return;
+            }
+            TickPendingLogout();
+        }
+
         void TickSession(const float elapsedSeconds)
         {
             if (state == OnlineAccountState::RefreshingSession)
@@ -1061,6 +1599,10 @@ namespace LamaPon
                 sessionRemainingSeconds = std::max(
                     0.0f,
                     sessionRemainingSeconds - elapsedSeconds);
+                if (sessionRemainingSeconds <= 0.0f)
+                {
+                    ExpireRefreshingSession();
+                }
                 return;
             }
             if (state != OnlineAccountState::SignedIn)
@@ -1090,6 +1632,7 @@ namespace LamaPon
                 EraseSecret(refreshToken);
                 if (sessionRemainingSeconds <= 0.0f)
                 {
+                    DetachAccountPersistence();
                     ClearSession();
                     player = {};
                     state = OnlineAccountState::Error;
@@ -1098,6 +1641,10 @@ namespace LamaPon
                 return;
             }
             state = OnlineAccountState::RefreshingSession;
+            if (sessionRemainingSeconds <= 0.0f)
+            {
+                ExpireRefreshingSession();
+            }
         }
 
         void TickPendingLogout()
@@ -1118,6 +1665,8 @@ namespace LamaPon
         Detail::OnlineServicesTestAccess::HttpSender senderOverride;
         std::shared_ptr<Detail::DiscordAuthClient> client;
         std::shared_ptr<AsyncMailbox> inFlight;
+        std::unique_ptr<Detail::OnlinePersistenceCoordinator>
+            persistenceCoordinator;
         std::unique_ptr<Detail::IRefreshTokenStore> refreshTokenStore;
         std::unique_ptr<Detail::IAuthorizationLauncher>
             authorizationLauncher;
@@ -1128,6 +1677,8 @@ namespace LamaPon
         std::string authorizationUrl;
         std::string errorCode;
         std::string errorMessage;
+        std::string configuredGameId;
+        std::string configuredEnvironmentId;
         OnlineAccountState state{ OnlineAccountState::Unconfigured };
         std::uint64_t generation{ 1 };
         float loginRemainingSeconds{};
@@ -1141,6 +1692,8 @@ namespace LamaPon
         bool browserLaunchAttempted{};
         bool browserLaunchFailed{};
         bool localRefreshTokenDeleteFailed{};
+        bool accountPersistenceSaveFailed{};
+        bool preserveErrorAfterLogout{};
         bool awaitingCancelledTask{};
         bool cancelledPollExpired{};
         TaskKind cancelledTaskKind{ TaskKind::StartLogin };
@@ -1184,12 +1737,22 @@ namespace LamaPon
         auto& implementation = *m_implementation;
         if (implementation.IsBusy()
             || implementation.inFlight
-            || implementation.state == OnlineAccountState::SignedIn)
+            || implementation.state == OnlineAccountState::SignedIn
+            || (implementation.persistenceCoordinator
+                && implementation.persistenceCoordinator
+                    ->IsAccountActive()))
         {
             throw std::logic_error(
                 "Sign out before changing the online service configuration.");
         }
+        if (!implementation.ResolvePendingRefreshTokenDelete())
+        {
+            throw std::runtime_error(
+                "Pending refresh credential could not be deleted.");
+        }
 
+        auto nextGameId = configuration.gameId;
+        auto nextEnvironmentId = configuration.environmentId;
         std::shared_ptr<Detail::DiscordAuthClient> nextClient;
         std::unique_ptr<Detail::IRefreshTokenStore> nextStore;
         std::unique_ptr<Detail::IAuthorizationLauncher> nextLauncher;
@@ -1199,18 +1762,39 @@ namespace LamaPon
                 std::move(configuration.serviceBaseUrl),
                 configuration.allowInsecureLoopback,
                 implementation.senderOverride,
-                configuration.gameId,
-                configuration.environmentId);
+                nextGameId,
+                nextEnvironmentId);
             if (implementation.useWindowsPlatformDefaults)
             {
-                if (!configuration.gameId.empty())
+                if (!nextGameId.empty())
                 {
                     nextStore = Detail::MakeWindowsRefreshTokenStore(
-                        configuration.gameId,
-                        configuration.environmentId);
+                        nextGameId,
+                        nextEnvironmentId);
                 }
                 nextLauncher =
                     Detail::MakeWindowsAuthorizationLauncher();
+            }
+        }
+        else
+        {
+            nextGameId.clear();
+            nextEnvironmentId.clear();
+        }
+
+        if (implementation.persistenceCoordinator)
+        {
+            if (nextClient && !nextGameId.empty())
+            {
+                implementation.persistenceCoordinator->ConfigureNamespace(
+                    nextGameId,
+                    nextEnvironmentId,
+                    nextClient->ServiceBaseUrl(),
+                    configuration.allowInsecureLoopback);
+            }
+            else
+            {
+                implementation.persistenceCoordinator->DisableNamespace();
             }
         }
 
@@ -1221,6 +1805,8 @@ namespace LamaPon
         implementation.player = {};
         implementation.ClearError();
         implementation.localRefreshTokenDeleteFailed = false;
+        implementation.accountPersistenceSaveFailed = false;
+        implementation.preserveErrorAfterLogout = false;
         implementation.awaitingCancelledTask = false;
         implementation.cancelledPollExpired = false;
         implementation.allowInsecureLoopback =
@@ -1234,6 +1820,8 @@ namespace LamaPon
                 std::move(nextLauncher);
         }
         implementation.client = std::move(nextClient);
+        implementation.configuredGameId.swap(nextGameId);
+        implementation.configuredEnvironmentId.swap(nextEnvironmentId);
         implementation.state = implementation.client
             ? OnlineAccountState::SignedOut
             : OnlineAccountState::Unconfigured;
@@ -1248,6 +1836,20 @@ namespace LamaPon
         {
             elapsedSeconds = 0.0f;
         }
+        const bool refreshElapsedApplied =
+            implementation.state
+                == OnlineAccountState::RefreshingSession;
+        if (refreshElapsedApplied)
+        {
+            // 完了mailboxをreapする前に旧access tokenの残存時間へ
+            // このframe分を一度だけ適用します。成功ならPublishSessionが
+            // 新期限へ置換し、失敗なら0を見て同じframeでfail-closedに
+            // できます。
+            implementation.sessionRemainingSeconds = std::max(
+                0.0f,
+                implementation.sessionRemainingSeconds
+                    - elapsedSeconds);
+        }
         if (implementation.ReapCompletedTask())
         {
             // 完了によって遷移したばかりの状態へ、前状態で経過した
@@ -1255,7 +1857,8 @@ namespace LamaPon
             return;
         }
         implementation.TickLogin(elapsedSeconds);
-        implementation.TickSession(elapsedSeconds);
+        implementation.TickSession(
+            refreshElapsedApplied ? 0.0f : elapsedSeconds);
         implementation.TickPendingLogout();
     }
 
@@ -1284,6 +1887,12 @@ namespace LamaPon
                 "すでにサインインしています。";
             return false;
         }
+        if (!implementation.ResolvePendingRefreshTokenDelete())
+        {
+            implementation.SetFixedError(
+                "credential_delete_failed");
+            return false;
+        }
 
         implementation.AdvanceGeneration();
         implementation.ClearLoginTransaction();
@@ -1291,6 +1900,8 @@ namespace LamaPon
         implementation.player = {};
         implementation.ClearError();
         implementation.localRefreshTokenDeleteFailed = false;
+        implementation.accountPersistenceSaveFailed = false;
+        implementation.preserveErrorAfterLogout = false;
         implementation.awaitingCancelledTask = false;
         implementation.cancelledPollExpired = false;
         implementation.state = OnlineAccountState::StartingSignIn;
@@ -1341,12 +1952,19 @@ namespace LamaPon
     void OnlineServices::SignOut()
     {
         auto& implementation = *m_implementation;
+        if (implementation.state != OnlineAccountState::SigningOut)
+        {
+            implementation.AdvanceGeneration();
+        }
+        implementation.DetachAccountPersistence();
+        // failed adoption cleanup中でも、明示操作は最終SignedOutを優先します。
+        implementation.preserveErrorAfterLogout = false;
         if (implementation.state == OnlineAccountState::SigningOut)
         {
             // 内部cleanup中に明示SignOutされた場合も、端末tokenの削除を
             // 必ず試します。前回失敗していればこの呼び出しが再試行です。
-            implementation.localRefreshTokenDeleteFailed =
-                !implementation.DeleteRefreshToken();
+            static_cast<void>(
+                implementation.DeleteRefreshTokenTracked());
             implementation.cancelledPollExpired = false;
             implementation.ClearError();
             if (implementation.localRefreshTokenDeleteFailed)
@@ -1359,8 +1977,8 @@ namespace LamaPon
 
         // 通信の完了を待たず、端末の再ログイン情報は
         // この呼び出し中に削除します。
-        implementation.localRefreshTokenDeleteFailed =
-            !implementation.DeleteRefreshToken();
+        static_cast<void>(
+            implementation.DeleteRefreshTokenTracked());
         if (implementation.awaitingCancelledTask
             && implementation.cancelledTaskKind
                 == Implementation::TaskKind::PollLogin)
@@ -1504,6 +2122,127 @@ namespace LamaPon
                         false)));
             services->Configure(std::move(configuration));
             return services;
+        }
+
+        bool OnlineServicesTestAccess::CurrentTaskCompleted(
+            const OnlineServices& services) noexcept
+        {
+            const auto mailbox = services.m_implementation->inFlight;
+            if (!mailbox)
+            {
+                return false;
+            }
+            try
+            {
+                std::scoped_lock lock(mailbox->mutex);
+                return mailbox->completed;
+            }
+            catch (...)
+            {
+                return false;
+            }
+        }
+
+        bool OnlineServicesTestAccess::AgeCurrentTaskCompletion(
+            OnlineServices& services,
+            const float elapsedSeconds) noexcept
+        {
+            if (!std::isfinite(elapsedSeconds)
+                || elapsedSeconds < 0.0f
+                || elapsedSeconds > 31536000.0f)
+            {
+                return false;
+            }
+            const auto mailbox = services.m_implementation->inFlight;
+            if (!mailbox)
+            {
+                return false;
+            }
+            try
+            {
+                std::scoped_lock lock(mailbox->mutex);
+                if (!mailbox->completed)
+                {
+                    return false;
+                }
+                mailbox->completedAt -=
+                    std::chrono::duration_cast<
+                        std::chrono::steady_clock::duration>(
+                            std::chrono::duration<float>(
+                                elapsedSeconds));
+                return true;
+            }
+            catch (...)
+            {
+                return false;
+            }
+        }
+
+        void OnlinePersistenceAccess::Attach(
+            OnlineServices& services,
+            PlayerPrefs& preferences,
+            SaveDataStore& saves,
+            std::filesystem::path trustedUserDataDirectory)
+        {
+            auto& implementation = *services.m_implementation;
+            if (implementation.persistenceCoordinator)
+            {
+                throw std::logic_error(
+                    "Online persistence is already attached.");
+            }
+            if (implementation.IsBusy()
+                || implementation.inFlight
+                || implementation.state == OnlineAccountState::SignedIn)
+            {
+                throw std::logic_error(
+                    "Attach online persistence before signing in.");
+            }
+
+            auto coordinator =
+                std::make_unique<OnlinePersistenceCoordinator>(
+                    preferences,
+                    saves,
+                    std::move(trustedUserDataDirectory));
+            if (implementation.client
+                && !implementation.configuredGameId.empty())
+            {
+                coordinator->ConfigureNamespace(
+                    implementation.configuredGameId,
+                    implementation.configuredEnvironmentId,
+                    implementation.client->ServiceBaseUrl(),
+                    implementation.allowInsecureLoopback);
+            }
+            implementation.persistenceCoordinator =
+                std::move(coordinator);
+        }
+
+        OnlinePersistenceDetachResult OnlinePersistenceAccess::Detach(
+            OnlineServices& services) noexcept
+        {
+            auto* const coordinator =
+                services.m_implementation->persistenceCoordinator.get();
+            return coordinator
+                ? coordinator->DetachToGuest()
+                : OnlinePersistenceDetachResult::AlreadyGuest;
+        }
+
+        void OnlinePersistenceAccess::EndFrame(
+            OnlineServices& services) noexcept
+        {
+            if (auto* const coordinator =
+                    services.m_implementation
+                        ->persistenceCoordinator.get())
+            {
+                coordinator->EndFrame();
+            }
+        }
+
+        OnlinePersistenceCoordinator*
+            OnlinePersistenceAccess::Coordinator(
+                OnlineServices& services) noexcept
+        {
+            return services.m_implementation
+                ->persistenceCoordinator.get();
         }
     }
 

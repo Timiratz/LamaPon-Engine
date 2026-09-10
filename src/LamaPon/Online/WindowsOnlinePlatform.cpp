@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cwctype>
 #include <limits>
@@ -36,6 +37,13 @@ namespace
     };
     constexpr std::string_view EntropyLabel =
         "LamaPon.Online.RefreshToken/v1";
+    std::atomic<LamaPon::Detail::WindowsRefreshTokenSaveTestFailPoint>
+        CredentialSaveFailPoint{
+            LamaPon::Detail::WindowsRefreshTokenSaveTestFailPoint::None
+        };
+    std::atomic<LamaPon::Detail::WindowsRefreshTokenSaveTestHook>
+        CredentialSaveBeforeReplaceHook{};
+    std::atomic<void*> CredentialSaveBeforeReplaceContext{};
     // パス名の疑似匿名化とWindows名のalias回避に使う固定鍵です。
     // 秘密鍵ではなく、HMAC入力の用途を将来も固定するための定数です。
     constexpr LamaPon::Crypto::AesKey CredentialPathHashKey{
@@ -63,6 +71,18 @@ namespace
             value = INVALID_HANDLE_VALUE;
         }
     };
+
+    [[nodiscard]] bool ConsumeCredentialSaveFailPoint(
+        const LamaPon::Detail::WindowsRefreshTokenSaveTestFailPoint
+            expected) noexcept
+    {
+        auto current = expected;
+        return CredentialSaveFailPoint.compare_exchange_strong(
+            current,
+            LamaPon::Detail::WindowsRefreshTokenSaveTestFailPoint::None,
+            std::memory_order_acq_rel,
+            std::memory_order_acquire);
+    }
 
     struct KnownFolderGuard final
     {
@@ -189,7 +209,201 @@ namespace
             attributes.bInheritHandle = FALSE;
             return true;
         }
+
+        [[nodiscard]] PSID CurrentUserSid() const noexcept
+        {
+            return tokenUser.empty()
+                ? nullptr
+                : reinterpret_cast<const TOKEN_USER*>(
+                    tokenUser.data())->User.Sid;
+        }
     };
+
+    enum class ParentDirectoryState : std::uint8_t
+    {
+        Exists,
+        Missing,
+        Unavailable
+    };
+
+    [[nodiscard]] ParentDirectoryState InspectCredentialParent(
+        const std::filesystem::path& filePath) noexcept
+    {
+        try
+        {
+            const auto parent = std::filesystem::absolute(
+                filePath.parent_path().empty()
+                    ? std::filesystem::current_path()
+                    : filePath.parent_path()).lexically_normal();
+            auto current = parent.root_path();
+            const auto inspectComponent = [](const auto& path)
+            {
+                HandleGuard directory;
+                directory.value = CreateFileW(
+                    path.c_str(),
+                    FILE_READ_ATTRIBUTES,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    nullptr,
+                    OPEN_EXISTING,
+                    FILE_FLAG_BACKUP_SEMANTICS
+                        | FILE_FLAG_OPEN_REPARSE_POINT,
+                    nullptr);
+                if (directory.value == INVALID_HANDLE_VALUE)
+                {
+                    const auto error = GetLastError();
+                    return error == ERROR_FILE_NOT_FOUND
+                            || error == ERROR_PATH_NOT_FOUND
+                        ? ParentDirectoryState::Missing
+                        : ParentDirectoryState::Unavailable;
+                }
+                FILE_ATTRIBUTE_TAG_INFO attributes{};
+                if (GetFileInformationByHandleEx(
+                        directory.value,
+                        FileAttributeTagInfo,
+                        &attributes,
+                        sizeof(attributes)) == FALSE
+                    || (attributes.FileAttributes
+                        & FILE_ATTRIBUTE_DIRECTORY) == 0u
+                    || (attributes.FileAttributes
+                        & FILE_ATTRIBUTE_REPARSE_POINT) != 0u)
+                {
+                    return ParentDirectoryState::Unavailable;
+                }
+                return ParentDirectoryState::Exists;
+            };
+            auto state = inspectComponent(current);
+            if (state != ParentDirectoryState::Exists)
+            {
+                return state;
+            }
+            for (const auto& component : parent.relative_path())
+            {
+                current /= component;
+                state = inspectComponent(current);
+                if (state != ParentDirectoryState::Exists)
+                {
+                    return state;
+                }
+            }
+            return ParentDirectoryState::Exists;
+        }
+        catch (...)
+        {
+            return ParentDirectoryState::Unavailable;
+        }
+    }
+
+    [[nodiscard]] bool IsPlainSingleLinkFile(
+        const HANDLE file) noexcept
+    {
+        FILE_ATTRIBUTE_TAG_INFO attributes{};
+        FILE_STANDARD_INFO standard{};
+        return GetFileInformationByHandleEx(
+                file,
+                FileAttributeTagInfo,
+                &attributes,
+                sizeof(attributes)) != FALSE
+            && GetFileInformationByHandleEx(
+                file,
+                FileStandardInfo,
+                &standard,
+                sizeof(standard)) != FALSE
+            && (attributes.FileAttributes
+                & FILE_ATTRIBUTE_DIRECTORY) == 0u
+            && (attributes.FileAttributes
+                & FILE_ATTRIBUTE_REPARSE_POINT) == 0u
+            && standard.NumberOfLinks == 1u;
+    }
+
+    [[nodiscard]] bool ProtectPlainFileHandle(
+        const HANDLE file,
+        const RestrictedSecurity& security) noexcept
+    {
+        return IsPlainSingleLinkFile(file)
+            && SetSecurityInfo(
+                file,
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION
+                    | PROTECTED_DACL_SECURITY_INFORMATION,
+                nullptr,
+                nullptr,
+                security.acl,
+                nullptr) == ERROR_SUCCESS;
+    }
+
+    [[nodiscard]] bool RemoveSafeCredentialTemporary(
+        const std::filesystem::path& path) noexcept
+    {
+        HandleGuard file;
+        file.value = CreateFileW(
+            path.c_str(),
+            DELETE | FILE_READ_ATTRIBUTES,
+            0u,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+            nullptr);
+        if (file.value == INVALID_HANDLE_VALUE)
+        {
+            const auto error = GetLastError();
+            return error == ERROR_FILE_NOT_FOUND
+                || error == ERROR_PATH_NOT_FOUND;
+        }
+        if (!IsPlainSingleLinkFile(file.value))
+        {
+            return false;
+        }
+        FILE_DISPOSITION_INFO disposition{};
+        disposition.DeleteFile = TRUE;
+        return SetFileInformationByHandle(
+            file.value,
+            FileDispositionInfo,
+            &disposition,
+            sizeof(disposition)) != FALSE;
+    }
+
+    [[nodiscard]] bool AcquireCredentialOperationLock(
+        const std::filesystem::path& filePath,
+        HandleGuard& lock) noexcept
+    {
+        try
+        {
+            RestrictedSecurity security;
+            if (!security.Initialize(NO_INHERITANCE))
+            {
+                return false;
+            }
+            auto lockPath = filePath;
+            lockPath += L".lock";
+            lock.value = CreateFileW(
+                lockPath.c_str(),
+                GENERIC_READ | GENERIC_WRITE | FILE_READ_ATTRIBUTES
+                    | READ_CONTROL | WRITE_DAC,
+                0u,
+                &security.attributes,
+                OPEN_ALWAYS,
+                FILE_ATTRIBUTE_HIDDEN
+                    | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED
+                    | FILE_FLAG_OPEN_REPARSE_POINT,
+                nullptr);
+            if (lock.value == INVALID_HANDLE_VALUE)
+            {
+                return false;
+            }
+            if (security.CurrentUserSid() == nullptr
+                || !ProtectPlainFileHandle(lock.value, security))
+            {
+                lock.Reset();
+                return false;
+            }
+            return true;
+        }
+        catch (...)
+        {
+            lock.Reset();
+            return false;
+        }
+    }
 
     [[nodiscard]] LamaPon::Detail::OnlinePlatformResult Success()
     {
@@ -546,6 +760,26 @@ namespace
 
 namespace LamaPon::Detail
 {
+    void SetWindowsRefreshTokenSaveTestFailPoint(
+        const WindowsRefreshTokenSaveTestFailPoint failPoint) noexcept
+    {
+        CredentialSaveFailPoint.store(
+            failPoint,
+            std::memory_order_release);
+    }
+
+    void SetWindowsRefreshTokenSaveBeforeReplaceHook(
+        const WindowsRefreshTokenSaveTestHook hook,
+        void* const context) noexcept
+    {
+        CredentialSaveBeforeReplaceContext.store(
+            context,
+            std::memory_order_release);
+        CredentialSaveBeforeReplaceHook.store(
+            hook,
+            std::memory_order_release);
+    }
+
     WindowsRefreshTokenStore::WindowsRefreshTokenStore(
         std::filesystem::path filePath,
         std::string gameId,
@@ -565,6 +799,30 @@ namespace LamaPon::Detail
                 "credential_storage_unavailable",
                 "Secure credential storage is unavailable.");
         }
+        const auto parentState = InspectCredentialParent(m_filePath);
+        if (parentState == ParentDirectoryState::Missing)
+        {
+            RefreshTokenLoadResult result;
+            result.status = RefreshTokenLoadStatus::NotFound;
+            return result;
+        }
+        if (parentState != ParentDirectoryState::Exists)
+        {
+            return LoadFailure(
+                RefreshTokenLoadStatus::Unavailable,
+                "credential_read_unavailable",
+                "The saved online session could not be read.");
+        }
+        HandleGuard operationLock;
+        if (!AcquireCredentialOperationLock(
+                m_filePath,
+                operationLock))
+        {
+            return LoadFailure(
+                RefreshTokenLoadStatus::Unavailable,
+                "credential_read_unavailable",
+                "The saved online session could not be read.");
+        }
 
         HandleGuard file;
         file.value = CreateFileW(
@@ -573,7 +831,7 @@ namespace LamaPon::Detail
             FILE_SHARE_READ,
             nullptr,
             OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
             nullptr);
         if (file.value == INVALID_HANDLE_VALUE)
         {
@@ -585,6 +843,13 @@ namespace LamaPon::Detail
                 result.status = RefreshTokenLoadStatus::NotFound;
                 return result;
             }
+            return LoadFailure(
+                RefreshTokenLoadStatus::Unavailable,
+                "credential_read_unavailable",
+                "The saved online session could not be read.");
+        }
+        if (!IsPlainSingleLinkFile(file.value))
+        {
             return LoadFailure(
                 RefreshTokenLoadStatus::Unavailable,
                 "credential_read_unavailable",
@@ -739,6 +1004,14 @@ namespace LamaPon::Detail
             plaintext.end(),
             refreshToken.begin(),
             refreshToken.end());
+        if (ConsumeCredentialSaveFailPoint(
+                WindowsRefreshTokenSaveTestFailPoint::Protection))
+        {
+            Crypto::SecureErase(plaintext);
+            return Failure(
+                "credential_protection_unavailable",
+                "The online session could not be protected.");
+        }
         auto protectedData = Crypto::ProtectForCurrentUser(
             plaintext.data(),
             plaintext.size(),
@@ -777,9 +1050,21 @@ namespace LamaPon::Detail
         if (!EnsureDirectoryExists(
                 m_filePath.parent_path(),
                 directoryError)
+            || InspectCredentialParent(m_filePath)
+                != ParentDirectoryState::Exists
             || !ApplyRestrictedAcl(
                 m_filePath.parent_path(),
                 true))
+        {
+            Crypto::SecureErase(fileBytes);
+            return Failure(
+                "credential_storage_unavailable",
+                "Secure credential storage is unavailable.");
+        }
+        HandleGuard operationLock;
+        if (!AcquireCredentialOperationLock(
+                m_filePath,
+                operationLock))
         {
             Crypto::SecureErase(fileBytes);
             return Failure(
@@ -797,21 +1082,40 @@ namespace LamaPon::Detail
         }
         auto temporary = m_filePath;
         temporary += L".tmp";
+        if (ConsumeCredentialSaveFailPoint(
+                WindowsRefreshTokenSaveTestFailPoint::TemporaryWrite))
+        {
+            Crypto::SecureErase(fileBytes);
+            return Failure(
+                "credential_write_failed",
+                "The online session could not be saved.");
+        }
+        if (!RemoveSafeCredentialTemporary(temporary))
+        {
+            Crypto::SecureErase(fileBytes);
+            return Failure(
+                "credential_write_failed",
+                "The online session could not be saved.");
+        }
         HandleGuard file;
         file.value = CreateFileW(
             temporary.c_str(),
-            GENERIC_WRITE,
+            GENERIC_WRITE | FILE_READ_ATTRIBUTES
+                | READ_CONTROL | WRITE_DAC,
             0,
             &fileSecurity.attributes,
-            CREATE_ALWAYS,
-            FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED,
+            CREATE_NEW,
+            FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED
+                | FILE_FLAG_OPEN_REPARSE_POINT,
             nullptr);
         if (file.value == INVALID_HANDLE_VALUE
+            || !ProtectPlainFileHandle(file.value, fileSecurity)
             || !WriteAll(file.value, fileBytes)
             || FlushFileBuffers(file.value) == FALSE)
         {
             file.Reset();
-            DeleteFileW(temporary.c_str());
+            static_cast<void>(
+                RemoveSafeCredentialTemporary(temporary));
             Crypto::SecureErase(fileBytes);
             return Failure(
                 "credential_write_failed",
@@ -819,12 +1123,38 @@ namespace LamaPon::Detail
         }
         file.Reset();
         Crypto::SecureErase(fileBytes);
-        if (!ApplyRestrictedAcl(temporary, false))
+        if (ConsumeCredentialSaveFailPoint(
+                WindowsRefreshTokenSaveTestFailPoint::TemporaryAcl))
         {
-            DeleteFileW(temporary.c_str());
+            static_cast<void>(
+                RemoveSafeCredentialTemporary(temporary));
             return Failure(
                 "credential_storage_unavailable",
                 "Secure credential storage is unavailable.");
+        }
+        if (!ApplyRestrictedAcl(temporary, false))
+        {
+            static_cast<void>(
+                RemoveSafeCredentialTemporary(temporary));
+            return Failure(
+                "credential_storage_unavailable",
+                "Secure credential storage is unavailable.");
+        }
+        if (const auto hook =
+                CredentialSaveBeforeReplaceHook.load(
+                    std::memory_order_acquire))
+        {
+            hook(CredentialSaveBeforeReplaceContext.load(
+                std::memory_order_acquire));
+        }
+        if (ConsumeCredentialSaveFailPoint(
+                WindowsRefreshTokenSaveTestFailPoint::Replace))
+        {
+            static_cast<void>(
+                RemoveSafeCredentialTemporary(temporary));
+            return Failure(
+                "credential_write_failed",
+                "The online session could not be saved.");
         }
         if (MoveFileExW(
                 temporary.c_str(),
@@ -832,7 +1162,8 @@ namespace LamaPon::Detail
                 MOVEFILE_REPLACE_EXISTING
                     | MOVEFILE_WRITE_THROUGH) == FALSE)
         {
-            DeleteFileW(temporary.c_str());
+            static_cast<void>(
+                RemoveSafeCredentialTemporary(temporary));
             return Failure(
                 "credential_write_failed",
                 "The online session could not be saved.");
@@ -848,12 +1179,33 @@ namespace LamaPon::Detail
                 "credential_storage_unavailable",
                 "Secure credential storage is unavailable.");
         }
+        const auto parentState = InspectCredentialParent(m_filePath);
+        if (parentState == ParentDirectoryState::Missing)
+        {
+            return Success();
+        }
+        if (parentState != ParentDirectoryState::Exists)
+        {
+            return Failure(
+                "credential_delete_failed",
+                "The saved online session could not be deleted.");
+        }
+        HandleGuard operationLock;
+        if (!AcquireCredentialOperationLock(
+                m_filePath,
+                operationLock))
+        {
+            return Failure(
+                "credential_delete_failed",
+                "The saved online session could not be deleted.");
+        }
         auto temporary = m_filePath;
         temporary += L".tmp";
         // 片方が失敗してももう片方を必ず試します。finalを消せても
         // tmpを消せなかった場合は、残骸があることを隠さず失敗です。
         const bool finalDeleted = DeleteIfPresent(m_filePath);
-        const bool temporaryDeleted = DeleteIfPresent(temporary);
+        const bool temporaryDeleted =
+            RemoveSafeCredentialTemporary(temporary);
         if (finalDeleted && temporaryDeleted)
         {
             return Success();

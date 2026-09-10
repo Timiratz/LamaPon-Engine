@@ -286,6 +286,12 @@ namespace LamaPon
         SaveDataStore& saves,
         const PersistenceProfilePaths& profile) const
     {
+        if (preferences.IsBindingLeased()
+            || saves.IsBindingLeased())
+        {
+            throw std::logic_error(
+                "Persistence binding is owned by online persistence.");
+        }
         // pathのコピーで起こり得るallocation failureを、PlayerPrefsの
         // state交換より前にすべて済ませます。
         auto preferencesPath = profile.playerPrefsFile;
@@ -325,6 +331,12 @@ namespace LamaPon
         bool attemptedFinalRename{};
         try
         {
+            if (activePreferences.IsBindingLeased()
+                || activeSaves.IsBindingLeased())
+            {
+                return FailedImport(
+                    "Persistence binding is owned by online persistence.");
+            }
             guest = Guest();
             account = Account(playerId);
 

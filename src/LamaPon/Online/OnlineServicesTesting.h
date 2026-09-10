@@ -24,5 +24,16 @@ namespace LamaPon::Detail
                 std::unique_ptr<IRefreshTokenStore> refreshTokenStore = {},
                 std::unique_ptr<IAuthorizationLauncher>
                     authorizationLauncher = {});
+
+        // owner破棄時の「worker完了済み・Update未reap」を
+        // 待機なしで決定論的に検証するための内部テスト専用状態です。
+        [[nodiscard]] static LAMAPON_API bool CurrentTaskCompleted(
+            const OnlineServices& services) noexcept;
+
+        // OS suspend/main-thread stallをsleepなしで再現し、完了結果の
+        // token TTLがreapまでにも減ることを検証します。
+        [[nodiscard]] static LAMAPON_API bool AgeCurrentTaskCompletion(
+            OnlineServices& services,
+            float elapsedSeconds) noexcept;
     };
 }

@@ -33,6 +33,54 @@ namespace LamaPon
     void SaveDataStore::Rebind(
         std::filesystem::path directory) noexcept
     {
+        if (m_bindingLeaseOwner)
+        {
+            return;
+        }
+        m_directory.swap(directory);
+    }
+
+    bool SaveDataStore::AcquireBindingLease(
+        const void* const owner) noexcept
+    {
+        if (!owner || m_bindingLeaseOwner)
+        {
+            return false;
+        }
+        m_bindingLeaseOwner = owner;
+        return true;
+    }
+
+    bool SaveDataStore::ReleaseBindingLease(
+        const void* const owner) noexcept
+    {
+        if (!owner || m_bindingLeaseOwner != owner)
+        {
+            return false;
+        }
+        m_bindingLeaseOwner = nullptr;
+        return true;
+    }
+
+    bool SaveDataStore::IsBindingLeased() const noexcept
+    {
+        return m_bindingLeaseOwner != nullptr;
+    }
+
+    bool SaveDataStore::BindingLeaseOwnedBy(
+        const void* const owner) const noexcept
+    {
+        return owner && m_bindingLeaseOwner == owner;
+    }
+
+    void SaveDataStore::RelocateBinding(
+        std::filesystem::path directory,
+        const void* const owner) noexcept
+    {
+        if (!BindingLeaseOwnedBy(owner))
+        {
+            return;
+        }
         m_directory.swap(directory);
     }
 

@@ -13,6 +13,7 @@ namespace LamaPon
     namespace Detail
     {
         class LocalPersistenceDocuments;
+        class OnlinePersistenceCoordinator;
     }
 
     enum class PlayerPrefType
@@ -85,12 +86,25 @@ namespace LamaPon
     private:
         friend class PersistenceProfiles;
         friend class Detail::LocalPersistenceDocuments;
+        friend class Detail::OnlinePersistenceCoordinator;
 
         // PersistenceProfilesが、検証済みの状態をfinal rename後に
         // 例外なしで公開するための内部トランザクション操作です。
         void RelocateBinding(
             std::filesystem::path filePath) noexcept;
         void SwapLoadedState(PlayerPrefs& other) noexcept;
+        [[nodiscard]] bool AcquireBindingLease(
+            const void* owner) noexcept;
+        [[nodiscard]] bool ReleaseBindingLease(
+            const void* owner) noexcept;
+        [[nodiscard]] bool IsBindingLeased() const noexcept;
+        [[nodiscard]] bool BindingLeaseOwnedBy(
+            const void* owner) const noexcept;
+        // LocalPersistenceDocumentsがsecure/strict readerの同一snapshotを
+        // disk再openなしでprepared stateへ変換する内部seamです。
+        void LoadValidatedSnapshot(
+            std::string_view fullDocument,
+            bool missing);
         void ApplyRemoteDocumentAtomically(std::string_view fullDocument);
         void DeleteRemoteDocumentAtomically();
 

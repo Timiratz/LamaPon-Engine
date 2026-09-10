@@ -51,6 +51,10 @@ namespace LamaPon::Detail
         virtual ~IRefreshTokenStore() = default;
 
         [[nodiscard]] virtual RefreshTokenLoadResult Load() = 0;
+        // 強いcommit契約: succeeded==trueのときだけcandidateがLoad可能な
+        // final値になります。falseを返す、または例外を投げる場合は、
+        // 直前のcommitted値を保持し、candidateをLoad可能にしては
+        // いけません（一時残骸もLoad対象外である必要があります）。
         [[nodiscard]] virtual OnlinePlatformResult Save(
             std::string_view refreshToken) = 0;
         [[nodiscard]] virtual OnlinePlatformResult Delete() = 0;
@@ -91,6 +95,25 @@ namespace LamaPon::Detail
         std::vector<std::uint8_t> m_entropy;
         bool m_storageAvailable{};
     };
+
+    enum class WindowsRefreshTokenSaveTestFailPoint : std::uint8_t
+    {
+        None,
+        Protection,
+        TemporaryWrite,
+        TemporaryAcl,
+        Replace
+    };
+
+    // Windows credential storeのcommit前失敗を決定論的に検証するための
+    // one-shot internal test seamです。
+    void SetWindowsRefreshTokenSaveTestFailPoint(
+        WindowsRefreshTokenSaveTestFailPoint failPoint) noexcept;
+    using WindowsRefreshTokenSaveTestHook =
+        void(*)(void* context) noexcept;
+    void SetWindowsRefreshTokenSaveBeforeReplaceHook(
+        WindowsRefreshTokenSaveTestHook hook,
+        void* context) noexcept;
 
     // ShellExecuteWを直接呼ばずに検証できるよう、Windows APIと同じ
     // 引数を受ける境界を内部テストへ公開します。

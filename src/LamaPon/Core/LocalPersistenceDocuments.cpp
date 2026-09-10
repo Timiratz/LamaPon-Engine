@@ -1329,6 +1329,39 @@ namespace LamaPon::Detail
         target.SwapLoadedState(prepared);
     }
 
+    void LocalPersistenceDocuments::LoadPlayerPrefsSnapshot(
+        PlayerPrefs& target,
+        const LocalPersistenceDocument& snapshot)
+    {
+        switch (snapshot.state)
+        {
+        case LocalPersistenceDocumentState::Loaded:
+            if (snapshot.bytes.empty())
+            {
+                ThrowPersistenceFailure();
+            }
+            target.LoadValidatedSnapshot(
+                std::string_view(
+                    reinterpret_cast<const char*>(snapshot.bytes.data()),
+                    snapshot.bytes.size()),
+                false);
+            return;
+
+        case LocalPersistenceDocumentState::Missing:
+            if (!snapshot.bytes.empty())
+            {
+                ThrowPersistenceFailure();
+            }
+            target.LoadValidatedSnapshot({}, true);
+            return;
+
+        case LocalPersistenceDocumentState::Unavailable:
+        case LocalPersistenceDocumentState::Corrupt:
+            ThrowPersistenceFailure();
+        }
+        ThrowPersistenceFailure();
+    }
+
     void LocalPersistenceDocuments::ApplySaveData(
         SaveDataStore& saveData,
         const std::string_view slot,
