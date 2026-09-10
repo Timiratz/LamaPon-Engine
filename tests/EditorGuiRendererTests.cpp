@@ -318,10 +318,19 @@ namespace
 
         // GPU初期化前でもfile-only AssetManagerとScene async loadは使える
         // ため、初回Initializeもlive ownerがいれば安全側で拒否します。
+        LamaPon::SpriteRenderPass passPastDeviceLifetime;
+        LamaPon::SpriteDrawContext contextPastDeviceLifetime;
         {
             LamaPon::GraphicsDevice initiallyGuardedGraphics;
             auto* const fileOnlyAssets =
                 &initiallyGuardedGraphics.Assets();
+            RequireThrowsExactly<std::logic_error>(
+                [&]
+                {
+                    static_cast<void>(
+                        initiallyGuardedGraphics.BeginSpritePass());
+                },
+                "An uninitialized graphics device accepted a sprite pass");
             {
                 LamaPon::Scene initialScene(
                     initiallyGuardedGraphics);
@@ -367,6 +376,95 @@ namespace
             Require(
                 initiallyGuardedGraphics.IsInitialized(),
                 "Resetting the final resource lease did not reopen initialization");
+
+            const D3D11_VIEWPORT spritePassViewport{
+                0.0f,
+                0.0f,
+                static_cast<float>(Width),
+                static_cast<float>(Height),
+                0.0f,
+                1.0f };
+            initiallyGuardedGraphics.Context()->RSSetViewports(
+                1,
+                &spritePassViewport);
+            LamaPon::SpritePassDescription invalidSpriteDescription;
+            invalidSpriteDescription.blend =
+                static_cast<LamaPon::SpriteBlendMode>(255);
+            RequireThrowsExactly<std::invalid_argument>(
+                [&]
+                {
+                    static_cast<void>(
+                        initiallyGuardedGraphics.BeginSpritePass(
+                            invalidSpriteDescription));
+                },
+                "An invalid sprite pass did not report its blend mode");
+            auto passAfterRejectedBegin =
+                initiallyGuardedGraphics.BeginSpritePass();
+            Require(static_cast<bool>(passAfterRejectedBegin),
+                "A rejected sprite pass retained its backend reservation");
+            passAfterRejectedBegin.End();
+
+            auto spritePass =
+                initiallyGuardedGraphics.BeginSpritePass();
+            auto spriteContext = spritePass.Context();
+            auto movedSpritePass = std::move(spritePass);
+            Require(
+                !spritePass && movedSpritePass && spriteContext,
+                "Moving a sprite render pass lost its active context");
+            RequireThrowsExactly<std::logic_error>(
+                [&]
+                {
+                    initiallyGuardedGraphics.Initialize(
+                        window.Get(),
+                        Width,
+                        Height,
+                        LamaPon::RenderingApi::DirectX11);
+                },
+                "An active sprite render pass did not block initialization");
+            std::atomic_bool wrongThreadEndRejected{};
+            std::thread wrongThreadEnd(
+                [&]
+                {
+                    try
+                    {
+                        movedSpritePass.End();
+                    }
+                    catch (const std::logic_error&)
+                    {
+                        wrongThreadEndRejected.store(
+                            true,
+                            std::memory_order_relaxed);
+                    }
+                });
+            wrongThreadEnd.join();
+            Require(
+                wrongThreadEndRejected.load(
+                    std::memory_order_relaxed)
+                    && movedSpritePass
+                    && spriteContext,
+                "A wrong-thread End corrupted the active sprite pass");
+            movedSpritePass.End();
+            movedSpritePass.End();
+            movedSpritePass.Abort();
+            Require(
+                !movedSpritePass
+                    && !spriteContext
+                    && !spriteContext.Draw({})
+                    && !spriteContext.PushScissor({})
+                    && !spriteContext.PopScissor(),
+                "A context remained usable after its sprite pass ended");
+
+            {
+                auto automaticSpritePass =
+                    initiallyGuardedGraphics.BeginSpritePass();
+                Require(static_cast<bool>(automaticSpritePass),
+                    "A sprite render pass could not restart after End");
+            }
+            auto spritePassAfterAbort =
+                initiallyGuardedGraphics.BeginSpritePass();
+            Require(static_cast<bool>(spritePassAfterAbort),
+                "The sprite pass destructor did not close its batch");
+            spritePassAfterAbort.End();
 
             ImGuiContextScope initialRendererContext;
             auto initialRenderer =
@@ -524,7 +622,22 @@ namespace
                             - 0.75f) < 0.0001f,
                 "Graphics recovery lost input action configuration");
             preservedAudio->SetSuspended(false);
+            initiallyGuardedGraphics.Context()->RSSetViewports(
+                1,
+                &spritePassViewport);
+            passPastDeviceLifetime =
+                initiallyGuardedGraphics.BeginSpritePass();
+            contextPastDeviceLifetime =
+                passPastDeviceLifetime.Context();
         }
+        Require(
+            !passPastDeviceLifetime
+                && !contextPastDeviceLifetime
+                && !passPastDeviceLifetime.Draw({})
+                && !contextPastDeviceLifetime.Draw({}),
+            "A sprite pass accessed its GraphicsDevice after destruction");
+        passPastDeviceLifetime.End();
+        passPastDeviceLifetime.Abort();
 
         // A background model import owns the old Device beyond the initiating
         // call. Reinitialization must join it before stopping the backend,
@@ -592,6 +705,13 @@ namespace
             fallbackGraphics.BeginFrame(fallbackClearColor);
             fallbackGraphics.BeginSprites();
             fallbackGraphics.EndSprites();
+            auto fallbackNeutralPass =
+                fallbackGraphics.BeginSpritePass();
+            LamaPon::SpriteDrawRequest fallbackNeutralRequest;
+            Require(fallbackNeutralPass.Draw(
+                    fallbackNeutralRequest),
+                "The DirectX 12 fallback rejected a neutral sprite draw");
+            fallbackNeutralPass.End();
             fallbackGraphics.EndFrame();
         }
 
@@ -1650,6 +1770,12 @@ namespace
                 deferredTextureAsset.resources.Acquire());
         Require(deferredView != nullptr,
             "SpriteBatch texture pin must resolve an asset view");
+        RequireThrowsExactly<std::logic_error>(
+            [&]
+            {
+                static_cast<void>(graphics.BeginSpritePass());
+            },
+            "A neutral sprite pass started inside a legacy SpriteBatch");
         const DirectX::XMFLOAT4 opaqueWhite{
             1.0f, 1.0f, 1.0f, 1.0f };
         deferredSprites.Draw(
@@ -1680,6 +1806,158 @@ namespace
             8u,
             { assetColor[0], assetColor[1], assetColor[2] },
             "SpriteBatch must retain the texture snapshot until EndSprites");
+
+        // API非依存passもhandleを強所有し、legacy/neutral双方のnested
+        // Beginをpin破棄より前に拒否します。stale handleは白へ化けず、
+        // 同じpassの後続Drawを壊しません。
+        auto neutralSpriteAsset =
+            CreateSolidTexture(graphics, assetColor);
+        auto neutralSpriteResources =
+            neutralSpriteAsset.resources.Acquire();
+        Require(neutralSpriteResources != nullptr,
+            "Neutral sprite test texture was not published");
+        LamaPon::SpriteDrawRequest neutralRequest;
+        neutralRequest.texture =
+            neutralSpriteResources->shaderResourceView;
+        neutralRequest.position = { 16.0f, 0.0f };
+        neutralRequest.scale = { 16.0f, 16.0f };
+        constexpr float neutralClearColor[]{
+            0.0f, 0.0f, 0.0f, 1.0f };
+        graphics.BeginFrame(neutralClearColor);
+        auto neutralPass = graphics.BeginSpritePass();
+        auto neutralContext = neutralPass.Context();
+        Require(neutralPass.Draw(neutralRequest),
+            "A current neutral sprite view was rejected");
+        neutralRequest.texture.Reset();
+        neutralSpriteResources.reset();
+        RequireThrowsExactly<std::logic_error>(
+            [&]
+            {
+                static_cast<void>(graphics.BeginSprites());
+            },
+            "A legacy SpriteBatch started inside a neutral sprite pass");
+        RequireThrowsExactly<std::logic_error>(
+            [&]
+            {
+                static_cast<void>(graphics.BeginSpritePass());
+            },
+            "A nested neutral sprite pass was accepted");
+        PublishSolidTexture(
+            neutralSpriteAsset,
+            graphics,
+            replacementAssetColor);
+
+        neutralRequest.texture = previousWhiteView;
+        neutralRequest.position = { 32.0f, 0.0f };
+        Require(!neutralContext.Draw(neutralRequest),
+            "A stale sprite view was accepted by the current backend");
+        const auto neutralReplacementResources =
+            neutralSpriteAsset.resources.Acquire();
+        Require(neutralReplacementResources != nullptr,
+            "Replacement neutral sprite texture was not published");
+        neutralRequest.texture =
+            neutralReplacementResources->shaderResourceView;
+        Require(neutralContext.Draw(neutralRequest),
+            "A valid draw after a stale handle was rejected");
+
+        neutralRequest.texture.Reset();
+        neutralRequest.position = { 48.0f, 0.0f };
+        neutralRequest.tint = { 0.0f, 0.0f, 1.0f, 1.0f };
+        Require(neutralPass.Draw(neutralRequest),
+            "An empty sprite view did not use the white texture fallback");
+        neutralPass.End();
+        Require(!neutralContext && !neutralContext.Draw(neutralRequest),
+            "A neutral context remained active after End");
+        std::uint32_t neutralWidth{};
+        std::uint32_t neutralHeight{};
+        const auto neutralPixels = graphics.CaptureBackBuffer(
+            neutralWidth,
+            neutralHeight);
+        graphics.EndFrame();
+        Require(
+            neutralWidth == Width && neutralHeight == Height,
+            "Neutral sprite test must capture the active back buffer");
+        RequirePixelNear(
+            neutralPixels,
+            24u,
+            8u,
+            { assetColor[0], assetColor[1], assetColor[2] },
+            "A neutral sprite pass did not retain its original view");
+        RequirePixelNear(
+            neutralPixels,
+            40u,
+            8u,
+            {
+                replacementAssetColor[0],
+                replacementAssetColor[1],
+                replacementAssetColor[2]
+            },
+            "A valid draw after a stale view did not reach the batch");
+        RequirePixelNear(
+            neutralPixels,
+            56u,
+            8u,
+            { 0u, 0u, 255u },
+            "The neutral white texture fallback did not preserve tint");
+
+        constexpr std::array<std::uint8_t, 12> threePixelColors{
+            255u, 0u, 0u, 255u,
+            0u, 255u, 0u, 255u,
+            0u, 0u, 255u, 255u };
+        const std::array threePixelData{
+            LamaPon::GraphicsTextureSubresourceData{
+                std::as_bytes(std::span{ threePixelColors }),
+                12u,
+                12u
+            }
+        };
+        const auto threePixelTexture = graphics.CreateTexture2D(
+            LamaPon::GraphicsTexture2DDescription{
+                3u,
+                1u,
+                1u,
+                LamaPon::GraphicsTextureFormat::Rgba8Unorm,
+                LamaPon::GraphicsTextureUpdateMode::Immutable
+            },
+            threePixelData);
+        const auto threePixelView =
+            graphics.CreateShaderResourceView(
+                threePixelTexture,
+                { 0u, 1u });
+        LamaPon::SpritePassDescription flipPassDescription;
+        flipPassDescription.blend =
+            LamaPon::SpriteBlendMode::Opaque;
+        LamaPon::SpriteDrawRequest flipRequest;
+        flipRequest.texture = threePixelView;
+        flipRequest.hasSourceRectangle = true;
+        flipRequest.sourceRectangle = { 0, 0, 2, 1 };
+        flipRequest.scale = { 16.0f, 16.0f };
+        flipRequest.flip = LamaPon::SpriteFlip::Horizontal;
+        graphics.BeginFrame(neutralClearColor);
+        auto flipPass = graphics.BeginSpritePass(
+            flipPassDescription);
+        Require(flipPass.Draw(flipRequest),
+            "A neutral source rectangle and flip were rejected");
+        flipPass.End();
+        std::uint32_t flipWidth{};
+        std::uint32_t flipHeight{};
+        const auto flipPixels = graphics.CaptureBackBuffer(
+            flipWidth,
+            flipHeight);
+        graphics.EndFrame();
+        Require(
+            flipWidth == Width && flipHeight == Height,
+            "Neutral flip test must capture the active back buffer");
+        const auto flippedLeft =
+            (static_cast<std::size_t>(8u) * Width + 8u) * 4u;
+        const auto flippedRight =
+            (static_cast<std::size_t>(8u) * Width + 24u) * 4u;
+        Require(
+            flipPixels[flippedLeft + 1u]
+                    > flipPixels[flippedLeft] + 64u
+                && flipPixels[flippedRight]
+                    > flipPixels[flippedRight + 1u] + 64u,
+            "Sprite source selection and horizontal flip were not applied");
 
         // 入れ子のUIシザーは外側との交差だけを描画し、余分なPopは
         // 進行中のSpriteBatchを壊さないことを実画素で確認します。
@@ -1747,6 +2025,272 @@ namespace
             4u,
             { 0u, 0u, 0u },
             "The outer UI scissor must preserve pixels outside its bounds");
+
+        // Opaque blendを指定したneutral passでも、scissorの内部flush後に
+        // blend設定がNonPremultipliedへ戻らないことを確認します。
+        LamaPon::SpritePassDescription opaqueSpriteDescription;
+        opaqueSpriteDescription.blend =
+            LamaPon::SpriteBlendMode::Opaque;
+        LamaPon::SpriteDrawRequest opaqueSpriteRequest;
+        opaqueSpriteRequest.scale = {
+            static_cast<float>(Width),
+            static_cast<float>(Height) };
+        opaqueSpriteRequest.tint = {
+            1.0f, 0.0f, 0.0f, 0.25f };
+        graphics.BeginFrame(scissorClearColor);
+        auto opaqueSpritePass = graphics.BeginSpritePass(
+            opaqueSpriteDescription);
+        Require(opaqueSpritePass.PushScissor(
+                { 8.0f, 8.0f, 56.0f, 48.0f })
+                && opaqueSpritePass.Draw(opaqueSpriteRequest),
+            "The neutral outer scissor rejected a draw");
+        opaqueSpriteRequest.tint = {
+            0.0f, 1.0f, 0.0f, 0.25f };
+        Require(opaqueSpritePass.PushScissor(
+                { 24.0f, 16.0f, 72.0f, 32.0f })
+                && opaqueSpritePass.Draw(opaqueSpriteRequest)
+                && opaqueSpritePass.PopScissor(),
+            "The neutral inner scissor could not be restored");
+        opaqueSpriteRequest.position = { 8.0f, 32.0f };
+        opaqueSpriteRequest.scale = { 16.0f, 8.0f };
+        opaqueSpriteRequest.tint = {
+            0.0f, 0.0f, 1.0f, 1.0f };
+        Require(opaqueSpritePass.Draw(opaqueSpriteRequest),
+            "A draw after restoring the outer scissor was rejected");
+        Require(
+            opaqueSpritePass.PopScissor()
+                && !opaqueSpritePass.PopScissor(),
+            "The neutral outer scissor stack was not balanced");
+        opaqueSpriteRequest.position = { 0.0f, 0.0f };
+        opaqueSpriteRequest.scale = { 8.0f, 8.0f };
+        opaqueSpriteRequest.tint = {
+            1.0f, 1.0f, 0.0f, 1.0f };
+        Require(opaqueSpritePass.Draw(opaqueSpriteRequest),
+            "A draw after removing every scissor was rejected");
+        opaqueSpritePass.End();
+        std::uint32_t opaqueScissorWidth{};
+        std::uint32_t opaqueScissorHeight{};
+        const auto opaqueScissorPixels = graphics.CaptureBackBuffer(
+            opaqueScissorWidth,
+            opaqueScissorHeight);
+        graphics.EndFrame();
+        Require(
+            opaqueScissorWidth == Width
+                && opaqueScissorHeight == Height,
+            "Neutral scissor test must capture the active back buffer");
+        RequirePixelNear(
+            opaqueScissorPixels,
+            12u,
+            12u,
+            { 255u, 0u, 0u },
+            "Neutral scissor restart lost the opaque blend mode");
+        RequirePixelNear(
+            opaqueScissorPixels,
+            32u,
+            24u,
+            { 0u, 255u, 0u },
+            "Neutral nested scissor did not preserve its intersection");
+        RequirePixelNear(
+            opaqueScissorPixels,
+            64u,
+            24u,
+            { 0u, 0u, 0u },
+            "Neutral nested scissor drew outside the outer rectangle");
+        RequirePixelNear(
+            opaqueScissorPixels,
+            12u,
+            36u,
+            { 0u, 0u, 255u },
+            "Popping the inner scissor did not restore the outer scissor");
+        RequirePixelNear(
+            opaqueScissorPixels,
+            4u,
+            4u,
+            { 255u, 255u, 0u },
+            "Popping every scissor did not restore unclipped drawing");
+
+        // Deferred callbackは、同じshaderがpass中に利用・再compileされても
+        // Begin時のeffect世代と定数をEndまで保持します。
+        const auto spriteMaskShaderPath =
+            std::filesystem::path(LAMAPON_TEST_ASSET_DIR)
+            / L"shaders/LamaPonSpriteMask.hlsl";
+        LamaPon::SpritePassDescription retainedShaderDescription;
+        retainedShaderDescription.pixelShader =
+            spriteMaskShaderPath;
+        retainedShaderDescription.blend =
+            LamaPon::SpriteBlendMode::Opaque;
+        retainedShaderDescription.customParameters[0] = {
+            0.0f, 0.0f, 0.0f, 0.0f };
+        retainedShaderDescription.customParameters[1] = {
+            8.0f, 8.0f, 8.0f, 8.0f };
+        LamaPon::SpriteDrawRequest retainedShaderRequest;
+        retainedShaderRequest.scale = { 16.0f, 16.0f };
+        retainedShaderRequest.tint = {
+            0.0f, 1.0f, 1.0f, 1.0f };
+        graphics.BeginFrame(scissorClearColor);
+        auto retainedShaderPass = graphics.BeginSpritePass(
+            retainedShaderDescription);
+        const auto retainedShaderStatus =
+            retainedShaderPass.ShaderStatus();
+        Require(
+            retainedShaderStatus.error.empty()
+                && retainedShaderStatus.fallback
+                    == LamaPon::SpriteShaderFallback::None
+                && retainedShaderPass.Draw(retainedShaderRequest),
+            "A valid custom sprite shader pass was not prepared");
+        auto conflictingParameters =
+            retainedShaderDescription.customParameters;
+        conflictingParameters[0].y = 1.0f;
+        std::uint64_t reusedShaderGeneration{};
+        std::string reusedShaderError;
+        Require(
+            graphics.ApplyCustomPixelShader(
+                spriteMaskShaderPath,
+                conflictingParameters,
+                &reusedShaderGeneration,
+                &reusedShaderError)
+                && reusedShaderError.empty()
+                && reusedShaderGeneration
+                    == retainedShaderStatus.generation,
+            "The active sprite shader could not be reused with new values");
+        graphics.InvalidateCustomPixelShader(
+            spriteMaskShaderPath);
+        std::uint64_t reloadedShaderGeneration{};
+        std::string reloadedShaderError;
+        Require(
+            graphics.ApplyCustomPixelShader(
+                spriteMaskShaderPath,
+                conflictingParameters,
+                &reloadedShaderGeneration,
+                &reloadedShaderError)
+                && reloadedShaderError.empty()
+                && reloadedShaderGeneration
+                    > retainedShaderStatus.generation,
+            "The active sprite shader could not retain a hot-reloaded generation");
+        retainedShaderPass.End();
+        std::uint32_t retainedShaderWidth{};
+        std::uint32_t retainedShaderHeight{};
+        const auto retainedShaderPixels = graphics.CaptureBackBuffer(
+            retainedShaderWidth,
+            retainedShaderHeight);
+        graphics.EndFrame();
+        Require(
+            retainedShaderWidth == Width
+                && retainedShaderHeight == Height,
+            "Retained sprite shader test did not capture the back buffer");
+        RequirePixelNear(
+            retainedShaderPixels,
+            8u,
+            8u,
+            { 0u, 255u, 255u },
+            "A sprite pass lost its shader generation or constants before End");
+
+        const auto spriteLitShaderPath =
+            std::filesystem::path(LAMAPON_TEST_ASSET_DIR)
+            / L"shaders/LamaPonSpriteLit.hlsl";
+        LamaPon::SpritePassDescription retainedLightingDescription;
+        retainedLightingDescription.pixelShader =
+            spriteLitShaderPath;
+        retainedLightingDescription.blend =
+            LamaPon::SpriteBlendMode::Opaque;
+        retainedLightingDescription.lighting.counts = {
+            1u, 0u, 0u, 0u };
+        retainedLightingDescription.lighting.lights[0]
+            .positionRadiusIntensity = {
+                32.5f, 8.5f, 4096.0f, 1.0f };
+        retainedLightingDescription.lighting.lights[0].color = {
+            0.0f, 0.0f, 1.0f, 0.0f };
+        LamaPon::SpriteDrawRequest retainedLightingRequest;
+        retainedLightingRequest.position = { 24.0f, 0.0f };
+        retainedLightingRequest.scale = { 16.0f, 16.0f };
+        retainedLightingRequest.tint = {
+            0.25f, 0.25f, 0.25f, 1.0f };
+        graphics.BeginFrame(scissorClearColor);
+        auto retainedLightingPass = graphics.BeginSpritePass(
+            retainedLightingDescription);
+        const auto retainedLightingStatus =
+            retainedLightingPass.ShaderStatus();
+        Require(
+            retainedLightingStatus.error.empty()
+                && retainedLightingStatus.fallback
+                    == LamaPon::SpriteShaderFallback::None
+                && retainedLightingPass.Draw(
+                    retainedLightingRequest),
+            "A lit sprite pass was not prepared");
+        graphics.InvalidateCustomPixelShader(
+            spriteLitShaderPath);
+        std::uint64_t reloadedLightingGeneration{};
+        std::string reloadedLightingError;
+        Require(
+            graphics.ApplyCustomPixelShader(
+                spriteLitShaderPath,
+                {},
+                &reloadedLightingGeneration,
+                &reloadedLightingError)
+                && reloadedLightingError.empty()
+                && reloadedLightingGeneration
+                    > retainedLightingStatus.generation,
+            "The active lit sprite shader could not retain a reload");
+        retainedLightingPass.End();
+        std::uint32_t retainedLightingWidth{};
+        std::uint32_t retainedLightingHeight{};
+        const auto retainedLightingPixels = graphics.CaptureBackBuffer(
+            retainedLightingWidth,
+            retainedLightingHeight);
+        graphics.EndFrame();
+        Require(
+            retainedLightingWidth == Width
+                && retainedLightingHeight == Height,
+            "Retained sprite lighting test did not capture the back buffer");
+        RequirePixelNear(
+            retainedLightingPixels,
+            32u,
+            8u,
+            { 64u, 64u, 128u },
+            "A sprite pass lost its lighting snapshot before End");
+
+        LamaPon::SpritePassDescription missingShaderDescription;
+        missingShaderDescription.pixelShader =
+            L"shaders/definitely-missing-neutral-sprite.hlsl";
+        missingShaderDescription.blend =
+            LamaPon::SpriteBlendMode::Opaque;
+        graphics.ResetShaderFallbackDraws();
+        graphics.BeginFrame(scissorClearColor);
+        auto fallbackSpritePass = graphics.BeginSpritePass(
+            missingShaderDescription);
+        Require(
+            !fallbackSpritePass.ShaderStatus().error.empty()
+                && fallbackSpritePass.ShaderStatus().fallback
+                    == LamaPon::SpriteShaderFallback::ErrorPlaceholder
+                && graphics.FrameStats().shaderFallbackDraws == 1u,
+            "A missing neutral sprite shader did not report its fallback");
+        Require(
+            fallbackSpritePass.PushScissor(
+                { 0.0f, 0.0f, 16.0f, 16.0f })
+                && fallbackSpritePass.PopScissor(),
+            "A fallback sprite pass could not restart around a scissor");
+        LamaPon::SpriteDrawRequest fallbackSpriteRequest;
+        fallbackSpriteRequest.scale = { 16.0f, 16.0f };
+        Require(fallbackSpritePass.Draw(fallbackSpriteRequest),
+            "The sprite error placeholder rejected the white fallback");
+        fallbackSpritePass.End();
+        std::uint32_t fallbackSpriteWidth{};
+        std::uint32_t fallbackSpriteHeight{};
+        const auto fallbackSpritePixels = graphics.CaptureBackBuffer(
+            fallbackSpriteWidth,
+            fallbackSpriteHeight);
+        graphics.EndFrame();
+        Require(
+            fallbackSpriteWidth == Width
+                && fallbackSpriteHeight == Height
+                && graphics.FrameStats().shaderFallbackDraws == 1u,
+            "Scissor restart requested the sprite fallback more than once");
+        RequirePixelNear(
+            fallbackSpritePixels,
+            8u,
+            8u,
+            { 255u, 0u, 255u },
+            "A missing sprite shader did not draw its error placeholder");
 
         auto modelPreviewRenderer =
             LamaPon::CreateEditorModelPreviewRenderer(
@@ -1927,6 +2471,16 @@ static_assert(std::is_nothrow_move_assignable_v<
     LamaPon::GraphicsDeviceResourceLease>);
 static_assert(std::is_nothrow_destructible_v<
     LamaPon::GraphicsDeviceResourceLease>);
+static_assert(!std::is_copy_constructible_v<
+    LamaPon::SpriteRenderPass>);
+static_assert(!std::is_copy_assignable_v<
+    LamaPon::SpriteRenderPass>);
+static_assert(std::is_nothrow_move_constructible_v<
+    LamaPon::SpriteRenderPass>);
+static_assert(std::is_nothrow_move_assignable_v<
+    LamaPon::SpriteRenderPass>);
+static_assert(std::is_nothrow_destructible_v<
+    LamaPon::SpriteRenderPass>);
 
 int main()
 {

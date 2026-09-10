@@ -43,7 +43,10 @@ namespace LamaPon
 
     struct GraphicsDevice::SpriteShaderEntry final
     {
-        std::unique_ptr<SpriteEffect> effect;
+        // SpriteBatch executes its callback at End.  Keep compiled effects
+        // shareable so an in-flight pass can retain the exact generation it
+        // began with while the cache is hot-reloaded.
+        std::shared_ptr<SpriteEffect> effect;
         std::filesystem::file_time_type writeTime{};
         std::uint64_t generation{};
         std::string error;

@@ -65,7 +65,7 @@ namespace LamaPon
     }
 
     GraphicsDevice::GraphicsDevice()
-        : m_resourceLeaseState(CreateResourceLeaseState())
+        : m_resourceLeaseState(CreateResourceLeaseState(this))
         , m_services(std::make_unique<RuntimeServices>())
     {
     }

@@ -1,21 +1,11 @@
 #include "LamaPon/Graphics/GraphicsDeviceResourceLease.h"
 
 #include "LamaPon/Graphics/GraphicsDevice.h"
+#include "LamaPon/Graphics/GraphicsDeviceResourceLeaseState.h"
 
 #include <mutex>
 #include <stdexcept>
 #include <utility>
-
-namespace LamaPon::Detail
-{
-    struct GraphicsDeviceResourceLeaseState final
-    {
-        std::mutex mutex;
-        std::size_t activeLeases{};
-        bool transitionInProgress{};
-        bool closed{};
-    };
-}
 
 namespace LamaPon
 {
@@ -73,10 +63,11 @@ namespace LamaPon
     }
 
     std::shared_ptr<Detail::GraphicsDeviceResourceLeaseState>
-        GraphicsDevice::CreateResourceLeaseState()
+        GraphicsDevice::CreateResourceLeaseState(
+            GraphicsDevice* const owner)
     {
         return std::make_shared<
-            Detail::GraphicsDeviceResourceLeaseState>();
+            Detail::GraphicsDeviceResourceLeaseState>(owner);
     }
 
     GraphicsDeviceResourceLease
@@ -161,12 +152,29 @@ namespace LamaPon
         }
         try
         {
+            {
+                std::scoped_lock lock(state->mutex);
+                state->closed = true;
+                state->transitionInProgress = false;
+            }
+            // closedを先に公開するので、新しいpass操作はownerへ入りません。
+            // 進行中だった操作は上のlock取得時点で完了しています。
+            AbortActiveD3D11SpritePass();
             std::scoped_lock lock(state->mutex);
-            state->closed = true;
-            state->transitionInProgress = false;
+            state->owner = nullptr;
         }
         catch (...)
         {
+            try
+            {
+                std::scoped_lock lock(state->mutex);
+                state->owner = nullptr;
+                state->closed = true;
+                state->transitionInProgress = false;
+            }
+            catch (...)
+            {
+            }
         }
     }
 }

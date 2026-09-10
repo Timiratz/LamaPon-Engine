@@ -7,6 +7,7 @@
 #include "LamaPon/Graphics/Lighting.h"
 #include "LamaPon/Graphics/GraphicsQuality.h"
 #include "LamaPon/Graphics/ShaderVariants.h"
+#include "LamaPon/Graphics/SpriteRendering.h"
 
 #include <d3d11.h>
 #include <DirectXMath.h>
@@ -16,6 +17,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <future>
 #include <memory>
 #include <span>
@@ -96,7 +98,6 @@ namespace LamaPon
     struct BloomSettings;
     struct ScreenSpaceLensFlareSettings;
     struct ColorGradingSettings;
-    struct Sprite2DLighting;
     struct SceneLoadingScreenSettings;
     struct VolumetricLightFrame;
     struct TemporalAntiAliasingFrame;
@@ -232,6 +233,10 @@ namespace LamaPon
                 std::uint32_t& height) const;
 
         void BeginFrame(const float clearColor[4]);
+        // API非依存のSprite描画scopeです。passが生きている間はDeviceの
+        // 再初期化をleaseで拒否し、destructorで描画終了を試みます。
+        [[nodiscard]] SpriteRenderPass BeginSpritePass(
+            const SpritePassDescription& description = {});
         DirectX::SpriteBatch& BeginSprites();
         // SpriteBatchはDeferredなので、Drawへ渡すnative viewをEndSpritesまで
         // snapshotごと保持します。2D/UI componentはraw resolverではなく
@@ -713,6 +718,7 @@ namespace LamaPon
 
     private:
         friend class Application;
+        friend class Detail::SpriteRenderPassState;
 
         // 組み込みシェーダーの組み立てに失敗した時刻とエラーを保持します。
         struct BuiltInFailure final
@@ -733,7 +739,7 @@ namespace LamaPon
         void Shutdown() noexcept;
         [[nodiscard]] static std::shared_ptr<
             Detail::GraphicsDeviceResourceLeaseState>
-            CreateResourceLeaseState();
+            CreateResourceLeaseState(GraphicsDevice* owner);
         void BeginResourceTransition();
         void EndResourceTransition() noexcept;
         void CloseResourceLeaseGate() noexcept;
@@ -746,6 +752,28 @@ namespace LamaPon
             RenderingApi requestedApi);
         void CreateApiResources(RenderingApi activeApi);
         void ResetApiResources() noexcept;
+        [[nodiscard]] std::function<void()>
+            PrepareD3D11SpriteShader(
+                const SpritePassDescription& description,
+                SpriteShaderStatus& status);
+        [[nodiscard]] std::uint64_t BeginD3D11SpritePass(
+            const SpritePassDescription& description,
+            bool neutralOwner,
+            SpriteShaderStatus* status,
+            std::uint64_t* generation,
+            std::string* error);
+        [[nodiscard]] bool DrawD3D11Sprite(
+            std::uint64_t token,
+            const SpriteDrawRequest& request);
+        [[nodiscard]] bool PushD3D11SpriteScissor(
+            std::uint64_t token,
+            const SpriteClipRectangle& rectangle);
+        [[nodiscard]] bool PopD3D11SpriteScissor(
+            std::uint64_t token);
+        void EndD3D11SpritePass(std::uint64_t token);
+        void AbortD3D11SpritePass(
+            std::uint64_t token) noexcept;
+        void AbortActiveD3D11SpritePass() noexcept;
         [[nodiscard]] Detail::GraphicsDeviceD3D11Resources*
             TryD3D11ApiResources() const noexcept;
         [[nodiscard]] Detail::GraphicsDeviceD3D11Resources&

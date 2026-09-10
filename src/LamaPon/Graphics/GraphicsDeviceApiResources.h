@@ -1,10 +1,11 @@
 #pragma once
 
 #include "LamaPon/Graphics/GraphicsResource.h"
-
 #include <d3d11.h>
 #include <wrl/client.h>
 
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -25,6 +26,14 @@ namespace LamaPon
 
     namespace Detail
     {
+        enum class D3D11SpriteBatchOwner : std::uint8_t
+        {
+            None,
+            Legacy,
+            Neutral,
+            Poisoned
+        };
+
         // GraphicsDeviceの公開レイアウトから隔離するDirectX 11固有状態です。
         // GraphicsDeviceApiResourcesだけが所有し、Backendより先に破棄します。
         struct GraphicsDeviceD3D11Resources final
@@ -45,12 +54,20 @@ namespace LamaPon
             std::unique_ptr<DirectX::SpriteBatch> spriteBatch;
             std::vector<std::shared_ptr<
                 const TextureResourceSnapshot>> spriteTexturePins;
+            std::vector<GraphicsViewHandle> spriteViewPins;
             std::unique_ptr<DirectX::CommonStates> commonStates;
             mutable Microsoft::WRL::ComPtr<ID3D11BlendState>
                 additiveBlendPreservingAlpha;
             Microsoft::WRL::ComPtr<ID3D11RasterizerState>
                 uiScissorRasterizer;
             std::vector<D3D11_RECT> uiScissorStack;
+            D3D11SpriteBatchOwner spriteBatchOwner{
+                D3D11SpriteBatchOwner::None };
+            std::uint64_t spriteBatchToken{};
+            std::uint64_t nextSpriteBatchToken{ 1 };
+            bool spriteBatchNativeBegun{};
+            ID3D11BlendState* spriteBlendState{};
+            std::function<void()> spriteShaderCallback;
         };
 
         // 将来の描画APIごとの状態を同じ所有境界へ追加するための

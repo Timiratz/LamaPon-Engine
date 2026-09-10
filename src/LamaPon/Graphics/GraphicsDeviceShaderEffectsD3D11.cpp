@@ -69,23 +69,33 @@ namespace LamaPon
         std::string* error,
         const Sprite2DLighting* lighting)
     {
-        auto& resources = RequireD3D11ApiResources();
-        resources.spriteTexturePins.clear();
-        if (generation != nullptr)
+        SpritePassDescription description;
+        description.pixelShader = shaderPath;
+        description.customParameters = customParameters;
+        description.lighting = lighting != nullptr
+            ? *lighting
+            : Sprite2DLighting{};
+        static_cast<void>(BeginD3D11SpritePass(
+            description,
+            false,
+            nullptr,
+            generation,
+            error));
+        return *RequireD3D11ApiResources().spriteBatch;
+    }
+
+    std::function<void()> GraphicsDevice::PrepareD3D11SpriteShader(
+        const SpritePassDescription& description,
+        SpriteShaderStatus& status)
+    {
+        status = {};
+        if (description.pixelShader.empty())
         {
-            *generation = 0;
-        }
-        if (error != nullptr)
-        {
-            error->clear();
-        }
-        if (shaderPath.empty())
-        {
-            return BeginSprites();
+            return {};
         }
 
-        const auto absolutePath =
-            Assets().ResolvePath(shaderPath).lexically_normal();
+        const auto absolutePath = Assets().ResolvePath(
+            description.pixelShader).lexically_normal();
         auto& entry = m_spriteShaders[absolutePath];
         if (!entry)
         {
@@ -133,7 +143,7 @@ namespace LamaPon
                     try
                     {
                         auto candidate =
-                            std::make_unique<SpriteEffect>(
+                            std::make_shared<SpriteEffect>(
                                 Device(),
                                 Context(),
                                 Assets(),
@@ -159,14 +169,8 @@ namespace LamaPon
             }
         }
 
-        if (generation != nullptr)
-        {
-            *generation = entry->generation;
-        }
-        if (error != nullptr)
-        {
-            *error = entry->error;
-        }
+        status.generation = entry->generation;
+        status.error = entry->error;
         if (!entry->effect)
         {
             // コンパイル失敗を視認できるよう、マゼンタの代替表示を使います。
@@ -175,45 +179,36 @@ namespace LamaPon
                 if (auto* const placeholder =
                         SpriteErrorPlaceholder())
                 {
-                    placeholder->SetParameters(
-                        customParameters);
-                    placeholder->SetLights(Sprite2DLighting{});
-                    resources.spriteBatch->Begin(
-                        DirectX::SpriteSortMode_Deferred,
-                        resources.commonStates->NonPremultiplied(),
-                        nullptr,
-                        nullptr,
-                        nullptr,
-                        [placeholder]()
-                        {
-                            placeholder->Apply();
-                        });
-                    return *resources.spriteBatch;
+                    status.fallback =
+                        SpriteShaderFallback::ErrorPlaceholder;
+                    return [
+                        placeholder,
+                        parameters = description.customParameters]()
+                    {
+                        placeholder->SetParameters(parameters);
+                        placeholder->SetLights(Sprite2DLighting{});
+                        placeholder->Apply();
+                    };
                 }
             }
-            return BeginSprites();
+            status.fallback =
+                SpriteShaderFallback::DefaultPipeline;
+            return {};
         }
 
-        entry->effect->SetParameters(customParameters);
-        // 灯りを渡されなかった呼び出しでは空にします。前の描画の
-        // 一覧が残っていると、Light2Dを消したのにまだ光る、という
-        // 見え方になるためです。
-        entry->effect->SetLights(
-            lighting != nullptr
-                ? *lighting
-                : Sprite2DLighting{});
-        auto* effect = entry->effect.get();
-        resources.spriteBatch->Begin(
-            DirectX::SpriteSortMode_Deferred,
-            resources.commonStates->NonPremultiplied(),
-            nullptr,
-            nullptr,
-            nullptr,
-            [effect]()
-            {
-                effect->Apply();
-            });
-        return *resources.spriteBatch;
+        // SpriteBatch invokes this callback only when it flushes. Capture both
+        // the compiled generation and this pass's values: another renderer may
+        // use or hot-reload the same shader between Begin and End.
+        auto effect = entry->effect;
+        return [
+            effect = std::move(effect),
+            parameters = description.customParameters,
+            lighting = description.lighting]()
+        {
+            effect->SetParameters(parameters);
+            effect->SetLights(lighting);
+            effect->Apply();
+        };
     }
 
     bool GraphicsDevice::ApplyCustomPixelShader(
@@ -286,7 +281,7 @@ namespace LamaPon
                     try
                     {
                         auto candidate =
-                            std::make_unique<SpriteEffect>(
+                            std::make_shared<SpriteEffect>(
                                 Device(),
                                 Context(),
                                 Assets(),

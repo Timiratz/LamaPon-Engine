@@ -73,9 +73,15 @@ namespace LamaPon::Detail
 
     void GraphicsDeviceD3D11Resources::Reset() noexcept
     {
+        spriteShaderCallback = {};
+        spriteBatchOwner = D3D11SpriteBatchOwner::None;
+        spriteBatchToken = 0;
+        spriteBatchNativeBegun = false;
+        spriteBlendState = nullptr;
         additiveBlendPreservingAlpha.Reset();
         uiScissorRasterizer.Reset();
         uiScissorStack.clear();
+        spriteViewPins.clear();
         spriteTexturePins.clear();
         commonStates.reset();
         spriteBatch.reset();
@@ -399,6 +405,15 @@ namespace LamaPon
         GraphicsDevice::PinD3D11TextureForSpriteBatch(
             std::shared_ptr<const TextureResourceSnapshot> resources)
     {
+        auto& apiResources = RequireD3D11ApiResources();
+        if (apiResources.spriteBatchOwner
+                != Detail::D3D11SpriteBatchOwner::Legacy
+            || !apiResources.spriteBatchNativeBegun)
+        {
+            throw std::logic_error(
+                "A legacy SpriteBatch texture can only be pinned during "
+                "an active legacy sprite pass.");
+        }
         if (resources == nullptr)
         {
             return nullptr;
@@ -407,7 +422,7 @@ namespace LamaPon
             TryResolveD3D11ShaderResourceView(*resources);
         if (view != nullptr)
         {
-            RequireD3D11ApiResources().spriteTexturePins.emplace_back(
+            apiResources.spriteTexturePins.emplace_back(
                 std::move(resources));
         }
         return view;

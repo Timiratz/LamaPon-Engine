@@ -15,8 +15,8 @@ namespace LamaPon
     // 期間を表します。このleaseが1つでも生きている間は、Deviceを
     // 作り直すInitializeを安全側で拒否します。
     //
-    // lease自身はBackend resourceを所有しません。GraphicsDeviceは
-    // leaseより長く生存させてください。
+    // lease自身はBackend resourceを所有しません。GraphicsDeviceが先に
+    // 破棄された場合も、共有gateだけを保持して安全に無効化されます。
     class GraphicsDeviceResourceLease final
     {
     public:

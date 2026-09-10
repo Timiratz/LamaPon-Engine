@@ -282,6 +282,7 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Graphics/GraphicsDeviceSpriteD3D11.cpp
     src/LamaPon/Graphics/GraphicsDeviceResourceLease.cpp
     src/LamaPon/Graphics/GraphicsDeviceResourceLease.h
+    src/LamaPon/Graphics/GraphicsDeviceResourceLeaseState.h
     src/LamaPon/Graphics/D3D11Backend.cpp
     src/LamaPon/Graphics/D3D11Backend.h
     src/LamaPon/Graphics/D3D11GpuProfilerBackend.cpp
@@ -332,6 +333,7 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Graphics/ShaderVariants.h
     src/LamaPon/Graphics/SpriteEffect.cpp
     src/LamaPon/Graphics/SpriteEffect.h
+    src/LamaPon/Graphics/SpriteRendering.cpp
     src/LamaPon/Graphics/SpriteRendering.h
     src/LamaPon/Graphics/SkeletalModel.cpp
     src/LamaPon/Graphics/SkeletalModel.h
@@ -1787,6 +1789,7 @@ install(
         PATTERN "AssetPacker.h" EXCLUDE
         PATTERN "AssetArchive.h" EXCLUDE
         PATTERN "GraphicsDeviceApiResources.h" EXCLUDE
+        PATTERN "GraphicsDeviceResourceLeaseState.h" EXCLUDE
         PATTERN "GraphicsDeviceShaderState.h" EXCLUDE
 )
 install(

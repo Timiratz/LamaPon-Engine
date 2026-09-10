@@ -50,8 +50,11 @@
 - カスタムSprite、Material、Screen、Compute Shaderの読み込み・再読み込み・実行を`GraphicsDeviceShaderEffectsD3D11.cpp`へ分離し、共通Device本体をBackend寿命と設定管理へ縮小。
 - 名前付きRenderTextureの安定表示面をAPI非依存`GraphicsViewHandle`として公開し、同サイズではidentityを維持、resize・解放・再初期化では安全に世代を更新するsidecar cacheを追加。RenderTargetの途中初期化は無効状態として再試行する。
 - Light2DとSprite描画request・pass設定をD3D11非依存の`SpriteRendering.h`へ分離し、次段階のBackend中立Sprite描画経路で共有できる公開型を追加。
+- move-onlyの`SpriteRenderPass`と非所有`SpriteDrawContext`を追加し、API非依存handleからSpriteを送信できる経路をD3D11実装へ接続。pass中は再初期化をleaseで拒否し、legacyとの二重Beginやstale viewを安全に拒否する。
+- Sprite passのシザー切り替えでもblendとカスタムShaderを維持し、Deferred描画が完了するまでtexture viewを強所有するowner/token境界を追加。
 - `GraphicsDevice`の公開レイアウト変更に伴い、Game Module APIを38へ更新。SDK反映後はゲーム用DLLの再ビルドが必要。
 - `GraphicsBackend`の表示handle契約、`GraphicsDevice`の公開API、`RenderTarget`の完成状態追加に伴い、Game Module APIを39へ更新。SDK反映後はゲーム用DLLの再ビルドが必要。
+- API非依存Sprite passと描画requestの公開に伴い、Game Module APIを40へ更新。SDK反映後はゲーム用DLLの再ビルドが必要。
 
 ### ファイル名の統一
 
