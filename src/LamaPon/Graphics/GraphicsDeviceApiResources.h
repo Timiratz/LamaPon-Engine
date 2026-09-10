@@ -57,6 +57,11 @@ namespace LamaPon
             std::vector<std::shared_ptr<
                 const TextureResourceSnapshot>> spriteTexturePins;
             std::vector<GraphicsViewHandle> spriteViewPins;
+            // EnvironmentRendererが所有するSky IBLのraw cacheを、公開
+            // LightingState用の世代付きviewとして一度だけ取り込みます。
+            GraphicsViewHandle skyPrefilteredSpecular;
+            GraphicsViewHandle skyPrefilteredIrradiance;
+            float skyPrefilteredMaximumMip{};
             std::unique_ptr<DirectX::CommonStates> commonStates;
             mutable Microsoft::WRL::ComPtr<ID3D11BlendState>
                 additiveBlendPreservingAlpha;

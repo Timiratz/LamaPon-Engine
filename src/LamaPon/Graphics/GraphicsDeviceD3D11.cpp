@@ -15,6 +15,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <span>
 #include <stdexcept>
@@ -39,6 +40,78 @@ namespace
             LamaPon::GraphicsBackend* const backend) noexcept
     {
         return dynamic_cast<LamaPon::D3D11Backend*>(backend);
+    }
+
+    [[nodiscard]] bool IsCubeShaderResource(
+        ID3D11Device* const device,
+        ID3D11ShaderResourceView* const view,
+        const DXGI_FORMAT expectedFormat = DXGI_FORMAT_UNKNOWN,
+        const std::uint32_t expectedSize = 0,
+        const std::uint32_t expectedMipLevels = 0) noexcept
+    {
+        if (device == nullptr || view == nullptr)
+        {
+            return false;
+        }
+
+        D3D11_SHADER_RESOURCE_VIEW_DESC viewDescription{};
+        view->GetDesc(&viewDescription);
+        if (viewDescription.ViewDimension
+                != D3D11_SRV_DIMENSION_TEXTURECUBE
+            || viewDescription.TextureCube.MostDetailedMip != 0
+            || viewDescription.TextureCube.MipLevels == 0)
+        {
+            return false;
+        }
+
+        Microsoft::WRL::ComPtr<ID3D11Resource> resource;
+        view->GetResource(resource.ReleaseAndGetAddressOf());
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+        if (resource == nullptr || FAILED(resource.As(&texture)))
+        {
+            return false;
+        }
+        D3D11_TEXTURE2D_DESC description{};
+        texture->GetDesc(&description);
+        auto viewMipLevels =
+            viewDescription.TextureCube.MipLevels;
+        if (viewMipLevels == std::numeric_limits<UINT>::max())
+        {
+            viewMipLevels = description.MipLevels;
+        }
+        if (description.Width == 0
+            || description.Width != description.Height
+            || description.ArraySize != 6
+            || description.MipLevels == 0
+            || viewMipLevels > description.MipLevels
+            || description.SampleDesc.Count != 1
+            || (description.MiscFlags
+                & D3D11_RESOURCE_MISC_TEXTURECUBE) == 0
+            || (description.BindFlags
+                & D3D11_BIND_SHADER_RESOURCE) == 0)
+        {
+            return false;
+        }
+
+        if (expectedFormat != DXGI_FORMAT_UNKNOWN)
+        {
+            return viewDescription.Format == expectedFormat
+                && description.Format == expectedFormat
+                && description.Width == expectedSize
+                && description.MipLevels == expectedMipLevels
+                && viewMipLevels == expectedMipLevels;
+        }
+
+        UINT formatSupport{};
+        constexpr UINT RequiredFormatSupport =
+            D3D11_FORMAT_SUPPORT_TEXTURECUBE
+            | D3D11_FORMAT_SUPPORT_SHADER_SAMPLE;
+        return viewDescription.Format != DXGI_FORMAT_UNKNOWN
+            && SUCCEEDED(device->CheckFormatSupport(
+                viewDescription.Format,
+                &formatSupport))
+            && (formatSupport & RequiredFormatSupport)
+                == RequiredFormatSupport;
     }
 }
 
@@ -79,6 +152,9 @@ namespace LamaPon::Detail
         spriteBatchToken = 0;
         spriteBatchNativeBegun = false;
         spriteBlendState = nullptr;
+        skyPrefilteredSpecular.Reset();
+        skyPrefilteredIrradiance.Reset();
+        skyPrefilteredMaximumMip = 0.0f;
         additiveBlendPreservingAlpha.Reset();
         uiScissorRasterizer.Reset();
         uiScissorStack.clear();
@@ -364,6 +440,100 @@ namespace LamaPon
             const std::uint64_t key) const
     {
         return EnvironmentCache::TryLoad(Device(), key);
+    }
+
+    PrefilteredEnvironmentViews
+        GraphicsDevice::TryGetPrefilteredEnvironmentViews(
+            const GraphicsViewHandle& source,
+            const std::uint64_t cacheKey) const noexcept
+    {
+        auto* const backend = AsD3D11Backend(m_backend.get());
+        auto* const apiResources = TryD3D11ApiResources();
+        if (!source || backend == nullptr || apiResources == nullptr)
+        {
+            return {};
+        }
+
+        try
+        {
+            auto* const nativeSource =
+                backend->ResolveShaderResourceView(source);
+            if (!IsCubeShaderResource(
+                    backend->Device(),
+                    nativeSource))
+            {
+                return {};
+            }
+
+            const auto native = Environment()
+                .GetPrefilteredEnvironment(
+                    nativeSource,
+                    cacheKey);
+            constexpr auto ExpectedMaximumMip = static_cast<float>(
+                EnvironmentRenderer::PrefilteredSpecularMipLevels - 1);
+            if (!IsCubeShaderResource(
+                    backend->Device(),
+                    native.specular,
+                    DXGI_FORMAT_R16G16B16A16_FLOAT,
+                    EnvironmentRenderer::PrefilteredSpecularSize,
+                    EnvironmentRenderer::PrefilteredSpecularMipLevels)
+                || !IsCubeShaderResource(
+                    backend->Device(),
+                    native.irradiance,
+                    DXGI_FORMAT_R16G16B16A16_FLOAT,
+                    EnvironmentRenderer::PrefilteredIrradianceSize,
+                    EnvironmentRenderer::PrefilteredIrradianceMipLevels)
+                || native.specularMaximumMip != ExpectedMaximumMip)
+            {
+                return {};
+            }
+
+            bool reuseHandles =
+                apiResources->skyPrefilteredSpecular
+                && apiResources->skyPrefilteredIrradiance
+                && apiResources->skyPrefilteredMaximumMip
+                    == native.specularMaximumMip;
+            if (reuseHandles)
+            {
+                try
+                {
+                    reuseHandles =
+                        backend->ResolveShaderResourceView(
+                            apiResources->skyPrefilteredSpecular)
+                            == native.specular
+                        && backend->ResolveShaderResourceView(
+                            apiResources->skyPrefilteredIrradiance)
+                            == native.irradiance;
+                }
+                catch (...)
+                {
+                    reuseHandles = false;
+                }
+            }
+            if (!reuseHandles)
+            {
+                auto specular = backend->ImportShaderResourceViewHandle(
+                    native.specular);
+                auto irradiance = backend->ImportShaderResourceViewHandle(
+                    native.irradiance);
+                apiResources->skyPrefilteredSpecular =
+                    std::move(specular);
+                apiResources->skyPrefilteredIrradiance =
+                    std::move(irradiance);
+                apiResources->skyPrefilteredMaximumMip =
+                    native.specularMaximumMip;
+            }
+
+            return {
+                apiResources->skyPrefilteredSpecular,
+                apiResources->skyPrefilteredIrradiance,
+                apiResources->skyPrefilteredMaximumMip
+            };
+        }
+        catch (...)
+        {
+            return {};
+        }
     }
 
     std::array<Microsoft::WRL::ComPtr<

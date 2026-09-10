@@ -11,14 +11,204 @@
 #include <d3dcompiler.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace
 {
+    // Environment prefilterはScene描画中にも初回生成されるため、変更する
+    // D3D11 pipeline slotを全て復元します。今後pass内に早期returnや
+    // 例外が増えても、呼び出し元の状態を残さないRAII境界です。
+    class PipelineStateScope final
+    {
+    public:
+        explicit PipelineStateScope(
+            ID3D11DeviceContext* const context) noexcept
+            : m_context(context)
+        {
+            if (m_context == nullptr)
+            {
+                return;
+            }
+
+            std::array<
+                ID3D11RenderTargetView*,
+                D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT> rawTargets{};
+            m_context->OMGetRenderTargets(
+                static_cast<UINT>(rawTargets.size()),
+                rawTargets.data(),
+                m_depth.ReleaseAndGetAddressOf());
+            for (std::size_t index{}; index < rawTargets.size(); ++index)
+            {
+                m_targets[index].Attach(rawTargets[index]);
+            }
+
+            m_viewportCount = static_cast<UINT>(m_viewports.size());
+            m_context->RSGetViewports(
+                &m_viewportCount,
+                m_viewports.data());
+            m_context->OMGetDepthStencilState(
+                m_depthState.ReleaseAndGetAddressOf(),
+                &m_stencilReference);
+            m_context->RSGetState(
+                m_rasterizer.ReleaseAndGetAddressOf());
+            m_context->IAGetInputLayout(
+                m_inputLayout.ReleaseAndGetAddressOf());
+            m_context->IAGetPrimitiveTopology(&m_topology);
+
+            std::array<
+                ID3D11ClassInstance*,
+                D3D11_SHADER_MAX_INTERFACES> rawVertexInstances{};
+            m_vertexInstanceCount =
+                static_cast<UINT>(rawVertexInstances.size());
+            m_context->VSGetShader(
+                m_vertexShader.ReleaseAndGetAddressOf(),
+                rawVertexInstances.data(),
+                &m_vertexInstanceCount);
+            for (UINT index{}; index < m_vertexInstanceCount; ++index)
+            {
+                m_vertexInstances[index].Attach(
+                    rawVertexInstances[index]);
+            }
+
+            std::array<
+                ID3D11ClassInstance*,
+                D3D11_SHADER_MAX_INTERFACES> rawPixelInstances{};
+            m_pixelInstanceCount =
+                static_cast<UINT>(rawPixelInstances.size());
+            m_context->PSGetShader(
+                m_pixelShader.ReleaseAndGetAddressOf(),
+                rawPixelInstances.data(),
+                &m_pixelInstanceCount);
+            for (UINT index{}; index < m_pixelInstanceCount; ++index)
+            {
+                m_pixelInstances[index].Attach(
+                    rawPixelInstances[index]);
+            }
+
+            m_context->PSGetShaderResources(
+                1,
+                1,
+                m_pixelResource.ReleaseAndGetAddressOf());
+            m_context->PSGetSamplers(
+                0,
+                1,
+                m_pixelSampler.ReleaseAndGetAddressOf());
+            m_context->PSGetConstantBuffers(
+                3,
+                1,
+                m_pixelBuffer.ReleaseAndGetAddressOf());
+        }
+
+        ~PipelineStateScope() noexcept
+        {
+            if (m_context == nullptr)
+            {
+                return;
+            }
+
+            std::array<
+                ID3D11RenderTargetView*,
+                D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT> rawTargets{};
+            for (std::size_t index{}; index < rawTargets.size(); ++index)
+            {
+                rawTargets[index] = m_targets[index].Get();
+            }
+            m_context->OMSetRenderTargets(
+                static_cast<UINT>(rawTargets.size()),
+                rawTargets.data(),
+                m_depth.Get());
+            m_context->RSSetViewports(
+                m_viewportCount,
+                m_viewportCount != 0 ? m_viewports.data() : nullptr);
+            m_context->OMSetDepthStencilState(
+                m_depthState.Get(),
+                m_stencilReference);
+            m_context->RSSetState(m_rasterizer.Get());
+            m_context->IASetInputLayout(m_inputLayout.Get());
+            m_context->IASetPrimitiveTopology(m_topology);
+
+            std::array<
+                ID3D11ClassInstance*,
+                D3D11_SHADER_MAX_INTERFACES> rawVertexInstances{};
+            for (UINT index{}; index < m_vertexInstanceCount; ++index)
+            {
+                rawVertexInstances[index] =
+                    m_vertexInstances[index].Get();
+            }
+            m_context->VSSetShader(
+                m_vertexShader.Get(),
+                m_vertexInstanceCount != 0
+                    ? rawVertexInstances.data()
+                    : nullptr,
+                m_vertexInstanceCount);
+
+            std::array<
+                ID3D11ClassInstance*,
+                D3D11_SHADER_MAX_INTERFACES> rawPixelInstances{};
+            for (UINT index{}; index < m_pixelInstanceCount; ++index)
+            {
+                rawPixelInstances[index] =
+                    m_pixelInstances[index].Get();
+            }
+            m_context->PSSetShader(
+                m_pixelShader.Get(),
+                m_pixelInstanceCount != 0
+                    ? rawPixelInstances.data()
+                    : nullptr,
+                m_pixelInstanceCount);
+
+            ID3D11ShaderResourceView* resources[]{
+                m_pixelResource.Get()
+            };
+            m_context->PSSetShaderResources(1, 1, resources);
+            ID3D11SamplerState* samplers[]{ m_pixelSampler.Get() };
+            m_context->PSSetSamplers(0, 1, samplers);
+            ID3D11Buffer* buffers[]{ m_pixelBuffer.Get() };
+            m_context->PSSetConstantBuffers(3, 1, buffers);
+        }
+
+        PipelineStateScope(const PipelineStateScope&) = delete;
+        PipelineStateScope& operator=(const PipelineStateScope&) = delete;
+
+    private:
+        ID3D11DeviceContext* m_context{};
+        std::array<
+            Microsoft::WRL::ComPtr<ID3D11RenderTargetView>,
+            D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT> m_targets;
+        Microsoft::WRL::ComPtr<ID3D11DepthStencilView> m_depth;
+        std::array<
+            D3D11_VIEWPORT,
+            D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE>
+            m_viewports{};
+        UINT m_viewportCount{};
+        Microsoft::WRL::ComPtr<ID3D11DepthStencilState> m_depthState;
+        UINT m_stencilReference{};
+        Microsoft::WRL::ComPtr<ID3D11RasterizerState> m_rasterizer;
+        Microsoft::WRL::ComPtr<ID3D11InputLayout> m_inputLayout;
+        D3D11_PRIMITIVE_TOPOLOGY m_topology{
+            D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED
+        };
+        Microsoft::WRL::ComPtr<ID3D11VertexShader> m_vertexShader;
+        std::array<
+            Microsoft::WRL::ComPtr<ID3D11ClassInstance>,
+            D3D11_SHADER_MAX_INTERFACES> m_vertexInstances;
+        UINT m_vertexInstanceCount{};
+        Microsoft::WRL::ComPtr<ID3D11PixelShader> m_pixelShader;
+        std::array<
+            Microsoft::WRL::ComPtr<ID3D11ClassInstance>,
+            D3D11_SHADER_MAX_INTERFACES> m_pixelInstances;
+        UINT m_pixelInstanceCount{};
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_pixelResource;
+        Microsoft::WRL::ComPtr<ID3D11SamplerState> m_pixelSampler;
+        Microsoft::WRL::ComPtr<ID3D11Buffer> m_pixelBuffer;
+    };
+
     void ThrowIfFailed(const HRESULT result, const char* operation)
     {
         if (FAILED(result))
@@ -727,7 +917,8 @@ namespace LamaPon
         {
             return {};
         }
-        if (m_prefilterSource.Get() != source)
+        if (m_prefilterSource.Get() != source
+            || m_prefilterCacheKey != cacheKey)
         {
             BuildPrefilteredEnvironment(source, cacheKey);
         }
@@ -742,40 +933,45 @@ namespace LamaPon
         ID3D11ShaderResourceView* const source,
         const std::uint64_t cacheKey)
     {
+        // source/keyと2本の結果をlocalで完成させてから一括反映します。
+        // 生成例外後に新sourceと旧結果が混在し、次フレームで誤って
+        // cache hitになることを防ぎます。
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> nextSource{
+            source
+        };
+        OwnedPrefilteredEnvironment next;
+        bool restoredFromCache{};
+
         // スカイ用キャッシュが有効な場合は、決定的な畳み込み結果を
         // ディスクから復元してGPUでの再計算を省略します。
-        m_prefilterSource = source;
         if (cacheKey != 0)
         {
-            auto restored = EnvironmentCache::TryLoad(
+            next = EnvironmentCache::TryLoad(
                 m_device,
                 cacheKey);
-            if (restored.IsValid())
+            restoredFromCache = next.IsValid();
+        }
+        if (!restoredFromCache)
+        {
+            next = CreatePrefilteredEnvironment(source);
+            if (cacheKey != 0 && next.IsValid())
             {
-                m_prefilteredSpecular =
-                    std::move(restored.specular);
-                m_prefilteredIrradiance =
-                    std::move(restored.irradiance);
-                m_prefilteredMaximumMip =
-                    restored.specularMaximumMip;
-                return;
+                EnvironmentCache::Store(
+                    cacheKey,
+                    m_device,
+                    m_context,
+                    next);
             }
         }
-        auto owned = CreatePrefilteredEnvironment(source);
-        if (cacheKey != 0 && owned.IsValid())
-        {
-            EnvironmentCache::Store(
-                cacheKey,
-                m_device,
-                m_context,
-                owned);
-        }
+
+        m_prefilterSource = std::move(nextSource);
+        m_prefilterCacheKey = cacheKey;
         m_prefilteredSpecular =
-            std::move(owned.specular);
+            std::move(next.specular);
         m_prefilteredIrradiance =
-            std::move(owned.irradiance);
+            std::move(next.irradiance);
         m_prefilteredMaximumMip =
-            owned.specularMaximumMip;
+            next.specularMaximumMip;
     }
 
     EnvironmentRenderer::OwnedPrefilteredEnvironment
@@ -802,11 +998,6 @@ namespace LamaPon
         }
         D3D11_TEXTURE2D_DESC sourceDescription{};
         sourceTexture->GetDesc(&sourceDescription);
-
-        // スペキュラ: 128px・8ミップ、放射照度: 16px・1ミップ。
-        constexpr std::uint32_t SpecularSize = 128;
-        constexpr std::uint32_t SpecularMips = 8;
-        constexpr std::uint32_t IrradianceSize = 16;
 
         const auto createCube =
             [this](
@@ -855,39 +1046,65 @@ namespace LamaPon
         if (includeSpecular)
         {
             createCube(
-                SpecularSize,
-                SpecularMips,
+                PrefilteredSpecularSize,
+                PrefilteredSpecularMipLevels,
                 specularTexture,
                 result.specular);
         }
         createCube(
-            IrradianceSize,
-            1,
+            PrefilteredIrradianceSize,
+            PrefilteredIrradianceMipLevels,
             irradianceTexture,
             result.irradiance);
 
-        // 現在のパイプライン状態を退避します
-        // （シーン描画の途中で呼ばれるため）。
-        ComPtr<ID3D11RenderTargetView> previousTarget;
-        ComPtr<ID3D11DepthStencilView> previousDepth;
-        m_context->OMGetRenderTargets(
-            1,
-            previousTarget.ReleaseAndGetAddressOf(),
-            previousDepth.ReleaseAndGetAddressOf());
-        D3D11_VIEWPORT previousViewport{};
-        UINT viewportCount = 1;
-        m_context->RSGetViewports(
-            &viewportCount,
-            &previousViewport);
-        ComPtr<ID3D11DepthStencilState>
-            previousDepthState;
-        UINT previousStencilReference{};
-        m_context->OMGetDepthStencilState(
-            previousDepthState.ReleaseAndGetAddressOf(),
-            &previousStencilReference);
-        ComPtr<ID3D11RasterizerState> previousRasterizer;
-        m_context->RSGetState(
-            previousRasterizer.ReleaseAndGetAddressOf());
+        // 描画状態を変更する前に全RTVを作ります。途中で作成に失敗しても
+        // 呼び出し元のcontextを半端なprefilter passに残しません。
+        const auto createFaceTargets = [this](
+            ID3D11Texture2D* const texture,
+            const std::uint32_t mipLevels)
+        {
+            std::vector<Microsoft::WRL::ComPtr<
+                ID3D11RenderTargetView>> targets;
+            targets.reserve(
+                static_cast<std::size_t>(mipLevels) * 6u);
+            for (std::uint32_t mip{}; mip < mipLevels; ++mip)
+            {
+                for (std::uint32_t face{}; face < 6u; ++face)
+                {
+                    D3D11_RENDER_TARGET_VIEW_DESC description{};
+                    description.Format =
+                        DXGI_FORMAT_R16G16B16A16_FLOAT;
+                    description.ViewDimension =
+                        D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
+                    description.Texture2DArray.MipSlice = mip;
+                    description.Texture2DArray.FirstArraySlice = face;
+                    description.Texture2DArray.ArraySize = 1;
+                    Microsoft::WRL::ComPtr<ID3D11RenderTargetView> target;
+                    ThrowIfFailed(
+                        m_device->CreateRenderTargetView(
+                            texture,
+                            &description,
+                            target.ReleaseAndGetAddressOf()),
+                        "ID3D11Device::CreateRenderTargetView(prefilter)");
+                    targets.push_back(std::move(target));
+                }
+            }
+            return targets;
+        };
+        std::vector<Microsoft::WRL::ComPtr<ID3D11RenderTargetView>>
+            specularTargets;
+        if (includeSpecular)
+        {
+            specularTargets = createFaceTargets(
+                specularTexture.Get(),
+                PrefilteredSpecularMipLevels);
+        }
+        const auto irradianceTargets = createFaceTargets(
+            irradianceTexture.Get(),
+            PrefilteredIrradianceMipLevels);
+
+        // シーン描画中の初回生成でも、変更する全slotを必ず元へ戻します。
+        const PipelineStateScope pipelineState{ m_context };
 
         m_context->IASetInputLayout(nullptr);
         m_context->IASetPrimitiveTopology(
@@ -915,11 +1132,12 @@ namespace LamaPon
 
         const auto renderFaces =
             [this](
-                ID3D11Texture2D* texture,
                 ID3D11PixelShader* shader,
                 const std::uint32_t size,
                 const std::uint32_t mips,
-                const float sourceResolution)
+                const float sourceResolution,
+                const std::vector<Microsoft::WRL::ComPtr<
+                    ID3D11RenderTargetView>>& faceTargets)
         {
             m_context->PSSetShader(shader, nullptr, 0);
             for (std::uint32_t mip = 0;
@@ -958,29 +1176,9 @@ namespace LamaPon
                         0,
                         0);
 
-                    D3D11_RENDER_TARGET_VIEW_DESC
-                        targetDescription{};
-                    targetDescription.Format =
-                        DXGI_FORMAT_R16G16B16A16_FLOAT;
-                    targetDescription.ViewDimension =
-                        D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
-                    targetDescription.Texture2DArray
-                        .MipSlice = mip;
-                    targetDescription.Texture2DArray
-                        .FirstArraySlice = face;
-                    targetDescription.Texture2DArray
-                        .ArraySize = 1;
-                    Microsoft::WRL::ComPtr<
-                        ID3D11RenderTargetView> target;
-                    ThrowIfFailed(
-                        m_device->CreateRenderTargetView(
-                            texture,
-                            &targetDescription,
-                            target
-                                .ReleaseAndGetAddressOf()),
-                        "ID3D11Device::CreateRenderTargetView(prefilter)");
                     ID3D11RenderTargetView* targets[]{
-                        target.Get() };
+                        faceTargets[static_cast<std::size_t>(mip) * 6u
+                            + face].Get() };
                     m_context->OMSetRenderTargets(
                         1,
                         targets,
@@ -993,45 +1191,21 @@ namespace LamaPon
         if (includeSpecular)
         {
             renderFaces(
-                specularTexture.Get(),
                 m_prefilterPixelShader.Get(),
-                SpecularSize,
-                SpecularMips,
-                static_cast<float>(sourceDescription.Width));
+                PrefilteredSpecularSize,
+                PrefilteredSpecularMipLevels,
+                static_cast<float>(sourceDescription.Width),
+                specularTargets);
         }
         renderFaces(
-            irradianceTexture.Get(),
             m_irradiancePixelShader.Get(),
-            IrradianceSize,
-            1,
-            static_cast<float>(sourceDescription.Width));
-
-        // 状態を復元します。
-        ID3D11ShaderResourceView* clearResources[]{
-            nullptr };
-        m_context->PSSetShaderResources(
-            1,
-            1,
-            clearResources);
-        ID3D11RenderTargetView* restoreTargets[]{
-            previousTarget.Get() };
-        m_context->OMSetRenderTargets(
-            1,
-            restoreTargets,
-            previousDepth.Get());
-        if (viewportCount > 0)
-        {
-            m_context->RSSetViewports(
-                1,
-                &previousViewport);
-        }
-        m_context->OMSetDepthStencilState(
-            previousDepthState.Get(),
-            previousStencilReference);
-        m_context->RSSetState(previousRasterizer.Get());
+            PrefilteredIrradianceSize,
+            PrefilteredIrradianceMipLevels,
+            static_cast<float>(sourceDescription.Width),
+            irradianceTargets);
 
         result.specularMaximumMip =
-            static_cast<float>(SpecularMips - 1);
+            static_cast<float>(PrefilteredSpecularMipLevels - 1);
         return result;
     }
 

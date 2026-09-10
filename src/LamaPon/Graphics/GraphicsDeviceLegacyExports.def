@@ -1,4 +1,5 @@
 EXPORTS
+    ?GetPrefilteredEnvironment@EnvironmentRenderer@LamaPon@@QEAA?AUPrefilteredEnvironment@12@PEAUID3D11ShaderResourceView@@_K@Z=?GetPrefilteredEnvironment@EnvironmentRenderer@LamaPon@@AEAA?AUPrefilteredEnvironment@12@PEAUID3D11ShaderResourceView@@_K@Z
     ?ShaderResourceView@ShadowMap@LamaPon@@QEBAPEAUID3D11ShaderResourceView@@XZ=?ShaderResourceView@ShadowMap@LamaPon@@AEBAPEAUID3D11ShaderResourceView@@XZ
     ?AmbientOcclusionShaderResourceView@RenderTarget@LamaPon@@QEBAPEAUID3D11ShaderResourceView@@XZ=?AmbientOcclusionShaderResourceView@RenderTarget@LamaPon@@AEBAPEAUID3D11ShaderResourceView@@XZ
     ?ColorHistoryShaderResourceView@RenderTarget@LamaPon@@QEBAPEAUID3D11ShaderResourceView@@XZ=?ColorHistoryShaderResourceView@RenderTarget@LamaPon@@AEBAPEAUID3D11ShaderResourceView@@XZ

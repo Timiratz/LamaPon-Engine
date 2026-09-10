@@ -21,6 +21,20 @@ namespace LamaPon
     class GraphicsDevice;
     class RenderTarget;
 
+    // 共通Sky IBLが公開するAPI非依存の事前フィルタ結果です。
+    // 2本は同じBackend世代で一組として生成・更新されます。
+    struct PrefilteredEnvironmentViews final
+    {
+        GraphicsViewHandle specular;
+        GraphicsViewHandle irradiance;
+        float specularMaximumMip{};
+
+        [[nodiscard]] bool IsValid() const noexcept
+        {
+            return specular && irradiance;
+        }
+    };
+
     class EnvironmentRenderer final
     {
     public:
@@ -259,6 +273,11 @@ namespace LamaPon
         void CopyToBoundRenderTarget(
             ID3D11ShaderResourceView* source);
         // IBLの事前フィルタ結果（split-sum近似）。
+        static constexpr std::uint32_t PrefilteredSpecularSize = 128;
+        static constexpr std::uint32_t PrefilteredSpecularMipLevels = 8;
+        static constexpr std::uint32_t PrefilteredIrradianceSize = 16;
+        static constexpr std::uint32_t PrefilteredIrradianceMipLevels = 1;
+
         struct PrefilteredEnvironment final
         {
             // ミップごとに粗さを上げてGGX畳み込みした
@@ -269,16 +288,6 @@ namespace LamaPon
             // specularの最終ミップ番号（粗さ→ミップ変換用）。
             float specularMaximumMip{};
         };
-
-        // ソースキューブマップの事前フィルタ結果を返します。
-        // 同じソースなら生成済みを再利用します（生成は1回だけ）。
-        // cacheKeyが0以外なら、生成のかわりにディスクの環境
-        // キャッシュを引き、外れたら生成して保存します（鍵は
-        // 呼ぶ側がソースの内容から作ります）。
-        [[nodiscard]] PrefilteredEnvironment
-            GetPrefilteredEnvironment(
-                ID3D11ShaderResourceView* source,
-                std::uint64_t cacheKey = 0);
 
         // 呼び出し側が所有する事前フィルタ結果。リフレクション
         // プローブのように「プローブごとに1組」を持ちたい場合に
@@ -344,6 +353,14 @@ namespace LamaPon
         {
             m_backend = backend;
         }
+
+        // 旧raw公開APIのbinary symbolはAPI 56以前のGame Moduleが
+        // API不一致案内へ到達できるようprivate shimとして残します。
+        // sourceとcacheKeyが同じ間だけ生成済み結果を再利用します。
+        [[nodiscard]] PrefilteredEnvironment
+            GetPrefilteredEnvironment(
+                ID3D11ShaderResourceView* source,
+                std::uint64_t cacheKey = 0);
 
         // includeSpecular=falseでスペキュラの畳み込みを飛ばします
         // （照度しか使わないGIベイク用）。
@@ -533,9 +550,10 @@ namespace LamaPon
         struct ProbeBakeResources;
         std::unique_ptr<ProbeBakeResources> m_probeBakeResources;
         bool m_probeBakeActive{};
-        // 事前フィルタのキャッシュ（ソースが変わったら再生成）。
+        // 事前フィルタのキャッシュ（sourceまたはcacheKeyで識別）。
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
             m_prefilterSource;
+        std::uint64_t m_prefilterCacheKey{};
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
             m_prefilteredSpecular;
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>

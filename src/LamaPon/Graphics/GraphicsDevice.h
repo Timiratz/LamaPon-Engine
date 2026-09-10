@@ -515,6 +515,13 @@ namespace LamaPon
             return m_gpuProfiler;
         }
         [[nodiscard]] EnvironmentRenderer& Environment() const;
+        // 共通Sky IBLをneutral viewへ変換する境界です。同じsource/key
+        // ならhandleを再利用し、生成・取込のどこかで失敗した場合は
+        // 片方だけを公開せず全emptyを返します。
+        [[nodiscard]] PrefilteredEnvironmentViews
+            TryGetPrefilteredEnvironmentViews(
+                const GraphicsViewHandle& source,
+                std::uint64_t cacheKey = 0) const noexcept;
         // 環境資源の表現はまだD3D11ですが、SceneがDevice / Contextを
         // 直接扱わないよう、復元・生成操作をこのfacadeへ集約します。
         // 将来はBackend固有のopaque environment handleへ置き換えます。

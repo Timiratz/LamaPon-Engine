@@ -80,6 +80,7 @@
 - Forward+の3本のStructuredBuffer viewを`LightingState`でも世代付きneutral handleとして強所有し、Lit bridgeで形式・要素数・Backend世代を一括検証してから反映する構造へ移行。公開layout変更に伴いGame Module APIを54へ更新。
 - RenderTargetのSSAO結果・SSRカラー履歴・Hi-Z深度を世代付きneutral handleとして公開し、`LightingState`からraw D3D11 viewを除去。Resize時の3本一括更新とLit bridgeの形式・寸法・mip検証を追加し、旧raw getterをprivate互換shimへ移行。公開layout変更に伴いGame Module APIを55へ更新。
 - 平行光・スポット・ポイントのShadowMapとボリューメトリック光の深度入力を世代付きneutral handleへ移行。array/cube形状・解像度・ライト番号をGPU反映前に一括検証し、旧raw getterをprivate互換shimへ移行。公開layout変更に伴いGame Module APIを56へ更新。
+- 共通Sky IBLのsource・スペキュラ・放射照度viewを世代付きneutral handleへ移行。事前フィルタ結果の一括取込・再利用とcube形状検証を追加し、source/key/cache更新を例外安全にした。旧raw入口をprivate互換shimへ移行し、公開layout変更に伴いGame Module APIを57へ更新。
 
 ### ファイル名の統一
 

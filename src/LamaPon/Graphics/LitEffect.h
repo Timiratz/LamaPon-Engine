@@ -201,6 +201,9 @@ namespace LamaPon
             ID3D11ShaderResourceView* directionalShadow{};
             ID3D11ShaderResourceView* spotShadow{};
             ID3D11ShaderResourceView* pointShadow{};
+            // source/specular/irradiance。共通Sky IBLは3本を同時に
+            // 検証した後だけnative bindingへ反映します。
+            std::array<ID3D11ShaderResourceView*, 3> environment{};
             ID3D11ShaderResourceView* screenAmbientOcclusion{};
             std::array<ID3D11ShaderResourceView*, 2>
                 screenSpaceReflection{};

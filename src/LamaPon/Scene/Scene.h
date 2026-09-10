@@ -771,9 +771,10 @@ namespace LamaPon
             m_frameReflectionProbes;
         // ベイク中の再帰描画でプローブ自身が映り込まないように。
         bool m_bakingReflectionProbes{};
-        // SkyboxのIBL畳み込みのディスクキャッシュ鍵。パスが変わった
-        // ときだけ読み直して計算するための控えです（0は鍵なし）。
+        // SkyboxのIBL畳み込みのディスクキャッシュ鍵。パスまたは
+        // Asset再読込後のview世代が変わったときに内容を再hashします。
         std::filesystem::path m_skyPrefilterKeyPath;
+        GraphicsViewHandle m_skyPrefilterKeySourceView;
         std::uint64_t m_skyPrefilterKey{};
 
         // ベイクした間接光（照度ボリューム）。

@@ -887,15 +887,17 @@ namespace LamaPon
         const auto& environment = lighting.environment;
         const bool environmentActive =
             environment.enabled
-            && environment.texture != nullptr;
+            && views.environment[0] != nullptr;
         // 事前フィルタ済みがあればそれを使い、z へ最終ミップ番号を
         // 載せます（0なら旧来のソース直接サンプリング）。
         const bool prefilteredActive =
             environmentActive
-            && environment.specular != nullptr
-            && environment.irradiance != nullptr;
+            && views.environment[1] != nullptr
+            && views.environment[2] != nullptr;
         m_lightingConstants.environmentParameters = {
-            std::max(environment.intensity, 0.0f),
+            environmentActive
+                ? std::max(environment.intensity, 0.0f)
+                : 0.0f,
             environmentActive ? 1.0f : 0.0f,
             prefilteredActive
                 ? environment.specularMaximumMip
@@ -904,11 +906,11 @@ namespace LamaPon
         };
         m_environmentTexture = environmentActive
             ? (prefilteredActive
-                ? environment.specular
-                : environment.texture)
+                ? views.environment[1]
+                : views.environment[0])
             : nullptr;
         m_irradianceTexture = prefilteredActive
-            ? environment.irradiance
+            ? views.environment[2]
             : nullptr;
         // ベイクした間接光（照度ボリューム）。3枚のSH係数
         // テクスチャが揃っていなければ無効にして、シェーダーは

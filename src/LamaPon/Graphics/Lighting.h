@@ -10,8 +10,6 @@
 #include <cstdint>
 #include <vector>
 
-struct ID3D11ShaderResourceView;
-
 namespace DirectX
 {
     inline namespace DX11
@@ -106,12 +104,12 @@ namespace LamaPon
     // キューブマップ環境光（IBL）。
     struct EnvironmentMapData final
     {
-        ID3D11ShaderResourceView* texture{};
+        GraphicsViewHandle texture;
         // 事前フィルタ済みスペキュラ／放射照度キューブ
         // （EnvironmentRendererが生成。nullならtextureへ
         // フォールバックします）。
-        ID3D11ShaderResourceView* specular{};
-        ID3D11ShaderResourceView* irradiance{};
+        GraphicsViewHandle specular;
+        GraphicsViewHandle irradiance;
         float specularMaximumMip{};
         float intensity{ 1.0f };
         bool enabled{};

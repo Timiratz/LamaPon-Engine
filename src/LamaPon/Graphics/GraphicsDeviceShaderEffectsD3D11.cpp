@@ -25,6 +25,7 @@
 #include <exception>
 #include <filesystem>
 #include <future>
+#include <limits>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -948,6 +949,79 @@ namespace LamaPon
                 && (textureDescription.BindFlags
                     & D3D11_BIND_SHADER_RESOURCE) != 0;
         };
+        const auto tryResolveTextureCube = [this](
+            const GraphicsViewHandle& handle,
+            const DXGI_FORMAT expectedFormat,
+            const std::uint32_t expectedSize,
+            const std::uint32_t expectedMipLevels,
+            ID3D11ShaderResourceView*& resolved) noexcept
+        {
+            resolved = TryResolveD3D11ShaderResourceView(handle);
+            if (!handle || resolved == nullptr)
+            {
+                return false;
+            }
+            D3D11_SHADER_RESOURCE_VIEW_DESC viewDescription{};
+            resolved->GetDesc(&viewDescription);
+            if (viewDescription.ViewDimension
+                    != D3D11_SRV_DIMENSION_TEXTURECUBE
+                || viewDescription.TextureCube.MostDetailedMip != 0
+                || viewDescription.TextureCube.MipLevels == 0)
+            {
+                return false;
+            }
+
+            Microsoft::WRL::ComPtr<ID3D11Resource> resource;
+            resolved->GetResource(resource.ReleaseAndGetAddressOf());
+            Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+            if (resource == nullptr || FAILED(resource.As(&texture)))
+            {
+                return false;
+            }
+            D3D11_TEXTURE2D_DESC description{};
+            texture->GetDesc(&description);
+            auto viewMipLevels =
+                viewDescription.TextureCube.MipLevels;
+            if (viewMipLevels == std::numeric_limits<UINT>::max())
+            {
+                viewMipLevels = description.MipLevels;
+            }
+            if (description.Width == 0
+                || description.Width != description.Height
+                || description.ArraySize != 6
+                || description.MipLevels == 0
+                || viewMipLevels > description.MipLevels
+                || description.SampleDesc.Count != 1
+                || (description.MiscFlags
+                    & D3D11_RESOURCE_MISC_TEXTURECUBE) == 0
+                || (description.BindFlags
+                    & D3D11_BIND_SHADER_RESOURCE) == 0)
+            {
+                return false;
+            }
+
+            if (expectedFormat != DXGI_FORMAT_UNKNOWN)
+            {
+                return viewDescription.Format == expectedFormat
+                    && description.Format == expectedFormat
+                    && description.Width == expectedSize
+                    && description.MipLevels == expectedMipLevels
+                    && viewMipLevels == expectedMipLevels;
+            }
+
+            UINT formatSupport{};
+            constexpr UINT RequiredFormatSupport =
+                D3D11_FORMAT_SUPPORT_TEXTURECUBE
+                | D3D11_FORMAT_SUPPORT_SHADER_SAMPLE;
+            return viewDescription.Format != DXGI_FORMAT_UNKNOWN
+                && (description.BindFlags
+                    & D3D11_BIND_DEPTH_STENCIL) == 0
+                && SUCCEEDED(Device()->CheckFormatSupport(
+                    viewDescription.Format,
+                    &formatSupport))
+                && (formatSupport & RequiredFormatSupport)
+                    == RequiredFormatSupport;
+        };
         const auto tryRecoverDimension = [](
             const float inverseDimension,
             std::uint32_t& dimension) noexcept
@@ -976,6 +1050,55 @@ namespace LamaPon
             dimension = static_cast<std::uint32_t>(roundedDimension);
             return true;
         };
+
+        const auto& environment = lighting.environment;
+        if (environment.enabled)
+        {
+            if (!std::isfinite(environment.intensity)
+                || !tryResolveTextureCube(
+                    environment.texture,
+                    DXGI_FORMAT_UNKNOWN,
+                    0,
+                    0,
+                    nativeViews.environment[0]))
+            {
+                return false;
+            }
+
+            const bool hasSpecular =
+                static_cast<bool>(environment.specular);
+            const bool hasIrradiance =
+                static_cast<bool>(environment.irradiance);
+            if (hasSpecular != hasIrradiance)
+            {
+                return false;
+            }
+            if (hasSpecular)
+            {
+                constexpr auto ExpectedMaximumMip = static_cast<float>(
+                    EnvironmentRenderer::PrefilteredSpecularMipLevels - 1);
+                if (!tryResolveTextureCube(
+                        environment.specular,
+                        DXGI_FORMAT_R16G16B16A16_FLOAT,
+                        EnvironmentRenderer::PrefilteredSpecularSize,
+                        EnvironmentRenderer::PrefilteredSpecularMipLevels,
+                        nativeViews.environment[1])
+                    || !tryResolveTextureCube(
+                        environment.irradiance,
+                        DXGI_FORMAT_R16G16B16A16_FLOAT,
+                        EnvironmentRenderer::PrefilteredIrradianceSize,
+                        EnvironmentRenderer::PrefilteredIrradianceMipLevels,
+                        nativeViews.environment[2])
+                    || !std::isfinite(
+                        environment.specularMaximumMip)
+                    || environment.specularMaximumMip
+                        != ExpectedMaximumMip)
+                {
+                    return false;
+                }
+            }
+        }
+
         const auto tryResolveShadow = [this](
             const GraphicsViewHandle& handle,
             const bool cube,

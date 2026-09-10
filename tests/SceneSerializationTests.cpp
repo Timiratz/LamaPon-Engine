@@ -3932,6 +3932,16 @@ int RunTest(const std::string_view suite)
 
             const auto pbrJson =
                 pbrScene.SerializeToJson();
+            const auto pbrDocument =
+                nlohmann::json::parse(pbrJson);
+            const auto& serializedSky =
+                pbrDocument.at("environment").at("sky");
+            Require(
+                !serializedSky.contains("texture")
+                    && !serializedSky.contains("specular")
+                    && !serializedSky.contains("irradiance")
+                    && !serializedSky.contains("specularMaximumMip"),
+                "Runtime IBL handles leaked into scene serialization.");
             LamaPon::Scene pbrLoaded(graphics);
             pbrLoaded.LoadFromJson(pbrJson);
             const auto* loadedPbrObject =

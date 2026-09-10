@@ -3779,6 +3779,7 @@ namespace LamaPon
         m_renderSpatialIndex.Clear();
         m_frameReflectionProbes.clear();
         m_skyPrefilterKeyPath.clear();
+        m_skyPrefilterKeySourceView.Reset();
         m_skyPrefilterKey = 0;
     }
 
@@ -6892,6 +6893,7 @@ namespace LamaPon
 
         // キューブマップスカイとIBL（環境反射）。
         ID3D11ShaderResourceView* skyCubemap{};
+        GraphicsViewHandle skyCubemapView;
         std::shared_ptr<const TextureResourceSnapshot>
             skyResources;
         if (m_sky.enabled
@@ -6906,30 +6908,37 @@ namespace LamaPon
                     texture != nullptr && texture->isCube)
                 {
                     skyResources = texture->resources.Acquire();
-                    skyCubemap = skyResources != nullptr
-                        ? m_graphics.TryResolveD3D11ShaderResourceView(
-                            *skyResources)
-                        : nullptr;
+                    if (skyResources != nullptr)
+                    {
+                        skyCubemapView =
+                            skyResources->shaderResourceView;
+                        skyCubemap = m_graphics
+                            .TryResolveD3D11ShaderResourceView(
+                                skyCubemapView);
+                    }
                 }
             }
             catch (...)
             {
             }
         }
-        lighting.environment.texture = skyCubemap;
+        lighting.environment.texture = skyCubemapView;
         lighting.environment.intensity =
             m_sky.iblIntensity;
         lighting.environment.enabled =
             skyCubemap != nullptr
+            && skyCubemapView
             && m_sky.iblIntensity > 0.0f;
         if (lighting.environment.enabled)
         {
             // ディスクキャッシュの鍵（キューブマップの内容ハッシュ）。
-            // パスが変わったときだけ読み直して計算します。読めない
-            // ときは0＝キャッシュなしで、従来どおり毎回生成します。
-            if (m_sky.cubemapPath != m_skyPrefilterKeyPath)
+            // パスまたはAssetのview世代が変わったときに読み直します。
+            // 同じパスの再importでも古い内容hashを使い回しません。
+            if (m_sky.cubemapPath != m_skyPrefilterKeyPath
+                || skyCubemapView != m_skyPrefilterKeySourceView)
             {
                 m_skyPrefilterKeyPath = m_sky.cubemapPath;
+                m_skyPrefilterKeySourceView = skyCubemapView;
                 m_skyPrefilterKey = 0;
                 try
                 {
@@ -6946,22 +6955,18 @@ namespace LamaPon
             }
             // GGX事前畳み込み（初回のみ生成、以降はキャッシュ）。
             // 失敗時はソース直接サンプリングへフォールバック。
-            try
+            const auto prefiltered = m_graphics
+                .TryGetPrefilteredEnvironmentViews(
+                    skyCubemapView,
+                    m_skyPrefilterKey);
+            if (prefiltered.IsValid())
             {
-                const auto prefiltered =
-                    m_graphics.Environment()
-                        .GetPrefilteredEnvironment(
-                            skyCubemap,
-                            m_skyPrefilterKey);
                 lighting.environment.specular =
                     prefiltered.specular;
                 lighting.environment.irradiance =
                     prefiltered.irradiance;
                 lighting.environment.specularMaximumMip =
                     prefiltered.specularMaximumMip;
-            }
-            catch (const std::exception&)
-            {
             }
         }
 

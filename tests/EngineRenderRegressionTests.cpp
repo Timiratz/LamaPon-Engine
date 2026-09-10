@@ -95,6 +95,235 @@ namespace
         return result;
     }
 
+    struct PrefilterPipelineState final
+    {
+        std::array<
+            Microsoft::WRL::ComPtr<ID3D11RenderTargetView>,
+            D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT> targets;
+        Microsoft::WRL::ComPtr<ID3D11DepthStencilView> depth;
+        std::array<
+            D3D11_VIEWPORT,
+            D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE>
+            viewports{};
+        UINT viewportCount{};
+        Microsoft::WRL::ComPtr<ID3D11DepthStencilState> depthState;
+        UINT stencilReference{};
+        Microsoft::WRL::ComPtr<ID3D11RasterizerState> rasterizer;
+        Microsoft::WRL::ComPtr<ID3D11InputLayout> inputLayout;
+        D3D11_PRIMITIVE_TOPOLOGY topology{
+            D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED
+        };
+        Microsoft::WRL::ComPtr<ID3D11VertexShader> vertexShader;
+        std::array<
+            Microsoft::WRL::ComPtr<ID3D11ClassInstance>,
+            D3D11_SHADER_MAX_INTERFACES> vertexInstances;
+        UINT vertexInstanceCount{};
+        Microsoft::WRL::ComPtr<ID3D11PixelShader> pixelShader;
+        std::array<
+            Microsoft::WRL::ComPtr<ID3D11ClassInstance>,
+            D3D11_SHADER_MAX_INTERFACES> pixelInstances;
+        UINT pixelInstanceCount{};
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> pixelResource;
+        Microsoft::WRL::ComPtr<ID3D11SamplerState> pixelSampler;
+        Microsoft::WRL::ComPtr<ID3D11Buffer> pixelBuffer;
+
+        [[nodiscard]] static PrefilterPipelineState Capture(
+            ID3D11DeviceContext* const context)
+        {
+            PrefilterPipelineState state;
+            std::array<
+                ID3D11RenderTargetView*,
+                D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT> rawTargets{};
+            context->OMGetRenderTargets(
+                static_cast<UINT>(rawTargets.size()),
+                rawTargets.data(),
+                state.depth.ReleaseAndGetAddressOf());
+            for (std::size_t index{}; index < rawTargets.size(); ++index)
+            {
+                state.targets[index].Attach(rawTargets[index]);
+            }
+
+            state.viewportCount = static_cast<UINT>(
+                state.viewports.size());
+            context->RSGetViewports(
+                &state.viewportCount,
+                state.viewports.data());
+            context->OMGetDepthStencilState(
+                state.depthState.ReleaseAndGetAddressOf(),
+                &state.stencilReference);
+            context->RSGetState(
+                state.rasterizer.ReleaseAndGetAddressOf());
+            context->IAGetInputLayout(
+                state.inputLayout.ReleaseAndGetAddressOf());
+            context->IAGetPrimitiveTopology(&state.topology);
+
+            std::array<
+                ID3D11ClassInstance*,
+                D3D11_SHADER_MAX_INTERFACES> rawVertexInstances{};
+            state.vertexInstanceCount = static_cast<UINT>(
+                rawVertexInstances.size());
+            context->VSGetShader(
+                state.vertexShader.ReleaseAndGetAddressOf(),
+                rawVertexInstances.data(),
+                &state.vertexInstanceCount);
+            for (UINT index{}; index < state.vertexInstanceCount; ++index)
+            {
+                state.vertexInstances[index].Attach(
+                    rawVertexInstances[index]);
+            }
+
+            std::array<
+                ID3D11ClassInstance*,
+                D3D11_SHADER_MAX_INTERFACES> rawPixelInstances{};
+            state.pixelInstanceCount = static_cast<UINT>(
+                rawPixelInstances.size());
+            context->PSGetShader(
+                state.pixelShader.ReleaseAndGetAddressOf(),
+                rawPixelInstances.data(),
+                &state.pixelInstanceCount);
+            for (UINT index{}; index < state.pixelInstanceCount; ++index)
+            {
+                state.pixelInstances[index].Attach(
+                    rawPixelInstances[index]);
+            }
+
+            context->PSGetShaderResources(
+                1,
+                1,
+                state.pixelResource.ReleaseAndGetAddressOf());
+            context->PSGetSamplers(
+                0,
+                1,
+                state.pixelSampler.ReleaseAndGetAddressOf());
+            context->PSGetConstantBuffers(
+                3,
+                1,
+                state.pixelBuffer.ReleaseAndGetAddressOf());
+            return state;
+        }
+
+        void Restore(ID3D11DeviceContext* const context) const noexcept
+        {
+            std::array<
+                ID3D11RenderTargetView*,
+                D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT> rawTargets{};
+            for (std::size_t index{}; index < rawTargets.size(); ++index)
+            {
+                rawTargets[index] = targets[index].Get();
+            }
+            context->OMSetRenderTargets(
+                static_cast<UINT>(rawTargets.size()),
+                rawTargets.data(),
+                depth.Get());
+            context->RSSetViewports(
+                viewportCount,
+                viewportCount != 0 ? viewports.data() : nullptr);
+            context->OMSetDepthStencilState(
+                depthState.Get(),
+                stencilReference);
+            context->RSSetState(rasterizer.Get());
+            context->IASetInputLayout(inputLayout.Get());
+            context->IASetPrimitiveTopology(topology);
+
+            std::array<
+                ID3D11ClassInstance*,
+                D3D11_SHADER_MAX_INTERFACES> rawVertexInstances{};
+            for (UINT index{}; index < vertexInstanceCount; ++index)
+            {
+                rawVertexInstances[index] = vertexInstances[index].Get();
+            }
+            context->VSSetShader(
+                vertexShader.Get(),
+                vertexInstanceCount != 0
+                    ? rawVertexInstances.data()
+                    : nullptr,
+                vertexInstanceCount);
+
+            std::array<
+                ID3D11ClassInstance*,
+                D3D11_SHADER_MAX_INTERFACES> rawPixelInstances{};
+            for (UINT index{}; index < pixelInstanceCount; ++index)
+            {
+                rawPixelInstances[index] = pixelInstances[index].Get();
+            }
+            context->PSSetShader(
+                pixelShader.Get(),
+                pixelInstanceCount != 0
+                    ? rawPixelInstances.data()
+                    : nullptr,
+                pixelInstanceCount);
+            ID3D11ShaderResourceView* resources[]{
+                pixelResource.Get()
+            };
+            context->PSSetShaderResources(1, 1, resources);
+            ID3D11SamplerState* samplers[]{ pixelSampler.Get() };
+            context->PSSetSamplers(0, 1, samplers);
+            ID3D11Buffer* buffers[]{ pixelBuffer.Get() };
+            context->PSSetConstantBuffers(3, 1, buffers);
+        }
+
+        [[nodiscard]] bool Matches(
+            ID3D11DeviceContext* const context) const
+        {
+            const auto current = Capture(context);
+            if (viewportCount != current.viewportCount
+                || depth.Get() != current.depth.Get()
+                || depthState.Get() != current.depthState.Get()
+                || stencilReference != current.stencilReference
+                || rasterizer.Get() != current.rasterizer.Get()
+                || inputLayout.Get() != current.inputLayout.Get()
+                || topology != current.topology
+                || vertexShader.Get() != current.vertexShader.Get()
+                || vertexInstanceCount != current.vertexInstanceCount
+                || pixelShader.Get() != current.pixelShader.Get()
+                || pixelInstanceCount != current.pixelInstanceCount
+                || pixelResource.Get() != current.pixelResource.Get()
+                || pixelSampler.Get() != current.pixelSampler.Get()
+                || pixelBuffer.Get() != current.pixelBuffer.Get())
+            {
+                return false;
+            }
+            for (std::size_t index{}; index < targets.size(); ++index)
+            {
+                if (targets[index].Get() != current.targets[index].Get())
+                {
+                    return false;
+                }
+            }
+            for (UINT index{}; index < viewportCount; ++index)
+            {
+                const auto& left = viewports[index];
+                const auto& right = current.viewports[index];
+                if (left.TopLeftX != right.TopLeftX
+                    || left.TopLeftY != right.TopLeftY
+                    || left.Width != right.Width
+                    || left.Height != right.Height
+                    || left.MinDepth != right.MinDepth
+                    || left.MaxDepth != right.MaxDepth)
+                {
+                    return false;
+                }
+            }
+            for (UINT index{}; index < vertexInstanceCount; ++index)
+            {
+                if (vertexInstances[index].Get()
+                    != current.vertexInstances[index].Get())
+                {
+                    return false;
+                }
+            }
+            for (UINT index{}; index < pixelInstanceCount; ++index)
+            {
+                if (pixelInstances[index].Get()
+                    != current.pixelInstances[index].Get())
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+    };
+
     // 失敗時にどこまで進んだかCTestログで分かるようにします。
     void Stage(const char* name)
     {
@@ -457,6 +686,10 @@ int main(const int argumentCount, char** arguments)
         constexpr char LegacyShadowMapViewSymbol[] =
             "?ShaderResourceView@ShadowMap@LamaPon@@"
             "QEBAPEAUID3D11ShaderResourceView@@XZ";
+        constexpr char LegacyPrefilteredEnvironmentSymbol[] =
+            "?GetPrefilteredEnvironment@EnvironmentRenderer@LamaPon@@"
+            "QEAA?AUPrefilteredEnvironment@12@"
+            "PEAUID3D11ShaderResourceView@@_K@Z";
         const auto runtimeModule = GetModuleHandleW(
             L"LamaPonRuntime.dll");
         Require(
@@ -492,8 +725,13 @@ int main(const int argumentCount, char** arguments)
                 LegacyRenderTargetDepthViewSymbol) != nullptr
                 && GetProcAddress(
                     runtimeModule,
-                    LegacyShadowMapViewSymbol) != nullptr,
+                LegacyShadowMapViewSymbol) != nullptr,
             "An API 55 shadow or depth-view export alias is missing");
+        Require(
+            GetProcAddress(
+                runtimeModule,
+                LegacyPrefilteredEnvironmentSymbol) != nullptr,
+            "The API 56 prefiltered-environment export alias is missing");
         Stage("asset-root");
         graphics.Assets().SetAssetRoot(
             LAMAPON_TEST_ASSET_DIR);
@@ -744,6 +982,281 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 shadowLighting),
             "The neutral shadow baseline could not be restored");
+
+        // 共通Sky IBLはsourceと畳み込み済みpairをneutral handleで運び、
+        // 同じsource/keyではhandle wrapperも再利用します。
+        Stage("neutral-sky-ibl");
+        const auto baselinePrefilterPipeline =
+            PrefilterPipelineState::Capture(graphics.Context());
+        D3D11_TEXTURE2D_DESC sentinelTargetDescription{};
+        sentinelTargetDescription.Width = Width;
+        sentinelTargetDescription.Height = Height;
+        sentinelTargetDescription.MipLevels = 1;
+        sentinelTargetDescription.ArraySize = 1;
+        sentinelTargetDescription.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        sentinelTargetDescription.SampleDesc.Count = 1;
+        sentinelTargetDescription.Usage = D3D11_USAGE_DEFAULT;
+        sentinelTargetDescription.BindFlags = D3D11_BIND_RENDER_TARGET;
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> sentinelTargetTexture;
+        Require(
+            SUCCEEDED(graphics.Device()->CreateTexture2D(
+                &sentinelTargetDescription,
+                nullptr,
+                sentinelTargetTexture.ReleaseAndGetAddressOf())),
+            "The IBL pipeline-state sentinel texture could not be created");
+        Microsoft::WRL::ComPtr<ID3D11RenderTargetView> sentinelTarget;
+        Require(
+            SUCCEEDED(graphics.Device()->CreateRenderTargetView(
+                sentinelTargetTexture.Get(),
+                nullptr,
+                sentinelTarget.ReleaseAndGetAddressOf())),
+            "The IBL pipeline-state sentinel RTV could not be created");
+        ID3D11RenderTargetView* sentinelTargets[]{
+            baselinePrefilterPipeline.targets[0].Get(),
+            sentinelTarget.Get()
+        };
+        graphics.Context()->OMSetRenderTargets(
+            static_cast<UINT>(std::size(sentinelTargets)),
+            sentinelTargets,
+            baselinePrefilterPipeline.depth.Get());
+        const D3D11_VIEWPORT sentinelViewports[]{
+            baselinePrefilterPipeline.viewportCount != 0
+                ? baselinePrefilterPipeline.viewports[0]
+                : D3D11_VIEWPORT{
+                    0.0f,
+                    0.0f,
+                    static_cast<float>(Width),
+                    static_cast<float>(Height),
+                    0.0f,
+                    1.0f },
+            D3D11_VIEWPORT{
+                5.0f,
+                7.0f,
+                37.0f,
+                23.0f,
+                0.1f,
+                0.9f }
+        };
+        graphics.Context()->RSSetViewports(
+            static_cast<UINT>(std::size(sentinelViewports)),
+            sentinelViewports);
+        graphics.Context()->IASetPrimitiveTopology(
+            D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
+        const auto sentinelPrefilterPipeline =
+            PrefilterPipelineState::Capture(graphics.Context());
+        const auto prefilteredEnvironment =
+            graphics.TryGetPrefilteredEnvironmentViews(
+                pointShadowView);
+        const bool retainedPrefilterPipeline =
+            sentinelPrefilterPipeline.Matches(graphics.Context());
+        baselinePrefilterPipeline.Restore(graphics.Context());
+        Require(
+            retainedPrefilterPipeline,
+            "Sky IBL prefiltering did not restore the D3D11 pipeline state");
+        Require(
+            prefilteredEnvironment.IsValid()
+                && prefilteredEnvironment.specularMaximumMip
+                    == static_cast<float>(
+                        LamaPon::EnvironmentRenderer::
+                            PrefilteredSpecularMipLevels - 1),
+            "A sampleable cube could not produce neutral IBL views");
+        const auto repeatedPrefilteredEnvironment =
+            graphics.TryGetPrefilteredEnvironmentViews(
+                pointShadowView);
+        Require(
+            repeatedPrefilteredEnvironment.specular
+                    == prefilteredEnvironment.specular
+                && repeatedPrefilteredEnvironment.irradiance
+                    == prefilteredEnvironment.irradiance,
+            "Repeated Sky IBL lookup rebuilt neutral view handles");
+        const auto emptyPrefilteredEnvironment =
+            graphics.TryGetPrefilteredEnvironmentViews({});
+        const auto twoDimensionalPrefilteredEnvironment =
+            graphics.TryGetPrefilteredEnvironmentViews(litViews[0]);
+        Require(
+            !emptyPrefilteredEnvironment.IsValid()
+                && !twoDimensionalPrefilteredEnvironment.IsValid()
+                && graphics.TryGetPrefilteredEnvironmentViews(
+                    pointShadowView).specular
+                    == prefilteredEnvironment.specular,
+            "Invalid IBL sources changed the cached neutral pair");
+
+        const auto requirePrefilteredCube = [&graphics](
+            const LamaPon::GraphicsViewHandle& handle,
+            const std::uint32_t size,
+            const std::uint32_t mipLevels)
+        {
+            auto* const view =
+                graphics.TryResolveD3D11ShaderResourceView(handle);
+            Require(
+                view != nullptr,
+                "A neutral IBL view could not be resolved");
+            D3D11_SHADER_RESOURCE_VIEW_DESC viewDescription{};
+            view->GetDesc(&viewDescription);
+            Microsoft::WRL::ComPtr<ID3D11Resource> resource;
+            view->GetResource(resource.ReleaseAndGetAddressOf());
+            Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+            Require(
+                resource != nullptr
+                    && SUCCEEDED(resource.As(&texture)),
+                "A neutral IBL view did not own Texture2D storage");
+            D3D11_TEXTURE2D_DESC description{};
+            texture->GetDesc(&description);
+            Require(
+                viewDescription.Format
+                        == DXGI_FORMAT_R16G16B16A16_FLOAT
+                    && viewDescription.ViewDimension
+                        == D3D11_SRV_DIMENSION_TEXTURECUBE
+                    && viewDescription.TextureCube.MostDetailedMip == 0
+                    && viewDescription.TextureCube.MipLevels == mipLevels
+                    && description.Width == size
+                    && description.Height == size
+                    && description.MipLevels == mipLevels
+                    && description.ArraySize == 6
+                    && description.Format
+                        == DXGI_FORMAT_R16G16B16A16_FLOAT
+                    && (description.MiscFlags
+                        & D3D11_RESOURCE_MISC_TEXTURECUBE) != 0,
+                "A neutral IBL view had the wrong cube shape");
+        };
+        requirePrefilteredCube(
+            prefilteredEnvironment.specular,
+            LamaPon::EnvironmentRenderer::PrefilteredSpecularSize,
+            LamaPon::EnvironmentRenderer::PrefilteredSpecularMipLevels);
+        requirePrefilteredCube(
+            prefilteredEnvironment.irradiance,
+            LamaPon::EnvironmentRenderer::PrefilteredIrradianceSize,
+            LamaPon::EnvironmentRenderer::PrefilteredIrradianceMipLevels);
+
+        LamaPon::LightingState environmentLighting;
+        auto& environment = environmentLighting.environment;
+        environment.texture = prefilteredEnvironment.specular;
+        environment.intensity = 1.0f;
+        environment.enabled = true;
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                environmentLighting),
+            "A source-only neutral environment was rejected");
+        litEffect.Apply(graphics.Context());
+        Require(
+            CapturePixelShaderView(graphics, 3u).Get()
+                    == graphics.TryResolveD3D11ShaderResourceView(
+                        prefilteredEnvironment.specular)
+                && CapturePixelShaderView(graphics, 6u) == nullptr,
+            "A source-only environment did not use its cube fallback");
+
+        environment.specular = prefilteredEnvironment.specular;
+        environment.irradiance = prefilteredEnvironment.irradiance;
+        environment.specularMaximumMip =
+            prefilteredEnvironment.specularMaximumMip;
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                environmentLighting),
+            "A valid neutral prefiltered environment was rejected");
+        litEffect.Apply(graphics.Context());
+        Require(
+            CapturePixelShaderView(graphics, 3u).Get()
+                    == graphics.TryResolveD3D11ShaderResourceView(
+                        prefilteredEnvironment.specular)
+                && CapturePixelShaderView(graphics, 6u).Get()
+                    == graphics.TryResolveD3D11ShaderResourceView(
+                        prefilteredEnvironment.irradiance),
+            "Neutral IBL views were bound to the wrong slots");
+
+        auto incompleteEnvironment = environmentLighting;
+        incompleteEnvironment.environment.irradiance.Reset();
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                incompleteEnvironment),
+            "An incomplete prefiltered environment pair was accepted");
+        auto swappedEnvironment = environmentLighting;
+        std::swap(
+            swappedEnvironment.environment.specular,
+            swappedEnvironment.environment.irradiance);
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                swappedEnvironment),
+            "Prefiltered environment views with swapped shapes were accepted");
+        auto invalidEnvironmentSource = environmentLighting;
+        invalidEnvironmentSource.environment.texture = litViews[0];
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                invalidEnvironmentSource),
+            "A Texture2D was accepted as an environment cube");
+        auto depthEnvironmentSource = environmentLighting;
+        depthEnvironmentSource.environment.texture = pointShadowView;
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                depthEnvironmentSource),
+            "A depth-stencil cube was accepted as an environment map");
+        auto invalidEnvironmentMip = environmentLighting;
+        invalidEnvironmentMip.environment.specularMaximumMip += 1.0f;
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                invalidEnvironmentMip),
+            "An invalid prefiltered maximum mip was accepted");
+        auto nonFiniteEnvironment = environmentLighting;
+        nonFiniteEnvironment.environment.intensity =
+            std::numeric_limits<float>::quiet_NaN();
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                nonFiniteEnvironment),
+            "A non-finite environment intensity was accepted");
+        auto clampedEnvironment = environmentLighting;
+        clampedEnvironment.environment.intensity = -1.0f;
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                clampedEnvironment),
+            "A finite negative environment intensity was not clamped");
+
+        // 失敗した要求は、直前に反映済みのvalid pairを部分変更しません。
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                environmentLighting),
+            "The neutral environment baseline could not be restored");
+        litEffect.Apply(graphics.Context());
+        static_cast<void>(graphics.TrySetLitEffectLighting(
+            litEffect,
+            incompleteEnvironment));
+        litEffect.Apply(graphics.Context());
+        Require(
+            CapturePixelShaderView(graphics, 3u).Get()
+                    == graphics.TryResolveD3D11ShaderResourceView(
+                        prefilteredEnvironment.specular)
+                && CapturePixelShaderView(graphics, 6u).Get()
+                    == graphics.TryResolveD3D11ShaderResourceView(
+                        prefilteredEnvironment.irradiance),
+            "Rejected neutral IBL lighting partially changed the Effect");
+
+        auto disabledEnvironment = nonFiniteEnvironment;
+        disabledEnvironment.environment.enabled = false;
+        disabledEnvironment.environment.texture = litViews[0];
+        disabledEnvironment.environment.irradiance.Reset();
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                disabledEnvironment),
+            "Disabled environment state resolved stale resource handles");
+        litEffect.Apply(graphics.Context());
+        Require(
+            CapturePixelShaderView(graphics, 3u) == nullptr
+                && CapturePixelShaderView(graphics, 6u) == nullptr,
+            "Disabling neutral IBL retained previous bindings");
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                environmentLighting),
+            "The neutral environment baseline could not be restored");
 
         // ボリューメトリック光のmain depthとcascade shadowもhandleで
         // 運び、検証に失敗した場合はping-pong先へ切り替えません。
@@ -1429,6 +1942,63 @@ int main(const int argumentCount, char** arguments)
                 volumetricTarget.ShaderResourceView()
                     == foreignVolumetricSource,
                 "Foreign neutral volumetric inputs changed the target");
+
+            const auto foreignPrefilteredEnvironment =
+                graphics.TryGetPrefilteredEnvironmentViews(
+                    foreignShadowMap.ViewHandle());
+            Require(
+                !foreignPrefilteredEnvironment.IsValid()
+                    && !foreignPrefilteredEnvironment.specular
+                    && !foreignPrefilteredEnvironment.irradiance,
+                "A foreign cube produced primary-backend IBL handles");
+            const auto retainedPrefilteredEnvironment =
+                graphics.TryGetPrefilteredEnvironmentViews(
+                    pointShadowView);
+            Require(
+                retainedPrefilteredEnvironment.specular
+                        == prefilteredEnvironment.specular
+                    && retainedPrefilteredEnvironment.irradiance
+                        == prefilteredEnvironment.irradiance,
+                "Rejected foreign IBL input corrupted the cached pair");
+
+            Require(
+                graphics.TrySetLitEffectLighting(
+                    litEffect,
+                    environmentLighting),
+                "The neutral environment baseline could not be restored");
+            litEffect.Apply(graphics.Context());
+            auto mixedEnvironment = environmentLighting;
+            mixedEnvironment.environment.texture =
+                foreignShadowMap.ViewHandle();
+            Require(
+                !graphics.TrySetLitEffectLighting(
+                    litEffect,
+                    mixedEnvironment),
+                "A foreign-generation environment source was accepted");
+            litEffect.Apply(graphics.Context());
+            Require(
+                CapturePixelShaderView(graphics, 3u).Get()
+                        == graphics.TryResolveD3D11ShaderResourceView(
+                            prefilteredEnvironment.specular)
+                    && CapturePixelShaderView(graphics, 6u).Get()
+                        == graphics.TryResolveD3D11ShaderResourceView(
+                            prefilteredEnvironment.irradiance),
+                "Rejected foreign environment changed the Effect");
+            auto disabledForeignEnvironment = mixedEnvironment;
+            disabledForeignEnvironment.environment.enabled = false;
+            disabledForeignEnvironment.environment.specular =
+                foreignShadowMap.ViewHandle();
+            disabledForeignEnvironment.environment.irradiance.Reset();
+            Require(
+                graphics.TrySetLitEffectLighting(
+                    litEffect,
+                    disabledForeignEnvironment),
+                "Disabled foreign environment handles were resolved");
+            litEffect.Apply(graphics.Context());
+            Require(
+                CapturePixelShaderView(graphics, 3u) == nullptr
+                    && CapturePixelShaderView(graphics, 6u) == nullptr,
+                "Disabled foreign environment retained IBL bindings");
             Require(
                 graphics.TrySetLitEffectLighting(
                     litEffect,
