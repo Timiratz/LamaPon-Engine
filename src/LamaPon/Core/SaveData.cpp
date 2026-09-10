@@ -1,6 +1,7 @@
 #include "LamaPon/Core/SaveData.h"
 
 #include "LamaPon/Core/DocumentMigration.h"
+#include "LamaPon/Core/LocalPersistenceDocuments.h"
 #include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Core/SaveSlotValidation.h"
 
@@ -17,34 +18,7 @@ namespace
         const std::filesystem::path& path,
         const std::string_view text)
     {
-        std::filesystem::create_directories(
-            path.parent_path());
-        auto temporary = path;
-        temporary += L".tmp";
-        std::ofstream output(
-            temporary,
-            std::ios::binary | std::ios::trunc);
-        if (!output)
-        {
-            throw std::runtime_error(
-                "Could not create temporary save slot: "
-                + LamaPon::PathToUtf8(temporary));
-        }
-        output << text;
-        output.close();
-        if (!output
-            || !MoveFileExW(
-                temporary.c_str(),
-                path.c_str(),
-                MOVEFILE_REPLACE_EXISTING
-                    | MOVEFILE_WRITE_THROUGH))
-        {
-            std::error_code error;
-            std::filesystem::remove(temporary, error);
-            throw std::runtime_error(
-                "Could not replace save slot: "
-                + LamaPon::PathToUtf8(path));
-        }
+        LamaPon::Detail::DurablePublishLocalDocument(path, text);
     }
 }
 
@@ -83,9 +57,18 @@ namespace LamaPon
             { "slot", slot },
             { "data", payload }
         };
+        const auto path = SlotPath(slot);
+        const Detail::LocalPersistenceCommitEvent event{
+            Detail::LocalPersistenceResourceKind::SaveData,
+            this,
+            &path,
+            slot,
+            false
+        };
         WriteAtomically(
-            SlotPath(slot),
+            path,
             document.dump(2) + '\n');
+        Detail::NotifyLocalPersistenceCommit(event);
     }
 
     std::optional<std::string>
@@ -131,16 +114,18 @@ namespace LamaPon
     bool SaveDataStore::DeleteSlot(
         const std::string_view slot)
     {
-        std::error_code error;
-        const bool removed =
-            std::filesystem::remove(
-                SlotPath(slot),
-                error);
-        if (error)
+        const auto path = SlotPath(slot);
+        const Detail::LocalPersistenceCommitEvent event{
+            Detail::LocalPersistenceResourceKind::SaveData,
+            this,
+            &path,
+            slot,
+            true
+        };
+        const bool removed = Detail::DurableDeleteLocalDocument(path);
+        if (removed)
         {
-            throw std::runtime_error(
-                "Could not delete save slot: "
-                + error.message());
+            Detail::NotifyLocalPersistenceCommit(event);
         }
         return removed;
     }

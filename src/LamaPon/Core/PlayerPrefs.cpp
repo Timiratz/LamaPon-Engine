@@ -1,6 +1,7 @@
 #include "LamaPon/Core/PlayerPrefs.h"
 
 #include "LamaPon/Core/DocumentMigration.h"
+#include "LamaPon/Core/LocalPersistenceDocuments.h"
 #include "LamaPon/Core/PathUtils.h"
 
 #include <Windows.h>
@@ -43,37 +44,7 @@ namespace
         const std::filesystem::path& path,
         const std::string_view text)
     {
-        if (!path.parent_path().empty())
-        {
-            std::filesystem::create_directories(
-                path.parent_path());
-        }
-        auto temporary = path;
-        temporary += L".tmp";
-        std::ofstream output(
-            temporary,
-            std::ios::binary | std::ios::trunc);
-        if (!output)
-        {
-            throw std::runtime_error(
-                "Could not create temporary save file: "
-                + LamaPon::PathToUtf8(temporary));
-        }
-        output << text;
-        output.close();
-        if (!output
-            || !MoveFileExW(
-                temporary.c_str(),
-                path.c_str(),
-                MOVEFILE_REPLACE_EXISTING
-                    | MOVEFILE_WRITE_THROUGH))
-        {
-            std::error_code error;
-            std::filesystem::remove(temporary, error);
-            throw std::runtime_error(
-                "Could not replace save file: "
-                + LamaPon::PathToUtf8(path));
-        }
+        LamaPon::Detail::DurablePublishLocalDocument(path, text);
     }
 
     ValueMap ReadValues(
@@ -161,6 +132,41 @@ namespace
             {
                 throw std::runtime_error(
                     "PlayerPrefs contains an unknown value type.");
+            }
+        }
+        return values;
+    }
+
+    ValueMap ReadStrictValues(const std::string_view text)
+    {
+        LamaPon::Detail::ValidatePlayerPrefsFullDocument(text);
+        const auto document = nlohmann::json::parse(text);
+        ValueMap values;
+        for (const auto& [key, entry] : document.at("values").items())
+        {
+            ValidateKey(key);
+            const auto type = entry.at("type").get<std::string>();
+            if (type == "integer")
+            {
+                values[key] = entry.at("value").get<std::int64_t>();
+            }
+            else if (type == "number")
+            {
+                const auto value = entry.at("value").get<double>();
+                if (!std::isfinite(value))
+                {
+                    throw std::runtime_error(
+                        "PlayerPrefs contains a non-finite number.");
+                }
+                values[key] = value;
+            }
+            else if (type == "boolean")
+            {
+                values[key] = entry.at("value").get<bool>();
+            }
+            else
+            {
+                values[key] = entry.at("value").get<std::string>();
             }
         }
         return values;
@@ -374,10 +380,36 @@ namespace LamaPon
             throw std::logic_error(
                 "PlayerPrefs cannot be saved after a load failure without explicit recovery.");
         }
+        const Detail::LocalPersistenceCommitEvent event{
+            Detail::LocalPersistenceResourceKind::PlayerPrefs,
+            this,
+            &m_implementation->filePath,
+            {},
+            false
+        };
         WriteAtomically(
             m_implementation->filePath,
             SerializeToJson());
         m_implementation->dirty = false;
+        Detail::NotifyLocalPersistenceCommit(event);
+    }
+
+    void PlayerPrefs::ApplyRemoteDocumentAtomically(
+        const std::string_view fullDocument)
+    {
+        auto replacement = std::make_unique<Implementation>();
+        replacement->filePath = m_implementation->filePath;
+        replacement->values = ReadStrictValues(fullDocument);
+        WriteAtomically(replacement->filePath, fullDocument);
+        m_implementation.swap(replacement);
+    }
+
+    void PlayerPrefs::DeleteRemoteDocumentAtomically()
+    {
+        auto replacement = std::make_unique<Implementation>();
+        replacement->filePath = m_implementation->filePath;
+        (void)Detail::DurableDeleteLocalDocument(replacement->filePath);
+        m_implementation.swap(replacement);
     }
 
     bool PlayerPrefs::IsDirty() const noexcept

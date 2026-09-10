@@ -246,6 +246,8 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Core/VersionCompare.h
     src/LamaPon/Core/Log.cpp
     src/LamaPon/Core/Log.h
+    src/LamaPon/Core/LocalPersistenceDocuments.cpp
+    src/LamaPon/Core/LocalPersistenceDocuments.h
     src/LamaPon/Core/Noise.h
     src/LamaPon/Core/Profiler.cpp
     src/LamaPon/Core/Profiler.h
@@ -1220,6 +1222,28 @@ if(BUILD_TESTING)
         COMMAND LamaPonPersistenceTests
     )
 
+    add_executable(LamaPonLocalPersistenceDocumentsTests
+        tests/LocalPersistenceDocumentsTests.cpp
+    )
+    target_link_libraries(
+        LamaPonLocalPersistenceDocumentsTests
+        PRIVATE
+            LamaPonRuntime
+    )
+    target_compile_options(LamaPonLocalPersistenceDocumentsTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_test(
+        NAME LocalPersistenceDocuments
+        COMMAND LamaPonLocalPersistenceDocumentsTests
+    )
+    set_tests_properties(
+        LocalPersistenceDocuments
+        PROPERTIES LABELS "persistence;cloud-save;durability"
+    )
+
     add_executable(LamaPonPersistenceProfileTests
         tests/PersistenceProfilesTests.cpp
     )
@@ -1905,6 +1929,7 @@ install(
         PATTERN "CloudSave.h" EXCLUDE
         PATTERN "CloudSaveClient.h" EXCLUDE
         PATTERN "CloudSaveJournal.h" EXCLUDE
+        PATTERN "LocalPersistenceDocuments.h" EXCLUDE
         PATTERN "OnlineHttpValidation.h" EXCLUDE
         PATTERN "SaveSlotValidation.h" EXCLUDE
         PATTERN "OnlineServicesTesting.h" EXCLUDE

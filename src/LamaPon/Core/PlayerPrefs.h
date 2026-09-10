@@ -10,6 +10,10 @@
 namespace LamaPon
 {
     class PersistenceProfiles;
+    namespace Detail
+    {
+        class LocalPersistenceDocuments;
+    }
 
     enum class PlayerPrefType
     {
@@ -80,12 +84,15 @@ namespace LamaPon
 
     private:
         friend class PersistenceProfiles;
+        friend class Detail::LocalPersistenceDocuments;
 
         // PersistenceProfilesが、検証済みの状態をfinal rename後に
         // 例外なしで公開するための内部トランザクション操作です。
         void RelocateBinding(
             std::filesystem::path filePath) noexcept;
         void SwapLoadedState(PlayerPrefs& other) noexcept;
+        void ApplyRemoteDocumentAtomically(std::string_view fullDocument);
+        void DeleteRemoteDocumentAtomically();
 
         struct Implementation;
         std::unique_ptr<Implementation> m_implementation;
