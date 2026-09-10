@@ -704,6 +704,18 @@ int main(const int argumentCount, char** arguments)
         constexpr char LegacyEnvironmentOverrideSymbol[] =
             "?SetEnvironmentOverride@LitEffect@LamaPon@@"
             "QEAAXAEBUReflectionProbeEnvironment@2@@Z";
+        constexpr char LegacySkyDrawSymbol[] =
+            "?DrawSky@EnvironmentRenderer@LamaPon@@"
+            "QEAAXUXMMATRIX@DirectX@@AEBU34@"
+            "AEBUSkySettings@2@PEAUID3D11ShaderResourceView@@"
+            "PEBUSkySun@12@@Z";
+        constexpr char LegacyReflectionDepthBuildSymbol[] =
+            "?BuildReflectionDepthPyramid@EnvironmentRenderer@LamaPon@@"
+            "QEAAXAEAVRenderTarget@2@MM@Z";
+        constexpr char LegacyIrradianceProbeBakeSymbol[] =
+            "?BakeIrradianceProbe@EnvironmentRenderer@LamaPon@@"
+            "QEAA?AV?$optional@V?$array@M$0M@@std@@@std@@"
+            "AEBV?$function@$$A6AXI@Z@4@@Z";
         const auto runtimeModule = GetModuleHandleW(
             L"LamaPonRuntime.dll");
         Require(
@@ -760,6 +772,17 @@ int main(const int argumentCount, char** arguments)
                     runtimeModule,
                     LegacyEnvironmentOverrideSymbol) != nullptr,
             "An API 57 Reflection Probe export alias is missing");
+        Require(
+            GetProcAddress(
+                runtimeModule,
+                LegacySkyDrawSymbol) != nullptr
+                && GetProcAddress(
+                    runtimeModule,
+                    LegacyReflectionDepthBuildSymbol) != nullptr
+                && GetProcAddress(
+                    runtimeModule,
+                    LegacyIrradianceProbeBakeSymbol) != nullptr,
+            "An API 60 EnvironmentRenderer export alias is missing");
         Stage("asset-root");
         graphics.Assets().SetAssetRoot(
             LAMAPON_TEST_ASSET_DIR);
@@ -1014,6 +1037,57 @@ int main(const int argumentCount, char** arguments)
         // 共通Sky IBLはsourceと畳み込み済みpairをneutral handleで運び、
         // 同じsource/keyではhandle wrapperも再利用します。
         Stage("neutral-sky-ibl");
+        Require(
+            graphics.IsSampleableCubeView(pointShadowView)
+                && !graphics.IsSampleableCubeView({})
+                && !graphics.IsSampleableCubeView(litViews[0]),
+            "Sky cube validation accepted an empty or Texture2D view");
+
+        LamaPon::SkySettings neutralSkySettings;
+        neutralSkySettings.enabled = true;
+        neutralSkySettings.topColor = { 0.13f, 0.37f, 0.71f };
+        neutralSkySettings.horizonColor = { 0.13f, 0.37f, 0.71f };
+        neutralSkySettings.groundColor = { 0.13f, 0.37f, 0.71f };
+        LamaPon::SkySunDescription neutralSkySun;
+        neutralSkySun.directionToSun = { 0.0f, 1.0f, 0.0f };
+        neutralSkySun.color = { 0.9f, 0.8f, 0.7f };
+        constexpr float neutralSkyClear[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+        const auto captureNeutralSky =
+            [&graphics,
+             &identity,
+             &neutralSkySettings,
+             &neutralSkySun,
+             &neutralSkyClear](
+                const LamaPon::GraphicsViewHandle& cubemap)
+        {
+            graphics.BeginFrame(neutralSkyClear);
+            graphics.DrawSky(
+                identity,
+                identity,
+                neutralSkySettings,
+                cubemap,
+                &neutralSkySun);
+            std::uint32_t width{};
+            std::uint32_t height{};
+            auto pixels = graphics.CaptureBackBuffer(width, height);
+            graphics.EndFrame();
+            Require(
+                width == Width
+                    && height == Height
+                    && pixels.size()
+                        == static_cast<std::size_t>(Width)
+                            * Height * 4u,
+                "The neutral Sky facade produced an invalid frame");
+            return pixels;
+        };
+        static_cast<void>(captureNeutralSky(pointShadowView));
+        const auto emptyNeutralSky = captureNeutralSky({});
+        const auto twoDimensionalNeutralSky =
+            captureNeutralSky(litViews[0]);
+        Require(
+            twoDimensionalNeutralSky == emptyNeutralSky,
+            "A Texture2D did not fall back to the procedural Sky");
+
         const auto baselinePrefilterPipeline =
             PrefilterPipelineState::Capture(graphics.Context());
         D3D11_TEXTURE2D_DESC sentinelTargetDescription{};
@@ -2219,6 +2293,23 @@ int main(const int argumentCount, char** arguments)
                     && foreignBackend.ResolveShaderResourceView(
                         foreignShadowMap.ViewHandle()) != nullptr,
                 "A foreign shadow map did not publish a neutral view");
+            LamaPon::ShadowMap foreignSkyCube;
+            foreignBackend.InitializeShadowMap(
+                foreignSkyCube,
+                1,
+                1,
+                true);
+            Require(
+                foreignSkyCube.IsValid()
+                    && foreignBackend.ResolveShaderResourceView(
+                        foreignSkyCube.ViewHandle()) != nullptr
+                    && !graphics.IsSampleableCubeView(
+                        foreignSkyCube.ViewHandle()),
+                "A foreign cube was accepted by the Sky facade");
+            Require(
+                captureNeutralSky(foreignSkyCube.ViewHandle())
+                    == emptyNeutralSky,
+                "A foreign cube did not fall back to the procedural Sky");
             graphics.BeginShadowMap(foreignShadowMap, 0);
             graphics.EndShadowMap(foreignShadowMap);
             Require(

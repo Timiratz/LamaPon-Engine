@@ -43,12 +43,17 @@ namespace LamaPon
             float angularRadius{ 0.004625f };
         };
 
+    private:
+        // API 59以前のraw Sky入口はbinary互換shimとして残し、
+        // 新しいcallerはGraphicsDeviceのneutral facadeを通します。
         void DrawSky(
             DirectX::FXMMATRIX view,
             DirectX::CXMMATRIX projection,
             const SkySettings& settings,
             ID3D11ShaderResourceView* cubemap = nullptr,
             const SkySun* sun = nullptr);
+
+    public:
         void ApplyBloom(
             ID3D11ShaderResourceView* source,
             ID3D11RenderTargetView* destination,
@@ -301,9 +306,13 @@ namespace LamaPon
         // HDRの面描画だけを行ってください。同じrendererへのBake再入は
         // logic_errorになります。描画先の作成・clear・左右反転コピー・
         // 畳み込み・readbackはこのD3D11描画島の内部で完結します。
-        static constexpr std::uint32_t ProbeBakeFaceSize = 128;
+        static constexpr std::uint32_t ProbeBakeFaceSize =
+            EnvironmentProbeBakeFaceSize;
         using ProbeFaceRenderer = EnvironmentProbeFaceRenderer;
 
+    private:
+        // SceneからD3D11描画島を隠すGraphicsDevice facadeが呼びます。
+        // 旧public symbolは.defでこのprivate実装へaliasします。
         [[nodiscard]] std::optional<std::array<float, 12>>
             BakeIrradianceProbe(
                 const ProbeFaceRenderer& renderFace);

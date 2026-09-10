@@ -83,6 +83,7 @@
 - 共通Sky IBLのsource・スペキュラ・放射照度viewを世代付きneutral handleへ移行。事前フィルタ結果の一括取込・再利用とcube形状検証を追加し、source/key/cache更新を例外安全にした。旧raw入口をprivate互換shimへ移行し、公開layout変更に伴いGame Module APIを57へ更新。
 - Reflection Probeのベイク結果とprimary／secondary IBL viewを世代付きneutral handleへ移行。cache・ベイク結果の一括取込、Lit bridgeのcube形状検証、Backend再初期化後のstale検出と再ベイクを追加。旧raw入口をprivate互換shimへ移行し、公開layout／Backend契約変更に伴いGame Module APIを58へ更新。
 - TAAの履歴カラーと深度入力を世代付きneutral handleへ移行。RenderTarget生成時に他の画面空間viewと一括取込し、TAA描画前にBackend世代・RGBA16F履歴・R24深度の形式と寸法を検証。公開layout変更に伴いGame Module APIを59へ更新。
+- Sky描画のcubemapをneutral viewで受けるGraphicsDevice facadeを追加し、stale・foreign・2D viewはprocedural Skyへ安全にフォールバック。SSR深度ピラミッドとGI probeベイクもDevice境界へ集約し、Sceneからraw D3D11参照と`EnvironmentRenderer`直接依存を除去。旧raw入口はprivate互換shimとし、Game Module APIを60へ更新。
 
 ### ファイル名の統一
 

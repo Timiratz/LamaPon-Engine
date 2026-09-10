@@ -10,6 +10,10 @@
 
 namespace LamaPon
 {
+    // Reflection ProbeとBaked GIが共有するcube面の解像度です。
+    // Backend固有rendererを参照せずcache keyと描画入力で共有します。
+    inline constexpr std::uint32_t EnvironmentProbeBakeFaceSize = 128;
+
     struct SkySettings final
     {
         bool enabled{};
@@ -26,6 +30,18 @@ namespace LamaPon
         // 太陽そのものも描かれます。ライトを回すだけで夜明けから
         // 日没まで動きます。末尾に足しています。
         bool sunDriven{};
+    };
+
+    // Sky描画へ渡す解決済みの太陽です。ライトやSceneの設定と
+    // 分け、描画API固有型を含まないフレーム入力として扱います。
+    struct SkySunDescription final
+    {
+        // 太陽へ向かう向き（Directional Lightの進行方向の逆）。
+        DirectX::XMFLOAT3 directionToSun{ 0.0f, 1.0f, 0.0f };
+        // 色×強さ。
+        DirectX::XMFLOAT3 color{ 1.0f, 1.0f, 1.0f };
+        // 角半径（ラジアン）。本物の太陽は0.53度＝0.00465。
+        float angularRadius{ 0.004625f };
     };
 
     // 太陽の高度から決まる空と環境光。sunDrivenのときに使います。

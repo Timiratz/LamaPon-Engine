@@ -356,6 +356,120 @@ namespace LamaPon
             : nullptr;
     }
 
+    bool GraphicsDevice::IsSampleableCubeView(
+        const GraphicsViewHandle& cubemap) const noexcept
+    {
+        const auto* const backend =
+            AsD3D11Backend(m_backend.get());
+        if (!cubemap || backend == nullptr)
+        {
+            return false;
+        }
+        try
+        {
+            return IsCubeShaderResource(
+                backend->Device(),
+                backend->ResolveShaderResourceView(cubemap));
+        }
+        catch (...)
+        {
+            return false;
+        }
+    }
+
+    void GraphicsDevice::DrawSky(
+        DirectX::FXMMATRIX view,
+        DirectX::CXMMATRIX projection,
+        const SkySettings& settings,
+        const GraphicsViewHandle& cubemap,
+        const SkySunDescription* const sun) const
+    {
+        auto* const backend = AsD3D11Backend(m_backend.get());
+        if (backend == nullptr || backend->Device() == nullptr)
+        {
+            throw std::logic_error(
+                "Sky rendering requires an active backend.");
+        }
+
+        ID3D11ShaderResourceView* nativeCubemap{};
+        if (cubemap)
+        {
+            try
+            {
+                auto* const resolved =
+                    backend->ResolveShaderResourceView(cubemap);
+                if (IsCubeShaderResource(
+                        backend->Device(),
+                        resolved))
+                {
+                    nativeCubemap = resolved;
+                }
+            }
+            catch (...)
+            {
+                // stale / foreign handleはprocedural Skyへフォールバック。
+            }
+        }
+
+        EnvironmentRenderer::SkySun nativeSun{};
+        const EnvironmentRenderer::SkySun* nativeSunPointer{};
+        if (sun != nullptr)
+        {
+            nativeSun.directionToSun = sun->directionToSun;
+            nativeSun.color = sun->color;
+            nativeSun.angularRadius = sun->angularRadius;
+            nativeSunPointer = &nativeSun;
+        }
+        Environment().DrawSky(
+            view,
+            projection,
+            settings,
+            nativeCubemap,
+            nativeSunPointer);
+    }
+
+    bool GraphicsDevice::TryBuildReflectionDepthPyramid(
+        RenderTarget& target,
+        const float projectionZ,
+        const float projectionW) const noexcept
+    {
+        const auto* const backend =
+            AsD3D11Backend(m_backend.get());
+        if (backend == nullptr
+            || !target.IsValid()
+            || !backend->IsViewCurrent(target.DepthViewHandle())
+            || !backend->IsViewCurrent(
+                target.ReflectionDepthPyramidViewHandle()))
+        {
+            return false;
+        }
+        try
+        {
+            Environment().BuildReflectionDepthPyramid(
+                target,
+                projectionZ,
+                projectionW);
+            return true;
+        }
+        catch (...)
+        {
+            return false;
+        }
+    }
+
+    std::optional<std::array<float, 12>>
+        GraphicsDevice::BakeIrradianceProbe(
+            const EnvironmentProbeFaceRenderer& renderFace) const
+    {
+        auto* const backend = AsD3D11Backend(m_backend.get());
+        if (backend == nullptr || backend->Device() == nullptr)
+        {
+            throw std::logic_error(
+                "Irradiance probe baking requires an active backend.");
+        }
+        return Environment().BakeIrradianceProbe(renderFace);
+    }
+
     ID3D11ShaderResourceView*
         GraphicsDevice::WhiteTexture() const noexcept
     {

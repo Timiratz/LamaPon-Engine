@@ -519,6 +519,28 @@ namespace LamaPon
             return m_gpuProfiler;
         }
         [[nodiscard]] EnvironmentRenderer& Environment() const;
+        // Sky cubemapをnative SRVへ公開せず、現在のBackend世代に
+        // 属するsampleableなTextureCubeかを確認します。
+        [[nodiscard]] bool IsSampleableCubeView(
+            const GraphicsViewHandle& cubemap) const noexcept;
+        // empty / stale / foreign / TextureCube以外のcubemapはグラデーション
+        // Skyへ安全にフォールバックします。
+        void DrawSky(
+            DirectX::FXMMATRIX view,
+            DirectX::CXMMATRIX projection,
+            const SkySettings& settings,
+            const GraphicsViewHandle& cubemap = {},
+            const SkySunDescription* sun = nullptr) const;
+        // SSRのHi-Z深度ピラミッドを、RenderTargetのnative viewを
+        // Sceneへ公開せずに生成します。
+        [[nodiscard]] bool TryBuildReflectionDepthPyramid(
+            RenderTarget& target,
+            float projectionZ,
+            float projectionW) const noexcept;
+        // GI probeの6面描画とSH readbackをD3D11描画島に閉じ込めます。
+        [[nodiscard]] std::optional<std::array<float, 12>>
+            BakeIrradianceProbe(
+                const EnvironmentProbeFaceRenderer& renderFace) const;
         // 共通Sky IBLをneutral viewへ変換する境界です。同じsource/key
         // ならhandleを再利用し、生成・取込のどこかで失敗した場合は
         // 片方だけを公開せず全emptyを返します。

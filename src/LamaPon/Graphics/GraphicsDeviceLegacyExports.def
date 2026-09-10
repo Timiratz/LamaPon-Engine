@@ -1,4 +1,7 @@
 EXPORTS
+    ?DrawSky@EnvironmentRenderer@LamaPon@@QEAAXUXMMATRIX@DirectX@@AEBU34@AEBUSkySettings@2@PEAUID3D11ShaderResourceView@@PEBUSkySun@12@@Z=?DrawSky@EnvironmentRenderer@LamaPon@@AEAAXUXMMATRIX@DirectX@@AEBU34@AEBUSkySettings@2@PEAUID3D11ShaderResourceView@@PEBUSkySun@12@@Z
+    ?BuildReflectionDepthPyramid@EnvironmentRenderer@LamaPon@@QEAAXAEAVRenderTarget@2@MM@Z=?BuildReflectionDepthPyramid@EnvironmentRenderer@LamaPon@@AEAAXAEAVRenderTarget@2@MM@Z
+    ?BakeIrradianceProbe@EnvironmentRenderer@LamaPon@@QEAA?AV?$optional@V?$array@M$0M@@std@@@std@@AEBV?$function@$$A6AXI@Z@4@@Z=?BakeIrradianceProbe@EnvironmentRenderer@LamaPon@@AEAA?AV?$optional@V?$array@M$0M@@std@@@std@@AEBV?$function@$$A6AXI@Z@4@@Z
     ?TryLoadCachedEnvironment@GraphicsDevice@LamaPon@@QEBA?AUOwnedPrefilteredEnvironment@EnvironmentRenderer@2@_K@Z=?TryLoadCachedEnvironment@GraphicsDevice@LamaPon@@AEBA?AUOwnedPrefilteredEnvironment@EnvironmentRenderer@2@_K@Z
     ?PrepareProbeBake@EnvironmentRenderer@LamaPon@@QEAAXXZ=?PrepareProbeBake@EnvironmentRenderer@LamaPon@@AEAAXXZ
     ?BakeReflectionProbe@EnvironmentRenderer@LamaPon@@QEAA?AUOwnedPrefilteredEnvironment@12@AEBV?$function@$$A6AXI@Z@std@@V?$optional@_K@5@@Z=?BakeReflectionProbe@EnvironmentRenderer@LamaPon@@AEAA?AUOwnedPrefilteredEnvironment@12@AEBV?$function@$$A6AXI@Z@std@@V?$optional@_K@5@@Z

@@ -13,11 +13,11 @@ namespace LamaPon
     // Game ModuleとRuntimeのABIを識別します。公開構造体のレイアウトや
     // 公開関数のシグネチャを変更した場合は、この値も更新してください。
     // GameModuleHostは完全一致を要求し、互換性のないDLLを読み込みません。
-    // API 59ではTAAの履歴カラーと深度入力をAPI非依存
-    // handleへ移し、RenderTargetとTemporalInputsの公開layoutを
-    // 更新したため、
+    // API 60ではSky・SSR深度ピラミッド・GI probeの入口を
+    // GraphicsDeviceのneutral facadeへ移し、raw D3D11入口を
+    // private互換shimにしたため、
     // ゲーム用DLLの再ビルドが必要です。
-    inline constexpr std::uint32_t GameModuleApiVersion = 59;
+    inline constexpr std::uint32_t GameModuleApiVersion = 60;
 
     using NativeScriptCreateFunction = void* (*)(
         GameObject* owner,

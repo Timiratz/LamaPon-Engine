@@ -54,7 +54,6 @@
 #include "LamaPon/Core/Time.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Graphics/EnvironmentCache.h"
-#include "LamaPon/Graphics/EnvironmentRenderer.h"
 #include "LamaPon/Graphics/RenderPipeline.h"
 #include "LamaPon/Graphics/TemporalJitter.h"
 #include "LamaPon/Graphics/RenderTarget.h"
@@ -6841,49 +6840,57 @@ namespace LamaPon
                     // Hi-Z: 深度を「距離のminミップピラミッド」へ
                     // 直します。シェーダーはこれを読んで、何も無い
                     // 空間を大股で飛びます。
-                    m_graphics.Environment()
-                        .BuildReflectionDepthPyramid(
-                            *target,
-                            storedProjection._33,
-                            storedProjection._43);
-                    reflection.depth =
-                        target->
-                            ReflectionDepthPyramidViewHandle();
-                    reflection.depthPyramidMaximumMip =
-                        target->ReflectionDepthPyramidMipCount()
-                            > 0
-                        ? target
-                            ->ReflectionDepthPyramidMipCount()
-                            - 1
-                        : 0;
-                    reflection.previousViewProjection =
-                        target->
-                            ColorHistoryViewProjection();
-                    reflection.inverseWidth = 1.0f
-                        / static_cast<float>(
-                            std::max(target->Width(), 1u));
-                    reflection.inverseHeight = 1.0f
-                        / static_cast<float>(
-                            std::max(
-                                target->Height(), 1u));
-                    // 深度をビュー空間のZへ戻すための値。
-                    reflection.projectionZ =
-                        storedProjection._33;
-                    reflection.projectionW =
-                        storedProjection._43;
-                    reflection.intensity =
-                        m_screenSpaceReflection.intensity;
-                    reflection.maximumDistance =
-                        m_screenSpaceReflection
-                            .maximumDistance;
-                    reflection.thickness =
-                        m_screenSpaceReflection.thickness;
-                    reflection.roughnessCutoff =
-                        m_screenSpaceReflection
-                            .roughnessCutoff;
-                    reflection.stepCount =
-                        m_screenSpaceReflection.stepCount;
-                    reflection.enabled = true;
+                    if (m_graphics
+                            .TryBuildReflectionDepthPyramid(
+                                *target,
+                                storedProjection._33,
+                                storedProjection._43))
+                    {
+                        reflection.depth =
+                            target->
+                                ReflectionDepthPyramidViewHandle();
+                        reflection.depthPyramidMaximumMip =
+                            target->ReflectionDepthPyramidMipCount()
+                                > 0
+                            ? target
+                                ->ReflectionDepthPyramidMipCount()
+                                - 1
+                            : 0;
+                        reflection.previousViewProjection =
+                            target->
+                                ColorHistoryViewProjection();
+                        reflection.inverseWidth = 1.0f
+                            / static_cast<float>(
+                                std::max(target->Width(), 1u));
+                        reflection.inverseHeight = 1.0f
+                            / static_cast<float>(
+                                std::max(
+                                    target->Height(), 1u));
+                        // 深度をビュー空間のZへ戻すための値。
+                        reflection.projectionZ =
+                            storedProjection._33;
+                        reflection.projectionW =
+                            storedProjection._43;
+                        reflection.intensity =
+                            m_screenSpaceReflection.intensity;
+                        reflection.maximumDistance =
+                            m_screenSpaceReflection
+                                .maximumDistance;
+                        reflection.thickness =
+                            m_screenSpaceReflection.thickness;
+                        reflection.roughnessCutoff =
+                            m_screenSpaceReflection
+                                .roughnessCutoff;
+                        reflection.stepCount =
+                            m_screenSpaceReflection.stepCount;
+                        reflection.enabled = true;
+                    }
+                    else
+                    {
+                        // stale / 別BackendのRenderTargetはこのフレームの
+                        // SSRを無効にし、native viewを誤bindしません。
+                        reflection = {};
+                    }
                 }
             }
             // プリパスとSSAOで描画先が変わっているので、カラーへ
@@ -6892,10 +6899,7 @@ namespace LamaPon
         }
 
         // キューブマップスカイとIBL（環境反射）。
-        ID3D11ShaderResourceView* skyCubemap{};
         GraphicsViewHandle skyCubemapView;
-        std::shared_ptr<const TextureResourceSnapshot>
-            skyResources;
         if (m_sky.enabled
             && !m_sky.cubemapPath.empty()
             && m_graphics.IsInitialized())
@@ -6907,14 +6911,12 @@ namespace LamaPon
                             m_sky.cubemapPath);
                     texture != nullptr && texture->isCube)
                 {
-                    skyResources = texture->resources.Acquire();
+                    const auto skyResources =
+                        texture->resources.Acquire();
                     if (skyResources != nullptr)
                     {
                         skyCubemapView =
                             skyResources->shaderResourceView;
-                        skyCubemap = m_graphics
-                            .TryResolveD3D11ShaderResourceView(
-                                skyCubemapView);
                     }
                 }
             }
@@ -6926,8 +6928,8 @@ namespace LamaPon
         lighting.environment.intensity =
             m_sky.iblIntensity;
         lighting.environment.enabled =
-            skyCubemap != nullptr
-            && skyCubemapView
+            m_graphics.IsSampleableCubeView(
+                skyCubemapView)
             && m_sky.iblIntensity > 0.0f;
         if (lighting.environment.enabled)
         {
@@ -7093,18 +7095,18 @@ namespace LamaPon
                 m_graphics.Gpu(),
                 "スカイ"
             };
-            EnvironmentRenderer::SkySun skySun{};
+            SkySunDescription skySun{};
             const bool hasSkySun =
                 m_sky.sunDriven
                 && ResolveSkySun(
                     skySun.directionToSun,
                     skySun.color,
                     skySun.angularRadius);
-            m_graphics.Environment().DrawSky(
+            m_graphics.DrawSky(
                 view,
                 projection,
                 ResolvedSky(),
-                skyCubemap,
+                skyCubemapView,
                 hasSkySun ? &skySun : nullptr);
         }
         GpuProfiler::SectionScope renderSectionScope{
@@ -7666,8 +7668,7 @@ namespace LamaPon
                                     ->CurrentScenePath()
                                 : std::filesystem::path{},
                             *probe,
-                            EnvironmentRenderer::
-                                ProbeBakeFaceSize));
+                            EnvironmentProbeBakeFaceSize));
                 if (restored.IsValid())
                 {
                     probe->SetBakedEnvironment(
@@ -7764,8 +7765,7 @@ namespace LamaPon
                                     ->CurrentScenePath()
                                 : std::filesystem::path{},
                             *probe,
-                            EnvironmentRenderer::
-                                ProbeBakeFaceSize) }
+                            EnvironmentProbeBakeFaceSize) }
                     : std::nullopt;
                 auto baked = m_graphics
                     .BakeReflectionProbeViews(
@@ -8066,29 +8066,28 @@ namespace LamaPon
                 };
 
                 const auto coefficients =
-                    m_graphics.Environment()
-                        .BakeIrradianceProbe(
-                            [this,
-                             &eye,
-                             &faceProjection](
-                                const std::uint32_t face)
-                            {
-                                const auto faceView =
-                                    DirectX::XMMatrixLookToRH(
-                                        DirectX::XMLoadFloat3(
-                                            &eye),
-                                        DirectX::XMLoadFloat3(
-                                            &FaceDirections[face]),
-                                        DirectX::XMLoadFloat3(
-                                            &FaceUps[face]));
-                                // プローブベイクと同じくポスト処理なしの
-                                // HDRリニアで焼きます。
-                                RenderWithMatrices(
-                                    faceView,
-                                    faceProjection,
-                                    false,
-                                    false);
-                            });
+                    m_graphics.BakeIrradianceProbe(
+                        [this,
+                         &eye,
+                         &faceProjection](
+                            const std::uint32_t face)
+                        {
+                            const auto faceView =
+                                DirectX::XMMatrixLookToRH(
+                                    DirectX::XMLoadFloat3(
+                                        &eye),
+                                    DirectX::XMLoadFloat3(
+                                        &FaceDirections[face]),
+                                    DirectX::XMLoadFloat3(
+                                        &FaceUps[face]));
+                            // プローブベイクと同じくポスト処理なしの
+                            // HDRリニアで焼きます。
+                            RenderWithMatrices(
+                                faceView,
+                                faceProjection,
+                                false,
+                                false);
+                        });
                 if (!coefficients)
                 {
                     throw std::runtime_error(
