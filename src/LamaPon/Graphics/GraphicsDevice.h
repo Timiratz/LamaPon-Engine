@@ -237,35 +237,6 @@ namespace LamaPon
         // 再初期化をleaseで拒否し、destructorで描画終了を試みます。
         [[nodiscard]] SpriteRenderPass BeginSpritePass(
             const SpritePassDescription& description = {});
-        DirectX::SpriteBatch& BeginSprites();
-        // 旧DirectX 11拡張向けの互換経路です。SpriteBatchはDeferred
-        // なので、Drawへ渡すnative viewをEndSpritesまでsnapshotごと
-        // 保持します。通常の2D/UI描画はBeginSpritePassを使います。
-        [[nodiscard]] ID3D11ShaderResourceView*
-            PinD3D11TextureForSpriteBatch(
-                std::shared_ptr<const TextureResourceSnapshot>
-                    resources);
-        // lightingを渡すと、組み込みの2D照明Shaderが読む灯り一覧を
-        // b1の専用バッファへ載せます。CustomParameters（8本しかなく、
-        // 自作Shaderの持ち物）を使わないので16灯まで扱えます。
-        // nullptrのときは空の一覧を載せます（前の描画の灯りが残って
-        // 「消したのにまだ光る」状態になるのを防ぐため）。
-        DirectX::SpriteBatch& BeginSprites(
-            const std::filesystem::path& shaderPath,
-            const std::array<DirectX::XMFLOAT4, 8>&
-                customParameters,
-            std::uint64_t* generation = nullptr,
-            std::string* error = nullptr,
-            const Sprite2DLighting* lighting = nullptr);
-        void EndSprites();
-        // 2D/UIスプライトパス中にクリッピング矩形を適用します
-        // （UIピクセル座標）。入れ子は交差矩形になります。
-        void PushUIScissor(
-            float minimumX,
-            float minimumY,
-            float maximumX,
-            float maximumY);
-        void PopUIScissor();
         // インスタンス描画用の共有ダイナミック頂点バッファへ
         // データを書き込み、そのバッファを返します（スロット1用）。
         [[nodiscard]] ID3D11Buffer* AcquireInstanceBuffer(
@@ -756,6 +727,28 @@ namespace LamaPon
             PrepareD3D11SpriteShader(
                 const SpritePassDescription& description,
                 SpriteShaderStatus& status);
+        // API 41のGame ModuleをLoadLibraryして明確なAPI不一致を
+        // 案内するためだけにbinary symbolを1互換期間残すprivate
+        // shimです。新規コードはBeginSpritePassを使用します。
+        DirectX::SpriteBatch& BeginSprites();
+        [[nodiscard]] ID3D11ShaderResourceView*
+            PinD3D11TextureForSpriteBatch(
+                std::shared_ptr<const TextureResourceSnapshot>
+                    resources);
+        DirectX::SpriteBatch& BeginSprites(
+            const std::filesystem::path& shaderPath,
+            const std::array<DirectX::XMFLOAT4, 8>&
+                customParameters,
+            std::uint64_t* generation = nullptr,
+            std::string* error = nullptr,
+            const Sprite2DLighting* lighting = nullptr);
+        void EndSprites();
+        void PushUIScissor(
+            float minimumX,
+            float minimumY,
+            float maximumX,
+            float maximumY);
+        void PopUIScissor();
         [[nodiscard]] std::uint64_t BeginD3D11SpritePass(
             const SpritePassDescription& description,
             bool neutralOwner,

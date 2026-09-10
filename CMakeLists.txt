@@ -497,6 +497,17 @@ add_library(LamaPonRuntime SHARED
 add_library(LamaPon::Runtime ALIAS LamaPonRuntime)
 add_library(LamaPon ALIAS LamaPonRuntime)
 
+# MSVCはC++ memberのaccess指定をdecorated nameに含めます。
+# 旧public SpriteBatch facadeをprivate化してもAPI 41 Game Moduleが
+# LoadLibrary後のAPI不一致案内へ到達できるよう、対応環境の
+# MSVC x64でのみ旧public名をprivate shimへaliasします。
+if(MSVC
+   AND CMAKE_CXX_COMPILER_ARCHITECTURE_ID STREQUAL "x64")
+    target_sources(LamaPonRuntime PRIVATE
+        src/LamaPon/Graphics/GraphicsDeviceLegacyExports.def
+    )
+endif()
+
 set_target_properties(LamaPonRuntime PROPERTIES
     WINDOWS_EXPORT_ALL_SYMBOLS ON
 )

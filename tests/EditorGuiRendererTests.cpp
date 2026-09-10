@@ -19,7 +19,6 @@
 
 #include <Windows.h>
 #include <CommonStates.h>
-#include <SpriteBatch.h>
 #include <imgui.h>
 
 #include <array>
@@ -239,16 +238,14 @@ namespace
         const DirectX::XMFLOAT2 size,
         const DirectX::XMFLOAT4 color)
     {
-        auto& sprites = graphics.BeginSprites();
-        sprites.Draw(
-            graphics.WhiteTexture(),
-            position,
-            nullptr,
-            DirectX::XMLoadFloat4(&color),
-            0.0f,
-            DirectX::XMFLOAT2{},
-            size);
-        graphics.EndSprites();
+        auto pass = graphics.BeginSpritePass();
+        LamaPon::SpriteDrawRequest request;
+        request.position = position;
+        request.scale = size;
+        request.tint = color;
+        Require(pass.Draw(request),
+            "A solid rectangle was rejected by the sprite pass");
+        pass.End();
     }
 
     void DrawImageWindow(
@@ -767,8 +764,6 @@ namespace
             constexpr float fallbackClearColor[]{
                 0.0f, 0.0f, 0.0f, 1.0f };
             fallbackGraphics.BeginFrame(fallbackClearColor);
-            fallbackGraphics.BeginSprites();
-            fallbackGraphics.EndSprites();
             auto fallbackNeutralPass =
                 fallbackGraphics.BeginSpritePass();
             LamaPon::SpriteDrawRequest fallbackNeutralRequest;
@@ -1822,57 +1817,8 @@ namespace
             { 13u, 51u, 230u },
             "Binding must restore and publishing must expose the offscreen target");
 
-        // SpriteBatchもDrawをEndまで遅延します。Draw登録後にassetの
-        // snapshotを差し替えても、登録時のviewがEndSpritesまで生存し、
-        // その色で描かれることを確認します。
-        auto deferredTextureAsset =
-            CreateSolidTexture(graphics, assetColor);
-        graphics.BeginFrame(clearColor);
-        auto& deferredSprites = graphics.BeginSprites();
-        auto* const deferredView =
-            graphics.PinD3D11TextureForSpriteBatch(
-                deferredTextureAsset.resources.Acquire());
-        Require(deferredView != nullptr,
-            "SpriteBatch texture pin must resolve an asset view");
-        RequireThrowsExactly<std::logic_error>(
-            [&]
-            {
-                static_cast<void>(graphics.BeginSpritePass());
-            },
-            "A neutral sprite pass started inside a legacy SpriteBatch");
-        const DirectX::XMFLOAT4 opaqueWhite{
-            1.0f, 1.0f, 1.0f, 1.0f };
-        deferredSprites.Draw(
-            deferredView,
-            DirectX::XMFLOAT2{},
-            nullptr,
-            DirectX::XMLoadFloat4(&opaqueWhite),
-            0.0f,
-            DirectX::XMFLOAT2{},
-            DirectX::XMFLOAT2{ 16.0f, 16.0f });
-        PublishSolidTexture(
-            deferredTextureAsset,
-            graphics,
-            replacementAssetColor);
-        graphics.EndSprites();
-        std::uint32_t deferredWidth{};
-        std::uint32_t deferredHeight{};
-        const auto deferredPixels = graphics.CaptureBackBuffer(
-            deferredWidth,
-            deferredHeight);
-        graphics.EndFrame();
-        Require(
-            deferredWidth == Width && deferredHeight == Height,
-            "SpriteBatch pin test must capture the active back buffer");
-        RequirePixelNear(
-            deferredPixels,
-            8u,
-            8u,
-            { assetColor[0], assetColor[1], assetColor[2] },
-            "SpriteBatch must retain the texture snapshot until EndSprites");
-
-        // API非依存passもhandleを強所有し、legacy/neutral双方のnested
-        // Beginをpin破棄より前に拒否します。stale handleは白へ化けず、
+        // API非依存passはhandleを強所有し、nested Beginをpin破棄より
+        // 前に拒否します。stale handleは白へ化けず、
         // 同じpassの後続Drawを壊しません。
         auto neutralSpriteAsset =
             CreateSolidTexture(graphics, assetColor);
@@ -1894,12 +1840,6 @@ namespace
             "A current neutral sprite view was rejected");
         neutralRequest.texture.Reset();
         neutralSpriteResources.reset();
-        RequireThrowsExactly<std::logic_error>(
-            [&]
-            {
-                static_cast<void>(graphics.BeginSprites());
-            },
-            "A legacy SpriteBatch started inside a neutral sprite pass");
         RequireThrowsExactly<std::logic_error>(
             [&]
             {
@@ -2024,7 +1964,7 @@ namespace
             "Sprite source selection and horizontal flip were not applied");
 
         // 入れ子のUIシザーは外側との交差だけを描画し、余分なPopは
-        // 進行中のSpriteBatchを壊さないことを実画素で確認します。
+        // 進行中のSprite passを壊さないことを実画素で確認します。
         constexpr float scissorClearColor[]{
             0.0f, 0.0f, 0.0f, 1.0f };
         const DirectX::XMFLOAT4 scissorRed{
@@ -2032,30 +1972,34 @@ namespace
         const DirectX::XMFLOAT4 scissorGreen{
             0.0f, 1.0f, 0.0f, 1.0f };
         graphics.BeginFrame(scissorClearColor);
-        auto& scissorSprites = graphics.BeginSprites();
+        auto scissorPass = graphics.BeginSpritePass();
         const auto drawScissorColor =
-            [&graphics, &scissorSprites](
+            [&scissorPass](
                 const DirectX::XMFLOAT4& color)
             {
-                scissorSprites.Draw(
-                    graphics.WhiteTexture(),
-                    DirectX::XMFLOAT2{},
-                    nullptr,
-                    DirectX::XMLoadFloat4(&color),
-                    0.0f,
-                    DirectX::XMFLOAT2{},
-                    DirectX::XMFLOAT2{
-                        static_cast<float>(Width),
-                        static_cast<float>(Height) });
+                LamaPon::SpriteDrawRequest request;
+                request.scale = {
+                    static_cast<float>(Width),
+                    static_cast<float>(Height) };
+                request.tint = color;
+                Require(scissorPass.Draw(request),
+                    "A scissored neutral sprite draw was rejected");
             };
-        graphics.PushUIScissor(8.0f, 8.0f, 56.0f, 48.0f);
+        Require(scissorPass.PushScissor(
+                { 8.0f, 8.0f, 56.0f, 48.0f }),
+            "The outer sprite scissor was rejected");
         drawScissorColor(scissorRed);
-        graphics.PushUIScissor(24.0f, 16.0f, 72.0f, 32.0f);
+        Require(scissorPass.PushScissor(
+                { 24.0f, 16.0f, 72.0f, 32.0f }),
+            "The inner sprite scissor was rejected");
         drawScissorColor(scissorGreen);
-        graphics.PopUIScissor();
-        graphics.PopUIScissor();
-        graphics.PopUIScissor();
-        graphics.EndSprites();
+        Require(scissorPass.PopScissor(),
+            "The inner sprite scissor could not be popped");
+        Require(scissorPass.PopScissor(),
+            "The outer sprite scissor could not be popped");
+        Require(!scissorPass.PopScissor(),
+            "An extra sprite scissor pop was accepted");
+        scissorPass.End();
         std::uint32_t scissorWidth{};
         std::uint32_t scissorHeight{};
         const auto scissorPixels = graphics.CaptureBackBuffer(

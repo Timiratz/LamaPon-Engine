@@ -13,9 +13,9 @@ namespace LamaPon
     // Game ModuleとRuntimeのABIを識別します。公開構造体のレイアウトや
     // 公開関数のシグネチャを変更した場合は、この値も更新してください。
     // GameModuleHostは完全一致を要求し、互換性のないDLLを読み込みません。
-    // API 41ではComponentの2D描画入口をSpriteDrawContextへ変更したため、
+    // API 42では旧D3D11 SpriteBatch facadeを非公開化したため、
     // ゲーム用DLLの再ビルドが必要です。
-    inline constexpr std::uint32_t GameModuleApiVersion = 41;
+    inline constexpr std::uint32_t GameModuleApiVersion = 42;
 
     using NativeScriptCreateFunction = void* (*)(
         GameObject* owner,
