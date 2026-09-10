@@ -1198,7 +1198,9 @@ namespace LamaPon
             nextClient = std::make_shared<Detail::DiscordAuthClient>(
                 std::move(configuration.serviceBaseUrl),
                 configuration.allowInsecureLoopback,
-                implementation.senderOverride);
+                implementation.senderOverride,
+                configuration.gameId,
+                configuration.environmentId);
             if (implementation.useWindowsPlatformDefaults)
             {
                 if (!configuration.gameId.empty())

@@ -2,6 +2,7 @@
 
 #include "LamaPon/Core/DocumentMigration.h"
 #include "LamaPon/Core/PathUtils.h"
+#include "LamaPon/Core/SaveSlotValidation.h"
 
 #include <Windows.h>
 #include <nlohmann/json.hpp>
@@ -61,30 +62,10 @@ namespace LamaPon
         m_directory.swap(directory);
     }
 
-    void SaveDataStore::ValidateSlot(
-        const std::string_view slot)
-    {
-        if (slot.empty()
-            || slot.size() > 64
-            || slot == "."
-            || slot == ".."
-            || slot.find_first_of("<>:\"/\\|?*")
-                != std::string_view::npos
-            || slot.find_first_not_of(" \t\r\n.")
-                == std::string_view::npos
-            || slot.back() == ' '
-            || slot.back() == '.'
-            || Utf8ToWide(slot).empty())
-        {
-            throw std::invalid_argument(
-                "Save slot must be valid UTF-8 filename text with 1 to 64 bytes.");
-        }
-    }
-
     std::filesystem::path SaveDataStore::SlotPath(
         const std::string_view slot) const
     {
-        ValidateSlot(slot);
+        Detail::ValidateSaveSlotName(slot);
         return m_directory
             / (PathFromUtf8(slot).wstring()
                 + L".save.json");

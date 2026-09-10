@@ -1,6 +1,7 @@
 #include "LamaPon/Online/DiscordAuth.h"
 
 #include "LamaPon/Core/PathUtils.h"
+#include "LamaPon/Online/OnlineHttpValidation.h"
 
 #include <nlohmann/json.hpp>
 
@@ -11,106 +12,6 @@
 namespace
 {
     using Json = nlohmann::json;
-
-    std::string_view UrlAuthority(
-        const std::string_view value,
-        const std::string_view scheme)
-    {
-        if (!value.starts_with(scheme))
-        {
-            return {};
-        }
-        const auto begin = scheme.size();
-        const auto end = value.find_first_of("/?#", begin);
-        return value.substr(
-            begin,
-            end == std::string_view::npos
-                ? value.size() - begin
-                : end - begin);
-    }
-
-    bool IsDigits(const std::string_view value)
-    {
-        return !value.empty()
-            && std::ranges::all_of(
-                value,
-                [](const unsigned char character)
-                {
-                    return character >= '0' && character <= '9';
-                });
-    }
-
-    bool IsLoopbackBaseUrl(const std::string_view value)
-    {
-        const auto authority = UrlAuthority(value, "http://");
-        if (authority == "127.0.0.1"
-            || authority == "localhost"
-            || authority == "[::1]")
-        {
-            return true;
-        }
-        for (const auto host : {
-                std::string_view("127.0.0.1"),
-                std::string_view("localhost"),
-                std::string_view("[::1]") })
-        {
-            if (authority.starts_with(host)
-                && authority.size() > host.size()
-                && authority[host.size()] == ':'
-                && IsDigits(authority.substr(host.size() + 1)))
-            {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    bool ContainsUnsafeUrlCharacter(const std::string_view value)
-    {
-        return std::ranges::any_of(
-            value,
-            [](const unsigned char character)
-            {
-                return character <= 0x20 || character == 0x7f;
-            });
-    }
-
-    std::string NormalizeBaseUrl(
-        std::string value,
-        const bool allowInsecureLoopback)
-    {
-        while (!value.empty() && value.back() == '/')
-        {
-            value.pop_back();
-        }
-        const bool secure = value.starts_with("https://");
-        const bool allowedLoopback = allowInsecureLoopback
-            && IsLoopbackBaseUrl(value);
-        const auto authority = secure
-            ? UrlAuthority(value, "https://")
-            : UrlAuthority(value, "http://");
-        if ((!secure && !allowedLoopback)
-            || authority.empty()
-            || authority.find('@') != std::string_view::npos
-            || value.size() > 2048
-            || value.find_first_of("?#") != std::string::npos
-            || ContainsUnsafeUrlCharacter(value))
-        {
-            throw std::invalid_argument(
-                "Online service URL must be an HTTPS base URL. "
-                "Only an explicitly enabled loopback URL may use HTTP.");
-        }
-        return value;
-    }
-
-    bool IsSafeOpaqueValue(
-        const std::string_view value,
-        const std::size_t maxBytes)
-    {
-        return !value.empty()
-            && value.size() <= maxBytes
-            && !ContainsUnsafeUrlCharacter(value);
-    }
 
     bool IsSafeErrorCode(const std::string_view value)
     {
@@ -126,20 +27,6 @@ namespace
                         || character == '-'
                         || character == '.';
                 });
-    }
-
-    bool IsSafeBrowserUrl(
-        const std::string_view value,
-        const bool allowInsecureLoopback)
-    {
-        return !value.empty()
-            && value.size() <= 2048
-            && !ContainsUnsafeUrlCharacter(value)
-            && ((!UrlAuthority(value, "https://").empty()
-                    && UrlAuthority(value, "https://").find('@')
-                        == std::string_view::npos)
-                || (allowInsecureLoopback
-                    && IsLoopbackBaseUrl(value)));
     }
 
     std::string LimitedText(
@@ -203,8 +90,8 @@ namespace
             "refreshToken",
             8192);
         const auto player = json.find("player");
-        if (!IsSafeOpaqueValue(accessToken, 8192)
-            || !IsSafeOpaqueValue(refreshToken, 8192)
+        if (!LamaPon::Detail::IsSafeOnlineBearerToken(accessToken)
+            || !LamaPon::Detail::IsSafeOnlineOpaqueValue(refreshToken, 8192)
             || player == json.end()
             || !player->is_object())
         {
@@ -226,14 +113,16 @@ namespace
             *player,
             "linkedProvider",
             64);
-        if (!IsSafeOpaqueValue(profile.playerId, 128)
+        if (!LamaPon::Detail::IsSafeOnlineOpaqueValue(profile.playerId, 128)
             || profile.displayName.empty())
         {
             error = "Online service returned an invalid player profile.";
             return false;
         }
         if (!profile.avatarUrl.empty()
-            && !IsSafeBrowserUrl(profile.avatarUrl, false))
+            && !LamaPon::Detail::IsSafeOnlineBrowserUrl(
+                profile.avatarUrl,
+                false))
         {
             error = "Online service returned an invalid avatar URL.";
             return false;
@@ -263,13 +152,24 @@ namespace LamaPon::Detail
     DiscordAuthClient::DiscordAuthClient(
         std::string serviceBaseUrl,
         const bool allowInsecureLoopback,
-        OnlineHttpSender sender)
-        : m_serviceBaseUrl(NormalizeBaseUrl(
+        OnlineHttpSender sender,
+        std::string gameId,
+        std::string environmentId)
+        : m_serviceBaseUrl(NormalizeOnlineServiceBaseUrl(
             std::move(serviceBaseUrl),
             allowInsecureLoopback))
         , m_allowInsecureLoopback(allowInsecureLoopback)
         , m_sender(sender ? std::move(sender) : OnlineHttpSender(HttpSend))
+        , m_gameId(std::move(gameId))
+        , m_environmentId(std::move(environmentId))
     {
+        if (!m_gameId.empty()
+            && (!IsSafeOnlineNamespaceId(m_gameId, 128)
+                || !IsSafeOnlineNamespaceId(m_environmentId, 64)))
+        {
+            throw std::invalid_argument(
+                "Online game and environment IDs are invalid.");
+        }
     }
 
     HttpResponse DiscordAuthClient::PostJson(
@@ -285,6 +185,15 @@ namespace LamaPon::Detail
         request.headers.emplace_back(
             L"Content-Type",
             L"application/json; charset=utf-8");
+        if (!m_gameId.empty())
+        {
+            request.headers.emplace_back(
+                L"X-LamaPon-Game-Id",
+                Utf8ToWide(m_gameId));
+            request.headers.emplace_back(
+                L"X-LamaPon-Environment-Id",
+                Utf8ToWide(m_environmentId));
+        }
         if (!bearerToken.empty())
         {
             request.headers.emplace_back(
@@ -347,13 +256,13 @@ namespace LamaPon::Detail
                 json.value("pollInterval", 1u),
                 1u,
                 10u);
-            if (!IsSafeOpaqueValue(
+            if (!IsSafeOnlineOpaqueValue(
                     result.transaction.transactionId,
                     512)
-                || !IsSafeOpaqueValue(
+                || !IsSafeOnlineOpaqueValue(
                     result.transaction.pollToken,
                     2048)
-                || !IsSafeBrowserUrl(
+                || !IsSafeOnlineBrowserUrl(
                     result.transaction.authorizationUrl,
                     m_allowInsecureLoopback))
             {
@@ -376,8 +285,8 @@ namespace LamaPon::Detail
         const std::string_view pollToken) const
     {
         DiscordLoginPollResult result;
-        if (!IsSafeOpaqueValue(transactionId, 512)
-            || !IsSafeOpaqueValue(pollToken, 2048))
+        if (!IsSafeOnlineOpaqueValue(transactionId, 512)
+            || !IsSafeOnlineOpaqueValue(pollToken, 2048))
         {
             result.errorCode = "invalid_transaction";
             result.errorMessage = "Login transaction is invalid.";
@@ -452,7 +361,7 @@ namespace LamaPon::Detail
         const std::string_view refreshToken) const
     {
         OnlineSessionResult result;
-        if (!IsSafeOpaqueValue(refreshToken, 8192))
+        if (!IsSafeOnlineOpaqueValue(refreshToken, 8192))
         {
             result.errorCode = "invalid_refresh_token";
             result.errorMessage = "Refresh token is invalid.";
@@ -501,7 +410,7 @@ namespace LamaPon::Detail
     bool DiscordAuthClient::Logout(
         const std::string_view accessToken) const
     {
-        if (!IsSafeOpaqueValue(accessToken, 8192))
+        if (!IsSafeOnlineBearerToken(accessToken))
         {
             return false;
         }

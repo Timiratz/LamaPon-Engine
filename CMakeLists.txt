@@ -261,6 +261,8 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Core/PersistenceProfiles.h
     src/LamaPon/Core/SaveData.cpp
     src/LamaPon/Core/SaveData.h
+    src/LamaPon/Core/SaveSlotValidation.cpp
+    src/LamaPon/Core/SaveSlotValidation.h
     src/LamaPon/Core/ProjectSettings.cpp
     src/LamaPon/Core/ProjectSettings.h
     src/LamaPon/Core/Time.cpp
@@ -269,6 +271,11 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Core/Window.h
     src/LamaPon/Online/DiscordAuth.cpp
     src/LamaPon/Online/DiscordAuth.h
+    src/LamaPon/Online/CloudSaveClient.cpp
+    src/LamaPon/Online/CloudSaveClient.h
+    src/LamaPon/Online/CloudSave.h
+    src/LamaPon/Online/OnlineHttpValidation.cpp
+    src/LamaPon/Online/OnlineHttpValidation.h
     src/LamaPon/Online/OnlineServices.cpp
     src/LamaPon/Online/OnlineServices.h
     src/LamaPon/Online/OnlineServicesTesting.h
@@ -1256,6 +1263,28 @@ if(BUILD_TESTING)
         PROPERTIES LABELS "online;authentication"
     )
 
+    add_executable(LamaPonCloudSaveClientTests
+        tests/CloudSaveClientTests.cpp
+    )
+    target_link_libraries(
+        LamaPonCloudSaveClientTests
+        PRIVATE
+            LamaPonRuntime
+    )
+    target_compile_options(LamaPonCloudSaveClientTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_test(
+        NAME CloudSaveWireProtocol
+        COMMAND LamaPonCloudSaveClientTests
+    )
+    set_tests_properties(
+        CloudSaveWireProtocol
+        PROPERTIES LABELS "online;cloud-save;protocol"
+    )
+
     add_executable(LamaPonOnlineServicesTests
         tests/OnlineServicesTests.cpp
     )
@@ -1848,6 +1877,10 @@ install(
         PATTERN "AssetPacker.h" EXCLUDE
         PATTERN "AssetArchive.h" EXCLUDE
         PATTERN "DiscordAuth.h" EXCLUDE
+        PATTERN "CloudSave.h" EXCLUDE
+        PATTERN "CloudSaveClient.h" EXCLUDE
+        PATTERN "OnlineHttpValidation.h" EXCLUDE
+        PATTERN "SaveSlotValidation.h" EXCLUDE
         PATTERN "OnlineServicesTesting.h" EXCLUDE
         PATTERN "WindowsOnlinePlatform.h" EXCLUDE
 )

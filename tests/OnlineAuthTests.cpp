@@ -330,7 +330,9 @@ int main()
         LamaPon::Detail::DiscordAuthClient client(
             "https://online.example.test/",
             false,
-            sender);
+            sender,
+            "auth-tests",
+            "staging");
         Require(
             client.ServiceBaseUrl() == "https://online.example.test",
             "Online service base URL was not normalized.");
@@ -397,6 +399,19 @@ int main()
         Require(
             responses.empty() && requests.size() == 6,
             "Unexpected online authentication request count.");
+        for (const auto& request : requests)
+        {
+            Require(
+                HasHeader(
+                    request,
+                    L"X-LamaPon-Game-Id",
+                    L"auth-tests")
+                    && HasHeader(
+                        request,
+                        L"X-LamaPon-Environment-Id",
+                        L"staging"),
+                "An authentication request omitted its backend namespace.");
+        }
 
         std::cout << "Online authentication protocol tests passed.\n";
         return 0;

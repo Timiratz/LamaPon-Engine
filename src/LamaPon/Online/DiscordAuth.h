@@ -93,7 +93,9 @@ namespace LamaPon::Detail
         explicit DiscordAuthClient(
             std::string serviceBaseUrl,
             bool allowInsecureLoopback = false,
-            OnlineHttpSender sender = {});
+            OnlineHttpSender sender = {},
+            std::string gameId = {},
+            std::string environmentId = "production");
 
         [[nodiscard]] DiscordLoginStartResult
             BeginLogin() const;
@@ -120,5 +122,7 @@ namespace LamaPon::Detail
         std::string m_serviceBaseUrl;
         bool m_allowInsecureLoopback{};
         OnlineHttpSender m_sender;
+        std::string m_gameId;
+        std::string m_environmentId;
     };
 }

@@ -37,8 +37,6 @@ namespace LamaPon
         }
 
     private:
-        static void ValidateSlot(std::string_view slot);
-
         std::filesystem::path m_directory;
     };
 }

@@ -614,8 +614,22 @@ namespace
             "A secret escaped through the public OnlineServices API.");
 
         const auto requests = backend->Requests();
+        bool allRequestsNamespaced = !requests.empty();
+        for (const auto& request : requests)
+        {
+            allRequestsNamespaced = allRequestsNamespaced
+                && HasHeader(
+                    request,
+                    L"X-LamaPon-Game-Id",
+                    L"online-services-tests")
+                && HasHeader(
+                    request,
+                    L"X-LamaPon-Environment-Id",
+                    L"test");
+        }
         Require(
             requests.size() == 4
+                && allRequestsNamespaced
                 && requests[0].url.ends_with(
                     L"/v1/auth/login/start")
                 && requests[1].url.ends_with(
