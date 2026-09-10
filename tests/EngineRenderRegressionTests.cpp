@@ -441,6 +441,15 @@ int main(const int argumentCount, char** arguments)
         constexpr char LegacyLitLightingSymbol[] =
             "?SetLighting@LitEffect@LamaPon@@"
             "QEAAXAEBULightingState@2@@Z";
+        constexpr char LegacyAmbientOcclusionViewSymbol[] =
+            "?AmbientOcclusionShaderResourceView@RenderTarget@LamaPon@@"
+            "QEBAPEAUID3D11ShaderResourceView@@XZ";
+        constexpr char LegacyColorHistoryViewSymbol[] =
+            "?ColorHistoryShaderResourceView@RenderTarget@LamaPon@@"
+            "QEBAPEAUID3D11ShaderResourceView@@XZ";
+        constexpr char LegacyReflectionDepthViewSymbol[] =
+            "?ReflectionDepthPyramidShaderResourceView@RenderTarget@LamaPon@@"
+            "QEBAPEAUID3D11ShaderResourceView@@XZ";
         const auto runtimeModule = GetModuleHandleW(
             L"LamaPonRuntime.dll");
         Require(
@@ -459,6 +468,17 @@ int main(const int argumentCount, char** arguments)
                 runtimeModule,
                 LegacyLitLightingSymbol) != nullptr,
             "The API 52 LitEffect lighting export alias is missing");
+        Require(
+            GetProcAddress(
+                runtimeModule,
+                LegacyAmbientOcclusionViewSymbol) != nullptr
+                && GetProcAddress(
+                    runtimeModule,
+                    LegacyColorHistoryViewSymbol) != nullptr
+                && GetProcAddress(
+                    runtimeModule,
+                    LegacyReflectionDepthViewSymbol) != nullptr,
+            "An API 54 RenderTarget screen-space export alias is missing");
         Stage("asset-root");
         graphics.Assets().SetAssetRoot(
             LAMAPON_TEST_ASSET_DIR);
@@ -584,6 +604,153 @@ int main(const int argumentCount, char** arguments)
                         litViews[index]),
                 "A neutral Lit texture was bound to the wrong slot");
         }
+        const auto disabledAmbientOcclusionView =
+            CapturePixelShaderView(graphics, 15u);
+        Require(
+            disabledAmbientOcclusionView != nullptr,
+            "Disabled SSAO did not bind the Lit white fallback");
+
+        // SSAOとSSRもRenderTargetがneutral handleを所有し、Effectへ
+        // 反映する直前に3本まとめて同じBackend世代へ解決します。
+        Stage("lit-neutral-screen-space-lighting");
+        LamaPon::RenderTarget screenLightingTarget;
+        graphics.ResizeOffscreenTarget(
+            screenLightingTarget,
+            Width,
+            Height);
+        Require(
+            screenLightingTarget.AmbientOcclusionViewHandle()
+                && screenLightingTarget
+                    .ReflectionDepthPyramidViewHandle()
+                && !screenLightingTarget.ColorHistoryViewHandle(),
+            "RenderTarget did not publish its neutral screen-space views");
+        DirectX::XMFLOAT4X4 screenHistoryTransform{};
+        DirectX::XMStoreFloat4x4(
+            &screenHistoryTransform,
+            DirectX::XMMatrixIdentity());
+        graphics.CaptureOffscreenTargetColorHistory(
+            screenLightingTarget,
+            screenHistoryTransform);
+        const auto ambientOcclusionView =
+            screenLightingTarget.AmbientOcclusionViewHandle();
+        const auto colorHistoryView =
+            screenLightingTarget.ColorHistoryViewHandle();
+        const auto reflectionDepthView =
+            screenLightingTarget.ReflectionDepthPyramidViewHandle();
+        Require(
+            colorHistoryView
+                && graphics.TryResolveD3D11ShaderResourceView(
+                    ambientOcclusionView) != nullptr
+                && graphics.TryResolveD3D11ShaderResourceView(
+                    colorHistoryView) != nullptr
+                && graphics.TryResolveD3D11ShaderResourceView(
+                    reflectionDepthView) != nullptr,
+            "A RenderTarget screen-space view could not be resolved");
+
+        LamaPon::LightingState screenLighting;
+        auto& ambientOcclusion =
+            screenLighting.screenAmbientOcclusion;
+        ambientOcclusion.enabled = true;
+        ambientOcclusion.texture = ambientOcclusionView;
+        ambientOcclusion.inverseWidth =
+            1.0f / static_cast<float>(Width);
+        ambientOcclusion.inverseHeight =
+            1.0f / static_cast<float>(Height);
+        auto& screenReflection =
+            screenLighting.screenSpaceReflection;
+        screenReflection.enabled = true;
+        screenReflection.texture = colorHistoryView;
+        screenReflection.depth = reflectionDepthView;
+        screenReflection.previousViewProjection =
+            screenHistoryTransform;
+        screenReflection.inverseWidth =
+            1.0f / static_cast<float>(Width);
+        screenReflection.inverseHeight =
+            1.0f / static_cast<float>(Height);
+        screenReflection.depthPyramidMaximumMip =
+            screenLightingTarget.ReflectionDepthPyramidMipCount() - 1;
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                screenLighting),
+            "Valid neutral screen-space lighting was rejected");
+        litEffect.Apply(graphics.Context());
+        Require(
+            CapturePixelShaderView(graphics, 15u).Get()
+                    == graphics.TryResolveD3D11ShaderResourceView(
+                        ambientOcclusionView)
+                && CapturePixelShaderView(graphics, 21u).Get()
+                    == graphics.TryResolveD3D11ShaderResourceView(
+                        colorHistoryView)
+                && CapturePixelShaderView(graphics, 22u).Get()
+                    == graphics.TryResolveD3D11ShaderResourceView(
+                        reflectionDepthView),
+            "Neutral screen-space lighting was bound to the wrong slot");
+
+        auto incompleteScreenLighting = screenLighting;
+        incompleteScreenLighting.screenSpaceReflection.depth.Reset();
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                incompleteScreenLighting),
+            "An incomplete neutral SSR pair was accepted");
+        auto wrongAmbientOcclusionView = screenLighting;
+        wrongAmbientOcclusionView.screenAmbientOcclusion.texture =
+            litViews[0];
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                wrongAmbientOcclusionView),
+            "An RGBA texture was accepted as neutral SSAO");
+        auto wrongScreenMetadata = screenLighting;
+        wrongScreenMetadata.screenSpaceReflection
+            .depthPyramidMaximumMip = 0;
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                wrongScreenMetadata),
+            "SSR with an incomplete mip-chain declaration was accepted");
+        auto wrongAmbientOcclusionSize = screenLighting;
+        wrongAmbientOcclusionSize.screenAmbientOcclusion.inverseWidth =
+            1.0f / static_cast<float>(Width + 2u);
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                wrongAmbientOcclusionSize),
+            "SSAO with mismatched dimensions was accepted");
+        litEffect.Apply(graphics.Context());
+        Require(
+            CapturePixelShaderView(graphics, 15u).Get()
+                    == graphics.TryResolveD3D11ShaderResourceView(
+                        ambientOcclusionView)
+                && CapturePixelShaderView(graphics, 21u).Get()
+                    == graphics.TryResolveD3D11ShaderResourceView(
+                        colorHistoryView)
+                && CapturePixelShaderView(graphics, 22u).Get()
+                    == graphics.TryResolveD3D11ShaderResourceView(
+                        reflectionDepthView),
+            "Rejected screen-space lighting partially changed the Effect");
+
+        auto disabledScreenLighting = screenLighting;
+        disabledScreenLighting.screenAmbientOcclusion.enabled = false;
+        disabledScreenLighting.screenSpaceReflection.enabled = false;
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                disabledScreenLighting),
+            "Disabled neutral screen-space lighting was rejected");
+        litEffect.Apply(graphics.Context());
+        Require(
+            CapturePixelShaderView(graphics, 15u).Get()
+                    == disabledAmbientOcclusionView.Get()
+                && CapturePixelShaderView(graphics, 21u) == nullptr
+                && CapturePixelShaderView(graphics, 22u) == nullptr,
+            "Disabling screen-space lighting retained previous bindings");
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                screenLighting),
+            "The neutral screen-space baseline could not be restored");
 
         // Forward+の3本のStructuredBufferもLightingStateがneutral
         // handleで強所有し、Effect反映前にall-or-noneで解決します。
@@ -962,6 +1129,73 @@ int main(const int argumentCount, char** arguments)
                             clusteredViews[index]),
                     "Rejected mixed clustered lighting changed the Effect");
             }
+
+            Require(
+                graphics.TrySetLitEffectLighting(
+                    litEffect,
+                    screenLighting),
+                "The screen-space lighting baseline could not be restored");
+            litEffect.Apply(graphics.Context());
+            LamaPon::RenderTarget foreignScreenTarget;
+            foreignBackend.ResizeOffscreenTarget(
+                foreignScreenTarget,
+                Width,
+                Height);
+            foreignBackend.CaptureOffscreenTargetColorHistory(
+                foreignScreenTarget,
+                screenHistoryTransform);
+            const auto foreignAmbientOcclusionView =
+                foreignScreenTarget.AmbientOcclusionViewHandle();
+            const auto foreignColorHistoryView =
+                foreignScreenTarget.ColorHistoryViewHandle();
+            const auto foreignReflectionDepthView =
+                foreignScreenTarget.ReflectionDepthPyramidViewHandle();
+            auto mixedScreenLighting = screenLighting;
+            mixedScreenLighting.screenSpaceReflection.texture =
+                foreignColorHistoryView;
+            Require(
+                !graphics.TrySetLitEffectLighting(
+                    litEffect,
+                    mixedScreenLighting),
+                "A mixed-generation screen-space view set was accepted");
+            litEffect.Apply(graphics.Context());
+            Require(
+                CapturePixelShaderView(graphics, 15u).Get()
+                        == graphics.TryResolveD3D11ShaderResourceView(
+                            ambientOcclusionView)
+                    && CapturePixelShaderView(graphics, 21u).Get()
+                        == graphics.TryResolveD3D11ShaderResourceView(
+                            colorHistoryView)
+                    && CapturePixelShaderView(graphics, 22u).Get()
+                        == graphics.TryResolveD3D11ShaderResourceView(
+                            reflectionDepthView),
+                "Rejected mixed screen-space lighting changed the Effect");
+            graphics.ResizeOffscreenTarget(
+                foreignScreenTarget,
+                Width,
+                Height);
+            Require(
+                foreignScreenTarget.AmbientOcclusionViewHandle()
+                        != foreignAmbientOcclusionView
+                    && foreignScreenTarget
+                        .ReflectionDepthPyramidViewHandle()
+                        != foreignReflectionDepthView
+                    && !foreignScreenTarget.ColorHistoryViewHandle()
+                    && graphics.TryResolveD3D11ShaderResourceView(
+                        foreignScreenTarget
+                            .AmbientOcclusionViewHandle()) != nullptr
+                    && graphics.TryResolveD3D11ShaderResourceView(
+                        foreignScreenTarget
+                            .ReflectionDepthPyramidViewHandle()) != nullptr
+                    && graphics.TryResolveD3D11ShaderResourceView(
+                        foreignColorHistoryView) == nullptr,
+                "A same-size RenderTarget kept resources from another device");
+            Require(
+                graphics.TrySetLitEffectLighting(
+                    litEffect,
+                    clusteredLighting),
+                "The clustered-lighting baseline could not be restored");
+            litEffect.Apply(graphics.Context());
 
             // LightingStateのproducerをneutral handleへ移す前提として、
             // Texture2D以外の既存D3D11 SRVも同じ世代・所有契約へ載せます。

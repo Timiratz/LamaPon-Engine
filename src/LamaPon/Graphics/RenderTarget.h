@@ -3,6 +3,7 @@
 // VolumetricInputsがEnvironmentRendererの入れ子型のため、
 // 前方宣言では足りずヘッダが必要です。
 #include "LamaPon/Graphics/EnvironmentRenderer.h"
+#include "LamaPon/Graphics/GraphicsResource.h"
 
 #include <DirectXMath.h>
 #include <d3d11.h>
@@ -107,18 +108,17 @@ namespace LamaPon
         // projectionはこのターゲットを描いたときの射影行列（深度を
         // ビュー空間へ戻すために必要）です。
         // sampleCountは品質設定から渡す遮蔽の探索回数です。
-        // 戻り値がtrueのときだけ
-        // AmbientOcclusionShaderResourceView()が使えます。
+        // 戻り値がtrueのときだけAmbientOcclusionViewHandle()が
+        // 有効な内容を指します。
         [[nodiscard]] bool ResolveAmbientOcclusion(
             EnvironmentRenderer& renderer,
             const AmbientOcclusionSettings& settings,
             const DirectX::XMFLOAT4X4& projection,
             std::uint32_t sampleCount);
-        [[nodiscard]] ID3D11ShaderResourceView*
-            AmbientOcclusionShaderResourceView()
-                const noexcept
+        [[nodiscard]] GraphicsViewHandle
+            AmbientOcclusionViewHandle() const noexcept
         {
-            return m_occlusionBlurShaderResourceView.Get();
+            return m_ambientOcclusionView;
         }
         void ApplyScreenEffect(
             ScreenEffect& effect,
@@ -133,14 +133,13 @@ namespace LamaPon
         {
             return m_shaderResourceView.Get();
         }
-        // 履歴がまだ無い最初のフレームではnullptrを返します。
-        [[nodiscard]] ID3D11ShaderResourceView*
-            ColorHistoryShaderResourceView()
-                const noexcept
+        // 履歴がまだ無い最初のフレームではemptyを返します。
+        [[nodiscard]] GraphicsViewHandle
+            ColorHistoryViewHandle() const noexcept
         {
             return m_historyValid
-                ? m_historyShaderResourceView.Get()
-                : nullptr;
+                ? m_colorHistoryView
+                : GraphicsViewHandle{};
         }
         [[nodiscard]] const DirectX::XMFLOAT4X4&
             ColorHistoryViewProjection() const noexcept
@@ -167,11 +166,10 @@ namespace LamaPon
         // SSRのHi-Z用の深度ピラミッド（R32F、各ミップが2x2の
         // 最小値）。中身はEnvironmentRendererの
         // BuildReflectionDepthPyramidが毎フレーム書きます。
-        [[nodiscard]] ID3D11ShaderResourceView*
-            ReflectionDepthPyramidShaderResourceView()
-            const noexcept
+        [[nodiscard]] GraphicsViewHandle
+            ReflectionDepthPyramidViewHandle() const noexcept
         {
-            return m_reflectionDepthPyramidView.Get();
+            return m_reflectionDepthPyramidViewHandle;
         }
         [[nodiscard]] std::uint32_t
             ReflectionDepthPyramidMipCount() const noexcept
@@ -238,6 +236,16 @@ namespace LamaPon
         // 自動露出のreadbackと次回用転送はGraphicsDeviceがBackendの
         // 前後で順序付けるため、高水準の更新処理も直接公開しません。
         friend class GraphicsDevice;
+
+        // API 54以前のGame Moduleが公開名を解決してからAPI不一致を
+        // 案内できるよう、旧raw view getterのbinary symbolだけを
+        // private shimとして残します。
+        [[nodiscard]] ID3D11ShaderResourceView*
+            AmbientOcclusionShaderResourceView() const noexcept;
+        [[nodiscard]] ID3D11ShaderResourceView*
+            ColorHistoryShaderResourceView() const noexcept;
+        [[nodiscard]] ID3D11ShaderResourceView*
+            ReflectionDepthPyramidShaderResourceView() const noexcept;
 
         void Resize(
             ID3D11Device* device,
@@ -320,6 +328,7 @@ namespace LamaPon
             m_occlusionBlurRenderTargetView;
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
             m_occlusionBlurShaderResourceView;
+        GraphicsViewHandle m_ambientOcclusionView;
         std::uint32_t m_occlusionWidth{};
         std::uint32_t m_occlusionHeight{};
         // レンズフレアの筋を作る1/4解像度のping-pong。
@@ -389,6 +398,7 @@ namespace LamaPon
             m_historyTexture;
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
             m_historyShaderResourceView;
+        GraphicsViewHandle m_colorHistoryView;
         // TAAの履歴＝前フレームの解決済みの絵。
         Microsoft::WRL::ComPtr<ID3D11Texture2D>
             m_temporalHistoryTexture;
@@ -406,6 +416,7 @@ namespace LamaPon
             m_reflectionDepthPyramidTexture;
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
             m_reflectionDepthPyramidView;
+        GraphicsViewHandle m_reflectionDepthPyramidViewHandle;
         std::vector<
             Microsoft::WRL::ComPtr<ID3D11RenderTargetView>>
             m_reflectionDepthPyramidTargets;
@@ -416,6 +427,9 @@ namespace LamaPon
         bool m_historyValid{};
         std::uint32_t m_width{};
         std::uint32_t m_height{};
+        // 同じ寸法でもBackendのDeviceが変わった場合は全resourceを
+        // 作り直し、旧Deviceのviewを新しいcontextへ渡しません。
+        Microsoft::WRL::ComPtr<ID3D11Device> m_ownerDevice;
         // 全てのsize-dependent resourceが完成した世代だけを有効とします。
         bool m_initialized{};
     };

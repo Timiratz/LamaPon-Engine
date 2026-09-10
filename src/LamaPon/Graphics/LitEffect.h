@@ -198,6 +198,9 @@ namespace LamaPon
         // 追加し、Effectを部分更新しないようにします。
         struct D3D11LightingViews final
         {
+            ID3D11ShaderResourceView* screenAmbientOcclusion{};
+            std::array<ID3D11ShaderResourceView*, 2>
+                screenSpaceReflection{};
             std::array<ID3D11ShaderResourceView*, 3> clustered{};
             std::array<ID3D11ShaderResourceView*, 3>
                 bakedGlobalIllumination{};

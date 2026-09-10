@@ -78,6 +78,7 @@
 - API非依存のimmutable Texture3D生成とRGBA16F formatを追加し、Baked GI係数を3個の世代付き`GraphicsViewHandle`としてアップロードできる新経路を追加。旧raw戻り値は互換shimとして維持し、公開Backend / Device契約の変更に伴いGame Module APIを52へ更新。
 - Sceneと`LightingState`のBaked GI所有をneutral viewへ移し、3枚の世代・Texture3D形式を描画直前にまとめて検証するLit bridgeを追加。旧raw uploadはprivate互換shimへ移し、公開layout / API変更に伴いGame Module APIを53へ更新。
 - Forward+の3本のStructuredBuffer viewを`LightingState`でも世代付きneutral handleとして強所有し、Lit bridgeで形式・要素数・Backend世代を一括検証してから反映する構造へ移行。公開layout変更に伴いGame Module APIを54へ更新。
+- RenderTargetのSSAO結果・SSRカラー履歴・Hi-Z深度を世代付きneutral handleとして公開し、`LightingState`からraw D3D11 viewを除去。Resize時の3本一括更新とLit bridgeの形式・寸法・mip検証を追加し、旧raw getterをprivate互換shimへ移行。公開layout変更に伴いGame Module APIを55へ更新。
 
 ### ファイル名の統一
 

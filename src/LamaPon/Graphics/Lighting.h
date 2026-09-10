@@ -159,7 +159,7 @@ namespace LamaPon
     // 違って、環境光／IBL項だけを暗くできます。
     struct ScreenAmbientOcclusionData final
     {
-        ID3D11ShaderResourceView* texture{};
+        GraphicsViewHandle texture;
         // SV_PositionからUVを作るための1/幅・1/高さ。
         float inverseWidth{};
         float inverseHeight{};
@@ -173,8 +173,8 @@ namespace LamaPon
     // 位置がずれないようにするため）。
     struct ScreenSpaceReflectionData final
     {
-        ID3D11ShaderResourceView* texture{};
-        ID3D11ShaderResourceView* depth{};
+        GraphicsViewHandle texture;
+        GraphicsViewHandle depth;
         DirectX::XMFLOAT4X4 previousViewProjection{};
         float inverseWidth{};
         float inverseHeight{};

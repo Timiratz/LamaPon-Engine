@@ -1955,12 +1955,39 @@ namespace
                 && displayTarget.Width() == 1u
                 && displayTarget.Height() == 1u,
             "Offscreen target dimensions must be clamped to at least one");
+        const auto firstAmbientOcclusionView =
+            displayTarget.AmbientOcclusionViewHandle();
+        const auto firstReflectionDepthView =
+            displayTarget.ReflectionDepthPyramidViewHandle();
+        Require(
+            firstAmbientOcclusionView
+                && firstReflectionDepthView
+                && !displayTarget.ColorHistoryViewHandle(),
+            "Offscreen screen-space views were not published atomically");
         graphics.ResizeOffscreenTarget(displayTarget, 8, 4);
         Require(
             displayTarget.IsValid()
                 && displayTarget.Width() == 8u
                 && displayTarget.Height() == 4u,
             "Offscreen target resize must apply the requested dimensions");
+        Require(
+            displayTarget.AmbientOcclusionViewHandle()
+                    != firstAmbientOcclusionView
+                && displayTarget.ReflectionDepthPyramidViewHandle()
+                    != firstReflectionDepthView
+                && !displayTarget.ColorHistoryViewHandle(),
+            "Offscreen resize retained stale screen-space views");
+        const auto resizedAmbientOcclusionView =
+            displayTarget.AmbientOcclusionViewHandle();
+        const auto resizedReflectionDepthView =
+            displayTarget.ReflectionDepthPyramidViewHandle();
+        graphics.ResizeOffscreenTarget(displayTarget, 8, 4);
+        Require(
+            displayTarget.AmbientOcclusionViewHandle()
+                    == resizedAmbientOcclusionView
+                && displayTarget.ReflectionDepthPyramidViewHandle()
+                    == resizedReflectionDepthView,
+            "A no-op offscreen resize rebuilt neutral views");
         RequireThrows<std::invalid_argument>(
             [&]
             {
@@ -2060,7 +2087,7 @@ namespace
         // publishし、下のImGui画像に対する左・中央・右の画素検証で
         // 描画済みの内容が保たれていることも確認します。
         Require(
-            displayTarget.ColorHistoryShaderResourceView() == nullptr,
+            !displayTarget.ColorHistoryViewHandle(),
             "Color history must be unavailable before its first capture");
         graphics.CaptureOffscreenTargetColorHistory(
             displayTarget,
@@ -2068,9 +2095,18 @@ namespace
         graphics.CaptureOffscreenTargetTemporalHistory(
             displayTarget,
             historyViewProjection);
+        const auto capturedColorHistory =
+            displayTarget.ColorHistoryViewHandle();
         Require(
-            displayTarget.ColorHistoryShaderResourceView() != nullptr,
+            capturedColorHistory
+                && graphics.TryResolveD3D11ShaderResourceView(
+                    capturedColorHistory) != nullptr,
             "Color history must become available after capture");
+        graphics.ResizeOffscreenTarget(displayTarget, 8, 4);
+        Require(
+            displayTarget.ColorHistoryViewHandle()
+                == capturedColorHistory,
+            "A no-op offscreen resize discarded valid color history");
         const auto& storedHistoryViewProjection =
             displayTarget.ColorHistoryViewProjection();
         Require(

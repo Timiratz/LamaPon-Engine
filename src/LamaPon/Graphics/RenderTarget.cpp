@@ -27,6 +27,29 @@ namespace
 
 namespace LamaPon
 {
+    ID3D11ShaderResourceView*
+        RenderTarget::AmbientOcclusionShaderResourceView()
+        const noexcept
+    {
+        return m_occlusionBlurShaderResourceView.Get();
+    }
+
+    ID3D11ShaderResourceView*
+        RenderTarget::ColorHistoryShaderResourceView()
+        const noexcept
+    {
+        return m_historyValid
+            ? m_historyShaderResourceView.Get()
+            : nullptr;
+    }
+
+    ID3D11ShaderResourceView*
+        RenderTarget::ReflectionDepthPyramidShaderResourceView()
+        const noexcept
+    {
+        return m_reflectionDepthPyramidView.Get();
+    }
+
     void RenderTarget::Resize(
         ID3D11Device* device,
         const std::uint32_t width,
@@ -36,12 +59,17 @@ namespace LamaPon
         const std::uint32_t requestedHeight = std::max(height, 1u);
         if (requestedWidth == m_width
             && requestedHeight == m_height
+            && m_ownerDevice.Get() == device
             && IsValid())
         {
             return;
         }
 
         m_initialized = false;
+        m_ownerDevice.Reset();
+        m_ambientOcclusionView.Reset();
+        m_colorHistoryView.Reset();
+        m_reflectionDepthPyramidViewHandle.Reset();
         m_colorTexture.Reset();
         m_renderTargetView.Reset();
         m_shaderResourceView.Reset();
@@ -649,6 +677,7 @@ namespace LamaPon
         m_viewport.Height = static_cast<float>(m_height);
         m_viewport.MinDepth = 0.0f;
         m_viewport.MaxDepth = 1.0f;
+        m_ownerDevice = device;
         m_initialized = true;
     }
 

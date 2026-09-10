@@ -6811,7 +6811,7 @@ namespace LamaPon
                     lighting.screenAmbientOcclusion;
                 occlusion.texture =
                     target->
-                        AmbientOcclusionShaderResourceView();
+                        AmbientOcclusionViewHandle();
                 occlusion.inverseWidth = 1.0f
                     / static_cast<float>(
                         std::max(target->Width(), 1u));
@@ -6827,9 +6827,9 @@ namespace LamaPon
                 && m_screenSpaceReflection.enabled
                 && !m_bakingReflectionProbes)
             {
-                auto* const history =
-                    target->ColorHistoryShaderResourceView();
-                if (history != nullptr)
+                const auto history =
+                    target->ColorHistoryViewHandle();
+                if (history)
                 {
                     auto& reflection =
                         lighting.screenSpaceReflection;
@@ -6848,7 +6848,7 @@ namespace LamaPon
                             storedProjection._43);
                     reflection.depth =
                         target->
-                            ReflectionDepthPyramidShaderResourceView();
+                            ReflectionDepthPyramidViewHandle();
                     reflection.depthPyramidMaximumMip =
                         target->ReflectionDepthPyramidMipCount()
                             > 0

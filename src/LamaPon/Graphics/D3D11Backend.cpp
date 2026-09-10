@@ -712,6 +712,26 @@ namespace LamaPon
             throw std::logic_error(
                 "ResizeOffscreenTarget failed to create a valid target.");
         }
+        if (!target.m_ambientOcclusionView
+            || !target.m_colorHistoryView
+            || !target.m_reflectionDepthPyramidViewHandle)
+        {
+            // Resizeが作った3本をすべて取り込めた後にだけ公開handleを
+            // 更新し、途中失敗で新旧resourceを混在させません。
+            auto ambientOcclusionView =
+                ImportShaderResourceViewHandle(
+                    target.m_occlusionBlurShaderResourceView.Get());
+            auto colorHistoryView = ImportShaderResourceViewHandle(
+                target.m_historyShaderResourceView.Get());
+            auto reflectionDepthView =
+                ImportShaderResourceViewHandle(
+                    target.m_reflectionDepthPyramidView.Get());
+            target.m_ambientOcclusionView =
+                std::move(ambientOcclusionView);
+            target.m_colorHistoryView = std::move(colorHistoryView);
+            target.m_reflectionDepthPyramidViewHandle =
+                std::move(reflectionDepthView);
+        }
     }
 
     void D3D11Backend::BeginOffscreenTarget(

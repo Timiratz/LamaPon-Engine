@@ -13,11 +13,11 @@ namespace LamaPon
     // Game ModuleとRuntimeのABIを識別します。公開構造体のレイアウトや
     // 公開関数のシグネチャを変更した場合は、この値も更新してください。
     // GameModuleHostは完全一致を要求し、互換性のないDLLを読み込みません。
-    // API 54ではLightingStateのForward+ StructuredBuffer viewを
-    // API非依存handleへ移し、描画直前に3本まとめて検証・解決する
-    // 構造へ変更したため、
+    // API 55ではRenderTargetとLightingStateのSSAO / SSR viewを
+    // API非依存handleへ移し、履歴の有効性と描画直前の一括検証を
+    // 共通契約にしたため、
     // ゲーム用DLLの再ビルドが必要です。
-    inline constexpr std::uint32_t GameModuleApiVersion = 54;
+    inline constexpr std::uint32_t GameModuleApiVersion = 55;
 
     using NativeScriptCreateFunction = void* (*)(
         GameObject* owner,

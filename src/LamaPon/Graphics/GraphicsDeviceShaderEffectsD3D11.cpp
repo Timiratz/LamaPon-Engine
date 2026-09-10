@@ -910,6 +910,166 @@ namespace LamaPon
 
         LitEffect::D3D11LightingViews nativeViews;
 
+        const auto tryResolveTexture2D = [this](
+            const GraphicsViewHandle& handle,
+            const DXGI_FORMAT expectedFormat,
+            const std::uint32_t expectedMipLevels,
+            ID3D11ShaderResourceView*& resolved,
+            D3D11_TEXTURE2D_DESC& textureDescription) noexcept
+        {
+            resolved = TryResolveD3D11ShaderResourceView(handle);
+            if (!handle || resolved == nullptr)
+            {
+                return false;
+            }
+            D3D11_SHADER_RESOURCE_VIEW_DESC viewDescription{};
+            resolved->GetDesc(&viewDescription);
+            if (viewDescription.ViewDimension
+                    != D3D11_SRV_DIMENSION_TEXTURE2D
+                || viewDescription.Format != expectedFormat
+                || viewDescription.Texture2D.MostDetailedMip != 0
+                || viewDescription.Texture2D.MipLevels
+                    != expectedMipLevels)
+            {
+                return false;
+            }
+            Microsoft::WRL::ComPtr<ID3D11Resource> resource;
+            resolved->GetResource(resource.ReleaseAndGetAddressOf());
+            Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+            if (resource == nullptr || FAILED(resource.As(&texture)))
+            {
+                return false;
+            }
+            texture->GetDesc(&textureDescription);
+            return textureDescription.Format == expectedFormat
+                && textureDescription.MipLevels == expectedMipLevels
+                && textureDescription.ArraySize == 1
+                && textureDescription.SampleDesc.Count == 1
+                && (textureDescription.BindFlags
+                    & D3D11_BIND_SHADER_RESOURCE) != 0;
+        };
+        const auto tryRecoverDimension = [](
+            const float inverseDimension,
+            std::uint32_t& dimension) noexcept
+        {
+            if (!std::isfinite(inverseDimension)
+                || !(inverseDimension > 0.0f))
+            {
+                return false;
+            }
+            const auto exactDimension =
+                1.0 / static_cast<double>(inverseDimension);
+            if (!std::isfinite(exactDimension)
+                || exactDimension < 1.0
+                || exactDimension
+                    > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION)
+            {
+                return false;
+            }
+            const auto roundedDimension = std::round(exactDimension);
+            if (std::abs(
+                    inverseDimension * roundedDimension - 1.0)
+                    > 0.0001)
+            {
+                return false;
+            }
+            dimension = static_cast<std::uint32_t>(roundedDimension);
+            return true;
+        };
+
+        const auto& screenOcclusion =
+            lighting.screenAmbientOcclusion;
+        if (screenOcclusion.enabled)
+        {
+            if (!std::isfinite(screenOcclusion.inverseWidth)
+                || !std::isfinite(screenOcclusion.inverseHeight)
+                || !(screenOcclusion.inverseWidth > 0.0f)
+                || !(screenOcclusion.inverseHeight > 0.0f))
+            {
+                return false;
+            }
+            D3D11_TEXTURE2D_DESC description{};
+            std::uint32_t targetWidth{};
+            std::uint32_t targetHeight{};
+            if (!tryResolveTexture2D(
+                    screenOcclusion.texture,
+                    DXGI_FORMAT_R8_UNORM,
+                    1,
+                    nativeViews.screenAmbientOcclusion,
+                    description)
+                || !tryRecoverDimension(
+                    screenOcclusion.inverseWidth,
+                    targetWidth)
+                || !tryRecoverDimension(
+                    screenOcclusion.inverseHeight,
+                    targetHeight)
+                || description.Width
+                    != std::max(targetWidth / 2u, 1u)
+                || description.Height
+                    != std::max(targetHeight / 2u, 1u))
+            {
+                return false;
+            }
+        }
+
+        const auto& screenReflection =
+            lighting.screenSpaceReflection;
+        if (screenReflection.enabled)
+        {
+            if (!std::isfinite(screenReflection.inverseWidth)
+                || !std::isfinite(screenReflection.inverseHeight)
+                || !(screenReflection.inverseWidth > 0.0f)
+                || !(screenReflection.inverseHeight > 0.0f)
+                || screenReflection.depthPyramidMaximumMip
+                    >= D3D11_REQ_MIP_LEVELS)
+            {
+                return false;
+            }
+            D3D11_TEXTURE2D_DESC colorDescription{};
+            D3D11_TEXTURE2D_DESC depthDescription{};
+            std::uint32_t targetWidth{};
+            std::uint32_t targetHeight{};
+            const auto depthMipLevels =
+                screenReflection.depthPyramidMaximumMip + 1;
+            if (!tryResolveTexture2D(
+                    screenReflection.texture,
+                    DXGI_FORMAT_R16G16B16A16_FLOAT,
+                    1,
+                    nativeViews.screenSpaceReflection[0],
+                    colorDescription)
+                || !tryResolveTexture2D(
+                    screenReflection.depth,
+                    DXGI_FORMAT_R32_FLOAT,
+                    depthMipLevels,
+                    nativeViews.screenSpaceReflection[1],
+                    depthDescription)
+                || colorDescription.Width != depthDescription.Width
+                || colorDescription.Height != depthDescription.Height
+                || !tryRecoverDimension(
+                    screenReflection.inverseWidth,
+                    targetWidth)
+                || !tryRecoverDimension(
+                    screenReflection.inverseHeight,
+                    targetHeight)
+                || colorDescription.Width != targetWidth
+                || colorDescription.Height != targetHeight)
+            {
+                return false;
+            }
+            std::uint32_t fullMipLevels{ 1 };
+            for (auto maximumDimension =
+                    std::max(targetWidth, targetHeight);
+                maximumDimension > 1;
+                maximumDimension >>= 1)
+            {
+                ++fullMipLevels;
+            }
+            if (depthMipLevels != fullMipLevels)
+            {
+                return false;
+            }
+        }
+
         const auto& clustered = lighting.clustered;
         if (clustered.enabled)
         {

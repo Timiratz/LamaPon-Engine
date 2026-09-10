@@ -1,4 +1,7 @@
 EXPORTS
+    ?AmbientOcclusionShaderResourceView@RenderTarget@LamaPon@@QEBAPEAUID3D11ShaderResourceView@@XZ=?AmbientOcclusionShaderResourceView@RenderTarget@LamaPon@@AEBAPEAUID3D11ShaderResourceView@@XZ
+    ?ColorHistoryShaderResourceView@RenderTarget@LamaPon@@QEBAPEAUID3D11ShaderResourceView@@XZ=?ColorHistoryShaderResourceView@RenderTarget@LamaPon@@AEBAPEAUID3D11ShaderResourceView@@XZ
+    ?ReflectionDepthPyramidShaderResourceView@RenderTarget@LamaPon@@QEBAPEAUID3D11ShaderResourceView@@XZ=?ReflectionDepthPyramidShaderResourceView@RenderTarget@LamaPon@@AEBAPEAUID3D11ShaderResourceView@@XZ
     ?SetLighting@LitEffect@LamaPon@@QEAAXAEBULightingState@2@@Z=?SetLighting@LitEffect@LamaPon@@AEAAXAEBULightingState@2@@Z
     ?AcquireInstanceBuffer@GraphicsDevice@LamaPon@@QEAAPEAUID3D11Buffer@@PEBX_K@Z=?AcquireInstanceBuffer@GraphicsDevice@LamaPon@@AEAAPEAUID3D11Buffer@@PEBX_K@Z
     ?BeginSprites@GraphicsDevice@LamaPon@@QEAAAEAVSpriteBatch@DX11@DirectX@@AEBVpath@filesystem@std@@AEBV?$array@UXMFLOAT4@DirectX@@$07@8@PEA_KPEAV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@8@PEBUSprite2DLighting@2@@Z=?BeginSprites@GraphicsDevice@LamaPon@@AEAAAEAVSpriteBatch@DX11@DirectX@@AEBVpath@filesystem@std@@AEBV?$array@UXMFLOAT4@DirectX@@$07@8@PEA_KPEAV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@8@PEBUSprite2DLighting@2@@Z

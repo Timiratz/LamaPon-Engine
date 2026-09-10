@@ -766,7 +766,7 @@ namespace LamaPon
             lighting.screenAmbientOcclusion;
         const bool screenOcclusionActive =
             screenOcclusion.enabled
-            && screenOcclusion.texture != nullptr;
+            && views.screenAmbientOcclusion != nullptr;
         m_lightingConstants
             .screenAmbientOcclusionParameters = {
             screenOcclusion.inverseWidth,
@@ -776,7 +776,7 @@ namespace LamaPon
         };
         m_screenAmbientOcclusionTexture =
             screenOcclusionActive
-                ? screenOcclusion.texture
+                ? views.screenAmbientOcclusion
                 : nullptr;
 
         // SSR（画面空間反射）。前フレームのカラーと深度が揃って
@@ -785,8 +785,8 @@ namespace LamaPon
             lighting.screenSpaceReflection;
         const bool screenReflectionActive =
             screenReflection.enabled
-            && screenReflection.texture != nullptr
-            && screenReflection.depth != nullptr;
+            && views.screenSpaceReflection[0] != nullptr
+            && views.screenSpaceReflection[1] != nullptr;
         m_lightingConstants.screenReflectionParameters = {
             std::clamp(screenReflection.intensity, 0.0f, 1.0f),
             screenReflectionActive ? 1.0f : 0.0f,
@@ -819,11 +819,11 @@ namespace LamaPon
                 screenReflection.previousViewProjection;
         m_screenReflectionColorTexture =
             screenReflectionActive
-                ? screenReflection.texture
+                ? views.screenSpaceReflection[0]
                 : nullptr;
         m_screenReflectionDepthTexture =
             screenReflectionActive
-                ? screenReflection.depth
+                ? views.screenSpaceReflection[1]
                 : nullptr;
 
         // クラスタライトカリング（Forward+）。SRVが揃っていなければ
