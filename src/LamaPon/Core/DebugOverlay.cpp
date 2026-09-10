@@ -3,10 +3,9 @@
 #include "LamaPon/Assets/AssetManager.h"
 #include "LamaPon/Core/Log.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
+#include "LamaPon/Graphics/TextLayout.h"
 #include "LamaPon/Input/InputSystem.h"
 #include "LamaPon/Scene/Scene.h"
-
-#include <SpriteBatch.h>
 
 #include <DirectXMath.h>
 
@@ -170,6 +169,11 @@ namespace LamaPon
             return;
         }
 
+        // AssetManagerと描画Backendを同じ世代に固定します。テキストを
+        // 準備してからpassを開始し、GPU uploadをactive passの外に保ちます。
+        [[maybe_unused]] auto operationLease =
+            graphics.AcquireResourceLease();
+
         // 先にテキストテクスチャを揃えてパネルサイズを決めます
         // （文字列単位でAssetManagerがキャッシュします）。
         constexpr float FontSize = 15.0f;
@@ -181,6 +185,7 @@ namespace LamaPon
         struct Line final
         {
             std::shared_ptr<const TextTextureAsset> texture;
+            GraphicsViewHandle view;
             XMFLOAT4 color{};
         };
         std::vector<Line> textures;
@@ -208,13 +213,22 @@ namespace LamaPon
             panelHeight +=
                 static_cast<float>(texture->height)
                 + LineGap;
+            const auto resources = texture->resources.Acquire();
             textures.push_back(
-                Line{ std::move(texture), color });
+                Line{
+                    std::move(texture),
+                    resources
+                        ? resources->shaderResourceView
+                        : GraphicsViewHandle{},
+                    color });
         }
         panelWidth += Padding * 2.0f;
         panelHeight -= LineGap;
 
-        auto& sprites = graphics.BeginSprites();
+        SpritePassDescription description;
+        description.blend = SpriteBlendMode::NonPremultiplied;
+        auto pass = graphics.BeginSpritePass(description);
+        const auto context = pass.Context();
         const XMFLOAT4 backgroundColor{
             0.0f, 0.0f, 0.0f, 0.68f };
         const XMFLOAT4 backgroundTint{
@@ -222,33 +236,34 @@ namespace LamaPon
             backgroundColor.y * backgroundColor.w,
             backgroundColor.z * backgroundColor.w,
             backgroundColor.w };
-        sprites.Draw(
-            graphics.WhiteTexture(),
-            XMFLOAT2{ 6.0f, 6.0f },
-            nullptr,
-            XMLoadFloat4(&backgroundTint),
-            0.0f,
-            XMFLOAT2{},
-            XMFLOAT2{ panelWidth, panelHeight });
+        SpriteDrawRequest backgroundRequest;
+        // empty textureはBackend所有のwhite textureへfallbackします。
+        backgroundRequest.position = { 6.0f, 6.0f };
+        backgroundRequest.scale = { panelWidth, panelHeight };
+        backgroundRequest.tint = backgroundTint;
+        static_cast<void>(context.Draw(backgroundRequest));
 
         float y = 6.0f + Padding;
         for (const auto& line : textures)
         {
-            auto* const view =
-                graphics.PinD3D11TextureForSpriteBatch(
-                    line.texture->resources.Acquire());
-            if (view == nullptr)
+            // empty handleはwhite fallbackになるため、欠落文字は明示的に
+            // skipします。Draw失敗時も従来どおり行送りしません。
+            if (!line.view)
             {
                 continue;
             }
-            sprites.Draw(
-                view,
-                XMFLOAT2{ 6.0f + Padding, y },
-                nullptr,
+            SpriteDrawRequest request;
+            request.texture = line.view;
+            request.position = { 6.0f + Padding, y };
+            XMStoreFloat4(
+                &request.tint,
                 PremultipliedTextColor(line.color));
-            y += static_cast<float>(line.texture->height)
-                + LineGap;
+            if (context.Draw(request))
+            {
+                y += static_cast<float>(line.texture->height)
+                    + LineGap;
+            }
         }
-        graphics.EndSprites();
+        pass.End();
     }
 }

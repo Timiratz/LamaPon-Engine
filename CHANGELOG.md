@@ -56,6 +56,7 @@
 - `GraphicsBackend`の表示handle契約、`GraphicsDevice`の公開API、`RenderTarget`の完成状態追加に伴い、Game Module APIを39へ更新。SDK反映後はゲーム用DLLの再ビルドが必要。
 - API非依存Sprite passと描画requestの公開に伴い、Game Module APIを40へ更新。SDK反映後はゲーム用DLLの再ビルドが必要。
 - ローディング画面と起動ロゴをAPI非依存Sprite passへ移行し、高レベル描画手順をD3D11実装ファイルから分離。
+- デバッグオーバーレイをAPI非依存Sprite passへ移行し、文字textureの取得から描画完了までBackend世代を安全に固定。
 
 ### ファイル名の統一
 

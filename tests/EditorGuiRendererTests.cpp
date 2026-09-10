@@ -2,6 +2,7 @@
 #include "LamaPon/Editor/EditorModelPreviewRenderer.h"
 #include "LamaPon/Assets/AssetManager.h"
 #include "LamaPon/Audio/AudioSystem.h"
+#include "LamaPon/Core/DebugOverlay.h"
 #include "LamaPon/Graphics/EnvironmentSettings.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Graphics/LitMaterial.h"
@@ -2380,6 +2381,56 @@ namespace
             20u,
             { 0u, 0u, 0u },
             "The neutral startup logo exceeded its scaled bounds");
+
+        constexpr float debugOverlayClearColor[]{
+            1.0f, 0.0f, 0.0f, 1.0f };
+        std::vector<std::uint8_t> debugOverlayPixels;
+        std::uint32_t debugOverlayWidth{};
+        std::uint32_t debugOverlayHeight{};
+        {
+            LamaPon::Scene debugOverlayScene(graphics);
+            LamaPon::DebugOverlay debugOverlay;
+            debugOverlay.SetVisible(true);
+            graphics.BeginFrame(debugOverlayClearColor);
+            debugOverlay.Update(
+                graphics,
+                debugOverlayScene,
+                1.0f);
+            Require(debugOverlay.IsVisible(),
+                "The neutral debug overlay hid after drawing failed");
+            debugOverlayPixels = graphics.CaptureBackBuffer(
+                debugOverlayWidth,
+                debugOverlayHeight);
+            graphics.EndFrame();
+        }
+        Require(
+            debugOverlayWidth == Width
+                && debugOverlayHeight == Height,
+            "Debug overlay test did not capture the back buffer");
+        RequirePixelNear(
+            debugOverlayPixels,
+            8u,
+            8u,
+            { 82u, 0u, 0u },
+            "The neutral debug overlay lost its translucent panel");
+        std::size_t debugOverlayTextPixels{};
+        for (std::size_t offset = 0;
+            offset + 3u < debugOverlayPixels.size();
+            offset += 4u)
+        {
+            if (debugOverlayPixels[offset + 1u] > 32u
+                || debugOverlayPixels[offset + 2u] > 32u)
+            {
+                ++debugOverlayTextPixels;
+            }
+        }
+        Require(debugOverlayTextPixels >= 16u,
+            "The neutral debug overlay did not draw its text handles");
+
+        graphics.BeginFrame(scissorClearColor);
+        auto passAfterDebugOverlay = graphics.BeginSpritePass();
+        passAfterDebugOverlay.End();
+        graphics.EndFrame();
 
         auto modelPreviewRenderer =
             LamaPon::CreateEditorModelPreviewRenderer(
