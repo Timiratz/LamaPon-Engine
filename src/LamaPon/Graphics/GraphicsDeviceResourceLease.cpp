@@ -1,6 +1,7 @@
 #include "LamaPon/Graphics/GraphicsDeviceResourceLease.h"
 
 #include "LamaPon/Graphics/GraphicsDevice.h"
+#include "LamaPon/Graphics/GraphicsDeviceState.h"
 #include "LamaPon/Graphics/GraphicsDeviceResourceLeaseState.h"
 
 #include <mutex>
@@ -73,7 +74,7 @@ namespace LamaPon
     GraphicsDeviceResourceLease
         GraphicsDevice::AcquireResourceLease()
     {
-        auto state = m_resourceLeaseState;
+        auto state = m_state->m_resourceLeaseState;
         if (!state)
         {
             throw std::logic_error(
@@ -99,7 +100,7 @@ namespace LamaPon
 
     void GraphicsDevice::BeginResourceTransition()
     {
-        auto state = m_resourceLeaseState;
+        auto state = m_state->m_resourceLeaseState;
         if (!state)
         {
             throw std::logic_error(
@@ -128,7 +129,7 @@ namespace LamaPon
 
     void GraphicsDevice::EndResourceTransition() noexcept
     {
-        const auto state = m_resourceLeaseState;
+        const auto state = m_state->m_resourceLeaseState;
         if (!state)
         {
             return;
@@ -145,7 +146,7 @@ namespace LamaPon
 
     void GraphicsDevice::CloseResourceLeaseGate() noexcept
     {
-        const auto state = m_resourceLeaseState;
+        const auto state = m_state->m_resourceLeaseState;
         if (!state)
         {
             return;

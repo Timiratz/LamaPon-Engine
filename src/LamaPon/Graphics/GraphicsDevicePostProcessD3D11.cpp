@@ -1,4 +1,5 @@
 #include "LamaPon/Graphics/GraphicsDevice.h"
+#include "LamaPon/Graphics/GraphicsDeviceState.h"
 
 #include "LamaPon/Graphics/EnvironmentRenderer.h"
 #include "LamaPon/Graphics/EnvironmentSettings.h"
@@ -80,7 +81,7 @@ namespace LamaPon
                 "current color view.");
         }
 
-        m_backend->BindBackBuffer();
+        m_state->m_backend->BindBackBuffer();
         environment.CopyToBoundRenderTarget(source);
     }
 

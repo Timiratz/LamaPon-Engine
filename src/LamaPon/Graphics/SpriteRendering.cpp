@@ -3,6 +3,7 @@
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Graphics/GraphicsDeviceResourceLease.h"
 #include "LamaPon/Graphics/GraphicsDeviceResourceLeaseState.h"
+#include "LamaPon/Graphics/GraphicsDeviceState.h"
 
 #include <exception>
 #include <mutex>
@@ -366,12 +367,12 @@ namespace LamaPon
         // fallbackするため、未実装設定でもこの経路は安全です。
         auto state = std::make_shared<
             Detail::SpriteRenderPassState>(
-                m_resourceLeaseState,
+                m_state->m_resourceLeaseState,
                 AcquireResourceLease());
         {
-            std::scoped_lock lock(m_resourceLeaseState->mutex);
-            if (m_resourceLeaseState->closed
-                || m_resourceLeaseState->owner != this)
+            std::scoped_lock lock(m_state->m_resourceLeaseState->mutex);
+            if (m_state->m_resourceLeaseState->closed
+                || m_state->m_resourceLeaseState->owner != this)
             {
                 throw std::logic_error(
                     "GraphicsDevice is shutting down.");

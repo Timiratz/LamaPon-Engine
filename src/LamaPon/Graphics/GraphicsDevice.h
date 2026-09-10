@@ -275,19 +275,9 @@ namespace LamaPon
         // 種別を分けているのは、メインビューの深度プリパスだけは
         // 「メインパスとまったく同じ深度を書けるもの」に限る必要が
         // あるためです（詳細はDepthPassKind）。
-        void SetDepthPass(const DepthPassKind kind) noexcept
-        {
-            m_depthPass = kind;
-        }
-        [[nodiscard]] DepthPassKind
-            DepthPass() const noexcept
-        {
-            return m_depthPass;
-        }
-        [[nodiscard]] bool IsDepthOnlyPass() const noexcept
-        {
-            return m_depthPass != DepthPassKind::None;
-        }
+        void SetDepthPass(DepthPassKind kind) noexcept;
+        [[nodiscard]] DepthPassKind DepthPass() const noexcept;
+        [[nodiscard]] bool IsDepthOnlyPass() const noexcept;
         void EndFrame();
         void BeginSceneComposition(const float clearColor[4]);
         void EndSceneComposition(
@@ -319,22 +309,13 @@ namespace LamaPon
         // とEndSceneCompositionの間だけ有効です。深度プリパスを
         // 走らせるためにScene側へ渡します。
         [[nodiscard]] RenderTarget*
-            SceneCompositionTarget() const noexcept
-        {
-            return m_sceneCompositionTarget.get();
-        }
+            SceneCompositionTarget() const noexcept;
         // 直前に3Dを描いたときの射影行列。SSAOが深度をビュー空間へ
         // 戻すのに使います（Scene側の描画が毎回設定します）。
         void SetSceneProjection(
-            const DirectX::XMFLOAT4X4& projection) noexcept
-        {
-            m_sceneProjection = projection;
-        }
+            const DirectX::XMFLOAT4X4& projection) noexcept;
         [[nodiscard]] const DirectX::XMFLOAT4X4&
-            SceneProjection() const noexcept
-        {
-            return m_sceneProjection;
-        }
+            SceneProjection() const noexcept;
         void DrawLoadingScreen(
             float progress,
             const SceneLoadingScreenSettings& settings,
@@ -350,10 +331,7 @@ namespace LamaPon
         void ApplyQualityPreset(
             GraphicsQualityPreset preset);
         [[nodiscard]] const GraphicsSettings&
-            Settings() const noexcept
-        {
-            return m_graphicsSettings;
-        }
+            Settings() const noexcept;
         // 実際に生成されたBackendの描画APIです。要求された設定は
         // Settings().renderingApi に保持します。
         [[nodiscard]] RenderingApi
@@ -361,26 +339,14 @@ namespace LamaPon
         // Initialize時に選択された設定です。実行中の設定変更では
         // 書き換えず、再起動が必要かどうかの判定に使います。
         [[nodiscard]] RenderingApi
-            StartupRenderingApi() const noexcept
-        {
-            return m_startupRenderingApi;
-        }
+            StartupRenderingApi() const noexcept;
         // 起動時の要求と生成されたBackendが異なる理由です。
         [[nodiscard]] RenderingApiFallbackReason
-            RenderingApiFallback() const noexcept
-        {
-            return m_renderingApiFallbackReason;
-        }
+            RenderingApiFallback() const noexcept;
         [[nodiscard]] const FrameStatistics&
-            FrameStats() const noexcept
-        {
-            return m_frameStatistics;
-        }
+            FrameStats() const noexcept;
         [[nodiscard]] const GraphicsMemoryStatistics&
-            MemoryStats() const noexcept
-        {
-            return m_memoryStatistics;
-        }
+            MemoryStats() const noexcept;
         // 通常はBeginFrameが低頻度で更新します。ベンチマークで
         // リソース確保直後を測る場合だけforce=trueを指定します。
         void RefreshMemoryStatistics(
@@ -391,10 +357,7 @@ namespace LamaPon
         // 代役シェーダーの使用回数を0へ戻します。「この1フレームで
         // 代役が使われたか」を測りたいときに、そのフレームを描く
         // 直前で呼びます（FrameStatisticsのコメントを参照）。
-        void ResetShaderFallbackDraws() noexcept
-        {
-            m_frameStatistics.shaderFallbackDraws = 0;
-        }
+        void ResetShaderFallbackDraws() noexcept;
         // falseの場合はVSyncを無効にしてもFPSがモニターの
         // リフレッシュレートを超えないため、統計へ表示します。
         [[nodiscard]] bool TearingAllowed() const noexcept;
@@ -510,15 +473,9 @@ namespace LamaPon
         // 値で返し、再初期化で内部handleが差し替わっても取得時点のresource
         // snapshotを安全に保持できるようにします。
         [[nodiscard]] GraphicsTextureHandle
-            WhiteTextureHandle() const noexcept
-        {
-            return m_whiteTexture;
-        }
+            WhiteTextureHandle() const noexcept;
         [[nodiscard]] GraphicsViewHandle
-            WhiteTextureViewHandle() const noexcept
-        {
-            return m_whiteTextureView;
-        }
+            WhiteTextureViewHandle() const noexcept;
         // 描画時の互換経路です。empty/stale/別Backendのhandleは例外を
         // 外へ出さずnullptrへ倒し、旧Device resourceのbindを防ぎます。
         [[nodiscard]] ID3D11ShaderResourceView*
@@ -562,10 +519,7 @@ namespace LamaPon
         [[nodiscard]] DebugRenderer& Debug() const;
         // GPU区間計測（タイムスタンプクエリ）。フレームの
         // 開始/終了はBeginFrame/EndFrameが自動で行います。
-        [[nodiscard]] GpuProfiler& Gpu() noexcept
-        {
-            return m_gpuProfiler;
-        }
+        [[nodiscard]] GpuProfiler& Gpu() noexcept;
         // Sky cubemapをnative SRVへ公開せず、現在のBackend世代に
         // 属するsampleableなTextureCubeかを確認します。
         [[nodiscard]] bool IsSampleableCubeView(
@@ -675,15 +629,9 @@ namespace LamaPon
         // 読むときだけで、かつ配布物は全部事前コンパイル済みなので
         // 待ち時間がありません。
         void SetAsyncShaderCompilationEnabled(
-            const bool enabled) noexcept
-        {
-            m_asyncShaderCompilation = enabled;
-        }
+            bool enabled) noexcept;
         [[nodiscard]] bool
-            IsAsyncShaderCompilationEnabled() const noexcept
-        {
-            return m_asyncShaderCompilation;
-        }
+            IsAsyncShaderCompilationEnabled() const noexcept;
         // そのマテリアルのシェーダーが今コンパイル中か
         // （Inspectorの表示用）。
         [[nodiscard]] bool IsShaderCompiling(
@@ -745,33 +693,17 @@ namespace LamaPon
         [[nodiscard]] ShadowMap& Shadows() const;
         [[nodiscard]] ShadowMap& SpotShadows() const;
         [[nodiscard]] ShadowMap& PointShadows() const;
-        void SetLightingState(const LightingState& lighting) noexcept
-        {
-            m_lightingState = lighting;
-        }
-        [[nodiscard]] const LightingState& Lighting() const noexcept
-        {
-            return m_lightingState;
-        }
-        [[nodiscard]] std::uint32_t Width() const noexcept { return m_width; }
-        [[nodiscard]] std::uint32_t Height() const noexcept { return m_height; }
+        void SetLightingState(const LightingState& lighting) noexcept;
+        [[nodiscard]] const LightingState& Lighting() const noexcept;
+        [[nodiscard]] std::uint32_t Width() const noexcept;
+        [[nodiscard]] std::uint32_t Height() const noexcept;
         void SetUIViewportSize(
             std::uint32_t width,
-            std::uint32_t height) noexcept
-        {
-            m_uiWidth = width == 0 ? 1 : width;
-            m_uiHeight = height == 0 ? 1 : height;
-        }
+            std::uint32_t height) noexcept;
         [[nodiscard]] std::uint32_t
-            UIWidth() const noexcept
-        {
-            return m_uiWidth;
-        }
+            UIWidth() const noexcept;
         [[nodiscard]] std::uint32_t
-            UIHeight() const noexcept
-        {
-            return m_uiHeight;
-        }
+            UIHeight() const noexcept;
         void SetSprite2DOffset(
             const DirectX::XMFLOAT2& offset) noexcept;
         [[nodiscard]] const DirectX::XMFLOAT2&
@@ -979,131 +911,19 @@ namespace LamaPon
             RenderTarget& target,
             ScreenEffectPoint point);
 
-        // 外部resource ownerの数と再初期化中フラグを1つの同期境界で
-        // 管理します。lease側もstateを共有するため、破棄順を誤っても
-        // leaseの後始末自体が解放済みGraphicsDeviceへ触れません。
-        std::shared_ptr<
-            Detail::GraphicsDeviceResourceLeaseState>
-            m_resourceLeaseState;
-
-        // Device / Context / SwapChainとバックバッファ資源の所有者です。
-        // 現在はD3D11Backendだけを生成し、D3D12はrenderer移行完了まで
-        // 選択段階で安全にD3D11へフォールバックします。
-        std::unique_ptr<GraphicsBackend> m_backend;
-        // SpriteBatchや固定機能state等のAPI固有資源はprivateなopaque
-        // stateへ集約し、Backendより先に解放します。
-        std::unique_ptr<Detail::GraphicsDeviceApiResources>
-            m_apiResources;
-        GraphicsTextureHandle m_whiteTexture;
-        GraphicsViewHandle m_whiteTextureView;
-        GraphicsBufferHandle m_instanceBuffer;
-        DepthPassKind m_depthPass{ DepthPassKind::None };
-        GpuProfiler m_gpuProfiler;
         // WARP強制フラグ（Initialize前にテスト等から設定）。
         // 定義はGraphicsDevice.cpp（DLLの中に1つだけ）。
         static bool s_preferWarpAdapter;
         static bool s_enableDebugLayer;
-
-        // 既存のAssets/Audio/Input APIを保ち、サービスの寿命管理は
-        // 専用の所有者へ委譲します。D3Dデバイスより先に終了します。
-        std::unique_ptr<RuntimeServices> m_services;
-        std::unique_ptr<DebugRenderer> m_debugRenderer;
-        mutable std::unique_ptr<EnvironmentRenderer>
-            m_environmentRenderer;
-        mutable std::unique_ptr<ClusteredLights>
-            m_clusteredLights;
-        std::unique_ptr<RenderTarget> m_sceneCompositionTarget;
-        DirectX::XMFLOAT4X4 m_sceneProjection{
-            1.0f, 0.0f, 0.0f, 0.0f,
-            0.0f, 1.0f, 0.0f, 0.0f,
-            0.0f, 0.0f, 1.0f, 0.0f,
-            0.0f, 0.0f, 0.0f, 1.0f
-        };
-        // 名前付きレンダーテクスチャ。RenderTargetはコピー禁止
-        // なのでunique_ptrで保持します。
-        std::unordered_map<
-            std::string,
-            std::unique_ptr<RenderTarget>>
-            m_renderTextures;
-        mutable std::unique_ptr<LitEffect> m_litEffect;
-        mutable std::unique_ptr<LitEffect> m_skinnedLitEffect;
-        // コンパイル失敗時の代替シェーダーです。作成に失敗した場合は
-        // 毎フレームの再試行による負荷を避けるため再生成しません。
-        mutable std::unique_ptr<LitEffect> m_errorEffect;
-        mutable std::unique_ptr<LitEffect> m_skinnedErrorEffect;
-        mutable std::unique_ptr<SpriteEffect> m_spriteErrorEffect;
-        mutable bool m_errorEffectUnavailable{};
-        mutable bool m_skinnedErrorEffectUnavailable{};
-        mutable bool m_spriteErrorEffectUnavailable{};
-        // 組み込みシェーダーには代替描画経路が無いため、失敗を記録して
-        // 毎フレームの再コンパイルを防ぎます。BuiltInRetrySecondsごとに
-        // 再試行し、成功すると記録を解除します。
-        mutable BuiltInFailure m_litFailure;
-        mutable BuiltInFailure m_skinnedLitFailure;
-        mutable BuiltInFailure m_environmentFailure;
-        mutable BuiltInFailure m_clustersFailure;
         struct MaterialShaderEntry;
         struct SpriteShaderEntry;
         struct ScreenShaderEntry;
-        mutable std::unordered_map<
-            std::filesystem::path,
-            std::unique_ptr<MaterialShaderEntry>>
-            m_materialShaders;
-        mutable std::unordered_map<
-            std::filesystem::path,
-            std::unique_ptr<MaterialShaderEntry>>
-            m_skinnedMaterialShaders;
-        // シェーダーごとのバリアント宣言。書き換えたら
-        // InvalidateMaterialShaderが捨てます。
-        mutable std::unordered_map<
-            std::filesystem::path,
-            ShaderVariantDeclaration>
-            m_shaderVariants;
-        bool m_asyncShaderCompilation{ true };
-        mutable std::uint64_t
-            m_materialShaderGeneration{};
-        mutable std::unordered_map<
-            std::filesystem::path,
-            std::unique_ptr<SpriteShaderEntry>>
-            m_spriteShaders;
-        mutable std::uint64_t
-            m_spriteShaderGeneration{};
-        mutable std::unordered_map<
-            std::filesystem::path,
-            std::unique_ptr<ScreenShaderEntry>>
-            m_screenShaders;
-        mutable std::uint64_t
-            m_screenShaderGeneration{};
         struct QueuedScreenEffect;
-        std::vector<QueuedScreenEffect>
-            m_queuedScreenEffects;
         struct ComputeShaderEntry;
-        mutable std::unordered_map<
-            std::filesystem::path,
-            std::unique_ptr<ComputeShaderEntry>>
-            m_computeShaders;
-        std::unique_ptr<ShadowMap> m_shadowMap;
-        std::unique_ptr<ShadowMap> m_spotShadowMap;
-        std::unique_ptr<ShadowMap> m_pointShadowMap;
-        LightingState m_lightingState;
-        GraphicsSettings m_graphicsSettings =
-            GraphicsSettingsForPreset(
-                GraphicsQualityPreset::High);
-        std::uint32_t m_width{};
-        std::uint32_t m_height{};
-        std::uint32_t m_uiWidth{};
-        std::uint32_t m_uiHeight{};
-        DirectX::XMFLOAT2 m_sprite2DOffset{};
-        // mutable: shaderFallbackDrawsを数えるShaderErrorPlaceholder /
-        // SpriteErrorPlaceholderがconstメソッドのためです（このクラスの
-        // キャッシュ類と同じ扱い）。
-        mutable FrameStatistics m_frameStatistics;
-        GraphicsMemoryStatistics m_memoryStatistics;
-        std::chrono::steady_clock::time_point
-            m_lastMemoryStatisticsSample{};
-        RenderingApi m_startupRenderingApi{
-            RenderingApi::DirectX11 };
-        RenderingApiFallbackReason m_renderingApiFallbackReason{
-            RenderingApiFallbackReason::None };
+
+        // 全instance stateをSDK非公開の固定storageへ集約します。Stateは
+        // Initialize/Resizeで差し替えず、参照を返す既存APIの住所を保ちます。
+        struct State;
+        const std::unique_ptr<State> m_state;
     };
 }

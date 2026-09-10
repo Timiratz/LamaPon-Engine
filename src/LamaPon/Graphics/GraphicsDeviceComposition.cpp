@@ -1,4 +1,5 @@
 #include "LamaPon/Graphics/GraphicsDevice.h"
+#include "LamaPon/Graphics/GraphicsDeviceState.h"
 
 #include "LamaPon/Graphics/EnvironmentSettings.h"
 #include "LamaPon/Graphics/GpuProfiler.h"
@@ -27,7 +28,7 @@ namespace LamaPon
                 "ResizeOffscreenTarget requires an initialized device.");
         }
 
-        m_backend->ResizeOffscreenTarget(target, width, height);
+        m_state->m_backend->ResizeOffscreenTarget(target, width, height);
         if (!target.IsValid()
             || !IsGraphicsViewCurrent(
                 target.CurrentColorViewHandle())
@@ -60,7 +61,7 @@ namespace LamaPon
                 "BeginOffscreenTarget requires a valid target.");
         }
 
-        m_backend->BeginOffscreenTarget(target, clearColor);
+        m_state->m_backend->BeginOffscreenTarget(target, clearColor);
     }
 
     void GraphicsDevice::BindOffscreenTarget(
@@ -77,7 +78,7 @@ namespace LamaPon
                 "BindOffscreenTarget requires a valid target.");
         }
 
-        m_backend->BindOffscreenTarget(
+        m_state->m_backend->BindOffscreenTarget(
             target);
     }
 
@@ -106,7 +107,7 @@ namespace LamaPon
 
         // CopyToDisplayは描画先を変更しません。バックバッファへの復帰は
         // BeginFrameなど、既存のフレーム制御側に任せます。
-        m_backend->PublishOffscreenTarget(
+        m_state->m_backend->PublishOffscreenTarget(
             target);
     }
 
@@ -125,7 +126,7 @@ namespace LamaPon
                 "BindOffscreenTargetDepthOnly requires a valid target.");
         }
 
-        m_backend->BindOffscreenTargetDepthOnly(target);
+        m_state->m_backend->BindOffscreenTargetDepthOnly(target);
     }
 
     void GraphicsDevice::CaptureOffscreenTargetDepth(
@@ -143,7 +144,7 @@ namespace LamaPon
                 "CaptureOffscreenTargetDepth requires a valid target.");
         }
 
-        m_backend->CaptureOffscreenTargetDepth(target);
+        m_state->m_backend->CaptureOffscreenTargetDepth(target);
     }
 
     void GraphicsDevice::CaptureOffscreenTargetColorHistory(
@@ -163,7 +164,7 @@ namespace LamaPon
                 "target.");
         }
 
-        m_backend->CaptureOffscreenTargetColorHistory(
+        m_state->m_backend->CaptureOffscreenTargetColorHistory(
             target,
             viewProjection);
     }
@@ -185,7 +186,7 @@ namespace LamaPon
                 "target.");
         }
 
-        m_backend->CaptureOffscreenTargetTemporalHistory(
+        m_state->m_backend->CaptureOffscreenTargetTemporalHistory(
             target,
             viewProjection);
     }
@@ -212,7 +213,7 @@ namespace LamaPon
         if (settings.enabled)
         {
             measuredLuminance =
-                m_backend->TryReadOffscreenTargetLuminance(target);
+                m_state->m_backend->TryReadOffscreenTargetLuminance(target);
         }
 
         const float exposureStops = target.UpdateAutoExposure(
@@ -223,7 +224,7 @@ namespace LamaPon
 
         if (settings.enabled)
         {
-            m_backend->CaptureOffscreenTargetLuminance(target);
+            m_state->m_backend->CaptureOffscreenTargetLuminance(target);
         }
         return exposureStops;
     }
@@ -238,7 +239,7 @@ namespace LamaPon
         const std::uint32_t safeHeight =
             height == 0 ? 1 : height;
 
-        auto& slot = m_renderTextures[name];
+        auto& slot = m_state->m_renderTextures[name];
         const bool createdTarget = !slot;
         try
         {
@@ -258,7 +259,7 @@ namespace LamaPon
         {
             if (createdTarget)
             {
-                m_renderTextures.erase(name);
+                m_state->m_renderTextures.erase(name);
             }
             throw;
         }
@@ -274,7 +275,7 @@ namespace LamaPon
         const std::uint32_t safeHeight =
             height == 0 ? 1 : height;
 
-        auto& slot = m_renderTextures[name];
+        auto& slot = m_state->m_renderTextures[name];
         const bool createdTarget = !slot;
         try
         {
@@ -297,7 +298,7 @@ namespace LamaPon
         {
             if (createdTarget)
             {
-                m_renderTextures.erase(name);
+                m_state->m_renderTextures.erase(name);
             }
             throw;
         }
@@ -306,8 +307,8 @@ namespace LamaPon
     const RenderTarget* GraphicsDevice::FindRenderTexture(
         const std::string& name) const noexcept
     {
-        const auto entry = m_renderTextures.find(name);
-        if (entry == m_renderTextures.end())
+        const auto entry = m_state->m_renderTextures.find(name);
+        if (entry == m_state->m_renderTextures.end())
         {
             return nullptr;
         }
@@ -331,20 +332,20 @@ namespace LamaPon
     bool GraphicsDevice::ReleaseRenderTexture(
         const std::string& name)
     {
-        return m_renderTextures.erase(name) > 0;
+        return m_state->m_renderTextures.erase(name) > 0;
     }
 
     void GraphicsDevice::ClearRenderTextures() noexcept
     {
-        m_renderTextures.clear();
+        m_state->m_renderTextures.clear();
     }
 
     std::vector<std::string>
         GraphicsDevice::RenderTextureNames() const
     {
         std::vector<std::string> names;
-        names.reserve(m_renderTextures.size());
-        for (const auto& [name, target] : m_renderTextures)
+        names.reserve(m_state->m_renderTextures.size());
+        for (const auto& [name, target] : m_state->m_renderTextures)
         {
             static_cast<void>(target);
             names.push_back(name);
@@ -357,11 +358,11 @@ namespace LamaPon
         const float clearColor[4])
     {
         ResizeOffscreenTarget(
-            *m_sceneCompositionTarget,
+            *m_state->m_sceneCompositionTarget,
             RenderWidth(),
             RenderHeight());
         BeginOffscreenTarget(
-            *m_sceneCompositionTarget,
+            *m_state->m_sceneCompositionTarget,
             clearColor);
     }
 
@@ -426,7 +427,7 @@ namespace LamaPon
         // RunPostProcessが計測区間を開始するため、呼び出し側では開始しません。
         RunPostProcess(
             *this,
-            *m_sceneCompositionTarget,
+            *m_state->m_sceneCompositionTarget,
             frame,
             [this](
                 RenderTarget& target,
@@ -435,12 +436,12 @@ namespace LamaPon
                 ApplyQueuedScreenEffects(target, point);
             });
         GpuProfiler::SectionScope transferSection{
-            m_gpuProfiler,
+            m_state->m_gpuProfiler,
             "画面へ転送"
         };
         // current colorのnative view解決はD3D11 bridge内へ閉じ込め、
         // 共通compositionはRenderTargetだけを渡します。
         CopyOffscreenTargetToBackBuffer(
-            *m_sceneCompositionTarget);
+            *m_state->m_sceneCompositionTarget);
     }
 }

@@ -1,4 +1,5 @@
 #include "LamaPon/Graphics/GraphicsDevice.h"
+#include "LamaPon/Graphics/GraphicsDeviceState.h"
 
 #include "LamaPon/Assets/AssetManager.h"
 #include "LamaPon/Graphics/TextLayout.h"
@@ -61,9 +62,9 @@ namespace LamaPon
         [[maybe_unused]] auto operationLease =
             AcquireResourceLease();
         const std::uint32_t canvasWidth =
-            width == 0 ? m_width : width;
+            width == 0 ? m_state->m_width : width;
         const std::uint32_t canvasHeight =
-            height == 0 ? m_height : height;
+            height == 0 ? m_state->m_height : height;
         auto pass = BeginSpritePass();
         DrawRectangle(
             pass,
@@ -195,9 +196,9 @@ namespace LamaPon
         }
 
         const std::uint32_t canvasWidth =
-            width == 0 ? m_width : width;
+            width == 0 ? m_state->m_width : width;
         const std::uint32_t canvasHeight =
-            height == 0 ? m_height : height;
+            height == 0 ? m_state->m_height : height;
         const float maximumWidth = std::min(
             static_cast<float>(canvasWidth) * 0.32f,
             360.0f);
@@ -230,11 +231,11 @@ namespace LamaPon
     void GraphicsDevice::SetSprite2DOffset(
         const DirectX::XMFLOAT2& offset) noexcept
     {
-        m_sprite2DOffset = offset;
+        m_state->m_sprite2DOffset = offset;
     }
 
     const DirectX::XMFLOAT2& GraphicsDevice::Sprite2DOffset() const noexcept
     {
-        return m_sprite2DOffset;
+        return m_state->m_sprite2DOffset;
     }
 }

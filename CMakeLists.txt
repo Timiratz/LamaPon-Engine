@@ -285,6 +285,8 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Graphics/GraphicsDeviceParticleRendering.cpp
     src/LamaPon/Graphics/GraphicsDeviceSpriteFrontend.cpp
     src/LamaPon/Graphics/GraphicsDeviceSpriteD3D11.cpp
+    src/LamaPon/Graphics/GraphicsDeviceState.cpp
+    src/LamaPon/Graphics/GraphicsDeviceState.h
     src/LamaPon/Graphics/GraphicsDeviceResourceLease.cpp
     src/LamaPon/Graphics/GraphicsDeviceResourceLease.h
     src/LamaPon/Graphics/GraphicsDeviceResourceLeaseState.h
@@ -1812,6 +1814,7 @@ install(
         PATTERN "GraphicsRenderServices.h" EXCLUDE
         PATTERN "GraphicsDeviceResourceLeaseState.h" EXCLUDE
         PATTERN "GraphicsDeviceShaderState.h" EXCLUDE
+        PATTERN "GraphicsDeviceState.h" EXCLUDE
         PATTERN "RenderTargetBackendState.h" EXCLUDE
 )
 install(

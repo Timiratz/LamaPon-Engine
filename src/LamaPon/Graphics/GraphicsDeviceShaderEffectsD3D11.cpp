@@ -1,4 +1,5 @@
 #include "LamaPon/Graphics/GraphicsDevice.h"
+#include "LamaPon/Graphics/GraphicsDeviceState.h"
 
 #include "LamaPon/Assets/AssetManager.h"
 #include "LamaPon/Core/PathUtils.h"
@@ -155,7 +156,7 @@ namespace LamaPon
 
         const auto absolutePath = Assets().ResolvePath(
             description.pixelShader).lexically_normal();
-        auto& entry = m_spriteShaders[absolutePath];
+        auto& entry = m_state->m_spriteShaders[absolutePath];
         if (!entry)
         {
             entry = std::make_unique<SpriteShaderEntry>();
@@ -209,7 +210,7 @@ namespace LamaPon
                                 absolutePath);
                         entry->effect = std::move(candidate);
                         entry->generation =
-                            ++m_spriteShaderGeneration;
+                            ++m_state->m_spriteShaderGeneration;
                         entry->error.clear();
                     }
                     catch (const std::exception& exception)
@@ -293,7 +294,7 @@ namespace LamaPon
 
         const auto absolutePath =
             Assets().ResolvePath(shaderPath).lexically_normal();
-        auto& entry = m_spriteShaders[absolutePath];
+        auto& entry = m_state->m_spriteShaders[absolutePath];
         if (!entry)
         {
             entry = std::make_unique<SpriteShaderEntry>();
@@ -347,7 +348,7 @@ namespace LamaPon
                                 absolutePath);
                         entry->effect = std::move(candidate);
                         entry->generation =
-                            ++m_spriteShaderGeneration;
+                            ++m_state->m_spriteShaderGeneration;
                         entry->error.clear();
                     }
                     catch (const std::exception& exception)
@@ -407,7 +408,7 @@ namespace LamaPon
     {
         // 対象地点にエフェクトが無い場合は、深度変換係数の計算を省略します。
         if (std::ranges::none_of(
-                m_queuedScreenEffects,
+                m_state->m_queuedScreenEffects,
                 [point](const QueuedScreenEffect& queued)
                 {
                     return queued.point == point;
@@ -443,7 +444,7 @@ namespace LamaPon
         const auto whiteTextureView = WhiteTextureViewHandle();
         auto* const whiteTexture =
             TryResolveD3D11ShaderResourceView(whiteTextureView);
-        for (const auto& queued : m_queuedScreenEffects)
+        for (const auto& queued : m_state->m_queuedScreenEffects)
         {
             if (queued.effect == nullptr
                 || queued.point != point)
@@ -483,7 +484,7 @@ namespace LamaPon
         // 現在の地点で適用したエフェクトだけを取り除きます。同じフレームの
         // 後続地点に登録されたエフェクトはキューへ残します。
         std::erase_if(
-            m_queuedScreenEffects,
+            m_state->m_queuedScreenEffects,
             [point](const QueuedScreenEffect& queued)
             {
                 return queued.point == point;
@@ -511,7 +512,7 @@ namespace LamaPon
         const auto absolutePath =
             Assets().ResolvePath(request.shader)
                 .lexically_normal();
-        auto& entry = m_screenShaders[absolutePath];
+        auto& entry = m_state->m_screenShaders[absolutePath];
         if (!entry)
         {
             entry = std::make_unique<ScreenShaderEntry>();
@@ -564,7 +565,7 @@ namespace LamaPon
                                 absolutePath);
                         entry->effect = std::move(candidate);
                         entry->generation =
-                            ++m_screenShaderGeneration;
+                            ++m_state->m_screenShaderGeneration;
                         entry->error.clear();
                     }
                     catch (const std::exception& exception)
@@ -608,7 +609,7 @@ namespace LamaPon
                         request.auxiliaryTextures[index]);
             }
         }
-        m_queuedScreenEffects.emplace_back(
+        m_state->m_queuedScreenEffects.emplace_back(
             std::move(queued));
         return true;
     }
@@ -639,7 +640,7 @@ namespace LamaPon
         const auto absolutePath =
             Assets().ResolvePath(request.shader)
                 .lexically_normal();
-        auto& entry = m_computeShaders[absolutePath];
+        auto& entry = m_state->m_computeShaders[absolutePath];
         if (!entry)
         {
             entry = std::make_unique<ComputeShaderEntry>();
@@ -764,7 +765,7 @@ namespace LamaPon
         }
 
         GpuProfiler::SectionScope computeSection{
-            m_gpuProfiler,
+            m_state->m_gpuProfiler,
             "Compute"
         };
         entry->effect->Dispatch(
@@ -788,8 +789,8 @@ namespace LamaPon
             Assets().ResolvePath(shaderPath)
                 .lexically_normal();
         const auto found =
-            m_computeShaders.find(absolutePath);
-        if (found != m_computeShaders.end()
+            m_state->m_computeShaders.find(absolutePath);
+        if (found != m_state->m_computeShaders.end()
             && found->second)
         {
             found->second->forceReload = true;
@@ -807,8 +808,8 @@ namespace LamaPon
             Assets().ResolvePath(shaderPath)
                 .lexically_normal();
         const auto found =
-            m_screenShaders.find(absolutePath);
-        if (found != m_screenShaders.end()
+            m_state->m_screenShaders.find(absolutePath);
+        if (found != m_state->m_screenShaders.end()
             && found->second)
         {
             found->second->forceReload = true;
@@ -836,8 +837,8 @@ namespace LamaPon
                     absolutePath.wstring()
                     + L"?"
                     + Utf8ToWide(variantKey));
-        const auto found = m_materialShaders.find(cacheKey);
-        return found != m_materialShaders.end()
+        const auto found = m_state->m_materialShaders.find(cacheKey);
+        return found != m_state->m_materialShaders.end()
             && found->second->pending;
     }
 
@@ -852,8 +853,8 @@ namespace LamaPon
         }
         const auto absolutePath =
             Assets().ResolvePath(shaderPath).lexically_normal();
-        const auto found = m_shaderVariants.find(absolutePath);
-        if (found != m_shaderVariants.end())
+        const auto found = m_state->m_shaderVariants.find(absolutePath);
+        if (found != m_state->m_shaderVariants.end())
         {
             return found->second;
         }
@@ -876,7 +877,7 @@ namespace LamaPon
             // 読み取り失敗時は宣言なしとして扱い、Inspectorの表示を継続します。
             declaration = {};
         }
-        return m_shaderVariants
+        return m_state->m_shaderVariants
             .emplace(absolutePath, std::move(declaration))
             .first->second;
     }
@@ -1690,7 +1691,7 @@ namespace LamaPon
                     absolutePath.wstring()
                     + L"?"
                     + Utf8ToWide(variantKey));
-        auto& entry = m_materialShaders[cacheKey];
+        auto& entry = m_state->m_materialShaders[cacheKey];
         if (!entry)
         {
             entry = std::make_unique<MaterialShaderEntry>();
@@ -1737,7 +1738,7 @@ namespace LamaPon
                             false,
                             entry->keywords);
                     entry->generation =
-                        ++m_materialShaderGeneration;
+                        ++m_state->m_materialShaderGeneration;
                     entry->error.clear();
                 }
                 catch (const std::exception& exception)
@@ -1807,7 +1808,7 @@ namespace LamaPon
                     // コンパイル済みなので待ち時間が無く、かつ
                     // アーカイブ読み取りはスレッド安全ではないため
                     // 同期のままにします。
-                    if (m_asyncShaderCompilation
+                    if (m_state->m_asyncShaderCompilation
                         && !Assets().IsArchived())
                     {
                         // effectを破棄すると、失敗時は代替表示へ切り替わります。
@@ -1837,7 +1838,7 @@ namespace LamaPon
                         entry->keywords);
                     entry->effect = std::move(candidate);
                     entry->generation =
-                        ++m_materialShaderGeneration;
+                        ++m_state->m_materialShaderGeneration;
                     entry->error.clear();
                 }
                 catch (const std::exception& exception)
@@ -1886,7 +1887,7 @@ namespace LamaPon
                     absolutePath.wstring()
                     + L"?"
                     + Utf8ToWide(variantKey));
-        auto& entry = m_skinnedMaterialShaders[cacheKey];
+        auto& entry = m_state->m_skinnedMaterialShaders[cacheKey];
         if (!entry)
         {
             entry = std::make_unique<MaterialShaderEntry>();
@@ -1962,7 +1963,7 @@ namespace LamaPon
                         entry->keywords);
                     entry->effect = std::move(candidate);
                     entry->generation =
-                        ++m_materialShaderGeneration;
+                        ++m_state->m_materialShaderGeneration;
                     entry->error.clear();
                 }
                 catch (const std::exception& exception)
@@ -1995,11 +1996,11 @@ namespace LamaPon
             Assets().ResolvePath(shaderPath).lexically_normal();
         // 宣言そのものも読み直します（multi_compileの行を
         // 足し引きしたときに追従するため）。
-        m_shaderVariants.erase(absolutePath);
+        m_state->m_shaderVariants.erase(absolutePath);
         // バリアントごとに別エントリーなので、そのHLSLから作られた
         // ものを全部立て直します（キーは「パス?キーワード」）。
         const auto prefix = absolutePath.wstring();
-        for (auto& [key, value] : m_materialShaders)
+        for (auto& [key, value] : m_state->m_materialShaders)
         {
             const auto text = key.wstring();
             if (text == prefix
@@ -2010,7 +2011,7 @@ namespace LamaPon
                 value->forceReload = true;
             }
         }
-        for (auto& [key, value] : m_skinnedMaterialShaders)
+        for (auto& [key, value] : m_state->m_skinnedMaterialShaders)
         {
             const auto text = key.wstring();
             if (text == prefix
@@ -2033,8 +2034,8 @@ namespace LamaPon
         const auto absolutePath =
             Assets().ResolvePath(shaderPath).lexically_normal();
         const auto found =
-            m_spriteShaders.find(absolutePath);
-        if (found != m_spriteShaders.end())
+            m_state->m_spriteShaders.find(absolutePath);
+        if (found != m_state->m_spriteShaders.end())
         {
             found->second->forceReload = true;
         }

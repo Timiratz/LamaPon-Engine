@@ -804,6 +804,49 @@ int main(const int argumentCount, char** arguments)
             "?AspectRatio@RenderTarget@LamaPon@@QEBAMXZ",
             "?IsValid@RenderTarget@LamaPon@@QEBA_NXZ"
         };
+        constexpr std::array Api64GraphicsDeviceSymbols{
+            "?DepthPass@GraphicsDevice@LamaPon@@"
+                "QEBA?AW4DepthPassKind@2@XZ",
+            "?FrameStats@GraphicsDevice@LamaPon@@"
+                "QEBAAEBUFrameStatistics@2@XZ",
+            "?Gpu@GraphicsDevice@LamaPon@@"
+                "QEAAAEAVGpuProfiler@2@XZ",
+            "?Height@GraphicsDevice@LamaPon@@QEBAIXZ",
+            "?IsAsyncShaderCompilationEnabled@GraphicsDevice@LamaPon@@"
+                "QEBA_NXZ",
+            "?IsDepthOnlyPass@GraphicsDevice@LamaPon@@QEBA_NXZ",
+            "?Lighting@GraphicsDevice@LamaPon@@"
+                "QEBAAEBULightingState@2@XZ",
+            "?MemoryStats@GraphicsDevice@LamaPon@@"
+                "QEBAAEBUGraphicsMemoryStatistics@2@XZ",
+            "?RenderingApiFallback@GraphicsDevice@LamaPon@@"
+                "QEBA?AW4RenderingApiFallbackReason@2@XZ",
+            "?ResetShaderFallbackDraws@GraphicsDevice@LamaPon@@QEAAXXZ",
+            "?SceneCompositionTarget@GraphicsDevice@LamaPon@@"
+                "QEBAPEAVRenderTarget@2@XZ",
+            "?SceneProjection@GraphicsDevice@LamaPon@@"
+                "QEBAAEBUXMFLOAT4X4@DirectX@@XZ",
+            "?SetAsyncShaderCompilationEnabled@GraphicsDevice@LamaPon@@"
+                "QEAAX_N@Z",
+            "?SetDepthPass@GraphicsDevice@LamaPon@@"
+                "QEAAXW4DepthPassKind@2@@Z",
+            "?SetLightingState@GraphicsDevice@LamaPon@@"
+                "QEAAXAEBULightingState@2@@Z",
+            "?SetSceneProjection@GraphicsDevice@LamaPon@@"
+                "QEAAXAEBUXMFLOAT4X4@DirectX@@@Z",
+            "?SetUIViewportSize@GraphicsDevice@LamaPon@@QEAAXII@Z",
+            "?Settings@GraphicsDevice@LamaPon@@"
+                "QEBAAEBUGraphicsSettings@2@XZ",
+            "?StartupRenderingApi@GraphicsDevice@LamaPon@@"
+                "QEBA?AW4RenderingApi@2@XZ",
+            "?UIHeight@GraphicsDevice@LamaPon@@QEBAIXZ",
+            "?UIWidth@GraphicsDevice@LamaPon@@QEBAIXZ",
+            "?WhiteTextureHandle@GraphicsDevice@LamaPon@@"
+                "QEBA?AVGraphicsTextureHandle@2@XZ",
+            "?WhiteTextureViewHandle@GraphicsDevice@LamaPon@@"
+                "QEBA?AVGraphicsViewHandle@2@XZ",
+            "?Width@GraphicsDevice@LamaPon@@QEBAIXZ"
+        };
         const auto runtimeModule = GetModuleHandleW(
             L"LamaPonRuntime.dll");
         Require(
@@ -898,6 +941,12 @@ int main(const int argumentCount, char** arguments)
             Require(
                 GetProcAddress(runtimeModule, symbol) != nullptr,
                 "An API 63 opaque RenderTarget export is missing");
+        }
+        for (const auto* const symbol : Api64GraphicsDeviceSymbols)
+        {
+            Require(
+                GetProcAddress(runtimeModule, symbol) != nullptr,
+                "An API 64 opaque GraphicsDevice export is missing");
         }
         using LegacyEnvironmentAccessor =
             LamaPon::EnvironmentRenderer* (__fastcall*)(

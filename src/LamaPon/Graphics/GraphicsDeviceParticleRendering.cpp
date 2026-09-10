@@ -1,4 +1,5 @@
 #include "LamaPon/Graphics/GraphicsDevice.h"
+#include "LamaPon/Graphics/GraphicsDeviceState.h"
 
 #include "LamaPon/Graphics/GraphicsDeviceApiResources.h"
 #include "LamaPon/Graphics/GraphicsRenderServices.h"
@@ -12,8 +13,8 @@ namespace LamaPon
         std::uint64_t* const shaderGeneration,
         std::string* const shaderError)
     {
-        if (m_apiResources == nullptr
-            || m_apiResources->renderServices == nullptr)
+        if (m_state->m_apiResources == nullptr
+            || m_state->m_apiResources->renderServices == nullptr)
         {
             return false;
         }
@@ -35,7 +36,7 @@ namespace LamaPon
                     shaderError);
             };
         }
-        return m_apiResources->renderServices->DrawParticles(
+        return m_state->m_apiResources->renderServices->DrawParticles(
             effectiveRequest);
     }
 }

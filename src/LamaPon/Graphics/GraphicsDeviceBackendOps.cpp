@@ -1,4 +1,5 @@
 #include "LamaPon/Graphics/GraphicsDevice.h"
+#include "LamaPon/Graphics/GraphicsDeviceState.h"
 
 #include "LamaPon/Assets/AssetManager.h"
 #include "LamaPon/Graphics/ClusteredLights.h"
@@ -24,12 +25,12 @@ namespace LamaPon
         const std::span<const GraphicsTextureSubresourceData>
             initialData)
     {
-        if (m_backend == nullptr)
+        if (m_state->m_backend == nullptr)
         {
             throw std::logic_error(
                 "CreateTexture2D requires an initialized graphics backend.");
         }
-        return m_backend->CreateTexture2D(
+        return m_state->m_backend->CreateTexture2D(
             description,
             initialData);
     }
@@ -39,12 +40,12 @@ namespace LamaPon
         const std::span<const GraphicsTextureSubresourceData>
             initialData)
     {
-        if (m_backend == nullptr)
+        if (m_state->m_backend == nullptr)
         {
             throw std::logic_error(
                 "CreateTexture3D requires an initialized graphics backend.");
         }
-        return m_backend->CreateTexture3D(
+        return m_state->m_backend->CreateTexture3D(
             description,
             initialData);
     }
@@ -63,7 +64,7 @@ namespace LamaPon
                 width,
                 height,
                 depth);
-        if (m_backend == nullptr
+        if (m_state->m_backend == nullptr
             || !probeCount.has_value()
             || coefficients.size()
                 != *probeCount
@@ -96,11 +97,11 @@ namespace LamaPon
                         width * height * 8u
                     }
                 };
-                const auto texture = m_backend->CreateTexture3D(
+                const auto texture = m_state->m_backend->CreateTexture3D(
                     description,
                     initialData);
                 createdViews[channel] =
-                    m_backend->CreateShaderResourceView(
+                    m_state->m_backend->CreateShaderResourceView(
                         texture,
                         GraphicsTextureViewDescription{ 0, 1 });
             }
@@ -117,25 +118,25 @@ namespace LamaPon
         const std::uint32_t mipLevel,
         const GraphicsTextureSubresourceData& data)
     {
-        if (m_backend == nullptr)
+        if (m_state->m_backend == nullptr)
         {
             throw std::logic_error(
                 "UpdateTexture2D requires an initialized graphics backend.");
         }
-        m_backend->UpdateTexture2D(texture, mipLevel, data);
+        m_state->m_backend->UpdateTexture2D(texture, mipLevel, data);
     }
 
     GraphicsViewHandle GraphicsDevice::CreateShaderResourceView(
         const GraphicsTextureHandle& texture,
         const GraphicsTextureViewDescription& description)
     {
-        if (m_backend == nullptr)
+        if (m_state->m_backend == nullptr)
         {
             throw std::logic_error(
                 "CreateShaderResourceView requires an initialized graphics "
                 "backend.");
         }
-        return m_backend->CreateShaderResourceView(
+        return m_state->m_backend->CreateShaderResourceView(
             texture,
             description);
     }
@@ -143,8 +144,8 @@ namespace LamaPon
     bool GraphicsDevice::IsGraphicsViewCurrent(
         const GraphicsViewHandle& view) const noexcept
     {
-        return m_backend != nullptr
-            && m_backend->IsViewCurrent(view);
+        return m_state->m_backend != nullptr
+            && m_state->m_backend->IsViewCurrent(view);
     }
 
     void GraphicsDevice::BeginShadowMap(
@@ -157,7 +158,7 @@ namespace LamaPon
                 "BeginShadowMap requires an initialized device.");
         }
 
-        m_backend->BeginShadowMap(shadowMap, cascadeIndex);
+        m_state->m_backend->BeginShadowMap(shadowMap, cascadeIndex);
     }
 
     void GraphicsDevice::EndShadowMap(ShadowMap& shadowMap)
@@ -168,7 +169,7 @@ namespace LamaPon
                 "EndShadowMap requires an initialized device.");
         }
 
-        m_backend->EndShadowMap(shadowMap);
+        m_state->m_backend->EndShadowMap(shadowMap);
     }
 
     void GraphicsDevice::UpdateClusteredLights(
@@ -190,7 +191,7 @@ namespace LamaPon
         DirectX::XMFLOAT4X4 projectionValues{};
         DirectX::XMStoreFloat4x4(&viewValues, view);
         DirectX::XMStoreFloat4x4(&projectionValues, projection);
-        m_backend->UpdateClusteredLights(
+        m_state->m_backend->UpdateClusteredLights(
             clusteredLights,
             lighting,
             viewValues,
@@ -208,7 +209,7 @@ namespace LamaPon
                 "CaptureOutputState requires an initialized device.");
         }
 
-        return m_backend->CaptureOutputState();
+        return m_state->m_backend->CaptureOutputState();
     }
 
     void GraphicsDevice::RestoreOutputState(
@@ -220,7 +221,7 @@ namespace LamaPon
                 "RestoreOutputState requires an initialized device.");
         }
 
-        m_backend->RestoreOutputState(state);
+        m_state->m_backend->RestoreOutputState(state);
     }
 
     void GraphicsDevice::Resize(const std::uint32_t width, const std::uint32_t height)
@@ -230,17 +231,17 @@ namespace LamaPon
             return;
         }
 
-        m_width = width;
-        m_height = height;
-        m_uiWidth = width;
-        m_uiHeight = height;
+        m_state->m_width = width;
+        m_state->m_height = height;
+        m_state->m_uiWidth = width;
+        m_state->m_uiHeight = height;
 
-        m_backend->Resize(m_width, m_height);
+        m_state->m_backend->Resize(m_state->m_width, m_state->m_height);
     }
 
     void GraphicsDevice::BeginFrame(const float clearColor[4])
     {
-        m_gpuProfiler.OpenFrame();
+        m_state->m_gpuProfiler.OpenFrame();
         RefreshMemoryStatistics();
         // 大きいテクスチャの段階アップロードを予算内で進めます
         // （メインスレッドのフレーム先頭が唯一の転送ポイント）。
@@ -249,9 +250,9 @@ namespace LamaPon
             assets->PumpTextureUploads();
             assets->PumpModelUploads();
         }
-        m_uiWidth = m_width;
-        m_uiHeight = m_height;
-        m_backend->BindAndClearBackBuffer(clearColor);
+        m_state->m_uiWidth = m_state->m_width;
+        m_state->m_uiHeight = m_state->m_height;
+        m_state->m_backend->BindAndClearBackBuffer(clearColor);
     }
 
     GraphicsBufferHandle GraphicsDevice::AcquireInstanceBufferHandle(
@@ -261,13 +262,13 @@ namespace LamaPon
         {
             return {};
         }
-        if (!m_backend->UpdateDynamicVertexBuffer(
-                m_instanceBuffer,
+        if (!m_state->m_backend->UpdateDynamicVertexBuffer(
+                m_state->m_instanceBuffer,
                 data))
         {
             return {};
         }
-        return m_instanceBuffer;
+        return m_state->m_instanceBuffer;
     }
 
     void GraphicsDevice::BindVertexBuffer(
@@ -276,12 +277,12 @@ namespace LamaPon
         const std::uint32_t stride,
         const std::uint32_t offset)
     {
-        if (m_backend == nullptr)
+        if (m_state->m_backend == nullptr)
         {
             throw std::logic_error(
                 "BindVertexBuffer requires an initialized graphics backend.");
         }
-        m_backend->BindVertexBuffer(
+        m_state->m_backend->BindVertexBuffer(
             buffer,
             slot,
             stride,
@@ -293,8 +294,8 @@ namespace LamaPon
         const std::span<const GraphicsViewHandle> resources,
         const GraphicsViewHandle& fallback) noexcept
     {
-        return m_backend != nullptr
-            && m_backend->TryBindPixelShaderResources(
+        return m_state->m_backend != nullptr
+            && m_state->m_backend->TryBindPixelShaderResources(
                 firstSlot,
                 resources,
                 fallback);
@@ -304,10 +305,10 @@ namespace LamaPon
     {
         // Presentより前に流します。デバイスを失う描画があった場合、
         // その理由はこのメッセージ側に出ていることが多いためです。
-        m_backend->DrainDebugMessages();
-        m_gpuProfiler.CloseFrame();
-        m_backend->Present(
-            m_graphicsSettings.vSyncEnabled);
+        m_state->m_backend->DrainDebugMessages();
+        m_state->m_gpuProfiler.CloseFrame();
+        m_state->m_backend->Present(
+            m_state->m_graphicsSettings.vSyncEnabled);
     }
 
     std::vector<std::uint8_t>
@@ -320,6 +321,6 @@ namespace LamaPon
             throw std::logic_error(
                 "CaptureBackBuffer requires an initialized device.");
         }
-        return m_backend->CaptureBackBuffer(width, height);
+        return m_state->m_backend->CaptureBackBuffer(width, height);
     }
 }

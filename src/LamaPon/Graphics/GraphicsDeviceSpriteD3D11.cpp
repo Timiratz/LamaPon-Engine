@@ -1,4 +1,5 @@
 #include "LamaPon/Graphics/GraphicsDevice.h"
+#include "LamaPon/Graphics/GraphicsDeviceState.h"
 
 #include "LamaPon/Graphics/GraphicsDeviceApiResources.h"
 
@@ -431,7 +432,7 @@ namespace LamaPon
 
         const auto& texture = request.texture
             ? request.texture
-            : m_whiteTextureView;
+            : m_state->m_whiteTextureView;
         auto* const view =
             TryResolveD3D11ShaderResourceView(texture);
         if (view == nullptr)

@@ -408,6 +408,16 @@ namespace
 
     void CheckD3D11Lifecycle()
     {
+        static_assert(
+            sizeof(LamaPon::GraphicsDevice) == sizeof(void*),
+            "GraphicsDevice exposed implementation state in its SDK layout");
+        static_assert(
+            std::is_nothrow_destructible_v<LamaPon::GraphicsDevice>);
+        static_assert(
+            !std::is_copy_constructible_v<LamaPon::GraphicsDevice>);
+        static_assert(
+            !std::is_move_constructible_v<LamaPon::GraphicsDevice>);
+
         HiddenWindow window;
         LamaPon::GraphicsDevice::SetPreferWarpAdapter(true);
 
@@ -415,8 +425,63 @@ namespace
         // ため、初回Initializeもlive ownerがいれば安全側で拒否します。
         LamaPon::SpriteRenderPass passPastDeviceLifetime;
         LamaPon::SpriteDrawContext contextPastDeviceLifetime;
+        LamaPon::GraphicsDeviceResourceLease leasePastDeviceLifetime;
         {
             LamaPon::GraphicsDevice initiallyGuardedGraphics;
+            const auto* const settingsStorage =
+                &initiallyGuardedGraphics.Settings();
+            const auto* const frameStatisticsStorage =
+                &initiallyGuardedGraphics.FrameStats();
+            const auto* const memoryStatisticsStorage =
+                &initiallyGuardedGraphics.MemoryStats();
+            const auto* const gpuProfilerStorage =
+                &initiallyGuardedGraphics.Gpu();
+            const auto* const lightingStorage =
+                &initiallyGuardedGraphics.Lighting();
+            const auto* const sceneProjectionStorage =
+                &initiallyGuardedGraphics.SceneProjection();
+            const auto* const spriteOffsetStorage =
+                &initiallyGuardedGraphics.Sprite2DOffset();
+            const auto hasStableOpaqueStorage = [&]() noexcept
+            {
+                return settingsStorage
+                        == &initiallyGuardedGraphics.Settings()
+                    && frameStatisticsStorage
+                        == &initiallyGuardedGraphics.FrameStats()
+                    && memoryStatisticsStorage
+                        == &initiallyGuardedGraphics.MemoryStats()
+                    && gpuProfilerStorage
+                        == &initiallyGuardedGraphics.Gpu()
+                    && lightingStorage
+                        == &initiallyGuardedGraphics.Lighting()
+                    && sceneProjectionStorage
+                        == &initiallyGuardedGraphics.SceneProjection()
+                    && spriteOffsetStorage
+                        == &initiallyGuardedGraphics.Sprite2DOffset();
+            };
+            Require(
+                !initiallyGuardedGraphics.IsInitialized()
+                    && initiallyGuardedGraphics.Width() == 0u
+                    && initiallyGuardedGraphics.Height() == 0u
+                    && initiallyGuardedGraphics.UIWidth() == 0u
+                    && initiallyGuardedGraphics.UIHeight() == 0u
+                    && initiallyGuardedGraphics.SceneCompositionTarget()
+                        == nullptr
+                    && !initiallyGuardedGraphics.WhiteTextureHandle()
+                    && !initiallyGuardedGraphics.WhiteTextureViewHandle()
+                    && initiallyGuardedGraphics.DepthPass()
+                        == LamaPon::DepthPassKind::None
+                    && !initiallyGuardedGraphics.IsDepthOnlyPass()
+                    && initiallyGuardedGraphics
+                        .IsAsyncShaderCompilationEnabled()
+                    && initiallyGuardedGraphics.StartupRenderingApi()
+                        == LamaPon::RenderingApi::DirectX11
+                    && initiallyGuardedGraphics.RenderingApiFallback()
+                        == LamaPon::RenderingApiFallbackReason::None
+                    && initiallyGuardedGraphics.FrameStats().totalFrames
+                        == 0u
+                    && hasStableOpaqueStorage(),
+                "A default opaque GraphicsDevice changed its public state");
             auto* const fileOnlyAssets =
                 &initiallyGuardedGraphics.Assets();
             RequireThrowsExactly<std::logic_error>(
@@ -442,7 +507,8 @@ namespace
                 Require(
                     !initiallyGuardedGraphics.IsInitialized()
                         && initiallyGuardedGraphics.TryAssets()
-                            == fileOnlyAssets,
+                            == fileOnlyAssets
+                        && hasStableOpaqueStorage(),
                     "Rejected initial setup replaced the file-only AssetManager");
             }
             auto resourceLease =
@@ -469,8 +535,21 @@ namespace
                 Height,
                 LamaPon::RenderingApi::DirectX11);
             Require(
-                initiallyGuardedGraphics.IsInitialized(),
+                initiallyGuardedGraphics.IsInitialized()
+                    && hasStableOpaqueStorage(),
                 "Resetting the final resource lease did not reopen initialization");
+            initiallyGuardedGraphics.Resize(80u, 48u);
+            Require(
+                initiallyGuardedGraphics.Width() == 80u
+                    && initiallyGuardedGraphics.Height() == 48u
+                    && hasStableOpaqueStorage(),
+                "Graphics resize replaced the fixed opaque state");
+            initiallyGuardedGraphics.Resize(Width, Height);
+            Require(
+                initiallyGuardedGraphics.Width() == Width
+                    && initiallyGuardedGraphics.Height() == Height
+                    && hasStableOpaqueStorage(),
+                "Graphics resize recovery replaced the fixed opaque state");
 
             const D3D11_VIEWPORT spritePassViewport{
                 0.0f,
@@ -648,7 +727,8 @@ namespace
                         preservedAudio->BusVolume(
                             LamaPon::AudioBus::Effects) - 0.4f)
                         < 0.0001f
-                    && preservedAudio->IsSuspended(),
+                    && preservedAudio->IsSuspended()
+                    && hasStableOpaqueStorage(),
                 "Failed graphics reinitialization did not preserve audio");
             initiallyGuardedGraphics.Initialize(
                 window.Get(),
@@ -681,7 +761,8 @@ namespace
                     && recoveredOpaqueDevice.Get()
                         == initiallyGuardedGraphics.Device()
                     && recoveredAdditiveDevice.Get()
-                        == initiallyGuardedGraphics.Device(),
+                        == initiallyGuardedGraphics.Device()
+                    && hasStableOpaqueStorage(),
                 "Graphics recovery did not rebuild DirectX 11 frontend resources");
             Require(
                 &initiallyGuardedGraphics.Audio()
@@ -724,6 +805,8 @@ namespace
                 initiallyGuardedGraphics.BeginSpritePass();
             contextPastDeviceLifetime =
                 passPastDeviceLifetime.Context();
+            leasePastDeviceLifetime =
+                initiallyGuardedGraphics.AcquireResourceLease();
         }
         Require(
             !passPastDeviceLifetime
@@ -733,6 +816,13 @@ namespace
             "A sprite pass accessed its GraphicsDevice after destruction");
         passPastDeviceLifetime.End();
         passPastDeviceLifetime.Abort();
+        Require(
+            static_cast<bool>(leasePastDeviceLifetime),
+            "A surviving resource lease lost its detached state");
+        leasePastDeviceLifetime.Reset();
+        Require(
+            !leasePastDeviceLifetime,
+            "A resource lease touched its destroyed GraphicsDevice on reset");
 
         // A background model import owns the old Device beyond the initiating
         // call. Reinitialization must join it before stopping the backend,

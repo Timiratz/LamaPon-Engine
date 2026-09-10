@@ -1,4 +1,5 @@
 #include "LamaPon/Graphics/GraphicsDevice.h"
+#include "LamaPon/Graphics/GraphicsDeviceState.h"
 
 #include "LamaPon/Assets/AssetManager.h"
 #include "LamaPon/Graphics/D3D11Backend.h"
@@ -257,13 +258,13 @@ namespace LamaPon
     void GraphicsDevice::CreateApiResources(
         const RenderingApi activeApi)
     {
-        if (m_apiResources != nullptr)
+        if (m_state->m_apiResources != nullptr)
         {
             throw std::logic_error(
                 "Graphics API resources are already initialized.");
         }
-        if (m_backend == nullptr
-            || m_backend->Api() != activeApi)
+        if (m_state->m_backend == nullptr
+            || m_state->m_backend->Api() != activeApi)
         {
             throw std::logic_error(
                 "Graphics API resources require the active backend.");
@@ -278,7 +279,7 @@ namespace LamaPon
                 Detail::CreateD3D11GraphicsDeviceApiResources(
                     Device(),
                     Context(),
-                    *m_backend);
+                    *m_state->m_backend);
             break;
         case RenderingApi::Auto:
         case RenderingApi::DirectX12Experimental:
@@ -289,28 +290,28 @@ namespace LamaPon
         }
 
         // Factoryが全資源を作り終えてから一度だけ公開します。
-        m_apiResources = std::move(resources);
+        m_state->m_apiResources = std::move(resources);
     }
 
     void GraphicsDevice::ResetApiResources() noexcept
     {
-        if (m_apiResources)
+        if (m_state->m_apiResources)
         {
-            m_apiResources->Reset();
-            m_apiResources.reset();
+            m_state->m_apiResources->Reset();
+            m_state->m_apiResources.reset();
         }
     }
 
     Detail::GraphicsDeviceD3D11Resources*
         GraphicsDevice::TryD3D11ApiResources() const noexcept
     {
-        if (m_backend == nullptr
-            || m_backend->Api() != RenderingApi::DirectX11
-            || m_apiResources == nullptr)
+        if (m_state->m_backend == nullptr
+            || m_state->m_backend->Api() != RenderingApi::DirectX11
+            || m_state->m_apiResources == nullptr)
         {
             return nullptr;
         }
-        return m_apiResources->d3d11.get();
+        return m_state->m_apiResources->d3d11.get();
     }
 
     Detail::GraphicsDeviceD3D11Resources&
@@ -340,7 +341,7 @@ namespace LamaPon
     ID3D11Device* GraphicsDevice::Device() const noexcept
     {
         const auto* const backend =
-            AsD3D11Backend(m_backend.get());
+            AsD3D11Backend(m_state->m_backend.get());
         return backend != nullptr
             ? backend->Device()
             : nullptr;
@@ -349,7 +350,7 @@ namespace LamaPon
     ID3D11DeviceContext* GraphicsDevice::Context() const noexcept
     {
         const auto* const backend =
-            AsD3D11Backend(m_backend.get());
+            AsD3D11Backend(m_state->m_backend.get());
         return backend != nullptr
             ? backend->Context()
             : nullptr;
@@ -359,7 +360,7 @@ namespace LamaPon
         const GraphicsViewHandle& cubemap) const noexcept
     {
         const auto* const backend =
-            AsD3D11Backend(m_backend.get());
+            AsD3D11Backend(m_state->m_backend.get());
         if (!cubemap || backend == nullptr)
         {
             return false;
@@ -383,7 +384,7 @@ namespace LamaPon
         const GraphicsViewHandle& cubemap,
         const SkySunDescription* const sun) const
     {
-        auto* const backend = AsD3D11Backend(m_backend.get());
+        auto* const backend = AsD3D11Backend(m_state->m_backend.get());
         if (backend == nullptr || backend->Device() == nullptr)
         {
             throw std::logic_error(
@@ -433,7 +434,7 @@ namespace LamaPon
         const float projectionW) const noexcept
     {
         const auto* const backend =
-            AsD3D11Backend(m_backend.get());
+            AsD3D11Backend(m_state->m_backend.get());
         if (backend == nullptr
             || !target.IsValid()
             || !backend->IsViewCurrent(target.DepthViewHandle())
@@ -460,7 +461,7 @@ namespace LamaPon
         GraphicsDevice::BakeIrradianceProbe(
             const EnvironmentProbeFaceRenderer& renderFace) const
     {
-        auto* const backend = AsD3D11Backend(m_backend.get());
+        auto* const backend = AsD3D11Backend(m_state->m_backend.get());
         if (backend == nullptr || backend->Device() == nullptr)
         {
             throw std::logic_error(
@@ -473,7 +474,7 @@ namespace LamaPon
         GraphicsDevice::WhiteTexture() const noexcept
     {
         const auto* const backend =
-            AsD3D11Backend(m_backend.get());
+            AsD3D11Backend(m_state->m_backend.get());
         if (backend == nullptr)
         {
             return nullptr;
@@ -481,7 +482,7 @@ namespace LamaPon
         try
         {
             return backend->ResolveShaderResourceView(
-                m_whiteTextureView);
+                m_state->m_whiteTextureView);
         }
         catch (...)
         {
@@ -496,7 +497,7 @@ namespace LamaPon
             const GraphicsViewHandle& view) const
     {
         const auto* const backend =
-            AsD3D11Backend(m_backend.get());
+            AsD3D11Backend(m_state->m_backend.get());
         if (backend == nullptr)
         {
             if (view)
@@ -558,7 +559,7 @@ namespace LamaPon
         const GraphicsBufferHandle& buffer) const
     {
         const auto* const backend =
-            AsD3D11Backend(m_backend.get());
+            AsD3D11Backend(m_state->m_backend.get());
         if (backend == nullptr)
         {
             if (buffer)
@@ -580,7 +581,7 @@ namespace LamaPon
         {
             return {};
         }
-        auto* const backend = AsD3D11Backend(m_backend.get());
+        auto* const backend = AsD3D11Backend(m_state->m_backend.get());
         if (backend == nullptr)
         {
             throw std::logic_error(
@@ -599,7 +600,7 @@ namespace LamaPon
 
     void GraphicsDevice::PrepareEnvironmentProbeBake() const
     {
-        auto* const backend = AsD3D11Backend(m_backend.get());
+        auto* const backend = AsD3D11Backend(m_state->m_backend.get());
         if (backend == nullptr || backend->Device() == nullptr)
         {
             throw std::logic_error(
@@ -613,7 +614,7 @@ namespace LamaPon
             const EnvironmentProbeFaceRenderer& renderFace,
             const std::optional<std::uint64_t> cacheKey) const
     {
-        auto* const backend = AsD3D11Backend(m_backend.get());
+        auto* const backend = AsD3D11Backend(m_state->m_backend.get());
         if (backend == nullptr || backend->Device() == nullptr)
         {
             throw std::logic_error(
@@ -638,7 +639,7 @@ namespace LamaPon
         GraphicsDevice::TryLoadCachedEnvironmentViews(
             const std::uint64_t key) const noexcept
     {
-        auto* const backend = AsD3D11Backend(m_backend.get());
+        auto* const backend = AsD3D11Backend(m_state->m_backend.get());
         if (backend == nullptr || backend->Device() == nullptr)
         {
             return {};
@@ -663,7 +664,7 @@ namespace LamaPon
             const GraphicsViewHandle& source,
             const std::uint64_t cacheKey) const noexcept
     {
-        auto* const backend = AsD3D11Backend(m_backend.get());
+        auto* const backend = AsD3D11Backend(m_state->m_backend.get());
         auto* const apiResources = TryD3D11ApiResources();
         if (!source || backend == nullptr || apiResources == nullptr)
         {
