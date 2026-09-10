@@ -44,6 +44,7 @@
 - オフスクリーン描画先、名前付きRenderTexture、Scene最終合成の実装を`GraphicsDeviceComposition.cpp`へ分離し、Backend選択・寿命管理と画面合成の責務を切り分け。
 - resource生成、frame、shadow、cluster、描画先状態のAPI中立な委譲処理を`GraphicsDeviceBackendOps.cpp`へ分離し、Backend操作境界を集約。
 - SpriteBatch、CommonStates、UIシザー等のDirectX 11固有資源をprivateなopaque stateへ集約し、将来の描画APIごとの資源所有境界を追加。
+- SpriteBatchの基本開始・終了、UIシザー、起動画面描画を`GraphicsDeviceSpriteD3D11.cpp`へ分離し、共通Device実装からD3D11 Spriteフロントエンドの責務を切り出し。
 - `GraphicsDevice`の公開レイアウト変更に伴い、Game Module APIを38へ更新。SDK反映後はゲーム用DLLの再ビルドが必要。
 
 ### ファイル名の統一
