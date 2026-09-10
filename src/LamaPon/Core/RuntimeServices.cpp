@@ -11,8 +11,41 @@ namespace LamaPon
     RuntimeServices::RuntimeServices() = default;
     RuntimeServices::~RuntimeServices() = default;
 
-    void RuntimeServices::Initialize(ID3D11Device* device, ID3D11DeviceContext* context,
-        const HWND window, const bool textureCompression)
+    void RuntimeServices::Initialize(
+        ID3D11Device* const device,
+        ID3D11DeviceContext* const context,
+        const HWND window,
+        const bool textureCompression)
+    {
+        InitializeImpl(
+            device,
+            context,
+            window,
+            textureCompression,
+            nullptr);
+    }
+
+    void RuntimeServices::Initialize(
+        ID3D11Device* const device,
+        ID3D11DeviceContext* const context,
+        const HWND window,
+        const bool textureCompression,
+        GraphicsBackend& backend)
+    {
+        InitializeImpl(
+            device,
+            context,
+            window,
+            textureCompression,
+            &backend);
+    }
+
+    void RuntimeServices::InitializeImpl(
+        ID3D11Device* device,
+        ID3D11DeviceContext* context,
+        const HWND window,
+        const bool textureCompression,
+        GraphicsBackend* const backend)
     {
         if (m_input)
         {
@@ -20,7 +53,14 @@ namespace LamaPon
                 "Runtime services are already initialized; call Shutdown "
                 "or PrepareForGraphicsReinitialization first.");
         }
-        auto assets = std::make_unique<AssetManager>(device, context);
+        auto assets = backend != nullptr
+            ? std::make_unique<AssetManager>(
+                device,
+                context,
+                *backend)
+            : std::make_unique<AssetManager>(
+                device,
+                context);
         assets->SetRuntimeTextureCompressionEnabled(textureCompression);
         auto audio = m_audio
             ? std::unique_ptr<AudioSystem>{}
@@ -52,12 +92,47 @@ namespace LamaPon
         m_assets.reset();
     }
 
-    AssetManager& RuntimeServices::EnsureAssets(ID3D11Device* device,
-        ID3D11DeviceContext* context, const bool textureCompression)
+    AssetManager& RuntimeServices::EnsureAssets(
+        ID3D11Device* const device,
+        ID3D11DeviceContext* const context,
+        const bool textureCompression)
+    {
+        return EnsureAssetsImpl(
+            device,
+            context,
+            textureCompression,
+            nullptr);
+    }
+
+    AssetManager& RuntimeServices::EnsureAssets(
+        ID3D11Device* const device,
+        ID3D11DeviceContext* const context,
+        const bool textureCompression,
+        GraphicsBackend& backend)
+    {
+        return EnsureAssetsImpl(
+            device,
+            context,
+            textureCompression,
+            &backend);
+    }
+
+    AssetManager& RuntimeServices::EnsureAssetsImpl(
+        ID3D11Device* device,
+        ID3D11DeviceContext* context,
+        const bool textureCompression,
+        GraphicsBackend* const backend)
     {
         if (!m_assets)
         {
-            auto assets = std::make_unique<AssetManager>(device, context);
+            auto assets = backend != nullptr
+                ? std::make_unique<AssetManager>(
+                    device,
+                    context,
+                    *backend)
+                : std::make_unique<AssetManager>(
+                    device,
+                    context);
             assets->SetRuntimeTextureCompressionEnabled(textureCompression);
             m_assets = std::move(assets);
         }

@@ -465,8 +465,25 @@ namespace LamaPon
         [[nodiscard]] ID3D11ShaderResourceView*
             ResolveD3D11ShaderResourceView(
                 const GraphicsViewHandle& view) const;
+        // 描画時の互換経路です。empty/stale/別Backendのhandleは例外を
+        // 外へ出さずnullptrへ倒し、旧Device resourceのbindを防ぎます。
+        [[nodiscard]] ID3D11ShaderResourceView*
+            TryResolveD3D11ShaderResourceView(
+                const GraphicsViewHandle& view) const noexcept;
         [[nodiscard]] ID3D11Buffer* ResolveD3D11Buffer(
             const GraphicsBufferHandle& buffer) const;
+        // API非依存resource操作をactive Backendへ転送します。
+        [[nodiscard]] GraphicsTextureHandle CreateTexture2D(
+            const GraphicsTexture2DDescription& description,
+            std::span<const GraphicsTextureSubresourceData>
+                initialData);
+        void UpdateTexture2D(
+            const GraphicsTextureHandle& texture,
+            std::uint32_t mipLevel,
+            const GraphicsTextureSubresourceData& data);
+        [[nodiscard]] GraphicsViewHandle CreateShaderResourceView(
+            const GraphicsTextureHandle& texture,
+            const GraphicsTextureViewDescription& description);
         [[nodiscard]] AssetManager& Assets() const;
         [[nodiscard]] AssetManager* TryAssets() const noexcept;
         [[nodiscard]] AudioSystem& Audio() const;

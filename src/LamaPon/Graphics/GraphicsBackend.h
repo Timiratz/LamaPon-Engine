@@ -253,6 +253,26 @@ namespace LamaPon
         [[nodiscard]] virtual bool UpdateDynamicVertexBuffer(
             GraphicsBufferHandle& buffer,
             std::span<const std::byte> data) = 0;
+
+        // Asset側がAPI固有Deviceへ触れずに2D textureを生成・更新する境界です。
+        // initialDataは空（PerMipUpdateのみ）か、全mip分を先頭から並べます。
+        // Immutableは全mip必須かつ後続更新不可、PerMipUpdateは後から更新可能
+        // というdescriptionの契約を各Backendで同じように守ります。
+        // 生成はAsset準備workerからも呼べる必要があります。
+        // UpdateTexture2Dはimmediate command submissionを伴うためrender
+        // thread専用です。
+        [[nodiscard]] virtual GraphicsTextureHandle CreateTexture2D(
+            const GraphicsTexture2DDescription& description,
+            std::span<const GraphicsTextureSubresourceData>
+                initialData) = 0;
+        virtual void UpdateTexture2D(
+            const GraphicsTextureHandle& texture,
+            std::uint32_t mipLevel,
+            const GraphicsTextureSubresourceData& data) = 0;
+        [[nodiscard]] virtual GraphicsViewHandle
+            CreateShaderResourceView(
+                const GraphicsTextureHandle& texture,
+                const GraphicsTextureViewDescription& description) = 0;
     };
 
     // activeApiはSelectGraphicsBackendで解決済みの値を渡します。

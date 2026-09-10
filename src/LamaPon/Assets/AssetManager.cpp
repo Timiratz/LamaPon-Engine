@@ -10,6 +10,8 @@
 #include "LamaPon/Assets/TextureLoader.h"
 #include "LamaPon/Core/Log.h"
 #include "LamaPon/Core/PathUtils.h"
+#include "LamaPon/Graphics/D3D11Backend.h"
+#include "LamaPon/Graphics/GraphicsBackend.h"
 #include "LamaPon/Graphics/SkeletalModel.h"
 
 #include <DDSTextureLoader.h>
@@ -27,6 +29,7 @@
 #include <cwctype>
 #include <deque>
 #include <fstream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -193,6 +196,131 @@ namespace
         }
     }
 
+    [[nodiscard]] LamaPon::D3D11Backend* AsD3D11Backend(
+        LamaPon::GraphicsBackend* const backend) noexcept
+    {
+        return dynamic_cast<LamaPon::D3D11Backend*>(backend);
+    }
+
+    [[nodiscard]] LamaPon::GraphicsTextureFormat ToGraphicsTextureFormat(
+        const DXGI_FORMAT format)
+    {
+        switch (format)
+        {
+        case DXGI_FORMAT_R8G8B8A8_UNORM:
+            return LamaPon::GraphicsTextureFormat::Rgba8Unorm;
+        case DXGI_FORMAT_B8G8R8A8_UNORM:
+            return LamaPon::GraphicsTextureFormat::Bgra8Unorm;
+        case DXGI_FORMAT_BC1_UNORM:
+            return LamaPon::GraphicsTextureFormat::Bc1Unorm;
+        case DXGI_FORMAT_BC3_UNORM:
+            return LamaPon::GraphicsTextureFormat::Bc3Unorm;
+        case DXGI_FORMAT_BC5_UNORM:
+            return LamaPon::GraphicsTextureFormat::Bc5Unorm;
+        default:
+            throw std::invalid_argument(
+                "The prepared texture format has no graphics backend mapping.");
+        }
+    }
+
+    [[nodiscard]] LamaPon::GraphicsTexture2DDescription
+        MakeTextureDescription(
+            const LamaPon::TextureLoader::PreparedTextureData& data)
+    {
+        if (data.levels.empty())
+        {
+            throw std::invalid_argument(
+                "A prepared texture requires at least one mip level.");
+        }
+        if (data.levels.size()
+            > std::numeric_limits<std::uint32_t>::max())
+        {
+            throw std::overflow_error(
+                "The prepared texture has too many mip levels.");
+        }
+        return {
+            data.levels.front().width,
+            data.levels.front().height,
+            static_cast<std::uint32_t>(data.levels.size()),
+            ToGraphicsTextureFormat(data.format)
+        };
+    }
+
+    [[nodiscard]] std::vector<LamaPon::GraphicsTextureSubresourceData>
+        MakeTextureSubresources(
+            const LamaPon::TextureLoader::PreparedTextureData& data)
+    {
+        std::vector<LamaPon::GraphicsTextureSubresourceData> subresources;
+        subresources.reserve(data.levels.size());
+        for (const auto& level : data.levels)
+        {
+            if (level.bytes.size()
+                > std::numeric_limits<std::uint32_t>::max())
+            {
+                throw std::overflow_error(
+                    "A prepared texture mip is too large.");
+            }
+            subresources.push_back({
+                std::as_bytes(std::span{ level.bytes }),
+                level.rowPitch,
+                static_cast<std::uint32_t>(level.bytes.size())
+            });
+        }
+        return subresources;
+    }
+
+    [[nodiscard]] Microsoft::WRL::ComPtr<
+        ID3D11ShaderResourceView> ResolveCompatibilityView(
+            LamaPon::GraphicsBackend* const backend,
+            const LamaPon::GraphicsViewHandle& view)
+    {
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> resolved;
+        if (auto* const d3d11 = AsD3D11Backend(backend))
+        {
+            resolved = d3d11->ResolveShaderResourceView(view);
+        }
+        return resolved;
+    }
+
+    template <typename Asset>
+    void PublishTextureResources(
+        Asset& asset,
+        LamaPon::GraphicsBackend* const backend,
+        LamaPon::GraphicsTextureHandle texture,
+        LamaPon::GraphicsViewHandle view)
+    {
+        // resolverを含む失敗し得る処理を先に終え、assetへは完成した一式だけを
+        // 公開します。DirectX 12ではcompatibility viewは空になります。
+        auto compatibility = ResolveCompatibilityView(backend, view);
+        asset.textureHandle = std::move(texture);
+        asset.viewHandle = std::move(view);
+        asset.view = std::move(compatibility);
+    }
+
+    template <typename Asset>
+    void CreatePreparedTextureResources(
+        Asset& asset,
+        LamaPon::GraphicsBackend& backend,
+        const LamaPon::TextureLoader::PreparedTextureData& data)
+    {
+        const auto description = MakeTextureDescription(data);
+        const auto subresources = MakeTextureSubresources(data);
+        auto texture = backend.CreateTexture2D(
+            description,
+            subresources);
+        auto view = backend.CreateShaderResourceView(
+            texture,
+            LamaPon::GraphicsTextureViewDescription{
+                0,
+                description.mipLevels
+            });
+        PublishTextureResources(
+            asset,
+            &backend,
+            std::move(texture),
+            std::move(view));
+    }
+
     // 小文字化した拡張子を返します。
     [[nodiscard]] std::wstring LoweredExtension(
         const std::filesystem::path& path)
@@ -262,6 +390,7 @@ namespace
 
     [[nodiscard]] std::shared_ptr<LamaPon::TextureAsset>
         CreateBuiltInTexture(
+            LamaPon::GraphicsBackend* const backend,
             ID3D11Device* device,
             const std::filesystem::path& sourcePath,
             const std::wstring& kind)
@@ -345,6 +474,27 @@ namespace
                 pixels[pixelIndex + 3] = alpha;
             }
         }
+        auto asset = std::make_shared<LamaPon::TextureAsset>();
+        asset->width = Size;
+        asset->height = Size;
+        asset->sourcePath = sourcePath.lexically_normal();
+        if (backend != nullptr)
+        {
+            LamaPon::TextureLoader::PreparedTextureData prepared;
+            prepared.format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            prepared.levels.push_back(
+                LamaPon::TextureLoader::PreparedTextureLevel{
+                    Size,
+                    Size,
+                    Size * 4u,
+                    std::move(pixels)
+                });
+            CreatePreparedTextureResources(
+                *asset,
+                *backend,
+                prepared);
+            return asset;
+        }
         if (device == nullptr)
         {
             throw std::runtime_error(
@@ -374,16 +524,12 @@ namespace
         viewDescription.ViewDimension =
             D3D11_SRV_DIMENSION_TEXTURE2D;
         viewDescription.Texture2D.MipLevels = 1;
-        auto asset = std::make_shared<LamaPon::TextureAsset>();
         ThrowIfFailed(
             device->CreateShaderResourceView(
                 texture.Get(),
                 &viewDescription,
                 asset->view.ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateShaderResourceView(built-in)");
-        asset->width = Size;
-        asset->height = Size;
-        asset->sourcePath = sourcePath.lexically_normal();
         return asset;
     }
 }
@@ -391,11 +537,58 @@ namespace
 namespace LamaPon
 {
     AssetManager::AssetManager(
+        ID3D11Device* const device,
+        ID3D11DeviceContext* const context)
+        : AssetManager(device, context, nullptr)
+    {
+    }
+
+    AssetManager::AssetManager(
+        ID3D11Device* const device,
+        ID3D11DeviceContext* const context,
+        GraphicsBackend& backend)
+        : AssetManager(device, context, &backend)
+    {
+    }
+
+    AssetManager::AssetManager(
         ID3D11Device* device,
-        ID3D11DeviceContext* context)
+        ID3D11DeviceContext* context,
+        GraphicsBackend* backend)
         : m_device(device)
         , m_context(context)
+        , m_backend(backend)
     {
+        if (m_backend != nullptr && !m_backend->IsInitialized())
+        {
+            throw std::invalid_argument(
+                "AssetManager requires an initialized graphics backend.");
+        }
+        if (auto* const d3d11 = AsD3D11Backend(m_backend))
+        {
+            if (m_device == nullptr)
+            {
+                m_device = d3d11->Device();
+            }
+            if (m_context == nullptr)
+            {
+                m_context = d3d11->Context();
+            }
+            if (m_device != d3d11->Device()
+                || m_context != d3d11->Context())
+            {
+                throw std::invalid_argument(
+                    "AssetManager device/context do not match the graphics "
+                    "backend.");
+            }
+        }
+        else if (m_backend != nullptr
+            && (m_device != nullptr || m_context != nullptr))
+        {
+            throw std::invalid_argument(
+                "A non-D3D11 backend cannot borrow DirectX 11 objects.");
+        }
+
         ThrowIfFailed(
             D2D1CreateFactory(
                 D2D1_FACTORY_TYPE_SINGLE_THREADED,
@@ -567,7 +760,7 @@ namespace LamaPon
             {
                 try
                 {
-                    if (m_device != nullptr)
+                    if (m_backend != nullptr || m_device != nullptr)
                     {
                         static_cast<void>(LoadTexture(path));
                         ++report.preparedTextures;
@@ -589,53 +782,83 @@ namespace LamaPon
             }
             const auto resolvedPath = ResolvePath(path);
             const auto key = MakeCacheKey(resolvedPath);
-            bool alreadyCached{};
-            {
-                std::scoped_lock lock(m_prefetchMutex);
-                alreadyCached =
-                    m_prefetchedBytes.contains(key);
-            }
-            if (alreadyCached)
-            {
-                ++report.cachedFiles;
-                ++completed;
-                if (progress
-                    && !progress(
-                        completed,
-                        paths.size()))
-                {
-                    report.cancelled = true;
-                    break;
-                }
-                continue;
-            }
 
             try
             {
-                auto bytes =
-                    std::make_shared<
-                        const std::vector<std::uint8_t>>(
-                            ReadFileBytesUncached(
-                                resolvedPath));
+                bool foundExisting{};
+                for (;;)
                 {
-                    std::scoped_lock lock(
-                        m_prefetchMutex);
-                    const auto [iterator, inserted] =
-                        m_prefetchedBytes.emplace(
-                            key,
-                            bytes);
-                    static_cast<void>(iterator);
-                    if (inserted)
+                    std::uint64_t textureEpoch{};
+                    std::uint64_t pathGeneration{};
+                    std::uint64_t prefetchEpoch{};
                     {
-                        ++report.loadedFiles;
-                        report.loadedBytes +=
-                            bytes->size();
-                        m_prefetchedByteCount +=
-                            bytes->size();
+                        std::scoped_lock lock(
+                            m_textureMutex,
+                            m_prefetchMutex);
+                        if (m_prefetchedBytes.contains(key))
+                        {
+                            ++report.cachedFiles;
+                            foundExisting = true;
+                            break;
+                        }
+                        textureEpoch = m_textureEpoch;
+                        const auto generation =
+                            m_texturePathGenerations.find(key);
+                        pathGeneration = generation
+                                != m_texturePathGenerations.end()
+                            ? generation->second
+                            : 0;
+                        prefetchEpoch = m_prefetchEpoch;
                     }
-                    else
+
+                    auto bytes =
+                        std::make_shared<
+                            const std::vector<std::uint8_t>>(
+                                ReadFileBytesUncached(
+                                    resolvedPath));
+                    bool generationChanged{};
                     {
-                        ++report.cachedFiles;
+                        // Invalidate/Clearと同じmutex集合でcommitし、古い
+                        // 読み取り結果が新世代のbyte cacheへ復活しないように
+                        // します。世代が変わった場合は最新状態で読み直します。
+                        std::scoped_lock lock(
+                            m_textureMutex,
+                            m_prefetchMutex);
+                        const auto generation =
+                            m_texturePathGenerations.find(key);
+                        const auto currentPathGeneration = generation
+                                != m_texturePathGenerations.end()
+                            ? generation->second
+                            : 0;
+                        generationChanged =
+                            textureEpoch != m_textureEpoch
+                            || pathGeneration
+                                != currentPathGeneration
+                            || prefetchEpoch != m_prefetchEpoch;
+                        if (!generationChanged)
+                        {
+                            const auto [iterator, inserted] =
+                                m_prefetchedBytes.emplace(
+                                    key,
+                                    bytes);
+                            static_cast<void>(iterator);
+                            if (inserted)
+                            {
+                                ++report.loadedFiles;
+                                report.loadedBytes +=
+                                    bytes->size();
+                                m_prefetchedByteCount +=
+                                    bytes->size();
+                            }
+                            else
+                            {
+                                ++report.cachedFiles;
+                            }
+                        }
+                    }
+                    if (!generationChanged)
+                    {
+                        break;
                     }
                 }
 
@@ -644,7 +867,8 @@ namespace LamaPon
                 // フリースレッドなので安全）。失敗しても
                 // バイトキャッシュは有効なため、本番ロード側の
                 // エラー処理に任せて握りつぶします。
-                if (m_device != nullptr
+                if (!foundExisting
+                    && (m_backend != nullptr || m_device != nullptr)
                     && IsTextureExtension(
                         LoweredExtension(resolvedPath)))
                 {
@@ -680,6 +904,7 @@ namespace LamaPon
         try
         {
             std::scoped_lock lock(m_prefetchMutex);
+            ++m_prefetchEpoch;
             m_prefetchedBytes.clear();
             m_prefetchedByteCount = 0;
         }
@@ -724,40 +949,84 @@ namespace LamaPon
         const auto resolvedPath = builtInKind.empty()
             ? ResolvePath(path)
             : path.lexically_normal();
+        const auto baseCacheKey = MakeCacheKey(resolvedPath);
         // 同じ画像でも用途が違えばフォーマットが違うので、
         // メモリ上のキャッシュも用途で分けます。
-        auto cacheKey = MakeCacheKey(resolvedPath);
+        auto cacheKey = baseCacheKey;
         cacheKey += L"|u";
         cacheKey += static_cast<wchar_t>(
             L'0' + static_cast<int>(usage));
 
+        for (;;)
         {
-            std::scoped_lock lock(m_textureMutex);
-            if (const auto existing =
-                    m_textureCache.find(cacheKey);
-                existing != m_textureCache.end())
+            std::uint64_t epoch{};
+            std::uint64_t pathGeneration{};
             {
-                return existing->second;
+                std::scoped_lock lock(m_textureMutex);
+                if (const auto existing =
+                        m_textureCache.find(cacheKey);
+                    existing != m_textureCache.end())
+                {
+                    return existing->second;
+                }
+                epoch = m_textureEpoch;
+                pathGeneration =
+                    m_texturePathGenerations[baseCacheKey];
+            }
+
+            // 生成はロックの外で行い、他スレッドのキャッシュ参照を
+            // 止めません。同じpathが途中でInvalidate/Clearされた場合は
+            // 旧結果を公開せず、最新世代として読み直します。
+            std::optional<PendingTextureUpload> pendingUpload;
+            auto texture = builtInKind.empty()
+                ? LoadTextureUncached(
+                    resolvedPath,
+                    usage,
+                    pendingUpload)
+                : CreateBuiltInTexture(
+                    m_backend,
+                    m_device,
+                    resolvedPath,
+                    builtInKind);
+
+            {
+                // 世代確認、cache採用、段階upload登録を一括commitします。
+                // 同じkeyの並行loadでtry_emplaceに負けたresourceや、
+                // Invalidate済みのresourceはglobal queueへ公開しません。
+                std::scoped_lock lock(m_textureMutex, m_uploadMutex);
+                const auto currentGeneration =
+                    m_texturePathGenerations.find(baseCacheKey);
+                const auto currentPathGeneration =
+                    currentGeneration !=
+                            m_texturePathGenerations.end()
+                        ? currentGeneration->second
+                        : 0;
+                if (epoch == m_textureEpoch
+                    && pathGeneration == currentPathGeneration)
+                {
+                    const auto [iterator, inserted] =
+                        m_textureCache.try_emplace(
+                            cacheKey,
+                            texture);
+                    if (inserted && pendingUpload)
+                    {
+                        try
+                        {
+                            m_pendingUploads.push_back(
+                                std::move(*pendingUpload));
+                        }
+                        catch (...)
+                        {
+                            // placeholderだけがcacheへ残る半端なcommitを
+                            // 防ぎ、次回loadで生成から再試行できるようにします。
+                            m_textureCache.erase(iterator);
+                            throw;
+                        }
+                    }
+                    return iterator->second;
+                }
             }
         }
-
-        // 生成はロックの外で行い、他スレッドのキャッシュ参照を
-        // 止めないようにします（同じパスを同時に要求された場合は
-        // 先着の結果を採用）。
-        auto texture = builtInKind.empty()
-            ? LoadTextureUncached(resolvedPath, usage)
-            : CreateBuiltInTexture(
-                m_device,
-                resolvedPath,
-                builtInKind);
-
-        std::scoped_lock lock(m_textureMutex);
-        const auto [iterator, inserted] =
-            m_textureCache.try_emplace(
-                cacheKey,
-                std::move(texture));
-        static_cast<void>(inserted);
-        return iterator->second;
     }
 
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
@@ -819,8 +1088,10 @@ namespace LamaPon
     std::shared_ptr<TextureAsset>
         AssetManager::LoadTextureUncached(
             const std::filesystem::path& resolvedPath,
-            const TextureLoader::TextureUsage usage)
+            const TextureLoader::TextureUsage usage,
+            std::optional<PendingTextureUpload>& pendingUpload)
     {
+        pendingUpload.reset();
         if (!FileExists(resolvedPath))
         {
             throw std::runtime_error("Texture file does not exist: " + LamaPon::PathToUtf8(resolvedPath));
@@ -846,6 +1117,17 @@ namespace LamaPon
                     texture->view
                         .ReleaseAndGetAddressOf()),
                 resolvedPath);
+            if (auto* const d3d11 = AsD3D11Backend(m_backend))
+            {
+                auto [textureHandle, viewHandle] =
+                    d3d11->ImportShaderResourceView(
+                        texture->view.Get());
+                PublishTextureResources(
+                    *texture,
+                    m_backend,
+                    std::move(textureHandle),
+                    std::move(viewHandle));
+            }
         }
         else
         {
@@ -898,7 +1180,7 @@ namespace LamaPon
                 prepared = std::move(entry.data);
             }
 
-            if (m_context != nullptr
+            if ((m_backend != nullptr || m_context != nullptr)
                 && prepared.TotalBytes()
                     >= ProgressiveUploadThreshold())
             {
@@ -908,56 +1190,111 @@ namespace LamaPon
                 // 平均色SRVで表示します。
                 texture->width = prepared.levels[0].width;
                 texture->height = prepared.levels[0].height;
-                auto gpuTexture =
-                    TextureLoader::CreateUploadableTexture(
+                Microsoft::WRL::ComPtr<ID3D11Texture2D>
+                    gpuTexture;
+                GraphicsTextureHandle gpuTextureHandle;
+                if (m_backend != nullptr)
+                {
+                    auto uploadDescription =
+                        MakeTextureDescription(prepared);
+                    uploadDescription.updateMode =
+                        GraphicsTextureUpdateMode::PerMipUpdate;
+                    gpuTextureHandle = m_backend->CreateTexture2D(
+                        uploadDescription,
+                        {});
+                    TextureLoader::PreparedTextureData
+                        placeholderData;
+                    placeholderData.format =
+                        DXGI_FORMAT_R8G8B8A8_UNORM;
+                    placeholderData.levels.push_back(
+                        TextureLoader::PreparedTextureLevel{
+                            placeholder.width,
+                            placeholder.height,
+                            placeholder.width * 4u,
+                            std::move(placeholder.pixels)
+                        });
+                    CreatePreparedTextureResources(
+                        *texture,
+                        *m_backend,
+                        placeholderData);
+                }
+                else
+                {
+                    gpuTexture =
+                        TextureLoader::CreateUploadableTexture(
+                            m_device,
+                            prepared);
+                    texture->view = TextureLoader::CreateTexture(
                         m_device,
-                        prepared);
-                texture->view = TextureLoader::CreateTexture(
-                    m_device,
-                    std::vector<TextureLoader::CpuImage>{
-                        std::move(placeholder)
-                    },
-                    false);
+                        std::vector<TextureLoader::CpuImage>{
+                            std::move(placeholder)
+                        },
+                        false);
+                }
 
                 const auto lastLevel =
                     static_cast<std::ptrdiff_t>(
                         prepared.levels.size()) - 1;
-                std::scoped_lock uploadLock(m_uploadMutex);
-                m_pendingUploads.push_back(
+                pendingUpload.emplace(
                     PendingTextureUpload{
                         texture,
                         std::move(gpuTexture),
+                        std::move(gpuTextureHandle),
                         std::move(prepared),
                         lastLevel
                     });
                 return texture;
             }
 
-            texture->view = TextureLoader::CreateTexture(
-                m_device,
-                prepared);
+            // WIC/CPU decodeで作った2D textureの形状はprepared dataから
+            // API非依存に確定できます。D3D12 backendではD3D11互換viewを
+            // 公開しないため、native SRVのintrospectionへ依存させません。
+            texture->width = prepared.levels.front().width;
+            texture->height = prepared.levels.front().height;
+            texture->isCube = false;
+
+            if (m_backend != nullptr)
+            {
+                CreatePreparedTextureResources(
+                    *texture,
+                    *m_backend,
+                    prepared);
+            }
+            else
+            {
+                texture->view = TextureLoader::CreateTexture(
+                    m_device,
+                    prepared);
+            }
         }
 
-        Microsoft::WRL::ComPtr<ID3D11Resource> resource;
-        texture->view->GetResource(resource.ReleaseAndGetAddressOf());
+        // DDSとlegacy D3D11経路はnative metadataを保持し得ます。通常の
+        // WIC textureは上でprepared dataから設定済みであり、将来の
+        // D3D12 backendではcompatibility viewが空でも安全です。
+        if (texture->view)
+        {
+            Microsoft::WRL::ComPtr<ID3D11Resource> resource;
+            texture->view->GetResource(
+                resource.ReleaseAndGetAddressOf());
 
-        Microsoft::WRL::ComPtr<ID3D11Texture2D> texture2D;
-        ThrowIfFailed(resource.As(&texture2D), resolvedPath);
+            Microsoft::WRL::ComPtr<ID3D11Texture2D> texture2D;
+            ThrowIfFailed(resource.As(&texture2D), resolvedPath);
 
-        D3D11_TEXTURE2D_DESC description{};
-        texture2D->GetDesc(&description);
-        texture->width = description.Width;
-        texture->height = description.Height;
-        texture->isCube =
-            (description.MiscFlags
-                & D3D11_RESOURCE_MISC_TEXTURECUBE) != 0;
+            D3D11_TEXTURE2D_DESC description{};
+            texture2D->GetDesc(&description);
+            texture->width = description.Width;
+            texture->height = description.Height;
+            texture->isCube =
+                (description.MiscFlags
+                    & D3D11_RESOURCE_MISC_TEXTURECUBE) != 0;
+        }
         return texture;
     }
 
     void AssetManager::PumpTextureUploads(
         const std::size_t byteBudget)
     {
-        if (m_context == nullptr)
+        if (m_backend == nullptr && m_context == nullptr)
         {
             return;
         }
@@ -975,50 +1312,135 @@ namespace LamaPon
                 continue;
             }
 
-            bool advanced = false;
-            while (pending.nextLevel >= 0)
+            // 今回公開するmip範囲を、assetや進捗を変更せず先に決めます。
+            // view生成に失敗した場合は同じ範囲を次回再試行できます。
+            auto nextLevelAfterBatch = pending.nextLevel;
+            std::size_t batchBytes = 0;
+            while (nextLevelAfterBatch >= 0)
             {
                 // 予算を使い切っても最低1レベルは進めます
                 // （巨大なミップ0でも前進を保証）。
-                if (uploadedBytes > 0
-                    && uploadedBytes >= byteBudget)
+                if ((uploadedBytes != 0 || batchBytes != 0)
+                    && (uploadedBytes >= byteBudget
+                        || batchBytes
+                            >= byteBudget - uploadedBytes))
                 {
                     break;
                 }
-                auto& level = pending.data.levels[
+                const auto& level = pending.data.levels[
                     static_cast<std::size_t>(
-                        pending.nextLevel)];
-                m_context->UpdateSubresource(
-                    pending.texture.Get(),
-                    static_cast<UINT>(pending.nextLevel),
-                    nullptr,
-                    level.bytes.data(),
-                    level.rowPitch,
-                    0);
-                uploadedBytes += level.bytes.size();
-                // 転送済みのCPUデータはすぐ解放します。
-                level.bytes = {};
-                --pending.nextLevel;
-                advanced = true;
+                        nextLevelAfterBatch)];
+                if (batchBytes
+                    > std::numeric_limits<std::size_t>::max()
+                        - level.bytes.size())
+                {
+                    throw std::overflow_error(
+                        "Progressive texture upload size overflowed.");
+                }
+                batchBytes += level.bytes.size();
+                --nextLevelAfterBatch;
             }
 
-            if (advanced)
+            if (nextLevelAfterBatch == pending.nextLevel)
             {
-                // 転送済みの範囲だけを最詳細とするSRVへ差し替え。
-                // コンポーネントはTextureAsset経由で毎フレーム
-                // viewを参照するため、次の描画から反映されます。
-                const auto mostDetailed =
-                    static_cast<std::uint32_t>(
-                        pending.nextLevel + 1);
-                pending.asset->view =
+                // 既に別textureで予算を使い切りました。
+                break;
+            }
+
+            const auto mostDetailed =
+                static_cast<std::uint32_t>(
+                    nextLevelAfterBatch + 1);
+            const auto totalMipLevels =
+                static_cast<std::uint32_t>(
+                    pending.data.levels.size());
+            GraphicsViewHandle nextView;
+            Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
+                nextCompatibilityView;
+            if (pending.textureHandle)
+            {
+                if (m_backend == nullptr)
+                {
+                    throw std::logic_error(
+                        "A progressive texture handle lost its backend.");
+                }
+                nextView = m_backend->CreateShaderResourceView(
+                    pending.textureHandle,
+                    GraphicsTextureViewDescription{
+                        mostDetailed,
+                        totalMipLevels - mostDetailed
+                    });
+                nextCompatibilityView = ResolveCompatibilityView(
+                    m_backend,
+                    nextView);
+            }
+            else
+            {
+                nextCompatibilityView =
                     TextureLoader::CreateTextureView(
                         m_device,
                         pending.texture.Get(),
                         pending.data.format,
                         mostDetailed,
-                        static_cast<std::uint32_t>(
-                            pending.data.levels.size()));
+                        totalMipLevels);
             }
+
+            // viewとcompatibility mirrorが完成してからuploadします。途中で
+            // 失敗しても公開中のassetとnextLevel/CPU bytesは変わりません。
+            for (auto levelIndex = pending.nextLevel;
+                levelIndex > nextLevelAfterBatch;
+                --levelIndex)
+            {
+                auto& level = pending.data.levels[
+                    static_cast<std::size_t>(levelIndex)];
+                if (pending.textureHandle)
+                {
+                    if (level.bytes.size()
+                        > std::numeric_limits<std::uint32_t>::max())
+                    {
+                        throw std::overflow_error(
+                            "A progressive texture mip is too large.");
+                    }
+                    m_backend->UpdateTexture2D(
+                        pending.textureHandle,
+                        static_cast<std::uint32_t>(levelIndex),
+                        GraphicsTextureSubresourceData{
+                            std::as_bytes(std::span{ level.bytes }),
+                            level.rowPitch,
+                            static_cast<std::uint32_t>(
+                                level.bytes.size())
+                        });
+                }
+                else
+                {
+                    m_context->UpdateSubresource(
+                        pending.texture.Get(),
+                        static_cast<UINT>(levelIndex),
+                        nullptr,
+                        level.bytes.data(),
+                        level.rowPitch,
+                        0);
+                }
+            }
+
+            if (pending.textureHandle)
+            {
+                pending.asset->textureHandle =
+                    pending.textureHandle;
+                pending.asset->viewHandle =
+                    std::move(nextView);
+            }
+            pending.asset->view =
+                std::move(nextCompatibilityView);
+            for (auto levelIndex = pending.nextLevel;
+                levelIndex > nextLevelAfterBatch;
+                --levelIndex)
+            {
+                pending.data.levels[
+                    static_cast<std::size_t>(levelIndex)]
+                        .bytes = {};
+            }
+            pending.nextLevel = nextLevelAfterBatch;
+            uploadedBytes += batchBytes;
 
             if (pending.nextLevel < 0)
             {
@@ -1898,23 +2320,55 @@ namespace LamaPon
         initialData.pSysMem = data;
         initialData.SysMemPitch = stride;
 
-        Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
-        ThrowIfFailed(
-            m_device->CreateTexture2D(
-                &textureDescription,
-                &initialData,
-                texture.ReleaseAndGetAddressOf()),
-            "ID3D11Device::CreateTexture2D(text)");
-
         auto asset = std::make_shared<TextTextureAsset>();
         asset->width = width;
         asset->height = height;
-        ThrowIfFailed(
-            m_device->CreateShaderResourceView(
-                texture.Get(),
-                nullptr,
-                asset->view.ReleaseAndGetAddressOf()),
-            "ID3D11Device::CreateShaderResourceView(text)");
+        if (m_backend != nullptr)
+        {
+            const GraphicsTexture2DDescription description{
+                width,
+                height,
+                1,
+                GraphicsTextureFormat::Bgra8Unorm
+            };
+            const std::array subresources{
+                GraphicsTextureSubresourceData{
+                    std::span<const std::byte>{
+                        reinterpret_cast<const std::byte*>(data),
+                        dataSize
+                    },
+                    stride,
+                    dataSize
+                }
+            };
+            auto texture = m_backend->CreateTexture2D(
+                description,
+                subresources);
+            auto view = m_backend->CreateShaderResourceView(
+                texture,
+                GraphicsTextureViewDescription{ 0, 1 });
+            PublishTextureResources(
+                *asset,
+                m_backend,
+                std::move(texture),
+                std::move(view));
+        }
+        else
+        {
+            Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+            ThrowIfFailed(
+                m_device->CreateTexture2D(
+                    &textureDescription,
+                    &initialData,
+                    texture.ReleaseAndGetAddressOf()),
+                "ID3D11Device::CreateTexture2D(text)");
+            ThrowIfFailed(
+                m_device->CreateShaderResourceView(
+                    texture.Get(),
+                    nullptr,
+                    asset->view.ReleaseAndGetAddressOf()),
+                "ID3D11Device::CreateShaderResourceView(text)");
+        }
 
         // 文字テクスチャは「文字列ごとに1枚」なので、スコアや残り時間
         // のように中身が変わり続ける表示では際限なく増えます。上限を
@@ -2001,19 +2455,20 @@ namespace LamaPon
         WaitForModelPreparation();
         try
         {
-            std::scoped_lock lock(m_textureMutex);
+            // 世代更新/cache破棄とpending破棄を1つのtransactionにします。
+            // 間へ新世代のLoadTextureが入り、そのpendingだけを後段のClear
+            // が消してplaceholderを固定してしまう競合を防ぎます。
+            std::scoped_lock lock(
+                m_textureMutex,
+                m_uploadMutex,
+                m_prefetchMutex);
+            ++m_textureEpoch;
+            ++m_prefetchEpoch;
+            m_texturePathGenerations.clear();
             m_textureCache.clear();
-        }
-        catch (...)
-        {
-        }
-        try
-        {
-            // 保留中の段階アップロードは、対象テクスチャが
-            // キャッシュから消えた後も転送を続けようとするため
-            // 一緒に破棄します。
-            std::scoped_lock lock(m_uploadMutex);
             m_pendingUploads.clear();
+            m_prefetchedBytes.clear();
+            m_prefetchedByteCount = 0;
         }
         catch (...)
         {
@@ -2033,7 +2488,6 @@ namespace LamaPon
         m_animationCache.clear();
         m_animatorControllerCache.clear();
         m_dataAssetCache.clear();
-        ClearPrefetchedFiles();
     }
 
     void AssetManager::Invalidate(
@@ -2048,11 +2502,25 @@ namespace LamaPon
             const auto cacheKey =
                 MakeCacheKey(cachePath);
             {
-                std::scoped_lock lock(m_textureMutex);
-                m_textureCache.erase(cacheKey);
-            }
-            {
-                std::scoped_lock lock(m_uploadMutex);
+                // Clearと同様、cache generationとpending queueを原子的に
+                // 無効化し、新世代loadのuploadを誤って消さないようにします。
+                std::scoped_lock lock(
+                    m_textureMutex,
+                    m_uploadMutex,
+                    m_prefetchMutex);
+                ++m_texturePathGenerations[cacheKey];
+                for (int usage =
+                        static_cast<int>(
+                            TextureLoader::TextureUsage::Color);
+                    usage <= static_cast<int>(
+                        TextureLoader::TextureUsage::DataMap);
+                    ++usage)
+                {
+                    auto textureKey = cacheKey;
+                    textureKey += L"|u";
+                    textureKey += static_cast<wchar_t>(L'0' + usage);
+                    m_textureCache.erase(textureKey);
+                }
                 std::erase_if(
                     m_pendingUploads,
                     [&cacheKey](
@@ -2063,17 +2531,6 @@ namespace LamaPon
                                 pending.asset->sourcePath)
                                 == cacheKey;
                     });
-            }
-            {
-                std::scoped_lock lock(m_modelMutex);
-                ++m_modelGeneration;
-                m_modelCache.erase(cacheKey);
-            }
-            m_animationCache.erase(cacheKey);
-            m_animatorControllerCache.erase(cacheKey);
-            m_dataAssetCache.erase(cacheKey);
-            {
-                std::scoped_lock lock(m_prefetchMutex);
                 if (const auto cached =
                         m_prefetchedBytes.find(cacheKey);
                     cached != m_prefetchedBytes.end())
@@ -2088,6 +2545,14 @@ namespace LamaPon
                     m_prefetchedBytes.erase(cached);
                 }
             }
+            {
+                std::scoped_lock lock(m_modelMutex);
+                ++m_modelGeneration;
+                m_modelCache.erase(cacheKey);
+            }
+            m_animationCache.erase(cacheKey);
+            m_animatorControllerCache.erase(cacheKey);
+            m_dataAssetCache.erase(cacheKey);
         }
         catch (...)
         {

@@ -27,9 +27,12 @@
 - `GpuProfiler`をAPI非依存のfacadeとし、D3D11 timestamp / pipeline queryをBackend所有driverへ分離。未接続・非対応時は安全なno-opと空結果へフォールバックする。
 - `GraphicsDevice`の再初期化時に自身が所有する旧Device由来のShader・State・Texture等を破棄してからBackendを作り直し、途中の初期化失敗も空状態へ戻す寿命境界を追加。
 - API非依存の強所有`GraphicsTextureHandle` / `GraphicsBufferHandle` / `GraphicsViewHandle`とBackend世代境界を追加し、白テクスチャと共有インスタンスバッファをD3D11 Backend生成へ移行。従来のD3D11ポインターAPIは互換facadeとして維持。
+- API非依存の2D texture記述・subresource転送・mip範囲View生成をBackend契約へ追加。built-in／WIC／文字／DDS assetをneutral handle所有へ移し、DirectX 11 SRVは同じhandleから解決する互換mirrorとして維持。
+- 段階的texture uploadをtransactionalにし、View生成失敗時に進捗だけが完了する問題を修正。個別Invalidateは全usage variantを破棄し、読み込み中の旧世代結果がcacheへ復活しないようにした。
 - 車両パラメータープレビューのモデル送信を`EditorModelPreviewRenderer`へ分離し、DirectXTK11のContext / CommonStates / BasicEffect操作をD3D11実装内へ隔離。
 - `GraphicsSettings`、`GraphicsDevice`、`Scene`、`EnvironmentRenderer`、`GpuProfiler`、`DebugRenderer`のABI変更、および共通Backend契約の拡張に伴い、Game Module APIを32へ更新。
 - 描画resource handle契約と`GraphicsDevice` / `GraphicsBackend`のABI変更に伴い、Game Module APIを33へ更新。SDK反映後はゲーム用DLLの再ビルドが必要。
+- texture resource契約と`TextureAsset` / `AssetManager` / `RuntimeServices`のABI変更に伴い、Game Module APIを34へ更新。SDK反映後はゲーム用DLLの再ビルドが必要。
 
 ### ファイル名の統一
 
@@ -62,7 +65,7 @@
   環境ベイクworkflowの集約で27、環境資源facadeの追加で28、
   GPU計測scopeの追加で29、GPUメモリ統計契約の追加で30、
   Debug描画sinkの分離で31、GPU計測driverの分離で32、
-  描画resource handle契約の追加で現在の33へ更新。
+  描画resource handle契約の追加で33、texture resource境界の追加で現在の34へ更新。
 - MSVC／Ninjaのヘッダー依存検出を修正。ローカライズされた出力と既存ビルドの依存情報再取得に対応。
 - Web入力の登録解除・例外処理・ログを改善し、SDK構成、ライセンス同梱、Windows／Webの回帰検査を整備。
 

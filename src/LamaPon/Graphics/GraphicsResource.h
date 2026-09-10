@@ -3,12 +3,61 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <stdexcept>
 #include <utility>
 #include <variant>
 
 namespace LamaPon
 {
+    // Backendへ渡す2D textureのpixel formatです。描画API固有のformat値を
+    // Asset/Rendererへ漏らさず、現在のruntime texture経路で必要な形式だけを
+    // 共通化します。DDS等で必要な形式は移行時に末尾へ追加します。
+    enum class GraphicsTextureFormat : std::uint8_t
+    {
+        Rgba8Unorm,
+        Bgra8Unorm,
+        Bc1Unorm,
+        Bc3Unorm,
+        Bc5Unorm
+    };
+
+    // Immutableは全mipの初期dataを生成時に渡す静的texture、PerMipUpdateは
+    // 初期dataの有無にかかわらず後からmip単位で転送できるtextureです。
+    enum class GraphicsTextureUpdateMode : std::uint8_t
+    {
+        Immutable,
+        PerMipUpdate
+    };
+
+    struct GraphicsTexture2DDescription final
+    {
+        std::uint32_t width{};
+        std::uint32_t height{};
+        std::uint32_t mipLevels{ 1 };
+        GraphicsTextureFormat format{
+            GraphicsTextureFormat::Rgba8Unorm };
+        GraphicsTextureUpdateMode updateMode{
+            GraphicsTextureUpdateMode::Immutable };
+    };
+
+    // 呼び出し中だけ有効なCPU側転送範囲です。rowPitchは1行のbyte数、
+    // slicePitchは2D subresource全体のbyte数です。slicePitchが0なら
+    // bytes.size()を使います。
+    struct GraphicsTextureSubresourceData final
+    {
+        std::span<const std::byte> bytes;
+        std::uint32_t rowPitch{};
+        std::uint32_t slicePitch{};
+    };
+
+    // textureのどのmip範囲をshaderから見せるかを表します。
+    struct GraphicsTextureViewDescription final
+    {
+        std::uint32_t mostDetailedMip{};
+        std::uint32_t mipLevels{ 1 };
+    };
+
     // ViewがGPU資源をどの用途で参照するかを表します。値は描画APIの
     // descriptor種別とは独立しており、具象Backendがnative viewへ
     // 解決するときの型検証に使います。

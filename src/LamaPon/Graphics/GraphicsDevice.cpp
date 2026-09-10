@@ -81,14 +81,7 @@ namespace
         AsD3D11Backend(
             LamaPon::GraphicsBackend* const backend) noexcept
     {
-        if (backend == nullptr
-            || backend->Api()
-                != LamaPon::RenderingApi::DirectX11)
-        {
-            return nullptr;
-        }
-        return static_cast<LamaPon::D3D11Backend*>(
-            backend);
+        return dynamic_cast<LamaPon::D3D11Backend*>(backend);
     }
 
 }
@@ -194,6 +187,20 @@ namespace LamaPon
         return backend->ResolveShaderResourceView(view);
     }
 
+    ID3D11ShaderResourceView*
+        GraphicsDevice::TryResolveD3D11ShaderResourceView(
+            const GraphicsViewHandle& view) const noexcept
+    {
+        try
+        {
+            return ResolveD3D11ShaderResourceView(view);
+        }
+        catch (...)
+        {
+            return nullptr;
+        }
+    }
+
     ID3D11Buffer* GraphicsDevice::ResolveD3D11Buffer(
         const GraphicsBufferHandle& buffer) const
     {
@@ -210,6 +217,49 @@ namespace LamaPon
             return nullptr;
         }
         return backend->ResolveBuffer(buffer);
+    }
+
+    GraphicsTextureHandle GraphicsDevice::CreateTexture2D(
+        const GraphicsTexture2DDescription& description,
+        const std::span<const GraphicsTextureSubresourceData>
+            initialData)
+    {
+        if (m_backend == nullptr)
+        {
+            throw std::logic_error(
+                "CreateTexture2D requires an initialized graphics backend.");
+        }
+        return m_backend->CreateTexture2D(
+            description,
+            initialData);
+    }
+
+    void GraphicsDevice::UpdateTexture2D(
+        const GraphicsTextureHandle& texture,
+        const std::uint32_t mipLevel,
+        const GraphicsTextureSubresourceData& data)
+    {
+        if (m_backend == nullptr)
+        {
+            throw std::logic_error(
+                "UpdateTexture2D requires an initialized graphics backend.");
+        }
+        m_backend->UpdateTexture2D(texture, mipLevel, data);
+    }
+
+    GraphicsViewHandle GraphicsDevice::CreateShaderResourceView(
+        const GraphicsTextureHandle& texture,
+        const GraphicsTextureViewDescription& description)
+    {
+        if (m_backend == nullptr)
+        {
+            throw std::logic_error(
+                "CreateShaderResourceView requires an initialized graphics "
+                "backend.");
+        }
+        return m_backend->CreateShaderResourceView(
+            texture,
+            description);
     }
 
     EnvironmentRenderer::OwnedPrefilteredEnvironment
@@ -882,7 +932,8 @@ namespace LamaPon
                 "ID3D11Device::CreateRasterizerState");
         }
         m_services->Initialize(Device(), Context(), window,
-            m_graphicsSettings.runtimeTextureCompression);
+            m_graphicsSettings.runtimeTextureCompression,
+            *m_backend);
         m_debugRenderer = std::make_unique<DebugRenderer>(
             m_backend->CreateDebugDrawingBackend());
         m_shadowMap = std::make_unique<ShadowMap>();
@@ -2338,7 +2389,17 @@ namespace LamaPon
 
     AssetManager& GraphicsDevice::Assets() const
     {
-        return m_services->EnsureAssets(Device(), Context(),
+        if (m_backend != nullptr)
+        {
+            return m_services->EnsureAssets(
+                Device(),
+                Context(),
+                m_graphicsSettings.runtimeTextureCompression,
+                *m_backend);
+        }
+        return m_services->EnsureAssets(
+            Device(),
+            Context(),
             m_graphicsSettings.runtimeTextureCompression);
     }
 

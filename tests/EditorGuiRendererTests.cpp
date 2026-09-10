@@ -396,6 +396,10 @@ namespace
                         previousWhiteView));
             },
             "A shader view from the previous backend generation was accepted");
+        Require(
+            graphics.TryResolveD3D11ShaderResourceView(
+                previousWhiteView) == nullptr,
+            "The non-throwing shader view resolver accepted a stale handle");
         RequireThrowsExactly<std::invalid_argument>(
             [&]
             {
@@ -436,6 +440,250 @@ namespace
                 && graphics.ResolveD3D11Buffer(
                     rebuiltInstanceHandle) == rebuiltInstanceBuffer,
             "Growing a neutral buffer invalidated an externally held handle");
+
+        // API非依存texture契約のinitial upload、mip範囲view、後続update、
+        // 入力検証をD3D11/WARP実装に対して確認します。
+        const std::array<std::uint8_t, 16> textureMip0{
+            0xffu, 0x00u, 0x00u, 0xffu,
+            0x00u, 0xffu, 0x00u, 0xffu,
+            0x00u, 0x00u, 0xffu, 0xffu,
+            0xffu, 0xffu, 0xffu, 0xffu
+        };
+        const std::array<std::uint8_t, 4> textureMip1{
+            0x7fu, 0x7fu, 0x7fu, 0xffu
+        };
+        const std::array textureInitialData{
+            LamaPon::GraphicsTextureSubresourceData{
+                std::as_bytes(std::span{ textureMip0 }),
+                8,
+                16
+            },
+            LamaPon::GraphicsTextureSubresourceData{
+                std::as_bytes(std::span{ textureMip1 }),
+                4,
+                4
+            }
+        };
+        const LamaPon::GraphicsTexture2DDescription textureDescription{
+            2,
+            2,
+            2,
+            LamaPon::GraphicsTextureFormat::Rgba8Unorm,
+            LamaPon::GraphicsTextureUpdateMode::Immutable
+        };
+        const auto neutralTexture = graphics.CreateTexture2D(
+            textureDescription,
+            textureInitialData);
+        const auto fullTextureView = graphics.CreateShaderResourceView(
+            neutralTexture,
+            LamaPon::GraphicsTextureViewDescription{ 0, 2 });
+        const auto smallestMipView = graphics.CreateShaderResourceView(
+            neutralTexture,
+            LamaPon::GraphicsTextureViewDescription{ 1, 1 });
+        auto* const nativeSmallestMipView =
+            graphics.ResolveD3D11ShaderResourceView(smallestMipView);
+        Require(
+            nativeSmallestMipView != nullptr,
+            "The neutral texture mip view did not resolve to D3D11");
+        D3D11_SHADER_RESOURCE_VIEW_DESC smallestMipDescription{};
+        nativeSmallestMipView->GetDesc(&smallestMipDescription);
+        Require(
+            neutralTexture
+                && fullTextureView
+                && fullTextureView.Kind()
+                    == LamaPon::GraphicsViewKind::ShaderResource
+                && smallestMipDescription.ViewDimension
+                    == D3D11_SRV_DIMENSION_TEXTURE2D
+                && smallestMipDescription.Texture2D.MostDetailedMip == 1
+                && smallestMipDescription.Texture2D.MipLevels == 1,
+            "The neutral texture mip view did not preserve its range");
+
+        const std::array<std::uint8_t, 16> updatedTextureMip0{
+            0x20u, 0x30u, 0x40u, 0xffu,
+            0x20u, 0x30u, 0x40u, 0xffu,
+            0x20u, 0x30u, 0x40u, 0xffu,
+            0x20u, 0x30u, 0x40u, 0xffu
+        };
+        const auto updateableTexture = graphics.CreateTexture2D(
+            LamaPon::GraphicsTexture2DDescription{
+                2,
+                2,
+                1,
+                LamaPon::GraphicsTextureFormat::Rgba8Unorm,
+                LamaPon::GraphicsTextureUpdateMode::PerMipUpdate
+            },
+            {});
+        graphics.UpdateTexture2D(
+            updateableTexture,
+            0,
+            LamaPon::GraphicsTextureSubresourceData{
+                std::as_bytes(std::span{ updatedTextureMip0 }),
+                8,
+                16
+            });
+        RequireThrowsExactly<std::invalid_argument>(
+            [&]
+            {
+                graphics.UpdateTexture2D(
+                    neutralTexture,
+                    0,
+                    LamaPon::GraphicsTextureSubresourceData{
+                        std::as_bytes(std::span{ updatedTextureMip0 }),
+                        8,
+                        16
+                    });
+            },
+            "An immutable neutral texture accepted a later update");
+        RequireThrowsExactly<std::invalid_argument>(
+            [&]
+            {
+                static_cast<void>(graphics.CreateTexture2D(
+                    LamaPon::GraphicsTexture2DDescription{
+                        0,
+                        2,
+                        1,
+                        LamaPon::GraphicsTextureFormat::Rgba8Unorm
+                    },
+                    {}));
+            },
+            "A zero-width neutral texture was accepted");
+        RequireThrowsExactly<std::invalid_argument>(
+            [&]
+            {
+                const std::array shortMip{
+                    LamaPon::GraphicsTextureSubresourceData{
+                        std::as_bytes(std::span{ textureMip1 }),
+                        8,
+                        4
+                    }
+                };
+                static_cast<void>(graphics.CreateTexture2D(
+                    LamaPon::GraphicsTexture2DDescription{
+                        2,
+                        2,
+                        1,
+                        LamaPon::GraphicsTextureFormat::Rgba8Unorm
+                    },
+                    shortMip));
+            },
+            "A truncated neutral texture subresource was accepted");
+        RequireThrowsExactly<std::invalid_argument>(
+            [&]
+            {
+                static_cast<void>(graphics.CreateShaderResourceView(
+                    neutralTexture,
+                    LamaPon::GraphicsTextureViewDescription{ 1, 2 }));
+            },
+            "An out-of-range neutral texture view was accepted");
+
+        // RuntimeのAssetManagerはactive Backendを受け取り、通常画像・文字・
+        // DDSの所有権をneutral handleへ置きます。raw SRVは同じhandleを
+        // 解決したDirectX 11互換mirrorでなければなりません。
+        auto& assets = graphics.Assets();
+        const auto builtInTexture = assets.LoadTexture(
+            L"builtin/circle");
+        Require(
+            builtInTexture->textureHandle
+                && builtInTexture->viewHandle
+                && builtInTexture->view != nullptr
+                && graphics.ResolveD3D11ShaderResourceView(
+                    builtInTexture->viewHandle)
+                    == builtInTexture->view.Get(),
+            "Built-in texture handles diverged from the D3D11 mirror");
+        const auto textTexture = assets.LoadTextTexture(
+            "Rendering API",
+            "Yu Gothic UI",
+            18.0f);
+        Require(
+            textTexture->textureHandle
+                && textTexture->viewHandle
+                && textTexture->view != nullptr
+                && graphics.ResolveD3D11ShaderResourceView(
+                    textTexture->viewHandle)
+                    == textTexture->view.Get(),
+            "Text texture handles diverged from the D3D11 mirror");
+
+        const auto ddsTexture = assets.LoadTexture(
+            std::filesystem::path{ LAMAPON_TEST_ASSET_DIR }
+                / L"models/arrow.fbm_arrow.dds");
+        Require(
+            ddsTexture->textureHandle
+                && ddsTexture->viewHandle
+                && ddsTexture->view != nullptr
+                && graphics.ResolveD3D11ShaderResourceView(
+                    ddsTexture->viewHandle)
+                    == ddsTexture->view.Get(),
+            "DDS import did not enter the active backend generation");
+
+        assets.SetProgressiveUploadThreshold(1);
+        const auto progressiveTexture = assets.LoadTexture(
+            std::filesystem::path{ LAMAPON_TEST_ASSET_DIR }
+                / L"textures/LamaPonEngineLogo.png");
+        const auto placeholderTextureHandle =
+            progressiveTexture->textureHandle;
+        const auto placeholderViewHandle =
+            progressiveTexture->viewHandle;
+        Require(
+            placeholderTextureHandle
+                && placeholderViewHandle
+                && assets.PendingTextureUploadCount() == 1u,
+            "Backend-aware progressive loading did not publish a placeholder");
+        assets.PumpTextureUploads(1);
+        Require(
+            progressiveTexture->textureHandle
+                    != placeholderTextureHandle
+                && progressiveTexture->viewHandle
+                    != placeholderViewHandle
+                && graphics.ResolveD3D11ShaderResourceView(
+                    progressiveTexture->viewHandle)
+                    == progressiveTexture->view.Get()
+                && graphics.ResolveD3D11ShaderResourceView(
+                    placeholderViewHandle) != nullptr,
+            "The first progressive upload did not transactionally publish "
+            "the final texture generation");
+        for (int index = 0;
+            index < 64
+                && assets.PendingTextureUploadCount() != 0;
+            ++index)
+        {
+            assets.PumpTextureUploads(1u << 30);
+        }
+        Require(
+            assets.PendingTextureUploadCount() == 0
+                && progressiveTexture->textureHandle
+                    != placeholderTextureHandle
+                && graphics.ResolveD3D11ShaderResourceView(
+                    progressiveTexture->viewHandle)
+                    == progressiveTexture->view.Get(),
+            "Backend-aware progressive loading did not publish its final view");
+        assets.SetProgressiveUploadThreshold(
+            LamaPon::AssetManager::DefaultProgressiveUploadThreshold);
+
+        const auto colorVariant = assets.LoadTexture(
+            L"builtin/triangle",
+            LamaPon::TextureLoader::TextureUsage::Color);
+        const auto normalVariant = assets.LoadTexture(
+            L"builtin/triangle",
+            LamaPon::TextureLoader::TextureUsage::NormalMap);
+        const auto dataVariant = assets.LoadTexture(
+            L"builtin/triangle",
+            LamaPon::TextureLoader::TextureUsage::DataMap);
+        assets.Invalidate(L"builtin/triangle");
+        Require(
+            assets.LoadTexture(
+                L"builtin/triangle",
+                LamaPon::TextureLoader::TextureUsage::Color)
+                    != colorVariant
+                && assets.LoadTexture(
+                    L"builtin/triangle",
+                    LamaPon::TextureLoader::TextureUsage::NormalMap)
+                    != normalVariant
+                && assets.LoadTexture(
+                    L"builtin/triangle",
+                    LamaPon::TextureLoader::TextureUsage::DataMap)
+                    != dataVariant,
+            "Texture invalidation retained a usage-specific cache variant");
+
         Microsoft::WRL::ComPtr<ID3D11Device> whiteDevice;
         Microsoft::WRL::ComPtr<ID3D11Device> blendDevice;
         Microsoft::WRL::ComPtr<ID3D11Device> instanceDevice;

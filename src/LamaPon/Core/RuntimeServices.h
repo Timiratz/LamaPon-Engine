@@ -7,6 +7,7 @@ namespace LamaPon
 {
     class AssetManager;
     class AudioSystem;
+    class GraphicsBackend;
     class InputSystem;
 
     // アセット・音声・入力の生成と破棄順を管理します。
@@ -24,9 +25,14 @@ namespace LamaPon
         // Shutdownまで有効である必要があります。入力には単一所有者の
         // 制約があるため、再初期化の前にはShutdownまたは
         // PrepareForGraphicsReinitializationが必要です。全生成に成功して
-        // から交換し、途中の失敗では既存の状態を保持します。
+        // から交換し、途中の失敗では既存の状態を保持します。backend付き
+        // overloadではbackendも同様に借用し、Prepare/Shutdownより先に
+        // backendを停止・再初期化してはいけません。
         void Initialize(ID3D11Device* device, ID3D11DeviceContext* context,
             HWND window, bool textureCompression);
+        void Initialize(ID3D11Device* device, ID3D11DeviceContext* context,
+            HWND window, bool textureCompression,
+            GraphicsBackend& backend);
         // 描画Backendの再作成前に、旧Deviceを借りるAssetManagerと
         // Windowに結び付くInputだけを破棄します。Audioは描画APIと
         // 無関係なので保持し、短時間の再生成による途切れを避けます。
@@ -35,14 +41,30 @@ namespace LamaPon
 
         // 初回だけ生成します。nullptrのdevice/contextでもSceneやPrefabの
         // ファイル読み込みが可能です。GPU資源の読み込みには初期化が必要です。
+        // backend付きoverloadのlifetime規則はInitializeと同じです。
         [[nodiscard]] AssetManager& EnsureAssets(ID3D11Device* device,
             ID3D11DeviceContext* context, bool textureCompression);
+        [[nodiscard]] AssetManager& EnsureAssets(ID3D11Device* device,
+            ID3D11DeviceContext* context, bool textureCompression,
+            GraphicsBackend& backend);
         [[nodiscard]] AssetManager* TryAssets() const noexcept { return m_assets.get(); }
         // 未初期化またはShutdown後はlogic_errorを通知します。
         [[nodiscard]] AudioSystem& Audio() const;
         [[nodiscard]] InputSystem& Input() const;
 
     private:
+        void InitializeImpl(
+            ID3D11Device* device,
+            ID3D11DeviceContext* context,
+            HWND window,
+            bool textureCompression,
+            GraphicsBackend* backend);
+        [[nodiscard]] AssetManager& EnsureAssetsImpl(
+            ID3D11Device* device,
+            ID3D11DeviceContext* context,
+            bool textureCompression,
+            GraphicsBackend* backend);
+
         std::unique_ptr<AssetManager> m_assets;
         std::unique_ptr<AudioSystem> m_audio;
         std::unique_ptr<InputSystem> m_input;

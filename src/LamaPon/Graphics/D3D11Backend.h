@@ -7,6 +7,7 @@
 #include <wrl/client.h>
 
 #include <cstdint>
+#include <utility>
 
 namespace LamaPon
 {
@@ -114,6 +115,18 @@ namespace LamaPon
         [[nodiscard]] bool UpdateDynamicVertexBuffer(
             GraphicsBufferHandle& buffer,
             std::span<const std::byte> data) override;
+        [[nodiscard]] GraphicsTextureHandle CreateTexture2D(
+            const GraphicsTexture2DDescription& description,
+            std::span<const GraphicsTextureSubresourceData>
+                initialData) override;
+        void UpdateTexture2D(
+            const GraphicsTextureHandle& texture,
+            std::uint32_t mipLevel,
+            const GraphicsTextureSubresourceData& data) override;
+        [[nodiscard]] GraphicsViewHandle
+            CreateShaderResourceView(
+                const GraphicsTextureHandle& texture,
+                const GraphicsTextureViewDescription& description) override;
 
         // 既存のDirectX 11描画経路へ貸し出す非所有ポインターです。
         // GraphicsDeviceは移行期間中、従来のDevice/Context APIを
@@ -135,6 +148,13 @@ namespace LamaPon
                 const GraphicsViewHandle& view) const;
         [[nodiscard]] ID3D11Buffer* ResolveBuffer(
             const GraphicsBufferHandle& buffer) const;
+        // DDS / DirectXTK11など、移行途中のloaderが生成したnative SRVを
+        // 現在のBackend世代へ取り込みます。返したviewはtextureを強所有し、
+        // 入力COM pointerの所有権は移しません。
+        [[nodiscard]] std::pair<
+            GraphicsTextureHandle,
+            GraphicsViewHandle> ImportShaderResourceView(
+                ID3D11ShaderResourceView* view);
 
     private:
         void CreateSizeDependentResources(

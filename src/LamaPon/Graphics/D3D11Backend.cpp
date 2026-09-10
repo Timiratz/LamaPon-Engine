@@ -53,13 +53,16 @@ namespace
     public:
         D3D11TexturePayload(
             std::shared_ptr<LamaPon::Detail::GraphicsResourceDomain> domain,
-            Microsoft::WRL::ComPtr<ID3D11Texture2D> texture)
+            Microsoft::WRL::ComPtr<ID3D11Texture2D> texture,
+            const D3D11_TEXTURE2D_DESC& description)
             : GraphicsTexturePayload(std::move(domain))
             , native(std::move(texture))
+            , description(description)
         {
         }
 
         Microsoft::WRL::ComPtr<ID3D11Texture2D> native;
+        D3D11_TEXTURE2D_DESC description{};
     };
 
     class D3D11BufferPayload final
@@ -202,6 +205,126 @@ namespace
                 + " failed with HRESULT "
                 + std::to_string(
                     static_cast<unsigned long>(result)));
+        }
+    }
+
+    [[nodiscard]] DXGI_FORMAT ToDxgiFormat(
+        const LamaPon::GraphicsTextureFormat format)
+    {
+        switch (format)
+        {
+        case LamaPon::GraphicsTextureFormat::Rgba8Unorm:
+            return DXGI_FORMAT_R8G8B8A8_UNORM;
+        case LamaPon::GraphicsTextureFormat::Bgra8Unorm:
+            return DXGI_FORMAT_B8G8R8A8_UNORM;
+        case LamaPon::GraphicsTextureFormat::Bc1Unorm:
+            return DXGI_FORMAT_BC1_UNORM;
+        case LamaPon::GraphicsTextureFormat::Bc3Unorm:
+            return DXGI_FORMAT_BC3_UNORM;
+        case LamaPon::GraphicsTextureFormat::Bc5Unorm:
+            return DXGI_FORMAT_BC5_UNORM;
+        default:
+            throw std::invalid_argument(
+                "Unsupported graphics texture format.");
+        }
+    }
+
+    [[nodiscard]] std::uint32_t MaximumMipLevels(
+        std::uint32_t width,
+        std::uint32_t height) noexcept
+    {
+        std::uint32_t levels = 1;
+        while (width > 1 || height > 1)
+        {
+            width = std::max(width / 2, 1u);
+            height = std::max(height / 2, 1u);
+            ++levels;
+        }
+        return levels;
+    }
+
+    struct TextureSubresourceLayout final
+    {
+        std::uint32_t minimumRowBytes{};
+        std::uint32_t rowCount{};
+    };
+
+    [[nodiscard]] TextureSubresourceLayout RequiredTextureLayout(
+        const DXGI_FORMAT format,
+        const std::uint32_t width,
+        const std::uint32_t height)
+    {
+        switch (format)
+        {
+        case DXGI_FORMAT_R8G8B8A8_UNORM:
+        case DXGI_FORMAT_B8G8R8A8_UNORM:
+            if (width > std::numeric_limits<std::uint32_t>::max() / 4u)
+            {
+                throw std::invalid_argument(
+                    "The texture row pitch cannot be represented.");
+            }
+            return { width * 4u, height };
+        case DXGI_FORMAT_BC1_UNORM:
+            return {
+                std::max((width + 3u) / 4u, 1u) * 8u,
+                std::max((height + 3u) / 4u, 1u)
+            };
+        case DXGI_FORMAT_BC3_UNORM:
+        case DXGI_FORMAT_BC5_UNORM:
+            return {
+                std::max((width + 3u) / 4u, 1u) * 16u,
+                std::max((height + 3u) / 4u, 1u)
+            };
+        default:
+            throw std::invalid_argument(
+                "The texture format has no upload layout.");
+        }
+    }
+
+    void ValidateTextureSubresourceData(
+        const D3D11_TEXTURE2D_DESC& texture,
+        const std::uint32_t mipLevel,
+        const LamaPon::GraphicsTextureSubresourceData& data)
+    {
+        if (mipLevel >= texture.MipLevels
+            || data.bytes.empty()
+            || data.rowPitch == 0
+            || (data.slicePitch == 0
+                && data.bytes.size()
+                    > std::numeric_limits<UINT>::max()))
+        {
+            throw std::invalid_argument(
+                "The texture subresource data is incomplete.");
+        }
+
+        const auto mipWidth = std::max(
+            texture.Width >> mipLevel,
+            1u);
+        const auto mipHeight = std::max(
+            texture.Height >> mipLevel,
+            1u);
+        const auto layout = RequiredTextureLayout(
+            texture.Format,
+            mipWidth,
+            mipHeight);
+        if (data.rowPitch < layout.minimumRowBytes)
+        {
+            throw std::invalid_argument(
+                "The texture subresource row pitch is too small.");
+        }
+        const auto requiredBytes =
+            static_cast<std::uint64_t>(data.rowPitch)
+                * (layout.rowCount - 1u)
+            + layout.minimumRowBytes;
+        const auto slicePitch = data.slicePitch != 0
+            ? static_cast<std::uint64_t>(data.slicePitch)
+            : static_cast<std::uint64_t>(data.bytes.size());
+        if (requiredBytes > data.bytes.size()
+            || requiredBytes > slicePitch
+            || slicePitch > data.bytes.size())
+        {
+            throw std::invalid_argument(
+                "The texture subresource byte range is too small.");
         }
     }
 
@@ -974,51 +1097,34 @@ namespace LamaPon
     GraphicsTextureHandle D3D11Backend::CreateSolidRgba8Texture(
         const std::array<std::uint8_t, 4>& color)
     {
-        if (!IsInitialized() || m_resourceDomain == nullptr)
-        {
-            throw std::logic_error(
-                "CreateSolidRgba8Texture requires an initialized backend.");
-        }
-
-        D3D11_TEXTURE2D_DESC description{};
-        description.Width = 1;
-        description.Height = 1;
-        description.MipLevels = 1;
-        description.ArraySize = 1;
-        description.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        description.SampleDesc.Count = 1;
-        description.Usage = D3D11_USAGE_IMMUTABLE;
-        description.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-
-        D3D11_SUBRESOURCE_DATA initialData{};
-        initialData.pSysMem = color.data();
-        initialData.SysMemPitch = static_cast<UINT>(color.size());
-
-        Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
-        ThrowIfFailed(
-            m_device->CreateTexture2D(
-                &description,
-                &initialData,
-                texture.ReleaseAndGetAddressOf()),
-            "ID3D11Device::CreateTexture2D(solid RGBA8)");
-        return Detail::GraphicsResourceHandleAccess::MakeTexture(
-            std::make_shared<D3D11TexturePayload>(
-                m_resourceDomain,
-                std::move(texture)));
+        const GraphicsTexture2DDescription description{
+            1,
+            1,
+            1,
+            GraphicsTextureFormat::Rgba8Unorm
+        };
+        const std::array initialData{
+            GraphicsTextureSubresourceData{
+                std::as_bytes(std::span{ color }),
+                static_cast<std::uint32_t>(color.size()),
+                static_cast<std::uint32_t>(color.size())
+            }
+        };
+        return CreateTexture2D(description, initialData);
     }
 
     GraphicsViewHandle D3D11Backend::CreateShaderResourceView(
         const GraphicsTextureHandle& texture)
     {
         using Detail::GraphicsResourceHandleAccess;
+        const auto* const texturePayload =
+            dynamic_cast<const D3D11TexturePayload*>(
+            GraphicsResourceHandleAccess::Payload(texture));
         if (!IsInitialized() || m_resourceDomain == nullptr)
         {
             throw std::logic_error(
                 "CreateShaderResourceView requires an initialized backend.");
         }
-        const auto* const texturePayload =
-            dynamic_cast<const D3D11TexturePayload*>(
-            GraphicsResourceHandleAccess::Payload(texture));
         if (texturePayload == nullptr
             || GraphicsResourceHandleAccess::Domain(texture)
                 != m_resourceDomain.get())
@@ -1028,11 +1134,180 @@ namespace LamaPon
                 "backend generation.");
         }
 
+        return CreateShaderResourceView(
+            texture,
+            GraphicsTextureViewDescription{
+                0,
+                texturePayload->description.MipLevels
+            });
+    }
+
+    GraphicsTextureHandle D3D11Backend::CreateTexture2D(
+        const GraphicsTexture2DDescription& description,
+        const std::span<const GraphicsTextureSubresourceData>
+            initialData)
+    {
+        if (!IsInitialized() || m_resourceDomain == nullptr)
+        {
+            throw std::logic_error(
+                "CreateTexture2D requires an initialized backend.");
+        }
+        if (description.width == 0
+            || description.height == 0
+            || description.width
+                > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION
+            || description.height
+                > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION
+            || description.mipLevels == 0
+            || description.mipLevels > MaximumMipLevels(
+                description.width,
+                description.height)
+            || (description.updateMode
+                    != GraphicsTextureUpdateMode::Immutable
+                && description.updateMode
+                    != GraphicsTextureUpdateMode::PerMipUpdate)
+            || (description.updateMode
+                    == GraphicsTextureUpdateMode::Immutable
+                && initialData.empty())
+            || (!initialData.empty()
+                && initialData.size() != description.mipLevels))
+        {
+            throw std::invalid_argument(
+                "CreateTexture2D received an invalid description or "
+                "subresource count.");
+        }
+
+        D3D11_TEXTURE2D_DESC nativeDescription{};
+        nativeDescription.Width = description.width;
+        nativeDescription.Height = description.height;
+        nativeDescription.MipLevels = description.mipLevels;
+        nativeDescription.ArraySize = 1;
+        nativeDescription.Format = ToDxgiFormat(description.format);
+        nativeDescription.SampleDesc.Count = 1;
+        nativeDescription.Usage = description.updateMode
+                == GraphicsTextureUpdateMode::PerMipUpdate
+            ? D3D11_USAGE_DEFAULT
+            : D3D11_USAGE_IMMUTABLE;
+        nativeDescription.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+        std::vector<D3D11_SUBRESOURCE_DATA> nativeInitialData;
+        nativeInitialData.reserve(initialData.size());
+        for (std::size_t mipLevel = 0;
+            mipLevel < initialData.size();
+            ++mipLevel)
+        {
+            const auto& subresource = initialData[mipLevel];
+            ValidateTextureSubresourceData(
+                nativeDescription,
+                static_cast<std::uint32_t>(mipLevel),
+                subresource);
+            nativeInitialData.push_back(
+                D3D11_SUBRESOURCE_DATA{
+                    subresource.bytes.data(),
+                    subresource.rowPitch,
+                    subresource.slicePitch != 0
+                        ? subresource.slicePitch
+                        : static_cast<UINT>(
+                            subresource.bytes.size())
+                });
+        }
+
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+        ThrowIfFailed(
+            m_device->CreateTexture2D(
+                &nativeDescription,
+                nativeInitialData.empty()
+                    ? nullptr
+                    : nativeInitialData.data(),
+                texture.ReleaseAndGetAddressOf()),
+            "ID3D11Device::CreateTexture2D");
+        return Detail::GraphicsResourceHandleAccess::MakeTexture(
+            std::make_shared<D3D11TexturePayload>(
+                m_resourceDomain,
+                std::move(texture),
+                nativeDescription));
+    }
+
+    void D3D11Backend::UpdateTexture2D(
+        const GraphicsTextureHandle& texture,
+        const std::uint32_t mipLevel,
+        const GraphicsTextureSubresourceData& data)
+    {
+        using Detail::GraphicsResourceHandleAccess;
+        if (!IsInitialized() || m_resourceDomain == nullptr)
+        {
+            throw std::logic_error(
+                "UpdateTexture2D requires an initialized backend.");
+        }
+        const auto* const payload =
+            dynamic_cast<const D3D11TexturePayload*>(
+                GraphicsResourceHandleAccess::Payload(texture));
+        if (payload == nullptr
+            || GraphicsResourceHandleAccess::Domain(texture)
+                != m_resourceDomain.get()
+            || payload->description.Usage != D3D11_USAGE_DEFAULT)
+        {
+            throw std::invalid_argument(
+                "UpdateTexture2D requires valid data and a texture from "
+                "this backend generation.");
+        }
+        ValidateTextureSubresourceData(
+            payload->description,
+            mipLevel,
+            data);
+        m_context->UpdateSubresource(
+            payload->native.Get(),
+            mipLevel,
+            nullptr,
+            data.bytes.data(),
+            data.rowPitch,
+            data.slicePitch != 0
+                ? data.slicePitch
+                : static_cast<UINT>(data.bytes.size()));
+    }
+
+    GraphicsViewHandle D3D11Backend::CreateShaderResourceView(
+        const GraphicsTextureHandle& texture,
+        const GraphicsTextureViewDescription& description)
+    {
+        using Detail::GraphicsResourceHandleAccess;
+        if (!IsInitialized() || m_resourceDomain == nullptr)
+        {
+            throw std::logic_error(
+                "CreateShaderResourceView requires an initialized backend.");
+        }
+        const auto* const texturePayload =
+            dynamic_cast<const D3D11TexturePayload*>(
+                GraphicsResourceHandleAccess::Payload(texture));
+        if (texturePayload == nullptr
+            || GraphicsResourceHandleAccess::Domain(texture)
+                != m_resourceDomain.get()
+            || description.mipLevels == 0
+            || description.mostDetailedMip
+                >= texturePayload->description.MipLevels
+            || description.mipLevels
+                > texturePayload->description.MipLevels
+                    - description.mostDetailedMip)
+        {
+            throw std::invalid_argument(
+                "CreateShaderResourceView requires a valid mip range and "
+                "a texture from this backend generation.");
+        }
+
+        D3D11_SHADER_RESOURCE_VIEW_DESC nativeDescription{};
+        nativeDescription.Format =
+            texturePayload->description.Format;
+        nativeDescription.ViewDimension =
+            D3D11_SRV_DIMENSION_TEXTURE2D;
+        nativeDescription.Texture2D.MostDetailedMip =
+            description.mostDetailedMip;
+        nativeDescription.Texture2D.MipLevels =
+            description.mipLevels;
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view;
         ThrowIfFailed(
             m_device->CreateShaderResourceView(
                 texturePayload->native.Get(),
-                nullptr,
+                &nativeDescription,
                 view.ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateShaderResourceView");
         return GraphicsResourceHandleAccess::MakeView(
@@ -1186,6 +1461,59 @@ namespace LamaPon
                 "The buffer does not belong to this backend generation.");
         }
         return payload->native.Get();
+    }
+
+    std::pair<GraphicsTextureHandle, GraphicsViewHandle>
+        D3D11Backend::ImportShaderResourceView(
+            ID3D11ShaderResourceView* const view)
+    {
+        if (!IsInitialized() || m_resourceDomain == nullptr)
+        {
+            throw std::logic_error(
+                "ImportShaderResourceView requires an initialized backend.");
+        }
+        if (view == nullptr)
+        {
+            throw std::invalid_argument(
+                "ImportShaderResourceView requires a native view.");
+        }
+
+        Microsoft::WRL::ComPtr<ID3D11Device> ownerDevice;
+        view->GetDevice(ownerDevice.ReleaseAndGetAddressOf());
+        if (ownerDevice.Get() != m_device.Get())
+        {
+            throw std::invalid_argument(
+                "The native shader-resource view belongs to another "
+                "DirectX 11 device.");
+        }
+
+        Microsoft::WRL::ComPtr<ID3D11Resource> resource;
+        view->GetResource(resource.ReleaseAndGetAddressOf());
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+        ThrowIfFailed(
+            resource.As(&texture),
+            "ImportShaderResourceView(texture2D)");
+        D3D11_TEXTURE2D_DESC description{};
+        texture->GetDesc(&description);
+
+        auto textureHandle =
+            Detail::GraphicsResourceHandleAccess::MakeTexture(
+                std::make_shared<D3D11TexturePayload>(
+                    m_resourceDomain,
+                    std::move(texture),
+                    description));
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> ownedView = view;
+        auto viewHandle =
+            Detail::GraphicsResourceHandleAccess::MakeView(
+                std::make_shared<D3D11ViewPayload>(
+                    m_resourceDomain,
+                    GraphicsViewKind::ShaderResource,
+                    textureHandle,
+                    std::move(ownedView)));
+        return {
+            std::move(textureHandle),
+            std::move(viewHandle)
+        };
     }
 
     void D3D11Backend::BindAndClearBackBuffer(
