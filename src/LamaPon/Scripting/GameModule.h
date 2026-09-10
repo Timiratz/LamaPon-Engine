@@ -13,9 +13,9 @@ namespace LamaPon
     // Game ModuleとRuntimeのABIを識別します。公開構造体のレイアウトや
     // 公開関数のシグネチャを変更した場合は、この値も更新してください。
     // GameModuleHostは完全一致を要求し、互換性のないDLLを読み込みません。
-    // API 38ではGraphicsDeviceのDirectX 11固有資源をopaque stateへ
-    // 移したため、ゲーム用DLLの再ビルドが必要です。
-    inline constexpr std::uint32_t GameModuleApiVersion = 38;
+    // API 39では名前付きRenderTextureのAPI非依存表示handleと、
+    // RenderTargetの完成状態を追加したため、ゲーム用DLLの再ビルドが必要です。
+    inline constexpr std::uint32_t GameModuleApiVersion = 39;
 
     using NativeScriptCreateFunction = void* (*)(
         GameObject* owner,

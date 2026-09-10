@@ -273,6 +273,13 @@ namespace LamaPon
             CreateShaderResourceView(
                 const GraphicsTextureHandle& texture,
                 const GraphicsTextureViewDescription& description) = 0;
+
+        // 名前付きoffscreen targetの表示面を、API非依存handleとして
+        // 保持するための境界です。既存virtualのslotを維持するため、
+        // 新しい契約は常に末尾へ追加します。
+        [[nodiscard]] virtual GraphicsViewHandle
+            CreateOffscreenDisplayView(
+                const RenderTarget& target) = 0;
     };
 
     // activeApiはSelectGraphicsBackendで解決済みの値を渡します。

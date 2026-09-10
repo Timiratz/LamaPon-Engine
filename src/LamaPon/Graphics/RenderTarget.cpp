@@ -41,6 +41,7 @@ namespace LamaPon
             return;
         }
 
+        m_initialized = false;
         m_colorTexture.Reset();
         m_renderTargetView.Reset();
         m_shaderResourceView.Reset();
@@ -648,6 +649,7 @@ namespace LamaPon
         m_viewport.Height = static_cast<float>(m_height);
         m_viewport.MinDepth = 0.0f;
         m_viewport.MaxDepth = 1.0f;
+        m_initialized = true;
     }
 
     void RenderTarget::CaptureDepthForReflections(

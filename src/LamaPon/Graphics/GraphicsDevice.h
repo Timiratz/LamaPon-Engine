@@ -696,6 +696,10 @@ namespace LamaPon
             std::uint32_t height);
         [[nodiscard]] const RenderTarget* FindRenderTexture(
             const std::string& name) const noexcept;
+        // 表示用resourceを強所有するAPI非依存handleです。未作成ならempty。
+        [[nodiscard]] GraphicsViewHandle
+            RenderTextureViewHandle(
+                const std::string& name) const noexcept;
         // 表示用SRV（描画完了後のコピー）。未作成ならnullptr。
         [[nodiscard]] ID3D11ShaderResourceView*
             RenderTextureView(

@@ -1164,6 +1164,71 @@ int main(const int argumentCount, char** arguments)
                 && minimapTarget->Height()
                     == RenderTextureSize,
             "The render texture must use the requested resolution.");
+        const auto minimapViewHandle =
+            graphics.RenderTextureViewHandle("minimap");
+        Require(
+            static_cast<bool>(minimapViewHandle),
+            "The named render texture must expose a neutral display handle.");
+        Require(
+            minimapViewHandle.Kind()
+                == LamaPon::GraphicsViewKind::ShaderResource,
+            "The render texture display handle must be a shader-resource view.");
+        auto* const minimapRawView =
+            graphics.RenderTextureView("minimap");
+        Require(
+            graphics.ResolveD3D11ShaderResourceView(
+                minimapViewHandle)
+                == minimapRawView,
+            "The neutral display handle must resolve to the legacy D3D11 view.");
+        auto& sameSizeMinimap =
+            graphics.AcquireRenderTexture(
+                "minimap",
+                RenderTextureSize,
+                RenderTextureSize);
+        Require(
+            &sameSizeMinimap == minimapTarget
+                && graphics.RenderTextureViewHandle("minimap")
+                    == minimapViewHandle,
+            "Reacquiring the same render texture size must preserve handle identity.");
+        bool oversizedResizeRejected = false;
+        try
+        {
+            graphics.ResizeOffscreenTarget(
+                sameSizeMinimap,
+                D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION + 1u,
+                1u);
+        }
+        catch (const std::exception&)
+        {
+            oversizedResizeRejected = true;
+        }
+        Require(
+            oversizedResizeRejected
+                && graphics.FindRenderTexture("minimap")
+                    == &sameSizeMinimap
+                && !sameSizeMinimap.IsValid()
+                && !graphics.RenderTextureViewHandle("minimap")
+                && graphics.RenderTextureView("minimap") == nullptr,
+            "A failed named target resize must preserve the object while "
+            "invalidating its current views.");
+        auto& recoveredMinimap =
+            graphics.AcquireRenderTexture(
+                "minimap",
+                RenderTextureSize,
+                RenderTextureSize);
+        const auto recoveredMinimapViewHandle =
+            graphics.RenderTextureViewHandle("minimap");
+        auto* const recoveredMinimapRawView =
+            graphics.RenderTextureView("minimap");
+        Require(
+            &recoveredMinimap == &sameSizeMinimap
+                && recoveredMinimap.IsValid()
+                && recoveredMinimapViewHandle
+                && recoveredMinimapViewHandle != minimapViewHandle
+                && graphics.ResolveD3D11ShaderResourceView(
+                    recoveredMinimapViewHandle)
+                    == recoveredMinimapRawView,
+            "A failed named target resize must recover on the next acquire.");
         // レンダーテクスチャにもスカイとシーンのカラーグレーディング
         // （トーンマップ・ビネット）がかかるため、サブカメラの
         // クリア色がそのままピクセルへ出てくるわけではありません。
@@ -1205,11 +1270,73 @@ int main(const int argumentCount, char** arguments)
         Require(
             graphics.RenderTextureNames().size() == 1,
             "Only the requested render texture should exist.");
+        constexpr std::uint32_t ResizedRenderTextureSize =
+            RenderTextureSize / 2;
+        graphics.ResizeOffscreenTarget(
+            sameSizeMinimap,
+            ResizedRenderTextureSize,
+            ResizedRenderTextureSize);
+        const auto resizedMinimapViewHandle =
+            graphics.RenderTextureViewHandle("minimap");
+        auto* const resizedMinimapRawView =
+            graphics.RenderTextureView("minimap");
+        Require(
+            sameSizeMinimap.Width() == ResizedRenderTextureSize
+                && sameSizeMinimap.Height()
+                    == ResizedRenderTextureSize
+                && resizedMinimapViewHandle
+                && resizedMinimapViewHandle
+                    != recoveredMinimapViewHandle
+                && graphics.ResolveD3D11ShaderResourceView(
+                    resizedMinimapViewHandle)
+                    == resizedMinimapRawView,
+            "Resizing a named target directly must refresh its display handle.");
         Require(
             graphics.ReleaseRenderTexture("minimap")
                 && graphics.RenderTextureView("minimap")
-                    == nullptr,
+                    == nullptr
+                && !graphics.RenderTextureViewHandle(
+                    "minimap"),
             "Releasing a render texture must remove it.");
+        Require(
+            minimapViewHandle.Kind()
+                    == LamaPon::GraphicsViewKind::ShaderResource
+                && graphics.ResolveD3D11ShaderResourceView(
+                    minimapViewHandle)
+                    == minimapRawView
+                && resizedMinimapViewHandle.Kind()
+                    == LamaPon::GraphicsViewKind::ShaderResource
+                && graphics.ResolveD3D11ShaderResourceView(
+                    resizedMinimapViewHandle)
+                    == resizedMinimapRawView,
+            "A retained display handle must remain safe after registry release.");
+
+        auto& computeDisplayTarget =
+            graphics.AcquireComputeTexture(
+                "neutral-compute-display",
+                16u,
+                16u);
+        const auto computeDisplayHandle =
+            graphics.RenderTextureViewHandle(
+                "neutral-compute-display");
+        Require(
+            computeDisplayTarget.IsValid()
+                && computeDisplayTarget.DisplayUnorderedAccessView()
+                    != nullptr
+                && computeDisplayHandle.Kind()
+                    == LamaPon::GraphicsViewKind::ShaderResource
+                && graphics.ResolveD3D11ShaderResourceView(
+                    computeDisplayHandle)
+                    == computeDisplayTarget
+                        .DisplayShaderResourceView(),
+            "A compute output must expose its display surface through the "
+            "neutral handle registry.");
+        Require(
+            graphics.ReleaseRenderTexture(
+                "neutral-compute-display")
+                && !graphics.RenderTextureViewHandle(
+                    "neutral-compute-display"),
+            "Releasing a compute output must remove its neutral view.");
 
         // GIの保存→読み込み検証をテストの最後で行うための受け渡し
         // （ベイクする節と検証する節が離れているため、両方から

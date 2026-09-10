@@ -1516,6 +1516,28 @@ namespace LamaPon
         };
     }
 
+    GraphicsViewHandle D3D11Backend::CreateOffscreenDisplayView(
+        const RenderTarget& target)
+    {
+        if (!IsInitialized() || m_resourceDomain == nullptr)
+        {
+            throw std::logic_error(
+                "CreateOffscreenDisplayView requires an initialized backend.");
+        }
+
+        auto* const displayView =
+            target.DisplayShaderResourceView();
+        if (!target.IsValid() || displayView == nullptr)
+        {
+            throw std::invalid_argument(
+                "CreateOffscreenDisplayView requires a valid offscreen "
+                "target display view.");
+        }
+
+        auto imported = ImportShaderResourceView(displayView);
+        return std::move(imported.second);
+    }
+
     void D3D11Backend::BindAndClearBackBuffer(
         const float clearColor[4])
     {

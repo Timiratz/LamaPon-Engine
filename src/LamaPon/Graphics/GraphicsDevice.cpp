@@ -188,7 +188,7 @@ namespace LamaPon
         m_environmentFailure = {};
         m_clustersFailure = {};
         m_sceneCompositionTarget.reset();
-        m_renderTextures.clear();
+        ClearRenderTextures();
         m_environmentRenderer.reset();
         m_clusteredLights.reset();
         m_debugRenderer.reset();

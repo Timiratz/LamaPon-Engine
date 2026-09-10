@@ -4,6 +4,7 @@
 #include "LamaPon/Graphics/EnvironmentSettings.h"
 #include "LamaPon/Graphics/GpuProfiler.h"
 #include "LamaPon/Graphics/GraphicsBackend.h"
+#include "LamaPon/Graphics/GraphicsDeviceApiResources.h"
 #include "LamaPon/Graphics/RenderPipeline.h"
 #include "LamaPon/Graphics/RenderTarget.h"
 
@@ -13,6 +14,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace LamaPon
@@ -28,11 +30,70 @@ namespace LamaPon
                 "ResizeOffscreenTarget requires an initialized device.");
         }
 
-        m_backend->ResizeOffscreenTarget(target, width, height);
-        if (!target.IsValid())
+        auto namedEntry = m_renderTextures.end();
+        for (auto entry = m_renderTextures.begin();
+            entry != m_renderTextures.end();
+            ++entry)
         {
-            throw std::logic_error(
-                "ResizeOffscreenTarget failed to create a valid target.");
+            if (entry->second.get() == &target)
+            {
+                namedEntry = entry;
+                break;
+            }
+        }
+
+        const std::uint32_t safeWidth = std::max(width, 1u);
+        const std::uint32_t safeHeight = std::max(height, 1u);
+        const bool targetNeedsRebuild =
+            !target.IsValid()
+            || target.Width() != safeWidth
+            || target.Height() != safeHeight;
+        if (namedEntry != m_renderTextures.end()
+            && targetNeedsRebuild
+            && m_apiResources)
+        {
+            m_apiResources->namedRenderTextureViews.erase(
+                namedEntry->first);
+        }
+
+        try
+        {
+            m_backend->ResizeOffscreenTarget(target, width, height);
+            if (!target.IsValid())
+            {
+                throw std::logic_error(
+                    "ResizeOffscreenTarget failed to create a valid target.");
+            }
+
+            if (namedEntry != m_renderTextures.end())
+            {
+                if (!m_apiResources)
+                {
+                    throw std::logic_error(
+                        "Render texture API resources are not initialized.");
+                }
+                const auto& name = namedEntry->first;
+                if (!m_apiResources->namedRenderTextureViews.contains(name))
+                {
+                    auto view =
+                        m_backend->CreateOffscreenDisplayView(target);
+                    m_apiResources->namedRenderTextureViews.emplace(
+                        name,
+                        std::move(view));
+                }
+            }
+        }
+        catch (...)
+        {
+            if (namedEntry != m_renderTextures.end())
+            {
+                if (m_apiResources)
+                {
+                    m_apiResources->namedRenderTextureViews.erase(
+                        namedEntry->first);
+                }
+            }
+            throw;
         }
     }
 
@@ -226,17 +287,33 @@ namespace LamaPon
             height == 0 ? 1 : height;
 
         auto& slot = m_renderTextures[name];
-        if (!slot)
+        const bool createdTarget = !slot;
+        try
         {
-            slot = std::make_unique<RenderTarget>();
+            if (!slot)
+            {
+                slot = std::make_unique<RenderTarget>();
+            }
+            // Resizeは同じサイズなら何もしません（作り直しの判定は
+            // RenderTarget側が持っています）。
+            ResizeOffscreenTarget(
+                *slot,
+                safeWidth,
+                safeHeight);
+            return *slot;
         }
-        // Resizeは同じサイズなら何もしません（作り直しの判定は
-        // RenderTarget側が持っています）。
-        ResizeOffscreenTarget(
-            *slot,
-            safeWidth,
-            safeHeight);
-        return *slot;
+        catch (...)
+        {
+            if (m_apiResources)
+            {
+                m_apiResources->namedRenderTextureViews.erase(name);
+            }
+            if (createdTarget)
+            {
+                m_renderTextures.erase(name);
+            }
+            throw;
+        }
     }
 
     RenderTarget& GraphicsDevice::AcquireComputeTexture(
@@ -250,20 +327,36 @@ namespace LamaPon
             height == 0 ? 1 : height;
 
         auto& slot = m_renderTextures[name];
-        if (!slot)
+        const bool createdTarget = !slot;
+        try
         {
-            slot = std::make_unique<RenderTarget>();
+            if (!slot)
+            {
+                slot = std::make_unique<RenderTarget>();
+            }
+            // UAVのバインドフラグは作成時にしか決められないので、
+            // Resizeより前に印を付けます。カメラの描画先として先に
+            // 既存の同名テクスチャには作成フラグを追加できないため、
+            // カメラ描画先とは異なる名前を使用します。
+            slot->SetComputeWritable(true);
+            ResizeOffscreenTarget(
+                *slot,
+                safeWidth,
+                safeHeight);
+            return *slot;
         }
-        // UAVのバインドフラグは作成時にしか決められないので、
-        // Resizeより前に印を付けます。カメラの描画先として先に
-        // 既存の同名テクスチャには作成フラグを追加できないため、
-        // カメラ描画先とは異なる名前を使用します。
-        slot->SetComputeWritable(true);
-        ResizeOffscreenTarget(
-            *slot,
-            safeWidth,
-            safeHeight);
-        return *slot;
+        catch (...)
+        {
+            if (m_apiResources)
+            {
+                m_apiResources->namedRenderTextureViews.erase(name);
+            }
+            if (createdTarget)
+            {
+                m_renderTextures.erase(name);
+            }
+            throw;
+        }
     }
 
     const RenderTarget* GraphicsDevice::FindRenderTexture(
@@ -277,14 +370,36 @@ namespace LamaPon
         return entry->second.get();
     }
 
+    GraphicsViewHandle GraphicsDevice::RenderTextureViewHandle(
+        const std::string& name) const noexcept
+    {
+        if (!m_apiResources)
+        {
+            return {};
+        }
+        const auto entry =
+            m_apiResources->namedRenderTextureViews.find(name);
+        return entry != m_apiResources->namedRenderTextureViews.end()
+            ? entry->second
+            : GraphicsViewHandle{};
+    }
+
     bool GraphicsDevice::ReleaseRenderTexture(
         const std::string& name)
     {
+        if (m_apiResources)
+        {
+            m_apiResources->namedRenderTextureViews.erase(name);
+        }
         return m_renderTextures.erase(name) > 0;
     }
 
     void GraphicsDevice::ClearRenderTextures() noexcept
     {
+        if (m_apiResources)
+        {
+            m_apiResources->namedRenderTextureViews.clear();
+        }
         m_renderTextures.clear();
     }
 

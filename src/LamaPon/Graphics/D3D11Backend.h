@@ -127,6 +127,9 @@ namespace LamaPon
             CreateShaderResourceView(
                 const GraphicsTextureHandle& texture,
                 const GraphicsTextureViewDescription& description) override;
+        [[nodiscard]] GraphicsViewHandle
+            CreateOffscreenDisplayView(
+                const RenderTarget& target) override;
 
         // 既存のDirectX 11描画経路へ貸し出す非所有ポインターです。
         // GraphicsDeviceは移行期間中、従来のDevice/Context APIを

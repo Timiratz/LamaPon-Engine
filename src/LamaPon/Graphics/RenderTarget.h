@@ -225,7 +225,10 @@ namespace LamaPon
         [[nodiscard]] std::uint32_t Width() const noexcept { return m_width; }
         [[nodiscard]] std::uint32_t Height() const noexcept { return m_height; }
         [[nodiscard]] float AspectRatio() const noexcept;
-        [[nodiscard]] bool IsValid() const noexcept { return m_renderTargetView != nullptr; }
+        [[nodiscard]] bool IsValid() const noexcept
+        {
+            return m_initialized && m_renderTargetView != nullptr;
+        }
 
     private:
         // 基本的な資源作成・bind・clear・publishはGraphicsDeviceの
@@ -413,5 +416,7 @@ namespace LamaPon
         bool m_historyValid{};
         std::uint32_t m_width{};
         std::uint32_t m_height{};
+        // 全てのsize-dependent resourceが完成した世代だけを有効とします。
+        bool m_initialized{};
     };
 }

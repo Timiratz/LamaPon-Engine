@@ -90,6 +90,7 @@ namespace LamaPon::Detail
 
     void GraphicsDeviceApiResources::Reset() noexcept
     {
+        namedRenderTextureViews.clear();
         if (d3d11)
         {
             d3d11->Reset();

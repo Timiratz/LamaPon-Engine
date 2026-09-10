@@ -1,9 +1,13 @@
 #pragma once
 
+#include "LamaPon/Graphics/GraphicsResource.h"
+
 #include <d3d11.h>
 #include <wrl/client.h>
 
 #include <memory>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace DirectX
@@ -64,6 +68,8 @@ namespace LamaPon
 
             void Reset() noexcept;
 
+            std::unordered_map<std::string, GraphicsViewHandle>
+                namedRenderTextureViews;
             std::unique_ptr<GraphicsDeviceD3D11Resources> d3d11;
         };
 
