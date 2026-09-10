@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "name": "Custom/InvalidType",
+  "type": "entrypoint not found",
+  "source": "custom-entry-screen-effect.hlsl",
+  "passes": [
+    {
+      "name": "Main",
+      "vertex": {
+        "entry": "ManifestVertex",
+        "target": "vs_5_0"
+      },
+      "pixel": {
+        "entry": "ManifestPixel",
+        "target": "ps_5_0"
+      }
+    }
+  ]
+}

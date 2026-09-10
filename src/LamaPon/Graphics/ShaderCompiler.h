@@ -1,11 +1,16 @@
 #pragma once
 
+#include "LamaPon/Graphics/ShaderRenderState.h"
+#include "LamaPon/Graphics/ShaderVariants.h"
+
 #include <d3dcommon.h>
 #include <wrl/client.h>
 
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -14,8 +19,9 @@ namespace LamaPon
     class AssetManager;
 
     // HLSLをコンパイルし、バイトコードをディスクへ保存します。
-    // キャッシュのキーにはHLSL本体とインクルードした全ファイルの
-    // 内容を含めます。内容を変更した場合は自動的に再コンパイルします。
+    // キャッシュはHLSL本体をキーにし、実際にインクルードした全ファイル
+    // の内容hashを依存情報へ記録します。どちらを変更しても再コンパイル
+    // されます。
     //
     // 失敗したときはstd::runtime_errorを投げます（コンパイラの
     // メッセージ入り）。キャッシュの読み書きに失敗しても投げません。
@@ -29,6 +35,15 @@ namespace LamaPon
             const char* entryPoint,
             const char* target,
             const std::vector<std::string>& defines = {});
+
+    // 直近のcompileが実際に開いたmain source／#include群から、現在の
+    // file revisionを返します。entryごとの依存をdefine集合単位で束ねる
+    // ため、任意entryのManifestでもincludeだけの保存を検出できます。
+    // 未compileまたはarchiveでは0です。
+    [[nodiscard]] std::uint64_t ShaderSourceDependencyRevision(
+        AssetManager& assets,
+        const std::filesystem::path& path,
+        const std::vector<std::string>& defines = {}) noexcept;
 
     // バイトコードをディスクキャッシュへ用意するだけの入口です。
     // GPUオブジェクト（ID3D11VertexShader等）は作らないので、
@@ -75,6 +90,17 @@ namespace LamaPon
         std::filesystem::path directory);
     void ClearShaderCacheSearchDirectories();
 
+    // source-stripped配布用cacheに同梱した、HLSLから抽出済みの
+    // 描画状態とバリアント宣言を読みます。ソース本文は含まず、
+    // 直接HLSL指定の実行時semanticsだけを復元します。
+    // metadataが見つかったときだけtrue。出力pointerは片方だけでも
+    // nullptrでも構いません。
+    [[nodiscard]] bool LoadPrecompiledShaderMetadata(
+        AssetManager& assets,
+        const std::filesystem::path& path,
+        ShaderRenderState* renderState,
+        ShaderVariantDeclaration* variants);
+
     // 事前コンパイルで試す入口の一覧。エンジンが「あれば使う」方式で
     // 探すものを全部含みます。書き出し時にこれを総当たりし、成功も
     // 失敗もキャッシュへ残しておくと、プレイヤーの初回起動でも
@@ -101,6 +127,33 @@ namespace LamaPon
         const std::vector<std::string>& defines = {},
         const std::vector<std::string>* usedKeywords = nullptr);
 
+    // callerが指定した入口だけを、指定されたdefinesで1回ずつ
+    // 事前コンパイルする版です。
+    // Shader Manifestのように、実行時まで入口名が決まらないShaderで
+    // 使用します。ソース内のvariant宣言は展開しないため、実行時と同じ
+    // definesを渡してください。entryPointsが参照する文字列は呼び出し中
+    // だけ有効なら構いません。
+    std::uint32_t PrecompileShader(
+        AssetManager& assets,
+        const std::filesystem::path& path,
+        const std::filesystem::path& destinationDirectory,
+        std::span<const ShaderEntryPoint> entryPoints,
+        const std::vector<std::string>& defines,
+        std::string* error = nullptr);
+
+    // caller指定の入口について、HLSL内のmulti_compile /
+    // shader_featureを展開して事前コンパイルします。Material
+    // Manifestのように入口名はManifest、バリアント宣言は参照先HLSL
+    // にある場合に使います。usedKeywordsの扱いは既知入口版と同じです。
+    std::uint32_t PrecompileShaderVariants(
+        AssetManager& assets,
+        const std::filesystem::path& path,
+        const std::filesystem::path& destinationDirectory,
+        std::span<const ShaderEntryPoint> entryPoints,
+        const std::vector<std::string>& defines = {},
+        const std::vector<std::string>* usedKeywords = nullptr,
+        std::string* error = nullptr);
+
     // 起動からのコンパイル状況。計測とテスト用です。
     struct ShaderCompileStats final
     {
@@ -116,6 +169,11 @@ namespace LamaPon
 
     [[nodiscard]] ShaderCompileStats ShaderCompileStatistics() noexcept;
     void ResetShaderCompileStatistics() noexcept;
+
+    // 実compileが依存一覧を記録した直後に一度だけ呼ぶテスト用hookです。
+    // Compile中の保存を再現する回帰テスト以外では設定しないでください。
+    void SetShaderCompileCompletionHookForTesting(
+        std::function<void()> hook);
 
     // キャッシュを消します。テストと、疑わしいときの手動リセット用。
     void ClearShaderCache();

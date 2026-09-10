@@ -347,6 +347,15 @@ namespace
             std::filesystem::path(LAMAPON_TEST_ASSET_DIR)
             / "models"
             / "RiggedSimple.glb";
+        bool requiresForwardRole{};
+        Require(
+            LamaPon::GltfImporter::RequiresSkinning(
+                assets,
+                modelPath,
+                &requiresForwardRole)
+                && !requiresForwardRole,
+            "glTF role probe did not classify the rigged fixture as "
+                "Skinned-only.");
         const auto model = LamaPon::GltfImporter::Load(
             device.Get(),
             context.Get(),

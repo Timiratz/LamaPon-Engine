@@ -215,6 +215,7 @@ namespace LamaPon
             HasEntryPoint(stripped, "VSSkinnedMain");
         entryPoints.skinnedPixel =
             HasEntryPoint(stripped, "PSSkinnedMain");
+        entryPoints.geometry = HasEntryPoint(stripped, "GSMain");
         entryPoints.hull = HasEntryPoint(stripped, "HSMain");
         entryPoints.domain = HasEntryPoint(stripped, "DSMain");
         entryPoints.compute = HasEntryPoint(stripped, "CSMain");

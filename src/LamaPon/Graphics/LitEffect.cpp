@@ -1,5 +1,7 @@
 #include "LamaPon/Graphics/LitEffect.h"
 #include "LamaPon/Graphics/ShaderCompiler.h"
+#include "LamaPon/Graphics/ShaderManifest.h"
+#include "LamaPon/Graphics/ShaderProgram.h"
 
 #include "LamaPon/Graphics/ClusteredLights.h"
 #include "LamaPon/Graphics/ShaderRenderState.h"
@@ -18,10 +20,129 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace
 {
+    [[nodiscard]] std::string FoldAsciiLower(
+        const std::string_view value)
+    {
+        std::string folded;
+        folded.reserve(value.size());
+        for (const char character : value)
+        {
+            if (character >= 'A' && character <= 'Z')
+            {
+                folded.push_back(static_cast<char>(
+                    character + ('a' - 'A')));
+            }
+            else
+            {
+                folded.push_back(character);
+            }
+        }
+        return folded;
+    }
+
+    [[nodiscard]] const char* ManifestRoleName(
+        const LamaPon::ShaderPassRole role) noexcept
+    {
+        switch (role)
+        {
+        case LamaPon::ShaderPassRole::Forward:
+            return "forward";
+        case LamaPon::ShaderPassRole::Skinned:
+            return "skinned";
+        case LamaPon::ShaderPassRole::Instanced:
+            return "instanced";
+        case LamaPon::ShaderPassRole::Outline:
+            return "outline";
+        case LamaPon::ShaderPassRole::SkinnedOutline:
+            return "skinnedOutline";
+        case LamaPon::ShaderPassRole::Occluded:
+            return "occluded";
+        }
+        return "unknown";
+    }
+
+    [[nodiscard]] LamaPon::ShaderRenderState
+        ConvertManifestRenderState(
+            const LamaPon::RenderStateDesc& description)
+    {
+        LamaPon::ShaderRenderState state;
+        state.declared = true;
+
+        const auto blend = FoldAsciiLower(description.blend);
+        if (blend == "opaque")
+        {
+            state.blend = LamaPon::ShaderBlendMode::Opaque;
+        }
+        else if (blend == "alpha")
+        {
+            state.blend = LamaPon::ShaderBlendMode::Alpha;
+        }
+        else if (blend == "additive")
+        {
+            state.blend = LamaPon::ShaderBlendMode::Additive;
+        }
+        else if (blend == "premultiplied")
+        {
+            state.blend = LamaPon::ShaderBlendMode::Premultiplied;
+        }
+        else
+        {
+            throw std::invalid_argument(
+                "renderState.blend must be Opaque, Alpha, Additive, or "
+                "Premultiplied (received '" + description.blend + "').");
+        }
+
+        const auto cull = FoldAsciiLower(description.cull);
+        if (cull == "back")
+        {
+            state.cull = LamaPon::ShaderCullMode::Back;
+        }
+        else if (cull == "front")
+        {
+            state.cull = LamaPon::ShaderCullMode::Front;
+        }
+        else if (cull == "off" || cull == "none")
+        {
+            state.cull = LamaPon::ShaderCullMode::None;
+        }
+        else
+        {
+            throw std::invalid_argument(
+                "renderState.cull must be Back, Front, Off, or None "
+                "(received '" + description.cull + "').");
+        }
+
+        const auto zTest = FoldAsciiLower(description.zTest);
+        if (zTest == "lessequal")
+        {
+            state.depthTest = true;
+        }
+        else if (zTest == "always")
+        {
+            state.depthTest = false;
+        }
+        else
+        {
+            throw std::invalid_argument(
+                "renderState.zTest must be LessEqual or Always "
+                "(received '" + description.zTest + "').");
+        }
+        state.depthWrite = description.zWrite;
+        if (!state.depthTest && state.depthWrite)
+        {
+            throw std::invalid_argument(
+                "renderState zTest=Always requires zWrite=false; the "
+                "current LitEffect state model cannot safely apply "
+                "Always with depth writes enabled.");
+        }
+        return state;
+    }
+
     void ThrowIfFailed(
         const HRESULT result,
         const char* operation)
@@ -114,47 +235,170 @@ namespace LamaPon
                 "LitEffect requires a Direct3D device and context.");
         }
 
-        // 実行時にも必要なため、Shaderが宣言した描画状態をLitEffectで解釈します。
+        const bool manifestShader = IsShaderManifestPath(shaderPath);
+        if (manifestShader)
         {
-            const auto sourceBytes =
-                assets.ReadFileBytes(shaderPath);
-            m_renderState = ParseShaderRenderState(
-                std::string_view{
-                    reinterpret_cast<const char*>(
-                        sourceBytes.data()),
-                    sourceBytes.size()
+            ShaderAssetDesc shaderAsset;
+            std::string manifestError;
+            if (!LoadShaderAssetDesc(
+                    assets,
+                    shaderPath,
+                    shaderAsset,
+                    manifestError))
+            {
+                throw std::runtime_error(manifestError);
+            }
+            if (shaderAsset.type != ShaderAssetType::Material)
+            {
+                throw std::invalid_argument(
+                    "Shader manifest '" + PathToUtf8(shaderPath)
+                    + "' cannot be used by LitEffect because its type "
+                    "is not 'material'.");
+            }
+
+            const auto primaryRole = skinned
+                ? ShaderPassRole::Skinned
+                : ShaderPassRole::Forward;
+            const auto hasPrimaryRole = std::ranges::any_of(
+                shaderAsset.passes,
+                [primaryRole](const ShaderPassDesc& pass)
+                {
+                    return pass.role == primaryRole;
                 });
+            if (!hasPrimaryRole)
+            {
+                throw std::invalid_argument(
+                    "Material shader manifest '"
+                    + PathToUtf8(shaderPath)
+                    + "' cannot be used by this "
+                    + (skinned ? "skinned" : "static")
+                    + " LitEffect because it has no pass with role '"
+                    + ManifestRoleName(primaryRole) + "'.");
+            }
+
+            m_manifestEffect = true;
+            for (const auto& pass : shaderAsset.passes)
+            {
+                const bool relevant = skinned
+                    ? pass.role == ShaderPassRole::Skinned
+                        || pass.role
+                            == ShaderPassRole::SkinnedOutline
+                        || pass.role == ShaderPassRole::Occluded
+                    : pass.role == ShaderPassRole::Forward
+                        || pass.role == ShaderPassRole::Instanced
+                        || pass.role == ShaderPassRole::Outline
+                        || pass.role == ShaderPassRole::Occluded;
+                if (!relevant)
+                {
+                    continue;
+                }
+
+                ShaderRenderState renderState;
+                try
+                {
+                    renderState = ConvertManifestRenderState(
+                        pass.renderState);
+                }
+                catch (const std::exception& exception)
+                {
+                    throw std::invalid_argument(
+                        "Material shader manifest '"
+                        + PathToUtf8(shaderPath) + "', pass '"
+                        + (pass.name.empty()
+                            ? std::string{ "<unnamed>" }
+                            : pass.name)
+                        + "' (role "
+                        + ManifestRoleName(pass.role) + "): "
+                        + exception.what());
+                }
+
+                ShaderProgram program;
+                std::string compileError;
+                if (!program.Compile(
+                        device,
+                        assets,
+                        shaderAsset.source,
+                        pass,
+                        compileError,
+                        keywords))
+                {
+                    throw std::runtime_error(
+                        "Material shader manifest '"
+                        + PathToUtf8(shaderPath) + "', pass '"
+                        + (pass.name.empty()
+                            ? std::string{ "<unnamed>" }
+                            : pass.name)
+                        + "' (role "
+                        + ManifestRoleName(pass.role) + "): "
+                        + compileError);
+                }
+                m_manifestPasses[RoleIndex(pass.role)].push_back({
+                    pass.name,
+                    std::move(program),
+                    renderState
+                });
+            }
+            m_renderState = SelectedPassRenderState(primaryRole);
+        }
+        else
+        {
+            // 実行時にも必要なため、Shaderが宣言した描画状態をLitEffectで解釈します。
+            // sourceを除いた配布archiveでは、export時に保存したmetadata
+            // から同じ描画状態を復元します。loose assetの欠落は従来どおり
+            // ReadFileBytesで明示的に失敗します。
+            if (!assets.IsArchived() || assets.FileExists(shaderPath))
+            {
+                const auto sourceBytes =
+                    assets.ReadFileBytesFresh(shaderPath);
+                m_renderState = ParseShaderRenderState(
+                    std::string_view{
+                        reinterpret_cast<const char*>(
+                            sourceBytes.data()),
+                        sourceBytes.size()
+                    });
+            }
+            else
+            {
+                // 新しいexport cacheならsource解析済みmetadataから
+                // 宣言を復元します。旧cacheにmetadataが無い場合だけ
+                // 後方互換の既定状態を使います。
+                static_cast<void>(LoadPrecompiledShaderMetadata(
+                    assets,
+                    shaderPath,
+                    &m_renderState,
+                    nullptr));
+            }
+
+            m_vertexShaderByteCode = CompileShader(
+                assets,
+                shaderPath,
+                skinned ? "VSSkinnedMain" : "VSMain",
+                "vs_5_0",
+                keywords);
+            const auto pixelShaderByteCode = CompileShader(
+                assets,
+                shaderPath,
+                skinned ? "PSSkinnedMain" : "PSMain",
+                "ps_5_0",
+                keywords);
+
+            ThrowIfFailed(
+                device->CreateVertexShader(
+                    m_vertexShaderByteCode->GetBufferPointer(),
+                    m_vertexShaderByteCode->GetBufferSize(),
+                    nullptr,
+                    m_vertexShader.ReleaseAndGetAddressOf()),
+                "ID3D11Device::CreateVertexShader");
+            ThrowIfFailed(
+                device->CreatePixelShader(
+                    pixelShaderByteCode->GetBufferPointer(),
+                    pixelShaderByteCode->GetBufferSize(),
+                    nullptr,
+                    m_pixelShader.ReleaseAndGetAddressOf()),
+                "ID3D11Device::CreatePixelShader");
         }
 
-        m_vertexShaderByteCode = CompileShader(
-            assets,
-            shaderPath,
-            skinned ? "VSSkinnedMain" : "VSMain",
-            "vs_5_0",
-            keywords);
-        const auto pixelShaderByteCode = CompileShader(
-            assets,
-            shaderPath,
-            skinned ? "PSSkinnedMain" : "PSMain",
-            "ps_5_0",
-            keywords);
-
-        ThrowIfFailed(
-            device->CreateVertexShader(
-                m_vertexShaderByteCode->GetBufferPointer(),
-                m_vertexShaderByteCode->GetBufferSize(),
-                nullptr,
-                m_vertexShader.ReleaseAndGetAddressOf()),
-            "ID3D11Device::CreateVertexShader");
-        ThrowIfFailed(
-            device->CreatePixelShader(
-                pixelShaderByteCode->GetBufferPointer(),
-                pixelShaderByteCode->GetBufferSize(),
-                nullptr,
-                m_pixelShader.ReleaseAndGetAddressOf()),
-            "ID3D11Device::CreatePixelShader");
-
-        if (!skinned)
+        if (!manifestShader && !skinned)
         {
             // インスタンス描画用VS（定義があるシェーダーのみ）。
             m_instancedVertexShaderByteCode =
@@ -179,20 +423,25 @@ namespace LamaPon
             }
         }
 
-        const auto hullShaderByteCode =
-            TryCompileShader(
+        Microsoft::WRL::ComPtr<ID3DBlob>
+            hullShaderByteCode;
+        Microsoft::WRL::ComPtr<ID3DBlob>
+            domainShaderByteCode;
+        if (!manifestShader)
+        {
+            hullShaderByteCode = TryCompileShader(
                 assets,
                 shaderPath,
                 "HSMain",
                 "hs_5_0",
-            keywords);
-        const auto domainShaderByteCode =
-            TryCompileShader(
+                keywords);
+            domainShaderByteCode = TryCompileShader(
                 assets,
                 shaderPath,
                 "DSMain",
                 "ds_5_0",
-            keywords);
+                keywords);
+        }
         // ジオメトリシェーダー（定義があるシェーダーのみ）。
         //
         // 入力プリミティブを必ず確かめます。エンジンが流すのは
@@ -200,42 +449,47 @@ namespace LamaPon
         // なので、point/line を宣言したGSを束ねるとD3D11では不正な
         // 描画になります。WARPではプロセス終了につながるため、
         // ドライバーへ渡す前に拒否します。
-        if (const auto geometryShaderByteCode =
-                TryCompileShader(
-                    assets,
-                    shaderPath,
-                    "GSMain",
-                    "gs_5_0",
-                    keywords))
+        if (!manifestShader)
         {
-            Microsoft::WRL::ComPtr<ID3D11ShaderReflection>
-                reflection;
-            D3D11_SHADER_DESC shaderDescription{};
-            if (SUCCEEDED(D3DReflect(
-                    geometryShaderByteCode->GetBufferPointer(),
-                    geometryShaderByteCode->GetBufferSize(),
-                    IID_ID3D11ShaderReflection,
-                    &reflection))
-                && SUCCEEDED(
-                    reflection->GetDesc(&shaderDescription))
-                && shaderDescription.InputPrimitive
-                    != D3D_PRIMITIVE_TRIANGLE)
+            if (const auto geometryShaderByteCode =
+                    TryCompileShader(
+                        assets,
+                        shaderPath,
+                        "GSMain",
+                        "gs_5_0",
+                        keywords))
             {
-                throw std::runtime_error(
-                    "GSMain must take 'triangle' input."
-                    " LamaPon only ever draws triangles, so a"
-                    " point/line geometry shader cannot be used.");
+                Microsoft::WRL::ComPtr<ID3D11ShaderReflection>
+                    reflection;
+                D3D11_SHADER_DESC shaderDescription{};
+                if (SUCCEEDED(D3DReflect(
+                        geometryShaderByteCode->GetBufferPointer(),
+                        geometryShaderByteCode->GetBufferSize(),
+                        IID_ID3D11ShaderReflection,
+                        &reflection))
+                    && SUCCEEDED(
+                        reflection->GetDesc(&shaderDescription))
+                    && shaderDescription.InputPrimitive
+                        != D3D_PRIMITIVE_TRIANGLE)
+                {
+                    throw std::runtime_error(
+                        "GSMain must take 'triangle' input."
+                        " LamaPon only ever draws triangles, so a"
+                        " point/line geometry shader cannot be used.");
+                }
+                ThrowIfFailed(
+                    device->CreateGeometryShader(
+                        geometryShaderByteCode->GetBufferPointer(),
+                        geometryShaderByteCode->GetBufferSize(),
+                        nullptr,
+                        m_geometryShader.ReleaseAndGetAddressOf()),
+                    "ID3D11Device::CreateGeometryShader");
             }
-            ThrowIfFailed(
-                device->CreateGeometryShader(
-                    geometryShaderByteCode->GetBufferPointer(),
-                    geometryShaderByteCode->GetBufferSize(),
-                    nullptr,
-                    m_geometryShader.ReleaseAndGetAddressOf()),
-                "ID3D11Device::CreateGeometryShader");
         }
 
-        if (hullShaderByteCode && domainShaderByteCode)
+        if (!manifestShader
+            && hullShaderByteCode
+            && domainShaderByteCode)
         {
             ThrowIfFailed(
                 device->CreateHullShader(
@@ -253,6 +507,7 @@ namespace LamaPon
                 "ID3D11Device::CreateDomainShader");
         }
 
+        if (!manifestShader)
         {
             const char* outlineVertexEntry =
                 skinned
@@ -292,13 +547,17 @@ namespace LamaPon
                     "ID3D11Device::CreatePixelShader(outline)");
             }
         }
-        const auto occludedPixelByteCode =
-            TryCompileShader(
+        Microsoft::WRL::ComPtr<ID3DBlob>
+            occludedPixelByteCode;
+        if (!manifestShader)
+        {
+            occludedPixelByteCode = TryCompileShader(
                 assets,
                 shaderPath,
                 "PSOccluded",
                 "ps_5_0",
-            keywords);
+                keywords);
+        }
         if (occludedPixelByteCode)
         {
             ThrowIfFailed(
@@ -309,7 +568,12 @@ namespace LamaPon
                     m_occludedPixelShader.
                         ReleaseAndGetAddressOf()),
                 "ID3D11Device::CreatePixelShader(occluded)");
+        }
 
+        if (occludedPixelByteCode
+            || (m_manifestEffect
+                && PassCount(ShaderPassRole::Occluded) != 0))
+        {
             D3D11_DEPTH_STENCIL_DESC depthDescription{};
             depthDescription.DepthEnable = TRUE;
             depthDescription.DepthWriteMask =
@@ -1033,11 +1297,354 @@ namespace LamaPon
         }
     }
 
+    std::size_t LitEffect::RoleIndex(
+        const ShaderPassRole role) noexcept
+    {
+        return static_cast<std::size_t>(role);
+    }
+
+    ShaderPassRole LitEffect::PrimaryRole() const noexcept
+    {
+        return m_skinned
+            ? ShaderPassRole::Skinned
+            : ShaderPassRole::Forward;
+    }
+
+    ShaderPassRole LitEffect::OutlineRole() const noexcept
+    {
+        return m_skinned
+            ? ShaderPassRole::SkinnedOutline
+            : ShaderPassRole::Outline;
+    }
+
+    const LitEffect::ManifestPass* LitEffect::ManifestPassAt(
+        const ShaderPassRole role,
+        const std::size_t index) const noexcept
+    {
+        if (!m_manifestEffect)
+        {
+            return nullptr;
+        }
+        const auto& passes = m_manifestPasses[RoleIndex(role)];
+        return index < passes.size() ? &passes[index] : nullptr;
+    }
+
+    const LitEffect::ManifestPass* LitEffect::SelectedManifestPass(
+        const ShaderPassRole role) const noexcept
+    {
+        return ManifestPassAt(
+            role,
+            m_selectedManifestPasses[RoleIndex(role)]);
+    }
+
+    const ShaderProgram* LitEffect::ActiveManifestProgram(
+        const bool primaryOnly) const noexcept
+    {
+        if (!m_manifestEffect)
+        {
+            return nullptr;
+        }
+
+        if (primaryOnly)
+        {
+            const auto* const primary = ManifestPassAt(
+                PrimaryRole(),
+                0);
+            return primary != nullptr ? &primary->program : nullptr;
+        }
+
+        ShaderPassRole role = PrimaryRole();
+        if (m_manifestRoleOverride)
+        {
+            role = m_manifestOverrideRole;
+        }
+        else if (m_instancingEnabled)
+        {
+            role = ShaderPassRole::Instanced;
+        }
+        const auto* const selected = SelectedManifestPass(role);
+        return selected != nullptr ? &selected->program : nullptr;
+    }
+
+    std::size_t LitEffect::PassCount(
+        const ShaderPassRole role) const noexcept
+    {
+        if (m_manifestEffect)
+        {
+            return m_manifestPasses[RoleIndex(role)].size();
+        }
+
+        switch (role)
+        {
+        case ShaderPassRole::Forward:
+            return m_skinned ? 0u : 1u;
+        case ShaderPassRole::Skinned:
+            return m_skinned ? 1u : 0u;
+        case ShaderPassRole::Instanced:
+            return m_instancedVertexShader != nullptr ? 1u : 0u;
+        case ShaderPassRole::Outline:
+            return !m_skinned
+                    && m_outlineVertexShader != nullptr
+                    && m_outlinePixelShader != nullptr
+                ? 1u
+                : 0u;
+        case ShaderPassRole::SkinnedOutline:
+            return m_skinned
+                    && m_outlineVertexShader != nullptr
+                    && m_outlinePixelShader != nullptr
+                ? 1u
+                : 0u;
+        case ShaderPassRole::Occluded:
+            return m_occludedPixelShader != nullptr
+                    && m_occludedDepthState != nullptr
+                ? 1u
+                : 0u;
+        }
+        return 0;
+    }
+
+    void LitEffect::SelectPass(
+        const ShaderPassRole role,
+        const std::size_t index)
+    {
+        const auto count = PassCount(role);
+        if (index >= count)
+        {
+            throw std::out_of_range(
+                "Material shader role '"
+                + std::string{ ManifestRoleName(role) }
+                + "' pass index " + std::to_string(index)
+                + " is out of range (count "
+                + std::to_string(count) + ").");
+        }
+        if (m_manifestEffect)
+        {
+            m_selectedManifestPasses[RoleIndex(role)] = index;
+        }
+    }
+
+    const ShaderRenderState& LitEffect::SelectedPassRenderState(
+        const ShaderPassRole role) const
+    {
+        if (const auto* const pass = SelectedManifestPass(role))
+        {
+            return pass->renderState;
+        }
+        if (PassCount(role) != 0)
+        {
+            return m_renderState;
+        }
+        throw std::out_of_range(
+            "Material shader has no pass with role '"
+            + std::string{ ManifestRoleName(role) } + "'.");
+    }
+
+    ID3DBlob* LitEffect::SelectedPassVertexShaderByteCode(
+        const ShaderPassRole role) const noexcept
+    {
+        if (const auto* const pass = SelectedManifestPass(role))
+        {
+            if (auto* const byteCode =
+                    pass->program.VertexShaderByteCode())
+            {
+                return byteCode;
+            }
+            if (role == ShaderPassRole::Occluded)
+            {
+                const auto* const primary = ManifestPassAt(
+                    PrimaryRole(),
+                    0);
+                return primary != nullptr
+                    ? primary->program.VertexShaderByteCode()
+                    : nullptr;
+            }
+            return nullptr;
+        }
+        if (PassCount(role) == 0)
+        {
+            return nullptr;
+        }
+        if (role == ShaderPassRole::Instanced)
+        {
+            return m_instancedVertexShaderByteCode.Get();
+        }
+        return m_vertexShaderByteCode.Get();
+    }
+
+    bool LitEffect::SelectedPassHasTessellation(
+        const ShaderPassRole role) const noexcept
+    {
+        if (m_manifestEffect)
+        {
+            const auto* pass = SelectedManifestPass(role);
+            if (role == ShaderPassRole::Occluded)
+            {
+                pass = ManifestPassAt(PrimaryRole(), 0);
+            }
+            return pass != nullptr
+                && pass->program.HullShader() != nullptr
+                && pass->program.DomainShader() != nullptr;
+        }
+        if (PassCount(role) == 0
+            || role == ShaderPassRole::Outline
+            || role == ShaderPassRole::SkinnedOutline)
+        {
+            return false;
+        }
+        return m_hullShader != nullptr && m_domainShader != nullptr;
+    }
+
+    bool LitEffect::SelectedPassHasGeometryShader(
+        const ShaderPassRole role) const noexcept
+    {
+        if (m_manifestEffect)
+        {
+            const auto* pass = SelectedManifestPass(role);
+            if (role == ShaderPassRole::Occluded)
+            {
+                pass = ManifestPassAt(PrimaryRole(), 0);
+            }
+            return pass != nullptr
+                && pass->program.GeometryShader() != nullptr;
+        }
+        if (PassCount(role) == 0
+            || role == ShaderPassRole::Outline
+            || role == ShaderPassRole::SkinnedOutline)
+        {
+            return false;
+        }
+        return m_geometryShader != nullptr;
+    }
+
+    std::size_t LitEffect::ColorPassCount() const noexcept
+    {
+        return PassCount(PrimaryRole());
+    }
+
+    void LitEffect::SelectColorPass(const std::size_t index)
+    {
+        SelectPass(PrimaryRole(), index);
+    }
+
+    const ShaderRenderState& LitEffect::ColorPassRenderState(
+        const std::size_t index) const
+    {
+        if (m_manifestEffect)
+        {
+            if (const auto* const pass = ManifestPassAt(
+                    PrimaryRole(),
+                    index))
+            {
+                return pass->renderState;
+            }
+        }
+        else if (index == 0)
+        {
+            return m_renderState;
+        }
+        throw std::out_of_range(
+            "Material color pass index " + std::to_string(index)
+            + " is out of range (count "
+            + std::to_string(ColorPassCount()) + ").");
+    }
+
+    ID3DBlob* LitEffect::ColorPassVertexShaderByteCode(
+        const std::size_t index) const noexcept
+    {
+        if (m_manifestEffect)
+        {
+            const auto* const pass = ManifestPassAt(
+                PrimaryRole(),
+                index);
+            return pass != nullptr
+                ? pass->program.VertexShaderByteCode()
+                : nullptr;
+        }
+        return index == 0 ? m_vertexShaderByteCode.Get() : nullptr;
+    }
+
+    const ShaderRenderState& LitEffect::RenderState() const noexcept
+    {
+        if (m_manifestEffect)
+        {
+            const auto role = m_instancingEnabled
+                ? ShaderPassRole::Instanced
+                : PrimaryRole();
+            if (const auto* const pass = SelectedManifestPass(role))
+            {
+                return pass->renderState;
+            }
+        }
+        return m_renderState;
+    }
+
+    bool LitEffect::HasTessellation() const noexcept
+    {
+        if (const auto* const program = ActiveManifestProgram(m_depthOnly))
+        {
+            return program->HullShader() != nullptr
+                && program->DomainShader() != nullptr;
+        }
+        return m_hullShader != nullptr && m_domainShader != nullptr;
+    }
+
+    bool LitEffect::HasGeometryShader() const noexcept
+    {
+        if (const auto* const program = ActiveManifestProgram(m_depthOnly))
+        {
+            return program->GeometryShader() != nullptr;
+        }
+        return m_geometryShader != nullptr;
+    }
+
+    bool LitEffect::HasOutline() const noexcept
+    {
+        return PassCount(OutlineRole()) != 0;
+    }
+
+    bool LitEffect::HasOccludedPass() const noexcept
+    {
+        return PassCount(ShaderPassRole::Occluded) != 0;
+    }
+
+    bool LitEffect::SupportsInstancing() const noexcept
+    {
+        return PassCount(ShaderPassRole::Instanced) != 0;
+    }
+
+    ID3DBlob* LitEffect::InstancedVertexShaderByteCode() const noexcept
+    {
+        return SelectedPassVertexShaderByteCode(
+            ShaderPassRole::Instanced);
+    }
+
     void LitEffect::Apply(ID3D11DeviceContext* deviceContext)
     {
         auto* context = deviceContext != nullptr
             ? deviceContext
             : m_context;
+        const auto* const manifestProgram =
+            ActiveManifestProgram(m_depthOnly);
+        auto* const activeVertexShader = manifestProgram != nullptr
+            ? manifestProgram->VertexShader()
+            : m_instancingEnabled
+                ? m_instancedVertexShader.Get()
+                : m_vertexShader.Get();
+        auto* const activePixelShader = manifestProgram != nullptr
+            ? manifestProgram->PixelShader()
+            : m_pixelShader.Get();
+        auto* const activeHullShader = manifestProgram != nullptr
+            ? manifestProgram->HullShader()
+            : m_hullShader.Get();
+        auto* const activeDomainShader = manifestProgram != nullptr
+            ? manifestProgram->DomainShader()
+            : m_domainShader.Get();
+        auto* const activeGeometryShader = manifestProgram != nullptr
+            ? manifestProgram->GeometryShader()
+            : m_geometryShader.Get();
+        const bool bindTessellation = m_tessellationDraw
+            && activeHullShader != nullptr
+            && activeDomainShader != nullptr;
         ResolveTextureFlags();
         context->UpdateSubresource(
             m_objectBuffer.Get(),
@@ -1081,9 +1688,7 @@ namespace LamaPon
                     vertexBuffers);
             }
             context->VSSetShader(
-                m_instancingEnabled
-                    ? m_instancedVertexShader.Get()
-                    : m_vertexShader.Get(),
+                activeVertexShader,
                 nullptr,
                 0);
             // 深度だけのパスでも、パッチで描くなら束ねます。外すと
@@ -1095,7 +1700,7 @@ namespace LamaPon
             // いなかったので、頂点より後ろの段を使うときだけ揃えます。
             // 揃えないと前の描画の値で形が決まり、影だけ形が違う
             // という追いにくい絵になります。
-            if (m_tessellationDraw || m_geometryShader)
+            if (bindTessellation || activeGeometryShader != nullptr)
             {
                 context->UpdateSubresource(
                     m_customVectorBuffer.Get(),
@@ -1105,7 +1710,7 @@ namespace LamaPon
                     0,
                     0);
             }
-            if (m_tessellationDraw)
+            if (bindTessellation)
             {
                 ID3D11Buffer* tessellationBuffers[]{
                     m_objectBuffer.Get()
@@ -1131,16 +1736,16 @@ namespace LamaPon
                     customVectorBuffer);
             }
             context->HSSetShader(
-                m_tessellationDraw ? m_hullShader.Get() : nullptr,
+                bindTessellation ? activeHullShader : nullptr,
                 nullptr,
                 0);
             context->DSSetShader(
-                m_tessellationDraw ? m_domainShader.Get() : nullptr,
+                bindTessellation ? activeDomainShader : nullptr,
                 nullptr,
                 0);
             // 深度パスでもジオメトリシェーダーは束ねます。外すと
             // 影だけGSの前の形になり、本体と影がずれます。
-            if (m_geometryShader)
+            if (activeGeometryShader != nullptr)
             {
                 ID3D11Buffer* geometryBuffers[]{
                     m_objectBuffer.Get()
@@ -1158,7 +1763,7 @@ namespace LamaPon
                     customVectorBuffer);
             }
             context->GSSetShader(
-                m_geometryShader.Get(),
+                activeGeometryShader,
                 nullptr,
                 0);
             context->PSSetShader(nullptr, nullptr, 0);
@@ -1259,28 +1864,26 @@ namespace LamaPon
             1,
             customVectorBuffer);
         context->VSSetShader(
-            m_instancingEnabled
-                ? m_instancedVertexShader.Get()
-                : m_vertexShader.Get(),
+            activeVertexShader,
             nullptr,
             0);
         // パッチで描くときだけ束ねます。三角形リストのままハル
         // シェーダーが刺さっていると描画そのものが不正になります。
         context->HSSetShader(
-            m_tessellationDraw ? m_hullShader.Get() : nullptr,
+            bindTessellation ? activeHullShader : nullptr,
             nullptr,
             0);
         context->DSSetShader(
-            m_tessellationDraw ? m_domainShader.Get() : nullptr,
+            bindTessellation ? activeDomainShader : nullptr,
             nullptr,
             0);
         // 入力が三角形以外のGSはコンパイル時に拒否されるため、
         // 有効なジオメトリシェーダーをそのまま設定します。
         context->GSSetShader(
-            m_geometryShader.Get(),
+            activeGeometryShader,
             nullptr,
             0);
-        context->PSSetShader(m_pixelShader.Get(), nullptr, 0);
+        context->PSSetShader(activePixelShader, nullptr, 0);
         BindMaterialAndShadowTextures(context);
         BindPbrTextures(context);
         // クラスタライトカリング（t16〜t18）。無効時はnullptrのまま
@@ -1377,6 +1980,30 @@ namespace LamaPon
         auto* context = deviceContext != nullptr
             ? deviceContext
             : m_context;
+        if (m_manifestEffect)
+        {
+            const bool previousOverride = m_manifestRoleOverride;
+            const auto previousRole = m_manifestOverrideRole;
+            const bool previousDepthOnly = m_depthOnly;
+            m_manifestRoleOverride = true;
+            m_manifestOverrideRole = OutlineRole();
+            m_depthOnly = false;
+            try
+            {
+                Apply(context);
+            }
+            catch (...)
+            {
+                m_manifestRoleOverride = previousOverride;
+                m_manifestOverrideRole = previousRole;
+                m_depthOnly = previousDepthOnly;
+                throw;
+            }
+            m_manifestRoleOverride = previousOverride;
+            m_manifestOverrideRole = previousRole;
+            m_depthOnly = previousDepthOnly;
+            return;
+        }
         context->UpdateSubresource(
             m_objectBuffer.Get(),
             0,
@@ -1444,6 +2071,54 @@ namespace LamaPon
         auto* context = deviceContext != nullptr
             ? deviceContext
             : m_context;
+        if (m_manifestEffect)
+        {
+            // Occludedはstatic/skinnedいずれの入力にも同じ定義を
+            // 使えるようpixel-onlyです。primary pipelineを適用後、
+            // 選択されたrole passのPSだけを差し替えます。
+            const auto primaryRole = PrimaryRole();
+            const auto primaryRoleIndex = RoleIndex(primaryRole);
+            const auto previousPrimaryIndex =
+                m_selectedManifestPasses[primaryRoleIndex];
+            const bool previousInstancing = m_instancingEnabled;
+            const bool previousDepthOnly = m_depthOnly;
+            const bool previousOverride = m_manifestRoleOverride;
+            const auto previousOverrideRole = m_manifestOverrideRole;
+            m_selectedManifestPasses[primaryRoleIndex] = 0;
+            m_instancingEnabled = false;
+            m_depthOnly = false;
+            m_manifestRoleOverride = false;
+            try
+            {
+                Apply(context);
+            }
+            catch (...)
+            {
+                m_selectedManifestPasses[primaryRoleIndex] =
+                    previousPrimaryIndex;
+                m_instancingEnabled = previousInstancing;
+                m_depthOnly = previousDepthOnly;
+                m_manifestRoleOverride = previousOverride;
+                m_manifestOverrideRole = previousOverrideRole;
+                throw;
+            }
+            m_selectedManifestPasses[primaryRoleIndex] =
+                previousPrimaryIndex;
+            m_instancingEnabled = previousInstancing;
+            m_depthOnly = previousDepthOnly;
+            m_manifestRoleOverride = previousOverride;
+            m_manifestOverrideRole = previousOverrideRole;
+            const auto* const occluded = SelectedManifestPass(
+                ShaderPassRole::Occluded);
+            context->PSSetShader(
+                occluded->program.PixelShader(),
+                nullptr,
+                0);
+            context->OMSetDepthStencilState(
+                m_occludedDepthState.Get(),
+                0);
+            return;
+        }
         Apply(context);
         context->PSSetShader(
             m_occludedPixelShader.Get(),
@@ -1485,9 +2160,19 @@ namespace LamaPon
             static_cast<UINT>(std::size(pixelBuffers)),
             pixelBuffers);
         // この経路はDirectXTKの頂点シェーダーと組み合わせて使うので、
-        // GSMainが期待する入力とは限りません。束ねません。
+        // programmable geometry stagesが期待する入力とは限りません。
+        // 前のdrawのHS/DS/GSも含め、すべて明示的に外します。
+        context->HSSetShader(nullptr, nullptr, 0);
+        context->DSSetShader(nullptr, nullptr, 0);
         context->GSSetShader(nullptr, nullptr, 0);
-        context->PSSetShader(m_pixelShader.Get(), nullptr, 0);
+        const auto* const primary = SelectedManifestPass(
+            PrimaryRole());
+        context->PSSetShader(
+            primary != nullptr
+                ? primary->program.PixelShader()
+                : m_pixelShader.Get(),
+            nullptr,
+            0);
         // スキニング経路でもIBLとスポット／ポイント影を使えるよう、
         // アルベドや法線を含むt0〜t6をすべてバインドします。
         BindMaterialAndShadowTextures(context);
@@ -1592,9 +2277,21 @@ namespace LamaPon
             throw std::invalid_argument(
                 "Shader bytecode output pointers cannot be null.");
         }
-        *shaderByteCode =
-            m_vertexShaderByteCode->GetBufferPointer();
-        *byteCodeLength =
-            m_vertexShaderByteCode->GetBufferSize();
+        ID3DBlob* byteCode = m_vertexShaderByteCode.Get();
+        if (m_manifestEffect)
+        {
+            const auto* const program = ActiveManifestProgram(
+                m_depthOnly);
+            byteCode = program != nullptr
+                ? program->VertexShaderByteCode()
+                : nullptr;
+        }
+        if (byteCode == nullptr)
+        {
+            throw std::runtime_error(
+                "The active material pass has no vertex shader bytecode.");
+        }
+        *shaderByteCode = byteCode->GetBufferPointer();
+        *byteCodeLength = byteCode->GetBufferSize();
     }
 }

@@ -270,6 +270,60 @@ int main()
                 "a broken include must not return cached bytecode");
         }
 
+        // Shader隣接fileが無い間はasset-rootの同名includeへfallback
+        // します。その後、優先順位の高い隣接fileが作られたら、root
+        // fallbackの内容が同じでも依存解決をやり直す必要があります。
+        {
+            const auto marker = UniqueMarker("include-shadow");
+            const auto shader = root.Path()
+                / L"nested"
+                / L"shadow.hlsl";
+            const auto fallback = root.Path() / L"shadow.hlsli";
+            const auto local = root.Path()
+                / L"nested"
+                / L"shadow.hlsli";
+            WriteFile(
+                fallback,
+                "float4 Value() { return float4(1, 1, 1, 1); }\n");
+            WriteFile(
+                shader,
+                marker
+                + "#include \"shadow.hlsli\"\n"
+                "float4 VSMain() : SV_Position"
+                " { return Value(); }\n");
+            Require(
+                CompileMessage(
+                    assets,
+                    L"nested/shadow.hlsl",
+                    "VSMain",
+                    "vs_5_0").empty(),
+                "the asset-root include fallback must compile");
+            const auto fallbackRevision =
+                LamaPon::ShaderSourceDependencyRevision(
+                    assets,
+                    L"nested/shadow.hlsl");
+            Require(
+                fallbackRevision != 0,
+                "the fallback include dependencies must be tracked");
+
+            WriteFile(
+                local,
+                "float4 Value() { return not_a_function(); }\n");
+            Require(
+                LamaPon::ShaderSourceDependencyRevision(
+                    assets,
+                    L"nested/shadow.hlsl")
+                    != fallbackRevision,
+                "creating a higher-priority local include must change the live revision");
+            Require(
+                !CompileMessage(
+                    assets,
+                    L"nested/shadow.hlsl",
+                    "VSMain",
+                    "vs_5_0").empty(),
+                "a new local include must shadow the cached root fallback");
+        }
+
         // include修正後は失敗結果を再利用せず、コンパイルが成功すること。
         {
             const auto marker = UniqueMarker("stale-failure");

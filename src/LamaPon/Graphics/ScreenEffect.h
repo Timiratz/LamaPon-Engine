@@ -1,5 +1,7 @@
 #pragma once
 
+#include "LamaPon/Graphics/ShaderProgram.h"
+
 #include <DirectXMath.h>
 #include <d3d11.h>
 #include <wrl/client.h>
@@ -13,8 +15,9 @@ namespace LamaPon
 {
     class AssetManager;
 
-    // 画面全体を入力テクスチャとして受け取る、任意HLSL用のポストエフェクトです。
-    // VSMain と PSMain を持つHLSLを、フルスクリーン三角形として実行します。
+    // 画面全体を入力テクスチャとして受け取る、任意Shader用の
+    // ポストエフェクトです。HLSLではVSMain/PSMainを、
+    // .lamashader.jsonでは最初のpassが指定する入口を使用します。
     class ScreenEffect final
     {
     public:
@@ -58,10 +61,7 @@ namespace LamaPon
         };
 
         ID3D11DeviceContext* m_context{};
-        Microsoft::WRL::ComPtr<ID3D11VertexShader>
-            m_vertexShader;
-        Microsoft::WRL::ComPtr<ID3D11PixelShader>
-            m_pixelShader;
+        ShaderProgram m_program;
         Microsoft::WRL::ComPtr<ID3D11Buffer>
             m_constantBuffer;
         Microsoft::WRL::ComPtr<ID3D11SamplerState>

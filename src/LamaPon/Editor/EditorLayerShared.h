@@ -166,6 +166,19 @@ namespace LamaPon::EditorDetail
                 == NormalizeAssetReference(right);
     }
 
+    // 未選択（空path）同士も同じ選択として扱います。Asset Selectorで
+    // 現在の項目を再クリックしただけの操作を変更扱いにしないためです。
+    inline bool IsAssetSelectionChange(
+        const std::filesystem::path& current,
+        const std::filesystem::path& candidate)
+    {
+        if (current.empty() || candidate.empty())
+        {
+            return current.empty() != candidate.empty();
+        }
+        return !IsSameAssetReference(current, candidate);
+    }
+
     inline bool IsTextureAsset(const std::filesystem::path& path)
     {
         auto normalized = Lowercase(
@@ -214,9 +227,28 @@ namespace LamaPon::EditorDetail
             ".material.json");
     }
 
+    inline bool IsShaderManifestAsset(
+        const std::filesystem::path& path)
+    {
+        return Lowercase(LamaPon::PathToUtf8(path.filename())).ends_with(
+            ".lamashader.json");
+    }
+
+    // 従来のHLSL直接指定だけを表します。Manifestをここへ混ぜると、
+    // Material Manifestが未対応のSprite／Particleにも選べてしまうため、
+    // そちらは用途別の選択経路で明示的に許可します。
     inline bool IsShaderAsset(const std::filesystem::path& path)
     {
         return Lowercase(LamaPon::PathToUtf8(path.extension())) == ".hlsl";
+    }
+
+    // Asset Browserからコードエディターで開けるShader資産です。
+    // 割り当て可否ではなく編集導線専用なので、Manifestも含めます。
+    inline bool IsOpenableShaderAsset(
+        const std::filesystem::path& path)
+    {
+        return IsShaderAsset(path)
+            || IsShaderManifestAsset(path);
     }
 
     // エンジンが「壊れている印」として使うShader（コンパイルに失敗した

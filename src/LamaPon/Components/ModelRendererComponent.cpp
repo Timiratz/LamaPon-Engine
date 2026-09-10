@@ -49,7 +49,37 @@ namespace
         const bool skinned,
         std::string& shaderError)
     {
-        if (effect == nullptr || !effect->HasTessellation())
+        if (effect == nullptr)
+        {
+            return effect;
+        }
+        bool hasTessellation{};
+        const std::array roles{
+            skinned
+                ? LamaPon::ShaderPassRole::Skinned
+                : LamaPon::ShaderPassRole::Forward,
+            skinned
+                ? LamaPon::ShaderPassRole::SkinnedOutline
+                : LamaPon::ShaderPassRole::Outline,
+            LamaPon::ShaderPassRole::Instanced
+        };
+        for (const auto role : roles)
+        {
+            const auto passCount = effect->PassCount(role);
+            for (std::size_t index = 0;
+                index < passCount;
+                ++index)
+            {
+                effect->SelectPass(role, index);
+                hasTessellation = hasTessellation
+                    || effect->SelectedPassHasTessellation(role);
+            }
+            if (passCount != 0)
+            {
+                effect->SelectPass(role, 0);
+            }
+        }
+        if (!hasTessellation)
         {
             return effect;
         }
@@ -67,6 +97,185 @@ namespace
             return placeholder;
         }
         return effect;
+    }
+
+    // LitEffectはGraphicsDevice内で共有されます。Manifestの
+    // 選択中passと一時フラグを別componentへ持ち越さず、
+    // programmable geometry stageも後続描画へ漏らさないための
+    // スコープです。
+    class MaterialPassScope final
+    {
+    public:
+        MaterialPassScope(
+            LamaPon::LitEffect& effect,
+            ID3D11DeviceContext* context) noexcept
+            : m_effect(effect)
+            , m_context(context)
+        {
+        }
+
+        MaterialPassScope(const MaterialPassScope&) = delete;
+        MaterialPassScope& operator=(const MaterialPassScope&) = delete;
+
+        ~MaterialPassScope()
+        {
+            m_effect.SetTessellationDrawEnabled(false);
+            m_effect.SetDepthOnlyEnabled(false);
+            m_effect.SetInstancingEnabled(false);
+            constexpr std::array roles{
+                LamaPon::ShaderPassRole::Forward,
+                LamaPon::ShaderPassRole::Skinned,
+                LamaPon::ShaderPassRole::Instanced,
+                LamaPon::ShaderPassRole::Outline,
+                LamaPon::ShaderPassRole::SkinnedOutline,
+                LamaPon::ShaderPassRole::Occluded
+            };
+            for (const auto role : roles)
+            {
+                if (m_effect.PassCount(role) == 0)
+                {
+                    continue;
+                }
+                try
+                {
+                    m_effect.SelectPass(role, 0);
+                }
+                catch (...)
+                {
+                    // 有効なindex 0への復帰なので通常は失敗
+                    // しません。destructorから例外を出さない
+                    // ため、万一の場合だけ無視します。
+                }
+            }
+            if (m_context != nullptr)
+            {
+                m_context->HSSetShader(nullptr, nullptr, 0);
+                m_context->DSSetShader(nullptr, nullptr, 0);
+                m_context->GSSetShader(nullptr, nullptr, 0);
+            }
+        }
+
+    private:
+        LamaPon::LitEffect& m_effect;
+        ID3D11DeviceContext* m_context{};
+    };
+
+    // glTF/FBXインポータの頂点はDirectX::Modelと表面の
+    // 向きが反対です。Manifestの描画状態を適用するときも
+    // 従来のSkeletalModel描画と同じcull規約にします。
+    void ApplyImportedModelRenderState(
+        ID3D11DeviceContext* const context,
+        LamaPon::GraphicsDevice& graphics,
+        const LamaPon::ShaderRenderState& state,
+        const bool doubleSided)
+    {
+        auto& states = graphics.States();
+        switch (state.blend)
+        {
+        case LamaPon::ShaderBlendMode::Alpha:
+            context->OMSetBlendState(
+                states.NonPremultiplied(), nullptr, 0xffffffff);
+            break;
+        case LamaPon::ShaderBlendMode::Additive:
+            context->OMSetBlendState(
+                graphics.AdditiveBlendPreservingAlpha(),
+                nullptr,
+                0xffffffff);
+            break;
+        case LamaPon::ShaderBlendMode::Premultiplied:
+            context->OMSetBlendState(
+                states.AlphaBlend(), nullptr, 0xffffffff);
+            break;
+        case LamaPon::ShaderBlendMode::Opaque:
+        default:
+            context->OMSetBlendState(
+                states.Opaque(), nullptr, 0xffffffff);
+            break;
+        }
+        context->OMSetDepthStencilState(
+            state.depthTest
+                ? (state.depthWrite
+                    ? states.DepthDefault()
+                    : states.DepthRead())
+                : states.DepthNone(),
+            0);
+        switch (state.cull)
+        {
+        case LamaPon::ShaderCullMode::Front:
+            context->RSSetState(states.CullCounterClockwise());
+            break;
+        case LamaPon::ShaderCullMode::None:
+            context->RSSetState(states.CullNone());
+            break;
+        case LamaPon::ShaderCullMode::Back:
+        default:
+            context->RSSetState(
+                doubleSided
+                    ? states.CullNone()
+                    : states.CullClockwise());
+            break;
+        }
+    }
+
+    // DirectXTKの頂点宣言は位置をSV_Positionとしますが、
+    // 一般的な自作HLSLはPOSITIONを使います。データ形式は
+    // 同じなので、最初の作成が失敗したときだけ位置semantic
+    // を入れ替えて再試行します。
+    HRESULT CreateInputLayoutWithPositionAlias(
+        ID3D11Device* const device,
+        const D3D11_INPUT_ELEMENT_DESC* const elements,
+        const UINT elementCount,
+        ID3DBlob* const byteCode,
+        ID3D11InputLayout** const layout)
+    {
+        HRESULT result = device->CreateInputLayout(
+            elements,
+            elementCount,
+            byteCode->GetBufferPointer(),
+            byteCode->GetBufferSize(),
+            layout);
+        if (SUCCEEDED(result))
+        {
+            return result;
+        }
+        if (*layout != nullptr)
+        {
+            (*layout)->Release();
+            *layout = nullptr;
+        }
+
+        std::vector<D3D11_INPUT_ELEMENT_DESC> aliases(
+            elements,
+            elements + elementCount);
+        bool changed{};
+        for (auto& element : aliases)
+        {
+            if (element.SemanticName == nullptr
+                || element.SemanticIndex != 0)
+            {
+                continue;
+            }
+            if (::_stricmp(element.SemanticName, "POSITION") == 0)
+            {
+                element.SemanticName = "SV_Position";
+                changed = true;
+            }
+            else if (::_stricmp(
+                element.SemanticName,
+                "SV_Position") == 0)
+            {
+                element.SemanticName = "POSITION";
+                changed = true;
+            }
+        }
+        return changed
+            ? device->CreateInputLayout(
+                aliases.data(),
+                static_cast<UINT>(aliases.size()),
+                byteCode->GetBufferPointer(),
+                byteCode->GetBufferSize(),
+                layout)
+            : result;
     }
 
     // 読み込み済みテクスチャとマテリアル値から、Effectへ渡す
@@ -206,7 +415,9 @@ namespace LamaPon
             break;
         case ShaderBlendMode::Additive:
             m_context->OMSetBlendState(
-                m_states->Additive(),
+                m_graphics != nullptr
+                    ? m_graphics->AdditiveBlendPreservingAlpha()
+                    : m_states->Additive(),
                 blendFactor,
                 0xffffffffu);
             break;
@@ -275,8 +486,12 @@ namespace LamaPon
         {
             DirectX::ModelMesh* mesh{};
             DirectX::ModelMeshPart* part{};
-            Microsoft::WRL::ComPtr<ID3D11InputLayout>
-                inputLayout;
+            // forward/outlineはそれぞれ同じrole内で複数
+            // passを持てるため、VSごとにlayoutを分けます。
+            std::vector<Microsoft::WRL::ComPtr<
+                ID3D11InputLayout>> forwardInputLayouts;
+            std::vector<Microsoft::WRL::ComPtr<
+                ID3D11InputLayout>> outlineInputLayouts;
             Microsoft::WRL::ComPtr<
                 ID3D11ShaderResourceView>
                 embeddedAlbedoTexture;
@@ -301,20 +516,71 @@ namespace LamaPon
 
     bool ModelRendererComponent::IsAlphaBlended3D() const
     {
+        // GraphicsDeviceのMaterial Shader cacheはhot reload時にEffectを
+        // 置き換えます。別componentが先に更新した直後でも、下で古い
+        // raw pointerを参照しないよう、const queryの論理cacheを同期します。
+        const_cast<ModelRendererComponent*>(this)
+            ->RefreshShader(false);
         // 判定の条件は描画側（forceAlphaとpart->isAlpha）と同じ
         // ものです。片方だけ直すと「並べ替えの対象から外れたのに
         // 半透明で描かれる」パーツができるので、変えるときは両方。
+        bool hasEffect{};
+        bool allPassesDeclareState = true;
+        const std::array effects{
+            m_effect,
+            m_skinnedEffect,
+            m_skeletalForwardEffect
+        };
+        for (std::size_t effectIndex = 0;
+            effectIndex < effects.size();
+            ++effectIndex)
+        {
+            const auto* const activeEffect = effects[effectIndex];
+            if (activeEffect == nullptr)
+            {
+                continue;
+            }
+            // 同じfallback Effectが複数roleに返った場合は1回だけ調べます。
+            if (std::find(
+                    effects.begin(),
+                    effects.begin() + effectIndex,
+                    activeEffect)
+                != effects.begin() + effectIndex)
+            {
+                continue;
+            }
+            hasEffect = true;
+            const auto colorPassCount =
+                activeEffect->ColorPassCount();
+            allPassesDeclareState = allPassesDeclareState
+                && colorPassCount != 0;
+            for (std::size_t index = 0;
+                index < colorPassCount;
+                ++index)
+            {
+                const auto& state =
+                    activeEffect->ColorPassRenderState(index);
+                allPassesDeclareState =
+                    allPassesDeclareState && state.declared;
+                // forward/skinnedのどのpassか1つでも順序依存
+                // の合成なら、オブジェクト全体を半透明ソートへ
+                // 送ります。純加算は順番によらないため除外。
+                if (state.declared
+                    && (state.blend == ShaderBlendMode::Alpha
+                        || state.blend
+                            == ShaderBlendMode::Premultiplied))
+                {
+                    return true;
+                }
+            }
+        }
+        if (hasEffect && allPassesDeclareState)
+        {
+            return false;
+        }
         if (m_material.BaseColor().w < 0.999f)
         {
             return true;
-        }
-        if (m_effect != nullptr
-            && m_effect->RenderState().declared)
-        {
-            const auto blend = m_effect->RenderState().blend;
-            // 加算は順番によらないので並べ替えません。
-            return blend == ShaderBlendMode::Alpha
-                || blend == ShaderBlendMode::Premultiplied;
         }
         // モデルの中に半透明パーツが1つでもあれば対象にします。
         // 粒度はGameObject単位なので、不透明パーツも一緒に後回しに
@@ -331,6 +597,16 @@ namespace LamaPon
                     return true;
                 }
             }
+        }
+        if (m_model && m_model->skeletalModel)
+        {
+            return std::ranges::any_of(
+                m_model->skeletalModel->primitives,
+                [](const SkeletalPrimitive& primitive)
+                {
+                    return primitive.alpha
+                        || primitive.baseColor.w < 0.999f;
+                });
         }
         return false;
     }
@@ -416,6 +692,12 @@ namespace LamaPon
                 EnterAnimationState(*state);
             }
         }
+        // インスタンスバッチは個別OnRender3Dより先に
+        // CanBeInstancedを問うため、初フレームのバッチ判定までに
+        // Material Shaderとrole能力を確定させます。
+        RefreshShader(false);
+        // Shader identityが同じ場合はRefreshShaderが早期returnしますが、
+        // model自体は差し替わっているため、raw part参照は必ず作り直します。
         RebuildCommonLitResources();
     }
 
@@ -1392,13 +1674,40 @@ namespace LamaPon
 
         if (m_model && m_model->skeletalModel)
         {
+            const bool hasSkinnedPrimitive = std::ranges::any_of(
+                m_model->skeletalModel->primitives,
+                [](const SkeletalPrimitive& primitive)
+                {
+                    return primitive.skin >= 0;
+                });
+            const bool hasForwardPrimitive = std::ranges::any_of(
+                m_model->skeletalModel->primitives,
+                [](const SkeletalPrimitive& primitive)
+                {
+                    return primitive.skin < 0;
+                });
             std::uint64_t generation{};
-            std::string compileError;
-            auto* effect = m_graphics->SkinnedMaterialShader(
-                m_material.Shader(),
-                generation,
-                compileError,
-                m_material.ShaderKeywords());
+            std::string primaryError;
+            LitEffect* effect{};
+            const bool manifestRequested =
+                IsShaderManifestPath(m_material.Shader());
+            if (hasSkinnedPrimitive || !manifestRequested)
+            {
+                effect = m_graphics->SkinnedMaterialShader(
+                    m_material.Shader(),
+                    generation,
+                    primaryError,
+                    m_material.ShaderKeywords());
+            }
+            else if (!m_useLegacyShading
+                || !m_material.Shader().empty())
+            {
+                effect = &m_graphics->MaterialShader(
+                    m_material.Shader(),
+                    generation,
+                    primaryError,
+                    m_material.ShaderKeywords());
+            }
             // カスタムShaderが指定されていなければ、既定の
             // LamaPon Lit（PBR）で描きます。互換トグルが有効な
             // ときだけ従来のDirectXTK描画へ戻します。
@@ -1414,54 +1723,280 @@ namespace LamaPon
             effect = SubstituteUnsupportedTessellation(
                 effect,
                 *m_graphics,
-                true,
-                compileError);
-            if (m_skinnedEffect == effect
-                && m_activeShaderPath == m_material.Shader()
-                && m_shaderGeneration == generation)
+                effect != nullptr && effect->IsSkinned(),
+                primaryError);
+            if (manifestRequested
+                && effect != nullptr
+                && effect == &m_graphics->Lit())
             {
-                m_shaderError = std::move(compileError);
+                // glTF/FBX primitiveの既存VSは常にDirectXTK
+                // SkinnedEffectです。Forward Manifestの非同期compile中も
+                // その出力semanticへ合うPSSkinnedMainで代役します。
+                effect = &m_graphics->SkinnedLit();
+            }
+
+            // Manifest modelでは同じファイル内にskin付きとskin無しの
+            // primitiveが共存できます。前者はskinned role、後者は
+            // forward roleなので、mixed modelだけ両Effectを保持します。
+            LitEffect* forwardEffect{};
+            std::uint64_t forwardGeneration{};
+            std::string forwardError;
+            if (manifestRequested
+                && hasSkinnedPrimitive
+                && hasForwardPrimitive)
+            {
+                forwardEffect = &m_graphics->MaterialShader(
+                    m_material.Shader(),
+                    forwardGeneration,
+                    forwardError,
+                    m_material.ShaderKeywords());
+                forwardEffect = SubstituteUnsupportedTessellation(
+                    forwardEffect,
+                    *m_graphics,
+                    false,
+                    forwardError);
+                if (forwardEffect == &m_graphics->Lit())
+                {
+                    forwardEffect = &m_graphics->SkinnedLit();
+                }
+            }
+
+            std::string compileError;
+            const auto appendError = [](
+                std::string& destination,
+                const char* const label,
+                const std::string& message)
+            {
+                if (message.empty())
+                {
+                    return;
+                }
+                if (!destination.empty())
+                {
+                    destination += "; ";
+                }
+                destination += label;
+                destination += message;
+            };
+            if (forwardEffect != nullptr || !forwardError.empty())
+            {
+                appendError(compileError, "Skinned: ", primaryError);
+                appendError(compileError, "Forward: ", forwardError);
+            }
+            else
+            {
+                compileError = std::move(primaryError);
+            }
+            if (m_skinnedEffect == effect
+                && m_skeletalForwardEffect == forwardEffect
+                && m_activeShaderPath == m_material.Shader()
+                && m_shaderGeneration == generation
+                && m_skeletalForwardShaderGeneration
+                    == forwardGeneration)
+            {
+                // 入力layoutの互換性エラーはEffectのgenerationが
+                // 変わるまで保持し、毎フレームのcache照会で消しません。
+                if (!compileError.empty() || m_shaderError.empty())
+                {
+                    m_shaderError = std::move(compileError);
+                }
                 return;
             }
 
             m_skinnedEffect = effect;
+            m_skeletalForwardEffect = forwardEffect;
             m_effect = nullptr;
             m_activeShaderPath = m_material.Shader();
             m_shaderGeneration = generation;
+            m_skeletalForwardShaderGeneration = forwardGeneration;
             m_shaderError = std::move(compileError);
             m_skinnedInputLayout.Reset();
+            m_skeletalColorInputLayouts.clear();
+            m_skeletalOutlineInputLayouts.clear();
+            m_skeletalForwardColorInputLayouts.clear();
+            m_skeletalForwardOutlineInputLayouts.clear();
+            m_instancedInputLayouts.clear();
+
+            const auto buildManifestLayouts =
+                [this, &appendError](
+                    LitEffect* const manifestEffect,
+                    std::vector<Microsoft::WRL::ComPtr<
+                        ID3D11InputLayout>>& colorLayouts,
+                    std::vector<Microsoft::WRL::ComPtr<
+                        ID3D11InputLayout>>& outlineLayouts,
+                    const char* const label)
+                {
+                    if (manifestEffect == nullptr
+                        || !manifestEffect->IsManifestEffect())
+                    {
+                        return;
+                    }
+                    std::string layoutError;
+                    const auto createLayout =
+                        [this, &layoutError](
+                            ID3DBlob* const byteCode,
+                            Microsoft::WRL::ComPtr<
+                                ID3D11InputLayout>& layout,
+                            const std::string& passLabel)
+                        {
+                            if (byteCode == nullptr)
+                            {
+                                layoutError = passLabel
+                                    + " has no vertex shader bytecode.";
+                                return false;
+                            }
+                            const HRESULT result =
+                                CreateInputLayoutWithPositionAlias(
+                                    m_graphics->Device(),
+                                    DirectX::
+                                        VertexPositionNormalTangentColorTextureSkinning::
+                                            InputElements,
+                                    DirectX::
+                                        VertexPositionNormalTangentColorTextureSkinning::
+                                            InputElementCount,
+                                    byteCode,
+                                    layout.ReleaseAndGetAddressOf());
+                            if (FAILED(result))
+                            {
+                                layoutError = passLabel
+                                    + " input layout is incompatible.";
+                                return false;
+                            }
+                            return true;
+                        };
+
+                    bool layoutsValid = true;
+                    const auto colorPassCount =
+                        manifestEffect->ColorPassCount();
+                    colorLayouts.reserve(colorPassCount);
+                    for (std::size_t index = 0;
+                        index < colorPassCount;
+                        ++index)
+                    {
+                        Microsoft::WRL::ComPtr<
+                            ID3D11InputLayout> layout;
+                        layoutsValid = createLayout(
+                            manifestEffect
+                                ->ColorPassVertexShaderByteCode(index),
+                            layout,
+                            std::string(label)
+                                + " color pass "
+                                + std::to_string(index))
+                            && layoutsValid;
+                        if (!layoutsValid)
+                        {
+                            break;
+                        }
+                        colorLayouts.push_back(std::move(layout));
+                    }
+
+                    const auto outlineRole =
+                        manifestEffect->IsSkinned()
+                        ? ShaderPassRole::SkinnedOutline
+                        : ShaderPassRole::Outline;
+                    const auto outlinePassCount =
+                        manifestEffect->PassCount(outlineRole);
+                    outlineLayouts.reserve(outlinePassCount);
+                    for (std::size_t index = 0;
+                        layoutsValid && index < outlinePassCount;
+                        ++index)
+                    {
+                        manifestEffect->SelectPass(outlineRole, index);
+                        Microsoft::WRL::ComPtr<
+                            ID3D11InputLayout> layout;
+                        layoutsValid = createLayout(
+                            manifestEffect
+                                ->SelectedPassVertexShaderByteCode(
+                                    outlineRole),
+                            layout,
+                            std::string(label)
+                                + " outline pass "
+                                + std::to_string(index));
+                        if (layoutsValid)
+                        {
+                            outlineLayouts.push_back(std::move(layout));
+                        }
+                    }
+                    if (outlinePassCount != 0)
+                    {
+                        manifestEffect->SelectPass(outlineRole, 0);
+                    }
+                    if (colorPassCount != 0)
+                    {
+                        manifestEffect->SelectColorPass(0);
+                    }
+                    if (!layoutsValid
+                        || colorLayouts.size() != colorPassCount)
+                    {
+                        colorLayouts.clear();
+                        outlineLayouts.clear();
+                        appendError(
+                            m_shaderError,
+                            "",
+                            layoutError);
+                    }
+                };
+
             if (effect != nullptr)
             {
-                const void* shaderByteCode{};
-                std::size_t shaderByteCodeSize{};
-                effect->GetVertexShaderBytecode(
-                    &shaderByteCode,
-                    &shaderByteCodeSize);
-                const HRESULT result =
-                    m_graphics->Device()->CreateInputLayout(
-                        DirectX::
-                            VertexPositionNormalTangentColorTextureSkinning::
-                                InputElements,
-                        DirectX::
-                            VertexPositionNormalTangentColorTextureSkinning::
-                                InputElementCount,
-                        shaderByteCode,
-                        shaderByteCodeSize,
-                        m_skinnedInputLayout.
-                            ReleaseAndGetAddressOf());
-                if (FAILED(result))
+                if (effect->IsManifestEffect())
                 {
-                    m_shaderError =
-                        "Skinned shader input layout is incompatible.";
-                    m_skinnedEffect = nullptr;
+                    buildManifestLayouts(
+                        effect,
+                        m_skeletalColorInputLayouts,
+                        m_skeletalOutlineInputLayouts,
+                        effect->IsSkinned()
+                            ? "Skinned material"
+                            : "Forward material");
+                }
+                else
+                {
+                    const void* shaderByteCode{};
+                    std::size_t shaderByteCodeSize{};
+                    effect->GetVertexShaderBytecode(
+                        &shaderByteCode,
+                        &shaderByteCodeSize);
+                    const HRESULT result =
+                        m_graphics->Device()->CreateInputLayout(
+                            DirectX::
+                                VertexPositionNormalTangentColorTextureSkinning::
+                                    InputElements,
+                            DirectX::
+                                VertexPositionNormalTangentColorTextureSkinning::
+                                    InputElementCount,
+                            shaderByteCode,
+                            shaderByteCodeSize,
+                            m_skinnedInputLayout.
+                                ReleaseAndGetAddressOf());
+                    if (FAILED(result))
+                    {
+                        const std::string layoutError =
+                            hasSkinnedPrimitive
+                            ? "Skinned shader input layout is incompatible."
+                            : "Model shader input layout is incompatible.";
+                        appendError(m_shaderError, "", layoutError);
+                        m_skinnedEffect = nullptr;
+                    }
                 }
             }
+            buildManifestLayouts(
+                forwardEffect,
+                m_skeletalForwardColorInputLayouts,
+                m_skeletalForwardOutlineInputLayouts,
+                "Forward material");
             RebuildCommonLitResources();
             return;
         }
 
         m_skinnedEffect = nullptr;
+        m_skeletalForwardEffect = nullptr;
         m_skinnedInputLayout.Reset();
+        m_skeletalColorInputLayouts.clear();
+        m_skeletalOutlineInputLayouts.clear();
+        m_skeletalForwardColorInputLayouts.clear();
+        m_skeletalForwardOutlineInputLayouts.clear();
+        m_instancedInputLayouts.clear();
+        m_skeletalForwardShaderGeneration = 0;
         std::uint64_t generation{};
         std::string compileError;
         auto* effect = &m_graphics->MaterialShader(
@@ -1556,7 +2091,10 @@ namespace LamaPon
                 ? nullptr
                 : m_assets->LoadTexture(path);
         }
-        RebuildCommonLitResources();
+        // Sceneのインスタンス収集は個別OnRender3Dより先に
+        // 走るので、初フレームからrole能力を利用できるよう
+        // 初期化時点でShaderを選択します。
+        RefreshShader(false);
     }
 
     void ModelRendererComponent::OnUpdate(const float deltaTime)
@@ -1705,6 +2243,10 @@ namespace LamaPon
                 m_occlusionTexture,
                 m_emissiveTexture,
                 m_material);
+            const auto customTextureViews =
+                ResolveCustomTextureViews();
+            const bool depthOnly =
+                m_graphics->IsDepthOnlyPass();
             m_model->skeletalModel->Draw(
                 m_context,
                 *m_states,
@@ -1739,9 +2281,30 @@ namespace LamaPon
                 // 従来のDirectXTK描画になります）。
                 m_skinnedEffect,
                 m_skinnedInputLayout.Get(),
-                m_graphics->IsDepthOnlyPass(),
+                depthOnly,
                 &m_cachedGlobalPose,
-                m_graphics->Settings().automaticLodQuality);
+                m_graphics->Settings().automaticLodQuality,
+                m_skinnedEffect != nullptr
+                        && m_skinnedEffect->IsManifestEffect()
+                    ? &m_skeletalColorInputLayouts
+                    : nullptr,
+                m_skinnedEffect != nullptr
+                        && m_skinnedEffect->IsManifestEffect()
+                    ? &m_skeletalOutlineInputLayouts
+                    : nullptr,
+                &customTextureViews,
+                m_skeletalForwardEffect,
+                m_skeletalForwardEffect != nullptr
+                        && m_skeletalForwardEffect->IsManifestEffect()
+                    ? &m_skeletalForwardColorInputLayouts
+                    : nullptr,
+                m_skeletalForwardEffect != nullptr
+                        && m_skeletalForwardEffect->IsManifestEffect()
+                    ? &m_skeletalForwardOutlineInputLayouts
+                    : nullptr,
+                depthOnly
+                    && m_graphics->DepthPass()
+                        == DepthPassKind::Prepass);
             return;
         }
 
@@ -2338,10 +2901,13 @@ namespace LamaPon
 
     bool ModelRendererComponent::CanBeInstanced() const
     {
+        // Sceneは個別OnRender3Dより前にこの判定を呼びます。共有Effectが
+        // 他componentのhot reloadで置換済みでも、能力参照より先に
+        // generationとraw pointerを更新します。
+        const_cast<ModelRendererComponent*>(this)
+            ->RefreshShader(false);
         if (m_wireframe
-            || m_materialOverrideEnabled
             || m_useLegacyShading
-            || !m_material.Shader().empty()
             || m_graphics == nullptr
             || m_graphics->IsDepthOnlyPass()
             || !m_model
@@ -2349,11 +2915,55 @@ namespace LamaPon
         {
             return false;
         }
+        if (m_materialOverrideEnabled
+            && m_material.BaseColor().w < 0.999f)
+        {
+            return false;
+        }
         const auto& model = *m_model->skeletalModel;
+        auto* const effect = m_material.Shader().empty()
+            ? &m_graphics->Lit()
+            : m_skinnedEffect;
         if (!model.skins.empty()
             || !model.animations.empty()
             || model.primitives.empty()
-            || !m_graphics->Lit().SupportsInstancing())
+            || effect == nullptr
+            || effect->IsSkinned()
+            || !effect->SupportsInstancing())
+        {
+            return false;
+        }
+        bool hasOrderDependentInstancedPass{};
+        for (std::size_t index = 0;
+            index < effect->PassCount(ShaderPassRole::Instanced);
+            ++index)
+        {
+            effect->SelectPass(ShaderPassRole::Instanced, index);
+            const auto& state = effect->SelectedPassRenderState(
+                ShaderPassRole::Instanced);
+            // Alpha系のinstanceは個別オブジェクト単位で奥から並べる
+            // 必要があり、1 drawのbatchでは正しい合成順を作れません。
+            if (state.declared
+                && (state.blend == ShaderBlendMode::Alpha
+                    || state.blend
+                        == ShaderBlendMode::Premultiplied))
+            {
+                hasOrderDependentInstancedPass = true;
+                break;
+            }
+        }
+        effect->SelectPass(ShaderPassRole::Instanced, 0);
+        if (hasOrderDependentInstancedPass)
+        {
+            return false;
+        }
+        // outline/occludedはインスタンス行列を受けるroleを
+        // 持たないため、有効時は個別描画へ回します。
+        // 個別経路では同じroleの全passが実行されます。
+        if ((effect->HasOutline()
+                && m_material.CustomParameter(3).x > 0.0f)
+            || (effect->HasOccludedPass()
+                && m_material.CustomParameter(4).w > 0.0f))
         {
             return false;
         }
@@ -2375,16 +2985,96 @@ namespace LamaPon
             const noexcept
     {
         std::uint64_t hash = 14695981039346656037ull;
-        const auto& native = m_modelPath.native();
-        const auto* bytes = reinterpret_cast<
-            const unsigned char*>(native.data());
-        const std::size_t byteCount = native.size()
-            * sizeof(std::filesystem::path::value_type);
-        for (std::size_t index = 0; index < byteCount; ++index)
+        const auto hashBytes = [&hash](
+            const void* const data,
+            const std::size_t byteCount) noexcept
         {
-            hash ^= bytes[index];
-            hash *= 1099511628211ull;
+            const auto* const bytes = static_cast<
+                const unsigned char*>(data);
+            for (std::size_t index = 0;
+                index < byteCount;
+                ++index)
+            {
+                hash ^= bytes[index];
+                hash *= 1099511628211ull;
+            }
+        };
+        const auto hashPath = [&hashBytes](
+            const std::filesystem::path& path) noexcept
+        {
+            const auto& native = path.native();
+            const auto byteCount = native.size()
+                * sizeof(std::filesystem::path::value_type);
+            hashBytes(&byteCount, sizeof(byteCount));
+            hashBytes(
+                native.data(),
+                byteCount);
+        };
+        const auto hashString = [&hashBytes](
+            const std::string& value) noexcept
+        {
+            const auto byteCount = value.size();
+            hashBytes(&byteCount, sizeof(byteCount));
+            hashBytes(value.data(), value.size());
+        };
+
+        hashPath(m_modelPath);
+        hashPath(m_material.Shader());
+        for (const auto& keyword :
+            m_material.ShaderKeywords().Keywords())
+        {
+            hashString(keyword);
+            constexpr unsigned char separator = 0xff;
+            hashBytes(&separator, sizeof(separator));
         }
+        for (const auto& texture : m_material.CustomTextures())
+        {
+            hashPath(texture);
+            constexpr unsigned char separator = 0xfe;
+            hashBytes(&separator, sizeof(separator));
+        }
+        const std::uint8_t materialOverride =
+            m_materialOverrideEnabled ? 1u : 0u;
+        hashBytes(&materialOverride, sizeof(materialOverride));
+        if (m_materialOverrideEnabled)
+        {
+            const auto& baseColor = m_material.BaseColor();
+            const auto roughness = m_material.Roughness();
+            const auto normalStrength = m_material.NormalStrength();
+            const auto metallic = m_material.Metallic();
+            const auto occlusionStrength =
+                m_material.OcclusionStrength();
+            const auto& emissive = m_material.EmissiveColor();
+            hashBytes(&baseColor, sizeof(baseColor));
+            hashBytes(&roughness, sizeof(roughness));
+            hashBytes(&normalStrength, sizeof(normalStrength));
+            hashBytes(&metallic, sizeof(metallic));
+            hashBytes(
+                &occlusionStrength,
+                sizeof(occlusionStrength));
+            hashBytes(&emissive, sizeof(emissive));
+            hashBytes(
+                m_material.CustomParameters().data(),
+                sizeof(m_material.CustomParameters()));
+            hashBytes(
+                m_material.CustomVectors().data(),
+                sizeof(m_material.CustomVectors()));
+            hashPath(m_material.AlbedoTexture());
+            hashPath(m_material.NormalTexture());
+            hashPath(m_material.RoughnessTexture());
+            hashPath(m_material.MetallicTexture());
+            hashPath(m_material.OcclusionTexture());
+            hashPath(m_material.EmissiveTexture());
+        }
+        // 同じpathでもホットリロードの入れ替え途中は
+        // 異なるEffectを1batchに混ぜません。
+        const auto* const batchEffect =
+            m_graphics != nullptr && m_material.Shader().empty()
+                ? &m_graphics->Lit()
+                : m_skinnedEffect;
+        const auto effectIdentity = reinterpret_cast<
+            std::uintptr_t>(batchEffect);
+        hashBytes(&effectIdentity, sizeof(effectIdentity));
         return hash;
     }
 
@@ -2416,80 +3106,137 @@ namespace LamaPon
         DirectX::FXMMATRIX view,
         DirectX::CXMMATRIX projection)
     {
-        if (batch.size() < 2 || !CanBeInstanced())
+        if (batch.size() < 2)
+        {
+            return false;
+        }
+        // 個別OnRender3Dは成功したbatchでskipされます。共有cacheが
+        // hot reloadでeffectを置換すると他componentの旧pointerも
+        // 無効になるため、dereferenceより先にbatch全体を更新します。
+        bool refreshedThis{};
+        for (auto* const component : batch)
+        {
+            if (component == nullptr)
+            {
+                return false;
+            }
+            component->RefreshShader(false);
+            refreshedThis = refreshedThis || component == this;
+        }
+        if (!refreshedThis)
+        {
+            RefreshShader(false);
+        }
+        if (!CanBeInstanced())
+        {
+            return false;
+        }
+        const auto refreshedBatchKey = InstanceBatchKey();
+        if (std::ranges::any_of(
+            batch,
+            [refreshedBatchKey](
+                const ModelRendererComponent* const component)
+            {
+                return !component->CanBeInstanced()
+                    || component->InstanceBatchKey()
+                        != refreshedBatchKey;
+            }))
         {
             return false;
         }
 
         using Vertex = DirectX::
             VertexPositionNormalTangentColorTextureSkinning;
-        constexpr std::array<D3D11_INPUT_ELEMENT_DESC, 8> elements{
-            D3D11_INPUT_ELEMENT_DESC{
-                "SV_Position", 0,
-                DXGI_FORMAT_R32G32B32_FLOAT,
-                0, 0,
-                D3D11_INPUT_PER_VERTEX_DATA, 0 },
-            D3D11_INPUT_ELEMENT_DESC{
-                "NORMAL", 0,
-                DXGI_FORMAT_R32G32B32_FLOAT,
-                0, 12,
-                D3D11_INPUT_PER_VERTEX_DATA, 0 },
-            D3D11_INPUT_ELEMENT_DESC{
-                "TEXCOORD", 0,
-                DXGI_FORMAT_R32G32_FLOAT,
-                0, 44,
-                D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        std::array<
+            D3D11_INPUT_ELEMENT_DESC,
+            Vertex::InputElementCount + 5> elements{};
+        std::copy_n(
+            Vertex::InputElements,
+            Vertex::InputElementCount,
+            elements.begin());
+        elements[Vertex::InputElementCount + 0] =
             D3D11_INPUT_ELEMENT_DESC{
                 "INSTANCE_TRANSFORM", 0,
                 DXGI_FORMAT_R32G32B32A32_FLOAT,
                 1, 0,
-                D3D11_INPUT_PER_INSTANCE_DATA, 1 },
+                D3D11_INPUT_PER_INSTANCE_DATA, 1 };
+        elements[Vertex::InputElementCount + 1] =
             D3D11_INPUT_ELEMENT_DESC{
                 "INSTANCE_TRANSFORM", 1,
                 DXGI_FORMAT_R32G32B32A32_FLOAT,
                 1, 16,
-                D3D11_INPUT_PER_INSTANCE_DATA, 1 },
+                D3D11_INPUT_PER_INSTANCE_DATA, 1 };
+        elements[Vertex::InputElementCount + 2] =
             D3D11_INPUT_ELEMENT_DESC{
                 "INSTANCE_TRANSFORM", 2,
                 DXGI_FORMAT_R32G32B32A32_FLOAT,
                 1, 32,
-                D3D11_INPUT_PER_INSTANCE_DATA, 1 },
+                D3D11_INPUT_PER_INSTANCE_DATA, 1 };
+        elements[Vertex::InputElementCount + 3] =
             D3D11_INPUT_ELEMENT_DESC{
                 "INSTANCE_TRANSFORM", 3,
                 DXGI_FORMAT_R32G32B32A32_FLOAT,
                 1, 48,
-                D3D11_INPUT_PER_INSTANCE_DATA, 1 },
+                D3D11_INPUT_PER_INSTANCE_DATA, 1 };
+        elements[Vertex::InputElementCount + 4] =
             D3D11_INPUT_ELEMENT_DESC{
                 "INSTANCE_COLOR", 0,
                 DXGI_FORMAT_R32G32B32A32_FLOAT,
                 1, 64,
-                D3D11_INPUT_PER_INSTANCE_DATA, 1 }
-        };
+                D3D11_INPUT_PER_INSTANCE_DATA, 1 };
 
         auto& model = *m_model->skeletalModel;
-        auto& effect = m_graphics->Lit();
-        auto* const byteCode =
-            effect.InstancedVertexShaderByteCode();
-        if (byteCode == nullptr)
+        auto* const selectedEffect = m_material.Shader().empty()
+            ? &m_graphics->Lit()
+            : m_skinnedEffect;
+        if (selectedEffect == nullptr)
         {
             return false;
         }
-        for (const auto& primitive : model.primitives)
+        if (selectedEffect->IsSkinned()
+            || !selectedEffect->SupportsInstancing())
         {
-            if (primitive.instancedInputLayout)
+            return false;
+        }
+        auto& effect = *selectedEffect;
+        const MaterialPassScope passScope{ effect, m_context };
+        const auto instancedPassCount = effect.PassCount(
+            ShaderPassRole::Instanced);
+        if (m_instancedInputLayouts.size()
+            != instancedPassCount)
+        {
+            m_instancedInputLayouts.clear();
+            m_instancedInputLayouts.reserve(instancedPassCount);
+            for (std::size_t passIndex = 0;
+                passIndex < instancedPassCount;
+                ++passIndex)
             {
-                continue;
+                effect.SelectPass(
+                    ShaderPassRole::Instanced,
+                    passIndex);
+                auto* const byteCode =
+                    effect.SelectedPassVertexShaderByteCode(
+                        ShaderPassRole::Instanced);
+                if (byteCode == nullptr)
+                {
+                    m_instancedInputLayouts.clear();
+                    return false;
+                }
+                Microsoft::WRL::ComPtr<ID3D11InputLayout> layout;
+                if (FAILED(
+                    CreateInputLayoutWithPositionAlias(
+                        m_graphics->Device(),
+                        elements.data(),
+                        static_cast<UINT>(elements.size()),
+                        byteCode,
+                        layout.ReleaseAndGetAddressOf())))
+                {
+                    m_instancedInputLayouts.clear();
+                    return false;
+                }
+                m_instancedInputLayouts.push_back(std::move(layout));
             }
-            if (FAILED(m_graphics->Device()->CreateInputLayout(
-                    elements.data(),
-                    static_cast<UINT>(elements.size()),
-                    byteCode->GetBufferPointer(),
-                    byteCode->GetBufferSize(),
-                    primitive.instancedInputLayout
-                        .ReleaseAndGetAddressOf())))
-            {
-                return false;
-            }
+            effect.SelectPass(ShaderPassRole::Instanced, 0);
         }
 
         std::vector<SkeletalPoseTransform> localPose;
@@ -2506,15 +3253,11 @@ namespace LamaPon
             3> lodBatches;
         for (auto* component : batch)
         {
-            if (component != nullptr
-                && component->CanBeInstanced())
-            {
-                lodBatches[std::min<std::size_t>(
-                    component->AutomaticLodLevel(
-                        view,
-                        projection),
-                    2u)].push_back(component);
-            }
+            lodBatches[std::min<std::size_t>(
+                component->AutomaticLodLevel(
+                    view,
+                    projection),
+                2u)].push_back(component);
         }
 
         struct InstanceData final
@@ -2562,7 +3305,9 @@ namespace LamaPon
                         &data.world,
                         meshGlobal
                             * component->Owner().WorldMatrix());
-                    data.color = primitive.baseColor;
+                    data.color = component->m_materialOverrideEnabled
+                        ? component->m_material.BaseColor()
+                        : primitive.baseColor;
                     instances.push_back(data);
                 }
                 auto* instanceBuffer =
@@ -2596,42 +3341,55 @@ namespace LamaPon
                 }
 
                 LitMaterial material;
-                material.SetBaseColor(primitive.baseColor);
-                material.SetRoughness(primitive.roughness);
-                material.SetMetallic(primitive.metallic);
+                if (m_materialOverrideEnabled)
+                {
+                    material = m_material;
+                }
+                else
+                {
+                    material.SetBaseColor(primitive.baseColor);
+                    material.SetRoughness(primitive.roughness);
+                    material.SetMetallic(primitive.metallic);
+                }
                 effect.SetMaterial(material);
                 PbrTextures pbr{};
-                pbr.roughness =
-                    primitive.roughnessTexture.Get();
-                pbr.metallic =
-                    primitive.metallicTexture.Get();
-                pbr.occlusion =
-                    primitive.occlusionTexture.Get();
-                pbr.emissive =
-                    primitive.emissiveTexture.Get();
-                pbr.occlusionStrength =
-                    primitive.occlusionStrength;
-                pbr.emissiveFactor =
-                    primitive.emissiveFactor;
+                if (m_materialOverrideEnabled)
+                {
+                    pbr = BuildPbrTextures(
+                        m_roughnessTexture,
+                        m_metallicTexture,
+                        m_occlusionTexture,
+                        m_emissiveTexture,
+                        m_material);
+                }
+                else
+                {
+                    pbr.roughness =
+                        primitive.roughnessTexture.Get();
+                    pbr.metallic =
+                        primitive.metallicTexture.Get();
+                    pbr.occlusion =
+                        primitive.occlusionTexture.Get();
+                    pbr.emissive =
+                        primitive.emissiveTexture.Get();
+                    pbr.occlusionStrength =
+                        primitive.occlusionStrength;
+                    pbr.emissiveFactor =
+                        primitive.emissiveFactor;
+                }
                 effect.SetTextures(
-                    primitive.texture
-                        ? primitive.texture.Get()
-                        : m_graphics->WhiteTexture(),
-                    primitive.normalTexture.Get(),
+                    m_materialOverrideEnabled && m_albedoTexture
+                        ? m_albedoTexture->view.Get()
+                        : primitive.texture
+                            ? primitive.texture.Get()
+                            : m_graphics->WhiteTexture(),
+                    m_materialOverrideEnabled && m_normalTexture
+                        ? m_normalTexture->view.Get()
+                        : primitive.normalTexture.Get(),
                     pbr);
-                effect.SetCustomTextures({});
+                effect.SetCustomTextures(
+                    ResolveCustomTextureViews());
 
-                context->OMSetBlendState(
-                    m_states->Opaque(),
-                    nullptr,
-                    0xffffffff);
-                context->OMSetDepthStencilState(
-                    m_states->DepthDefault(),
-                    0);
-                context->RSSetState(
-                    primitive.doubleSided
-                        ? m_states->CullNone()
-                        : m_states->CullClockwise());
                 ID3D11Buffer* vertexBuffers[]{
                     primitive.vertexBuffer.Get(),
                     instanceBuffer
@@ -2651,21 +3409,59 @@ namespace LamaPon
                     indexBuffer,
                     DXGI_FORMAT_R32_UINT,
                     0);
-                context->IASetInputLayout(
-                    primitive.instancedInputLayout.Get());
                 context->IASetPrimitiveTopology(
                     D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-                effect.Apply(context);
-                context->DrawIndexedInstanced(
-                    indexCount,
-                    static_cast<UINT>(instances.size()),
-                    0,
-                    0,
-                    0);
-                drewAny = true;
+                for (std::size_t passIndex = 0;
+                    passIndex < instancedPassCount;
+                    ++passIndex)
+                {
+                    if (passIndex
+                        >= m_instancedInputLayouts.size()
+                        || !m_instancedInputLayouts[passIndex])
+                    {
+                        break;
+                    }
+                    effect.SelectPass(
+                        ShaderPassRole::Instanced,
+                        passIndex);
+                    context->IASetInputLayout(
+                        m_instancedInputLayouts[passIndex].Get());
+                    const auto& renderState =
+                        effect.SelectedPassRenderState(
+                            ShaderPassRole::Instanced);
+                    if (renderState.declared)
+                    {
+                        ApplyImportedModelRenderState(
+                            context,
+                            *m_graphics,
+                            renderState,
+                            primitive.doubleSided);
+                    }
+                    else
+                    {
+                        context->OMSetBlendState(
+                            m_states->Opaque(),
+                            nullptr,
+                            0xffffffff);
+                        context->OMSetDepthStencilState(
+                            m_states->DepthDefault(),
+                            0);
+                        context->RSSetState(
+                            primitive.doubleSided
+                                ? m_states->CullNone()
+                                : m_states->CullClockwise());
+                    }
+                    effect.Apply(context);
+                    context->DrawIndexedInstanced(
+                        indexCount,
+                        static_cast<UINT>(instances.size()),
+                        0,
+                        0,
+                        0);
+                    drewAny = true;
+                }
             }
         }
-        effect.SetInstancingEnabled(false);
         if (!drewAny)
         {
             return false;
@@ -2732,6 +3528,7 @@ namespace LamaPon
         m_effect = &effect;
         m_activeShaderPath = m_material.Shader();
         m_shaderGeneration = generation;
+        const MaterialPassScope passScope{ effect, m_context };
         for (const auto& mesh : model.meshes)
         {
             for (const auto& part : mesh->meshParts)
@@ -2761,11 +3558,105 @@ namespace LamaPon
                 commonPart.part = part.get();
                 try
                 {
-                    part->CreateInputLayout(
-                        m_graphics->Device(),
-                        &effect,
-                        commonPart.inputLayout.
-                            ReleaseAndGetAddressOf());
+                    if (effect.IsManifestEffect())
+                    {
+                        const auto createLayout =
+                            [this, &part](
+                                ID3DBlob* const byteCode,
+                                Microsoft::WRL::ComPtr<
+                                    ID3D11InputLayout>& layout,
+                                const std::string& label)
+                            {
+                                if (byteCode == nullptr
+                                    || !part->vbDecl)
+                                {
+                                    throw std::runtime_error(
+                                        label
+                                        + " has no compatible vertex "
+                                          "signature.");
+                                }
+                                const HRESULT result =
+                                    CreateInputLayoutWithPositionAlias(
+                                        m_graphics->Device(),
+                                        part->vbDecl->data(),
+                                        static_cast<UINT>(
+                                            part->vbDecl->size()),
+                                        byteCode,
+                                        layout.ReleaseAndGetAddressOf());
+                                if (FAILED(result))
+                                {
+                                    throw std::runtime_error(
+                                        label
+                                        + " input layout is incompatible.");
+                                }
+                            };
+
+                        const auto colorPassCount =
+                            effect.ColorPassCount();
+                        commonPart.forwardInputLayouts.reserve(
+                            colorPassCount);
+                        for (std::size_t index = 0;
+                            index < colorPassCount;
+                            ++index)
+                        {
+                            Microsoft::WRL::ComPtr<
+                                ID3D11InputLayout> layout;
+                            createLayout(
+                                effect.ColorPassVertexShaderByteCode(
+                                    index),
+                                layout,
+                                "Material color pass "
+                                    + std::to_string(index));
+                            commonPart.forwardInputLayouts.push_back(
+                                std::move(layout));
+                        }
+
+                        const auto outlineRole =
+                            ShaderPassRole::Outline;
+                        const auto outlinePassCount =
+                            effect.PassCount(outlineRole);
+                        commonPart.outlineInputLayouts.reserve(
+                            outlinePassCount);
+                        for (std::size_t index = 0;
+                            index < outlinePassCount;
+                            ++index)
+                        {
+                            effect.SelectPass(outlineRole, index);
+                            Microsoft::WRL::ComPtr<
+                                ID3D11InputLayout> layout;
+                            createLayout(
+                                effect.SelectedPassVertexShaderByteCode(
+                                    outlineRole),
+                                layout,
+                                "Material outline pass "
+                                    + std::to_string(index));
+                            commonPart.outlineInputLayouts.push_back(
+                                std::move(layout));
+                        }
+                        if (outlinePassCount != 0)
+                        {
+                            effect.SelectPass(outlineRole, 0);
+                        }
+                        effect.SelectColorPass(0);
+                    }
+                    else
+                    {
+                        Microsoft::WRL::ComPtr<ID3D11InputLayout>
+                            inputLayout;
+                        part->CreateInputLayout(
+                            m_graphics->Device(),
+                            &effect,
+                            inputLayout.ReleaseAndGetAddressOf());
+                        commonPart.forwardInputLayouts.push_back(
+                            inputLayout);
+                        if (effect.HasOutline())
+                        {
+                            // direct HLSLの輪郭VSは従来どおり通常VS
+                            // と同じ入力形式を使います。
+                            commonPart.outlineInputLayouts.push_back(
+                                std::move(inputLayout));
+                        }
+                    }
 
                     // CMO内の各マテリアルが持つテクスチャを保持する。
                     // 明示的な上書き画像がない場合、カスタムShaderでも
@@ -2867,15 +3758,6 @@ namespace LamaPon
             return;
         }
 
-        // OnPreRender3D（遮蔽表示）からも呼ばれるので、ここにも
-        // 見張りを置きます。
-        const GeometryShaderScope geometryScope{
-            m_effect != nullptr
-                && m_effect->HasGeometryShader()
-                ? m_context
-                : nullptr
-        };
-
         auto& model = *m_model->model;
         auto& resources = *m_commonLitResources;
         if (!resources.boneTransforms.empty())
@@ -2888,6 +3770,12 @@ namespace LamaPon
         auto& effect = m_effect != nullptr
             ? *m_effect
             : m_graphics->Lit();
+        effect.SetInstancingEnabled(false);
+        effect.SetTessellationDrawEnabled(false);
+        effect.SelectColorPass(0);
+        // OnPreRender3D（遮蔽表示）からの早期returnも含め、
+        // 共有Effectの選択状態とHS/DS/GSを必ず戻します。
+        const MaterialPassScope passScope{ effect, m_context };
         // シャドウパスは深度のみ書き込み、ライティングの
         // セットアップを省略します（テクスチャはパーツ単位で
         // 設定されます）。
@@ -2928,10 +3816,10 @@ namespace LamaPon
         if (depthOnly
             && m_graphics->DepthPass()
                 == DepthPassKind::Prepass
-            && effect.RenderState().declared
-            && (effect.RenderState().blend
+            && effect.ColorPassRenderState(0).declared
+            && (effect.ColorPassRenderState(0).blend
                     != ShaderBlendMode::Opaque
-                || !effect.RenderState().depthWrite))
+                || !effect.ColorPassRenderState(0).depthWrite))
         {
             effect.SetDepthOnlyEnabled(false);
             return;
@@ -3042,26 +3930,53 @@ namespace LamaPon
                     }
                     if (drawOccluded)
                     {
-                        part.part->Draw(
-                            m_context,
-                            &effect,
-                            part.inputLayout.Get(),
-                            [this, &effect]()
+                        const auto passCount = effect.PassCount(
+                            ShaderPassRole::Occluded);
+                        for (std::size_t passIndex = 0;
+                            passIndex < passCount;
+                            ++passIndex)
+                        {
+                            if (part.forwardInputLayouts.empty())
                             {
-                                m_context->OMSetBlendState(
-                                    m_states->NonPremultiplied(),
-                                    nullptr,
-                                    0xffffffff);
-                                m_context->RSSetState(
-                                    m_states->
-                                        CullCounterClockwise());
-                                effect.ApplyOccluded(m_context);
-                            });
-                        mesh->PrepareForRendering(
-                            m_context,
-                            *m_states,
-                            alphaPass,
-                            m_wireframe);
+                                break;
+                            }
+                            effect.SelectPass(
+                                ShaderPassRole::Occluded,
+                                passIndex);
+                            const auto& renderState =
+                                effect.SelectedPassRenderState(
+                                    ShaderPassRole::Occluded);
+                            part.part->Draw(
+                                m_context,
+                                &effect,
+                                part.forwardInputLayouts.front().Get(),
+                                [this,
+                                    &effect,
+                                    &renderState]()
+                                {
+                                    if (effect.IsManifestEffect()
+                                        && renderState.declared)
+                                    {
+                                        ApplyShaderRenderState(
+                                            renderState);
+                                    }
+                                    else
+                                    {
+                                        m_context->OMSetBlendState(
+                                            m_states->
+                                                NonPremultiplied(),
+                                            nullptr,
+                                            0xffffffff);
+                                        m_context->RSSetState(
+                                            m_states->
+                                                CullCounterClockwise());
+                                    }
+                                    // Manifestのoccludedもprimary index 0
+                                    // のVSを再利用し、選択中PSだけを
+                                    // 差し替えます。
+                                    effect.ApplyOccluded(m_context);
+                                });
+                        }
                     }
                     if (occludedOnly)
                     {
@@ -3069,40 +3984,92 @@ namespace LamaPon
                     }
                     if (drawOutline)
                     {
-                        part.part->Draw(
-                            m_context,
-                            &effect,
-                            part.inputLayout.Get(),
-                            [this, &effect]()
+                        const auto outlineRole =
+                            ShaderPassRole::Outline;
+                        const auto passCount =
+                            effect.PassCount(outlineRole);
+                        for (std::size_t passIndex = 0;
+                            passIndex < passCount;
+                            ++passIndex)
+                        {
+                            if (passIndex
+                                >= part.outlineInputLayouts.size())
                             {
-                                m_context->OMSetBlendState(
-                                    m_states->NonPremultiplied(),
-                                    nullptr,
-                                    0xffffffff);
-                                m_context->OMSetDepthStencilState(
-                                    m_states->DepthRead(),
-                                    0);
-                                m_context->RSSetState(
-                                    m_states->CullClockwise());
-                                effect.ApplyOutline(m_context);
-                            });
+                                break;
+                            }
+                            effect.SelectPass(
+                                outlineRole,
+                                passIndex);
+                            const auto& renderState =
+                                effect.SelectedPassRenderState(
+                                    outlineRole);
+                            part.part->Draw(
+                                m_context,
+                                &effect,
+                                part.outlineInputLayouts[
+                                    passIndex].Get(),
+                                [this,
+                                    &effect,
+                                    &renderState]()
+                                {
+                                    if (effect.IsManifestEffect()
+                                        && renderState.declared)
+                                    {
+                                        ApplyShaderRenderState(
+                                            renderState);
+                                    }
+                                    else
+                                    {
+                                        m_context->OMSetBlendState(
+                                            m_states->
+                                                NonPremultiplied(),
+                                            nullptr,
+                                            0xffffffff);
+                                        m_context->
+                                            OMSetDepthStencilState(
+                                                m_states->DepthRead(),
+                                                0);
+                                        m_context->RSSetState(
+                                            m_states->CullClockwise());
+                                    }
+                                    effect.ApplyOutline(m_context);
+                                });
+                        }
+                    }
+
+                    // 影と深度プリパスはprimary index 0のみ。
+                    // 通常色はManifestのforward roleをJSON順で全件
+                    // 実行します。direct HLSLは1件なので従来どおり。
+                    const auto colorPassCount = depthOnly
+                        ? std::size_t{ 1 }
+                        : effect.ColorPassCount();
+                    for (std::size_t passIndex = 0;
+                        passIndex < colorPassCount;
+                        ++passIndex)
+                    {
+                        if (passIndex
+                            >= part.forwardInputLayouts.size())
+                        {
+                            break;
+                        }
+                        effect.SelectColorPass(passIndex);
                         mesh->PrepareForRendering(
                             m_context,
                             *m_states,
                             alphaPass,
                             m_wireframe);
+                        const auto& renderState =
+                            effect.ColorPassRenderState(passIndex);
+                        if (renderState.declared)
+                        {
+                            ApplyShaderRenderState(renderState);
+                        }
+                        part.part->Draw(
+                            m_context,
+                            &effect,
+                            part.forwardInputLayouts[
+                                passIndex].Get());
                     }
-                    // Shaderが描画状態を宣言している場合は、
-                    // PrepareForRenderingの設定を上書きします。
-                    if (effect.RenderState().declared)
-                    {
-                        ApplyShaderRenderState(
-                            effect.RenderState());
-                    }
-                    part.part->Draw(
-                        m_context,
-                        &effect,
-                        part.inputLayout.Get());
                 }
             }
         }

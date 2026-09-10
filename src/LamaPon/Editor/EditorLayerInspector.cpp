@@ -56,6 +56,7 @@
 #include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Graphics/LitMaterialAsset.h"
+#include "LamaPon/Graphics/ShaderManifest.h"
 #include "LamaPon/Input/InputSystem.h"
 #include "LamaPon/Scene/Scene.h"
 #include "LamaPon/Physics/CollisionTypes.h"
@@ -83,6 +84,50 @@ using namespace LamaPon::EditorDetail;
 namespace
 {
     constexpr float InspectorWidth = 360.0f;
+
+    [[nodiscard]] bool IsAssignableMaterialShaderAsset(
+        LamaPon::AssetManager& assets,
+        const std::filesystem::path& path,
+        std::string* error = nullptr)
+    {
+        if (error != nullptr)
+        {
+            error->clear();
+        }
+        if (IsAssignableShaderAsset(path))
+        {
+            return true;
+        }
+        if (!IsShaderManifestAsset(path))
+        {
+            return false;
+        }
+
+        LamaPon::ShaderAssetDesc manifest;
+        std::string manifestError;
+        if (!LamaPon::LoadShaderAssetDesc(
+                assets,
+                path,
+                manifest,
+                manifestError))
+        {
+            if (error != nullptr)
+            {
+                *error = std::move(manifestError);
+            }
+            return false;
+        }
+        if (manifest.type != LamaPon::ShaderAssetType::Material)
+        {
+            if (error != nullptr)
+            {
+                *error = "Materialへ割り当てるShader Manifestのtypeは"
+                    "'material'である必要があります。";
+            }
+            return false;
+        }
+        return true;
+    }
 
     // レイヤーの表示名（"番号: 名前"、無名なら番号だけ）。
     [[nodiscard]] std::string CollisionLayerLabel(
@@ -1278,17 +1323,23 @@ namespace LamaPon
 
     bool EditorLayer::DrawShaderAssetSelector(
         const char* label,
-        std::filesystem::path& shaderPath)
+        std::filesystem::path& shaderPath,
+        const bool allowMaterialManifests)
     {
         std::vector<std::filesystem::path> shaders;
         for (const auto& asset : m_assetFiles)
         {
-            if (!IsShaderAsset(asset))
+            const bool legacyShader = IsShaderAsset(asset);
+            if (!legacyShader
+                && (!allowMaterialManifests
+                    || !IsAssignableMaterialShaderAsset(
+                        m_graphics.Assets(),
+                        asset)))
             {
                 continue;
             }
 
-            // 選択肢には、VSMain/PSMainを持つ利用者向けShaderだけを
+            // HLSLの選択肢には、VSMain/PSMainを持つ利用者向けShaderだけを
             // 表示します。エンジン内部用Shaderはファイル名で除外するため、
             // 内部用Shaderを追加する場合は下の条件にも追加します。
             //   LamaPonLit         … エンジンが標準として直接使う
@@ -1303,14 +1354,17 @@ namespace LamaPon
             //   LamaPonSpriteError   代役（3D／2D）。自分で選べて
             //                        しまうと「壊れている印」が
             //                        意味を失う
-            const std::string filename = Lowercase(
-                LamaPon::PathToUtf8(asset.filename()));
-            if (filename == "lamaponlit.hlsl"
-                || filename == "lamaponenvironment.hlsl"
-                || filename == "lamaponlightculling.hlsl"
-                || IsShaderErrorPlaceholder(asset))
+            if (legacyShader)
             {
-                continue;
+                const std::string filename = Lowercase(
+                    LamaPon::PathToUtf8(asset.filename()));
+                if (filename == "lamaponlit.hlsl"
+                    || filename == "lamaponenvironment.hlsl"
+                    || filename == "lamaponlightculling.hlsl"
+                    || IsShaderErrorPlaceholder(asset))
+                {
+                    continue;
+                }
             }
             shaders.push_back(asset);
         }
@@ -1331,7 +1385,8 @@ namespace LamaPon
             const bool standardSelected = shaderPath.empty();
             if (ImGui::Selectable(
                     "LamaPon Lit (Default)",
-                    standardSelected))
+                    standardSelected)
+                && IsAssetSelectionChange(shaderPath, {}))
             {
                 shaderPath.clear();
                 changed = true;
@@ -1350,7 +1405,8 @@ namespace LamaPon
                     shader);
                 if (ImGui::Selectable(
                         shaderLabel.c_str(),
-                        selected))
+                        selected)
+                    && IsAssetSelectionChange(shaderPath, shader))
                 {
                     shaderPath = shader;
                     changed = true;
@@ -1620,9 +1676,20 @@ namespace LamaPon
             m_materialInspectorDraft.Shader();
         if (DrawShaderAssetSelector(
                 "Shader##MaterialAsset",
-                shaderPath))
+                shaderPath,
+                true))
         {
             m_materialInspectorDraft.SetShader(shaderPath);
+            ApplyShaderPropertyDefaults(
+                shaderPath,
+                [this](
+                    const std::size_t index,
+                    const DirectX::XMFLOAT4& value)
+                {
+                    m_materialInspectorDraft.SetCustomParameter(
+                        index,
+                        value);
+                });
             m_materialInspectorDirty = true;
         }
         ImGui::TextDisabled(
@@ -1648,7 +1715,7 @@ namespace LamaPon
                 "Custom Parameters",
                 ImGuiTreeNodeFlags_DefaultOpen))
         {
-            if (DrawCustomShaderParameters(
+            const auto edit = DrawCustomShaderParameters(
                 m_materialInspectorDraft.Shader(),
                 "MaterialAssetParameters",
                 [this](const std::size_t index)
@@ -1676,7 +1743,8 @@ namespace LamaPon
                         .SetCustomTexture(
                             index,
                             std::move(path));
-                }))
+                });
+            if (edit.changed)
             {
                 m_materialInspectorDirty = true;
             }
@@ -2218,6 +2286,9 @@ namespace LamaPon
             return empty;
         }
 
+        const bool manifestAsset =
+            IsShaderManifestAsset(shaderPath);
+
         const auto resolved =
             m_graphics.Assets().ResolvePath(shaderPath);
         std::error_code error;
@@ -2237,9 +2308,35 @@ namespace LamaPon
         }
 
         // 保存し直されたら読み直します（Shaderのホットリロードと
-        // 同じ感覚で、宣言の変更もすぐ反映されます）。
+        // 同じ感覚で、宣言の変更もすぐ反映されます）。ここでは宣言だけを
+        // 更新し、Materialが既に持つ値には書き込まないため、Manifestの
+        // 保存だけで調整済みの値が既定値へ戻ることはありません。
         CachedShaderProperties cached;
-        cached.properties = LoadShaderProperties(resolved);
+        if (manifestAsset)
+        {
+            ShaderAssetDesc manifest;
+            std::string manifestError;
+            if (LoadShaderAssetDesc(
+                    m_graphics.Assets(),
+                    shaderPath,
+                    manifest,
+                    manifestError))
+            {
+                cached.properties =
+                    ConvertShaderManifestProperties(
+                        manifest.properties);
+            }
+            else
+            {
+                cached.properties.declared = true;
+                cached.properties.error =
+                    std::move(manifestError);
+            }
+        }
+        else
+        {
+            cached.properties = LoadShaderProperties(resolved);
+        }
         cached.writeTime = writeTime;
         auto& stored = m_shaderPropertiesCache[key];
         stored = std::move(cached);
@@ -2337,7 +2434,8 @@ namespace LamaPon
         }
         const auto& properties =
             ShaderPropertiesFor(shaderPath);
-        if (!properties.declared)
+        if (!properties.declared
+            || !properties.error.empty())
         {
             return;
         }
@@ -2379,7 +2477,8 @@ namespace LamaPon
         }
     }
 
-    bool EditorLayer::DrawCustomShaderParameters(
+    ShaderPropertyEditResult
+        EditorLayer::DrawCustomShaderParameters(
         const std::filesystem::path& shaderPath,
         const char* identifier,
         const std::function<
@@ -2394,7 +2493,7 @@ namespace LamaPon
             std::size_t,
             std::filesystem::path)>& textureSetter)
     {
-        bool changed = false;
+        ShaderPropertyEditResult result;
         ImGui::PushID(identifier);
 
         const auto& properties =
@@ -2406,7 +2505,8 @@ namespace LamaPon
                 properties.error.c_str());
         }
 
-        if (properties.declared
+        if (properties.error.empty()
+            && properties.declared
             && !properties.fields.empty())
         {
             for (std::size_t index = 0;
@@ -2466,7 +2566,7 @@ namespace LamaPon
                                 textureSetter(
                                     field.parameterIndex,
                                     dropped);
-                                changed = true;
+                                result.Observe(true, true);
                             }
                         }
                         ImGui::EndDragDropTarget();
@@ -2479,7 +2579,7 @@ namespace LamaPon
                         textureSetter(
                             field.parameterIndex,
                             m_selectedAsset);
-                        changed = true;
+                        result.Observe(true, true);
                     }
                     if (!current.empty()
                         && textureSetter)
@@ -2490,7 +2590,7 @@ namespace LamaPon
                             textureSetter(
                                 field.parameterIndex,
                                 {});
-                            changed = true;
+                            result.Observe(true, true);
                         }
                     }
                     ImGui::PopID();
@@ -2550,7 +2650,10 @@ namespace LamaPon
                             0.01f);
                     break;
                 }
+                const bool fieldCommitted =
+                    ImGui::IsItemDeactivatedAfterEdit();
                 ImGui::PopID();
+                result.Observe(fieldChanged, fieldCommitted);
 
                 if (fieldChanged)
                 {
@@ -2562,7 +2665,6 @@ namespace LamaPon
                             editing[component];
                     }
                     setter(field.parameterIndex, parameter);
-                    changed = true;
                 }
             }
 
@@ -2586,7 +2688,7 @@ namespace LamaPon
                     }
                     setter(field.parameterIndex, parameter);
                 }
-                changed = true;
+                result.Observe(true, true);
             }
             ImGui::SameLine();
             ImGui::TextDisabled(
@@ -2603,13 +2705,16 @@ namespace LamaPon
                 const std::string label =
                     "Parameter "
                     + std::to_string(index + 1);
-                if (ImGui::DragFloat4(
+                const bool fieldChanged = ImGui::DragFloat4(
                     label.c_str(),
                     &parameter.x,
-                    0.01f))
+                    0.01f);
+                const bool fieldCommitted =
+                    ImGui::IsItemDeactivatedAfterEdit();
+                result.Observe(fieldChanged, fieldCommitted);
+                if (fieldChanged)
                 {
                     setter(index, parameter);
-                    changed = true;
                 }
             }
             if (!properties.declared)
@@ -2621,7 +2726,7 @@ namespace LamaPon
         }
 
         ImGui::PopID();
-        return changed;
+        return result;
     }
 
     RenderTexturePickerResult
@@ -7907,7 +8012,8 @@ namespace LamaPon
                 auto shaderSelection = mesh->ShaderPath();
                 if (DrawShaderAssetSelector(
                         "Shaderを選択##MeshRenderer",
-                        shaderSelection))
+                        shaderSelection,
+                        true))
                 {
                     mesh->SetShaderPath(shaderSelection);
                     ApplyShaderPropertyDefaults(
@@ -7938,19 +8044,28 @@ namespace LamaPon
                     {
                         const auto droppedPath = PathFromUtf8(
                             static_cast<const char*>(payload->Data));
-                        if (IsAssignableShaderAsset(droppedPath))
-                        {
-                            mesh->SetShaderPath(droppedPath);
-                            ApplyShaderPropertyDefaults(
+                        std::string assignmentError;
+                        if (IsAssignableMaterialShaderAsset(
+                                m_graphics.Assets(),
                                 droppedPath,
-                                [mesh](
-                                    const std::size_t index,
-                                    const DirectX::XMFLOAT4& value)
-                                {
-                                    mesh->SetCustomParameter(index, value);
-                                });
-                            RecordHistory();
-                            SetStatus("カスタムShaderを設定しました");
+                                &assignmentError))
+                        {
+                            if (IsAssetSelectionChange(
+                                    mesh->ShaderPath(),
+                                    droppedPath))
+                            {
+                                mesh->SetShaderPath(droppedPath);
+                                ApplyShaderPropertyDefaults(
+                                    droppedPath,
+                                    [mesh](
+                                        const std::size_t index,
+                                        const DirectX::XMFLOAT4& value)
+                                    {
+                                        mesh->SetCustomParameter(index, value);
+                                    });
+                                RecordHistory();
+                                SetStatus("カスタムShaderを設定しました");
+                            }
                         }
                         else
                         {
@@ -7959,15 +8074,28 @@ namespace LamaPon
                                     ? "このShaderはエンジンが"
                                       "「壊れている印」に使うため、"
                                       "割り当てられません"
-                                    : "HLSLファイルをドロップして"
-                                      "ください",
+                                    : (!assignmentError.empty()
+                                        ? assignmentError
+                                        : "HLSLまたはtypeがmaterialの"
+                                          "Shader Manifestをドロップして"
+                                          "ください"),
                                 true);
                         }
                     }
                     ImGui::EndDragDropTarget();
                 }
-                ImGui::BeginDisabled(
-                    !IsAssignableShaderAsset(m_selectedAsset));
+                std::string selectedShaderError;
+                const bool selectedShaderAssignable =
+                    IsAssignableMaterialShaderAsset(
+                        m_graphics.Assets(),
+                        m_selectedAsset,
+                        &selectedShaderError);
+                const bool selectedShaderChanges =
+                    selectedShaderAssignable
+                    && IsAssetSelectionChange(
+                        mesh->ShaderPath(),
+                        m_selectedAsset);
+                ImGui::BeginDisabled(!selectedShaderChanges);
                 if (ImGui::Button("選択Shaderを設定"))
                 {
                     mesh->SetShaderPath(m_selectedAsset);
@@ -7988,6 +8116,16 @@ namespace LamaPon
                     showItemTooltip(
                         "このShaderはエンジンが「壊れている印」に"
                         "使うため、割り当てられません");
+                }
+                else if (IsShaderManifestAsset(m_selectedAsset)
+                    && !selectedShaderError.empty())
+                {
+                    showItemTooltip(selectedShaderError.c_str());
+                }
+                else if (selectedShaderAssignable
+                    && !selectedShaderChanges)
+                {
+                    showItemTooltip("このShaderは既に設定されています");
                 }
                 ImGui::EndDisabled();
                 if (!mesh->ShaderPath().empty())
@@ -8038,7 +8176,7 @@ namespace LamaPon
                 }
                 if (ImGui::TreeNode("カスタムShaderパラメーター"))
                 {
-                    if (DrawCustomShaderParameters(
+                    const auto edit = DrawCustomShaderParameters(
                         mesh->ShaderPath(),
                         "MeshShaderParameters",
                         [mesh](const std::size_t index)
@@ -8066,13 +8204,10 @@ namespace LamaPon
                             mesh->SetCustomTexturePath(
                                 index,
                                 std::move(path));
-                        }))
+                        });
+                    if (edit.committed)
                     {
-                        // スライダーを離した時点で履歴へ入れます。
-                        if (ImGui::IsItemDeactivatedAfterEdit())
-                        {
-                            RecordHistory();
-                        }
+                        RecordHistory();
                     }
                     ImGui::TreePop();
                 }
@@ -8860,7 +8995,8 @@ namespace LamaPon
                         model->ShaderPath();
                     if (DrawShaderAssetSelector(
                             "Shaderを選択##ModelRenderer",
-                            shaderSelection))
+                            shaderSelection,
+                            true))
                     {
                         model->SetShaderPath(
                             shaderSelection);
@@ -8894,19 +9030,31 @@ namespace LamaPon
                         {
                             const auto droppedPath = PathFromUtf8(
                                 static_cast<const char*>(payload->Data));
-                            if (IsAssignableShaderAsset(droppedPath))
-                            {
-                                model->SetShaderPath(droppedPath);
-                                ApplyShaderPropertyDefaults(
+                            std::string assignmentError;
+                            if (IsAssignableMaterialShaderAsset(
+                                    m_graphics.Assets(),
                                     droppedPath,
-                                    [model](
-                                        const std::size_t index,
-                                        const DirectX::XMFLOAT4& value)
-                                    {
-                                        model->SetCustomParameter(index, value);
-                                    });
-                                RecordHistory();
-                                SetStatus("モデルへカスタムShaderを設定しました");
+                                    &assignmentError))
+                            {
+                                if (IsAssetSelectionChange(
+                                        model->ShaderPath(),
+                                        droppedPath))
+                                {
+                                    model->SetShaderPath(droppedPath);
+                                    ApplyShaderPropertyDefaults(
+                                        droppedPath,
+                                        [model](
+                                            const std::size_t index,
+                                            const DirectX::XMFLOAT4& value)
+                                        {
+                                            model->SetCustomParameter(
+                                                index,
+                                                value);
+                                        });
+                                    RecordHistory();
+                                    SetStatus(
+                                        "モデルへカスタムShaderを設定しました");
+                                }
                             }
                             else
                             {
@@ -8916,15 +9064,28 @@ namespace LamaPon
                                         ? "このShaderはエンジンが"
                                           "「壊れている印」に使うため、"
                                           "割り当てられません"
-                                        : "HLSLファイルをドロップして"
-                                          "ください",
+                                        : (!assignmentError.empty()
+                                            ? assignmentError
+                                            : "HLSLまたはtypeがmaterialの"
+                                              "Shader Manifestをドロップして"
+                                              "ください"),
                                     true);
                             }
                         }
                         ImGui::EndDragDropTarget();
                     }
-                    ImGui::BeginDisabled(
-                        !IsAssignableShaderAsset(m_selectedAsset));
+                    std::string selectedShaderError;
+                    const bool selectedShaderAssignable =
+                        IsAssignableMaterialShaderAsset(
+                            m_graphics.Assets(),
+                            m_selectedAsset,
+                            &selectedShaderError);
+                    const bool selectedShaderChanges =
+                        selectedShaderAssignable
+                        && IsAssetSelectionChange(
+                            model->ShaderPath(),
+                            m_selectedAsset);
+                    ImGui::BeginDisabled(!selectedShaderChanges);
                     if (ImGui::Button("選択Shaderをモデルへ"))
                     {
                         model->SetShaderPath(m_selectedAsset);
@@ -8945,6 +9106,17 @@ namespace LamaPon
                         showItemTooltip(
                             "このShaderはエンジンが「壊れている印」に"
                             "使うため、割り当てられません");
+                    }
+                    else if (IsShaderManifestAsset(m_selectedAsset)
+                        && !selectedShaderError.empty())
+                    {
+                        showItemTooltip(selectedShaderError.c_str());
+                    }
+                    else if (selectedShaderAssignable
+                        && !selectedShaderChanges)
+                    {
+                        showItemTooltip(
+                            "このShaderは既に設定されています");
                     }
                     ImGui::EndDisabled();
                     if (!model->ShaderPath().empty())
@@ -8997,7 +9169,7 @@ namespace LamaPon
                     if (ImGui::TreeNode(
                         "モデルShaderパラメーター"))
                     {
-                        if (DrawCustomShaderParameters(
+                        const auto edit = DrawCustomShaderParameters(
                             model->ShaderPath(),
                             "ModelShaderParameters",
                             [model](
@@ -9027,12 +9199,10 @@ namespace LamaPon
                                 model->SetCustomTexturePath(
                                     index,
                                     std::move(path));
-                            }))
+                            });
+                        if (edit.committed)
                         {
-                            if (ImGui::IsItemDeactivatedAfterEdit())
-                            {
-                                RecordHistory();
-                            }
+                            RecordHistory();
                         }
                         ImGui::TreePop();
                     }

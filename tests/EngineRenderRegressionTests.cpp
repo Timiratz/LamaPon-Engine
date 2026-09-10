@@ -17,6 +17,7 @@
 #include <objbase.h>
 // Compute Shaderの出力（R16G16B16A16_FLOAT）をCPUで読み戻すため。
 #include <DirectXPackedVector.h>
+#include <nlohmann/json.hpp>
 #include <wrl/client.h>
 
 #include <algorithm>
@@ -26,9 +27,12 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 namespace
@@ -390,7 +394,7 @@ int main(const int argumentCount, char** arguments)
             scene.CreateGameObject("Subject");
         subject.GetTransform().scale =
             { 2.0f, 2.0f, 2.0f };
-        subject.AddComponent<
+        auto& subjectRenderer = subject.AddComponent<
             LamaPon::MeshRendererComponent>(
             LamaPon::PrimitiveShape::Cube,
             DirectX::XMFLOAT4{
@@ -493,7 +497,7 @@ int main(const int argumentCount, char** arguments)
             { 2.5f, 0.0f, 0.0f };
         clone.GetTransform().scale =
             { 1.5f, 1.5f, 1.5f };
-        clone.AddComponent<
+        auto& cloneRenderer = clone.AddComponent<
             LamaPon::MeshRendererComponent>(
             LamaPon::PrimitiveShape::Cube,
             DirectX::XMFLOAT4{
@@ -531,6 +535,55 @@ int main(const int argumentCount, char** arguments)
                 Height / 2 + 6,
                 background),
             "Center must return to the clear color.");
+        Require(
+            scene.VisibilityStats().meshInstanceBatchCount == 1
+                && scene.VisibilityStats()
+                    .meshInstancedRendererCount == 2,
+            "Matching meshes must use one two-renderer instance batch.");
+
+        // leaderが共有する値はbatch keyへすべて含めます。含め忘れると
+        // 片方のcustom vector/textureがもう片方にも使われます。
+        Require(
+            subjectRenderer.InstanceBatchKey()
+                    == cloneRenderer.InstanceBatchKey(),
+            "Matching mesh materials must share an instance batch.");
+        cloneRenderer.SetCustomVector(
+            0,
+            { 1.0f, 2.0f, 3.0f, 4.0f });
+        Require(
+            subjectRenderer.InstanceBatchKey()
+                != cloneRenderer.InstanceBatchKey(),
+            "Different custom vectors must split mesh instance batches.");
+        static_cast<void>(renderFrame());
+        Require(
+            scene.VisibilityStats().meshInstanceBatchCount == 0
+                && scene.VisibilityStats()
+                    .meshInstancedRendererCount == 0,
+            "Different custom vectors must render as separate meshes.");
+        cloneRenderer.SetCustomVector(0, {});
+        cloneRenderer.SetCustomTexturePath(
+            0,
+            "textures/particle-glow.png");
+        Require(
+            subjectRenderer.InstanceBatchKey()
+                != cloneRenderer.InstanceBatchKey(),
+            "Different custom textures must split mesh instance batches.");
+        static_cast<void>(renderFrame());
+        Require(
+            scene.VisibilityStats().meshInstanceBatchCount == 0
+                && scene.VisibilityStats()
+                    .meshInstancedRendererCount == 0,
+            "Different custom textures must render as separate meshes.");
+        cloneRenderer.SetCustomTexturePath(0, {});
+        static_cast<void>(renderFrame());
+        Require(
+            subjectRenderer.InstanceBatchKey()
+                    == cloneRenderer.InstanceBatchKey()
+                && scene.VisibilityStats()
+                    .meshInstanceBatchCount == 1
+                && scene.VisibilityStats()
+                    .meshInstancedRendererCount == 2,
+            "Restored mesh materials must rejoin one instance batch.");
 
         // インスタンシングはGameObject::Render3Dを迂回するため、
         // 無効オブジェクトをバッチへ混ぜると通常経路と違って描画
@@ -3808,6 +3861,22 @@ int main(const int argumentCount, char** arguments)
                     ("The compute effect must run: "
                         + computeError).c_str());
 
+                // bool/error契約を守り、入力textureのdecode失敗を例外として
+                // 呼び出し側へ漏らさないこと。HLSLを意図的に画像入力へ
+                // 指定しています。
+                auto invalidInputCompute = compute;
+                invalidInputCompute.outputTexture =
+                    "computeInvalidInputProbe";
+                invalidInputCompute.inputTextures[0] =
+                    compute.shader;
+                std::string invalidInputError;
+                Require(
+                    !graphics.DispatchComputeEffect(
+                        invalidInputCompute,
+                        &invalidInputError)
+                        && !invalidInputError.empty(),
+                    "A compute effect with an unreadable input texture must return false and an error.");
+
                 // 表示経路のフィルターやUV変換を除外するため、
                 // Compute Shaderの出力テクスチャをCPUへ直接読み戻します。
                 const auto* computeTarget =
@@ -3971,6 +4040,56 @@ int main(const int argumentCount, char** arguments)
                     spriteRed > 200 && spriteGreen > 200,
                     "A SpriteRenderer pointed at the compute"
                     " output must show both halves of it.");
+
+                // GraphicsDevice経由でもcompute manifestの任意entryを
+                // 実行し、失敗時にCSMain固定の誤診断を足さないことを
+                // 確かめます。fixtureのsourceはasset-root相対なので、
+                // この検証中だけfixture directoryをrootにします。
+                const auto engineAssetRoot =
+                    graphics.Assets().AssetRoot();
+                graphics.Assets().SetAssetRoot(
+                    std::filesystem::path{
+                        LAMAPON_TEST_FIXTURE_DIR }
+                    / "shader-manifest");
+
+                LamaPon::ComputeEffectRequest manifestCompute;
+                manifestCompute.shader =
+                    "valid-compute.lamashader.json";
+                manifestCompute.outputTexture =
+                    "computeManifestProbe";
+                manifestCompute.outputWidth = 16;
+                manifestCompute.outputHeight = 16;
+                manifestCompute.customParameters[0] = {
+                    0.25f, 0.5f, 0.75f, 0.0f
+                };
+                std::string manifestComputeError;
+                Require(
+                    graphics.DispatchComputeEffect(
+                        manifestCompute,
+                        &manifestComputeError),
+                    ("A compute manifest with a custom entry"
+                        " must run through GraphicsDevice: "
+                        + manifestComputeError).c_str());
+
+                manifestCompute.shader =
+                    "invalid-compute-entry.lamashader.json";
+                manifestCompute.outputTexture =
+                    "invalidComputeManifestProbe";
+                manifestComputeError.clear();
+                Require(
+                    !graphics.DispatchComputeEffect(
+                        manifestCompute,
+                        &manifestComputeError)
+                        && manifestComputeError.find(
+                            "RequiredComputeDoesNotExist")
+                            != std::string::npos
+                        && manifestComputeError.find("cs_5_0")
+                            != std::string::npos
+                        && manifestComputeError.find("CSMain")
+                            == std::string::npos,
+                    "GraphicsDevice must preserve a compute"
+                    " manifest's custom entry/target diagnostic.");
+                graphics.Assets().SetAssetRoot(engineAssetRoot);
 
                 subject.GetTransform().position =
                     savedSubjectPosition;
@@ -4717,6 +4836,35 @@ int main(const int argumentCount, char** arguments)
                         " above for which one).");
                 }
                 static_cast<void>(probeUsable);
+            }
+
+            // Manifestの構文・検証エラーには、VSMain/PSMain固定だった
+            // 旧HLSL向けの診断を足しません。type値へ意図的に
+            // "entrypoint not found"を入れ、旧診断へ誤って流すと
+            // PSMainの案内が付くケースを回帰検証します。
+            {
+                LamaPon::ScreenEffectRequest request;
+                request.shader =
+                    std::filesystem::path{
+                        LAMAPON_TEST_FIXTURE_DIR }
+                    / "shader-manifest"
+                    / "invalid-type-screen-effect.lamashader.json";
+                std::string manifestError;
+                Require(
+                    !graphics.QueueScreenEffect(
+                        request,
+                        nullptr,
+                        &manifestError),
+                    "A ScreenEffect accepted an invalid manifest type.");
+                Require(
+                    manifestError.find("entrypoint not found")
+                        != std::string::npos,
+                    "The manifest validation error was not preserved.");
+                Require(
+                    manifestError.find("PSMain")
+                        == std::string::npos,
+                    "A manifest validation error received the legacy"
+                    " fixed-entry diagnostic.");
             }
 
             // ScreenEffectがシーンの深度（t3）を読めることの確認。
@@ -6188,21 +6336,35 @@ int main(const int argumentCount, char** arguments)
                 };
 
                 writeProbe("variant-probe.hlsl");
+                // 共有cacheをもう1つのMeshRendererにも持たせ、片方の
+                // reload直後にconst queryだけで追従できるか調べます。
+                subjectRenderer.SetShaderPath(probePath);
                 errorRenderer.SetShaderPath(probePath);
                 const auto working =
                     sampleShaderError("shader-error-working");
 
                 writeProbe("broken-shader.hlsl");
                 errorRenderer.ReloadShader();
+                static_cast<void>(
+                    subjectRenderer.CanBeInstanced());
+                Require(
+                    !subjectRenderer.ShaderError().empty(),
+                    "CanBeInstanced must refresh a shared shader replaced by another component.");
                 const auto edited =
                     sampleShaderError("shader-error-edited");
 
                 // 修正後は本来の色へ戻り、代替表示が解除されること。
                 writeProbe("variant-probe.hlsl");
                 errorRenderer.ReloadShader();
+                static_cast<void>(
+                    subjectRenderer.IsAlphaBlended3D());
+                Require(
+                    subjectRenderer.ShaderError().empty(),
+                    "IsAlphaBlended3D must refresh a shared shader replaced by another component.");
                 const auto repaired =
                     sampleShaderError("shader-error-repaired");
 
+                subjectRenderer.SetShaderPath({});
                 std::error_code removeError;
                 std::filesystem::remove(probePath, removeError);
 
@@ -6756,6 +6918,51 @@ int main(const int argumentCount, char** arguments)
                 "An effect injected before bloom must bleed"
                 " outside the square; if it does not, it was"
                 " applied at the old fixed position.");
+
+            // Queue APIは失敗をfalse/errorで返し、画像でない補助入力を
+            // 指定しても例外を呼び出し側へ漏らさないこと。
+            LamaPon::ScreenEffectRequest invalidAuxiliary;
+            invalidAuxiliary.shader = dotShader;
+            invalidAuxiliary.auxiliaryTextures[0] = dotShader;
+            std::string invalidAuxiliaryError;
+            Require(
+                !graphics.QueueScreenEffect(
+                    invalidAuxiliary,
+                    nullptr,
+                    &invalidAuxiliaryError)
+                    && !invalidAuxiliaryError.empty(),
+                "A screen effect with an unreadable auxiliary texture must return false and an error.");
+
+            // 同じframeでqueue済みのEffectをinvalidateして差し替えても、
+            // 先に積んだ描画が共有所有した旧Effectを安全に使い切ること。
+            LamaPon::ScreenEffectRequest lifetimeProbe;
+            lifetimeProbe.shader = dotShader;
+            lifetimeProbe.point =
+                LamaPon::ScreenEffectPoint::AfterToneMapping;
+            lifetimeProbe.customParameters[0] = {
+                DotRadius, 6.0f, 0.0f, 0.0f
+            };
+            std::string lifetimeError;
+            Require(
+                graphics.QueueScreenEffect(
+                    lifetimeProbe,
+                    nullptr,
+                    &lifetimeError),
+                "The first same-frame lifetime probe must queue.");
+            graphics.InvalidateScreenEffectShader(dotShader);
+            Require(
+                graphics.QueueScreenEffect(
+                    lifetimeProbe,
+                    nullptr,
+                    &lifetimeError),
+                "The reloaded same-frame lifetime probe must queue.");
+            Stage("frame-screen-effect-reload-lifetime");
+            const auto lifetimeFrame = renderComposedFrame();
+            Require(
+                lifetimeFrame.size()
+                    == static_cast<std::size_t>(Width)
+                        * Height * 4,
+                "Queued screen effects must survive a same-frame reload.");
 
             graphics.SetGraphicsSettings(savedGraphicsSettings);
             scene.SetBloomSettings(savedBloom);
@@ -7816,6 +8023,621 @@ int main(const int argumentCount, char** arguments)
             Require(
                 compressionError < 12.0,
                 "BC5 shading error must stay small per pixel");
+        }
+
+        // 1つのglTFにskin付き／無しのprimitiveが混在するとき、
+        // Manifestのskinned roleだけへモデル全体を寄せず、primitive
+        // ごとにskinned/forwardを選ぶことを実描画で確かめます。
+        // RiggedSimple.glbのmesh nodeを複製し、複製側からskinだけを
+        // 外したGLBを、ほかの実行時生成物と同じtest-outputへ置きます。
+        {
+            const auto outputRoot =
+                std::filesystem::current_path()
+                / "test-output"
+                / "mixed-manifest-runtime";
+            std::error_code directoryError;
+            std::filesystem::create_directories(
+                outputRoot,
+                directoryError);
+            Require(
+                !directoryError,
+                "The mixed Manifest runtime output directory could not be created.");
+
+            const auto modelPath = outputRoot / "mixed-rigged.glb";
+            const auto manifestPath = outputRoot
+                / "mixed-role.lamashader.json";
+            const auto shaderPath = outputRoot / "mixed-role.hlsl";
+            const auto colorIncludePath = outputRoot
+                / "mixed-colors.hlsli";
+
+            const auto readUint32 = [](
+                const std::vector<std::uint8_t>& bytes,
+                const std::size_t offset)
+            {
+                Require(
+                    offset + 4 <= bytes.size(),
+                    "The source GLB has a truncated uint32 field.");
+                return static_cast<std::uint32_t>(bytes[offset])
+                    | (static_cast<std::uint32_t>(bytes[offset + 1])
+                        << 8u)
+                    | (static_cast<std::uint32_t>(bytes[offset + 2])
+                        << 16u)
+                    | (static_cast<std::uint32_t>(bytes[offset + 3])
+                        << 24u);
+            };
+            const auto appendUint32 = [](
+                std::vector<std::uint8_t>& bytes,
+                const std::uint32_t value)
+            {
+                bytes.push_back(
+                    static_cast<std::uint8_t>(value));
+                bytes.push_back(
+                    static_cast<std::uint8_t>(value >> 8u));
+                bytes.push_back(
+                    static_cast<std::uint8_t>(value >> 16u));
+                bytes.push_back(
+                    static_cast<std::uint8_t>(value >> 24u));
+            };
+            const auto storeUint32 = [](
+                std::vector<std::uint8_t>& bytes,
+                const std::size_t offset,
+                const std::uint32_t value)
+            {
+                Require(
+                    offset + 4 <= bytes.size(),
+                    "The generated GLB has a truncated uint32 field.");
+                bytes[offset] = static_cast<std::uint8_t>(value);
+                bytes[offset + 1] =
+                    static_cast<std::uint8_t>(value >> 8u);
+                bytes[offset + 2] =
+                    static_cast<std::uint8_t>(value >> 16u);
+                bytes[offset + 3] =
+                    static_cast<std::uint8_t>(value >> 24u);
+            };
+
+            std::ifstream sourceModel(
+                std::filesystem::path{ LAMAPON_TEST_ASSET_DIR }
+                    / "models"
+                    / "RiggedSimple.glb",
+                std::ios::binary);
+            Require(
+                static_cast<bool>(sourceModel),
+                "RiggedSimple.glb could not be opened for the mixed model probe.");
+            const std::vector<std::uint8_t> sourceBytes{
+                std::istreambuf_iterator<char>{ sourceModel },
+                std::istreambuf_iterator<char>{}
+            };
+            constexpr std::uint32_t GlbMagic = 0x46546c67u;
+            constexpr std::uint32_t JsonChunk = 0x4e4f534au;
+            Require(
+                sourceBytes.size() >= 20
+                    && readUint32(sourceBytes, 0) == GlbMagic
+                    && readUint32(sourceBytes, 4) == 2u
+                    && readUint32(sourceBytes, 16) == JsonChunk,
+                "RiggedSimple.glb is not a GLB 2.0 file with a JSON first chunk.");
+            const auto sourceJsonLength =
+                readUint32(sourceBytes, 12);
+            const auto sourceTailOffset =
+                std::size_t{ 20 } + sourceJsonLength;
+            Require(
+                sourceTailOffset <= sourceBytes.size(),
+                "RiggedSimple.glb has a truncated JSON chunk.");
+
+            const std::string sourceJson{
+                reinterpret_cast<const char*>(
+                    sourceBytes.data() + 20),
+                sourceJsonLength
+            };
+            auto gltf = nlohmann::json::parse(sourceJson);
+            Require(
+                gltf.contains("nodes")
+                    && gltf["nodes"].is_array()
+                    && gltf["nodes"].size() > 2
+                    && gltf["nodes"][1].contains("children")
+                    && gltf["nodes"][2].contains("mesh")
+                    && gltf["nodes"][2].contains("skin"),
+                "RiggedSimple.glb no longer has the expected rigged mesh node layout.");
+
+            // node 1のローカルYはZ-up変換後の画面X方向です。元の
+            // skin nodeと複製したstatic nodeを左右へ離し、片方が
+            // もう片方を隠して誤判定しない構図にします。
+            gltf["nodes"][2]["translation"] =
+                nlohmann::json::array({ 0.0, -2.2, 0.0 });
+            auto staticNode = gltf["nodes"][2];
+            staticNode.erase("skin");
+            staticNode["name"] = "StaticRoleProbe";
+            staticNode["translation"] =
+                nlohmann::json::array({ 0.0, 2.2, 0.0 });
+            const auto staticNodeIndex = gltf["nodes"].size();
+            gltf["nodes"].push_back(std::move(staticNode));
+            gltf["nodes"][1]["children"].push_back(
+                staticNodeIndex);
+
+            auto generatedJson = gltf.dump();
+            while ((generatedJson.size() & 3u) != 0u)
+            {
+                generatedJson.push_back(' ');
+            }
+            Require(
+                generatedJson.size()
+                    <= std::numeric_limits<std::uint32_t>::max(),
+                "The generated mixed model JSON chunk is too large.");
+
+            std::vector<std::uint8_t> mixedBytes;
+            mixedBytes.reserve(
+                20 + generatedJson.size()
+                + sourceBytes.size() - sourceTailOffset);
+            mixedBytes.insert(
+                mixedBytes.end(),
+                sourceBytes.begin(),
+                sourceBytes.begin() + 12);
+            appendUint32(
+                mixedBytes,
+                static_cast<std::uint32_t>(
+                    generatedJson.size()));
+            appendUint32(mixedBytes, JsonChunk);
+            mixedBytes.insert(
+                mixedBytes.end(),
+                generatedJson.begin(),
+                generatedJson.end());
+            mixedBytes.insert(
+                mixedBytes.end(),
+                sourceBytes.begin() + sourceTailOffset,
+                sourceBytes.end());
+            Require(
+                mixedBytes.size()
+                    <= std::numeric_limits<std::uint32_t>::max(),
+                "The generated mixed GLB is too large.");
+            storeUint32(
+                mixedBytes,
+                8,
+                static_cast<std::uint32_t>(mixedBytes.size()));
+            {
+                std::ofstream output(modelPath, std::ios::binary);
+                output.write(
+                    reinterpret_cast<const char*>(
+                        mixedBytes.data()),
+                    static_cast<std::streamsize>(
+                        mixedBytes.size()));
+                Require(
+                    static_cast<bool>(output),
+                    "The mixed GLB probe could not be written.");
+            }
+
+            {
+                std::ofstream output(
+                    manifestPath,
+                    std::ios::binary | std::ios::trunc);
+                output << R"json({
+  "version": 1,
+  "name": "Tests/MixedModelRoles",
+  "type": "material",
+  "source": "mixed-role.hlsl",
+  "passes": [
+    {
+      "name": "Static",
+      "role": "forward",
+      "vertex": { "entry": "ForwardVertex", "target": "vs_5_0" },
+      "pixel": { "entry": "ForwardPixel", "target": "ps_5_0" },
+      "renderState": { "cull": "None" }
+    },
+    {
+      "name": "Rigged",
+      "role": "skinned",
+      "vertex": { "entry": "SkinnedVertex", "target": "vs_5_0" },
+      "pixel": { "entry": "SkinnedPixel", "target": "ps_5_0" },
+      "renderState": { "cull": "None" }
+    }
+  ]
+})json";
+                Require(
+                    static_cast<bool>(output),
+                    "The mixed role Manifest could not be written.");
+            }
+
+            const auto writeRoleShader = [&shaderPath]
+            {
+                std::ofstream output(
+                    shaderPath,
+                    std::ios::binary | std::ios::trunc);
+                output << R"hlsl(#include "mixed-colors.hlsli"
+
+cbuffer ObjectBuffer : register(b0)
+{
+    row_major float4x4 World;
+    row_major float4x4 ViewProjection;
+    row_major float4x4 WorldInverseTranspose;
+    float4 MaterialColor;
+};
+
+cbuffer BoneBuffer : register(b2)
+{
+    float4x3 BoneTransforms[72];
+};
+
+struct ModelVertex
+{
+    float3 Position : SV_Position;
+    float3 Normal : NORMAL;
+    float4 Tangent : TANGENT;
+    float4 Color : COLOR;
+    float2 TexCoord : TEXCOORD0;
+    uint4 BlendIndices : BLENDINDICES0;
+    float4 BlendWeights : BLENDWEIGHT0;
+};
+
+struct PixelInput
+{
+    float4 Position : SV_Position;
+};
+
+PixelInput ForwardVertex(ModelVertex input)
+{
+    PixelInput output;
+    const float4 worldPosition =
+        mul(float4(input.Position, 1.0f), World);
+    output.Position = mul(worldPosition, ViewProjection);
+    return output;
+}
+
+float4 ForwardPixel(PixelInput input) : SV_Target
+{
+    return float4(FORWARD_COLOR, 1.0f);
+}
+
+PixelInput SkinnedVertex(ModelVertex input)
+{
+    float4x3 skinning = 0.0f;
+    [unroll]
+    for (uint index = 0u; index < 4u; ++index)
+    {
+        const uint bone = min(input.BlendIndices[index], 71u);
+        skinning += BoneTransforms[bone]
+            * input.BlendWeights[index];
+    }
+    const float3 skinnedPosition =
+        mul(float4(input.Position, 1.0f), skinning);
+    PixelInput output;
+    const float4 worldPosition =
+        mul(float4(skinnedPosition, 1.0f), World);
+    output.Position = mul(worldPosition, ViewProjection);
+    return output;
+}
+
+float4 SkinnedPixel(PixelInput input) : SV_Target
+{
+    return float4(SKINNED_COLOR, 1.0f);
+}
+
+Texture2D SceneTexture : register(t0);
+SamplerState SceneSampler : register(s0);
+
+struct ScreenVertexOutput
+{
+    float4 Position : SV_Position;
+    float2 TexCoord : TEXCOORD0;
+};
+
+ScreenVertexOutput VSMain(uint vertexId : SV_VertexID)
+{
+    ScreenVertexOutput output;
+    const float2 uv = float2(
+        (vertexId << 1) & 2,
+        vertexId & 2);
+    output.Position = float4(
+        uv * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f),
+        0.0f,
+        1.0f);
+    output.TexCoord = uv;
+    return output;
+}
+
+float4 PSMain(ScreenVertexOutput input) : SV_Target
+{
+    return SceneTexture.Sample(SceneSampler, input.TexCoord);
+}
+
+RWTexture2D<float4> OutputTexture : register(u0);
+
+[numthreads(8, 8, 1)]
+void CSMain(uint3 id : SV_DispatchThreadID)
+{
+    OutputTexture[id.xy] = float4(FORWARD_COLOR, 1.0f);
+}
+)hlsl";
+                Require(
+                    static_cast<bool>(output),
+                    "The mixed role HLSL could not be written.");
+            };
+            const auto writeRoleColors =
+                [&colorIncludePath](
+                    const char* const forwardColor,
+                    const char* const skinnedColor)
+            {
+                std::ofstream output(
+                    colorIncludePath,
+                    std::ios::binary | std::ios::trunc);
+                output
+                    << "#define FORWARD_COLOR float3("
+                    << forwardColor << ")\n"
+                    << "#define SKINNED_COLOR float3("
+                    << skinnedColor << ")\n";
+                Require(
+                    static_cast<bool>(output),
+                    "The mixed role color include could not be written.");
+            };
+            writeRoleShader();
+            writeRoleColors(
+                "0.95f, 0.02f, 0.02f",
+                "0.02f, 0.95f, 0.02f");
+
+            class AssetRootScope final
+            {
+            public:
+                AssetRootScope(
+                    LamaPon::AssetManager& assets,
+                    const std::filesystem::path& root)
+                    : m_assets(assets)
+                    , m_previous(assets.AssetRoot())
+                {
+                    m_assets.SetAssetRoot(root, false);
+                }
+
+                ~AssetRootScope()
+                {
+                    try
+                    {
+                        m_assets.SetAssetRoot(m_previous, false);
+                    }
+                    catch (...)
+                    {
+                    }
+                }
+
+                AssetRootScope(const AssetRootScope&) = delete;
+                AssetRootScope& operator=(
+                    const AssetRootScope&) = delete;
+
+            private:
+                LamaPon::AssetManager& m_assets;
+                std::filesystem::path m_previous;
+            } assetRootScope{ graphics.Assets(), outputRoot };
+
+            const auto shaderPrefetch =
+                graphics.Assets().PrefetchFiles({
+                    "mixed-role.lamashader.json",
+                    "mixed-role.hlsl",
+                    "mixed-colors.hlsli"
+                });
+            Require(
+                shaderPrefetch.failedFiles == 0
+                    && graphics.Assets().PrefetchedFileCount() >= 3,
+                "The mixed Manifest hot-reload probe could not prefetch "
+                "its shader files.");
+
+            LamaPon::Scene mixedScene(graphics);
+            auto& mixedCameraObject =
+                mixedScene.CreateGameObject("MixedRoleCamera");
+            mixedCameraObject.GetTransform().position =
+                { 0.0f, 0.0f, 9.0f };
+            auto& mixedCamera = mixedCameraObject.AddComponent<
+                LamaPon::CameraComponent>();
+            mixedScene.SetMainCamera(mixedCamera);
+
+            auto& mixedModelObject =
+                mixedScene.CreateGameObject("MixedRoleModel");
+            mixedModelObject.GetTransform().scale =
+                { 0.65f, 0.65f, 0.65f };
+            auto& mixedRenderer = mixedModelObject.AddComponent<
+                LamaPon::ModelRendererComponent>(
+                    "mixed-rigged.glb");
+            mixedRenderer.SetShaderPath(
+                "mixed-role.lamashader.json");
+            mixedRenderer.SetAnimationTime(0.9f);
+            Require(
+                mixedRenderer.ShaderError().empty(),
+                "The mixed model Manifest must compile both forward and skinned roles.");
+
+            const auto renderMixed =
+                [&graphics, &mixedScene](
+                    const char* const stageName)
+            {
+                constexpr float clear[]{
+                    0.0f, 0.0f, 0.0f, 1.0f
+                };
+                Stage(stageName);
+                graphics.BeginFrame(clear);
+                graphics.BeginSceneComposition(clear);
+                mixedScene.RenderMainCamera(
+                    graphics.AspectRatio(),
+                    false,
+                    graphics.SceneCompositionTarget());
+                graphics.EndSceneComposition(
+                    mixedScene.PostProcessFrameData());
+                std::uint32_t width{};
+                std::uint32_t height{};
+                auto pixels = graphics.CaptureBackBuffer(
+                    width,
+                    height);
+                graphics.EndFrame();
+                Require(
+                    width == Width && height == Height,
+                    "The mixed role frame has an unexpected size.");
+                DumpFrame(stageName + 6, pixels);
+                return pixels;
+            };
+            const auto countColor = [](
+                const std::vector<std::uint8_t>& frame,
+                const char dominant,
+                const char secondary = '\0')
+            {
+                std::size_t count{};
+                for (std::uint32_t y{}; y < Height; ++y)
+                {
+                    for (std::uint32_t x{}; x < Width; ++x)
+                    {
+                        const auto pixel = At(frame, x, y);
+                        const int red = pixel.red;
+                        const int green = pixel.green;
+                        const int blue = pixel.blue;
+                        const bool match = secondary == '\0'
+                            ? (dominant == 'r'
+                                ? red > green + 45
+                                    && red > blue + 45
+                                    && red > 70
+                                : dominant == 'g'
+                                    ? green > red + 45
+                                        && green > blue + 45
+                                        && green > 70
+                                    : blue > red + 45
+                                        && blue > green + 45
+                                        && blue > 70)
+                            : red > blue + 45
+                                && green > blue + 45
+                                && red > 70
+                                && green > 70;
+                        if (match)
+                        {
+                            ++count;
+                        }
+                    }
+                }
+                return count;
+            };
+
+            const auto initialFrame = renderMixed(
+                "frame-mixed-model-manifest");
+            const auto forwardRed = countColor(initialFrame, 'r');
+            const auto skinnedGreen = countColor(initialFrame, 'g');
+            std::cout
+                << "mixed Manifest roles: forward-red="
+                << forwardRed
+                << " skinned-green=" << skinnedGreen
+                << std::endl;
+            Require(
+                forwardRed > 150 && skinnedGreen > 150,
+                "A mixed glTF must draw visible coverage from both its forward and skinned Manifest roles.");
+
+            // 同じroot HLSLをScreen/Computeとしても一度compileし、3系統
+            // すべてがinclude-only保存を個別に検出できる状態にします。
+            LamaPon::ScreenEffectRequest includeScreen;
+            includeScreen.shader = "mixed-role.hlsl";
+            std::uint64_t initialScreenGeneration{};
+            std::string includeScreenError;
+            Require(
+                graphics.QueueScreenEffect(
+                    includeScreen,
+                    &initialScreenGeneration,
+                    &includeScreenError)
+                    && includeScreenError.empty()
+                    && initialScreenGeneration != 0,
+                "The include hot-reload ScreenEffect probe must compile.");
+
+            LamaPon::ComputeEffectRequest includeCompute;
+            includeCompute.shader = "mixed-role.hlsl";
+            includeCompute.outputTexture = "mixedIncludeCompute";
+            includeCompute.outputWidth = 8;
+            includeCompute.outputHeight = 8;
+            std::string includeComputeError;
+            Require(
+                graphics.DispatchComputeEffect(
+                    includeCompute,
+                    &includeComputeError)
+                    && includeComputeError.empty(),
+                "The include hot-reload ComputeEffect probe must compile.");
+
+            // Scene prefetchには古いbyte列が残ったままです。root HLSLや
+            // Manifestには触れずincludeだけを保存します。明示的な
+            // ReloadShaderなしで次の描画が変更を検出し、fresh readした
+            // 内容から両roleを再構築することを確かめます。
+            writeRoleColors(
+                "0.02f, 0.02f, 0.95f",
+                "0.95f, 0.95f, 0.02f");
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(300));
+
+            std::uint64_t reloadedScreenGeneration{};
+            Require(
+                graphics.QueueScreenEffect(
+                    includeScreen,
+                    &reloadedScreenGeneration,
+                    &includeScreenError)
+                    && includeScreenError.empty()
+                    && reloadedScreenGeneration
+                        > initialScreenGeneration,
+                "ScreenEffect must reload when only an included file changes.");
+            const auto computeStatsBeforeReload =
+                LamaPon::ShaderCompileStatistics();
+            Require(
+                graphics.DispatchComputeEffect(
+                    includeCompute,
+                    &includeComputeError)
+                    && includeComputeError.empty(),
+                "ComputeEffect must reload when only an included file changes.");
+            const auto computeStatsAfterReload =
+                LamaPon::ShaderCompileStatistics();
+            Require(
+                computeStatsAfterReload.compiledCount
+                    > computeStatsBeforeReload.compiledCount,
+                "ComputeEffect include reload must compile a new bytecode result.");
+
+            const auto reloadedFrame = renderMixed(
+                "frame-mixed-model-manifest-reloaded");
+            Require(
+                mixedRenderer.ShaderError().empty(),
+                "Include-only hot reload must rebuild both mixed model Manifest roles.");
+            const auto forwardBlue = countColor(reloadedFrame, 'b');
+            const auto skinnedYellow = countColor(
+                reloadedFrame,
+                'r',
+                'g');
+            std::cout
+                << "mixed Manifest reload: forward-blue="
+                << forwardBlue
+                << " skinned-yellow=" << skinnedYellow
+                << std::endl;
+            Require(
+                forwardBlue > 150 && skinnedYellow > 150,
+                "Hot reload must update both the forward and skinned role effects of a mixed glTF.");
+
+            // Compileが依存一覧を読んだ直後にincludeをもう一度保存します。
+            // 終了後のrevisionをbaselineにすると、この二度目の保存を
+            // 消費してしまい、次のpollで再compileされません。
+            writeRoleColors(
+                "0.71f, 0.11f, 0.021f",
+                "0.61f, 0.12f, 0.031f");
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(300));
+            bool compileRaceHookCalled{};
+            LamaPon::SetShaderCompileCompletionHookForTesting(
+                [&]()
+                {
+                    writeRoleColors(
+                        "0.12345f, 0.65432f, 0.22222f",
+                        "0.54321f, 0.23456f, 0.76543f");
+                    compileRaceHookCalled = true;
+                });
+            std::uint64_t raceScreenGeneration{};
+            Require(
+                graphics.QueueScreenEffect(
+                    includeScreen,
+                    &raceScreenGeneration,
+                    &includeScreenError)
+                    && includeScreenError.empty()
+                    && compileRaceHookCalled,
+                "The compile-race hook must save the include during ScreenEffect compilation.");
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(300));
+            std::uint64_t recoveredScreenGeneration{};
+            Require(
+                graphics.QueueScreenEffect(
+                    includeScreen,
+                    &recoveredScreenGeneration,
+                    &includeScreenError)
+                    && includeScreenError.empty()
+                    && recoveredScreenGeneration
+                        > raceScreenGeneration,
+                "An include saved during compilation must trigger another reload on the next dependency poll.");
         }
     }
     catch (const std::system_error& error)

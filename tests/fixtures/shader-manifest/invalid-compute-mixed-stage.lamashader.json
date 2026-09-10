@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "name": "Custom/InvalidMixedComputePass",
+  "type": "compute",
+  "source": "custom-entry-compute.hlsl",
+  "passes": [
+    {
+      "name": "Main",
+      "compute": {
+        "entry": "CustomComputeEntry",
+        "target": "cs_5_0"
+      },
+      "pixel": {
+        "entry": "PixelIsNotAllowed",
+        "target": "ps_5_0",
+        "optional": true
+      }
+    }
+  ]
+}

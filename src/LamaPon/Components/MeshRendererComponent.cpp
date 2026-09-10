@@ -123,6 +123,59 @@ namespace
         textures.emissiveFactor = material.EmissiveColor();
         return textures;
     }
+
+    // LitEffectはGraphicsDevice内で共有されるため、選択中のManifest
+    // passや一時フラグを描画の外へ持ち越さないようにします。また、
+    // programmable geometry stageは、それを設定しない後続描画まで
+    // 作用するので必ず解除します。
+    class MaterialPassScope final
+    {
+    public:
+        MaterialPassScope(
+            LamaPon::LitEffect& effect,
+            ID3D11DeviceContext* context,
+            const LamaPon::ShaderPassRole role) noexcept
+            : m_effect(effect)
+            , m_context(context)
+            , m_role(role)
+        {
+        }
+
+        MaterialPassScope(const MaterialPassScope&) = delete;
+        MaterialPassScope& operator=(
+            const MaterialPassScope&) = delete;
+
+        ~MaterialPassScope()
+        {
+            m_effect.SetTessellationDrawEnabled(false);
+            m_effect.SetDepthOnlyEnabled(false);
+            m_effect.SetInstancingEnabled(false);
+            if (m_effect.PassCount(m_role) != 0)
+            {
+                try
+                {
+                    m_effect.SelectPass(m_role, 0);
+                }
+                catch (...)
+                {
+                    // 有効なindex 0への復帰なので通常は失敗しません。
+                    // destructorから例外を出して本来の描画エラーを
+                    // 隠さないため、万一の場合だけ無視します。
+                }
+            }
+            if (m_context != nullptr)
+            {
+                m_context->HSSetShader(nullptr, nullptr, 0);
+                m_context->DSSetShader(nullptr, nullptr, 0);
+                m_context->GSSetShader(nullptr, nullptr, 0);
+            }
+        }
+
+    private:
+        LamaPon::LitEffect& m_effect;
+        ID3D11DeviceContext* m_context{};
+        LamaPon::ShaderPassRole m_role{};
+    };
 }
 
 namespace LamaPon
@@ -767,13 +820,13 @@ namespace LamaPon
         // 入力レイアウトと制御点バッファの生成結果で判定します。
         return m_effect != nullptr
             && m_effect->HasTessellation()
-            && m_inputLayout
             && m_tessellationPatches
             && m_tessellationPatches->vertexBuffer
             && m_tessellationPatches->controlPointCount > 0;
     }
 
-    void MeshRendererComponent::DrawTessellatedPatch() const
+    void MeshRendererComponent::DrawTessellatedPatch(
+        ID3D11InputLayout* const inputLayout) const
     {
         auto* context = m_graphics->Context();
         const UINT stride =
@@ -789,7 +842,7 @@ namespace LamaPon
             &stride,
             &offset);
         context->IASetInputLayout(
-            m_inputLayout->value.Get());
+            inputLayout);
         context->IASetPrimitiveTopology(
             D3D11_PRIMITIVE_TOPOLOGY_4_CONTROL_POINT_PATCHLIST);
         // パッチで描くのはここだけです。Applyはこの指定を見て
@@ -846,15 +899,27 @@ namespace LamaPon
             m_material.ShaderKeywords());
         m_shaderError = std::move(compileError);
         // テセレーションは四角パッチ用の制御点を生成できるPlaneとCubeに
-        // 対応します。Sphere／CylinderではHSMain/DSMainを実行できず、
-        // テセレーション用頂点シェーダーだけでは描画が成立しません。
+        // 対応します。Manifestでは後段のforward passだけがHS/DSを持つ
+        // 場合もあるので、選択中の1件だけでなく全color passを調べます。
+        bool hasTessellatedColorPass = false;
+        if (m_shaderError.empty() && !m_tessellationPatches)
+        {
+            for (std::size_t index = 0;
+                index < selected->ColorPassCount();
+                ++index)
+            {
+                selected->SelectColorPass(index);
+                hasTessellatedColorPass =
+                    hasTessellatedColorPass
+                    || selected->SelectedPassHasTessellation(
+                        ShaderPassRole::Forward);
+            }
+            selected->SelectColorPass(0);
+        }
         // 非対応形状では描画消失を避けるため代替シェーダーを使用します。
-        //
         // 対応判定には形状名ではなく制御点バッファの有無を使用し、
         // 新しい対応形状にも同じ条件を適用します。
-        if (m_shaderError.empty()
-            && selected->HasTessellation()
-            && !m_tessellationPatches)
+        if (hasTessellatedColorPass)
         {
             m_shaderError =
                 "This shader uses tessellation (HSMain/DSMain),"
@@ -874,12 +939,55 @@ namespace LamaPon
             return;
         }
 
-        auto inputLayout = std::make_unique<InputLayoutHolder>();
+        std::vector<std::unique_ptr<InputLayoutHolder>>
+            colorInputLayouts;
         try
         {
-            m_primitive->CreateInputLayout(
-                &effect,
-                inputLayout->value.ReleaseAndGetAddressOf());
+            const auto colorPassCount = effect.IsManifestEffect()
+                ? effect.ColorPassCount()
+                : 1u;
+            if (colorPassCount == 0)
+            {
+                throw std::runtime_error(
+                    "A material shader requires at least one color pass.");
+            }
+            colorInputLayouts.reserve(colorPassCount);
+            for (std::size_t index = 0;
+                index < colorPassCount;
+                ++index)
+            {
+                auto* const byteCode =
+                    effect.ColorPassVertexShaderByteCode(index);
+                if (byteCode == nullptr)
+                {
+                    throw std::runtime_error(
+                        "Material color pass "
+                        + std::to_string(index)
+                        + " has no vertex shader bytecode.");
+                }
+                auto layout =
+                    std::make_unique<InputLayoutHolder>();
+                const HRESULT result =
+                    m_graphics->Device()->CreateInputLayout(
+                        DirectX::VertexPositionNormalTexture::
+                            InputElements,
+                        DirectX::VertexPositionNormalTexture::
+                            InputElementCount,
+                        byteCode->GetBufferPointer(),
+                        byteCode->GetBufferSize(),
+                        layout->value.ReleaseAndGetAddressOf());
+                if (FAILED(result))
+                {
+                    throw std::runtime_error(
+                        "Could not create the input layout for material "
+                        "color pass " + std::to_string(index)
+                        + " (HRESULT "
+                        + std::to_string(
+                            static_cast<unsigned long>(result))
+                        + ").");
+                }
+                colorInputLayouts.push_back(std::move(layout));
+            }
         }
         catch (const std::exception& exception)
         {
@@ -888,16 +996,19 @@ namespace LamaPon
             // 残すと、破棄済みのシェーダーを指したままになります。
             // 描かない方を選びます。
             m_effect = nullptr;
-            m_inputLayout.reset();
+            m_colorInputLayouts.clear();
+            m_instancedInputLayouts.clear();
             return;
         }
-        m_inputLayout = std::move(inputLayout);
 
-        // インスタンス描画用の入力レイアウト（対応シェーダーのみ）。
-        m_instancedInputLayout.reset();
-        if (effect.SupportsInstancing()
-            && effect.InstancedVertexShaderByteCode()
-                != nullptr)
+        // インスタンス描画用の入力レイアウトもrole passごとに作ります。
+        // どれか1件でもレイアウトが合わないときは、部分的にbatch化せず
+        // 全件を通常のforward描画へ安全に倒します。
+        std::vector<std::unique_ptr<InputLayoutHolder>>
+            instancedInputLayouts;
+        const auto instancedPassCount = effect.PassCount(
+            ShaderPassRole::Instanced);
+        if (instancedPassCount != 0)
         {
             std::array<D3D11_INPUT_ELEMENT_DESC, 8>
                 elements{};
@@ -929,24 +1040,44 @@ namespace LamaPon
                 "INSTANCE_COLOR", 0, instanceFormat,
                 1, 64,
                 D3D11_INPUT_PER_INSTANCE_DATA, 1 };
-            auto* byteCode =
-                effect.InstancedVertexShaderByteCode();
-            auto instancedLayout =
-                std::make_unique<InputLayoutHolder>();
-            if (SUCCEEDED(
-                m_graphics->Device()->CreateInputLayout(
-                    elements.data(),
-                    static_cast<UINT>(elements.size()),
-                    byteCode->GetBufferPointer(),
-                    byteCode->GetBufferSize(),
-                    instancedLayout->value
-                        .ReleaseAndGetAddressOf())))
+            instancedInputLayouts.reserve(instancedPassCount);
+            for (std::size_t index = 0;
+                index < instancedPassCount;
+                ++index)
             {
-                m_instancedInputLayout =
-                    std::move(instancedLayout);
+                effect.SelectPass(
+                    ShaderPassRole::Instanced,
+                    index);
+                auto* const byteCode =
+                    effect.SelectedPassVertexShaderByteCode(
+                        ShaderPassRole::Instanced);
+                if (byteCode == nullptr)
+                {
+                    instancedInputLayouts.clear();
+                    break;
+                }
+                auto layout =
+                    std::make_unique<InputLayoutHolder>();
+                const HRESULT result =
+                    m_graphics->Device()->CreateInputLayout(
+                        elements.data(),
+                        static_cast<UINT>(elements.size()),
+                        byteCode->GetBufferPointer(),
+                        byteCode->GetBufferSize(),
+                        layout->value.ReleaseAndGetAddressOf());
+                if (FAILED(result))
+                {
+                    instancedInputLayouts.clear();
+                    break;
+                }
+                instancedInputLayouts.push_back(std::move(layout));
             }
+            effect.SelectPass(ShaderPassRole::Instanced, 0);
         }
+        effect.SelectColorPass(0);
 
+        m_colorInputLayouts = std::move(colorInputLayouts);
+        m_instancedInputLayouts = std::move(instancedInputLayouts);
         m_effect = &effect;
         m_activeShaderPath = m_material.Shader();
         m_shaderGeneration = generation;
@@ -1031,24 +1162,27 @@ namespace LamaPon
         RefreshShader(false);
         if (!m_primitive
             || m_effect == nullptr
-            || !m_inputLayout
+            || m_colorInputLayouts.empty()
             || m_graphics == nullptr)
         {
             return;
         }
 
-        // ジオメトリシェーダーを束ねたまま抜けると、スプライトや
-        // ポスト処理などGSを設定しない経路まで巻き込みます
-        // （ハル／ドメインとまったく同じ理由）。抜け道が多い関数なので
-        // RAIIで外します。
-        const GeometryShaderScope geometryScope{
-            m_effect->HasGeometryShader()
-                ? m_graphics->Context()
-                : nullptr
+        auto* const context = m_graphics->Context();
+        // LitEffectは共有物なので、前のinstanced drawが異常終了しても
+        // 通常描画は必ずforwardの先頭から始めます。scopeは全return経路で
+        // selection/flagとHS/DS/GSを戻します。
+        m_effect->SetInstancingEnabled(false);
+        m_effect->SelectColorPass(0);
+        const MaterialPassScope passScope{
+            *m_effect,
+            context,
+            ShaderPassRole::Forward
         };
 
         // 深度のみのパス（シャドウ／深度プリパス）。半透明は従来から
-        // 深度を書かないため影を落としません。
+        // 深度を書かないため影を落としません。複数のforward passを
+        // 色用に持つ場合も、深度と影はprimary（index 0）だけを使います。
         if (m_graphics->IsDepthOnlyPass())
         {
             if (m_worldOverlay
@@ -1075,7 +1209,7 @@ namespace LamaPon
                 == DepthPassKind::Prepass)
             {
                 const auto& renderState =
-                    m_effect->RenderState();
+                    m_effect->ColorPassRenderState(0);
                 if (renderState.declared
                     && (renderState.blend
                             != ShaderBlendMode::Opaque
@@ -1103,7 +1237,6 @@ namespace LamaPon
                 // 深度と影を書き込める状態へ設定します。
                 // 分割後の三角形の向きは板の指定に依らないので、
                 // 影は両面で書きます。
-                auto* context = m_graphics->Context();
                 auto& states = m_graphics->States();
                 constexpr float blendFactor[4]{};
                 context->OMSetBlendState(
@@ -1115,13 +1248,14 @@ namespace LamaPon
                     0);
                 context->RSSetState(states.CullNone());
                 ApplyCullModeOverride();
-                DrawTessellatedPatch();
+                DrawTessellatedPatch(
+                    m_colorInputLayouts.front()->value.Get());
             }
             else
             {
                 m_primitive->Draw(
                     m_effect,
-                    m_inputLayout->value.Get(),
+                    m_colorInputLayouts.front()->value.Get(),
                     false,
                     false,
                     [this]()
@@ -1155,134 +1289,224 @@ namespace LamaPon
             ResolveCustomTextureViews());
         m_effect->SetLighting(m_graphics->Lighting());
         ApplyReflectionProbe();
-        if (CanDrawTessellatedPatch())
-        {
-            auto* context = m_graphics->Context();
-            auto& states = m_graphics->States();
-            constexpr float blendFactor[4]{};
-            // 描画状態はShaderの宣言（LAMAPON_RENDER_STATE）に
-            // 従い、不透明な地形を含む各マテリアルの設定を反映します。
-            const auto& renderState = m_effect->RenderState();
-            if (renderState.declared)
-            {
-                ApplyShaderRenderState(renderState);
-            }
-            else
-            {
-                // 宣言が無いときは通常のメッシュと同じ既定へ。
-                // ベースカラーのアルファが1未満なら半透明扱い、
-                // というのも他の経路と揃えます。
-                const bool translucent =
-                    m_material.BaseColor().w < 1.0f;
-                context->OMSetBlendState(
-                    translucent
-                        ? states.NonPremultiplied()
-                        : states.Opaque(),
-                    blendFactor,
-                    0xffffffffu);
-                context->OMSetDepthStencilState(
-                    translucent
-                        ? states.DepthRead()
-                        : states.DepthDefault(),
-                    0);
-                context->RSSetState(states.CullNone());
-            }
-            // ワールドオーバーレイ（常に手前）の指定だけは、
-            // 宣言より優先します。用途が「必ず見せる」なので。
-            if (m_worldOverlay)
-            {
-                context->OMSetDepthStencilState(
-                    states.DepthNone(),
-                    0);
-            }
-            ApplyCullModeOverride();
 
-            DrawTessellatedPatch();
-            return;
-        }
-        if (m_worldOverlay)
+        // direct HLSLはColorPassCount()==1なので従来と同じ1 drawです。
+        // Manifestだけが同じforward roleを複数持ち、JSON宣言順で全件を
+        // 実行します。
+        const auto colorPassCount = m_effect->IsManifestEffect()
+            ? m_effect->ColorPassCount()
+            : 1u;
+        for (std::size_t passIndex = 0;
+            passIndex < colorPassCount;
+            ++passIndex)
         {
-            m_primitive->Draw(
-                m_effect,
-                m_inputLayout->value.Get(),
-                true,
-                false,
-                [this]()
+            if (passIndex >= m_colorInputLayouts.size()
+                || !m_colorInputLayouts[passIndex])
+            {
+                break;
+            }
+            m_effect->SelectColorPass(passIndex);
+            auto* const inputLayout =
+                m_colorInputLayouts[passIndex]->value.Get();
+            const auto& renderState =
+                m_effect->ColorPassRenderState(passIndex);
+
+            if (m_effect->SelectedPassHasTessellation(
+                    ShaderPassRole::Forward))
+            {
+                if (!CanDrawTessellatedPatch())
                 {
-                    auto* context = m_graphics->Context();
-                    auto& states = m_graphics->States();
-                    constexpr float blendFactor[4]{};
+                    continue;
+                }
+                auto& states = m_graphics->States();
+                constexpr float blendFactor[4]{};
+                // 描画状態はpassごとの宣言に従います。
+                if (renderState.declared)
+                {
+                    ApplyShaderRenderState(renderState);
+                }
+                else
+                {
+                    const bool translucent =
+                        m_material.BaseColor().w < 1.0f;
                     context->OMSetBlendState(
-                        states.NonPremultiplied(),
+                        translucent
+                            ? states.NonPremultiplied()
+                            : states.Opaque(),
                         blendFactor,
                         0xffffffffu);
                     context->OMSetDepthStencilState(
+                        translucent
+                            ? states.DepthRead()
+                            : states.DepthDefault(),
+                        0);
+                    context->RSSetState(states.CullNone());
+                }
+                // ワールドオーバーレイと明示カリングは全passへ適用します。
+                if (m_worldOverlay)
+                {
+                    context->OMSetDepthStencilState(
                         states.DepthNone(),
                         0);
-                    // 深度なしPlaneの表裏を同時に描くと、反転した画像まで
-                    // 重なります。原作と同じ表面カリングで片側だけ描画します。
-                    context->RSSetState(
-                        states.CullCounterClockwise());
-                    ApplyCullModeOverride();
-                });
-            return;
-        }
-        // Shaderが描画状態を宣言している場合は、その指定で描きます。
-        const auto& renderState = m_effect->RenderState();
-        if (renderState.declared)
-        {
+                }
+                ApplyCullModeOverride();
+                DrawTessellatedPatch(inputLayout);
+                continue;
+            }
+
+            if (m_worldOverlay)
+            {
+                m_primitive->Draw(
+                    m_effect,
+                    inputLayout,
+                    true,
+                    false,
+                    [this]()
+                    {
+                        auto* drawContext =
+                            m_graphics->Context();
+                        auto& states = m_graphics->States();
+                        constexpr float blendFactor[4]{};
+                        drawContext->OMSetBlendState(
+                            states.NonPremultiplied(),
+                            blendFactor,
+                            0xffffffffu);
+                        drawContext->OMSetDepthStencilState(
+                            states.DepthNone(),
+                            0);
+                        drawContext->RSSetState(
+                            states.CullCounterClockwise());
+                        ApplyCullModeOverride();
+                    });
+                continue;
+            }
+
+            // Shaderが描画状態を宣言している場合は、そのpassの指定で
+            // 描きます。
+            if (renderState.declared)
+            {
+                m_primitive->Draw(
+                    m_effect,
+                    inputLayout,
+                    renderState.blend
+                        != ShaderBlendMode::Opaque,
+                    false,
+                    [this, &renderState]()
+                    {
+                        ApplyShaderRenderState(renderState);
+                    });
+                continue;
+            }
             m_primitive->Draw(
                 m_effect,
-                m_inputLayout->value.Get(),
-                renderState.blend
-                    != ShaderBlendMode::Opaque,
+                inputLayout,
+                m_material.BaseColor().w < 1.0f,
                 false,
-                [this, &renderState]()
+                [this]()
                 {
-                    ApplyShaderRenderState(renderState);
+                    ApplyCullModeOverride();
                 });
-            return;
         }
-        m_primitive->Draw(
-            m_effect,
-            m_inputLayout->value.Get(),
-            m_material.BaseColor().w < 1.0f,
-            false,
-            [this]()
-            {
-                ApplyCullModeOverride();
-            });
     }
 
     bool MeshRendererComponent::IsAlphaBlended3D() const
     {
+        // GraphicsDeviceのMaterial Shader cacheはhot reload時にEffectを
+        // 置き換えます。別componentが先に更新した直後でも、下で古い
+        // raw pointerを参照しないよう、const queryの論理cacheを同期します。
+        const_cast<MeshRendererComponent*>(this)
+            ->RefreshShader(false);
         // 判定の条件は描画側（Render/RenderInstancedBatchの
         // m_primitive->Draw呼び出し）と同じものです。片方だけ
         // 直すと「並べ替えの対象から外れたのに半透明で描かれる」
         // 物ができるので、変えるときは必ず両方。
-        if (m_effect != nullptr
-            && m_effect->RenderState().declared)
+        if (m_effect != nullptr)
         {
-            const auto blend = m_effect->RenderState().blend;
-            // 加算は順番によらないので並べ替えません。
-            return blend == ShaderBlendMode::Alpha
-                || blend == ShaderBlendMode::Premultiplied;
+            bool allPassesDeclareState =
+                m_effect->ColorPassCount() != 0;
+            for (std::size_t index = 0;
+                index < m_effect->ColorPassCount();
+                ++index)
+            {
+                const auto& state =
+                    m_effect->ColorPassRenderState(index);
+                allPassesDeclareState =
+                    allPassesDeclareState && state.declared;
+                // forwardのどれか1件でも順序依存の合成なら、オブジェクトを
+                // 半透明ソートへ送ります。純加算だけなら順序不問です。
+                if (state.declared
+                    && (state.blend == ShaderBlendMode::Alpha
+                        || state.blend
+                            == ShaderBlendMode::Premultiplied))
+                {
+                    return true;
+                }
+            }
+            if (allPassesDeclareState)
+            {
+                return false;
+            }
         }
         // Shaderがまだ用意できていないときは不透明として扱います。
         // 描画側もその状態では宣言を読めないので、揃います。
         return m_material.BaseColor().w < 1.0f;
     }
 
-    bool MeshRendererComponent::CanBeInstanced()
-        const noexcept
+    bool MeshRendererComponent::CanBeInstanced() const
     {
-        return !m_worldOverlay
-            && !HasProceduralMesh()
-            && m_primitive != nullptr
-            && m_effect != nullptr
-            && m_effect->SupportsInstancing()
-            && m_instancedInputLayout != nullptr
-            && m_graphics != nullptr;
+        // Sceneは個別OnRender3Dより前にこの判定を呼びます。共有Effectが
+        // 他componentのhot reloadで置換済みでも、能力参照より先に
+        // generationとraw pointerを更新します。
+        const_cast<MeshRendererComponent*>(this)
+            ->RefreshShader(false);
+        if (m_worldOverlay
+            || HasProceduralMesh()
+            || m_primitive == nullptr
+            || m_effect == nullptr
+            || !m_effect->SupportsInstancing()
+            || m_instancedInputLayouts.empty()
+            || m_instancedInputLayouts.size()
+                != m_effect->PassCount(
+                    ShaderPassRole::Instanced)
+            || !std::ranges::all_of(
+                m_instancedInputLayouts,
+                [](const auto& layout)
+                {
+                    return layout != nullptr
+                        && layout->value != nullptr;
+                })
+            || m_graphics == nullptr)
+        {
+            return false;
+        }
+
+        bool hasOrderDependentInstancedPass{};
+        for (std::size_t index = 0;
+            index < m_effect->PassCount(
+                ShaderPassRole::Instanced);
+            ++index)
+        {
+            m_effect->SelectPass(
+                ShaderPassRole::Instanced,
+                index);
+            const auto& state =
+                m_effect->SelectedPassRenderState(
+                    ShaderPassRole::Instanced);
+            // Alpha系のinstanceは個別オブジェクト単位で奥から並べる
+            // 必要があり、1 drawのbatchでは正しい合成順を作れません。
+            const bool orderDependent = state.declared
+                ? state.blend == ShaderBlendMode::Alpha
+                    || state.blend
+                        == ShaderBlendMode::Premultiplied
+                : m_material.BaseColor().w < 1.0f;
+            if (orderDependent)
+            {
+                hasOrderDependentInstancedPass = true;
+                break;
+            }
+        }
+        m_effect->SelectPass(ShaderPassRole::Instanced, 0);
+        return !hasOrderDependentInstancedPass;
     }
 
     std::uint64_t
@@ -1317,22 +1541,44 @@ namespace LamaPon
                 const std::filesystem::path& path)
         {
             const auto& native = path.native();
+            const auto byteCount = native.size()
+                * sizeof(
+                    std::filesystem::path::value_type);
+            combineBytes(&byteCount, sizeof(byteCount));
             combineBytes(
                 native.data(),
-                native.size()
-                    * sizeof(
-                        std::filesystem::path::
-                            value_type));
+                byteCount);
+        };
+        const auto combineString =
+            [&combineBytes](const std::string& value) noexcept
+        {
+            const auto byteCount = value.size();
+            combineBytes(&byteCount, sizeof(byteCount));
+            combineBytes(value.data(), value.size());
         };
         const auto shape =
             static_cast<std::uint32_t>(m_shape);
         combineBytes(&shape, sizeof(shape));
         combinePath(m_material.Shader());
+        for (const auto& keyword :
+            m_material.ShaderKeywords().Keywords())
+        {
+            combineString(keyword);
+            constexpr unsigned char separator = 0xff;
+            combineBytes(&separator, sizeof(separator));
+        }
         combinePath(m_material.AlbedoTexture());
         combinePath(m_material.NormalTexture());
+        combinePath(m_material.RoughnessTexture());
+        combinePath(m_material.MetallicTexture());
+        combinePath(m_material.OcclusionTexture());
+        combinePath(m_material.EmissiveTexture());
         combineFloat(m_material.Roughness());
         combineFloat(m_material.NormalStrength());
         combineFloat(m_material.Metallic());
+        combineFloat(m_material.OcclusionStrength());
+        const auto& emissive = m_material.EmissiveColor();
+        combineBytes(&emissive, sizeof(emissive));
         const bool alpha =
             m_material.BaseColor().w < 1.0f;
         combineBytes(&alpha, sizeof(alpha));
@@ -1344,6 +1590,23 @@ namespace LamaPon
         {
             combineBytes(&parameter, sizeof(parameter));
         }
+        for (const auto& value :
+            m_material.CustomVectors())
+        {
+            combineBytes(&value, sizeof(value));
+        }
+        for (const auto& texture :
+            m_material.CustomTextures())
+        {
+            combinePath(texture);
+            constexpr unsigned char separator = 0xfe;
+            combineBytes(&separator, sizeof(separator));
+        }
+        // 同じpathでもホットリロードの入れ替え途中は
+        // 異なるEffectを1batchに混ぜません。
+        const auto effectIdentity = reinterpret_cast<
+            std::uintptr_t>(m_effect);
+        combineBytes(&effectIdentity, sizeof(effectIdentity));
         return hash;
     }
 
@@ -1352,8 +1615,41 @@ namespace LamaPon
         DirectX::FXMMATRIX view,
         DirectX::CXMMATRIX projection)
     {
-        RefreshShader(false);
-        if (batch.empty() || !CanBeInstanced())
+        if (batch.empty())
+        {
+            return;
+        }
+        // 個別OnRender3Dは成功したbatchでskipされます。共有cacheが
+        // hot reloadでeffectを置換すると他componentの旧pointerも
+        // 無効になるため、dereferenceより先にbatch全体を更新します。
+        bool refreshedThis{};
+        for (auto* const component : batch)
+        {
+            if (component == nullptr)
+            {
+                return;
+            }
+            component->RefreshShader(false);
+            refreshedThis = refreshedThis || component == this;
+        }
+        if (!refreshedThis)
+        {
+            RefreshShader(false);
+        }
+        if (!CanBeInstanced())
+        {
+            return;
+        }
+        const auto refreshedBatchKey = InstanceBatchKey();
+        if (std::ranges::any_of(
+            batch,
+            [refreshedBatchKey](
+                const MeshRendererComponent* const component)
+            {
+                return !component->CanBeInstanced()
+                    || component->InstanceBatchKey()
+                        != refreshedBatchKey;
+            }))
         {
             return;
         }
@@ -1408,46 +1704,69 @@ namespace LamaPon
         m_effect->SetCustomTextures(
             ResolveCustomTextureViews());
         m_effect->SetLighting(m_graphics->Lighting());
-        // インスタンスバッチは1回のDrawなので、代表として自分の
+        // 各role passは同じインスタンス群を描くので、代表として自分の
         // 位置のプローブを使います（バッチは同じ形状・マテリアルの
         // 集まりで、たいてい近くに固まっているため）。
         ApplyReflectionProbe();
+        auto* const context = m_graphics->Context();
+        const MaterialPassScope passScope{
+            *m_effect,
+            context,
+            ShaderPassRole::Instanced
+        };
+        m_effect->SetTessellationDrawEnabled(false);
         m_effect->SetInstancingEnabled(true);
-        auto* context = m_graphics->Context();
-        // バッチキーにはShaderが含まれるため、バッチ内の宣言は同じです。
-        // 描画状態はバッチごとに1回だけ適用します。
-        const auto& renderState = m_effect->RenderState();
-        m_primitive->DrawInstanced(
-            m_effect,
-            m_instancedInputLayout->value.Get(),
-            static_cast<std::uint32_t>(instances.size()),
-            renderState.declared
-                ? renderState.blend != ShaderBlendMode::Opaque
-                : m_material.BaseColor().w < 1.0f,
-            false,
-            0,
-            [this, context, instanceBuffer, &renderState]
+
+        // direct HLSLは従来どおり1件、Manifestはinstanced roleを
+        // JSON順にすべてDrawInstancedします。
+        const auto passCount = m_effect->PassCount(
+            ShaderPassRole::Instanced);
+        for (std::size_t passIndex = 0;
+            passIndex < passCount;
+            ++passIndex)
+        {
+            if (passIndex >= m_instancedInputLayouts.size()
+                || !m_instancedInputLayouts[passIndex])
             {
-                ID3D11Buffer* buffers[]{ instanceBuffer };
-                const UINT strides[]{
-                    sizeof(InstanceData) };
-                const UINT offsets[]{ 0 };
-                context->IASetVertexBuffers(
-                    1,
-                    1,
-                    buffers,
-                    strides,
-                    offsets);
-                if (renderState.declared)
+                break;
+            }
+            m_effect->SelectPass(
+                ShaderPassRole::Instanced,
+                passIndex);
+            const auto& renderState =
+                m_effect->SelectedPassRenderState(
+                    ShaderPassRole::Instanced);
+            m_primitive->DrawInstanced(
+                m_effect,
+                m_instancedInputLayouts[passIndex]->value.Get(),
+                static_cast<std::uint32_t>(instances.size()),
+                renderState.declared
+                    ? renderState.blend != ShaderBlendMode::Opaque
+                    : m_material.BaseColor().w < 1.0f,
+                false,
+                0,
+                [this, context, instanceBuffer, &renderState]
                 {
-                    ApplyShaderRenderState(renderState);
-                }
-                else
-                {
-                    ApplyCullModeOverride();
-                }
-            });
-        m_effect->SetInstancingEnabled(false);
+                    ID3D11Buffer* buffers[]{ instanceBuffer };
+                    const UINT strides[]{
+                        sizeof(InstanceData) };
+                    const UINT offsets[]{ 0 };
+                    context->IASetVertexBuffers(
+                        1,
+                        1,
+                        buffers,
+                        strides,
+                        offsets);
+                    if (renderState.declared)
+                    {
+                        ApplyShaderRenderState(renderState);
+                    }
+                    else
+                    {
+                        ApplyCullModeOverride();
+                    }
+                });
+        }
 
         // このパスの個別描画をスキップさせます。
         for (auto* component : batch)

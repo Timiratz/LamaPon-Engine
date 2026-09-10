@@ -703,6 +703,77 @@ namespace
 
 namespace LamaPon
 {
+    bool GltfImporter::RequiresSkinning(
+        AssetManager& assets,
+        const std::filesystem::path& path,
+        bool* const requiresForwardRole)
+    {
+        if (requiresForwardRole != nullptr)
+        {
+            *requiresForwardRole = false;
+        }
+        const auto sourceBytes = assets.ReadFileBytes(path);
+        cgltf_options options{};
+        cgltf_data* rawData{};
+        const auto parseResult = cgltf_parse(
+            &options,
+            sourceBytes.data(),
+            sourceBytes.size(),
+            &rawData);
+        if (parseResult != cgltf_result_success)
+        {
+            throw std::runtime_error(
+                "Failed to inspect glTF skinning: "
+                + ResultName(parseResult));
+        }
+        const std::unique_ptr<cgltf_data, decltype(&cgltf_free)>
+            data(rawData, &cgltf_free);
+
+        // Load()がSkeletalPrimitiveを作る条件と揃え、全primitiveを
+        // 調べます。1モデル内にskin付き／skin無しnodeが混在すると、
+        // ModelRendererはSkinnedとForwardの両roleを使います。
+        bool requiresSkinnedRole{};
+        bool foundForwardRole{};
+        for (cgltf_size nodeIndex = 0;
+            nodeIndex < data->nodes_count;
+            ++nodeIndex)
+        {
+            const auto& node = data->nodes[nodeIndex];
+            if (node.mesh == nullptr)
+            {
+                continue;
+            }
+            for (cgltf_size primitiveIndex = 0;
+                primitiveIndex < node.mesh->primitives_count;
+                ++primitiveIndex)
+            {
+                const auto& primitive =
+                    node.mesh->primitives[primitiveIndex];
+                const auto* positions = FindAttribute(
+                    primitive,
+                    cgltf_attribute_type_position);
+                if (primitive.type == cgltf_primitive_type_triangles
+                    && positions != nullptr
+                    && positions->count != 0)
+                {
+                    if (node.skin != nullptr)
+                    {
+                        requiresSkinnedRole = true;
+                    }
+                    else
+                    {
+                        foundForwardRole = true;
+                    }
+                }
+            }
+        }
+        if (requiresForwardRole != nullptr)
+        {
+            *requiresForwardRole = foundForwardRole;
+        }
+        return requiresSkinnedRole;
+    }
+
     std::shared_ptr<SkeletalModel> GltfImporter::Load(
         ID3D11Device* device,
         ID3D11DeviceContext* context,

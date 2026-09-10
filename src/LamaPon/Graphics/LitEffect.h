@@ -4,6 +4,8 @@
 #include "LamaPon/Graphics/LitMaterial.h"
 #include "LamaPon/Graphics/PbrTextures.h"
 #include "LamaPon/Graphics/ReflectionProbeEnvironment.h"
+#include "LamaPon/Graphics/ShaderManifest.h"
+#include "LamaPon/Graphics/ShaderProgram.h"
 #include "LamaPon/Graphics/ShaderRenderState.h"
 
 #include <Effects.h>
@@ -105,50 +107,58 @@ namespace LamaPon
         {
             return m_skinned;
         }
-        [[nodiscard]] bool HasOutline() const noexcept
+        [[nodiscard]] bool IsManifestEffect() const noexcept
         {
-            return m_outlineVertexShader != nullptr
-                && m_outlinePixelShader != nullptr;
+            return m_manifestEffect;
         }
-        [[nodiscard]] bool HasOccludedPass() const noexcept
-        {
-            return m_occludedPixelShader != nullptr
-                && m_occludedDepthState != nullptr;
-        }
+        [[nodiscard]] bool HasOutline() const noexcept;
+        [[nodiscard]] bool HasOccludedPass() const noexcept;
+
+        // Manifestでは同じroleを複数回宣言できます。各role内の順序は
+        // JSONのpasses配列の順序です。direct .hlslも主passを1件として
+        // 公開するため、rendererは同じ列挙経路を使えます。
+        [[nodiscard]] std::size_t PassCount(
+            ShaderPassRole role) const noexcept;
+        void SelectPass(ShaderPassRole role, std::size_t index);
+        [[nodiscard]] const ShaderRenderState&
+            SelectedPassRenderState(ShaderPassRole role) const;
+        [[nodiscard]] ID3DBlob* SelectedPassVertexShaderByteCode(
+            ShaderPassRole role) const noexcept;
+        [[nodiscard]] bool SelectedPassHasTessellation(
+            ShaderPassRole role) const noexcept;
+        [[nodiscard]] bool SelectedPassHasGeometryShader(
+            ShaderPassRole role) const noexcept;
+
+        // 通常の色描画（static=forward、skinned=skinned）向けの
+        // convenience APIです。depth-onlyは選択に関係なくindex 0を
+        // 使用します。
+        [[nodiscard]] std::size_t ColorPassCount() const noexcept;
+        void SelectColorPass(std::size_t index);
+        [[nodiscard]] const ShaderRenderState& ColorPassRenderState(
+            std::size_t index) const;
+        [[nodiscard]] ID3DBlob* ColorPassVertexShaderByteCode(
+            std::size_t index) const noexcept;
         // Shaderが宣言した描画状態（半透明・カリング・深度）。
         // 宣言が無ければ既定値（不透明・裏面カリング・深度書き込み）
         // です。レンダラーがDraw前に適用します。
         [[nodiscard]] const ShaderRenderState&
-            RenderState() const noexcept
-        {
-            return m_renderState;
-        }
+            RenderState() const noexcept;
 
-        [[nodiscard]] bool HasTessellation() const noexcept
-        {
-            return m_hullShader != nullptr
-                && m_domainShader != nullptr;
-        }
+        [[nodiscard]] bool HasTessellation() const noexcept;
 
         // GSMainを書いたShaderか。テセレーションと違って束ねる条件は
         // 「持っているか」で判定できます。エンジンが渡すのは常に三角形で、
         // 三角形入力でないGSはコンパイル時に弾いているためです。
         // ただし束ねたまま抜けないことは呼ぶ側の責任です
         // （スプライトやポスト処理まで巻き込みます）。
-        [[nodiscard]] bool HasGeometryShader() const noexcept
-        {
-            return m_geometryShader != nullptr;
-        }
+        [[nodiscard]] bool HasGeometryShader() const noexcept;
         void ApplyOutline(ID3D11DeviceContext* deviceContext);
         void ApplyOccluded(ID3D11DeviceContext* deviceContext);
         void ApplyPixelOnly(ID3D11DeviceContext* deviceContext);
 
         // インスタンス描画対応（VSInstancedMainを定義するシェーダー
         // のみ）。有効化するとApplyがインスタンス用VSを使います。
-        [[nodiscard]] bool SupportsInstancing() const noexcept
-        {
-            return m_instancedVertexShader != nullptr;
-        }
+        [[nodiscard]] bool SupportsInstancing() const noexcept;
         void SetInstancingEnabled(const bool enabled) noexcept
         {
             m_instancingEnabled =
@@ -156,10 +166,7 @@ namespace LamaPon
         }
         // インスタンス用入力レイアウト作成に使うバイトコード。
         [[nodiscard]] ID3DBlob*
-            InstancedVertexShaderByteCode() const noexcept
-        {
-            return m_instancedVertexShaderByteCode.Get();
-        }
+            InstancedVertexShaderByteCode() const noexcept;
         // 深度専用描画（シャドウパス用）。有効中のApplyは
         // ピクセルシェーダーとライティングを省略します。
         void SetDepthOnlyEnabled(
@@ -185,6 +192,25 @@ namespace LamaPon
             std::size_t* byteCodeLength) override;
 
     private:
+        struct ManifestPass final
+        {
+            std::string name;
+            ShaderProgram program;
+            ShaderRenderState renderState;
+        };
+
+        [[nodiscard]] static std::size_t RoleIndex(
+            ShaderPassRole role) noexcept;
+        [[nodiscard]] ShaderPassRole PrimaryRole() const noexcept;
+        [[nodiscard]] ShaderPassRole OutlineRole() const noexcept;
+        [[nodiscard]] const ManifestPass* ManifestPassAt(
+            ShaderPassRole role,
+            std::size_t index) const noexcept;
+        [[nodiscard]] const ManifestPass* SelectedManifestPass(
+            ShaderPassRole role) const noexcept;
+        [[nodiscard]] const ShaderProgram* ActiveManifestProgram(
+            bool primaryOnly = false) const noexcept;
+
         [[nodiscard]] ID3D11SamplerState*
             ActiveMaterialSampler() const noexcept;
         // 法線マップとPBRマップの有効フラグを、実際にバインドされて
@@ -377,6 +403,11 @@ namespace LamaPon
         Microsoft::WRL::ComPtr<ID3DBlob> m_vertexShaderByteCode;
         Microsoft::WRL::ComPtr<ID3DBlob>
             m_instancedVertexShaderByteCode;
+        std::array<
+            std::vector<ManifestPass>,
+            ShaderPassRoleCount> m_manifestPasses;
+        std::array<std::size_t, ShaderPassRoleCount>
+            m_selectedManifestPasses{};
         Microsoft::WRL::ComPtr<ID3D11Buffer> m_objectBuffer;
         Microsoft::WRL::ComPtr<ID3D11Buffer> m_lightingBuffer;
         Microsoft::WRL::ComPtr<ID3D11Buffer> m_boneBuffer;
@@ -433,6 +464,11 @@ namespace LamaPon
         BoneConstants m_boneConstants;
         CustomVectorConstants m_customVectorConstants;
         bool m_skinned{};
+        bool m_manifestEffect{};
+        bool m_manifestRoleOverride{};
+        ShaderPassRole m_manifestOverrideRole{
+            ShaderPassRole::Forward
+        };
         bool m_instancingEnabled{};
         bool m_depthOnly{};
         bool m_tessellationDraw{};

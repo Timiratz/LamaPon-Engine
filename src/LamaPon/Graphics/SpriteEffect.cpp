@@ -35,7 +35,7 @@ namespace
         LamaPon::AssetManager& assets,
         const std::filesystem::path& path)
     {
-        if (!assets.FileExists(path))
+        if (!assets.FileExists(path) && !assets.IsArchived())
         {
             throw std::runtime_error(
                 "Sprite shader file was not found: "

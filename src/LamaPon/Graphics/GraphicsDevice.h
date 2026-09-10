@@ -18,6 +18,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace DirectX
@@ -145,13 +146,15 @@ namespace LamaPon
             ScreenEffectPoint::AfterToneMapping };
     };
 
-    // 自作Compute Shader（CSMain）を1回走らせる要求です。
+    // 自作Compute Shaderを1回走らせる要求です。直接HLSLはCSMain、
+    // compute manifestは宣言されたentry/targetを使います。
     // 結果は名前付きテクスチャへ書かれるので、SpriteRendererや
     // UI Imageの「レンダーテクスチャ」に同じ名前を入れれば
     // そのまま表示できます。
     struct ComputeEffectRequest final
     {
-        // assetsからの相対パス。CSMainを持つHLSL。
+        // assetsからの相対パス。直接HLSLはCSMain、compute manifestは
+        // 選択されたpassのentry/targetを使います。
         std::filesystem::path shader;
         // 書き込み先の名前。無ければ作られます。
         std::string outputTexture;
@@ -450,6 +453,9 @@ namespace LamaPon
             const std::filesystem::path& shaderPath) const;
         // 次回の3D画面合成で実行するポストエフェクトを末尾へ追加します。
         // 複数回呼ぶと、登録順に前の結果を次の入力として処理します。
+        // trueはqueueできたことを表します。hot reloadに失敗して直前の
+        // 正常版をqueueした場合もtrueなので、errorは戻り値とは独立して
+        // 確認してください。
         bool QueueScreenEffect(
             const ScreenEffectRequest& request,
             std::uint64_t* generation = nullptr,
@@ -459,8 +465,9 @@ namespace LamaPon
         // 自作Compute Shaderをその場で1回走らせます。ScreenEffectと
         // 違って積まずに即実行するのは、書き込み先が画面ではなく
         // 名前付きテクスチャで、ポスト処理の並びと無関係なためです。
-        // 失敗したらfalseを返し、errorへ理由が入ります（コンパイル
-        // エラーでも直前の正常なシェーダーは保持します）。
+        // trueはdispatchを実行できたことを表します。hot reloadに失敗
+        // して直前の正常版を実行した場合もtrueなので、errorは戻り値と
+        // 独立して確認してください。実行できなければfalseです。
         bool DispatchComputeEffect(
             const ComputeEffectRequest& request,
             std::string* error = nullptr);
@@ -657,6 +664,11 @@ namespace LamaPon
             std::filesystem::path,
             ShaderVariantDeclaration>
             m_shaderVariants;
+        // ソースを外した配布アーカイブではManifestから#pragmaを
+        // 読めません。その場合だけ、保存済みkeywordを落とさず
+        // shader-cacheの索引へ渡します。
+        mutable std::unordered_set<std::filesystem::path>
+            m_materialVariantSourcesUnavailable;
         bool m_asyncShaderCompilation{ true };
         mutable std::uint64_t
             m_materialShaderGeneration{};

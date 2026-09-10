@@ -110,6 +110,9 @@ namespace LamaPon
         AssetManager& operator=(const AssetManager&) = delete;
 
         void SetAssetRoot(std::filesystem::path assetRoot);
+        void SetAssetRoot(
+            std::filesystem::path assetRoot,
+            bool createMissingMeta);
         [[nodiscard]] const std::filesystem::path& AssetRoot() const noexcept { return m_assetRoot; }
         [[nodiscard]] std::filesystem::path ResolvePath(const std::filesystem::path& path) const;
 
@@ -123,6 +126,10 @@ namespace LamaPon
         // 開かないことで、エディターの展開済みファイルと、配布ゲームの
         // 暗号化アーカイブを呼び出し側から同じように扱えます。
         [[nodiscard]] std::vector<std::uint8_t> ReadFileBytes(
+            const std::filesystem::path& path) const;
+        // ホットリロード対象向け。Scene prefetchに保持されたsnapshotを
+        // 使わず、loose fileまたは配布archiveの現在内容を読みます。
+        [[nodiscard]] std::vector<std::uint8_t> ReadFileBytesFresh(
             const std::filesystem::path& path) const;
         [[nodiscard]] bool FileExists(
             const std::filesystem::path& path) const;

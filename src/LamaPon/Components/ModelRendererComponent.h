@@ -490,10 +490,31 @@ namespace LamaPon
             m_commonLitResources;
         LitEffect* m_effect{};
         LitEffect* m_skinnedEffect{};
+        // 1つのglTF/FBXにskin有無が混在する場合、Manifestの
+        // skinned roleとforward roleをプリミティブごとに使い分けます。
+        LitEffect* m_skeletalForwardEffect{};
         Microsoft::WRL::ComPtr<ID3D11InputLayout>
             m_skinnedInputLayout;
+        // glTF/FBXのManifest描画はrole passごとにVSが異なる
+        // ため、通常色と輪郭の入力レイアウトを分けて
+        // JSON順に保持します。direct HLSLは従来の単1件
+        // (m_skinnedInputLayout)を使います。
+        std::vector<Microsoft::WRL::ComPtr<ID3D11InputLayout>>
+            m_skeletalColorInputLayouts;
+        std::vector<Microsoft::WRL::ComPtr<ID3D11InputLayout>>
+            m_skeletalOutlineInputLayouts;
+        std::vector<Microsoft::WRL::ComPtr<ID3D11InputLayout>>
+            m_skeletalForwardColorInputLayouts;
+        std::vector<Microsoft::WRL::ComPtr<ID3D11InputLayout>>
+            m_skeletalForwardOutlineInputLayouts;
+        // インスタンス用VSもrole内で複数持てるため、
+        // 共有SkeletalPrimitiveではなくShaderを選択した
+        // component側にpass別layoutを持ちます。
+        std::vector<Microsoft::WRL::ComPtr<ID3D11InputLayout>>
+            m_instancedInputLayouts;
         std::filesystem::path m_activeShaderPath;
         std::uint64_t m_shaderGeneration{};
+        std::uint64_t m_skeletalForwardShaderGeneration{};
         std::string m_shaderError;
         bool m_wireframe{};
         bool m_materialOverrideEnabled{};

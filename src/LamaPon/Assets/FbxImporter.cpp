@@ -135,6 +135,34 @@ namespace
         return buffer.data();
     }
 
+    ufbx_load_opts MakeLoadOptions(
+        const std::string_view utf8Path)
+    {
+        ufbx_load_opts options{};
+        options.filename = {
+            utf8Path.data(),
+            utf8Path.size()
+        };
+        options.target_axes =
+            ufbx_axes_right_handed_y_up;
+        options.target_unit_meters = 1.0f;
+        options.space_conversion =
+            UFBX_SPACE_CONVERSION_MODIFY_GEOMETRY;
+        options.geometry_transform_handling =
+            UFBX_GEOMETRY_TRANSFORM_HANDLING_MODIFY_GEOMETRY;
+        options.inherit_mode_handling =
+            UFBX_INHERIT_MODE_HANDLING_HELPER_NODES;
+        options.pivot_handling =
+            UFBX_PIVOT_HANDLING_ADJUST_TO_PIVOT;
+        options.clean_skin_weights = true;
+        options.generate_missing_normals = true;
+        options.normalize_normals = true;
+        options.normalize_tangents = true;
+        options.use_blender_pbr_material = true;
+        options.node_depth_limit = 512;
+        return options;
+    }
+
     void ThrowIfFailed(
         const HRESULT result,
         const std::string& operation)
@@ -1287,6 +1315,85 @@ namespace
 
 namespace LamaPon
 {
+    bool FbxImporter::RequiresSkinning(
+        AssetManager& assets,
+        const std::filesystem::path& path,
+        bool* const requiresForwardRole)
+    {
+        if (requiresForwardRole != nullptr)
+        {
+            *requiresForwardRole = false;
+        }
+        if (!assets.FileExists(path))
+        {
+            throw std::runtime_error(
+                "Unable to open FBX file: "
+                + PathToUtf8(path));
+        }
+        const auto bytes = assets.ReadFileBytes(path);
+        if (bytes.empty())
+        {
+            throw std::runtime_error("FBX file is empty.");
+        }
+
+        const auto utf8Path = PathToUtf8(path);
+        const auto options = MakeLoadOptions(utf8Path);
+        ufbx_error error{};
+        const std::unique_ptr<ufbx_scene, SceneDeleter> scene(
+            ufbx_load_memory(
+                bytes.data(),
+                bytes.size(),
+                &options,
+                &error));
+        if (!scene)
+        {
+            throw std::runtime_error(
+                "Failed to inspect FBX skinning: "
+                + FormatError(error));
+        }
+
+        // Load()がStagingPartを作る条件と揃え、全partを調べます。
+        // 1モデル内にskin付き／skin無しmeshが混在すると、実行時は
+        // SkinnedとForwardの両roleを使います。
+        bool requiresSkinnedRole{};
+        bool foundForwardRole{};
+        for (std::size_t nodeIndex = 0;
+            nodeIndex < scene->nodes.count;
+            ++nodeIndex)
+        {
+            const auto* node = scene->nodes.data[nodeIndex];
+            const auto* mesh = node->mesh;
+            if (mesh == nullptr
+                || !node->visible)
+            {
+                continue;
+            }
+            for (std::size_t partIndex = 0;
+                partIndex < mesh->material_parts.count;
+                ++partIndex)
+            {
+                if (mesh->material_parts.data[partIndex]
+                        .num_triangles == 0)
+                {
+                    continue;
+                }
+                if (mesh->skin_deformers.count != 0)
+                {
+                    requiresSkinnedRole = true;
+                }
+                else
+                {
+                    foundForwardRole = true;
+                }
+            }
+        }
+        if (requiresForwardRole != nullptr)
+        {
+            *requiresForwardRole = foundForwardRole;
+        }
+        return requiresSkinnedRole;
+    }
+
     std::shared_ptr<SkeletalModel> FbxImporter::Load(
         ID3D11Device* device,
         ID3D11DeviceContext* context,
@@ -1333,28 +1440,7 @@ namespace LamaPon
         ModelCache::Recorder recorder;
 
         const std::string utf8Path = PathToUtf8(path);
-        ufbx_load_opts options{};
-        options.filename = {
-            utf8Path.data(),
-            utf8Path.size()
-        };
-        options.target_axes =
-            ufbx_axes_right_handed_y_up;
-        options.target_unit_meters = 1.0f;
-        options.space_conversion =
-            UFBX_SPACE_CONVERSION_MODIFY_GEOMETRY;
-        options.geometry_transform_handling =
-            UFBX_GEOMETRY_TRANSFORM_HANDLING_MODIFY_GEOMETRY;
-        options.inherit_mode_handling =
-            UFBX_INHERIT_MODE_HANDLING_HELPER_NODES;
-        options.pivot_handling =
-            UFBX_PIVOT_HANDLING_ADJUST_TO_PIVOT;
-        options.clean_skin_weights = true;
-        options.generate_missing_normals = true;
-        options.normalize_normals = true;
-        options.normalize_tangents = true;
-        options.use_blender_pbr_material = true;
-        options.node_depth_limit = 512;
+        const auto options = MakeLoadOptions(utf8Path);
 
         ufbx_error error{};
         std::unique_ptr<ufbx_scene, SceneDeleter> scene(

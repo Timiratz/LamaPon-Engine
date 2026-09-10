@@ -1,5 +1,6 @@
 #include "LamaPon/Assets/AssetPacker.h"
 
+#include "LamaPon/Assets/AssetDatabase.h"
 #include "LamaPon/Core/Crypto.h"
 #include "LamaPon/Core/PathUtils.h"
 
@@ -20,11 +21,6 @@ namespace
     constexpr std::array<char, 8> ArchiveMagic{
         'T', 'R', 'D', 'N', 'P', 'A', 'K', '2'
     };
-
-    bool IsMetaFile(const std::filesystem::path& path)
-    {
-        return path.extension() == L".meta";
-    }
 
     // AssetDatabase側と同じ判定です（一時ファイルと、移行が残した
     // <名前>.bakバックアップは書き出しに含めません）。
@@ -80,7 +76,8 @@ namespace LamaPon
         const std::filesystem::path& sourceDirectory,
         const std::filesystem::path& archiveOutputPath,
         const Crypto::AesKey& key,
-        const std::vector<std::wstring>& skipExtensions)
+        const std::vector<std::wstring>& skipExtensions,
+        const AssetPackTransform& transform)
     {
         if (!std::filesystem::is_directory(sourceDirectory))
         {
@@ -149,14 +146,19 @@ namespace LamaPon
                 }
             }
             const auto& path = iterator->path();
-            if (IsMetaFile(path) || IsTemporaryAssetFile(path))
+            if (LamaPon::AssetDatabase::IsMetaFile(path)
+                || IsTemporaryAssetFile(path))
             {
                 continue;
             }
 
             const auto relativePath =
                 path.lexically_relative(sourceDirectory);
-            const auto plainBytes = ReadWholeFile(path);
+            auto plainBytes = ReadWholeFile(path);
+            if (transform)
+            {
+                transform(relativePath, plainBytes);
+            }
             const auto iv = Crypto::RandomIv();
             auto cipherText = Crypto::AesEncrypt(
                 plainBytes,

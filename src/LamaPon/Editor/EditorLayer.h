@@ -179,13 +179,15 @@ namespace LamaPon
         void DrawPerformancePanel(bool& open);
         void DrawPersistencePanel(bool& open);
         // カスタムShaderのパラメーターUI。Shaderに
-        // LAMAPON_PROPERTIES宣言があれば名前付きのUIを生成し、
+        // LAMAPON_PROPERTIESまたはShader Manifestのproperties宣言が
+        // あれば名前付きのUIを生成し、
         // 無ければ生のfloat4を8本編集する従来のUIを出します。
-        // 変更があればtrueを返します。
+        // 値変更とUndo確定を分けて返します。
         [[nodiscard]] const ShaderProperties&
             ShaderPropertiesFor(
                 const std::filesystem::path& shaderPath);
-        [[nodiscard]] bool DrawCustomShaderParameters(
+        [[nodiscard]] ShaderPropertyEditResult
+            DrawCustomShaderParameters(
             const std::filesystem::path& shaderPath,
             const char* identifier,
             const std::function<
@@ -374,7 +376,8 @@ namespace LamaPon
         void LoadModelInspectorDraft();
         [[nodiscard]] bool DrawShaderAssetSelector(
             const char* label,
-            std::filesystem::path& shaderPath);
+            std::filesystem::path& shaderPath,
+            bool allowMaterialManifests = false);
         [[nodiscard]] bool DrawTextureAssetSelector(
             const char* label,
             std::filesystem::path& texturePath);

@@ -1,10 +1,9 @@
 # カスタムShader（HLSL）
 
-HLSLで見た目を拡張する方法を説明します。
-3Dマテリアル、2Dスプライト／パーティクル、画面全体のポストエフェクトに対応し、いずれも保存するだけで反映できます。
+HLSLとShader Manifestで見た目を拡張する方法を説明します。
+3Dマテリアル、2Dスプライト／パーティクル、画面全体のポストエフェクト、ComputeEffectに対応し、保存した変更は最大250ms間隔の監視で検出された後に反映されます。
 
-書けるシェーダーステージは**頂点・ピクセル・ハル・ドメイン・コンピュート**の5つです（ハルとドメイン＝[テセレーション](#テセレーションhsmaindsmain)、コンピュートは[ComputeEffect](#コンピュートシェーダーcomputeeffect)）。
-ジオメトリシェーダーだけ未対応です。
+書けるシェーダーステージは**頂点・ピクセル・ジオメトリ・ハル・ドメイン・コンピュート**の6つです（ハルとドメイン＝[テセレーション](#テセレーションhsmaindsmain)、コンピュートは[ComputeEffect](#コンピュートシェーダーcomputeeffect)）。
 
 [← ドキュメント一覧へ戻る](index.md)
 
@@ -17,6 +16,7 @@ HLSLで見た目を拡張する方法を説明します。
 | **Inspectorに名前付きの調整UIを出す** | [シェーダー宣言](#シェーダー宣言hlslへ書く設定) |
 | **半透明・加算・両面描画にする** | [描画状態を指定する](#描画状態を指定する) |
 | **マスクなどテクスチャを増やす** | [テクスチャを増やす](#テクスチャを増やす) |
+| **入口名・複数pass・用途をJSONで定義する** | [Shader Manifest](#shader-manifestlamashaderjson) |
 | スプライトやパーティクルに使う | [2DカスタムShader](#2dカスタムshaderスプライトパーティクル) |
 | 画面全体を加工する | [ScreenEffect](#画面全体のポストエフェクトscreeneffect) |
 | 保存しても反映されない | [ホットリロード](#ホットリロードとエラー表示)／[よくあるつまずき](#よくあるつまずき) |
@@ -30,7 +30,7 @@ Shaderを共有Materialとして保存すれば、Prefabやパッケージで配
   `VSMain`／`PSMain`を持つ編集可能な雛形（Shader Model 5.0）が作られます。
 2. HLSLをダブルクリックしてコードエディターで開き、`PSMain`の返す色を
   少し変えて保存します。
-  **実行中でも保存した瞬間に反映されます。**（どのエディターで開くかは「ファイル」→「プロジェクト設定とビルド...」→「スクリプト」で選べます。
+  **実行中でも、保存後に最大250ms間隔の監視が検出すると反映されます。**（どのエディターで開くかは「ファイル」→「プロジェクト設定とビルド...」→「スクリプト」で選べます。
   ）
 3. HLSLファイルをMesh Renderer／Model RendererのInspectorへドラッグすると、
   そのMaterialのShaderになります。
@@ -190,9 +190,19 @@ Texture2D MaskTexture : register(t7);
 その際は**配列サイズや末尾の`float4 ShadowTexelSizes;`まで正確に一致**させてください（エンジン更新でレイアウトは末尾へ伸びることがあり、`LamaPonLit.hlsl`が常に最新の正です）。
 
 スキニング（ボーン）モデルにもカスタムShaderを使えます。
-雛形の`VSSkinnedMain`がボーン変形（`BoneBuffer`、最大72ボーン）を行うので、キャラクターにも自作Shaderが当たります。
-エンジンはスキニング用に別途コンパイルし、専用の入力レイアウトを作ります。
-`VSSkinnedMain`を消すとそのモデルはDirectXTK描画へフォールバックします。
+`.hlsl`を直接指定する従来経路ではDirectXTKがボーン変形を行い、
+`PSSkinnedMain`でピクセル処理を差し替えます。雛形の固定entryとの互換性のため
+`VSSkinnedMain`も残してください。Shader Manifestなら`skinned` roleの頂点Shaderへ
+`BoneBuffer`（`b2`、最大72ボーン）が渡り、頂点処理と専用入力レイアウトまで
+差し替えられます。
+
+`glTF`／`GLB`／`FBX`はskinを持たないモデルも共通のモデル経路で読み込むため、
+`.hlsl`直接指定では`VSSkinnedMain`／`PSSkinnedMain`を使います。Manifestは実際の
+描画primitiveにskinがあれば`skinned`、無ければ`forward` roleを使います。
+同じモデル内に両方が混在する場合は、Manifestに両roleを宣言し、各primitiveを
+対応するroleで描き分けます。
+`CMO`／`SDKMESH`／`VBO`とmodel未指定時は、直接指定でも`VSMain`／`PSMain`、
+Manifestでは`forward` roleです。
 
 Shaderを指定していないモデルは標準の`LamaPonLit.hlsl`で描かれます（[グラフィックス](graphics.md)の「モデルのマテリアル取り込み」参照）。
 
@@ -304,8 +314,9 @@ void GSMain(
   理由はInspectorのShaderエラー欄に出ます
 - **`maxvertexcount`より多く出さないでください。** 超えた分は黙って
   捨てられ、形が途中で欠けます
-- **スキニングモデル（ボーン付き）では使えません。** 頂点シェーダーが
-  DirectXTKのものになるため、`GSMain`が期待する入力と合いません（割り当てても無視されます）
+- `.hlsl`直接指定の**スキニングモデル（ボーン付き）では使えません。** 頂点
+  シェーダーがDirectXTKのものになるため、`GSMain`が期待する入力と合いません。
+  Manifestなら`skinned` roleへ`geometry`を宣言できます
 - 輪郭（アウトライン）と遮蔽表示のパスでは束ねません。専用の頂点
   シェーダーで描くので、入力が合わないためです
 - **影も`GSMain`を通った形で落ちます。** 深度パスでも同じように
@@ -509,11 +520,20 @@ float4 PSMain(PixelInput input) : SV_Target
 **新しいプロジェクトでは既定でオン**です（それ以前に作ったプロジェクトは、保存されている値のままなので、必要なら入れてください）。
 なお、同梱するバイトコードは書き出し時に暗号化されます（[書き出したゲームの保護](export-protection.md)）。
 
-- 既定は**オフ**です。オフのままなら配布物にHLSLも入ります
+- 新しいプロジェクトの既定は**オン**です。オフにすれば配布物へHLSLも入ります
 - 入れると事前コンパイルは**全バリアント**を焼きます。`shader_feature`の
   ストリップは止まります。
   両方やると、取りこぼした組み合わせを実行時に作り直せず（ソースが無いので）標準Litへ落ちてしまうためです
 - 配布先で自作Shaderを差し替える余地は無くなります（それが狙いでもあります）
+- Manifestの検証、必須stageのコンパイル、cacheの保存・暗号化に失敗した場合は、
+  HLSL無しの壊れた配布物を残さず書き出しを中止します
+- Scene／Prefabから参照されるMaterial Assetは実行時と同じschemaで検証され、
+  参照先Shaderの欠落や、RendererとManifest type／roleの不一致も書き出し時に止まります
+- ModelRendererの必須entry／roleは、model形式とglTF／FBX内のskin使用状況を
+  GPU resourceを作らず確認し、実行時に選ばれる描画経路と同じ条件で検証します
+- `.meta`は配布物へ含めないため、GUIDで追従した移動後のアセットpathは、元の
+  Scene／Materialを変更せず、暗号化直前の配布JSONへ現在値として反映されます。
+  GUIDはAsset Databaseと同じく大文字・小文字を区別します
 - 書き出しに少し時間がかかるようになります
 
 **仕組みの補足**: ふだんのキャッシュのキーは「HLSLソースの中身のハッシュ」です。
@@ -589,10 +609,11 @@ noperspective float2 AffineTexCoord : TEXCOORD2;
 - 解像度自体を落としたいときは、品質設定の「レンダースケール」を
   下げてください（このShaderとは独立に効きます）
 
-**制約**: スキニングモデル（人物など）にはUVの歪みを適用しません。
-DirectXTKの頂点シェーダー出力の並びに合わせる必要があり、補間指定を変えられないためです（色の量子化と陰影は効きます）。
-静的なモデル、地形、建物には適用できます。深度判定には通常の
-深度バッファを使用します。
+`.hlsl`を直接指定する従来経路では、スキニングモデル（人物など）の頂点処理は
+DirectXTK側が担当するため、この例のUV歪みは静的なモデル、地形、建物向けです
+（色の量子化と陰影はスキニングにも効きます）。Shader Manifestへ`skinned`
+roleと専用頂点Shaderを書けば、ボーン変形を含む頂点処理そのものを差し替えられます。
+深度判定には通常の深度バッファを使用します。
 
 ## 画面全体のポストエフェクト（ScreenEffect）
 
@@ -607,12 +628,197 @@ void Update(float deltaTime) override
     effect.shader = "shaders/sepia.hlsl"; // assets内の相対パス
     effect.customParameters[0] = { 0.8f, 0.0f, 0.0f, 0.0f };
     std::string error;
-    if (!Graphics().QueueScreenEffect(effect, nullptr, &error))
+    const bool queued = Graphics().QueueScreenEffect(
+        effect, nullptr, &error);
+    if (!error.empty())
     {
-        // errorにコンパイルエラー等が入ります
+        // hot reload失敗時は、queued=trueでも直前の正常版を使いながら
+        // errorに新しいコンパイルエラーが入ります
+    }
+    if (!queued)
+    {
+        // 初回compileや入力textureの読み込みに失敗し、queueできませんでした
     }
 }
 ```
+
+### Shader Manifest（`.lamashader.json`）
+
+Shader Manifestは、入口名や描画passをHLSLの固定名から切り離すJSONです。
+`screenEffect`、`material`、`compute`の3種類があり、Mesh Renderer、静的／
+スキニングModel Renderer、ScreenEffect、ComputeEffectへ指定できます。
+passの名前は表示と診断用です。実際の用途は`role`で決まるため、名前を変えても
+描画経路は変わりません。
+`source`は`assets`を基準にした相対パスです。絶対パス、ドライブ相対パス、
+`..`を含むパスは、配布先から同じHLSLを参照できないため検証エラーになります。
+
+```cpp
+LamaPon::ScreenEffectRequest effect;
+effect.shader = "shaders/MyEffect.lamashader.json";
+Graphics().QueueScreenEffect(effect);
+```
+
+```json
+{
+  "version": 1,
+  "name": "Custom/MyEffect",
+  "type": "screenEffect",
+  "source": "shaders/MyEffect.hlsl",
+  "properties": [
+    {
+      "name": "Intensity",
+      "type": "float",
+      "target": "0.x",
+      "min": 0.0,
+      "max": 2.0,
+      "default": 1.0
+    }
+  ],
+  "passes": [
+    {
+      "name": "Main",
+      "vertex": {
+        "entry": "VSFullscreen",
+        "target": "vs_5_0"
+      },
+      "pixel": {
+        "entry": "PSInvert",
+        "target": "ps_5_0"
+      }
+    }
+  ]
+}
+```
+
+ScreenEffectは先頭passの`vertex`／`pixel`を使います。ComputeEffectは
+`passes`を先頭から調べ、最初に見つかった`optional: false`（省略時も
+`false`）の`compute` stageを実行します。選ばれるCompute passに描画stageを
+混在させることはできません。
+
+Materialでは同じ`role`を複数回書けます。同じroleのpassはJSONの順にすべて
+描画されるので、ベース描画の後へ発光やディテールを重ねる、といった構成に
+できます。`role`を省略したpassは`forward`です。
+
+```json
+{
+  "version": 1,
+  "name": "Custom/MultiPassCharacter",
+  "type": "material",
+  "source": "shaders/MultiPassCharacter.hlsl",
+  "passes": [
+    {
+      "name": "Base",
+      "role": "forward",
+      "vertex": { "entry": "VSRigid", "target": "vs_5_0" },
+      "pixel": { "entry": "PSBase", "target": "ps_5_0" }
+    },
+    {
+      "name": "Glow",
+      "role": "forward",
+      "vertex": { "entry": "VSRigid", "target": "vs_5_0" },
+      "pixel": { "entry": "PSGlow", "target": "ps_5_0" },
+      "renderState": {
+        "zTest": "LessEqual",
+        "zWrite": false,
+        "cull": "Off",
+        "blend": "Additive"
+      }
+    },
+    {
+      "name": "Bones",
+      "role": "skinned",
+      "vertex": { "entry": "VSSkinned", "target": "vs_5_0" },
+      "pixel": { "entry": "PSBase", "target": "ps_5_0" }
+    },
+    {
+      "name": "HiddenTint",
+      "role": "occluded",
+      "pixel": { "entry": "PSHidden", "target": "ps_5_0" }
+    }
+  ]
+}
+```
+
+| `role` | 使用される描画 |
+|---|---|
+| `forward` | 静的Mesh／Modelの通常カラー。1つ以上必須。複数なら宣言順に描画 |
+| `skinned` | ボーン付きModelの通常カラー。スキニングモデルで使うManifestには必須 |
+| `instanced` | GPUインスタンシング。無ければ通常の個別描画へ戻る |
+| `outline` | 静的Modelのアウトライン |
+| `skinnedOutline` | ボーン付きModelのアウトライン |
+| `occluded` | Modelの遮蔽部分。`pixel`だけを宣言し、先頭の`forward`または`skinned`の頂点処理を再利用 |
+
+`forward`、`skinned`、`instanced`、`outline`、`skinnedOutline`には必須の
+`vertex`／`pixel`を書きます。必要なら`geometry`も追加でき、`hull`と`domain`は
+必ず対で追加します。`occluded`は入力形式を静的／スキニングの両方で共有するため
+`pixel`だけです。Geometry Shaderは三角形入力でなければ検証エラーになります。
+補助stageへ`"optional": true`を書くと、その入口を持たないGPU／HLSLでもpassを
+残せます。必須のvertex/pixel、または片方だけのhull/domainをoptionalにはできません。
+
+深度prepassとshadow passは、透明な重ね描画を何度も深度へ加えないよう、通常描画の
+先頭passだけを使います。カラー、インスタンシング、アウトライン、遮蔽表示は対応する
+roleの全passを宣言順に使います。
+
+`renderState`はpassごとに適用されます。`zTest`は`LessEqual`／`Always`、
+`cull`は`Back`／`Front`／`Off`、`blend`は`Opaque`／`Alpha`／`Additive`／
+`Premultiplied`です。`zTest: Always`には`zWrite: false`が必要です。
+ただし`occluded` roleだけは「既存の深度より奥に隠れた部分」を描く意味を保つため、
+depthを`Greater`／書き込み無しへ固定します。このroleでは`blend`と`cull`は宣言どおり
+適用されますが、`zTest`と`zWrite`はroleの固定値が優先されます。
+
+#### Manifestの`properties`
+
+`properties`は[HLSL内の`LAMAPON_PROPERTIES`](#パラメーターに名前を付ける)と
+同じ名前付きUIをMaterial Inspectorへ作ります。`target`は
+`CustomParameters[8]`の成分（`"0.x"`、`"1.rgb"`など）、textureなら
+自由枠の`"t7"`〜`"t10"`です。`type`は`float`／`color`／`bool`／
+`vector`／`texture`、`float`には`min`／`max`、texture以外には`default`を
+指定できます。重なったtargetや型と成分数の不一致はエラーになります。
+
+初期版との互換性のため、`target`が無いpropertyを含むManifest自体は読み込めます。
+ただし値の格納先を決められないためInspectorに理由を表示し、生の`float4`編集UIへ
+戻ります。Manifestを保存し直したホットリロードでは既存Materialの値を上書きせず、
+「既定値に戻す」を選んだときだけ`default`を使います。
+
+ComputeEffectで使う場合は`type`を`compute`にします。`passes`を先頭から調べ、
+最初に見つかった`optional: false`（省略時も`false`）の`compute` stageを
+実行します。そのstageを書いたpassには`vertex`や`pixel`など、`compute`以外の
+stageを混在させることはできません。
+
+```json
+{
+  "version": 1,
+  "name": "Custom/NoiseField",
+  "type": "compute",
+  "source": "shaders/NoiseField.hlsl",
+  "passes": [
+    {
+      "name": "Main",
+      "compute": {
+        "entry": "CSGenerateNoise",
+        "target": "cs_5_0"
+      }
+    }
+  ]
+}
+```
+
+既存の`.hlsl`直接指定は変更されません。ScreenEffectは`VSMain`／`PSMain`、
+Materialは`VSMain`／`PSMain`をはじめとする従来の固定entry point、ComputeEffectは
+`CSMain`／`cs_5_0`を引き続き使います。そのため、既存Shaderの書き換えは不要です。
+
+Manifest本体、参照先HLSL、またはそこから`#include`したファイルを保存すると
+変更を検出します。確認は最大250ms間隔で、Material／ScreenEffectは描画呼び出し、
+ComputeEffectは`DispatchComputeEffect`呼び出しの中で行い、検出した呼び出しで
+ホットリロードされます。ゲームの
+エクスポート時にはManifestを収録し、参照先HLSLの全対象
+pass/stage/variantを事前コンパイルします。HLSLソースを配布物から外す設定でも、
+描画状態とバリアント宣言を暗号化済みcacheへ保存するため見た目は変わりません。
+配布先にHLSLコンパイラは不要です。sourceを外す書き出しで、Manifestの検証、
+Manifestまたは直接指定HLSLの必須stageコンパイル、cacheの保存・暗号化の
+いずれかに失敗した場合は、不完全な配布物を公開せず書き出し自体をエラーにします。
+sourceを同梱する書き出しでは、
+同じ問題をpath付きで警告し、実行時コンパイルへ戻せます。
 
 ### どこへ差し込むか（`point`）
 
@@ -637,7 +843,9 @@ effect.point = LamaPon::ScreenEffectPoint::BeforeBloom;
 複数を別々の地点へ同時に積めます。
 同じ地点のものは`Queue`した順にかかります。
 
-HLSL側は`VSMain`と`PSMain`を持ち、フルスクリーン三角形として実行されます。
+`.hlsl`を直接指定する場合、HLSL側は`VSMain`と`PSMain`を持ちます。
+Manifestを指定する場合は、その`vertex`／`pixel`に書いたentry pointを使います。
+どちらもフルスクリーン三角形として実行されます。
 `t0`が描画済みの画面、`t1`／`t2`が`ScreenEffectRequest::auxiliaryTextures`（未設定時は白）、`t3`が**シーンの深度**です（下の「深度を読む」を参照）。
 
 ```hlsl
@@ -788,15 +996,23 @@ float4 PSMain(VertexOutput input) : SV_Target
 void Start() override
 {
     LamaPon::ComputeEffectRequest request;
-    request.shader = "shaders/my-compute.hlsl"; // CSMainを持つHLSL
+    // CSMainを持つHLSL、またはtype=computeのManifestを指定します。
+    request.shader = "shaders/my-compute.lamashader.json";
     request.outputTexture = "noiseField";       // 表示に使う名前
     request.outputWidth = 256;
     request.outputHeight = 256;
     request.customParameters[0] = { 1.0f, 0.0f, 0.0f, 0.0f };
     std::string error;
-    if (!Graphics().DispatchComputeEffect(request, &error))
+    const bool dispatched = Graphics().DispatchComputeEffect(
+        request, &error);
+    if (!error.empty())
     {
-        // errorにコンパイルエラー等が入ります
+        // hot reload失敗時は、dispatched=trueでも直前の正常版を使いながら
+        // errorに新しいコンパイルエラーが入ります
+    }
+    if (!dispatched)
+    {
+        // compile、入力texture、出力確保などに失敗し実行できませんでした
     }
 }
 ```
@@ -804,6 +1020,10 @@ void Start() override
 ScreenEffectと違って**その場で1回走ります**（毎フレーム呼ぶ必要はありません）。
 書き込み先が画面ではなくテクスチャなので、ポスト処理の並びとは無関係だからです。
 毎フレーム更新したいならUpdateで呼んでください。
+
+`.hlsl`を直接指定したときは、従来どおり`CSMain`を`cs_5_0`として
+コンパイルします。Manifestなら、[Shader Manifest](#shader-manifestlamashaderjson)
+で説明した規則に従ってカスタムentry point／targetを使えます。
 
 HLSL側の雛形です。
 
@@ -839,13 +1059,21 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 - 出力の形式は`R16G16B16A16_FLOAT`なので、1.0を超える値も保てます
 - **同じディスパッチの中で、他のスレッドが書いた画素を読まないでください。**
   スレッドグループの実行順は決まっていないので、読むと結果が毎回変わります。
-  2段階の処理が要るなら`DispatchComputeEffect`を2回呼び、1回目の出力を2回目の`inputTextures`へ渡してください
-- 保存すると作り直されます（他の系統と同じホットリロード）
+  現在の`inputTextures`はassets内のファイルだけを受け取るため、名前付きcompute
+  出力を次のdispatchへ直接つなぐ多段処理にはまだ対応していません
+- HLSL／Manifest／`#include`先の保存は、最大250ms間隔で
+  `DispatchComputeEffect`呼び出し時に確認され、検出した呼び出しで
+  作り直してから実行します
 
 ## ホットリロードとエラー表示
 
-3系統とも、HLSLを保存すると実行中でも自動で再コンパイルされます。
-コンパイルに失敗しても、Inspector（ScreenEffectは`error`引数）へエラーを表示しながら描画は続きます。
+各Shader系統とも、HLSL本体やそこから`#include`したファイルの保存を監視します。
+Shader Manifestを使っている場合は、Manifest本体の変更も監視されます。
+監視は最大250ms間隔です。Material／ScreenEffectは描画呼び出し、ComputeEffectは
+dispatch呼び出しの中で変更を確認し、検出した呼び出しで再コンパイルします。
+コンパイルに失敗しても、Inspector（ScreenEffect／
+ComputeEffectは戻り値とは独立して`error`引数を確認）へエラーを表示しながら
+描画は続きます。
 ゲームが止まることはありません。
 
 Shaderがコンパイルできなかったときは、**そこがマゼンタ（明るい紫）で描かれます。** ファイルが見つからないとき、書き間違えたとき、どちらも同じ色です。
@@ -853,14 +1081,16 @@ Shaderがコンパイルできなかったときは、**そこがマゼンタ（
 
 普通のShaderで描き続けると、「動いているように見えて実は壊れている」状態になります。
 Inspectorを開かなければ気付けないので、**見ただけで分かる色**にしています。
-直して保存すれば、次のフレームで元の見た目へ戻ります。
+直して保存すれば、変更監視が検出した描画フレームで元の見た目へ戻ります。
 
 2つだけ例外があります。
 **コンパイル中**（非同期。
 下記）は標準Litで描かれます。
 焼き上がるまでの短い間だからです。
-そして**画面全体のポストエフェクト（ScreenEffect）はその効果を飛ばすだけ**です。
-画面をマゼンタで覆うと何も見えなくなり、直しようがなくなるためで、失敗は`error`引数で受け取ってください。
+そして**画面全体のポストエフェクト（ScreenEffect）は、初回compileに失敗すれば
+その効果を飛ばし、hot reloadに失敗すれば直前の正常版を使います。** 画面を
+マゼンタで覆うと何も見えなくなり、直しようがなくなるためです。どちらの場合も
+`QueueScreenEffect`の戻り値だけでなく`error`引数も確認してください。
 
 ## よくあるつまずき
 
@@ -868,7 +1098,9 @@ Inspectorを開かなければ気付けないので、**見ただけで分かる
   いません。
   InspectorのShaderエラー欄に理由が出ています。
   ファイルを消した・移動した場合も同じ色になります。
-  エラー欄の**1行目は日本語の説明**で、その下にHLSLコンパイラの元のメッセージ（行番号付き）が続きます。
+  `.hlsl`直接指定時は、エラー欄の**1行目が日本語の説明**で、その下に
+  HLSLコンパイラの元のメッセージ（行番号付き）が続きます。Manifestでは
+  stage名、entry、targetを含むエラーがそのまま表示されます。
 - **`entrypoint not found` と出る** — 割り当て先が求める入口が
   ありません。
   よくあるのは2D用のShader（`PSMain`だけ）を3Dマテリアルへ入れた場合です。
@@ -876,8 +1108,11 @@ Inspectorを開かなければ気付けないので、**見ただけで分かる
 - **編集しても見た目が変わらない** — マゼンタになっていなければ
   コンパイルは通っています。
   書いたつもりの分岐へ入っていない（キーワードの綴り違いなど）か、そもそも別のマテリアルを見ている可能性を先に疑ってください。
-- **エントリポイント名を変えたら動かない** — `VSMain`／`PSMain`は
-  固定名です（2Dスプライト／パーティクルは`PSMain`のみ）。
+- **エントリポイント名を変えたら動かない** — `.hlsl`を直接指定する
+  2D／Material／ScreenEffectでは`VSMain`／`PSMain`が固定名です
+  （2Dスプライト／パーティクルは`PSMain`のみ）。ComputeEffectでは
+  `CSMain`が固定名です。対応しているScreenEffect／Material／ComputeEffectの
+  `.lamashader.json`では、Manifest内で別の名前を指定できます。
 - **スキニングモデルだけ `VSSkinnedMain` が無いと言われる** — その
   Shaderは3D用としては正しく書けていて、割り当て先がボーン付きのモデルだった、という意味です。
   `VSSkinnedMain`と`PSSkinnedMain`を雛形から写すと、そのモデルにも使えます。
@@ -893,8 +1128,9 @@ Inspectorを開かなければ気付けないので、**見ただけで分かる
 - **b1をコピーしたら影や色が壊れた** — ライティング定数バッファの
   レイアウト不一致です。
   `LamaPonLit.hlsl`から丸ごとコピーし直すのが確実です（エンジン更新後は特に）。
-- **スキニングモデルに効かない** — 雛形から`VSSkinnedMain`または
-  `PSSkinnedMain`を消していると、DirectXTK描画へフォールバックします。
+- **スキニングモデルに効かない** — `.hlsl`直接指定なら雛形から
+  `VSSkinnedMain`または`PSSkinnedMain`を消していないか、Manifestなら
+  `skinned` roleのpassがあるか確認してください。
   ModelRendererの「従来のDirectXTK描画を使う」がオンになっていないかも確認してください（Inspectorの「描画経路」で実際の経路が分かります）。
 - **2Dでパラメーター[5]～[7]に書いた値が消える** — その3本はエンジンが
   毎描画上書きします。

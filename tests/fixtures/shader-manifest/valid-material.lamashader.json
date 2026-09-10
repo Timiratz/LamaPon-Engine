@@ -1,0 +1,123 @@
+{
+  "version": 1,
+  "name": "Custom/MaterialEntryPoints",
+  "type": "material",
+  "source": "custom-entry-material.hlsl",
+  "passes": [
+    {
+      "name": "Main",
+      "vertex": {
+        "entry": "CustomMaterialVertex",
+        "target": "vs_5_0"
+      },
+      "pixel": {
+        "entry": "CustomMaterialPixel",
+        "target": "ps_5_0"
+      },
+      "renderState": {
+        "zTest": "aLwAyS",
+        "zWrite": false,
+        "cull": "nOnE",
+        "blend": "pReMuLtIpLiEd"
+      }
+    },
+    {
+      "name": "DetailedForward",
+      "role": "forward",
+      "vertex": {
+        "entry": "CustomMaterialVertexAlt",
+        "target": "vs_5_0"
+      },
+      "pixel": {
+        "entry": "CustomMaterialPixelAlt",
+        "target": "ps_5_0"
+      },
+      "geometry": {
+        "entry": "CustomMaterialGeometry",
+        "target": "gs_5_0"
+      },
+      "hull": {
+        "entry": "CustomMaterialHull",
+        "target": "hs_5_0"
+      },
+      "domain": {
+        "entry": "CustomMaterialDomain",
+        "target": "ds_5_0"
+      },
+      "renderState": {
+        "zTest": "LessEqual",
+        "zWrite": true,
+        "cull": "Front",
+        "blend": "Alpha"
+      }
+    },
+    {
+      "name": "Skin",
+      "role": "skinned",
+      "vertex": {
+        "entry": "CustomMaterialVertex",
+        "target": "vs_5_0"
+      },
+      "pixel": {
+        "entry": "CustomMaterialPixel",
+        "target": "ps_5_0"
+      }
+    },
+    {
+      "name": "Instances",
+      "role": "instanced",
+      "vertex": {
+        "entry": "CustomMaterialVertexAlt",
+        "target": "vs_5_0"
+      },
+      "pixel": {
+        "entry": "CustomMaterialPixelAlt",
+        "target": "ps_5_0"
+      },
+      "renderState": {
+        "blend": "Additive",
+        "zWrite": false
+      }
+    },
+    {
+      "name": "Edge",
+      "role": "outline",
+      "vertex": {
+        "entry": "CustomMaterialVertex",
+        "target": "vs_5_0"
+      },
+      "pixel": {
+        "entry": "CustomMaterialPixel",
+        "target": "ps_5_0"
+      }
+    },
+    {
+      "name": "SkinnedEdge",
+      "role": "skinnedOutline",
+      "vertex": {
+        "entry": "CustomMaterialVertexAlt",
+        "target": "vs_5_0"
+      },
+      "pixel": {
+        "entry": "CustomMaterialPixelAlt",
+        "target": "ps_5_0"
+      }
+    },
+    {
+      "name": "HiddenFirst",
+      "role": "occluded",
+      "pixel": {
+        "entry": "CustomMaterialPixel",
+        "target": "ps_5_0"
+      }
+    },
+    {
+      "name": "HiddenSecond",
+      "role": "occluded",
+      "pixel": {
+        "entry": "CustomMaterialPixelAlt",
+        "target": "ps_5_0"
+      }
+    }
+  ]
+}

@@ -287,7 +287,7 @@ namespace LamaPon
 
         // インスタンス描画：同一キーのMeshRendererはシーンが
         // まとめて1ドローコールで描きます。
-        [[nodiscard]] bool CanBeInstanced() const noexcept;
+        [[nodiscard]] bool CanBeInstanced() const;
         // 並べ替えの振り分けにSceneが直接使うので、Componentの
         // 仮想関数（protected）と違ってこちらは公開します。
         [[nodiscard]] bool IsAlphaBlended3D() const override;
@@ -329,7 +329,8 @@ namespace LamaPon
         [[nodiscard]] bool CanDrawTessellatedPatch() const noexcept;
         // パッチを描きます。描画状態は呼ぶ側の責任です
         // （深度パスは影用の設定で描くので、ここで触ると壊れます）。
-        void DrawTessellatedPatch() const;
+        void DrawTessellatedPatch(
+            ID3D11InputLayout* inputLayout) const;
         // 形状に応じた制御点を作ります。四角パッチに割れない形状では
         // 何も作りません（m_tessellationPatchesがnullのままになり、
         // テセレーションShaderは代役へ倒れます）。
@@ -359,15 +360,20 @@ namespace LamaPon
         std::unique_ptr<DirectX::GeometricPrimitive> m_primitive;
         LitEffect* m_effect{};
         struct InputLayoutHolder;
-        std::unique_ptr<InputLayoutHolder> m_inputLayout;
+        // Manifestのforward passごとに対応するVSの入力レイアウトを
+        // JSON順で保持します。direct HLSLも1件として同じ経路を通ります。
+        std::vector<std::unique_ptr<InputLayoutHolder>>
+            m_colorInputLayouts;
         // テセレーション用の制御点。四角パッチに割れる形状
         // （Plane・Cube）でだけ作ります。Sphere／Cylinderは
         // 四角パッチにならないので作りません。
         struct TessellationPatchHolder;
         std::unique_ptr<TessellationPatchHolder>
             m_tessellationPatches;
-        std::unique_ptr<InputLayoutHolder>
-            m_instancedInputLayout;
+        // instanced roleも同じroleを複数宣言できるため、passごとに
+        // VS入力レイアウトを分けます。
+        std::vector<std::unique_ptr<InputLayoutHolder>>
+            m_instancedInputLayouts;
         GraphicsDevice* m_graphics{};
         std::filesystem::path m_activeShaderPath;
         std::uint64_t m_shaderGeneration{};

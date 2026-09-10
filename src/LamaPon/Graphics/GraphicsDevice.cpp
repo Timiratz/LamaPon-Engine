@@ -15,6 +15,7 @@
 #include "LamaPon/Graphics/ScreenEffect.h"
 #include "LamaPon/Graphics/ShaderCompiler.h"
 #include "LamaPon/Graphics/ShaderDiagnostics.h"
+#include "LamaPon/Graphics/ShaderManifest.h"
 #include "LamaPon/Graphics/ShaderRenderState.h"
 #include "LamaPon/Graphics/ShadowMap.h"
 #include "LamaPon/Graphics/SpriteEffect.h"
@@ -65,7 +66,7 @@ namespace
         try
         {
             const auto bytes =
-                assets.ReadFileBytes(shaderPath);
+                assets.ReadFileBytesFresh(shaderPath);
             source.assign(
                 reinterpret_cast<const char*>(bytes.data()),
                 bytes.size());
@@ -79,6 +80,75 @@ namespace
             compilerMessage != nullptr ? compilerMessage : "",
             source,
             usage);
+    }
+
+    // Source-stripped配布では直接指定HLSLだけがアーカイブから外れ、
+    // CompileShaderCachedがpath/entry/target/keyword索引からDXBCを読みます。
+    // Manifestはentryやpass自体を保持する定義ファイルなので、配布時も
+    // 本体の存在を必須にします。
+    [[nodiscard]] bool CanUseSourceStrippedShader(
+        LamaPon::AssetManager& assets,
+        const std::filesystem::path& definitionPath) noexcept
+    {
+        return assets.IsArchived()
+            && !LamaPon::IsShaderManifestPath(definitionPath);
+    }
+
+    // Material Manifestは定義ファイル自体をキャッシュ識別子として残し、
+    // コンパイル・variant解析・変更監視だけを参照先HLSLへ向けます。
+    // 直接HLSLを指定した従来経路ではdefinitionPathをそのまま返します。
+    [[nodiscard]] bool ResolveMaterialShaderSource(
+        LamaPon::AssetManager& assets,
+        const std::filesystem::path& definitionPath,
+        LamaPon::ShaderAssetDesc* const manifest,
+        std::filesystem::path& sourcePath,
+        std::string& error)
+    {
+        sourcePath = definitionPath;
+        error.clear();
+        if (!LamaPon::IsShaderManifestPath(definitionPath))
+        {
+            return true;
+        }
+
+        LamaPon::ShaderAssetDesc description;
+        if (!LamaPon::LoadShaderAssetDesc(
+                assets,
+                definitionPath,
+                description,
+                error))
+        {
+            return false;
+        }
+        if (description.type != LamaPon::ShaderAssetType::Material)
+        {
+            error = "Material shader requires a shader manifest"
+                " whose type is 'material': "
+                + LamaPon::PathToUtf8(definitionPath);
+            return false;
+        }
+
+        sourcePath = assets.ResolvePath(description.source)
+            .lexically_normal();
+        if (manifest != nullptr)
+        {
+            *manifest = std::move(description);
+        }
+        return true;
+    }
+
+    [[nodiscard]] std::uint64_t CurrentShaderDependencyRevision(
+        LamaPon::AssetManager& assets,
+        const std::filesystem::path& definitionPath,
+        const std::filesystem::path& referencedSource = {},
+        const std::vector<std::string>& defines = {}) noexcept
+    {
+        return LamaPon::ShaderSourceDependencyRevision(
+            assets,
+            referencedSource.empty()
+                ? definitionPath
+                : referencedSource,
+            defines);
     }
 
     // このアダプターがティアリング許可に対応しているか。対応が無い
@@ -130,6 +200,12 @@ namespace LamaPon
     struct GraphicsDevice::MaterialShaderEntry final
     {
         std::unique_ptr<LitEffect> effect;
+        // Manifest自体をcache identityとして保ちつつ、参照先HLSLも
+        // hot reload対象にします。直接HLSLではreferencedSourceは空です。
+        std::filesystem::path definitionPath;
+        std::filesystem::path referencedSource;
+        std::filesystem::file_time_type
+            referencedWriteTime{};
         // このエントリーのバリアント（#pragma multi_compileの
         // キーワード）。同じHLSLでも組み合わせごとに別エントリーです。
         std::vector<std::string> keywords;
@@ -140,11 +216,13 @@ namespace LamaPon
         // バイトコードの用意待ち。trueの間は標準Litで描きます。
         bool pending{};
         std::filesystem::file_time_type writeTime{};
+        std::uint64_t dependencyRevision{};
         std::uint64_t generation{};
         std::string error;
         std::chrono::steady_clock::time_point nextCheck{};
         bool observed{};
         bool sourceExists{};
+        bool referencedSourceExists{};
         bool forceReload{};
     };
 
@@ -152,6 +230,7 @@ namespace LamaPon
     {
         std::unique_ptr<SpriteEffect> effect;
         std::filesystem::file_time_type writeTime{};
+        std::uint64_t dependencyRevision{};
         std::uint64_t generation{};
         std::string error;
         std::chrono::steady_clock::time_point nextCheck{};
@@ -162,13 +241,22 @@ namespace LamaPon
 
     struct GraphicsDevice::ScreenShaderEntry final
     {
-        std::unique_ptr<ScreenEffect> effect;
+        // 同じframe内のhot reloadでentryが差し替わっても、既にqueue
+        // 済みの描画が旧Effectを安全に使い切れるよう共有所有します。
+        std::shared_ptr<ScreenEffect> effect;
         std::filesystem::file_time_type writeTime{};
+        // Manifestを使う場合に、そこから参照されるHLSLも監視します。
+        // 直接HLSLを指定した場合は空のままで、従来の監視だけが動きます。
+        std::filesystem::path referencedSource;
+        std::filesystem::file_time_type
+            referencedWriteTime{};
+        std::uint64_t dependencyRevision{};
         std::uint64_t generation{};
         std::string error;
         std::chrono::steady_clock::time_point nextCheck{};
         bool observed{};
         bool sourceExists{};
+        bool referencedSourceExists{};
         bool forceReload{};
     };
 
@@ -176,16 +264,23 @@ namespace LamaPon
     {
         std::unique_ptr<ComputeEffect> effect;
         std::filesystem::file_time_type writeTime{};
+        // Manifestを使う場合に、そこから参照されるHLSLも監視します。
+        // 直接HLSLを指定した場合は空のままで、従来の監視だけが動きます。
+        std::filesystem::path referencedSource;
+        std::filesystem::file_time_type
+            referencedWriteTime{};
+        std::uint64_t dependencyRevision{};
         std::string error;
         std::chrono::steady_clock::time_point nextCheck{};
         bool observed{};
         bool sourceExists{};
+        bool referencedSourceExists{};
         bool forceReload{};
     };
 
     struct GraphicsDevice::QueuedScreenEffect final
     {
-        ScreenEffect* effect{};
+        std::shared_ptr<ScreenEffect> effect;
         std::array<
             std::shared_ptr<const TextureAsset>,
             2> auxiliaryTextures{};
@@ -611,19 +706,32 @@ namespace LamaPon
                     absolutePath,
                     fileError)
                 : std::filesystem::file_time_type{};
+            const auto dependencyRevision =
+                CurrentShaderDependencyRevision(
+                    Assets(),
+                    absolutePath);
             const bool changed = !entry->observed
                 || entry->forceReload
                 || entry->sourceExists != sourceExists
                 || (sourceExists
                     && !archived
-                    && entry->writeTime != writeTime);
+                    && entry->writeTime != writeTime)
+                || (entry->observed
+                    && entry->dependencyRevision
+                        != dependencyRevision);
             if (changed)
             {
                 entry->observed = true;
                 entry->forceReload = false;
                 entry->sourceExists = sourceExists;
                 entry->writeTime = writeTime;
-                if (!sourceExists)
+                // Compile開始後の保存を監視済みとして消費しないよう、
+                // 終了時の値ではなく開始直前のsnapshotを基準にします。
+                entry->dependencyRevision = dependencyRevision;
+                if (!sourceExists
+                    && !CanUseSourceStrippedShader(
+                        Assets(),
+                        absolutePath))
                 {
                     entry->error =
                         "Sprite shader file was not found: "
@@ -764,19 +872,32 @@ namespace LamaPon
                     absolutePath,
                     fileError)
                 : std::filesystem::file_time_type{};
+            const auto dependencyRevision =
+                CurrentShaderDependencyRevision(
+                    Assets(),
+                    absolutePath);
             const bool changed = !entry->observed
                 || entry->forceReload
                 || entry->sourceExists != sourceExists
                 || (sourceExists
                     && !archived
-                    && entry->writeTime != writeTime);
+                    && entry->writeTime != writeTime)
+                || (entry->observed
+                    && entry->dependencyRevision
+                        != dependencyRevision);
             if (changed)
             {
                 entry->observed = true;
                 entry->forceReload = false;
                 entry->sourceExists = sourceExists;
                 entry->writeTime = writeTime;
-                if (!sourceExists)
+                // Compile開始後の保存を監視済みとして消費しないよう、
+                // 終了時の値ではなく開始直前のsnapshotを基準にします。
+                entry->dependencyRevision = dependencyRevision;
+                if (!sourceExists
+                    && !CanUseSourceStrippedShader(
+                        Assets(),
+                        absolutePath))
                 {
                     entry->error =
                         "Custom pixel shader file was not found: "
@@ -1516,19 +1637,86 @@ namespace LamaPon
                     absolutePath,
                     fileError)
                 : std::filesystem::file_time_type{};
+            std::error_code referencedFileError;
+            const bool referencedSourceExists =
+                !entry->referencedSource.empty()
+                && Assets().FileExists(
+                    entry->referencedSource);
+            const auto referencedWriteTime =
+                (referencedSourceExists && !archived)
+                ? std::filesystem::last_write_time(
+                    entry->referencedSource,
+                    referencedFileError)
+                : std::filesystem::file_time_type{};
+            const auto dependencyRevision =
+                CurrentShaderDependencyRevision(
+                    Assets(),
+                    absolutePath,
+                    entry->referencedSource);
             const bool changed = !entry->observed
                 || entry->forceReload
                 || entry->sourceExists != sourceExists
                 || (sourceExists
                     && !archived
-                    && entry->writeTime != writeTime);
+                    && entry->writeTime != writeTime)
+                || entry->referencedSourceExists
+                    != referencedSourceExists
+                || (referencedSourceExists
+                    && !archived
+                    && entry->referencedWriteTime
+                        != referencedWriteTime)
+                || (entry->observed
+                    && entry->dependencyRevision
+                        != dependencyRevision);
             if (changed)
             {
                 entry->observed = true;
                 entry->forceReload = false;
                 entry->sourceExists = sourceExists;
                 entry->writeTime = writeTime;
-                if (!sourceExists)
+                // Compile中のinclude保存を次回pollで必ず拾えるよう、
+                // 終了後ではなく開始前のrevisionを基準にします。
+                entry->dependencyRevision = dependencyRevision;
+
+                // 先に依存先を記録することで、HLSLのコンパイルに失敗して
+                // ScreenEffectを構築できなくても、そのHLSLを直した保存で
+                // 再試行できます。Manifestの解析失敗時は依存を外し、
+                // Manifest自身の次の保存だけを待ちます。
+                entry->referencedSource.clear();
+                if (sourceExists
+                    && IsShaderManifestPath(absolutePath))
+                {
+                    ShaderAssetDesc manifest;
+                    std::string manifestError;
+                    if (LoadShaderAssetDesc(
+                            Assets(),
+                            absolutePath,
+                            manifest,
+                            manifestError)
+                        && manifest.type
+                            == ShaderAssetType::ScreenEffect)
+                    {
+                        entry->referencedSource =
+                            Assets().ResolvePath(manifest.source)
+                                .lexically_normal();
+                    }
+                }
+                entry->referencedSourceExists =
+                    !entry->referencedSource.empty()
+                    && Assets().FileExists(
+                        entry->referencedSource);
+                std::error_code dependencyError;
+                entry->referencedWriteTime =
+                    (entry->referencedSourceExists
+                        && !archived)
+                    ? std::filesystem::last_write_time(
+                        entry->referencedSource,
+                        dependencyError)
+                    : std::filesystem::file_time_type{};
+                if (!sourceExists
+                    && !CanUseSourceStrippedShader(
+                        Assets(),
+                        absolutePath))
                 {
                     entry->error =
                         "Screen effect shader file was not found: "
@@ -1539,7 +1727,7 @@ namespace LamaPon
                     try
                     {
                         auto candidate =
-                            std::make_unique<ScreenEffect>(
+                            std::make_shared<ScreenEffect>(
                                 m_device.Get(),
                                 m_context.Get(),
                                 Assets(),
@@ -1552,11 +1740,18 @@ namespace LamaPon
                     catch (const std::exception& exception)
                     {
                         // 再コンパイルに失敗しても、直前の正常なシェーダーは維持します。
-                        entry->error = DescribeShaderFailure(
-                            Assets(),
-                            absolutePath,
-                            exception.what(),
-                            ShaderUsage::ScreenEffect);
+                        // 既存HLSL向け診断はVSMain/PSMainを前提にするため、
+                        // Manifestの任意entry pointへ適用すると誤案内に
+                        // なります。Manifest側はShaderProgramがstage名、
+                        // entry、targetを含む診断を返すので、そのまま出します。
+                        entry->error =
+                            IsShaderManifestPath(absolutePath)
+                            ? exception.what()
+                            : DescribeShaderFailure(
+                                Assets(),
+                                absolutePath,
+                                exception.what(),
+                                ShaderUsage::ScreenEffect);
                     }
                 }
             }
@@ -1576,19 +1771,40 @@ namespace LamaPon
         }
 
         QueuedScreenEffect queued{};
-        queued.effect = entry->effect.get();
+        queued.effect = entry->effect;
         queued.parameters = request.customParameters;
         queued.point = request.point;
-        for (std::size_t index = 0;
-            index < request.auxiliaryTextures.size();
-            ++index)
+        try
         {
-            if (!request.auxiliaryTextures[index].empty())
+            for (std::size_t index = 0;
+                index < request.auxiliaryTextures.size();
+                ++index)
             {
-                queued.auxiliaryTextures[index] =
-                    Assets().LoadTexture(
-                        request.auxiliaryTextures[index]);
+                if (!request.auxiliaryTextures[index].empty())
+                {
+                    queued.auxiliaryTextures[index] =
+                        Assets().LoadTexture(
+                            request.auxiliaryTextures[index]);
+                }
             }
+        }
+        catch (const std::exception& exception)
+        {
+            if (error != nullptr)
+            {
+                *error = "Screen effect auxiliary texture could not"
+                    " be loaded: " + std::string(exception.what());
+            }
+            return false;
+        }
+        catch (...)
+        {
+            if (error != nullptr)
+            {
+                *error = "Screen effect auxiliary texture could not"
+                    " be loaded.";
+            }
+            return false;
         }
         m_queuedScreenEffects.emplace_back(
             std::move(queued));
@@ -1646,24 +1862,101 @@ namespace LamaPon
                     absolutePath,
                     fileError)
                 : std::filesystem::file_time_type{};
+            std::error_code referencedFileError;
+            const bool referencedSourceExists =
+                !entry->referencedSource.empty()
+                && Assets().FileExists(
+                    entry->referencedSource);
+            const auto referencedWriteTime =
+                (referencedSourceExists && !archived)
+                ? std::filesystem::last_write_time(
+                    entry->referencedSource,
+                    referencedFileError)
+                : std::filesystem::file_time_type{};
+            const auto dependencyRevision =
+                CurrentShaderDependencyRevision(
+                    Assets(),
+                    absolutePath,
+                    entry->referencedSource);
             const bool changed = !entry->observed
                 || entry->forceReload
                 || entry->sourceExists != sourceExists
                 || (sourceExists
                     && !archived
-                    && entry->writeTime != writeTime);
+                    && entry->writeTime != writeTime)
+                || entry->referencedSourceExists
+                    != referencedSourceExists
+                || (referencedSourceExists
+                    && !archived
+                    && entry->referencedWriteTime
+                        != referencedWriteTime)
+                || (entry->observed
+                    && entry->dependencyRevision
+                        != dependencyRevision);
             if (changed)
             {
                 entry->observed = true;
                 entry->forceReload = false;
                 entry->sourceExists = sourceExists;
                 entry->writeTime = writeTime;
-                if (!sourceExists)
+                // Compile中のinclude保存を次回pollで必ず拾えるよう、
+                // 終了後ではなく開始前のrevisionを基準にします。
+                entry->dependencyRevision = dependencyRevision;
+
+                // 構築より先に参照先を記録します。HLSLのコンパイルに
+                // 失敗した場合も、そのHLSLを直した保存で再試行できます。
+                // Manifestの解析やtype検証に失敗した場合は依存を外し、
+                // Manifest自身の次の保存だけを待ちます。
+                entry->referencedSource.clear();
+                if (sourceExists
+                    && IsShaderManifestPath(absolutePath))
+                {
+                    ShaderAssetDesc manifest;
+                    std::string manifestError;
+                    if (LoadShaderAssetDesc(
+                            Assets(),
+                            absolutePath,
+                            manifest,
+                            manifestError)
+                        && manifest.type
+                            == ShaderAssetType::Compute)
+                    {
+                        entry->referencedSource =
+                            Assets().ResolvePath(manifest.source)
+                                .lexically_normal();
+                    }
+                }
+                entry->referencedSourceExists =
+                    !entry->referencedSource.empty()
+                    && Assets().FileExists(
+                        entry->referencedSource);
+                std::error_code dependencyError;
+                entry->referencedWriteTime =
+                    (entry->referencedSourceExists
+                        && !archived)
+                    ? std::filesystem::last_write_time(
+                        entry->referencedSource,
+                        dependencyError)
+                    : std::filesystem::file_time_type{};
+                if (!sourceExists
+                    && !CanUseSourceStrippedShader(
+                        Assets(),
+                        absolutePath))
                 {
                     entry->error =
                         "Compute effect shader file was not"
                         " found: "
                         + PathToUtf8(absolutePath);
+                }
+                else if (IsShaderManifestPath(absolutePath)
+                    && !entry->referencedSource.empty()
+                    && !entry->referencedSourceExists
+                    && !archived)
+                {
+                    entry->error =
+                        "Compute effect shader source file was"
+                        " not found: "
+                        + PathToUtf8(entry->referencedSource);
                 }
                 else
                 {
@@ -1679,11 +1972,17 @@ namespace LamaPon
                     }
                     catch (const std::exception& exception)
                     {
-                        entry->error = DescribeShaderFailure(
-                            Assets(),
-                            absolutePath,
-                            exception.what(),
-                            ShaderUsage::Compute);
+                        // Direct HLSLだけは従来のCSMain向け補助診断を
+                        // 維持します。Manifestは任意entry/targetを使うため、
+                        // ShaderProgramの具体的な診断をそのまま返します。
+                        entry->error =
+                            IsShaderManifestPath(absolutePath)
+                            ? exception.what()
+                            : DescribeShaderFailure(
+                                Assets(),
+                                absolutePath,
+                                exception.what(),
+                                ShaderUsage::Compute);
                     }
                 }
             }
@@ -1698,49 +1997,92 @@ namespace LamaPon
             return false;
         }
 
-        // 書き込み先。UAVが要るので、Resizeの前に印を付けます
-        // （バインドフラグは作成時にしか決められません）。
-        auto& target = AcquireComputeTexture(
-            request.outputTexture,
-            request.outputWidth,
-            request.outputHeight);
-        if (target.DisplayUnorderedAccessView() == nullptr)
+        bool profilerActive = false;
+        try
         {
+            // 書き込み先。UAVが要るので、Resizeの前に印を付けます
+            // （バインドフラグは作成時にしか決められません）。
+            auto& target = AcquireComputeTexture(
+                request.outputTexture,
+                request.outputWidth,
+                request.outputHeight);
+            if (target.DisplayUnorderedAccessView() == nullptr)
+            {
+                if (error != nullptr)
+                {
+                    *error =
+                        "The compute output texture could not"
+                        " be created for writing.";
+                }
+                return false;
+            }
+
+            std::array<ID3D11ShaderResourceView*, 2> inputs{};
+            for (std::size_t index = 0;
+                index < request.inputTextures.size();
+                ++index)
+            {
+                if (request.inputTextures[index].empty())
+                {
+                    inputs[index] = WhiteTexture();
+                    continue;
+                }
+                const auto texture = Assets().LoadTexture(
+                    request.inputTextures[index]);
+                inputs[index] = texture
+                    ? texture->view.Get()
+                    : WhiteTexture();
+            }
+
+            m_gpuProfiler.BeginSection("Compute");
+            profilerActive = true;
+            entry->effect->Dispatch(
+                inputs,
+                target.DisplayUnorderedAccessView(),
+                target.Width(),
+                target.Height(),
+                request.customParameters);
+            m_gpuProfiler.EndSection();
+            profilerActive = false;
+            return true;
+        }
+        catch (const std::exception& exception)
+        {
+            if (profilerActive)
+            {
+                try
+                {
+                    m_gpuProfiler.EndSection();
+                }
+                catch (...)
+                {
+                }
+            }
             if (error != nullptr)
             {
-                *error =
-                    "The compute output texture could not"
-                    " be created for writing.";
+                *error = "Compute effect dispatch failed: "
+                    + std::string(exception.what());
             }
             return false;
         }
-
-        std::array<ID3D11ShaderResourceView*, 2> inputs{};
-        for (std::size_t index = 0;
-            index < request.inputTextures.size();
-            ++index)
+        catch (...)
         {
-            if (request.inputTextures[index].empty())
+            if (profilerActive)
             {
-                inputs[index] = WhiteTexture();
-                continue;
+                try
+                {
+                    m_gpuProfiler.EndSection();
+                }
+                catch (...)
+                {
+                }
             }
-            const auto texture = Assets().LoadTexture(
-                request.inputTextures[index]);
-            inputs[index] = texture
-                ? texture->view.Get()
-                : WhiteTexture();
+            if (error != nullptr)
+            {
+                *error = "Compute effect dispatch failed.";
+            }
+            return false;
         }
-
-        m_gpuProfiler.BeginSection("Compute");
-        entry->effect->Dispatch(
-            inputs,
-            target.DisplayUnorderedAccessView(),
-            target.Width(),
-            target.Height(),
-            request.customParameters);
-        m_gpuProfiler.EndSection();
-        return true;
     }
 
     void GraphicsDevice::InvalidateComputeEffectShader(
@@ -1753,12 +2095,17 @@ namespace LamaPon
         const auto absolutePath =
             Assets().ResolvePath(shaderPath)
                 .lexically_normal();
-        const auto found =
-            m_computeShaders.find(absolutePath);
-        if (found != m_computeShaders.end()
-            && found->second)
+        for (auto& [definitionPath, entry] :
+            m_computeShaders)
         {
-            found->second->forceReload = true;
+            if (entry
+                && (definitionPath == absolutePath
+                    || (!entry->referencedSource.empty()
+                        && entry->referencedSource
+                            == absolutePath)))
+            {
+                entry->forceReload = true;
+            }
         }
     }
 
@@ -1772,12 +2119,16 @@ namespace LamaPon
         const auto absolutePath =
             Assets().ResolvePath(shaderPath)
                 .lexically_normal();
-        const auto found =
-            m_screenShaders.find(absolutePath);
-        if (found != m_screenShaders.end()
-            && found->second)
+        for (auto& [definitionPath, entry] : m_screenShaders)
         {
-            found->second->forceReload = true;
+            if (entry
+                && (definitionPath == absolutePath
+                    || (!entry->referencedSource.empty()
+                        && entry->referencedSource
+                            == absolutePath)))
+            {
+                entry->forceReload = true;
+            }
         }
     }
 
@@ -2311,7 +2662,10 @@ namespace LamaPon
                 "shaders/LamaPonLightCulling.hlsl";
             auto shaderPath =
                 Assets().ResolvePath(relativePath);
-            if (!Assets().FileExists(shaderPath))
+            if (!Assets().FileExists(shaderPath)
+                && !CanUseSourceStrippedShader(
+                    Assets(),
+                    shaderPath))
             {
                 shaderPath = ExecutableDirectory()
                     / "assets"
@@ -2388,7 +2742,10 @@ namespace LamaPon
         constexpr const char* relativePath =
             "shaders/LamaPonShaderError.hlsl";
         auto shaderPath = Assets().ResolvePath(relativePath);
-        if (!Assets().FileExists(shaderPath))
+        if (!Assets().FileExists(shaderPath)
+            && !CanUseSourceStrippedShader(
+                Assets(),
+                shaderPath))
         {
             shaderPath =
                 ExecutableDirectory() / "assets" / relativePath;
@@ -2431,7 +2788,10 @@ namespace LamaPon
         constexpr const char* relativePath =
             "shaders/LamaPonSpriteError.hlsl";
         auto shaderPath = Assets().ResolvePath(relativePath);
-        if (!Assets().FileExists(shaderPath))
+        if (!Assets().FileExists(shaderPath)
+            && !CanUseSourceStrippedShader(
+                Assets(),
+                shaderPath))
         {
             shaderPath =
                 ExecutableDirectory() / "assets" / relativePath;
@@ -2465,9 +2825,12 @@ namespace LamaPon
         }
         const auto absolutePath =
             Assets().ResolvePath(shaderPath).lexically_normal();
-        const auto normalized = NormalizeKeywords(
-            ShaderVariantsFor(absolutePath),
-            keywords);
+        const auto& variants = ShaderVariantsFor(absolutePath);
+        const auto normalized =
+            m_materialVariantSourcesUnavailable.find(absolutePath)
+                    != m_materialVariantSourcesUnavailable.end()
+                ? keywords
+                : NormalizeKeywords(variants, keywords);
         const auto variantKey = normalized.Key();
         const std::filesystem::path cacheKey =
             variantKey.empty()
@@ -2498,23 +2861,61 @@ namespace LamaPon
             return found->second;
         }
         ShaderVariantDeclaration declaration;
+        bool preserveRequestedKeywords{};
         try
         {
-            if (Assets().FileExists(absolutePath))
+            std::filesystem::path sourcePath;
+            std::string manifestError;
+            if (ResolveMaterialShaderSource(
+                    Assets(),
+                    absolutePath,
+                    nullptr,
+                    sourcePath,
+                    manifestError))
             {
-                const auto source =
-                    Assets().ReadFileBytes(absolutePath);
-                declaration = ParseShaderVariants(
-                    std::string_view{
-                        reinterpret_cast<const char*>(
-                            source.data()),
-                        source.size() });
+                if (Assets().FileExists(sourcePath))
+                {
+                    const auto source =
+                        Assets().ReadFileBytesFresh(sourcePath);
+                    declaration = ParseShaderVariants(
+                        std::string_view{
+                            reinterpret_cast<const char*>(
+                                source.data()),
+                            source.size() });
+                }
+                else
+                {
+                    // source-stripped配布では、export時にHLSLから抽出した
+                    // #pragma宣言をcache metadataから復元します。古いcacheに
+                    // metadataが無い場合だけ、保存済みkeywordをそのまま
+                    // indexへ渡す互換fallbackを使います。
+                    const bool metadataLoaded =
+                        Assets().IsArchived()
+                        && LoadPrecompiledShaderMetadata(
+                            Assets(),
+                            sourcePath,
+                            nullptr,
+                            &declaration);
+                    preserveRequestedKeywords =
+                        Assets().IsArchived() && !metadataLoaded;
+                }
             }
         }
         catch (const std::exception&)
         {
             // 読み取り失敗時は宣言なしとして扱い、Inspectorの表示を継続します。
             declaration = {};
+            preserveRequestedKeywords = false;
+        }
+        if (preserveRequestedKeywords)
+        {
+            m_materialVariantSourcesUnavailable.insert(
+                absolutePath);
+        }
+        else
+        {
+            m_materialVariantSourcesUnavailable.erase(
+                absolutePath);
         }
         return m_shaderVariants
             .emplace(absolutePath, std::move(declaration))
@@ -2539,9 +2940,12 @@ namespace LamaPon
         // 宣言に無いキーワードは落とします。シェーダーを差し替えた
         // 後のマテリアルが、存在しないキーワードでコンパイルを
         // 走らせないようにするためです。
-        const auto normalized = NormalizeKeywords(
-            ShaderVariantsFor(absolutePath),
-            keywords);
+        const auto& variants = ShaderVariantsFor(absolutePath);
+        const auto normalized =
+            m_materialVariantSourcesUnavailable.find(absolutePath)
+                    != m_materialVariantSourcesUnavailable.end()
+                ? keywords
+                : NormalizeKeywords(variants, keywords);
         // 同じHLSLでもバリアントごとに別のエントリーです。キーは
         // 「パス?キーワード」で、キーワードは常に整列済みなので
         // 同じ組み合わせなら必ず同じキーになります。
@@ -2557,6 +2961,7 @@ namespace LamaPon
         if (!entry)
         {
             entry = std::make_unique<MaterialShaderEntry>();
+            entry->definitionPath = absolutePath;
             entry->keywords = normalized.Keywords();
         }
 
@@ -2605,11 +3010,14 @@ namespace LamaPon
                 }
                 catch (const std::exception& exception)
                 {
-                    entry->error = DescribeShaderFailure(
-                        Assets(),
-                        absolutePath,
-                        exception.what(),
-                        ShaderUsage::Material);
+                    entry->error =
+                        IsShaderManifestPath(absolutePath)
+                        ? exception.what()
+                        : DescribeShaderFailure(
+                            Assets(),
+                            absolutePath,
+                            exception.what(),
+                            ShaderUsage::Material);
                 }
             }
             else
@@ -2643,23 +3051,111 @@ namespace LamaPon
                 absolutePath,
                 fileError)
             : std::filesystem::file_time_type{};
+        std::error_code referencedFileError;
+        const bool referencedSourceExists =
+            !entry->referencedSource.empty()
+            && Assets().FileExists(entry->referencedSource);
+        const auto referencedWriteTime =
+            (referencedSourceExists && !archived)
+            ? std::filesystem::last_write_time(
+                entry->referencedSource,
+                referencedFileError)
+            : std::filesystem::file_time_type{};
+        const auto shaderDependencyRevision =
+            CurrentShaderDependencyRevision(
+                Assets(),
+                absolutePath,
+                entry->referencedSource,
+                entry->keywords);
+        const bool definitionChanged = entry->observed
+            && (entry->sourceExists != sourceExists
+                || (sourceExists
+                    && !archived
+                    && entry->writeTime != writeTime));
+        const bool dependencyChanged = entry->observed
+            && (entry->referencedSourceExists
+                    != referencedSourceExists
+                || (referencedSourceExists
+                    && !archived
+                    && entry->referencedWriteTime
+                        != referencedWriteTime));
+        const bool includeDependencyChanged = entry->observed
+            && entry->dependencyRevision
+                != shaderDependencyRevision;
         const bool changed = !entry->observed
             || entry->forceReload
-            || entry->sourceExists != sourceExists
-            || (sourceExists
-                && !archived
-                && entry->writeTime != writeTime);
+            || definitionChanged
+            || dependencyChanged
+            || includeDependencyChanged;
         if (changed)
         {
+            // Manifestまたは参照先HLSLが変わった場合、#pragma宣言も
+            // 読み直します。mapのidentityはManifestパスのままです。
+            if (IsShaderManifestPath(absolutePath)
+                && (entry->forceReload
+                    || definitionChanged
+                    || dependencyChanged
+                    || includeDependencyChanged))
+            {
+                m_shaderVariants.erase(absolutePath);
+                m_materialVariantSourcesUnavailable.erase(
+                    absolutePath);
+            }
             entry->observed = true;
             entry->forceReload = false;
             entry->sourceExists = sourceExists;
             entry->writeTime = writeTime;
-            if (!sourceExists)
+            // 非同期warm-upを含め、Compile中のinclude保存を次回pollで
+            // 必ず拾えるよう開始前のrevisionを基準にします。
+            entry->dependencyRevision = shaderDependencyRevision;
+
+            ShaderAssetDesc manifest;
+            std::filesystem::path hlslPath;
+            std::string manifestError;
+            const bool sourceResolved =
+                ResolveMaterialShaderSource(
+                    Assets(),
+                    absolutePath,
+                    &manifest,
+                    hlslPath,
+                    manifestError);
+            entry->referencedSource =
+                IsShaderManifestPath(absolutePath)
+                    && sourceResolved
+                ? hlslPath
+                : std::filesystem::path{};
+            entry->referencedSourceExists =
+                !entry->referencedSource.empty()
+                && Assets().FileExists(entry->referencedSource);
+            std::error_code dependencyError;
+            entry->referencedWriteTime =
+                (entry->referencedSourceExists && !archived)
+                ? std::filesystem::last_write_time(
+                    entry->referencedSource,
+                    dependencyError)
+                : std::filesystem::file_time_type{};
+            if (!sourceExists
+                && !CanUseSourceStrippedShader(
+                    Assets(),
+                    absolutePath))
             {
                 entry->error =
                     "Shader file was not found: "
                     + PathToUtf8(absolutePath);
+                entry->effect.reset();
+            }
+            else if (!sourceResolved)
+            {
+                entry->error = std::move(manifestError);
+                entry->effect.reset();
+            }
+            else if (IsShaderManifestPath(absolutePath)
+                && !entry->referencedSourceExists
+                && !archived)
+            {
+                entry->error =
+                    "Material shader source file was not found: "
+                    + PathToUtf8(entry->referencedSource);
                 entry->effect.reset();
             }
             else
@@ -2675,21 +3171,78 @@ namespace LamaPon
                     {
                         // effectを破棄すると、失敗時は代替表示へ切り替わります。
                         auto* const assets = &Assets();
-                        const auto path = absolutePath;
+                        const auto path = hlslPath;
                         const auto keywordList = entry->keywords;
                         entry->effect.reset();
-                        entry->pending = true;
                         entry->error.clear();
-                        entry->warming = std::async(
-                            std::launch::async,
-                            [assets, path, keywordList]
+                        if (IsShaderManifestPath(absolutePath))
+                        {
+                            std::vector<ShaderStageDesc> stages;
+                            for (const auto& pass : manifest.passes)
                             {
-                                WarmShaderCache(
-                                    *assets,
-                                    path,
-                                    keywordList);
-                            });
-                        return Lit();
+                                const bool usedByStaticMaterial =
+                                    pass.role == ShaderPassRole::Forward
+                                    || pass.role
+                                        == ShaderPassRole::Instanced
+                                    || pass.role
+                                        == ShaderPassRole::Outline
+                                    || pass.role
+                                        == ShaderPassRole::Occluded;
+                                if (usedByStaticMaterial)
+                                {
+                                    stages.insert(
+                                        stages.end(),
+                                        pass.stages.begin(),
+                                        pass.stages.end());
+                                }
+                            }
+                            // 全role/pass/stageを先にcacheへ焼きます。optional
+                            // stageの失敗を含む最終診断は、main threadで
+                            // LitEffectを構築したときに一元的に決めます。
+                            if (!stages.empty())
+                            {
+                                entry->warming = std::async(
+                                    std::launch::async,
+                                    [assets,
+                                        path,
+                                        keywordList,
+                                        stages = std::move(stages)]() noexcept
+                                    {
+                                        for (const auto& stage : stages)
+                                        {
+                                            try
+                                            {
+                                                static_cast<void>(
+                                                    CompileShaderCached(
+                                                        *assets,
+                                                        path,
+                                                        stage.entryPoint.c_str(),
+                                                        stage.target.c_str(),
+                                                        keywordList));
+                                            }
+                                            catch (...)
+                                            {
+                                            }
+                                        }
+                                    });
+                                entry->pending = true;
+                                return Lit();
+                            }
+                        }
+                        else
+                        {
+                            entry->warming = std::async(
+                                std::launch::async,
+                                [assets, path, keywordList]
+                                {
+                                    WarmShaderCache(
+                                        *assets,
+                                        path,
+                                        keywordList);
+                                });
+                            entry->pending = true;
+                            return Lit();
+                        }
                     }
                     auto candidate = std::make_unique<LitEffect>(
                         m_device.Get(),
@@ -2705,11 +3258,14 @@ namespace LamaPon
                 }
                 catch (const std::exception& exception)
                 {
-                    entry->error = DescribeShaderFailure(
-                        Assets(),
-                        absolutePath,
-                        exception.what(),
-                        ShaderUsage::Material);
+                    entry->error =
+                        IsShaderManifestPath(absolutePath)
+                        ? exception.what()
+                        : DescribeShaderFailure(
+                            Assets(),
+                            absolutePath,
+                            exception.what(),
+                            ShaderUsage::Material);
                     // 再コンパイル失敗を視認できるよう、直前のシェーダーを破棄して
                     // 代替表示へ切り替えます。
                     entry->effect.reset();
@@ -2738,9 +3294,12 @@ namespace LamaPon
         const auto absolutePath =
             Assets().ResolvePath(shaderPath).lexically_normal();
         // 通常マテリアルと同じく、バリアントごとに別エントリーです。
-        const auto normalized = NormalizeKeywords(
-            ShaderVariantsFor(absolutePath),
-            keywords);
+        const auto& variants = ShaderVariantsFor(absolutePath);
+        const auto normalized =
+            m_materialVariantSourcesUnavailable.find(absolutePath)
+                    != m_materialVariantSourcesUnavailable.end()
+                ? keywords
+                : NormalizeKeywords(variants, keywords);
         const auto variantKey = normalized.Key();
         const std::filesystem::path cacheKey =
             variantKey.empty()
@@ -2753,6 +3312,7 @@ namespace LamaPon
         if (!entry)
         {
             entry = std::make_unique<MaterialShaderEntry>();
+            entry->definitionPath = absolutePath;
             entry->keywords = normalized.Keywords();
         }
 
@@ -2793,23 +3353,100 @@ namespace LamaPon
                 absolutePath,
                 fileError)
             : std::filesystem::file_time_type{};
+        std::error_code referencedFileError;
+        const bool referencedSourceExists =
+            !entry->referencedSource.empty()
+            && Assets().FileExists(entry->referencedSource);
+        const auto referencedWriteTime =
+            (referencedSourceExists && !archived)
+            ? std::filesystem::last_write_time(
+                entry->referencedSource,
+                referencedFileError)
+            : std::filesystem::file_time_type{};
+        const auto shaderDependencyRevision =
+            CurrentShaderDependencyRevision(
+                Assets(),
+                absolutePath,
+                entry->referencedSource,
+                entry->keywords);
+        const bool definitionChanged = entry->observed
+            && (entry->sourceExists != sourceExists
+                || (sourceExists
+                    && !archived
+                    && entry->writeTime != writeTime));
+        const bool dependencyChanged = entry->observed
+            && (entry->referencedSourceExists
+                    != referencedSourceExists
+                || (referencedSourceExists
+                    && !archived
+                    && entry->referencedWriteTime
+                        != referencedWriteTime));
+        const bool includeDependencyChanged = entry->observed
+            && entry->dependencyRevision
+                != shaderDependencyRevision;
         const bool changed = !entry->observed
             || entry->forceReload
-            || entry->sourceExists != sourceExists
-            || (sourceExists
-                && !archived
-                && entry->writeTime != writeTime);
+            || definitionChanged
+            || dependencyChanged
+            || includeDependencyChanged;
         if (changed)
         {
+            if (IsShaderManifestPath(absolutePath)
+                && (entry->forceReload
+                    || definitionChanged
+                    || dependencyChanged
+                    || includeDependencyChanged))
+            {
+                m_shaderVariants.erase(absolutePath);
+                m_materialVariantSourcesUnavailable.erase(
+                    absolutePath);
+            }
             entry->observed = true;
             entry->forceReload = false;
             entry->sourceExists = sourceExists;
             entry->writeTime = writeTime;
-            if (!sourceExists)
+            // Compile中のinclude保存を次回pollで必ず拾えるよう、
+            // 終了後ではなく開始前のrevisionを基準にします。
+            entry->dependencyRevision = shaderDependencyRevision;
+
+            ShaderAssetDesc manifest;
+            std::filesystem::path hlslPath;
+            std::string manifestError;
+            const bool sourceResolved =
+                ResolveMaterialShaderSource(
+                    Assets(),
+                    absolutePath,
+                    &manifest,
+                    hlslPath,
+                    manifestError);
+            entry->referencedSource =
+                IsShaderManifestPath(absolutePath)
+                    && sourceResolved
+                ? hlslPath
+                : std::filesystem::path{};
+            entry->referencedSourceExists =
+                !entry->referencedSource.empty()
+                && Assets().FileExists(entry->referencedSource);
+            std::error_code dependencyError;
+            entry->referencedWriteTime =
+                (entry->referencedSourceExists && !archived)
+                ? std::filesystem::last_write_time(
+                    entry->referencedSource,
+                    dependencyError)
+                : std::filesystem::file_time_type{};
+            if (!sourceExists
+                && !CanUseSourceStrippedShader(
+                    Assets(),
+                    absolutePath))
             {
                 entry->error =
                     "Shader file was not found: "
                     + PathToUtf8(absolutePath);
+                entry->effect.reset();
+            }
+            else if (!sourceResolved)
+            {
+                entry->error = std::move(manifestError);
                 entry->effect.reset();
             }
             else
@@ -2830,11 +3467,14 @@ namespace LamaPon
                 }
                 catch (const std::exception& exception)
                 {
-                    entry->error = DescribeShaderFailure(
-                        Assets(),
-                        absolutePath,
-                        exception.what(),
-                        ShaderUsage::Material);
+                    entry->error =
+                        IsShaderManifestPath(absolutePath)
+                        ? exception.what()
+                        : DescribeShaderFailure(
+                            Assets(),
+                            absolutePath,
+                            exception.what(),
+                            ShaderUsage::Material);
                     // 通常マテリアルと同じく、失敗したら直前の
                     // シェーダーは残しません。
                     entry->effect.reset();
@@ -2859,29 +3499,55 @@ namespace LamaPon
         // 宣言そのものも読み直します（multi_compileの行を
         // 足し引きしたときに追従するため）。
         m_shaderVariants.erase(absolutePath);
-        // バリアントごとに別エントリーなので、そのHLSLから作られた
-        // ものを全部立て直します（キーは「パス?キーワード」）。
+        m_materialVariantSourcesUnavailable.erase(
+            absolutePath);
+        // バリアントごとに別エントリーなので、その定義ファイルから
+        // 作られたものを全部立て直します（キーは「パス?キーワード」）。
+        // Manifestの参照先HLSLで呼ばれた場合も、Manifest identity側の
+        // variant宣言と全entryを無効化します。
         const auto prefix = absolutePath.wstring();
         for (auto& [key, value] : m_materialShaders)
         {
             const auto text = key.wstring();
-            if (text == prefix
+            const bool definitionMatches = text == prefix
                 || (text.rfind(prefix, 0) == 0
                     && text.size() > prefix.size()
-                    && text[prefix.size()] == L'?'))
+                    && text[prefix.size()] == L'?');
+            const bool dependencyMatches =
+                !value->referencedSource.empty()
+                && value->referencedSource == absolutePath;
+            if (definitionMatches || dependencyMatches)
             {
                 value->forceReload = true;
+                if (!value->definitionPath.empty())
+                {
+                    m_shaderVariants.erase(
+                        value->definitionPath);
+                    m_materialVariantSourcesUnavailable.erase(
+                        value->definitionPath);
+                }
             }
         }
         for (auto& [key, value] : m_skinnedMaterialShaders)
         {
             const auto text = key.wstring();
-            if (text == prefix
+            const bool definitionMatches = text == prefix
                 || (text.rfind(prefix, 0) == 0
                     && text.size() > prefix.size()
-                    && text[prefix.size()] == L'?'))
+                    && text[prefix.size()] == L'?');
+            const bool dependencyMatches =
+                !value->referencedSource.empty()
+                && value->referencedSource == absolutePath;
+            if (definitionMatches || dependencyMatches)
             {
                 value->forceReload = true;
+                if (!value->definitionPath.empty())
+                {
+                    m_shaderVariants.erase(
+                        value->definitionPath);
+                    m_materialVariantSourcesUnavailable.erase(
+                        value->definitionPath);
+                }
             }
         }
     }

@@ -1,6 +1,10 @@
 #include "LamaPon/Graphics/ComputeEffect.h"
 
+#include "LamaPon/Assets/AssetManager.h"
+#include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Graphics/ShaderCompiler.h"
+#include "LamaPon/Graphics/ShaderManifest.h"
+#include "LamaPon/Graphics/ShaderProgram.h"
 
 #include <algorithm>
 #include <limits>
@@ -9,6 +13,27 @@
 
 namespace
 {
+    [[nodiscard]] const char* StageName(
+        const LamaPon::ShaderStage stage) noexcept
+    {
+        switch (stage)
+        {
+        case LamaPon::ShaderStage::Vertex:
+            return "vertex";
+        case LamaPon::ShaderStage::Pixel:
+            return "pixel";
+        case LamaPon::ShaderStage::Geometry:
+            return "geometry";
+        case LamaPon::ShaderStage::Hull:
+            return "hull";
+        case LamaPon::ShaderStage::Domain:
+            return "domain";
+        case LamaPon::ShaderStage::Compute:
+            return "compute";
+        }
+        return "unknown";
+    }
+
     void ThrowIfFailed(
         const HRESULT result,
         const char* operation)
@@ -40,21 +65,98 @@ namespace LamaPon
                 " and context.");
         }
 
-        // ディスクキャッシュ付きの共通入口を使います
-        // （クラスタライトカリングと同じ経路）。
-        const auto byteCode = CompileShaderCached(
-            assets,
-            shaderPath,
-            "CSMain",
-            "cs_5_0");
-        ThrowIfFailed(
-            device->CreateComputeShader(
-                byteCode->GetBufferPointer(),
-                byteCode->GetBufferSize(),
-                nullptr,
-                m_computeShader.ReleaseAndGetAddressOf()),
-            "ID3D11Device::CreateComputeShader"
-            "(compute effect)");
+        if (IsShaderManifestPath(shaderPath))
+        {
+            ShaderAssetDesc asset;
+            std::string manifestError;
+            if (!LoadShaderAssetDesc(
+                    assets,
+                    shaderPath,
+                    asset,
+                    manifestError))
+            {
+                throw std::runtime_error(manifestError);
+            }
+            if (asset.type != ShaderAssetType::Compute)
+            {
+                throw std::runtime_error(
+                    "ComputeEffect requires a shader manifest"
+                    " whose type is 'compute': "
+                    + PathToUtf8(shaderPath));
+            }
+
+            // Validation guarantees that at least one pass has a required
+            // compute stage. Optional probes do not select the runtime pass.
+            const ShaderPassDesc* selectedPass{};
+            for (const auto& candidate : asset.passes)
+            {
+                const auto* compute = FindShaderStage(
+                    candidate,
+                    ShaderStage::Compute);
+                if (compute != nullptr && !compute->optional)
+                {
+                    selectedPass = &candidate;
+                    break;
+                }
+            }
+            if (selectedPass == nullptr)
+            {
+                throw std::runtime_error(
+                    "Compute shader manifest has no non-optional"
+                    " compute stage: " + PathToUtf8(shaderPath));
+            }
+
+            for (const auto& stage : selectedPass->stages)
+            {
+                if (stage.stage != ShaderStage::Compute)
+                {
+                    throw std::runtime_error(
+                        "ComputeEffect manifest pass '"
+                        + selectedPass->name
+                        + "' contains unsupported "
+                        + StageName(stage.stage)
+                        + " stage; a compute pass may contain only"
+                        " a compute stage: "
+                        + PathToUtf8(shaderPath));
+                }
+            }
+
+            ShaderProgram program;
+            std::string programError;
+            if (!program.Compile(
+                    device,
+                    assets,
+                    asset.source,
+                    *selectedPass,
+                    programError))
+            {
+                throw std::runtime_error(programError);
+            }
+            if (program.ComputeShader() == nullptr)
+            {
+                throw std::runtime_error(
+                    "ComputeEffect manifest pass did not create a"
+                    " compute shader: " + PathToUtf8(shaderPath));
+            }
+            m_computeShader = program.ComputeShader();
+        }
+        else
+        {
+            // Direct HLSL keeps the original CSMain/cs_5_0 fallback.
+            const auto byteCode = CompileShaderCached(
+                assets,
+                shaderPath,
+                "CSMain",
+                "cs_5_0");
+            ThrowIfFailed(
+                device->CreateComputeShader(
+                    byteCode->GetBufferPointer(),
+                    byteCode->GetBufferSize(),
+                    nullptr,
+                    m_computeShader.ReleaseAndGetAddressOf()),
+                "ID3D11Device::CreateComputeShader"
+                "(compute effect)");
+        }
 
         D3D11_BUFFER_DESC buffer{};
         buffer.ByteWidth =
