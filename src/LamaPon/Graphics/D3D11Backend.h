@@ -105,6 +105,15 @@ namespace LamaPon
             CreateDebugDrawingBackend() override;
         [[nodiscard]] GpuProfilerBackend*
             ProfilerBackend() noexcept override;
+        [[nodiscard]] GraphicsTextureHandle
+            CreateSolidRgba8Texture(
+                const std::array<std::uint8_t, 4>& color) override;
+        [[nodiscard]] GraphicsViewHandle
+            CreateShaderResourceView(
+                const GraphicsTextureHandle& texture) override;
+        [[nodiscard]] bool UpdateDynamicVertexBuffer(
+            GraphicsBufferHandle& buffer,
+            std::span<const std::byte> data) override;
 
         // 既存のDirectX 11描画経路へ貸し出す非所有ポインターです。
         // GraphicsDeviceは移行期間中、従来のDevice/Context APIを
@@ -119,6 +128,13 @@ namespace LamaPon
         {
             return m_context.Get();
         }
+        // 移行期間中のD3D11描画向けnative解決です。emptyはnullptr、別の
+        // Backend初期化世代から来たhandleはinvalid_argumentになります。
+        [[nodiscard]] ID3D11ShaderResourceView*
+            ResolveShaderResourceView(
+                const GraphicsViewHandle& view) const;
+        [[nodiscard]] ID3D11Buffer* ResolveBuffer(
+            const GraphicsBufferHandle& buffer) const;
 
     private:
         void CreateSizeDependentResources(
@@ -140,6 +156,8 @@ namespace LamaPon
             m_depthStencilView;
         D3D11_VIEWPORT m_viewport{};
         bool m_tearingAllowed{};
+        std::shared_ptr<Detail::GraphicsResourceDomain>
+            m_resourceDomain;
         Microsoft::WRL::ComPtr<ID3D11InfoQueue> m_infoQueue;
         std::uint64_t m_debugMessagesLogged{};
         // Device / Contextより先に破棄されるよう末尾で所有します。

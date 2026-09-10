@@ -1,10 +1,14 @@
 #pragma once
 
 #include "LamaPon/Graphics/GraphicsQuality.h"
+#include "LamaPon/Graphics/GraphicsResource.h"
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace DirectX
@@ -231,6 +235,24 @@ namespace LamaPon
         // 既存virtualのslotを維持するため、新しい契約は末尾へ追加します。
         [[nodiscard]] virtual GpuProfilerBackend*
             ProfilerBackend() noexcept = 0;
+
+        // API非依存handleを返す最初のresource生成境界です。viewはtextureを
+        // 強所有し、Backendを再初期化した後もhandleの破棄自体は安全です。
+        // 既存virtualのslotを維持するため、新しい契約は末尾へ追加します。
+        [[nodiscard]] virtual GraphicsTextureHandle
+            CreateSolidRgba8Texture(
+                const std::array<std::uint8_t, 4>& color) = 0;
+        [[nodiscard]] virtual GraphicsViewHandle
+            CreateShaderResourceView(
+                const GraphicsTextureHandle& texture) = 0;
+
+        // 共有の動的頂点bufferを必要容量へ拡張し、先頭からdataを書きます。
+        // allocation / upload失敗時はbufferを変更せずfalseを返します。
+        // 別Backend世代のhandleはprogrammer errorとしてinvalid_argumentで
+        // 拒否します。
+        [[nodiscard]] virtual bool UpdateDynamicVertexBuffer(
+            GraphicsBufferHandle& buffer,
+            std::span<const std::byte> data) = 0;
     };
 
     // activeApiはSelectGraphicsBackendで解決済みの値を渡します。

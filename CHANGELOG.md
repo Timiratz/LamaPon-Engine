@@ -26,8 +26,10 @@
 - エディター補助表示・UI・最終画面転送・Computeに残っていたGPU計測区間もscope guard化し、例外後のprofiler stackを維持。
 - `GpuProfiler`をAPI非依存のfacadeとし、D3D11 timestamp / pipeline queryをBackend所有driverへ分離。未接続・非対応時は安全なno-opと空結果へフォールバックする。
 - `GraphicsDevice`の再初期化時に自身が所有する旧Device由来のShader・State・Texture等を破棄してからBackendを作り直し、途中の初期化失敗も空状態へ戻す寿命境界を追加。
+- API非依存の強所有`GraphicsTextureHandle` / `GraphicsBufferHandle` / `GraphicsViewHandle`とBackend世代境界を追加し、白テクスチャと共有インスタンスバッファをD3D11 Backend生成へ移行。従来のD3D11ポインターAPIは互換facadeとして維持。
 - 車両パラメータープレビューのモデル送信を`EditorModelPreviewRenderer`へ分離し、DirectXTK11のContext / CommonStates / BasicEffect操作をD3D11実装内へ隔離。
 - `GraphicsSettings`、`GraphicsDevice`、`Scene`、`EnvironmentRenderer`、`GpuProfiler`、`DebugRenderer`のABI変更、および共通Backend契約の拡張に伴い、Game Module APIを32へ更新。
+- 描画resource handle契約と`GraphicsDevice` / `GraphicsBackend`のABI変更に伴い、Game Module APIを33へ更新。SDK反映後はゲーム用DLLの再ビルドが必要。
 
 ### ファイル名の統一
 
@@ -59,7 +61,8 @@
   クラスタライト更新契約の追加で25、描画先状態契約の追加で26、
   環境ベイクworkflowの集約で27、環境資源facadeの追加で28、
   GPU計測scopeの追加で29、GPUメモリ統計契約の追加で30、
-  Debug描画sinkの分離で31、GPU計測driverの分離で現在の32へ更新。
+  Debug描画sinkの分離で31、GPU計測driverの分離で32、
+  描画resource handle契約の追加で現在の33へ更新。
 - MSVC／Ninjaのヘッダー依存検出を修正。ローカライズされた出力と既存ビルドの依存情報再取得に対応。
 - Web入力の登録解除・例外処理・ログを改善し、SDK構成、ライセンス同梱、Windows／Webの回帰検査を整備。
 

@@ -20,9 +20,11 @@
 #include <array>
 #include <cstddef>
 #include <cstring>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace
@@ -38,6 +40,64 @@ namespace
             depthTarget;
         D3D11_VIEWPORT viewport{};
         bool hasViewport{};
+    };
+
+    class D3D11ResourceDomain final
+        : public LamaPon::Detail::GraphicsResourceDomain
+    {
+    };
+
+    class D3D11TexturePayload final
+        : public LamaPon::Detail::GraphicsTexturePayload
+    {
+    public:
+        D3D11TexturePayload(
+            std::shared_ptr<LamaPon::Detail::GraphicsResourceDomain> domain,
+            Microsoft::WRL::ComPtr<ID3D11Texture2D> texture)
+            : GraphicsTexturePayload(std::move(domain))
+            , native(std::move(texture))
+        {
+        }
+
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> native;
+    };
+
+    class D3D11BufferPayload final
+        : public LamaPon::Detail::GraphicsBufferPayload
+    {
+    public:
+        D3D11BufferPayload(
+            std::shared_ptr<LamaPon::Detail::GraphicsResourceDomain> domain,
+            Microsoft::WRL::ComPtr<ID3D11Buffer> buffer,
+            const std::size_t byteCapacity)
+            : GraphicsBufferPayload(std::move(domain))
+            , native(std::move(buffer))
+            , capacity(byteCapacity)
+        {
+        }
+
+        Microsoft::WRL::ComPtr<ID3D11Buffer> native;
+        std::size_t capacity{};
+    };
+
+    class D3D11ViewPayload final
+        : public LamaPon::Detail::GraphicsViewPayload
+    {
+    public:
+        D3D11ViewPayload(
+            std::shared_ptr<LamaPon::Detail::GraphicsResourceDomain> domain,
+            const LamaPon::GraphicsViewKind kind,
+            LamaPon::GraphicsTextureHandle resource,
+            Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view)
+            : GraphicsViewPayload(
+                std::move(domain),
+                kind,
+                std::move(resource))
+            , native(std::move(view))
+        {
+        }
+
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> native;
     };
 
     class D3D11DebugDrawingBackend final
@@ -340,6 +400,9 @@ namespace LamaPon
         m_gpuProfilerBackend = CreateProfilerBackend(
             m_device.Get(),
             m_context.Get());
+        // 同じD3D11 APIでも、Initializeごとに別Device世代として扱います。
+        // 外部に残った旧handleはnative解決時にこのidentityで拒否します。
+        m_resourceDomain = std::make_shared<D3D11ResourceDomain>();
     }
 
     void D3D11Backend::PrepareForResourceRelease() noexcept
@@ -353,6 +416,9 @@ namespace LamaPon
 
     void D3D11Backend::Shutdown() noexcept
     {
+        // 先に現役domainを外し、外部に残ったhandleをstaleにします。
+        // payload側のCOM参照は、そのhandleが最後に破棄されるまで安全に残ります。
+        m_resourceDomain.reset();
         m_gpuProfilerBackend.reset();
         m_infoQueue.Reset();
         m_depthStencilView.Reset();
@@ -903,6 +969,223 @@ namespace LamaPon
         D3D11Backend::ProfilerBackend() noexcept
     {
         return m_gpuProfilerBackend.get();
+    }
+
+    GraphicsTextureHandle D3D11Backend::CreateSolidRgba8Texture(
+        const std::array<std::uint8_t, 4>& color)
+    {
+        if (!IsInitialized() || m_resourceDomain == nullptr)
+        {
+            throw std::logic_error(
+                "CreateSolidRgba8Texture requires an initialized backend.");
+        }
+
+        D3D11_TEXTURE2D_DESC description{};
+        description.Width = 1;
+        description.Height = 1;
+        description.MipLevels = 1;
+        description.ArraySize = 1;
+        description.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        description.SampleDesc.Count = 1;
+        description.Usage = D3D11_USAGE_IMMUTABLE;
+        description.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+        D3D11_SUBRESOURCE_DATA initialData{};
+        initialData.pSysMem = color.data();
+        initialData.SysMemPitch = static_cast<UINT>(color.size());
+
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+        ThrowIfFailed(
+            m_device->CreateTexture2D(
+                &description,
+                &initialData,
+                texture.ReleaseAndGetAddressOf()),
+            "ID3D11Device::CreateTexture2D(solid RGBA8)");
+        return Detail::GraphicsResourceHandleAccess::MakeTexture(
+            std::make_shared<D3D11TexturePayload>(
+                m_resourceDomain,
+                std::move(texture)));
+    }
+
+    GraphicsViewHandle D3D11Backend::CreateShaderResourceView(
+        const GraphicsTextureHandle& texture)
+    {
+        using Detail::GraphicsResourceHandleAccess;
+        if (!IsInitialized() || m_resourceDomain == nullptr)
+        {
+            throw std::logic_error(
+                "CreateShaderResourceView requires an initialized backend.");
+        }
+        const auto* const texturePayload =
+            dynamic_cast<const D3D11TexturePayload*>(
+            GraphicsResourceHandleAccess::Payload(texture));
+        if (texturePayload == nullptr
+            || GraphicsResourceHandleAccess::Domain(texture)
+                != m_resourceDomain.get())
+        {
+            throw std::invalid_argument(
+                "CreateShaderResourceView requires a texture from this "
+                "backend generation.");
+        }
+
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view;
+        ThrowIfFailed(
+            m_device->CreateShaderResourceView(
+                texturePayload->native.Get(),
+                nullptr,
+                view.ReleaseAndGetAddressOf()),
+            "ID3D11Device::CreateShaderResourceView");
+        return GraphicsResourceHandleAccess::MakeView(
+            std::make_shared<D3D11ViewPayload>(
+                m_resourceDomain,
+                GraphicsViewKind::ShaderResource,
+                texture,
+                std::move(view)));
+    }
+
+    bool D3D11Backend::UpdateDynamicVertexBuffer(
+        GraphicsBufferHandle& buffer,
+        const std::span<const std::byte> data)
+    {
+        using Detail::GraphicsResourceHandleAccess;
+        if (!IsInitialized() || m_resourceDomain == nullptr)
+        {
+            throw std::logic_error(
+                "UpdateDynamicVertexBuffer requires an initialized backend.");
+        }
+
+        const auto* payload = dynamic_cast<const D3D11BufferPayload*>(
+            GraphicsResourceHandleAccess::Payload(buffer));
+        if (buffer
+            && (payload == nullptr
+                || GraphicsResourceHandleAccess::Domain(buffer)
+                    != m_resourceDomain.get()))
+        {
+            throw std::invalid_argument(
+                "UpdateDynamicVertexBuffer requires a buffer from this "
+                "backend generation.");
+        }
+        if (data.empty())
+        {
+            return false;
+        }
+
+        const std::size_t currentCapacity =
+            payload != nullptr ? payload->capacity : 0;
+        if (!buffer || currentCapacity < data.size())
+        {
+            constexpr std::size_t minimumCapacity = 4096;
+            constexpr auto maximumCapacity =
+                static_cast<std::size_t>(
+                    std::numeric_limits<UINT>::max());
+            if (data.size() > maximumCapacity)
+            {
+                return false;
+            }
+            const std::size_t doubledCapacity =
+                currentCapacity > maximumCapacity / 2
+                    ? maximumCapacity
+                    : currentCapacity * 2;
+            const std::size_t newCapacity = std::max({
+                data.size(),
+                doubledCapacity,
+                minimumCapacity });
+
+            D3D11_BUFFER_DESC description{};
+            description.ByteWidth = static_cast<UINT>(newCapacity);
+            description.Usage = D3D11_USAGE_DYNAMIC;
+            description.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+            description.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+            Microsoft::WRL::ComPtr<ID3D11Buffer> nativeBuffer;
+            if (FAILED(m_device->CreateBuffer(
+                    &description,
+                    nullptr,
+                    nativeBuffer.ReleaseAndGetAddressOf())))
+            {
+                return false;
+            }
+
+            D3D11_MAPPED_SUBRESOURCE mapped{};
+            if (FAILED(m_context->Map(
+                    nativeBuffer.Get(),
+                    0,
+                    D3D11_MAP_WRITE_DISCARD,
+                    0,
+                    &mapped)))
+            {
+                return false;
+            }
+            std::memcpy(mapped.pData, data.data(), data.size());
+            m_context->Unmap(nativeBuffer.Get(), 0);
+
+            auto replacement =
+                GraphicsResourceHandleAccess::MakeBuffer(
+                    std::make_shared<D3D11BufferPayload>(
+                        m_resourceDomain,
+                        std::move(nativeBuffer),
+                        newCapacity));
+            buffer = std::move(replacement);
+            return true;
+        }
+
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        if (payload == nullptr
+            || FAILED(m_context->Map(
+                payload->native.Get(),
+                0,
+                D3D11_MAP_WRITE_DISCARD,
+                0,
+                &mapped)))
+        {
+            return false;
+        }
+        std::memcpy(mapped.pData, data.data(), data.size());
+        m_context->Unmap(payload->native.Get(), 0);
+        return true;
+    }
+
+    ID3D11ShaderResourceView* D3D11Backend::ResolveShaderResourceView(
+        const GraphicsViewHandle& view) const
+    {
+        using Detail::GraphicsResourceHandleAccess;
+        if (!view)
+        {
+            return nullptr;
+        }
+        const auto* const payload = dynamic_cast<const D3D11ViewPayload*>(
+            GraphicsResourceHandleAccess::Payload(view));
+        if (view.Kind() != GraphicsViewKind::ShaderResource
+            || payload == nullptr
+            || m_resourceDomain == nullptr
+            || GraphicsResourceHandleAccess::Domain(view)
+                != m_resourceDomain.get())
+        {
+            throw std::invalid_argument(
+                "The shader-resource view does not belong to this "
+                "backend generation.");
+        }
+        return payload->native.Get();
+    }
+
+    ID3D11Buffer* D3D11Backend::ResolveBuffer(
+        const GraphicsBufferHandle& buffer) const
+    {
+        using Detail::GraphicsResourceHandleAccess;
+        if (!buffer)
+        {
+            return nullptr;
+        }
+        const auto* const payload = dynamic_cast<const D3D11BufferPayload*>(
+            GraphicsResourceHandleAccess::Payload(buffer));
+        if (payload == nullptr
+            || m_resourceDomain == nullptr
+            || GraphicsResourceHandleAccess::Domain(buffer)
+                != m_resourceDomain.get())
+        {
+            throw std::invalid_argument(
+                "The buffer does not belong to this backend generation.");
+        }
+        return payload->native.Get();
     }
 
     void D3D11Backend::BindAndClearBackBuffer(

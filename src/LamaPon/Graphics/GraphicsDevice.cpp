@@ -29,7 +29,6 @@
 #include <psapi.h>
 
 #include <algorithm>
-#include <cstring>
 #include <array>
 #include <chrono>
 #include <future>
@@ -152,6 +151,65 @@ namespace LamaPon
         return backend != nullptr
             ? backend->Context()
             : nullptr;
+    }
+
+    ID3D11ShaderResourceView*
+        GraphicsDevice::WhiteTexture() const noexcept
+    {
+        const auto* const backend =
+            AsD3D11Backend(m_backend.get());
+        if (backend == nullptr)
+        {
+            return nullptr;
+        }
+        try
+        {
+            return backend->ResolveShaderResourceView(
+                m_whiteTextureView);
+        }
+        catch (...)
+        {
+            // 既存のnoexcept互換getterは内部不変条件の破損時も安全側へ
+            // 倒します。外部handle用の明示resolverは厳密な例外を維持します。
+            return nullptr;
+        }
+    }
+
+    ID3D11ShaderResourceView*
+        GraphicsDevice::ResolveD3D11ShaderResourceView(
+            const GraphicsViewHandle& view) const
+    {
+        const auto* const backend =
+            AsD3D11Backend(m_backend.get());
+        if (backend == nullptr)
+        {
+            if (view)
+            {
+                throw std::invalid_argument(
+                    "A non-empty shader-resource view requires an active "
+                    "DirectX 11 backend.");
+            }
+            return nullptr;
+        }
+        return backend->ResolveShaderResourceView(view);
+    }
+
+    ID3D11Buffer* GraphicsDevice::ResolveD3D11Buffer(
+        const GraphicsBufferHandle& buffer) const
+    {
+        const auto* const backend =
+            AsD3D11Backend(m_backend.get());
+        if (backend == nullptr)
+        {
+            if (buffer)
+            {
+                throw std::invalid_argument(
+                    "A non-empty buffer requires an active DirectX 11 "
+                    "backend.");
+            }
+            return nullptr;
+        }
+        return backend->ResolveBuffer(buffer);
     }
 
     EnvironmentRenderer::OwnedPrefilteredEnvironment
@@ -629,7 +687,6 @@ namespace LamaPon
         m_spotShadowMap.reset();
         m_pointShadowMap.reset();
         m_instanceBuffer.Reset();
-        m_instanceBufferCapacity = 0;
         m_additiveBlendPreservingAlpha.Reset();
         m_uiScissorRasterizer.Reset();
         m_uiScissorStack.clear();
@@ -667,6 +724,7 @@ namespace LamaPon
         }
         m_commonStates.reset();
         m_spriteBatch.reset();
+        m_whiteTextureView.Reset();
         m_whiteTexture.Reset();
         m_lightingState = {};
         if (m_backend)
@@ -1264,54 +1322,31 @@ namespace LamaPon
         const void* data,
         const std::size_t bytes)
     {
-        if (data == nullptr
-            || bytes == 0
-            || !IsInitialized())
+        if (data == nullptr || bytes == 0)
         {
             return nullptr;
         }
+        return ResolveD3D11Buffer(
+            AcquireInstanceBufferHandle(
+                std::span{
+                    static_cast<const std::byte*>(data),
+                    bytes }));
+    }
 
-        if (!m_instanceBuffer
-            || m_instanceBufferCapacity < bytes)
+    GraphicsBufferHandle GraphicsDevice::AcquireInstanceBufferHandle(
+        const std::span<const std::byte> data)
+    {
+        if (data.empty() || !IsInitialized())
         {
-            const std::size_t capacity = std::max({
-                bytes,
-                m_instanceBufferCapacity * 2,
-                static_cast<std::size_t>(4096) });
-            D3D11_BUFFER_DESC description{};
-            description.ByteWidth =
-                static_cast<UINT>(capacity);
-            description.Usage = D3D11_USAGE_DYNAMIC;
-            description.BindFlags =
-                D3D11_BIND_VERTEX_BUFFER;
-            description.CPUAccessFlags =
-                D3D11_CPU_ACCESS_WRITE;
-            if (FAILED(Device()->CreateBuffer(
-                    &description,
-                    nullptr,
-                    m_instanceBuffer
-                        .ReleaseAndGetAddressOf())))
-            {
-                m_instanceBuffer.Reset();
-                m_instanceBufferCapacity = 0;
-                return nullptr;
-            }
-            m_instanceBufferCapacity = capacity;
+            return {};
         }
-
-        D3D11_MAPPED_SUBRESOURCE mapped{};
-        if (FAILED(Context()->Map(
-                m_instanceBuffer.Get(),
-                0,
-                D3D11_MAP_WRITE_DISCARD,
-                0,
-                &mapped)))
+        if (!m_backend->UpdateDynamicVertexBuffer(
+                m_instanceBuffer,
+                data))
         {
-            return nullptr;
+            return {};
         }
-        std::memcpy(mapped.pData, data, bytes);
-        Context()->Unmap(m_instanceBuffer.Get(), 0);
-        return m_instanceBuffer.Get();
+        return m_instanceBuffer;
     }
 
     void GraphicsDevice::EndFrame()
@@ -1956,7 +1991,7 @@ namespace LamaPon
                 const auto tint =
                     premultiplied(color);
                 sprites.Draw(
-                    m_whiteTexture.Get(),
+                    WhiteTexture(),
                     XMFLOAT2{ x, y },
                     nullptr,
                     XMLoadFloat4(&tint),
@@ -3057,35 +3092,11 @@ namespace LamaPon
 
     void GraphicsDevice::CreateWhiteTexture()
     {
-        constexpr std::uint32_t whitePixel = 0xffffffffu;
-
-        D3D11_TEXTURE2D_DESC textureDescription{};
-        textureDescription.Width = 1;
-        textureDescription.Height = 1;
-        textureDescription.MipLevels = 1;
-        textureDescription.ArraySize = 1;
-        textureDescription.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        textureDescription.SampleDesc.Count = 1;
-        textureDescription.Usage = D3D11_USAGE_IMMUTABLE;
-        textureDescription.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-
-        D3D11_SUBRESOURCE_DATA initialData{};
-        initialData.pSysMem = &whitePixel;
-        initialData.SysMemPitch = sizeof(whitePixel);
-
-        Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
-        ThrowIfFailed(
-            Device()->CreateTexture2D(
-                &textureDescription,
-                &initialData,
-                texture.ReleaseAndGetAddressOf()),
-            "ID3D11Device::CreateTexture2D(white)");
-
-        ThrowIfFailed(
-            Device()->CreateShaderResourceView(
-                texture.Get(),
-                nullptr,
-                m_whiteTexture.ReleaseAndGetAddressOf()),
-            "ID3D11Device::CreateShaderResourceView(white)");
+        constexpr std::array<std::uint8_t, 4> white{
+            0xffu, 0xffu, 0xffu, 0xffu };
+        auto texture = m_backend->CreateSolidRgba8Texture(white);
+        auto view = m_backend->CreateShaderResourceView(texture);
+        m_whiteTexture = std::move(texture);
+        m_whiteTextureView = std::move(view);
     }
 }

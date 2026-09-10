@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
+#include <span>
 #include <stdexcept>
 #include <typeinfo>
 #include <vector>
@@ -342,13 +343,30 @@ namespace
             "DirectX 11 compatibility resources were not created");
         Microsoft::WRL::ComPtr<ID3D11Device> previousDevice =
             graphics.Device();
+        const auto previousWhiteTexture =
+            graphics.WhiteTextureHandle();
+        const auto previousWhiteView =
+            graphics.WhiteTextureViewHandle();
         const std::array<float, 4> instanceData{
             1.0f, 2.0f, 3.0f, 4.0f };
+        const auto instanceBytes = std::as_bytes(
+            std::span{ instanceData });
+        const auto previousInstanceBuffer =
+            graphics.AcquireInstanceBufferHandle(instanceBytes);
         Require(
-            graphics.AcquireInstanceBuffer(
-                instanceData.data(),
-                sizeof(instanceData)) != nullptr,
-            "DirectX 11 compatibility instance buffer was not created");
+            previousWhiteTexture
+                && previousWhiteView
+                && previousWhiteView.Kind()
+                    == LamaPon::GraphicsViewKind::ShaderResource
+                && previousInstanceBuffer
+                && graphics.ResolveD3D11ShaderResourceView(
+                    previousWhiteView) == graphics.WhiteTexture()
+                && graphics.ResolveD3D11Buffer(
+                    previousInstanceBuffer)
+                    == graphics.AcquireInstanceBuffer(
+                        instanceData.data(),
+                        sizeof(instanceData)),
+            "Neutral and DirectX 11 compatibility resources diverged");
         graphics.Initialize(
             window.Get(),
             Width,
@@ -365,13 +383,59 @@ namespace
                 && graphics.AdditiveBlendPreservingAlpha() != nullptr
                 && graphics.Device() != previousDevice.Get(),
             "GraphicsDevice reinitialization did not rebuild DirectX 11 resources");
-        auto* const rebuiltInstanceBuffer =
-            graphics.AcquireInstanceBuffer(
-                instanceData.data(),
-                sizeof(instanceData));
         Require(
-            rebuiltInstanceBuffer != nullptr,
-            "GraphicsDevice reinitialization did not rebuild the instance buffer");
+            previousWhiteTexture
+                && previousWhiteView
+                && previousInstanceBuffer,
+            "Backend shutdown invalidated externally owned handle lifetimes");
+        RequireThrowsExactly<std::invalid_argument>(
+            [&]
+            {
+                static_cast<void>(
+                    graphics.ResolveD3D11ShaderResourceView(
+                        previousWhiteView));
+            },
+            "A shader view from the previous backend generation was accepted");
+        RequireThrowsExactly<std::invalid_argument>(
+            [&]
+            {
+                static_cast<void>(
+                    graphics.ResolveD3D11Buffer(
+                        previousInstanceBuffer));
+            },
+            "A buffer from the previous backend generation was accepted");
+
+        const auto rebuiltInstanceHandle =
+            graphics.AcquireInstanceBufferHandle(instanceBytes);
+        auto* const rebuiltInstanceBuffer =
+            graphics.ResolveD3D11Buffer(rebuiltInstanceHandle);
+        Require(
+            rebuiltInstanceHandle
+                && rebuiltInstanceHandle != previousInstanceBuffer
+                && graphics.WhiteTextureHandle()
+                    != previousWhiteTexture
+                && graphics.WhiteTextureViewHandle()
+                    != previousWhiteView
+                && rebuiltInstanceBuffer != nullptr
+                && graphics.AcquireInstanceBuffer(
+                    instanceData.data(),
+                    sizeof(instanceData)) == rebuiltInstanceBuffer,
+            "GraphicsDevice reinitialization did not rebuild neutral resources");
+
+        std::vector<std::byte> grownInstanceData(
+            8192,
+            std::byte{ 0x2a });
+        const auto grownInstanceHandle =
+            graphics.AcquireInstanceBufferHandle(grownInstanceData);
+        auto* const grownInstanceBuffer =
+            graphics.ResolveD3D11Buffer(grownInstanceHandle);
+        Require(
+            grownInstanceHandle
+                && grownInstanceHandle != rebuiltInstanceHandle
+                && grownInstanceBuffer != nullptr
+                && graphics.ResolveD3D11Buffer(
+                    rebuiltInstanceHandle) == rebuiltInstanceBuffer,
+            "Growing a neutral buffer invalidated an externally held handle");
         Microsoft::WRL::ComPtr<ID3D11Device> whiteDevice;
         Microsoft::WRL::ComPtr<ID3D11Device> blendDevice;
         Microsoft::WRL::ComPtr<ID3D11Device> instanceDevice;
@@ -379,7 +443,7 @@ namespace
             whiteDevice.ReleaseAndGetAddressOf());
         graphics.AdditiveBlendPreservingAlpha()->GetDevice(
             blendDevice.ReleaseAndGetAddressOf());
-        rebuiltInstanceBuffer->GetDevice(
+        grownInstanceBuffer->GetDevice(
             instanceDevice.ReleaseAndGetAddressOf());
         Require(
             whiteDevice.Get() == graphics.Device()

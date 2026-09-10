@@ -245,6 +245,10 @@ namespace LamaPon
         [[nodiscard]] ID3D11Buffer* AcquireInstanceBuffer(
             const void* data,
             std::size_t bytes);
+        // 同じ更新経路のAPI非依存handle版です。copyして保持できますが、
+        // 再初期化前のhandleは新しいBackendではnative解決できません。
+        [[nodiscard]] GraphicsBufferHandle AcquireInstanceBufferHandle(
+            std::span<const std::byte> data);
         // 深度だけを書くパスに切り替えます。レンダラーはライティングと
         // ピクセルシェーダーを省いた描画を行います。
         // 種別を分けているのは、メインビューの深度プリパスだけは
@@ -442,7 +446,27 @@ namespace LamaPon
         // D3D11型を持ち込まず、段階的なrenderer移行までここで転送します。
         [[nodiscard]] ID3D11Device* Device() const noexcept;
         [[nodiscard]] ID3D11DeviceContext* Context() const noexcept;
-        [[nodiscard]] ID3D11ShaderResourceView* WhiteTexture() const noexcept { return m_whiteTexture.Get(); }
+        // 値で返し、再初期化で内部handleが差し替わっても取得時点のresource
+        // snapshotを安全に保持できるようにします。
+        [[nodiscard]] GraphicsTextureHandle
+            WhiteTextureHandle() const noexcept
+        {
+            return m_whiteTexture;
+        }
+        [[nodiscard]] GraphicsViewHandle
+            WhiteTextureViewHandle() const noexcept
+        {
+            return m_whiteTextureView;
+        }
+        [[nodiscard]] ID3D11ShaderResourceView*
+            WhiteTexture() const noexcept;
+        // 移行中のD3D11 renderer向け非所有pointer解決です。返り値を使う間、
+        // 元handleを生存させてください。別Backend世代のhandleは拒否します。
+        [[nodiscard]] ID3D11ShaderResourceView*
+            ResolveD3D11ShaderResourceView(
+                const GraphicsViewHandle& view) const;
+        [[nodiscard]] ID3D11Buffer* ResolveD3D11Buffer(
+            const GraphicsBufferHandle& buffer) const;
         [[nodiscard]] AssetManager& Assets() const;
         [[nodiscard]] AssetManager* TryAssets() const noexcept;
         [[nodiscard]] AudioSystem& Audio() const;
@@ -679,7 +703,8 @@ namespace LamaPon
         // 現在はD3D11Backendだけを生成し、D3D12はrenderer移行完了まで
         // 選択段階で安全にD3D11へフォールバックします。
         std::unique_ptr<GraphicsBackend> m_backend;
-        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_whiteTexture;
+        GraphicsTextureHandle m_whiteTexture;
+        GraphicsViewHandle m_whiteTextureView;
         std::unique_ptr<DirectX::SpriteBatch> m_spriteBatch;
         std::unique_ptr<DirectX::CommonStates> m_commonStates;
         mutable Microsoft::WRL::ComPtr<ID3D11BlendState>
@@ -687,9 +712,7 @@ namespace LamaPon
         Microsoft::WRL::ComPtr<ID3D11RasterizerState>
             m_uiScissorRasterizer;
         std::vector<D3D11_RECT> m_uiScissorStack;
-        Microsoft::WRL::ComPtr<ID3D11Buffer>
-            m_instanceBuffer;
-        std::size_t m_instanceBufferCapacity{};
+        GraphicsBufferHandle m_instanceBuffer;
         DepthPassKind m_depthPass{ DepthPassKind::None };
         GpuProfiler m_gpuProfiler;
         // WARP強制フラグ（Initialize前にテスト等から設定）。
