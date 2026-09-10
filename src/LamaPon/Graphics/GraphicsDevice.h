@@ -520,18 +520,8 @@ namespace LamaPon
         // 将来はBackend固有のopaque environment handleへ置き換えます。
         [[nodiscard]] EnvironmentRenderer::OwnedPrefilteredEnvironment
             TryLoadCachedEnvironment(std::uint64_t key) const;
-        // [R, G, B] x probe x RGBAのfp16係数から、RGB別の
-        // RGBA16F Texture3Dを3枚作ります。失敗時は全emptyです。
-        [[nodiscard]] std::array<Microsoft::WRL::ComPtr<
-            ID3D11ShaderResourceView>, 3>
-            UploadBakedGlobalIllumination(
-            std::uint32_t width,
-            std::uint32_t height,
-            std::uint32_t depth,
-            std::span<const std::uint16_t> coefficients)
-                const noexcept;
-        // 上と同じ係数をAPI非依存Texture3Dへ作成する新経路です。旧raw
-        // 戻り値はGame Module互換期間中、この結果を解決して維持します。
+        // [R, G, B] x probe x RGBAのfp16係数から、RGB別のRGBA16F
+        // Texture3DをAPI非依存handleで3枚作ります。失敗時は全emptyです。
         [[nodiscard]] std::array<GraphicsViewHandle, 3>
             UploadBakedGlobalIlluminationViews(
                 std::uint32_t width,
@@ -552,6 +542,19 @@ namespace LamaPon
         bool TrySetLitEffectTextures(
             LitEffect& effect,
             const LitTextureRequest&& request) const = delete;
+        // LightingState内のneutral Baked GI viewを描画API固有viewへ
+        // 3枚まとめて解決してからEffectへ反映します。lightingは直後の
+        // 描画が終わるまで各viewを保持してください。不正な組み合わせや
+        // 別DeviceのEffectでは何も変更せずfalseを返します。
+        [[nodiscard]] bool TrySetLitEffectLighting(
+            LitEffect& effect,
+            const LightingState& lighting) const noexcept;
+        bool TrySetLitEffectLighting(
+            LitEffect& effect,
+            LightingState&& lighting) const = delete;
+        bool TrySetLitEffectLighting(
+            LitEffect& effect,
+            const LightingState&& lighting) const = delete;
         [[nodiscard]] LitEffect& Lit() const;
         // スキニングモデル（glTF/FBX）用のLamaPon Lit。
         // カスタムShader未指定のモデルはSkinnedLitで描画します。
@@ -799,6 +802,17 @@ namespace LamaPon
         [[nodiscard]] ID3D11ShaderResourceView*
             ResolveD3D11ShaderResourceView(
                 const GraphicsViewHandle& view) const;
+        // API 52のGame Moduleが旧公開名を解決してからAPI不一致を
+        // 案内できるよう、raw Baked GI uploadのシンボルだけを
+        // 1互換期間残すprivate shimです。
+        [[nodiscard]] std::array<Microsoft::WRL::ComPtr<
+            ID3D11ShaderResourceView>, 3>
+            UploadBakedGlobalIllumination(
+                std::uint32_t width,
+                std::uint32_t height,
+                std::uint32_t depth,
+                std::span<const std::uint16_t> coefficients)
+                    const noexcept;
         // 移行途中のnative D3D11 viewを、共通描画経路が保持できる
         // Backend世代付きhandleへ変換するprivate shimです。
         // nullは正常な未設定としてempty handleを返します。

@@ -90,7 +90,6 @@ namespace LamaPon
                 ID3D11ShaderResourceView*,
                 LitMaterial::CustomTextureCount>&
                 textures) noexcept;
-        void SetLighting(const LightingState& lighting) noexcept;
         // リフレクションプローブ用。環境反射（t3/t6）をシーン共通の
         // ものからプローブの結果へ差し替えます。SetLightingの後に
         // 呼び、SetLightingを呼び直せば元へ戻ります。
@@ -187,6 +186,17 @@ namespace LamaPon
 
     private:
         friend class GraphicsDevice;
+        friend class SkeletalModel;
+
+        // API 52のGame ModuleをLoadLibraryしてAPI不一致案内へ到達する
+        // ためのprivate shimです。旧raw SkeletalModel::Drawも1互換期間
+        // この入口を使い、Baked GIは安全に無効として扱います。
+        void SetLighting(const LightingState& lighting) noexcept;
+        void SetLightingD3D11(
+            const LightingState& lighting,
+            const std::array<
+                ID3D11ShaderResourceView*,
+                3>& bakedGiViews) noexcept;
 
         [[nodiscard]] ID3D11SamplerState*
             ActiveMaterialSampler() const noexcept;

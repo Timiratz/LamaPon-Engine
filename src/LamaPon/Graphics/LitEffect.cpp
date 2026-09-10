@@ -545,6 +545,15 @@ namespace LamaPon
     void LitEffect::SetLighting(
         const LightingState& lighting) noexcept
     {
+        SetLightingD3D11(lighting, {});
+    }
+
+    void LitEffect::SetLightingD3D11(
+        const LightingState& lighting,
+        const std::array<
+            ID3D11ShaderResourceView*,
+            3>& bakedGiViews) noexcept
+    {
         m_lightingConstants = {};
         m_lightingConstants.ambient = {
             lighting.ambientColor.x
@@ -896,9 +905,9 @@ namespace LamaPon
         const auto& bakedGi = lighting.bakedGlobalIllumination;
         const bool bakedGiActive =
             bakedGi.enabled
-            && bakedGi.redCoefficients != nullptr
-            && bakedGi.greenCoefficients != nullptr
-            && bakedGi.blueCoefficients != nullptr;
+            && bakedGiViews[0] != nullptr
+            && bakedGiViews[1] != nullptr
+            && bakedGiViews[2] != nullptr;
         m_lightingConstants.bakedGiVolumeMinimum = {
             bakedGi.volumeMinimum.x,
             bakedGi.volumeMinimum.y,
@@ -918,13 +927,13 @@ namespace LamaPon
             0.0f
         };
         m_bakedGiRedTexture = bakedGiActive
-            ? bakedGi.redCoefficients
+            ? bakedGiViews[0]
             : nullptr;
         m_bakedGiGreenTexture = bakedGiActive
-            ? bakedGi.greenCoefficients
+            ? bakedGiViews[1]
             : nullptr;
         m_bakedGiBlueTexture = bakedGiActive
-            ? bakedGi.blueCoefficients
+            ? bakedGiViews[2]
             : nullptr;
 
         // プローブの2個目は前のオブジェクトの分が残らないよう

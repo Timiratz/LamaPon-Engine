@@ -13,7 +13,6 @@
 #include "LamaPon/Scene/RenderSpatialIndex.h"
 
 #include <DirectXMath.h>
-#include <wrl/client.h>
 
 #include <array>
 #include <memory>
@@ -788,10 +787,7 @@ namespace LamaPon
         // m_bakedGiDataを焼いたときの格子と配置（設定を後から
         // 変えても、表示は焼いたときの形で続けるため）。
         BakedGlobalIlluminationSettings m_bakedGiBakedShape;
-        std::array<
-            Microsoft::WRL::ComPtr<
-                ID3D11ShaderResourceView>,
-            3> m_bakedGiViews;
+        std::array<GraphicsViewHandle, 3> m_bakedGiViews;
         bool m_bakedGiTexturesDirty{};
         // ベイクの進行状態（毎フレーム数点ずつ進める）。
         bool m_bakedGiBaking{};

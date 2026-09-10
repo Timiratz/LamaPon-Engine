@@ -1127,11 +1127,14 @@ namespace LamaPon
                     {
                         if (!textures.graphics->TrySetLitEffectTextures(
                                 *customEffect,
-                                effectiveTextures))
+                                effectiveTextures)
+                            || !textures.graphics->TrySetLitEffectLighting(
+                                *customEffect,
+                                lighting))
                         {
                             // stale / 異種 / 別Backend世代のhandleで前の
-                            // primitiveのtextureを再利用しないよう、描画を
-                            // 行わず次のprimitiveへ進みます。
+                            // primitiveのtextureやlightingを再利用しないよう、
+                            // 描画を行わず次のprimitiveへ進みます。
                             continue;
                         }
                     }
@@ -1164,8 +1167,10 @@ namespace LamaPon
                             texture,
                             normalTexture,
                             pbrTextures);
+                        // 旧raw Draw shimはneutral resolverを受け取らないため、
+                        // API 52以前と同じ直接経路を1互換期間だけ維持します。
+                        customEffect->SetLighting(lighting);
                     }
-                    customEffect->SetLighting(lighting);
                 }
                 else if (useCutout)
                 {

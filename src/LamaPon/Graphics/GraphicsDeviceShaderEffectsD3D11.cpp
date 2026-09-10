@@ -891,6 +891,99 @@ namespace LamaPon
         return true;
     }
 
+    bool GraphicsDevice::TrySetLitEffectLighting(
+        LitEffect& effect,
+        const LightingState& lighting) const noexcept
+    {
+        if (!IsInitialized() || effect.m_context == nullptr)
+        {
+            return false;
+        }
+        Microsoft::WRL::ComPtr<ID3D11Device> effectDevice;
+        effect.m_context->GetDevice(
+            effectDevice.ReleaseAndGetAddressOf());
+        if (effectDevice.Get() != Device())
+        {
+            return false;
+        }
+
+        std::array<ID3D11ShaderResourceView*, 3> bakedGiViews{};
+        const auto& bakedGi = lighting.bakedGlobalIllumination;
+        if (bakedGi.enabled)
+        {
+            D3D11_TEXTURE3D_DESC expectedVolume{};
+            const std::array<const GraphicsViewHandle*, 3> handles{
+                &bakedGi.redCoefficients,
+                &bakedGi.greenCoefficients,
+                &bakedGi.blueCoefficients
+            };
+            for (std::size_t index{};
+                index < handles.size();
+                ++index)
+            {
+                const auto& handle = *handles[index];
+                auto* const nativeView =
+                    TryResolveD3D11ShaderResourceView(handle);
+                if (!handle || nativeView == nullptr)
+                {
+                    return false;
+                }
+                D3D11_SHADER_RESOURCE_VIEW_DESC description{};
+                nativeView->GetDesc(&description);
+                if (description.ViewDimension
+                        != D3D11_SRV_DIMENSION_TEXTURE3D
+                    || description.Format
+                        != DXGI_FORMAT_R16G16B16A16_FLOAT
+                    || description.Texture3D.MostDetailedMip != 0
+                    || description.Texture3D.MipLevels != 1)
+                {
+                    return false;
+                }
+
+                Microsoft::WRL::ComPtr<ID3D11Resource> resource;
+                nativeView->GetResource(
+                    resource.ReleaseAndGetAddressOf());
+                Microsoft::WRL::ComPtr<ID3D11Texture3D> volume;
+                if (resource == nullptr
+                    || FAILED(resource.As(&volume)))
+                {
+                    return false;
+                }
+                D3D11_TEXTURE3D_DESC volumeDescription{};
+                volume->GetDesc(&volumeDescription);
+                if (volumeDescription.Format
+                        != DXGI_FORMAT_R16G16B16A16_FLOAT
+                    || (index != 0
+                        && (volumeDescription.Width
+                                != expectedVolume.Width
+                            || volumeDescription.Height
+                                != expectedVolume.Height
+                            || volumeDescription.Depth
+                                != expectedVolume.Depth)))
+                {
+                    return false;
+                }
+                if (index == 0)
+                {
+                    expectedVolume = volumeDescription;
+                }
+                bakedGiViews[index] = nativeView;
+            }
+            if (bakedGi.resolution.x
+                    != static_cast<float>(expectedVolume.Width)
+                || bakedGi.resolution.y
+                    != static_cast<float>(expectedVolume.Height)
+                || bakedGi.resolution.z
+                    != static_cast<float>(expectedVolume.Depth))
+            {
+                return false;
+            }
+        }
+
+        effect.SetLightingD3D11(lighting, bakedGiViews);
+        return true;
+    }
+
     LitEffect& GraphicsDevice::MaterialShader(
         const std::filesystem::path& shaderPath,
         std::uint64_t& generation,

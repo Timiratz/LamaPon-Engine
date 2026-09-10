@@ -1132,7 +1132,12 @@ namespace LamaPon
         {
             return;
         }
-        m_effect->SetLighting(m_graphics->Lighting());
+        if (!m_graphics->TrySetLitEffectLighting(
+                *m_effect,
+                m_graphics->Lighting()))
+        {
+            return;
+        }
         ApplyReflectionProbe();
         if (CanDrawTessellatedPatch())
         {
@@ -1429,7 +1434,12 @@ namespace LamaPon
         {
             return;
         }
-        m_effect->SetLighting(m_graphics->Lighting());
+        if (!m_graphics->TrySetLitEffectLighting(
+                *m_effect,
+                m_graphics->Lighting()))
+        {
+            return;
+        }
         // インスタンスバッチは1回のDrawなので、代表として自分の
         // 位置のプローブを使います（バッチは同じ形状・マテリアルの
         // 集まりで、たいてい近くに固まっているため）。

@@ -2511,7 +2511,12 @@ namespace LamaPon
             DirectX::XMMatrixIdentity(),
             view,
             projection);
-        effect.SetLighting(m_graphics->Lighting());
+        if (!m_graphics->TrySetLitEffectLighting(
+                effect,
+                m_graphics->Lighting()))
+        {
+            return false;
+        }
         effect.SetInstancingEnabled(true);
         effect.SetTessellationDrawEnabled(false);
 
@@ -2893,7 +2898,12 @@ namespace LamaPon
         if (!depthOnly)
         {
             effect.SetMaterial(m_material);
-            effect.SetLighting(m_graphics->Lighting());
+            if (!m_graphics->TrySetLitEffectLighting(
+                    effect,
+                    m_graphics->Lighting()))
+            {
+                return;
+            }
             // 範囲に入っているリフレクションプローブがあれば、
             // 環境反射をその結果へ差し替えます（2個あれば混ぜます）。
             const auto ownerWorldMatrix =

@@ -292,6 +292,72 @@ int RunTest(const std::string_view suite)
                 !invalidBakedGiScene
                     .HasBakedGlobalIllumination(),
                 "An invalid baked GI resolution was restored from JSON.");
+
+            // GPU側の所有表現を変更しても、保存形式は従来どおり
+            // baked shapeとfp16 word列をbit単位で維持します。現在の
+            // 編集設定とは独立して復元されなければなりません。
+            LamaPon::Scene patternedBakedGiScene(graphics);
+            LamaPon::BakedGlobalIlluminationSettings currentSettings;
+            currentSettings.enabled = true;
+            currentSettings.center = { 9.0f, 8.0f, 7.0f };
+            currentSettings.size = { 6.0f, 5.0f, 4.0f };
+            currentSettings.resolutionX = 3;
+            currentSettings.resolutionY = 2;
+            currentSettings.resolutionZ = 1;
+            currentSettings.intensity = 0.25f;
+            patternedBakedGiScene
+                .SetBakedGlobalIlluminationSettings(currentSettings);
+
+            LamaPon::BakedGlobalIlluminationSettings bakedShape;
+            bakedShape.enabled = true;
+            bakedShape.center = { -1.0f, -2.0f, -3.0f };
+            bakedShape.size = { 2.0f, 4.0f, 6.0f };
+            bakedShape.resolutionX = 2;
+            bakedShape.resolutionY = 1;
+            bakedShape.resolutionZ = 2;
+            std::vector<std::uint16_t> patternedPayload(
+                4 * LamaPon::
+                    BakedGlobalIlluminationCoefficientsPerProbe);
+            for (std::size_t index{};
+                index < patternedPayload.size();
+                ++index)
+            {
+                patternedPayload[index] = static_cast<std::uint16_t>(
+                    0x1200u + index * 37u);
+            }
+            patternedBakedGiScene.RestoreBakedGlobalIllumination(
+                bakedShape,
+                patternedPayload);
+
+            LamaPon::Scene patternedRoundTripScene(graphics);
+            patternedRoundTripScene.LoadFromJson(
+                patternedBakedGiScene.SerializeToJson());
+            const auto& restoredCurrent =
+                patternedRoundTripScene.BakedGlobalIllumination();
+            const auto& restoredShape =
+                patternedRoundTripScene
+                    .BakedGlobalIlluminationBakedShape();
+            Require(
+                patternedRoundTripScene.HasBakedGlobalIllumination()
+                    && patternedRoundTripScene
+                        .BakedGlobalIlluminationPayload()
+                        == patternedPayload
+                    && restoredCurrent.enabled
+                    && restoredCurrent.center.x == 9.0f
+                    && restoredCurrent.resolutionX == 3
+                    && restoredCurrent.resolutionY == 2
+                    && restoredCurrent.resolutionZ == 1
+                    && NearlyEqual(restoredCurrent.intensity, 0.25f)
+                    && restoredShape.center.x == -1.0f
+                    && restoredShape.center.y == -2.0f
+                    && restoredShape.center.z == -3.0f
+                    && restoredShape.size.x == 2.0f
+                    && restoredShape.size.y == 4.0f
+                    && restoredShape.size.z == 6.0f
+                    && restoredShape.resolutionX == 2
+                    && restoredShape.resolutionY == 1
+                    && restoredShape.resolutionZ == 2,
+                "Baked GI shape or patterned fp16 payload changed during JSON round trip.");
         }
 
         LamaPon::Scene source(graphics);

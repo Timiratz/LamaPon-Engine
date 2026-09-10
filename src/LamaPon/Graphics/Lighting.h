@@ -1,6 +1,7 @@
 #pragma once
 
 #include "LamaPon/Graphics/EnvironmentSettings.h"
+#include "LamaPon/Graphics/GraphicsResource.h"
 
 #include <DirectXMath.h>
 
@@ -200,9 +201,9 @@ namespace LamaPon
     // シェーダーは dot(float4(法線,1), texel) で環境光を得ます）。
     struct BakedGlobalIlluminationData final
     {
-        ID3D11ShaderResourceView* redCoefficients{};
-        ID3D11ShaderResourceView* greenCoefficients{};
-        ID3D11ShaderResourceView* blueCoefficients{};
+        GraphicsViewHandle redCoefficients;
+        GraphicsViewHandle greenCoefficients;
+        GraphicsViewHandle blueCoefficients;
         DirectX::XMFLOAT3 volumeMinimum{};
         DirectX::XMFLOAT3 volumeSize{ 1.0f, 1.0f, 1.0f };
         DirectX::XMFLOAT3 resolution{ 1.0f, 1.0f, 1.0f };

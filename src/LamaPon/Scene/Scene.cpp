@@ -6977,19 +6977,19 @@ namespace LamaPon
             const bool bakedGiActive =
                 m_bakedGiSettings.enabled
                 && !m_bakingReflectionProbes
-                && m_bakedGiViews[0] != nullptr
-                && m_bakedGiViews[1] != nullptr
-                && m_bakedGiViews[2] != nullptr;
+                && m_bakedGiViews[0]
+                && m_bakedGiViews[1]
+                && m_bakedGiViews[2];
             bakedGi.enabled = bakedGiActive;
             if (bakedGiActive)
             {
                 const auto& shape = m_bakedGiBakedShape;
                 bakedGi.redCoefficients =
-                    m_bakedGiViews[0].Get();
+                    m_bakedGiViews[0];
                 bakedGi.greenCoefficients =
-                    m_bakedGiViews[1].Get();
+                    m_bakedGiViews[1];
                 bakedGi.blueCoefficients =
-                    m_bakedGiViews[2].Get();
+                    m_bakedGiViews[2];
                 bakedGi.volumeMinimum = {
                     shape.center.x - shape.size.x * 0.5f,
                     shape.center.y - shape.size.y * 0.5f,
@@ -8155,7 +8155,7 @@ namespace LamaPon
         m_bakedGiViews = {};
         const auto& shape = m_bakedGiBakedShape;
         m_bakedGiViews =
-            m_graphics.UploadBakedGlobalIllumination(
+            m_graphics.UploadBakedGlobalIlluminationViews(
                 shape.resolutionX,
                 shape.resolutionY,
                 shape.resolutionZ,

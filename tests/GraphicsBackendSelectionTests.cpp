@@ -511,17 +511,6 @@ int main()
             !graphics.TryLoadCachedEnvironment(0).IsValid(),
             "Environment cache restore must fail safely without a device");
         const std::array<std::uint16_t, 12> coefficients{};
-        const auto bakedGiViews =
-            graphics.UploadBakedGlobalIllumination(
-                1,
-                1,
-                1,
-                coefficients);
-        Require(
-            bakedGiViews[0] == nullptr
-                && bakedGiViews[1] == nullptr
-                && bakedGiViews[2] == nullptr,
-            "Baked GI upload must return an empty result without a device");
         const auto neutralBakedGiViews =
             graphics.UploadBakedGlobalIlluminationViews(
                 1,

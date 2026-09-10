@@ -13,10 +13,10 @@ namespace LamaPon
     // Game ModuleとRuntimeのABIを識別します。公開構造体のレイアウトや
     // 公開関数のシグネチャを変更した場合は、この値も更新してください。
     // GameModuleHostは完全一致を要求し、互換性のないDLLを読み込みません。
-    // API 52ではGraphicsBackendへimmutable Texture3D生成契約を追加し、
-    // Baked GI uploadをAPI非依存handleで公開したため、
+    // API 53ではSceneとLightingStateのBaked GI所有をAPI非依存handleへ
+    // 移し、描画直前のBackend bridgeで解決する構造へ変更したため、
     // ゲーム用DLLの再ビルドが必要です。
-    inline constexpr std::uint32_t GameModuleApiVersion = 52;
+    inline constexpr std::uint32_t GameModuleApiVersion = 53;
 
     using NativeScriptCreateFunction = void* (*)(
         GameObject* owner,

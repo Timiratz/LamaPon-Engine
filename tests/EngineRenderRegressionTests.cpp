@@ -434,6 +434,13 @@ int main(const int argumentCount, char** arguments)
             "_KPEAVLitEffect@2@PEAUID3D11InputLayout@@6"
             "PEBV?$vector@UXMFLOAT4X4@DirectX@@"
             "V?$allocator@UXMFLOAT4X4@DirectX@@@std@@@std@@M@Z";
+        constexpr char LegacyBakedGiUploadSymbol[] =
+            "?UploadBakedGlobalIllumination@GraphicsDevice@LamaPon@@"
+            "QEBA?AV?$array@V?$ComPtr@UID3D11ShaderResourceView@@@"
+            "WRL@Microsoft@@$02@std@@IIIV?$span@$$CBG$0?0@4@@Z";
+        constexpr char LegacyLitLightingSymbol[] =
+            "?SetLighting@LitEffect@LamaPon@@"
+            "QEAAXAEBULightingState@2@@Z";
         const auto runtimeModule = GetModuleHandleW(
             L"LamaPonRuntime.dll");
         Require(
@@ -442,6 +449,16 @@ int main(const int argumentCount, char** arguments)
                     runtimeModule,
                     LegacySkeletalDrawSymbol) != nullptr,
             "The API 49 SkeletalModel::Draw export alias is missing");
+        Require(
+            GetProcAddress(
+                runtimeModule,
+                LegacyBakedGiUploadSymbol) != nullptr,
+            "The API 52 Baked GI upload export alias is missing");
+        Require(
+            GetProcAddress(
+                runtimeModule,
+                LegacyLitLightingSymbol) != nullptr,
+            "The API 52 LitEffect lighting export alias is missing");
         Stage("asset-root");
         graphics.Assets().SetAssetRoot(
             LAMAPON_TEST_ASSET_DIR);
@@ -543,7 +560,11 @@ int main(const int argumentCount, char** arguments)
         const auto identity = DirectX::XMMatrixIdentity();
         litEffect.SetMatrices(identity, identity, identity);
         litEffect.SetMaterial(LamaPon::LitMaterial{});
-        litEffect.SetLighting(graphics.Lighting());
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                graphics.Lighting()),
+            "A valid neutral Lit lighting state was rejected");
         Require(
             graphics.TrySetLitEffectTextures(
                 litEffect,
@@ -563,6 +584,102 @@ int main(const int argumentCount, char** arguments)
                         litViews[index]),
                 "A neutral Lit texture was bound to the wrong slot");
         }
+
+        // Baked GIはLightingStateでも3枚のneutral handleを強所有し、
+        // D3D11への解決はEffect反映直前にtransactionalに行います。
+        Stage("lit-neutral-baked-gi");
+        const std::array<std::uint16_t, 12> bakedGiCoefficients{
+            0x0000u, 0x0001u, 0x0002u, 0x0003u,
+            0x0010u, 0x0011u, 0x0012u, 0x0013u,
+            0x0020u, 0x0021u, 0x0022u, 0x0023u
+        };
+        const auto bakedGiViews =
+            graphics.UploadBakedGlobalIlluminationViews(
+                1,
+                1,
+                1,
+                bakedGiCoefficients);
+        LamaPon::LightingState bakedGiLighting = graphics.Lighting();
+        auto& bakedGi = bakedGiLighting.bakedGlobalIllumination;
+        bakedGi.enabled = true;
+        bakedGi.redCoefficients = bakedGiViews[0];
+        bakedGi.greenCoefficients = bakedGiViews[1];
+        bakedGi.blueCoefficients = bakedGiViews[2];
+        bakedGi.volumeMinimum = { -1.0f, -2.0f, -3.0f };
+        bakedGi.volumeSize = { 2.0f, 4.0f, 6.0f };
+        bakedGi.resolution = { 1.0f, 1.0f, 1.0f };
+        bakedGi.intensity = 0.75f;
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                bakedGiLighting),
+            "A valid neutral Baked GI triplet was rejected");
+        litEffect.Apply(graphics.Context());
+        for (std::size_t index{}; index < bakedGiViews.size(); ++index)
+        {
+            Require(
+                CapturePixelShaderView(
+                    graphics,
+                    static_cast<UINT>(23u + index)).Get()
+                    == graphics.TryResolveD3D11ShaderResourceView(
+                        bakedGiViews[index]),
+                "A neutral Baked GI view was bound to the wrong slot");
+        }
+
+        auto incompleteBakedGiLighting = bakedGiLighting;
+        incompleteBakedGiLighting.bakedGlobalIllumination
+            .blueCoefficients.Reset();
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                incompleteBakedGiLighting),
+            "An incomplete neutral Baked GI triplet was accepted");
+        auto wrongDimensionBakedGiLighting = bakedGiLighting;
+        wrongDimensionBakedGiLighting.bakedGlobalIllumination
+            .blueCoefficients = litViews[0];
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                wrongDimensionBakedGiLighting),
+            "A Texture2D was accepted as a Baked GI volume");
+        auto wrongResolutionBakedGiLighting = bakedGiLighting;
+        wrongResolutionBakedGiLighting.bakedGlobalIllumination
+            .resolution.x = 2.0f;
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                wrongResolutionBakedGiLighting),
+            "A Baked GI volume with mismatched resolution was accepted");
+        litEffect.Apply(graphics.Context());
+        for (std::size_t index{}; index < bakedGiViews.size(); ++index)
+        {
+            Require(
+                CapturePixelShaderView(
+                    graphics,
+                    static_cast<UINT>(23u + index)).Get()
+                    == graphics.TryResolveD3D11ShaderResourceView(
+                        bakedGiViews[index]),
+                "A rejected Baked GI triplet partially changed the Effect");
+        }
+
+        auto disabledBakedGiLighting = bakedGiLighting;
+        disabledBakedGiLighting.bakedGlobalIllumination.enabled = false;
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                disabledBakedGiLighting),
+            "A disabled neutral Baked GI state was rejected");
+        litEffect.Apply(graphics.Context());
+        Require(
+            CapturePixelShaderView(graphics, 23u) == nullptr
+                && CapturePixelShaderView(graphics, 24u) == nullptr
+                && CapturePixelShaderView(graphics, 25u) == nullptr,
+            "Disabling Baked GI retained a previous volume binding");
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                bakedGiLighting),
+            "The neutral Baked GI baseline could not be restored");
 
         LamaPon::LitTextureRequest emptyLitTextures;
         Require(
@@ -646,6 +763,56 @@ int main(const int argumentCount, char** arguments)
                     foreignEffect,
                     litTextures),
                 "A LitEffect owned by another GraphicsDevice was accepted");
+
+            const std::array<std::uint16_t, 4> foreignBakedGiVoxel{
+                0x3000u, 0x3001u, 0x3002u, 0x3003u
+            };
+            const std::array foreignBakedGiInitialData{
+                LamaPon::GraphicsTextureSubresourceData{
+                    std::as_bytes(std::span{ foreignBakedGiVoxel }),
+                    8,
+                    8
+                }
+            };
+            const auto foreignBakedGiTexture =
+                foreignBackend.CreateTexture3D(
+                    LamaPon::GraphicsTexture3DDescription{
+                        1,
+                        1,
+                        1,
+                        1,
+                        LamaPon::GraphicsTextureFormat::Rgba16Float
+                    },
+                    foreignBakedGiInitialData);
+            const auto foreignBakedGiView =
+                foreignBackend.CreateShaderResourceView(
+                    foreignBakedGiTexture);
+            auto mixedBakedGiLighting = bakedGiLighting;
+            mixedBakedGiLighting.bakedGlobalIllumination
+                .greenCoefficients = foreignBakedGiView;
+            Require(
+                !graphics.TrySetLitEffectLighting(
+                    litEffect,
+                    mixedBakedGiLighting),
+                "A mixed-generation Baked GI triplet was accepted");
+            litEffect.Apply(graphics.Context());
+            for (std::size_t index{};
+                index < bakedGiViews.size();
+                ++index)
+            {
+                Require(
+                    CapturePixelShaderView(
+                        graphics,
+                        static_cast<UINT>(23u + index)).Get()
+                        == graphics.TryResolveD3D11ShaderResourceView(
+                            bakedGiViews[index]),
+                    "A rejected mixed Baked GI triplet changed the Effect");
+            }
+            Require(
+                !graphics.TrySetLitEffectLighting(
+                    foreignEffect,
+                    bakedGiLighting),
+                "Baked GI lighting accepted an Effect from another device");
 
             // LightingStateのproducerをneutral handleへ移す前提として、
             // Texture2D以外の既存D3D11 SRVも同じ世代・所有契約へ載せます。
