@@ -611,6 +611,12 @@ namespace LamaPon
 
     void GraphicsDevice::Shutdown() noexcept
     {
+        ReleaseResources(false);
+    }
+
+    void GraphicsDevice::ReleaseResources(
+        const bool preserveAudio) noexcept
+    {
         // Backend所有のGPU計測driverより先に非所有参照を外します。
         m_gpuProfiler.Detach();
         if (m_backend)
@@ -624,22 +630,45 @@ namespace LamaPon
         m_pointShadowMap.reset();
         m_instanceBuffer.Reset();
         m_instanceBufferCapacity = 0;
+        m_additiveBlendPreservingAlpha.Reset();
         m_uiScissorRasterizer.Reset();
+        m_uiScissorStack.clear();
+        m_depthPass = DepthPassKind::None;
         m_skinnedMaterialShaders.clear();
         m_materialShaders.clear();
         m_spriteShaders.clear();
         m_screenShaders.clear();
+        m_computeShaders.clear();
         m_queuedScreenEffects.clear();
         m_litEffect.reset();
+        m_skinnedLitEffect.reset();
+        m_errorEffect.reset();
+        m_skinnedErrorEffect.reset();
+        m_spriteErrorEffect.reset();
+        m_errorEffectUnavailable = false;
+        m_skinnedErrorEffectUnavailable = false;
+        m_spriteErrorEffectUnavailable = false;
+        m_litFailure = {};
+        m_skinnedLitFailure = {};
+        m_environmentFailure = {};
+        m_clustersFailure = {};
         m_sceneCompositionTarget.reset();
         m_renderTextures.clear();
         m_environmentRenderer.reset();
         m_clusteredLights.reset();
         m_debugRenderer.reset();
-        m_services->Shutdown();
+        if (preserveAudio)
+        {
+            m_services->PrepareForGraphicsReinitialization();
+        }
+        else
+        {
+            m_services->Shutdown();
+        }
         m_commonStates.reset();
         m_spriteBatch.reset();
         m_whiteTexture.Reset();
+        m_lightingState = {};
         if (m_backend)
         {
             m_backend->Shutdown();
@@ -647,7 +676,18 @@ namespace LamaPon
         }
         m_width = 0;
         m_height = 0;
+        m_uiWidth = 0;
+        m_uiHeight = 0;
         m_sprite2DOffset = {};
+        m_sceneProjection = {
+            1.0f, 0.0f, 0.0f, 0.0f,
+            0.0f, 1.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 1.0f, 0.0f,
+            0.0f, 0.0f, 0.0f, 1.0f
+        };
+        m_frameStatistics = {};
+        m_memoryStatistics = {};
+        m_lastMemoryStatisticsSample = {};
     }
 
     void GraphicsDevice::Initialize(
@@ -668,6 +708,35 @@ namespace LamaPon
         const std::uint32_t height,
         RenderingApi requestedApi)
     {
+        // 再初期化では、旧Deviceから作った高レベル資源を先にすべて
+        // 破棄します。Backendだけを差し替えると、旧DeviceのSRVや
+        // BlendStateが新しいContextへ残り得るためです。
+        ReleaseResources(true);
+
+        try
+        {
+            InitializeResources(
+                window,
+                width,
+                height,
+                requestedApi);
+        }
+        catch (...)
+        {
+            // 部分初期化したBackendや高レベル資源を残さず、
+            // IsInitialized()が失敗後にtrueを返すことも防ぎます。
+            ReleaseResources(false);
+            throw;
+        }
+    }
+
+    void GraphicsDevice::InitializeResources(
+        const HWND window,
+        const std::uint32_t width,
+        const std::uint32_t height,
+        RenderingApi requestedApi)
+    {
+
         // Backend選択はここへ集約します。ProjectSettingsや各起動経路は
         // 要求値を渡すだけにし、実効APIとフォールバック理由を一箇所で
         // 決定します。

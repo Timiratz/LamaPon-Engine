@@ -14,19 +14,33 @@ namespace LamaPon
     void RuntimeServices::Initialize(ID3D11Device* device, ID3D11DeviceContext* context,
         const HWND window, const bool textureCompression)
     {
-        if (m_audio || m_input)
+        if (m_input)
         {
-            throw std::logic_error("Runtime services are already initialized; call Shutdown first.");
+            throw std::logic_error(
+                "Runtime services are already initialized; call Shutdown "
+                "or PrepareForGraphicsReinitialization first.");
         }
         auto assets = std::make_unique<AssetManager>(device, context);
         assets->SetRuntimeTextureCompressionEnabled(textureCompression);
-        auto audio = std::make_unique<AudioSystem>();
+        auto audio = m_audio
+            ? std::unique_ptr<AudioSystem>{}
+            : std::make_unique<AudioSystem>();
         auto input = std::make_unique<InputSystem>(window);
 
-        Shutdown();
         m_assets = std::move(assets);
-        m_audio = std::move(audio);
+        if (audio)
+        {
+            m_audio = std::move(audio);
+        }
         m_input = std::move(input);
+    }
+
+    void RuntimeServices::PrepareForGraphicsReinitialization() noexcept
+    {
+        // AssetManagerは旧Device / Contextを借りています。Inputも
+        // Windowへ登録されるため作り直しますが、Audioは再利用します。
+        m_input.reset();
+        m_assets.reset();
     }
 
     void RuntimeServices::Shutdown() noexcept

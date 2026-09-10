@@ -300,6 +300,24 @@ namespace
         HiddenWindow window;
         LamaPon::GraphicsDevice::SetPreferWarpAdapter(true);
 
+        LamaPon::GraphicsDevice failedGraphics;
+        RequireThrows<std::runtime_error>(
+            [&]
+            {
+                failedGraphics.Initialize(
+                    nullptr,
+                    Width,
+                    Height,
+                    LamaPon::RenderingApi::DirectX11);
+            },
+            "Invalid graphics initialization must report a failure");
+        Require(
+            !failedGraphics.IsInitialized()
+                && failedGraphics.Device() == nullptr
+                && failedGraphics.Context() == nullptr
+                && failedGraphics.TryAssets() == nullptr,
+            "Failed graphics initialization retained partial resources");
+
         LamaPon::GraphicsDevice graphics;
         graphics.Initialize(
             window.Get(),
@@ -314,6 +332,60 @@ namespace
                 && graphics.RenderingApiFallback()
                     == LamaPon::RenderingApiFallbackReason::NotImplemented,
             "Editor GUI smoke test requires the DirectX 11 fallback");
+
+        // Backend差し替え前に遅延生成資源も作り、同じGraphicsDeviceを
+        // 再初期化した後の描画で旧Device由来の資源が残らないことを
+        // このテスト全体で確認します。
+        Require(
+            graphics.WhiteTexture() != nullptr
+                && graphics.AdditiveBlendPreservingAlpha() != nullptr,
+            "DirectX 11 compatibility resources were not created");
+        Microsoft::WRL::ComPtr<ID3D11Device> previousDevice =
+            graphics.Device();
+        const std::array<float, 4> instanceData{
+            1.0f, 2.0f, 3.0f, 4.0f };
+        Require(
+            graphics.AcquireInstanceBuffer(
+                instanceData.data(),
+                sizeof(instanceData)) != nullptr,
+            "DirectX 11 compatibility instance buffer was not created");
+        graphics.Initialize(
+            window.Get(),
+            Width,
+            Height,
+            LamaPon::RenderingApi::DirectX11);
+        Require(
+            graphics.StartupRenderingApi()
+                    == LamaPon::RenderingApi::DirectX11
+                && graphics.ActiveRenderingApi()
+                    == LamaPon::RenderingApi::DirectX11
+                && graphics.RenderingApiFallback()
+                    == LamaPon::RenderingApiFallbackReason::None
+                && graphics.WhiteTexture() != nullptr
+                && graphics.AdditiveBlendPreservingAlpha() != nullptr
+                && graphics.Device() != previousDevice.Get(),
+            "GraphicsDevice reinitialization did not rebuild DirectX 11 resources");
+        auto* const rebuiltInstanceBuffer =
+            graphics.AcquireInstanceBuffer(
+                instanceData.data(),
+                sizeof(instanceData));
+        Require(
+            rebuiltInstanceBuffer != nullptr,
+            "GraphicsDevice reinitialization did not rebuild the instance buffer");
+        Microsoft::WRL::ComPtr<ID3D11Device> whiteDevice;
+        Microsoft::WRL::ComPtr<ID3D11Device> blendDevice;
+        Microsoft::WRL::ComPtr<ID3D11Device> instanceDevice;
+        graphics.WhiteTexture()->GetDevice(
+            whiteDevice.ReleaseAndGetAddressOf());
+        graphics.AdditiveBlendPreservingAlpha()->GetDevice(
+            blendDevice.ReleaseAndGetAddressOf());
+        rebuiltInstanceBuffer->GetDevice(
+            instanceDevice.ReleaseAndGetAddressOf());
+        Require(
+            whiteDevice.Get() == graphics.Device()
+                && blendDevice.Get() == graphics.Device()
+                && instanceDevice.Get() == graphics.Device(),
+            "Reinitialized compatibility resources belong to the old device");
         TestGraphicsOutputState foreignOutputState;
         RequireThrowsExactly<std::invalid_argument>(
             [&]

@@ -22,10 +22,15 @@ namespace LamaPon
 
         // COM初期化は呼び出し側の責務です。借用するdevice/context/windowは
         // Shutdownまで有効である必要があります。入力には単一所有者の
-        // 制約があるため、再初期化の前にはShutdownが必要です。全生成に
-        // 成功してから交換し、途中の失敗ではファイル専用の状態を保持します。
+        // 制約があるため、再初期化の前にはShutdownまたは
+        // PrepareForGraphicsReinitializationが必要です。全生成に成功して
+        // から交換し、途中の失敗では既存の状態を保持します。
         void Initialize(ID3D11Device* device, ID3D11DeviceContext* context,
             HWND window, bool textureCompression);
+        // 描画Backendの再作成前に、旧Deviceを借りるAssetManagerと
+        // Windowに結び付くInputだけを破棄します。Audioは描画APIと
+        // 無関係なので保持し、短時間の再生成による途切れを避けます。
+        void PrepareForGraphicsReinitialization() noexcept;
         void Shutdown() noexcept;
 
         // 初回だけ生成します。nullptrのdevice/contextでもSceneやPrefabの

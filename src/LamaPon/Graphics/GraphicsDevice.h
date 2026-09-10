@@ -175,6 +175,10 @@ namespace LamaPon
         GraphicsDevice& operator=(const GraphicsDevice&) = delete;
 
         void Initialize(HWND window, std::uint32_t width, std::uint32_t height);
+        // 同じインスタンスの再初期化はGraphicsDevice自身が所有するGPU
+        // 資源を作り直します。SceneやComponent等が外部に保持する旧Device
+        // 資源は呼び出し前に破棄してください。実行中のAPI切り替えを提供する
+        // ものではありません。
         void Initialize(
             HWND window,
             std::uint32_t width,
@@ -655,6 +659,12 @@ namespace LamaPon
             Factory&& factory) const;
 
         void Shutdown() noexcept;
+        void ReleaseResources(bool preserveAudio) noexcept;
+        void InitializeResources(
+            HWND window,
+            std::uint32_t width,
+            std::uint32_t height,
+            RenderingApi requestedApi);
         void CreateWhiteTexture();
         // 積まれた画面エフェクトを順に適用して待ち行列を空にします。
         // ポスト処理の並びはRunPostProcessが持っているので、その
