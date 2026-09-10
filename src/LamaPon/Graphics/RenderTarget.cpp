@@ -77,6 +77,7 @@ namespace LamaPon
         m_colorHistoryView.Reset();
         m_reflectionDepthPyramidViewHandle.Reset();
         m_depthView.Reset();
+        m_temporalHistoryView.Reset();
         m_colorTexture.Reset();
         m_renderTargetView.Reset();
         m_shaderResourceView.Reset();
@@ -927,10 +928,10 @@ namespace LamaPon
         // 深度はこのターゲットのものを使います。ポスト処理の時点では
         // 深度が描画先として外れているので、そのまま読めます。
         auto resolved = inputs;
-        resolved.depth = m_depthShaderResourceView.Get();
+        resolved.depth = m_depthView;
         resolved.history = m_temporalHistoryValid
-            ? m_temporalHistoryShaderResourceView.Get()
-            : nullptr;
+            ? m_temporalHistoryView
+            : GraphicsViewHandle{};
         // 前フレームの行列はこのビューが自分で覚えているものを
         // 使います（ビューをまたいで共有すると壊れます）。
         resolved.previousViewProjection =

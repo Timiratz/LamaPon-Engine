@@ -715,9 +715,10 @@ namespace LamaPon
         if (!target.m_ambientOcclusionView
             || !target.m_colorHistoryView
             || !target.m_reflectionDepthPyramidViewHandle
-            || !target.m_depthView)
+            || !target.m_depthView
+            || !target.m_temporalHistoryView)
         {
-            // Resizeが作った4本をすべて取り込めた後にだけ公開handleを
+            // Resizeが作った5本をすべて取り込めた後にだけ公開handleを
             // 更新し、途中失敗で新旧resourceを混在させません。
             auto ambientOcclusionView =
                 ImportShaderResourceViewHandle(
@@ -729,12 +730,17 @@ namespace LamaPon
                     target.m_reflectionDepthPyramidView.Get());
             auto depthView = ImportShaderResourceViewHandle(
                 target.m_depthShaderResourceView.Get());
+            auto temporalHistoryView =
+                ImportShaderResourceViewHandle(
+                    target.m_temporalHistoryShaderResourceView.Get());
             target.m_ambientOcclusionView =
                 std::move(ambientOcclusionView);
             target.m_colorHistoryView = std::move(colorHistoryView);
             target.m_reflectionDepthPyramidViewHandle =
                 std::move(reflectionDepthView);
             target.m_depthView = std::move(depthView);
+            target.m_temporalHistoryView =
+                std::move(temporalHistoryView);
         }
     }
 

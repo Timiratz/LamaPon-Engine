@@ -144,8 +144,11 @@ namespace LamaPon
         // TAA（時間的アンチエイリアス）の解決に必要な入力。
         struct TemporalInputs final
         {
-            ID3D11ShaderResourceView* history{};
-            ID3D11ShaderResourceView* depth{};
+            // RenderTargetが所有する前フレームの解決済みカラーと深度です。
+            // native SRVはD3D11描画島の中で、同じBackend世代・期待形状を
+            // 検証した後にだけ解決します。
+            GraphicsViewHandle history;
+            GraphicsViewHandle depth;
             // 今のフレームの逆ビュー射影。ずらしを含まないもの
             // を渡してください。ずらし込みで復元すると履歴を読む
             // 位置が毎フレーム動き、輪郭がちらつきます。

@@ -2021,8 +2021,80 @@ namespace LamaPon
             || !inputs.previousValid
             || source == nullptr
             || destination == nullptr
-            || inputs.history == nullptr
-            || inputs.depth == nullptr)
+            || !inputs.history
+            || !inputs.depth
+            || m_backend == nullptr)
+        {
+            return false;
+        }
+
+        ID3D11ShaderResourceView* history{};
+        ID3D11ShaderResourceView* depth{};
+        try
+        {
+            history = m_backend->ResolveShaderResourceView(
+                inputs.history);
+            depth = m_backend->ResolveShaderResourceView(
+                inputs.depth);
+        }
+        catch (const std::exception&)
+        {
+            // stale / foreign handleは、旧DeviceのSRVを現在の
+            // Contextへ渡さず、TAAそのものをスキップします。
+            return false;
+        }
+        if (history == nullptr || depth == nullptr)
+        {
+            return false;
+        }
+
+        const auto validateTexture2D = [width, height](
+            ID3D11ShaderResourceView* const view,
+            const DXGI_FORMAT viewFormat,
+            const DXGI_FORMAT textureFormat,
+            const UINT requiredBindFlags)
+        {
+            D3D11_SHADER_RESOURCE_VIEW_DESC viewDescription{};
+            view->GetDesc(&viewDescription);
+            if (viewDescription.Format != viewFormat
+                || viewDescription.ViewDimension
+                    != D3D11_SRV_DIMENSION_TEXTURE2D
+                || viewDescription.Texture2D.MostDetailedMip != 0
+                || viewDescription.Texture2D.MipLevels != 1)
+            {
+                return false;
+            }
+
+            Microsoft::WRL::ComPtr<ID3D11Resource> resource;
+            view->GetResource(resource.ReleaseAndGetAddressOf());
+            Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+            if (resource == nullptr
+                || FAILED(resource.As(&texture)))
+            {
+                return false;
+            }
+            D3D11_TEXTURE2D_DESC description{};
+            texture->GetDesc(&description);
+            return description.Width == std::max(width, 1u)
+                && description.Height == std::max(height, 1u)
+                && description.MipLevels == 1
+                && description.ArraySize == 1
+                && description.Format == textureFormat
+                && description.SampleDesc.Count == 1
+                && (description.BindFlags & requiredBindFlags)
+                    == requiredBindFlags;
+        };
+        if (!validateTexture2D(
+                history,
+                DXGI_FORMAT_R16G16B16A16_FLOAT,
+                DXGI_FORMAT_R16G16B16A16_FLOAT,
+                D3D11_BIND_SHADER_RESOURCE)
+            || !validateTexture2D(
+                depth,
+                DXGI_FORMAT_R24_UNORM_X8_TYPELESS,
+                DXGI_FORMAT_R24G8_TYPELESS,
+                D3D11_BIND_DEPTH_STENCIL
+                    | D3D11_BIND_SHADER_RESOURCE))
         {
             return false;
         }
@@ -2071,9 +2143,9 @@ namespace LamaPon
         ID3D11ShaderResourceView* resources[]{
             source,
             nullptr,
-            inputs.depth,
+            depth,
             nullptr,
-            inputs.history
+            history
         };
         m_context->PSSetShaderResources(
             0,

@@ -141,6 +141,15 @@ namespace LamaPon
                 ? m_colorHistoryView
                 : GraphicsViewHandle{};
         }
+        // TAAで前フレームの解決済みカラーを参照するviewです。最初の
+        // CaptureTemporalHistoryより前はemptyを返します。
+        [[nodiscard]] GraphicsViewHandle
+            TemporalHistoryViewHandle() const noexcept
+        {
+            return m_temporalHistoryValid
+                ? m_temporalHistoryView
+                : GraphicsViewHandle{};
+        }
         [[nodiscard]] const DirectX::XMFLOAT4X4&
             ColorHistoryViewProjection() const noexcept
         {
@@ -407,6 +416,7 @@ namespace LamaPon
             m_temporalHistoryTexture;
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
             m_temporalHistoryShaderResourceView;
+        GraphicsViewHandle m_temporalHistoryView;
         // このビューの前フレームのビュー射影（ずらし無し）。
         DirectX::XMFLOAT4X4
             m_temporalHistoryViewProjection{};

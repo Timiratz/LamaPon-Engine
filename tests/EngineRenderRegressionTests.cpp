@@ -1450,6 +1450,139 @@ int main(const int argumentCount, char** arguments)
                 == resolvedVolumetricSource,
             "Invalid neutral volumetric inputs changed the target");
 
+        // TAAの履歴と深度もRenderTargetがneutral handleで所有し、
+        // D3D11描画島が同じBackend世代・期待形式・画面寸法をまとめて
+        // 検証した後にだけ解決します。
+        Stage("temporal-neutral-history-and-depth");
+        LamaPon::RenderTarget temporalTarget;
+        graphics.ResizeOffscreenTarget(
+            temporalTarget,
+            Width,
+            Height);
+        Require(
+            temporalTarget.DepthViewHandle()
+                && !temporalTarget.TemporalHistoryViewHandle(),
+            "A fresh RenderTarget published an invalid temporal history state");
+        DirectX::XMFLOAT4X4 temporalIdentity{};
+        DirectX::XMStoreFloat4x4(
+            &temporalIdentity,
+            DirectX::XMMatrixIdentity());
+        graphics.CaptureOffscreenTargetTemporalHistory(
+            temporalTarget,
+            temporalIdentity);
+        const auto temporalHistoryView =
+            temporalTarget.TemporalHistoryViewHandle();
+        const auto temporalDepthView =
+            temporalTarget.DepthViewHandle();
+        Require(
+            temporalHistoryView
+                && temporalDepthView
+                && graphics.IsGraphicsViewCurrent(
+                    temporalHistoryView)
+                && graphics.IsGraphicsViewCurrent(
+                    temporalDepthView)
+                && graphics.TryResolveD3D11ShaderResourceView(
+                    temporalHistoryView) != nullptr
+                && graphics.TryResolveD3D11ShaderResourceView(
+                    temporalDepthView) != nullptr,
+            "RenderTarget did not publish current neutral TAA views");
+
+        LamaPon::TemporalAntiAliasingSettings temporalSettings;
+        temporalSettings.enabled = true;
+        LamaPon::EnvironmentRenderer::TemporalInputs temporalInputs;
+        temporalInputs.inverseViewProjection = temporalIdentity;
+        temporalInputs.viewProjection = temporalIdentity;
+        auto* const temporalSource =
+            temporalTarget.ShaderResourceView();
+        temporalTarget.ApplyTemporalAntiAliasing(
+            graphics.Environment(),
+            temporalSettings,
+            temporalInputs);
+        Require(
+            temporalTarget.ShaderResourceView() != temporalSource,
+            "Valid neutral TAA inputs were not applied by RenderTarget");
+
+        D3D11_TEXTURE2D_DESC temporalOutputDescription{};
+        temporalOutputDescription.Width = Width;
+        temporalOutputDescription.Height = Height;
+        temporalOutputDescription.MipLevels = 1;
+        temporalOutputDescription.ArraySize = 1;
+        temporalOutputDescription.Format =
+            DXGI_FORMAT_R16G16B16A16_FLOAT;
+        temporalOutputDescription.SampleDesc.Count = 1;
+        temporalOutputDescription.Usage = D3D11_USAGE_DEFAULT;
+        temporalOutputDescription.BindFlags =
+            D3D11_BIND_RENDER_TARGET;
+        Microsoft::WRL::ComPtr<ID3D11Texture2D>
+            temporalOutputTexture;
+        Microsoft::WRL::ComPtr<ID3D11RenderTargetView>
+            temporalOutputTarget;
+        Require(
+            SUCCEEDED(graphics.Device()->CreateTexture2D(
+                &temporalOutputDescription,
+                nullptr,
+                temporalOutputTexture.ReleaseAndGetAddressOf()))
+                && SUCCEEDED(graphics.Device()->CreateRenderTargetView(
+                    temporalOutputTexture.Get(),
+                    nullptr,
+                    temporalOutputTarget.ReleaseAndGetAddressOf())),
+            "The neutral TAA validation target could not be created");
+
+        auto directTemporalInputs = temporalInputs;
+        directTemporalInputs.history = temporalHistoryView;
+        directTemporalInputs.depth = temporalDepthView;
+        directTemporalInputs.previousViewProjection =
+            temporalIdentity;
+        directTemporalInputs.previousValid = true;
+        auto temporalOutputState = graphics.CaptureOutputState();
+        Require(
+            temporalOutputState != nullptr,
+            "The TAA renderer output state could not be captured");
+        Require(
+            graphics.Environment().ApplyTemporalAntiAliasing(
+                temporalTarget.ShaderResourceView(),
+                temporalOutputTarget.Get(),
+                Width,
+                Height,
+                temporalSettings,
+                directTemporalInputs),
+            "The TAA renderer rejected valid neutral history and depth views");
+        graphics.RestoreOutputState(*temporalOutputState);
+
+        auto incompleteTemporalInputs = directTemporalInputs;
+        incompleteTemporalInputs.history.Reset();
+        Require(
+            !graphics.Environment().ApplyTemporalAntiAliasing(
+                temporalTarget.ShaderResourceView(),
+                temporalOutputTarget.Get(),
+                Width,
+                Height,
+                temporalSettings,
+                incompleteTemporalInputs),
+            "The TAA renderer accepted a missing neutral history view");
+        auto invalidTemporalHistory = directTemporalInputs;
+        invalidTemporalHistory.history = litViews[0];
+        Require(
+            !graphics.Environment().ApplyTemporalAntiAliasing(
+                temporalTarget.ShaderResourceView(),
+                temporalOutputTarget.Get(),
+                Width,
+                Height,
+                temporalSettings,
+                invalidTemporalHistory),
+            "The TAA renderer accepted an RGBA8 history view");
+        auto invalidTemporalDepth = directTemporalInputs;
+        invalidTemporalDepth.depth = temporalHistoryView;
+        Require(
+            !graphics.Environment().ApplyTemporalAntiAliasing(
+                temporalTarget.ShaderResourceView(),
+                temporalOutputTarget.Get(),
+                Width,
+                Height,
+                temporalSettings,
+                invalidTemporalDepth),
+            "The TAA renderer accepted a color view as depth");
+
         // SSAOとSSRもRenderTargetがneutral handleを所有し、Effectへ
         // 反映する直前に3本まとめて同じBackend世代へ解決します。
         Stage("lit-neutral-screen-space-lighting");
@@ -1984,14 +2117,35 @@ int main(const int argumentCount, char** arguments)
             foreignBackend.CaptureOffscreenTargetColorHistory(
                 foreignScreenTarget,
                 screenHistoryTransform);
+            foreignBackend.CaptureOffscreenTargetTemporalHistory(
+                foreignScreenTarget,
+                temporalIdentity);
             const auto foreignAmbientOcclusionView =
                 foreignScreenTarget.AmbientOcclusionViewHandle();
             const auto foreignColorHistoryView =
                 foreignScreenTarget.ColorHistoryViewHandle();
+            const auto foreignTemporalHistoryView =
+                foreignScreenTarget.TemporalHistoryViewHandle();
             const auto foreignReflectionDepthView =
                 foreignScreenTarget.ReflectionDepthPyramidViewHandle();
             const auto foreignDepthView =
                 foreignScreenTarget.DepthViewHandle();
+            Require(
+                foreignTemporalHistoryView
+                    && foreignBackend.ResolveShaderResourceView(
+                        foreignTemporalHistoryView) != nullptr,
+                "A foreign RenderTarget did not publish its TAA history view");
+            auto mixedTemporalInputs = directTemporalInputs;
+            mixedTemporalInputs.history = foreignTemporalHistoryView;
+            Require(
+                !graphics.Environment().ApplyTemporalAntiAliasing(
+                    temporalTarget.ShaderResourceView(),
+                    temporalOutputTarget.Get(),
+                    Width,
+                    Height,
+                    temporalSettings,
+                    mixedTemporalInputs),
+                "The TAA renderer accepted a foreign history view");
             auto mixedScreenLighting = screenLighting;
             mixedScreenLighting.screenSpaceReflection.texture =
                 foreignColorHistoryView;
@@ -2025,6 +2179,7 @@ int main(const int argumentCount, char** arguments)
                     && foreignScreenTarget.DepthViewHandle()
                         != foreignDepthView
                     && !foreignScreenTarget.ColorHistoryViewHandle()
+                    && !foreignScreenTarget.TemporalHistoryViewHandle()
                     && graphics.TryResolveD3D11ShaderResourceView(
                         foreignScreenTarget
                             .AmbientOcclusionViewHandle()) != nullptr
@@ -2038,6 +2193,20 @@ int main(const int argumentCount, char** arguments)
                     && graphics.TryResolveD3D11ShaderResourceView(
                         foreignDepthView) == nullptr,
                 "A same-size RenderTarget kept resources from another device");
+            graphics.CaptureOffscreenTargetTemporalHistory(
+                foreignScreenTarget,
+                temporalIdentity);
+            const auto replacementTemporalHistoryView =
+                foreignScreenTarget.TemporalHistoryViewHandle();
+            Require(
+                replacementTemporalHistoryView
+                    && replacementTemporalHistoryView
+                        != foreignTemporalHistoryView
+                    && graphics.TryResolveD3D11ShaderResourceView(
+                        replacementTemporalHistoryView) != nullptr
+                    && graphics.TryResolveD3D11ShaderResourceView(
+                        foreignTemporalHistoryView) == nullptr,
+                "RenderTarget did not replace its foreign TAA history view");
 
             LamaPon::ShadowMap foreignShadowMap;
             foreignBackend.InitializeShadowMap(
