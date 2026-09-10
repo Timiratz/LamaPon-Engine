@@ -11,6 +11,8 @@
 #include "LamaPon/Graphics/EnvironmentCache.h"
 #include "LamaPon/Graphics/DebugRenderer.h"
 #include "LamaPon/Graphics/D3D11Backend.h"
+#include "LamaPon/Graphics/GraphicsDeviceApiResources.h"
+#include "LamaPon/Graphics/GraphicsRenderServices.h"
 #include "LamaPon/Graphics/LitEffect.h"
 #include "LamaPon/Graphics/PngWriter.h"
 #include "LamaPon/Graphics/RenderPipeline.h"
@@ -644,6 +646,152 @@ int main(const int argumentCount, char** arguments)
                     foreignEffect,
                     litTextures),
                 "A LitEffect owned by another GraphicsDevice was accepted");
+
+            // ParticleSystemから分離した共通serviceがneutral handleだけで
+            // D3D11へ描画し、従来と同じ主要stateへ戻すことを固定します。
+            Stage("particle-render-service");
+            auto particleService =
+                LamaPon::Detail::CreateD3D11GraphicsRenderServices(
+                    foreignBackend.Device(),
+                    foreignBackend.Context(),
+                    foreignBackend);
+            const auto particleTexture =
+                foreignBackend.CreateSolidRgba8Texture(
+                    { 255u, 255u, 255u, 255u });
+            const auto particleTextureView =
+                foreignBackend.CreateShaderResourceView(
+                    particleTexture);
+            constexpr std::array particleVertices{
+                LamaPon::ParticleRenderVertex{
+                    { -0.5f, -0.5f, 0.0f },
+                    { 0.0f, 1.0f, 0.0f, 1.0f },
+                    { 0.0f, 1.0f } },
+                LamaPon::ParticleRenderVertex{
+                    { 0.5f, -0.5f, 0.0f },
+                    { 0.0f, 1.0f, 0.0f, 1.0f },
+                    { 1.0f, 1.0f } },
+                LamaPon::ParticleRenderVertex{
+                    { 0.5f, 0.5f, 0.0f },
+                    { 0.0f, 1.0f, 0.0f, 1.0f },
+                    { 1.0f, 0.0f } },
+                LamaPon::ParticleRenderVertex{
+                    { -0.5f, 0.5f, 0.0f },
+                    { 0.0f, 1.0f, 0.0f, 1.0f },
+                    { 0.0f, 0.0f } }
+            };
+            LamaPon::ParticleDrawRequest particleRequest;
+            particleRequest.vertices = particleVertices;
+            DirectX::XMStoreFloat4x4(
+                &particleRequest.view,
+                DirectX::XMMatrixIdentity());
+            DirectX::XMStoreFloat4x4(
+                &particleRequest.projection,
+                DirectX::XMMatrixIdentity());
+            particleRequest.fallbackTexture = particleTextureView;
+            particleRequest.additive = false;
+            std::uint32_t customShaderAttempts{};
+            particleRequest.applyCustomPixelShader =
+                [&customShaderAttempts]
+            {
+                ++customShaderAttempts;
+                return false;
+            };
+            constexpr float particleClear[]{
+                0.0f, 0.0f, 0.0f, 1.0f
+            };
+            foreignBackend.BindAndClearBackBuffer(particleClear);
+            Require(
+                particleService->DrawParticles(particleRequest)
+                    && customShaderAttempts == 1u,
+                "The neutral particle render service rejected a valid quad");
+            std::uint32_t particleWidth{};
+            std::uint32_t particleHeight{};
+            const auto particlePixels =
+                foreignBackend.CaptureBackBuffer(
+                    particleWidth,
+                    particleHeight);
+            const auto particleCenter = At(
+                particlePixels,
+                Width / 2,
+                Height / 2);
+            Require(
+                particleWidth == Width
+                    && particleHeight == Height
+                    && particleCenter.green
+                        > particleCenter.red + 120
+                    && particleCenter.green
+                        > particleCenter.blue + 120,
+                "The neutral particle render service did not rasterize its quad");
+
+            Microsoft::WRL::ComPtr<ID3D11BlendState> restoredBlend;
+            float restoredBlendFactor[4]{};
+            UINT restoredSampleMask{};
+            foreignBackend.Context()->OMGetBlendState(
+                restoredBlend.ReleaseAndGetAddressOf(),
+                restoredBlendFactor,
+                &restoredSampleMask);
+            D3D11_BLEND_DESC restoredBlendDescription{};
+            restoredBlend->GetDesc(&restoredBlendDescription);
+            Require(
+                !restoredBlendDescription.RenderTarget[0].BlendEnable
+                    && restoredSampleMask == 0xffffffffu,
+                "Particle rendering did not restore opaque blending");
+
+            Microsoft::WRL::ComPtr<ID3D11DepthStencilState> restoredDepth;
+            UINT restoredStencilReference{};
+            foreignBackend.Context()->OMGetDepthStencilState(
+                restoredDepth.ReleaseAndGetAddressOf(),
+                &restoredStencilReference);
+            D3D11_DEPTH_STENCIL_DESC restoredDepthDescription{};
+            restoredDepth->GetDesc(&restoredDepthDescription);
+            Require(
+                restoredDepthDescription.DepthEnable
+                    && restoredDepthDescription.DepthWriteMask
+                        == D3D11_DEPTH_WRITE_MASK_ALL
+                    && restoredStencilReference == 0u,
+                "Particle rendering did not restore writable depth testing");
+
+            Microsoft::WRL::ComPtr<ID3D11RasterizerState> restoredRasterizer;
+            foreignBackend.Context()->RSGetState(
+                restoredRasterizer.ReleaseAndGetAddressOf());
+            D3D11_RASTERIZER_DESC restoredRasterizerDescription{};
+            restoredRasterizer->GetDesc(
+                &restoredRasterizerDescription);
+            Require(
+                restoredRasterizerDescription.CullMode
+                        == D3D11_CULL_BACK
+                    && !restoredRasterizerDescription.FrontCounterClockwise,
+                "Particle rendering did not restore counter-clockwise culling");
+
+            // custom shaderが有効な経路ではt0/t1を使い、終了後に両方を
+            // 外します。callback自身はこのテストでは既定PSを維持します。
+            particleRequest.texture = particleTextureView;
+            particleRequest.auxiliaryTexture = particleTextureView;
+            particleRequest.additive = true;
+            particleRequest.applyCustomPixelShader = []
+            {
+                return true;
+            };
+            foreignBackend.BindAndClearBackBuffer(particleClear);
+            Require(
+                particleService->DrawParticles(particleRequest),
+                "The particle custom-shader branch rejected a valid quad");
+            Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
+                releasedParticleView0;
+            Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
+                releasedParticleView1;
+            foreignBackend.Context()->PSGetShaderResources(
+                0,
+                1,
+                releasedParticleView0.ReleaseAndGetAddressOf());
+            foreignBackend.Context()->PSGetShaderResources(
+                1,
+                1,
+                releasedParticleView1.ReleaseAndGetAddressOf());
+            Require(
+                releasedParticleView0 == nullptr
+                    && releasedParticleView1 == nullptr,
+                "Particle custom-shader resources remained bound");
         }
         DestroyWindow(foreignWindow);
 
@@ -942,6 +1090,44 @@ int main(const int argumentCount, char** arguments)
                 "Captured size must match the swap chain.");
             return pixels;
         };
+
+        // Component側はAPI固有資源を持たず、CPUで生成したquadを共有service
+        // へ渡します。Scene統合経路でも中央に緑のparticleが描けること。
+        subject.SetEnabled(false);
+        auto& particleObject =
+            scene.CreateGameObject("ParticleServiceProbe");
+        auto& particleSystem = particleObject.AddComponent<
+            LamaPon::ParticleSystemComponent>(
+                1,
+                0.0f,
+                DirectX::XMFLOAT2{ 10.0f, 10.0f },
+                DirectX::XMFLOAT2{},
+                DirectX::XMFLOAT2{ 2.0f, 2.0f },
+                DirectX::XMFLOAT4{ 0.0f, 1.0f, 0.0f, 1.0f },
+                DirectX::XMFLOAT4{ 0.0f, 1.0f, 0.0f, 1.0f });
+        particleSystem.SetPlayOnStart(false);
+        particleSystem.SetAdditive(false);
+        particleSystem.EmitParticle(
+            {},
+            {},
+            10.0f,
+            2.0f);
+        Stage("frame-particle-render-service");
+        const auto particleFrame = renderFrame();
+        const auto sceneParticleCenter = At(
+            particleFrame,
+            Width / 2,
+            Height / 2);
+        Require(
+            sceneParticleCenter.green
+                    > sceneParticleCenter.red + 120
+                && sceneParticleCenter.green
+                    > sceneParticleCenter.blue + 120,
+            "ParticleSystem did not reach the shared render service");
+        Require(
+            scene.DestroyGameObject(particleObject),
+            "The particle service probe could not be destroyed");
+        subject.SetEnabled(true);
 
         // (1) クリアカラーと環境光のみの被写体
         Stage("frame-ambient");

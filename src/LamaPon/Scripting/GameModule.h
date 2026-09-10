@@ -13,10 +13,10 @@ namespace LamaPon
     // Game ModuleとRuntimeのABIを識別します。公開構造体のレイアウトや
     // 公開関数のシグネチャを変更した場合は、この値も更新してください。
     // GameModuleHostは完全一致を要求し、互換性のないDLLを読み込みません。
-    // API 50ではSkeletalPrimitiveの内蔵textureをneutral handleでも
-    // 保持し、SkeletalModel::Drawの公開texture契約を更新したため、
+    // API 51ではParticleSystemComponentからDirectXTK11描画資源を
+    // 除去し、API非依存のparticle描画要求へ移したため、
     // ゲーム用DLLの再ビルドが必要です。
-    inline constexpr std::uint32_t GameModuleApiVersion = 50;
+    inline constexpr std::uint32_t GameModuleApiVersion = 51;
 
     using NativeScriptCreateFunction = void* (*)(
         GameObject* owner,

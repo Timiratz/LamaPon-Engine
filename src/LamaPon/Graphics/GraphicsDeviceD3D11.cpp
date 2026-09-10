@@ -5,6 +5,7 @@
 #include "LamaPon/Graphics/EnvironmentCache.h"
 #include "LamaPon/Graphics/EnvironmentSettings.h"
 #include "LamaPon/Graphics/GraphicsDeviceApiResources.h"
+#include "LamaPon/Graphics/GraphicsRenderServices.h"
 #include "LamaPon/Graphics/RenderTarget.h"
 #include "LamaPon/Graphics/ShaderRenderState.h"
 
@@ -97,6 +98,8 @@ namespace LamaPon::Detail
     void GraphicsDeviceApiResources::Reset() noexcept
     {
         namedRenderTextureViews.clear();
+        // serviceはBackendとD3D11 API資源を参照するため先に破棄します。
+        renderServices.reset();
         if (d3d11)
         {
             d3d11->Reset();
@@ -107,7 +110,8 @@ namespace LamaPon::Detail
     std::unique_ptr<GraphicsDeviceApiResources>
         CreateD3D11GraphicsDeviceApiResources(
             ID3D11Device* const device,
-            ID3D11DeviceContext* const context)
+            ID3D11DeviceContext* const context,
+            GraphicsBackend& backend)
     {
         if (device == nullptr || context == nullptr)
         {
@@ -122,6 +126,11 @@ namespace LamaPon::Detail
             std::make_unique<GraphicsDeviceD3D11Resources>(
                 device,
                 context);
+        resources->renderServices =
+            CreateD3D11GraphicsRenderServices(
+                device,
+                context,
+                backend);
         return resources;
     }
 }
@@ -151,7 +160,8 @@ namespace LamaPon
             resources =
                 Detail::CreateD3D11GraphicsDeviceApiResources(
                     Device(),
-                    Context());
+                    Context(),
+                    *m_backend);
             break;
         case RenderingApi::Auto:
         case RenderingApi::DirectX12Experimental:

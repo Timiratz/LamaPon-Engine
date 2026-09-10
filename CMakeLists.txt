@@ -273,12 +273,14 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Graphics/GraphicsDevice.cpp
     src/LamaPon/Graphics/GraphicsDevice.h
     src/LamaPon/Graphics/GraphicsDeviceApiResources.h
+    src/LamaPon/Graphics/GraphicsRenderServices.h
     src/LamaPon/Graphics/GraphicsDeviceShaderState.h
     src/LamaPon/Graphics/GraphicsDeviceShaderEffectsD3D11.cpp
     src/LamaPon/Graphics/GraphicsDeviceBackendOps.cpp
     src/LamaPon/Graphics/GraphicsDeviceBuiltInEffectsD3D11.cpp
     src/LamaPon/Graphics/GraphicsDeviceComposition.cpp
     src/LamaPon/Graphics/GraphicsDeviceD3D11.cpp
+    src/LamaPon/Graphics/GraphicsDeviceParticleRendering.cpp
     src/LamaPon/Graphics/GraphicsDeviceSpriteFrontend.cpp
     src/LamaPon/Graphics/GraphicsDeviceSpriteD3D11.cpp
     src/LamaPon/Graphics/GraphicsDeviceResourceLease.cpp
@@ -286,6 +288,7 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Graphics/GraphicsDeviceResourceLeaseState.h
     src/LamaPon/Graphics/D3D11Backend.cpp
     src/LamaPon/Graphics/D3D11Backend.h
+    src/LamaPon/Graphics/D3D11RenderServices.cpp
     src/LamaPon/Graphics/D3D11GpuProfilerBackend.cpp
     src/LamaPon/Graphics/Lighting.cpp
     src/LamaPon/Graphics/Lighting.h
@@ -1802,6 +1805,7 @@ install(
         PATTERN "AssetPacker.h" EXCLUDE
         PATTERN "AssetArchive.h" EXCLUDE
         PATTERN "GraphicsDeviceApiResources.h" EXCLUDE
+        PATTERN "GraphicsRenderServices.h" EXCLUDE
         PATTERN "GraphicsDeviceResourceLeaseState.h" EXCLUDE
         PATTERN "GraphicsDeviceShaderState.h" EXCLUDE
 )

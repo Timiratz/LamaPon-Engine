@@ -89,7 +89,9 @@ namespace LamaPon
     class InputSystem;
     class LitEffect;
     class ModelRendererComponent;
+    class ParticleSystemComponent;
     struct LitTextureRequest;
+    struct ParticleDrawRequest;
     class SpriteEffect;
     class ShadowMap;
     class RenderTarget;
@@ -696,6 +698,7 @@ namespace LamaPon
     private:
         friend class Application;
         friend class ModelRendererComponent;
+        friend class ParticleSystemComponent;
         friend class SkeletalModel;
         friend class Detail::SpriteRenderPassState;
 
@@ -789,6 +792,15 @@ namespace LamaPon
         [[nodiscard]] GraphicsViewHandle
             ImportD3D11ShaderResourceView(
                 ID3D11ShaderResourceView* view);
+        // ParticleSystemが生成したquadを実効APIの共有serviceへ送ります。
+        // custom shader cacheはGraphicsDeviceに残し、Componentへ
+        // Device / Context / Effectを公開しません。
+        [[nodiscard]] bool DrawParticles(
+            const ParticleDrawRequest& request,
+            const std::filesystem::path& shaderPath,
+            const std::array<DirectX::XMFLOAT4, 8>& customParameters,
+            std::uint64_t* shaderGeneration,
+            std::string* shaderError);
         // API 46のGame Moduleが旧公開名を解決してからAPI不一致を
         // 案内できるよう、外部callerのないD3D11具象facadeも
         // 1互換期間だけprivate shimとして残します。

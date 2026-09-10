@@ -22,6 +22,8 @@ namespace DirectX
 
 namespace LamaPon
 {
+    class GraphicsBackend;
+    class GraphicsRenderServices;
     struct TextureResourceSnapshot;
 
     namespace Detail
@@ -87,12 +89,20 @@ namespace LamaPon
 
             std::unordered_map<std::string, GraphicsViewHandle>
                 namedRenderTextureViews;
+            std::unique_ptr<GraphicsRenderServices> renderServices;
             std::unique_ptr<GraphicsDeviceD3D11Resources> d3d11;
         };
+
+        [[nodiscard]] std::unique_ptr<GraphicsRenderServices>
+            CreateD3D11GraphicsRenderServices(
+                ID3D11Device* device,
+                ID3D11DeviceContext* context,
+                GraphicsBackend& backend);
 
         [[nodiscard]] std::unique_ptr<GraphicsDeviceApiResources>
             CreateD3D11GraphicsDeviceApiResources(
                 ID3D11Device* device,
-                ID3D11DeviceContext* context);
+                ID3D11DeviceContext* context,
+                GraphicsBackend& backend);
     }
 }
