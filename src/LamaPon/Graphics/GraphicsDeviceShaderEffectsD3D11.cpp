@@ -5,7 +5,7 @@
 #include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Graphics/ComputeEffect.h"
 #include "LamaPon/Graphics/ClusteredLights.h"
-#include "LamaPon/Graphics/GraphicsDeviceApiResources.h"
+#include "LamaPon/Graphics/GraphicsDeviceD3D11Resources.h"
 #include "LamaPon/Graphics/GraphicsDeviceD3D11Access.h"
 #include "LamaPon/Graphics/GraphicsDeviceShaderState.h"
 #include "LamaPon/Graphics/LitEffect.h"

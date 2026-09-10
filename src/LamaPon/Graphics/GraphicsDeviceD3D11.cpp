@@ -6,8 +6,9 @@
 #include "LamaPon/Graphics/D3D11Backend.h"
 #include "LamaPon/Graphics/EnvironmentCache.h"
 #include "LamaPon/Graphics/EnvironmentSettings.h"
-#include "LamaPon/Graphics/GraphicsDeviceApiResources.h"
+#include "LamaPon/Graphics/GraphicsDeviceD3D11Resources.h"
 #include "LamaPon/Graphics/GraphicsRenderServices.h"
+#include "LamaPon/Graphics/Lighting.h"
 #include "LamaPon/Graphics/RenderTarget.h"
 #include "LamaPon/Graphics/ShaderRenderState.h"
 #include "LamaPon/Graphics/ShadowMap.h"
@@ -15,6 +16,7 @@
 #include <CommonStates.h>
 #include <SpriteBatch.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -193,6 +195,9 @@ namespace LamaPon::Detail
     void GraphicsDeviceD3D11Resources::Reset() noexcept
     {
         ResetHighLevelResources();
+        // serviceは下のSpriteBatch/CommonStates等を借用するため、
+        // native D3D11 stateより先に破棄します。
+        renderServices.reset();
         spriteShaderCallback = {};
         spriteBatchOwner = D3D11SpriteBatchOwner::None;
         spriteBatchToken = 0;
@@ -210,7 +215,7 @@ namespace LamaPon::Detail
         spriteBatch.reset();
     }
 
-    void GraphicsDeviceD3D11Resources::QuiesceShaderWork() noexcept
+    void GraphicsDeviceD3D11Resources::QuiesceResourceWork() noexcept
     {
         const auto waitForShaders = [](auto& entries) noexcept
         {
@@ -238,7 +243,7 @@ namespace LamaPon::Detail
     void GraphicsDeviceD3D11Resources::
         ResetHighLevelResources() noexcept
     {
-        QuiesceShaderWork();
+        QuiesceResourceWork();
         // Callbackとpinsはshader cache/effectへの一時参照を持つため、
         // それらの所有者より先に解放します。
         spriteShaderCallback = {};
@@ -273,26 +278,60 @@ namespace LamaPon::Detail
         skyPrefilteredMaximumMip = 0.0f;
     }
 
-    GraphicsDeviceApiResources::GraphicsDeviceApiResources() = default;
-
-    GraphicsDeviceApiResources::~GraphicsDeviceApiResources()
+    GraphicsRenderServices*
+        GraphicsDeviceD3D11Resources::TryRenderServices() noexcept
     {
-        Reset();
+        return renderServices.get();
     }
 
-    void GraphicsDeviceApiResources::Reset() noexcept
+    void GraphicsDeviceD3D11Resources::RecreateShadowMaps(
+        GraphicsBackend& backend,
+        const GraphicsSettings& settings)
     {
-        if (d3d11)
+        shadowMap = std::make_unique<ShadowMap>();
+        spotShadowMap = std::make_unique<ShadowMap>();
+        pointShadowMap = std::make_unique<ShadowMap>();
+        if (!settings.shadowsEnabled)
         {
-            d3d11->ResetHighLevelResources();
+            return;
         }
-        // serviceはBackendとD3D11 API資源を参照するため先に破棄します。
-        renderServices.reset();
-        if (d3d11)
-        {
-            d3d11->Reset();
-            d3d11.reset();
-        }
+
+        backend.InitializeShadowMap(
+            *shadowMap,
+            settings.shadowResolution,
+            settings.shadowCascadeLimit,
+            false);
+        const std::uint32_t localShadowResolution = std::max(
+            settings.shadowResolution / 2u,
+            256u);
+        backend.InitializeShadowMap(
+            *spotShadowMap,
+            localShadowResolution,
+            static_cast<std::uint32_t>(MaximumSpotShadows),
+            false);
+        backend.InitializeShadowMap(
+            *pointShadowMap,
+            localShadowResolution,
+            6u,
+            true);
+    }
+
+    ShadowMap* GraphicsDeviceD3D11Resources::
+        TryDirectionalShadowMap() const noexcept
+    {
+        return shadowMap.get();
+    }
+
+    ShadowMap* GraphicsDeviceD3D11Resources::
+        TrySpotShadowMap() const noexcept
+    {
+        return spotShadowMap.get();
+    }
+
+    ShadowMap* GraphicsDeviceD3D11Resources::
+        TryPointShadowMap() const noexcept
+    {
+        return pointShadowMap.get();
     }
 
     std::unique_ptr<GraphicsDeviceApiResources>
@@ -309,8 +348,6 @@ namespace LamaPon::Detail
         }
 
         auto resources =
-            std::make_unique<GraphicsDeviceApiResources>();
-        resources->d3d11 =
             std::make_unique<GraphicsDeviceD3D11Resources>(
                 device,
                 context);
@@ -358,6 +395,12 @@ namespace LamaPon
                 "API resources for the active rendering API are not "
                 "implemented.");
         }
+        if (resources == nullptr || resources->Api() != activeApi)
+        {
+            throw std::logic_error(
+                "The graphics API resource factory returned an "
+                "incompatible resource owner.");
+        }
 
         // Factoryが全資源を作り終えてから一度だけ公開します。
         m_state->m_apiResources = std::move(resources);
@@ -377,11 +420,14 @@ namespace LamaPon
     {
         if (m_state->m_backend == nullptr
             || m_state->m_backend->Api() != RenderingApi::DirectX11
-            || m_state->m_apiResources == nullptr)
+            || m_state->m_apiResources == nullptr
+            || m_state->m_apiResources->Api()
+                != RenderingApi::DirectX11)
         {
             return nullptr;
         }
-        return m_state->m_apiResources->d3d11.get();
+        return dynamic_cast<Detail::GraphicsDeviceD3D11Resources*>(
+            m_state->m_apiResources.get());
     }
 
     Detail::GraphicsDeviceD3D11Resources&

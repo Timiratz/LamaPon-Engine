@@ -1,7 +1,7 @@
 #include "LamaPon/Graphics/GraphicsRenderServices.h"
 
 #include "LamaPon/Graphics/GraphicsBackend.h"
-#include "LamaPon/Graphics/GraphicsDeviceApiResources.h"
+#include "LamaPon/Graphics/GraphicsDeviceD3D11Resources.h"
 
 #include <CommonStates.h>
 #include <Effects.h>

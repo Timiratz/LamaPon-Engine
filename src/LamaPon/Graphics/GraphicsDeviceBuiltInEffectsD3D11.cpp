@@ -6,7 +6,7 @@
 #include "LamaPon/Graphics/ClusteredLights.h"
 #include "LamaPon/Graphics/D3D11Backend.h"
 #include "LamaPon/Graphics/EnvironmentRenderer.h"
-#include "LamaPon/Graphics/GraphicsDeviceApiResources.h"
+#include "LamaPon/Graphics/GraphicsDeviceD3D11Resources.h"
 #include "LamaPon/Graphics/LitEffect.h"
 #include "LamaPon/Graphics/SpriteEffect.h"
 

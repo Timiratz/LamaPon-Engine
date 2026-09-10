@@ -13,8 +13,10 @@ namespace LamaPon
         std::uint64_t* const shaderGeneration,
         std::string* const shaderError)
     {
-        if (m_state->m_apiResources == nullptr
-            || m_state->m_apiResources->renderServices == nullptr)
+        auto* const renderServices = m_state->m_apiResources != nullptr
+            ? m_state->m_apiResources->TryRenderServices()
+            : nullptr;
+        if (renderServices == nullptr)
         {
             return false;
         }
@@ -36,7 +38,6 @@ namespace LamaPon
                     shaderError);
             };
         }
-        return m_state->m_apiResources->renderServices->DrawParticles(
-            effectiveRequest);
+        return renderServices->DrawParticles(effectiveRequest);
     }
 }
