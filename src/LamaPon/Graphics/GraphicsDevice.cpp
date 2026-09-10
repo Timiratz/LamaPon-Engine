@@ -754,9 +754,47 @@ namespace LamaPon
         ReleaseResources(false);
     }
 
+    void GraphicsDevice::QuiesceResourceWork() noexcept
+    {
+        // Shader workers borrow AssetManager, so join them while both the
+        // AssetManager and graphics backend are still alive.
+        const auto waitForShaders = [](auto& entries) noexcept
+        {
+            for (auto& [path, entry] : entries)
+            {
+                static_cast<void>(path);
+                if (!entry || !entry->warming.valid())
+                {
+                    continue;
+                }
+                try
+                {
+                    entry->warming.wait();
+                }
+                catch (...)
+                {
+                    // Resource release continues; clearing the entry below
+                    // consumes any stored compilation failure.
+                }
+            }
+        };
+        waitForShaders(m_materialShaders);
+        waitForShaders(m_skinnedMaterialShaders);
+
+        if (m_services)
+        {
+            m_services->QuiesceGraphicsWork();
+        }
+    }
+
     void GraphicsDevice::ReleaseResources(
         const bool preserveAudio) noexcept
     {
+        // No backend state is cleared until every worker that borrows the
+        // current AssetManager or Device has stopped. Initialize closes the
+        // resource lease gate before entering this phase.
+        QuiesceResourceWork();
+
         // Backend所有のGPU計測driverより先に非所有参照を外します。
         m_gpuProfiler.Detach();
         if (m_backend)
@@ -870,7 +908,9 @@ namespace LamaPon
         {
             // 部分初期化したBackendや高レベル資源を残さず、
             // IsInitialized()が失敗後にtrueを返すことも防ぎます。
-            ReleaseResources(false);
+            // Audio is API-independent and remains available for a later
+            // recovery attempt even when graphics initialization fails.
+            ReleaseResources(true);
             EndResourceTransition();
             throw;
         }

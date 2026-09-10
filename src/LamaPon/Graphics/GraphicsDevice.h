@@ -727,6 +727,7 @@ namespace LamaPon
         void BeginResourceTransition();
         void EndResourceTransition() noexcept;
         void CloseResourceLeaseGate() noexcept;
+        void QuiesceResourceWork() noexcept;
         void ReleaseResources(bool preserveAudio) noexcept;
         void InitializeResources(
             HWND window,

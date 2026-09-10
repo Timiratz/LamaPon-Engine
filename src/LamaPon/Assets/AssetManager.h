@@ -284,6 +284,11 @@ namespace LamaPon
                 std::memory_order_relaxed);
         }
 
+        // Backendを停止する前に、Deviceを借用している現在のモデル準備
+        // workerとその結果を回収中の呼び出しを完了させます。この呼び出し
+        // 以降は新しいモデル準備を受け付けない、破棄専用の終端操作です。
+        void QuiesceGraphicsWork() noexcept;
+
         // usageは圧縮フォーマットの選択に使います。法線マップを
         // 既定のColorで読むとBC1（RGB565）に落ちて陰影に帯が出るので、
         // マテリアルのスロットに合わせて渡してください。
@@ -439,6 +444,10 @@ namespace LamaPon
         [[nodiscard]] std::shared_ptr<ModelAsset> LoadModelUncached(
             const std::filesystem::path& resolvedPath,
             ID3D11DeviceContext* context);
+        [[nodiscard]] std::shared_ptr<const ModelAsset> LoadModelImpl(
+            const std::filesystem::path& path);
+        [[nodiscard]] bool TryBeginGraphicsWork() noexcept;
+        void EndGraphicsWork() noexcept;
         void WaitForModelPreparation() noexcept;
         void EndModelUploadPreparation() noexcept;
         void DisableModelUploadThrottle() noexcept;
@@ -463,6 +472,10 @@ namespace LamaPon
         };
         std::optional<PendingModelPreparation>
             m_pendingModelPreparation;
+        mutable std::mutex m_graphicsWorkMutex;
+        std::condition_variable m_graphicsWorkCondition;
+        std::size_t m_activeGraphicsWork{};
+        bool m_acceptingGraphicsWork{ true };
         mutable std::mutex m_modelMutex;
         std::uint64_t m_modelGeneration{};
         mutable std::mutex m_modelUploadMutex;

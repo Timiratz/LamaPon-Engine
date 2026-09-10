@@ -36,6 +36,11 @@ namespace LamaPon
         // 描画Backendの再作成前に、旧Deviceを借りるAssetManagerと
         // Windowに結び付くInputだけを破棄します。Audioは描画APIと
         // 無関係なので保持し、短時間の再生成による途切れを避けます。
+        // Backend停止前にQuiesceGraphicsWorkを呼び、AssetManagerが
+        // 借りているDevice上のbackground処理を先に完了させてください。
+        // Asset root、upload/cache予算、Input actionは次のInitializeへ
+        // 引き継ぎ、描画API非依存のAudioインスタンスも保持します。
+        void QuiesceGraphicsWork() noexcept;
         void PrepareForGraphicsReinitialization() noexcept;
         void Shutdown() noexcept;
 
@@ -53,6 +58,8 @@ namespace LamaPon
         [[nodiscard]] InputSystem& Input() const;
 
     private:
+        struct ReinitializationState;
+
         void InitializeImpl(
             ID3D11Device* device,
             ID3D11DeviceContext* context,
@@ -64,7 +71,11 @@ namespace LamaPon
             ID3D11DeviceContext* context,
             bool textureCompression,
             GraphicsBackend* backend);
+        void CaptureAssetSettings() noexcept;
+        void RestoreAssetSettings(AssetManager& assets) const;
 
+        std::unique_ptr<ReinitializationState>
+            m_reinitializationState;
         std::unique_ptr<AssetManager> m_assets;
         std::unique_ptr<AudioSystem> m_audio;
         std::unique_ptr<InputSystem> m_input;

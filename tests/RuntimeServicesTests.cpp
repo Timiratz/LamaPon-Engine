@@ -3,6 +3,7 @@
 #include "LamaPon/Audio/AudioSystem.h"
 #include "LamaPon/Input/InputSystem.h"
 
+#include <filesystem>
 #include <iostream>
 #include <stdexcept>
 
@@ -38,12 +39,49 @@ int main()
             "File-only asset access must reuse its cache");
         Require(!assets.ReadFileBytes("assets/shaders/LamaPonLit.hlsl").empty(),
             "File-only service must read engine assets without a GraphicsDevice");
+        const auto assetRoot =
+            std::filesystem::absolute("assets").lexically_normal();
+        assets.SetAssetRoot(assetRoot);
+        assets.SetProgressiveUploadThreshold(4096);
+        assets.SetTextCacheBudgetBytes(8192);
         // 初期化前のファイル読み込みから通常サービスへ移行し、描画だけの
         // 再初期化ではAudioを維持できることも確認します。
         services.Initialize(nullptr, nullptr, nullptr, true);
         static_cast<void>(services.Audio());
         static_cast<void>(services.Input());
         Require(services.TryAssets() != nullptr, "Initialization must create assets");
+        Require(
+            services.TryAssets()->AssetRoot() == assetRoot
+                && services.TryAssets()->ProgressiveUploadThreshold() == 4096
+                && services.TryAssets()->TextCacheBudgetBytes() == 8192,
+            "Runtime initialization did not preserve asset configuration");
+        services.Input().SetActions(
+            {
+                {
+                    "PreservedAction",
+                    {
+                        {
+                            LamaPon::InputControl::KeyboardSpace,
+                            1.0f
+                        }
+                    }
+                }
+            });
+        constexpr auto missingModel = "missing-background-model.obj";
+        Require(
+            services.TryAssets()->PrepareModelAsync(missingModel),
+            "Background model preparation did not start");
+        services.QuiesceGraphicsWork();
+        services.QuiesceGraphicsWork();
+        std::string quiesceError;
+        Require(
+            services.TryAssets()->PollModelPreparation(
+                    missingModel,
+                    &quiesceError)
+                    == LamaPon::ModelPreparationState::Failed
+                && !services.TryAssets()->PrepareModelAsync(missingModel)
+                && !quiesceError.empty(),
+            "Graphics work quiescence did not close model work admission");
         auto* const audio = &services.Audio();
         services.PrepareForGraphicsReinitialization();
         Require(
@@ -59,6 +97,16 @@ int main()
         Require(
             &services.Audio() == audio,
             "Runtime service initialization recreated preserved audio");
+        Require(
+            services.TryAssets()->AssetRoot() == assetRoot
+                && services.TryAssets()->ProgressiveUploadThreshold() == 4096
+                && services.TryAssets()->TextCacheBudgetBytes() == 8192,
+            "Graphics reinitialization lost asset configuration");
+        Require(
+            services.Input().Actions().size() == 1
+                && services.Input().Actions().front().name
+                    == "PreservedAction",
+            "Graphics reinitialization lost input actions");
         auto* input = &services.Input();
         bool repeatedRejected{};
         try { services.Initialize(nullptr, nullptr, nullptr, true); }
@@ -69,8 +117,30 @@ int main()
         services.Shutdown();
         Require(services.TryAssets() == nullptr, "Shutdown must release assets");
         CheckUnavailable(services);
-        Require(!services.EnsureAssets(nullptr, nullptr, false).ReadFileBytes("assets/shaders/LamaPonLit.hlsl").empty(),
+        auto& resetAssets = services.EnsureAssets(
+            nullptr,
+            nullptr,
+            false);
+        Require(
+            resetAssets.AssetRoot().empty()
+                && resetAssets.ProgressiveUploadThreshold()
+                    == LamaPon::AssetManager::DefaultProgressiveUploadThreshold
+                && resetAssets.TextCacheBudgetBytes()
+                    == 32u * 1024u * 1024u,
+            "Full shutdown retained reinitialization asset settings");
+        Require(!resetAssets.ReadFileBytes("assets/shaders/LamaPonLit.hlsl").empty(),
             "File-only access must recover after shutdown");
+        services.Initialize(nullptr, nullptr, nullptr, false);
+        bool preservedActionFound{};
+        for (const auto& action : services.Input().Actions())
+        {
+            preservedActionFound = preservedActionFound
+                || action.name == "PreservedAction";
+        }
+        Require(
+            !preservedActionFound,
+            "Full shutdown retained reinitialization input actions");
+        services.Shutdown();
     }
     catch (const std::exception& error)
     {

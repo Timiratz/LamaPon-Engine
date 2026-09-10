@@ -694,7 +694,73 @@ namespace LamaPon
 
     AssetManager::~AssetManager()
     {
+        QuiesceGraphicsWork();
+    }
+
+    void AssetManager::QuiesceGraphicsWork() noexcept
+    {
+        try
+        {
+            {
+                std::scoped_lock lock(m_graphicsWorkMutex);
+                m_acceptingGraphicsWork = false;
+            }
+
+            // A worker may be waiting for the next frame's upload budget.
+            // Release that wait before waiting for the worker count to reach
+            // zero, otherwise teardown could deadlock without another frame.
+            DisableModelUploadThrottle();
+
+            std::unique_lock lock(m_graphicsWorkMutex);
+            m_graphicsWorkCondition.wait(
+                lock,
+                [this]
+                {
+                    return m_activeGraphicsWork == 0;
+                });
+        }
+        catch (...)
+        {
+            // Destruction remains noexcept. The normal mutex/condition
+            // variable path does not throw after successful construction.
+        }
         WaitForModelPreparation();
+    }
+
+    bool AssetManager::TryBeginGraphicsWork() noexcept
+    {
+        try
+        {
+            std::scoped_lock lock(m_graphicsWorkMutex);
+            if (!m_acceptingGraphicsWork)
+            {
+                return false;
+            }
+            ++m_activeGraphicsWork;
+            return true;
+        }
+        catch (...)
+        {
+            return false;
+        }
+    }
+
+    void AssetManager::EndGraphicsWork() noexcept
+    {
+        try
+        {
+            {
+                std::scoped_lock lock(m_graphicsWorkMutex);
+                if (m_activeGraphicsWork > 0)
+                {
+                    --m_activeGraphicsWork;
+                }
+            }
+            m_graphicsWorkCondition.notify_all();
+        }
+        catch (...)
+        {
+        }
     }
 
     void AssetManager::SetAssetRoot(std::filesystem::path assetRoot)
@@ -1671,6 +1737,29 @@ namespace LamaPon
     std::shared_ptr<const ModelAsset> AssetManager::LoadModel(
         const std::filesystem::path& path)
     {
+        if (!TryBeginGraphicsWork())
+        {
+            throw std::logic_error(
+                "AssetManager is stopping graphics work.");
+        }
+        const auto finishGraphicsWork = [](AssetManager* owner) noexcept
+        {
+            owner->EndGraphicsWork();
+        };
+        const std::unique_ptr<
+            AssetManager,
+            decltype(finishGraphicsWork)> graphicsWorkScope{
+                this,
+                finishGraphicsWork
+            };
+
+        return LoadModelImpl(path);
+    }
+
+    std::shared_ptr<const ModelAsset> AssetManager::LoadModelImpl(
+        const std::filesystem::path& path)
+    {
+
         const auto resolvedPath = ResolvePath(path);
         const auto cacheKey = MakeCacheKey(resolvedPath);
         std::future<std::shared_ptr<ModelAsset>> preparedFuture;
@@ -1725,6 +1814,21 @@ namespace LamaPon
     bool AssetManager::PrepareModelAsync(
         const std::filesystem::path& path)
     {
+        if (!TryBeginGraphicsWork())
+        {
+            return false;
+        }
+        const auto finishGraphicsWork = [](AssetManager* owner) noexcept
+        {
+            owner->EndGraphicsWork();
+        };
+        const std::unique_ptr<
+            AssetManager,
+            decltype(finishGraphicsWork)> graphicsWorkScope{
+                this,
+                finishGraphicsWork
+            };
+
         const auto resolvedPath = ResolvePath(path);
         const auto cacheKey = MakeCacheKey(resolvedPath);
         std::future<std::shared_ptr<ModelAsset>> completedFuture;
@@ -1804,12 +1908,28 @@ namespace LamaPon
             m_modelUploadBytesCurrentFrame = 0;
         }
         std::future<std::shared_ptr<ModelAsset>> future;
+        if (!TryBeginGraphicsWork())
+        {
+            EndModelUploadPreparation();
+            return false;
+        }
         try
         {
             future = std::async(
                 std::launch::async,
                 [this, resolvedPath]()
             {
+                const auto finishGraphicsWork = [](
+                    AssetManager* owner) noexcept
+                {
+                    owner->EndGraphicsWork();
+                };
+                const std::unique_ptr<
+                    AssetManager,
+                    decltype(finishGraphicsWork)> graphicsWorkScope{
+                        this,
+                        finishGraphicsWork
+                    };
                 {
                     std::scoped_lock lock(m_modelUploadMutex);
                     m_modelPreparationThread =
@@ -1856,6 +1976,7 @@ namespace LamaPon
         }
         catch (...)
         {
+            EndGraphicsWork();
             EndModelUploadPreparation();
             throw;
         }
@@ -1874,6 +1995,25 @@ namespace LamaPon
             const std::filesystem::path& path,
             std::string* error)
     {
+        if (!TryBeginGraphicsWork())
+        {
+            if (error != nullptr)
+            {
+                *error = "AssetManager is stopping graphics work.";
+            }
+            return ModelPreparationState::Failed;
+        }
+        const auto finishGraphicsWork = [](AssetManager* owner) noexcept
+        {
+            owner->EndGraphicsWork();
+        };
+        const std::unique_ptr<
+            AssetManager,
+            decltype(finishGraphicsWork)> graphicsWorkScope{
+                this,
+                finishGraphicsWork
+            };
+
         if (error != nullptr)
         {
             error->clear();
@@ -1941,6 +2081,22 @@ namespace LamaPon
     std::shared_ptr<const ModelAsset> AssetManager::CreateModelInstance(
         const std::filesystem::path& path)
     {
+        if (!TryBeginGraphicsWork())
+        {
+            throw std::logic_error(
+                "AssetManager is stopping graphics work.");
+        }
+        const auto finishGraphicsWork = [](AssetManager* owner) noexcept
+        {
+            owner->EndGraphicsWork();
+        };
+        const std::unique_ptr<
+            AssetManager,
+            decltype(finishGraphicsWork)> graphicsWorkScope{
+                this,
+                finishGraphicsWork
+            };
+
         const auto resolvedPath = ResolvePath(path);
         const auto cacheKey = MakeCacheKey(resolvedPath);
         bool preparationPending{};
@@ -1953,7 +2109,7 @@ namespace LamaPon
         {
             // 同じファイルを二重解析せず、準備結果（およびその
             // ディスクキャッシュ）が完成してからインスタンス化します。
-            static_cast<void>(LoadModel(resolvedPath));
+            static_cast<void>(LoadModelImpl(resolvedPath));
         }
         return LoadModelUncached(resolvedPath, m_context);
     }

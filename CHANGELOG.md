@@ -38,6 +38,8 @@
 - Sceneと外部renderer向けの`GraphicsDeviceResourceLease`を追加。SceneやEditor GUI等の旧Device資源所有者が生きている再初期化は、現在のBackendやAssetManagerを破棄する前に拒否する。
 - Scene破棄時は非同期Scene読み込みのcancelとjoinを明示し、AssetManagerより先にworkerを終了する。
 - `Scene` / `GraphicsDevice`の寿命契約変更に伴い、Game Module APIを36へ更新。SDK反映後はゲーム用DLLの再ビルドが必要。
+- Graphics Backend停止前に、AssetManagerの非同期モデル準備とmaterial shaderの暖機を明示的に完了させる。再初期化失敗時もAudioは保持する。
+- モデル準備の新規受付を終了境界で閉じ、進行中のworkerと結果回収をjoinする。再初期化後はAsset root・upload/cache予算・Input action設定を復元する。`AssetManager` / `RuntimeServices`のABI変更に伴い、Game Module APIを37へ更新。
 
 ### ファイル名の統一
 

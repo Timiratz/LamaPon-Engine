@@ -1,11 +1,13 @@
 #include "LamaPon/Editor/EditorGuiRenderer.h"
 #include "LamaPon/Editor/EditorModelPreviewRenderer.h"
 #include "LamaPon/Assets/AssetManager.h"
+#include "LamaPon/Audio/AudioSystem.h"
 #include "LamaPon/Graphics/EnvironmentSettings.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Graphics/LitMaterial.h"
 #include "LamaPon/Graphics/RenderTarget.h"
 #include "LamaPon/Graphics/ShadowMap.h"
+#include "LamaPon/Input/InputSystem.h"
 #include "LamaPon/Scene/Scene.h"
 
 #include <Windows.h>
@@ -394,6 +396,124 @@ namespace
                 initiallyGuardedGraphics.Device()
                     != initialRendererDevice.Get(),
                 "Editor renderer shutdown did not release its resource lease");
+
+            const auto preservedAssetRoot =
+                std::filesystem::path{ LAMAPON_TEST_ASSET_DIR };
+            initiallyGuardedGraphics.Assets().SetAssetRoot(
+                preservedAssetRoot);
+            initiallyGuardedGraphics.Assets()
+                .SetProgressiveUploadThreshold(4096);
+            initiallyGuardedGraphics.Assets()
+                .SetTextCacheBudgetBytes(8192);
+            initiallyGuardedGraphics.Input().SetActions(
+                {
+                    {
+                        "PreservedAction",
+                        {
+                            {
+                                LamaPon::InputControl::KeyboardSpace,
+                                0.75f
+                            }
+                        }
+                    }
+                });
+            auto* const preservedAudio =
+                &initiallyGuardedGraphics.Audio();
+            preservedAudio->SetMasterVolume(0.65f);
+            preservedAudio->SetBusVolume(
+                LamaPon::AudioBus::Effects,
+                0.4f);
+            preservedAudio->SetSuspended(true);
+            RequireThrows<std::runtime_error>(
+                [&]
+                {
+                    initiallyGuardedGraphics.Initialize(
+                        nullptr,
+                        Width,
+                        Height,
+                        LamaPon::RenderingApi::DirectX11);
+                },
+                "Invalid graphics reinitialization must report a failure");
+            Require(
+                !initiallyGuardedGraphics.IsInitialized()
+                    && &initiallyGuardedGraphics.Audio()
+                        == preservedAudio
+                    && std::abs(
+                        preservedAudio->MasterVolume() - 0.65f)
+                        < 0.0001f
+                    && std::abs(
+                        preservedAudio->BusVolume(
+                            LamaPon::AudioBus::Effects) - 0.4f)
+                        < 0.0001f
+                    && preservedAudio->IsSuspended(),
+                "Failed graphics reinitialization did not preserve audio");
+            initiallyGuardedGraphics.Initialize(
+                window.Get(),
+                Width,
+                Height,
+                LamaPon::RenderingApi::DirectX11);
+            Require(
+                &initiallyGuardedGraphics.Audio()
+                    == preservedAudio
+                    && std::abs(
+                        preservedAudio->MasterVolume() - 0.65f)
+                        < 0.0001f
+                    && std::abs(
+                        preservedAudio->BusVolume(
+                            LamaPon::AudioBus::Effects) - 0.4f)
+                        < 0.0001f
+                    && preservedAudio->IsSuspended(),
+                "Graphics recovery recreated preserved audio");
+            Require(
+                initiallyGuardedGraphics.Assets().AssetRoot()
+                        == preservedAssetRoot
+                    && initiallyGuardedGraphics.Assets()
+                        .ProgressiveUploadThreshold() == 4096
+                    && initiallyGuardedGraphics.Assets()
+                        .TextCacheBudgetBytes() == 8192,
+                "Graphics recovery lost asset configuration");
+            const auto& restoredActions =
+                initiallyGuardedGraphics.Input().Actions();
+            Require(
+                restoredActions.size() == 1
+                    && restoredActions.front().name
+                        == "PreservedAction"
+                    && restoredActions.front().bindings.size() == 1
+                    && restoredActions.front().bindings.front().control
+                        == LamaPon::InputControl::KeyboardSpace
+                    && std::abs(
+                        restoredActions.front().bindings.front().scale
+                            - 0.75f) < 0.0001f,
+                "Graphics recovery lost input action configuration");
+            preservedAudio->SetSuspended(false);
+        }
+
+        // A background model import owns the old Device beyond the initiating
+        // call. Reinitialization must join it before stopping the backend,
+        // then create a fresh AssetManager that remains usable.
+        {
+            LamaPon::GraphicsDevice asyncGraphics;
+            asyncGraphics.Initialize(
+                window.Get(),
+                Width,
+                Height,
+                LamaPon::RenderingApi::DirectX11);
+            const auto modelPath =
+                std::filesystem::path{ LAMAPON_TEST_ASSET_DIR }
+                / L"models/arrow.cmo";
+            Require(
+                asyncGraphics.Assets().PrepareModelAsync(modelPath),
+                "Background model preparation did not start");
+            asyncGraphics.Initialize(
+                window.Get(),
+                Width,
+                Height,
+                LamaPon::RenderingApi::DirectX11);
+            Require(
+                asyncGraphics.IsInitialized()
+                    && asyncGraphics.Assets().LoadModel(modelPath)
+                        != nullptr,
+                "Graphics reinitialization did not quiesce model work");
         }
 
         LamaPon::GraphicsDevice failedGraphics;
