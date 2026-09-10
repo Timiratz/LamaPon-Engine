@@ -2,6 +2,9 @@
 #include "LamaPon/Editor/EditorModelPreviewRenderer.h"
 #include "LamaPon/Assets/AssetManager.h"
 #include "LamaPon/Audio/AudioSystem.h"
+#include "LamaPon/Components/UIImageComponent.h"
+#include "LamaPon/Components/UIRectTransformComponent.h"
+#include "LamaPon/Components/UIScrollViewComponent.h"
 #include "LamaPon/Core/DebugOverlay.h"
 #include "LamaPon/Graphics/EnvironmentSettings.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
@@ -9,6 +12,8 @@
 #include "LamaPon/Graphics/RenderTarget.h"
 #include "LamaPon/Graphics/ShadowMap.h"
 #include "LamaPon/Input/InputSystem.h"
+#include "LamaPon/Scene/Component.h"
+#include "LamaPon/Scene/GameObject.h"
 #include "LamaPon/Scene/Scene.h"
 #include "LamaPon/Scene/SceneManager.h"
 
@@ -36,6 +41,63 @@ namespace
     class TestGraphicsOutputState final
         : public LamaPon::GraphicsOutputState
     {
+    };
+
+    // Public Component extensions receive the API-neutral draw context, and
+    // Scene owns the surrounding pass and scissor state.
+    class NeutralSceneSpriteComponent final
+        : public LamaPon::Component
+    {
+    public:
+        [[nodiscard]] std::size_t DrawCalls() const noexcept
+        {
+            return m_drawCalls;
+        }
+
+        [[nodiscard]] bool ContextWasActive() const noexcept
+        {
+            return m_contextWasActive;
+        }
+
+        [[nodiscard]] bool DrawWasAccepted() const noexcept
+        {
+            return m_drawWasAccepted;
+        }
+
+        void ThrowAfterNextDraw() noexcept
+        {
+            m_throwAfterDraw = true;
+        }
+
+        [[nodiscard]] int RenderSortOrder() const noexcept override
+        {
+            return 1;
+        }
+
+    protected:
+        void OnRender2D(
+            const LamaPon::SpriteDrawContext& sprites) override
+        {
+            ++m_drawCalls;
+            m_contextWasActive = static_cast<bool>(sprites);
+            LamaPon::SpriteDrawRequest request;
+            request.position = { 4.0f, 4.0f };
+            request.scale = { 32.0f, 32.0f };
+            request.tint = { 0.0f, 1.0f, 0.0f, 1.0f };
+            m_drawWasAccepted = sprites.Draw(request);
+            if (m_throwAfterDraw)
+            {
+                m_throwAfterDraw = false;
+                throw std::runtime_error(
+                    "Injected neutral Scene draw failure.");
+            }
+        }
+
+    private:
+        std::size_t m_drawCalls{};
+        bool m_contextWasActive{};
+        bool m_drawWasAccepted{};
+        bool m_throwAfterDraw{};
     };
 
     void Require(const bool condition, const char* message)
@@ -2431,6 +2493,107 @@ namespace
         auto passAfterDebugOverlay = graphics.BeginSpritePass();
         passAfterDebugOverlay.End();
         graphics.EndFrame();
+
+        // SceneはAPI非依存contextをComponentへ渡し、ScrollViewの子だけを
+        // view矩形へclipします。後続の通常UIまでclipされたままなら、赤い
+        // UIImageが消えるためPop漏れも同じframeで検出できます。
+        std::vector<std::uint8_t> neutralScenePixels;
+        std::uint32_t neutralSceneWidth{};
+        std::uint32_t neutralSceneHeight{};
+        {
+            LamaPon::Scene neutralScene(graphics);
+            auto& scrollObject =
+                neutralScene.CreateGameObject(
+                    "Neutral Scroll View");
+            scrollObject.AddComponent<
+                LamaPon::UIRectTransformComponent>(
+                    DirectX::XMFLOAT2{ 0.0f, 0.0f },
+                    DirectX::XMFLOAT2{ 0.0f, 0.0f },
+                    DirectX::XMFLOAT2{ 0.0f, 0.0f },
+                    DirectX::XMFLOAT2{ 8.0f, 8.0f },
+                    DirectX::XMFLOAT2{ 16.0f, 16.0f });
+            auto& scrollView = scrollObject.AddComponent<
+                LamaPon::UIScrollViewComponent>();
+            scrollView.SetBackgroundColor(
+                { 0.0f, 0.0f, 0.0f, 0.0f });
+
+            auto& clippedObject =
+                neutralScene.CreateGameObject(
+                    "Neutral Clipped Sprite");
+            clippedObject.SetParent(&scrollObject);
+            auto& clippedSprite = clippedObject.AddComponent<
+                NeutralSceneSpriteComponent>();
+
+            auto& fallbackObject =
+                neutralScene.CreateGameObject(
+                    "Neutral Fallback Image");
+            fallbackObject.AddComponent<
+                LamaPon::UIRectTransformComponent>(
+                    DirectX::XMFLOAT2{ 0.0f, 0.0f },
+                    DirectX::XMFLOAT2{ 0.0f, 0.0f },
+                    DirectX::XMFLOAT2{ 0.0f, 0.0f },
+                    DirectX::XMFLOAT2{ 40.0f, 8.0f },
+                    DirectX::XMFLOAT2{ 8.0f, 8.0f });
+            auto& fallbackImage = fallbackObject.AddComponent<
+                LamaPon::UIImageComponent>();
+            fallbackImage.SetColor(
+                { 1.0f, 0.0f, 0.0f, 1.0f });
+            fallbackImage.SetSortOrder(2);
+
+            graphics.SetUIViewportSize(Width, Height);
+            graphics.BeginFrame(scissorClearColor);
+            neutralScene.Render2D();
+            neutralScenePixels = graphics.CaptureBackBuffer(
+                neutralSceneWidth,
+                neutralSceneHeight);
+            graphics.EndFrame();
+
+            Require(
+                clippedSprite.DrawCalls() == 1u,
+                "Scene did not invoke the neutral Component render hook once");
+            Require(
+                clippedSprite.ContextWasActive(),
+                "Scene passed an inactive neutral sprite context to a Component");
+            Require(
+                clippedSprite.DrawWasAccepted(),
+                "The neutral Component draw was rejected by the Scene pass");
+
+            // Component例外でもpassのRAII cleanupがactive scissorごと
+            // batchを閉じ、同じframe中に次のpassを開始できること。
+            clippedSprite.ThrowAfterNextDraw();
+            graphics.BeginFrame(scissorClearColor);
+            RequireThrowsExactly<std::runtime_error>(
+                [&]
+                {
+                    neutralScene.Render2D();
+                },
+                "A neutral Scene Component failure did not propagate");
+            auto recoveredPass = graphics.BeginSpritePass();
+            recoveredPass.End();
+            graphics.EndFrame();
+        }
+        Require(
+            neutralSceneWidth == Width
+                && neutralSceneHeight == Height,
+            "Neutral Scene test did not capture the back buffer");
+        RequirePixelNear(
+            neutralScenePixels,
+            12u,
+            12u,
+            { 0u, 255u, 0u },
+            "The ScrollView clipped a neutral Component inside its view");
+        RequirePixelNear(
+            neutralScenePixels,
+            28u,
+            12u,
+            { 0u, 0u, 0u },
+            "The neutral Component drew outside its ScrollView clip");
+        RequirePixelNear(
+            neutralScenePixels,
+            44u,
+            12u,
+            { 255u, 0u, 0u },
+            "Scene did not remove the scissor or use UIImage's white fallback");
 
         auto modelPreviewRenderer =
             LamaPon::CreateEditorModelPreviewRenderer(

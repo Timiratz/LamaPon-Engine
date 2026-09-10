@@ -31,9 +31,8 @@ namespace LamaPon
     };
 
     // 文字テクスチャは白で焼いてあるので、描くときに色を掛けます。
-    // SpriteBatchはPremultiplied Alphaで描くため、RGBへあらかじめ
-    // アルファを掛けた値を渡します（忘れると半透明のときに色が濃く
-    // 出ます）。
+    // 既存Sprite passのtint規約に合わせ、RGBへあらかじめアルファを
+    // 掛けた値を渡します（忘れると半透明のときに色が濃く出ます）。
     [[nodiscard]] inline DirectX::XMVECTOR PremultipliedTextColor(
         const DirectX::XMFLOAT4& color) noexcept
     {

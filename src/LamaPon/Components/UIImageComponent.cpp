@@ -6,11 +6,10 @@
 #include "LamaPon/Graphics/RenderTarget.h"
 #include "LamaPon/Scene/GameObject.h"
 
-#include <SpriteBatch.h>
-
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <utility>
 
 namespace
@@ -82,8 +81,7 @@ namespace LamaPon
     }
 
     void UIImageComponent::OnRender2D(
-        DirectX::SpriteBatch& spriteBatch,
-        ID3D11ShaderResourceView* whiteTexture)
+        const SpriteDrawContext& sprites)
     {
         using namespace DirectX;
 
@@ -124,18 +122,14 @@ namespace LamaPon
             return;
         }
 
-        const auto premultiplied =
-            Premultiply(m_color);
-        const auto color =
-            XMLoadFloat4(&premultiplied);
-        auto* view = whiteTexture;
-        if (m_texture && m_graphics != nullptr)
+        const auto color = Premultiply(m_color);
+        GraphicsViewHandle view;
+        if (m_texture)
         {
-            if (auto* const resolved =
-                    m_graphics->PinD3D11TextureForSpriteBatch(
-                        m_texture->resources.Acquire()))
+            if (const auto resources =
+                    m_texture->resources.Acquire())
             {
-                view = resolved;
+                view = resources->shaderResourceView;
             }
         }
         float textureWidth = m_texture
@@ -150,14 +144,17 @@ namespace LamaPon
         if (!m_renderTexture.empty()
             && m_graphics != nullptr)
         {
+            const auto renderTextureView =
+                m_graphics->RenderTextureViewHandle(
+                    m_renderTexture);
             if (const auto* target =
                     m_graphics->FindRenderTexture(
                         m_renderTexture);
                 target != nullptr
-                && target->IsValid())
+                && target->IsValid()
+                && renderTextureView)
             {
-                view =
-                    target->DisplayShaderResourceView();
+                view = renderTextureView;
                 textureWidth =
                     static_cast<float>(target->Width());
                 textureHeight =
@@ -187,17 +184,17 @@ namespace LamaPon
                     textureWidth * 0.5f,
                     textureHeight * 0.5f }
                 : XMFLOAT2{};
-            spriteBatch.Draw(
-                view,
-                position,
-                nullptr,
-                color,
-                drawRotation,
-                origin,
-                {
-                    size.x / textureWidth,
-                    size.y / textureHeight
-                });
+            SpriteDrawRequest request;
+            request.texture = view;
+            request.position = position;
+            request.tint = color;
+            request.rotation = drawRotation;
+            request.origin = origin;
+            request.scale = {
+                size.x / textureWidth,
+                size.y / textureHeight
+            };
+            static_cast<void>(sprites.Draw(request));
             return;
         }
 
@@ -275,12 +272,12 @@ namespace LamaPon
                 {
                     continue;
                 }
-                const RECT source{
-                    static_cast<LONG>(sourceX[column]),
-                    static_cast<LONG>(sourceY[row]),
-                    static_cast<LONG>(
+                const SpriteSourceRectangle source{
+                    static_cast<std::int32_t>(sourceX[column]),
+                    static_cast<std::int32_t>(sourceY[row]),
+                    static_cast<std::int32_t>(
                         sourceX[column + 1]),
-                    static_cast<LONG>(sourceY[row + 1])
+                    static_cast<std::int32_t>(sourceY[row + 1])
                 };
                 XMFLOAT2 cellPosition{
                     destX[column],
@@ -307,17 +304,19 @@ namespace LamaPon
                         sourceWidth * 0.5f,
                         sourceHeight * 0.5f }
                     : XMFLOAT2{};
-                spriteBatch.Draw(
-                    view,
-                    cellPosition,
-                    &source,
-                    color,
-                    drawRotation,
-                    cellOrigin,
-                    XMFLOAT2{
-                        destWidth / sourceWidth,
-                        destHeight / sourceHeight
-                    });
+                SpriteDrawRequest request;
+                request.texture = view;
+                request.position = cellPosition;
+                request.hasSourceRectangle = true;
+                request.sourceRectangle = source;
+                request.tint = color;
+                request.rotation = drawRotation;
+                request.origin = cellOrigin;
+                request.scale = {
+                    destWidth / sourceWidth,
+                    destHeight / sourceHeight
+                };
+                static_cast<void>(sprites.Draw(request));
             }
         }
     }

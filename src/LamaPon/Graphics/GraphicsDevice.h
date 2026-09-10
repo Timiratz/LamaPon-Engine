@@ -238,9 +238,9 @@ namespace LamaPon
         [[nodiscard]] SpriteRenderPass BeginSpritePass(
             const SpritePassDescription& description = {});
         DirectX::SpriteBatch& BeginSprites();
-        // SpriteBatchはDeferredなので、Drawへ渡すnative viewをEndSpritesまで
-        // snapshotごと保持します。2D/UI componentはraw resolverではなく
-        // この経路を使ってください。
+        // 旧DirectX 11拡張向けの互換経路です。SpriteBatchはDeferred
+        // なので、Drawへ渡すnative viewをEndSpritesまでsnapshotごと
+        // 保持します。通常の2D/UI描画はBeginSpritePassを使います。
         [[nodiscard]] ID3D11ShaderResourceView*
             PinD3D11TextureForSpriteBatch(
                 std::shared_ptr<const TextureResourceSnapshot>

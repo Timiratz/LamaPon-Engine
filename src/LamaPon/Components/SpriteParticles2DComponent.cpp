@@ -5,8 +5,6 @@
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Scene/GameObject.h"
 
-#include <SpriteBatch.h>
-
 #include <algorithm>
 #include <cmath>
 #include <utility>
@@ -225,8 +223,7 @@ namespace LamaPon
     }
 
     void SpriteParticles2DComponent::OnRender2D(
-        DirectX::SpriteBatch& spriteBatch,
-        ID3D11ShaderResourceView* whiteTexture)
+        const SpriteDrawContext& sprites)
     {
         using namespace DirectX;
 
@@ -245,15 +242,14 @@ namespace LamaPon
         const float textureHeight = m_texture
             ? static_cast<float>(m_texture->height)
             : 1.0f;
-        auto* textureView = whiteTexture;
+        GraphicsViewHandle textureView;
         if (m_texture)
         {
-            if (auto* const resolved =
-                    m_graphics->PinD3D11TextureForSpriteBatch(
-                        m_texture->resources.Acquire()))
-            {
-                textureView = resolved;
-            }
+            const auto resources =
+                m_texture->resources.Acquire();
+            textureView = resources
+                ? resources->shaderResourceView
+                : GraphicsViewHandle{};
         }
         for (const auto& particle : m_particles)
         {
@@ -284,20 +280,20 @@ namespace LamaPon
                 color.z * color.w,
                 color.w
             };
-            spriteBatch.Draw(
-                textureView,
-                XMFLOAT2{
+            SpriteDrawRequest request;
+            request.texture = textureView;
+            request.position = {
                     particle.position.x + offset.x,
-                    particle.position.y + offset.y },
-                nullptr,
-                XMLoadFloat4(&premultipliedColor),
-                particle.rotation,
-                XMFLOAT2{
+                    particle.position.y + offset.y };
+            request.tint = premultipliedColor;
+            request.rotation = particle.rotation;
+            request.origin = {
                     textureWidth * 0.5f,
-                    textureHeight * 0.5f },
-                XMFLOAT2{
+                    textureHeight * 0.5f };
+            request.scale = {
                     size / textureWidth,
-                    size / textureHeight });
+                    size / textureHeight };
+            static_cast<void>(sprites.Draw(request));
         }
     }
 }

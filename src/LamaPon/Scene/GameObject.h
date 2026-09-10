@@ -17,6 +17,7 @@ namespace LamaPon
 {
     class GraphicsDevice;
     class Scene;
+    class SpriteDrawContext;
     using GameObjectId = std::uint64_t;
     // 追加読み込み（Additive）したシーンを識別する番号です。
     // 0は最初に読み込んだ主シーンを指します。
@@ -346,8 +347,7 @@ namespace LamaPon
             DirectX::CXMMATRIX projection);
         void Render2D(
             GraphicsDevice& graphics,
-            DirectX::SpriteBatch& spriteBatch,
-            ID3D11ShaderResourceView* whiteTexture);
+            const SpriteDrawContext& sprites);
         // このオブジェクトで有効なコンポーネントのRenderSortOrder()の
         // 最大値です。2D/UIスプライトパスでは、この値が大きいものほど
         // 後から手前に描画します。

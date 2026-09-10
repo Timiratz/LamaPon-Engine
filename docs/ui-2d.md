@@ -280,7 +280,7 @@ parallax.SetFactor({ 0.3f, 0.3f }); // カメラの30%の速さで動く遠景
 
 ## ゲーム内日本語テキスト
 
-TextRendererはDirectWriteでWindowsフォントを透過テクスチャへ変換し、SpriteBatchでGame Viewへ描画します。
+TextRendererはDirectWriteでWindowsフォントを透過テクスチャへ変換し、API非依存のSprite passでGame Viewへ描画します。
 
 Inspectorでは次を編集できます。
 

@@ -4,8 +4,6 @@
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Scene/GameObject.h"
 
-#include <SpriteBatch.h>
-
 #include <algorithm>
 #include <cmath>
 #include <set>
@@ -190,8 +188,7 @@ namespace LamaPon
     }
 
     void TilemapComponent::OnRender2D(
-        DirectX::SpriteBatch& spriteBatch,
-        ID3D11ShaderResourceView* whiteTexture)
+        const SpriteDrawContext& sprites)
     {
         using namespace DirectX;
 
@@ -230,15 +227,14 @@ namespace LamaPon
                 * worldScaleY
         };
 
-        auto* textureView = whiteTexture;
-        if (m_texture && m_graphics != nullptr)
+        GraphicsViewHandle textureView;
+        if (m_texture)
         {
-            if (auto* const resolved =
-                    m_graphics->PinD3D11TextureForSpriteBatch(
-                        m_texture->resources.Acquire()))
-            {
-                textureView = resolved;
-            }
+            const auto resources =
+                m_texture->resources.Acquire();
+            textureView = resources
+                ? resources->shaderResourceView
+                : GraphicsViewHandle{};
         }
 
         for (const auto& [coordinate, tileIndex] :
@@ -270,44 +266,40 @@ namespace LamaPon
                         : 0.0f)
             };
 
-            RECT sourceRectangle{};
-            const RECT* source{};
+            SpriteDrawRequest request;
+            request.texture = textureView;
+            request.position = position;
+            request.tint = premultipliedColor;
+            request.rotation = rotation;
+            request.scale = scale;
             if (m_texture)
             {
                 const std::uint32_t column =
                     tileIndex % m_atlasColumns;
                 const std::uint32_t row =
                     tileIndex / m_atlasColumns;
-                sourceRectangle.left =
-                    static_cast<LONG>(
+                request.hasSourceRectangle = true;
+                request.sourceRectangle.left =
+                    static_cast<std::int32_t>(
                         column * m_texture->width
                         / m_atlasColumns);
-                sourceRectangle.top =
-                    static_cast<LONG>(
+                request.sourceRectangle.top =
+                    static_cast<std::int32_t>(
                         row * m_texture->height
                         / m_atlasRows);
-                sourceRectangle.right =
-                    static_cast<LONG>(
+                request.sourceRectangle.right =
+                    static_cast<std::int32_t>(
                         (column + 1)
                             * m_texture->width
                         / m_atlasColumns);
-                sourceRectangle.bottom =
-                    static_cast<LONG>(
+                request.sourceRectangle.bottom =
+                    static_cast<std::int32_t>(
                         (row + 1)
                             * m_texture->height
                         / m_atlasRows);
-                source = &sourceRectangle;
             }
 
-            spriteBatch.Draw(
-                textureView,
-                position,
-                source,
-                XMLoadFloat4(
-                    &premultipliedColor),
-                rotation,
-                XMFLOAT2{ 0.0f, 0.0f },
-                scale);
+            static_cast<void>(sprites.Draw(request));
         }
     }
 }

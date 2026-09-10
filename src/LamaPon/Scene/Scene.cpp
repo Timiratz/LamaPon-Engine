@@ -1263,10 +1263,10 @@ namespace
     void RenderSprites2D(
         const std::vector<std::unique_ptr<LamaPon::GameObject>>&
             gameObjects,
-        LamaPon::GraphicsDevice& graphics,
-        DirectX::SpriteBatch& spriteBatch,
-        ID3D11ShaderResourceView* whiteTexture)
+        LamaPon::GraphicsDevice& graphics)
     {
+        auto defaultPass = graphics.BeginSpritePass();
+        auto sprites = defaultPass.Context();
         std::vector<LamaPon::GameObject*> ordered;
         ordered.reserve(gameObjects.size());
         for (const auto& gameObject : gameObjects)
@@ -1343,7 +1343,7 @@ namespace
         for (auto* gameObject : ordered)
         {
             // SpriteRenderer にカスタムシェーダーが指定されている場合は、
-            // そのオブジェクトの描画だけ SpriteBatch の PS を差し替えます。
+            // そのオブジェクトの描画だけSprite passを差し替えます。
             // パラメーターはオブジェクトごとに異なるため、カスタム描画の
             // 手前で一度バッチを確定させます（ScrollViewのクリッピングは
             // 通常バッチのみ対象で、切替時にシザーを畳んで整合させます）。
@@ -1358,17 +1358,18 @@ namespace
                 {
                     if (activeScrollView != nullptr)
                     {
-                        graphics.PopUIScissor();
+                        static_cast<void>(sprites.PopScissor());
                         activeScrollView = nullptr;
                     }
-                    graphics.EndSprites();
-                    sprite->BeginRenderBatch(graphics);
+                    defaultPass.End();
+                    auto customPass =
+                        sprite->BeginRenderPass(graphics);
                     gameObject->Render2D(
                         graphics,
-                        spriteBatch,
-                        whiteTexture);
-                    graphics.EndSprites();
-                    graphics.BeginSprites();
+                        customPass.Context());
+                    customPass.End();
+                    defaultPass = graphics.BeginSpritePass();
+                    sprites = defaultPass.Context();
                     continue;
                 }
             }
@@ -1438,19 +1439,22 @@ namespace
 
                     if (activeScrollView != nullptr)
                     {
-                        graphics.PopUIScissor();
+                        static_cast<void>(sprites.PopScissor());
                         activeScrollView = nullptr;
                     }
-                    graphics.EndSprites();
-                    graphics.BeginSprites(
-                        SpriteMaskShaderPath,
-                        parameters);
+                    defaultPass.End();
+                    LamaPon::SpritePassDescription maskDescription;
+                    maskDescription.pixelShader =
+                        SpriteMaskShaderPath;
+                    maskDescription.customParameters = parameters;
+                    auto maskPass = graphics.BeginSpritePass(
+                        maskDescription);
                     gameObject->Render2D(
                         graphics,
-                        spriteBatch,
-                        whiteTexture);
-                    graphics.EndSprites();
-                    graphics.BeginSprites();
+                        maskPass.Context());
+                    maskPass.End();
+                    defaultPass = graphics.BeginSpritePass();
+                    sprites = defaultPass.Context();
                     continue;
                 }
             }
@@ -1486,24 +1490,25 @@ namespace
                 {
                     if (activeScrollView != nullptr)
                     {
-                        graphics.PopUIScissor();
+                        static_cast<void>(sprites.PopScissor());
                         activeScrollView = nullptr;
                     }
-                    graphics.EndSprites();
+                    defaultPass.End();
                     // 色とUVは頂点から受け取るので、この経路では
                     // CustomParametersを使いません（灯りはb1）。
-                    graphics.BeginSprites(
-                        SpriteLit2DShaderPath,
-                        std::array<DirectX::XMFLOAT4, 8>{},
-                        nullptr,
-                        nullptr,
-                        isUI ? &uiLighting : &worldLighting);
+                    LamaPon::SpritePassDescription litDescription;
+                    litDescription.pixelShader =
+                        SpriteLit2DShaderPath;
+                    litDescription.lighting =
+                        isUI ? uiLighting : worldLighting;
+                    auto litPass = graphics.BeginSpritePass(
+                        litDescription);
                     gameObject->Render2D(
                         graphics,
-                        spriteBatch,
-                        whiteTexture);
-                    graphics.EndSprites();
-                    graphics.BeginSprites();
+                        litPass.Context());
+                    litPass.End();
+                    defaultPass = graphics.BeginSpritePass();
+                    sprites = defaultPass.Context();
                     continue;
                 }
             }
@@ -1513,7 +1518,7 @@ namespace
             {
                 if (activeScrollView != nullptr)
                 {
-                    graphics.PopUIScissor();
+                    static_cast<void>(sprites.PopScissor());
                 }
                 activeScrollView = scrollView;
                 if (activeScrollView != nullptr)
@@ -1521,22 +1526,22 @@ namespace
                     const auto viewRect =
                         activeScrollView->ViewRect(
                             graphics);
-                    graphics.PushUIScissor(
+                    static_cast<void>(sprites.PushScissor({
                         viewRect.minimum.x,
                         viewRect.minimum.y,
                         viewRect.maximum.x,
-                        viewRect.maximum.y);
+                        viewRect.maximum.y }));
                 }
             }
             gameObject->Render2D(
                 graphics,
-                spriteBatch,
-                whiteTexture);
+                sprites);
         }
         if (activeScrollView != nullptr)
         {
-            graphics.PopUIScissor();
+            static_cast<void>(sprites.PopScissor());
         }
+        defaultPass.End();
     }
 }
 
@@ -6146,13 +6151,9 @@ namespace LamaPon
             m_graphics.Gpu(),
             "2D／UI"
         };
-        auto& spriteBatch = m_graphics.BeginSprites();
         RenderSprites2D(
             m_gameObjects,
-            m_graphics,
-            spriteBatch,
-            m_graphics.WhiteTexture());
-        m_graphics.EndSprites();
+            m_graphics);
     }
 
     void Scene::RenderWithMatrices(

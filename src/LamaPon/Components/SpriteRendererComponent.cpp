@@ -7,10 +7,9 @@
 #include "LamaPon/Scene/GameObject.h"
 #include "LamaPon/Scene/Transform.h"
 
-#include <SpriteBatch.h>
-
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace LamaPon
 {
@@ -56,8 +55,8 @@ namespace LamaPon
         }
     }
 
-    DirectX::SpriteBatch&
-        SpriteRendererComponent::BeginRenderBatch(
+    SpriteRenderPass
+        SpriteRendererComponent::BeginRenderPass(
             GraphicsDevice& graphics)
     {
         auto renderParameters = m_customParameters;
@@ -99,7 +98,7 @@ namespace LamaPon
             drawSize.y *= worldScaleY;
         }
 
-        // SpriteBatch実装差でTEXCOORDを利用できない場合にも
+        // Sprite Backend実装差でTEXCOORDを利用できない場合にも
         // SV_Positionから正しい0～1 UVを復元できるようにする。
         // COLORも同様に予約パラメーターへ複製する。
         //
@@ -126,16 +125,18 @@ namespace LamaPon
                 ? static_cast<float>(m_texture->height)
                 : 1.0f
         };
-        return graphics.BeginSprites(
-            m_shaderPath,
-            renderParameters,
-            &m_shaderGeneration,
-            &m_shaderError);
+        SpritePassDescription description;
+        description.pixelShader = m_shaderPath;
+        description.customParameters = renderParameters;
+        auto pass = graphics.BeginSpritePass(description);
+        const auto status = pass.ShaderStatus();
+        m_shaderGeneration = status.generation;
+        m_shaderError = status.error;
+        return pass;
     }
 
     void SpriteRendererComponent::OnRender2D(
-        DirectX::SpriteBatch& spriteBatch,
-        ID3D11ShaderResourceView* whiteTexture)
+        const SpriteDrawContext& sprites)
     {
         using namespace DirectX;
 
@@ -155,7 +156,7 @@ namespace LamaPon
         const float worldScaleY = std::sqrt(world._21 * world._21 + world._22 * world._22);
         // Cameraが描いたレンダーテクスチャがあれば、通常の
         // テクスチャより優先して表示します。
-        ID3D11ShaderResourceView* renderTextureView{};
+        GraphicsViewHandle renderTextureView;
         float renderTextureWidth{};
         float renderTextureHeight{};
         if (!m_renderTexture.empty()
@@ -167,20 +168,24 @@ namespace LamaPon
                 target != nullptr
                 && target->IsValid())
             {
-                renderTextureView =
-                    target->DisplayShaderResourceView();
-                renderTextureWidth =
-                    static_cast<float>(target->Width());
-                renderTextureHeight =
-                    static_cast<float>(target->Height());
+                auto view = m_graphics->RenderTextureViewHandle(
+                    m_renderTexture);
+                if (view)
+                {
+                    renderTextureView = std::move(view);
+                    renderTextureWidth =
+                        static_cast<float>(target->Width());
+                    renderTextureHeight =
+                        static_cast<float>(target->Height());
+                }
             }
         }
         const float textureWidth =
-            renderTextureView != nullptr
+            renderTextureView
                 ? renderTextureWidth
                 : (m_texture ? static_cast<float>(m_texture->width) : 1.0f);
         const float textureHeight =
-            renderTextureView != nullptr
+            renderTextureView
                 ? renderTextureHeight
                 : (m_texture ? static_cast<float>(m_texture->height) : 1.0f);
         XMFLOAT2 drawSize = m_size;
@@ -215,20 +220,20 @@ namespace LamaPon
                 || m_sourceRect.y != 0.0f
                 || m_sourceRect.z != 1.0f
                 || m_sourceRect.w != 1.0f);
-        RECT source{};
+        SpriteSourceRectangle source{};
         if (hasSourceRect)
         {
-            source.left = static_cast<LONG>(
+            source.left = static_cast<std::int32_t>(
                 std::lround(
                     m_sourceRect.x * textureWidth));
-            source.top = static_cast<LONG>(
+            source.top = static_cast<std::int32_t>(
                 std::lround(
                     m_sourceRect.y * textureHeight));
-            source.right = static_cast<LONG>(
+            source.right = static_cast<std::int32_t>(
                 std::lround(
                     (m_sourceRect.x + m_sourceRect.z)
                     * textureWidth));
-            source.bottom = static_cast<LONG>(
+            source.bottom = static_cast<std::int32_t>(
                 std::lround(
                     (m_sourceRect.y + m_sourceRect.w)
                     * textureHeight));
@@ -257,7 +262,7 @@ namespace LamaPon
             m_color.w
         };
 
-        // SpriteBatchのoriginは「元画像のピクセル」で指定します
+        // Sprite requestのoriginは「元画像のピクセル」で指定します
         // （scaleが元画像→表示サイズの倍率なので、割合を元画像の
         // 大きさへ掛け直します）。
         //
@@ -274,26 +279,27 @@ namespace LamaPon
             sourceHeight * pivot.y
         };
 
-        auto* textureView = whiteTexture;
-        if (m_texture && m_graphics != nullptr)
+        GraphicsViewHandle textureView;
+        if (m_texture)
         {
-            if (auto* const resolved =
-                    m_graphics->PinD3D11TextureForSpriteBatch(
-                        m_texture->resources.Acquire()))
+            const auto resources = m_texture->resources.Acquire();
+            if (resources)
             {
-                textureView = resolved;
+                textureView = resources->shaderResourceView;
             }
         }
 
-        spriteBatch.Draw(
-            renderTextureView != nullptr
-                ? renderTextureView
-                : textureView,
-            position,
-            hasSourceRect ? &source : nullptr,
-            XMLoadFloat4(&premultipliedColor),
-            rotation,
-            origin,
-            scale);
+        SpriteDrawRequest request;
+        request.texture = renderTextureView
+            ? renderTextureView
+            : textureView;
+        request.position = position;
+        request.hasSourceRectangle = hasSourceRect;
+        request.sourceRectangle = source;
+        request.tint = premultipliedColor;
+        request.rotation = rotation;
+        request.origin = origin;
+        request.scale = scale;
+        static_cast<void>(sprites.Draw(request));
     }
 }

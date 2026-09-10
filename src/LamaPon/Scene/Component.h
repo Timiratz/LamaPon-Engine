@@ -6,21 +6,12 @@
 
 #include <string_view>
 
-namespace DirectX
-{
-    inline namespace DX11
-    {
-        class SpriteBatch;
-    }
-}
-
-struct ID3D11ShaderResourceView;
-
 namespace LamaPon
 {
     class GameObject;
     class GraphicsDevice;
     class Script;
+    class SpriteDrawContext;
     struct Transform;
 
     class Component
@@ -94,7 +85,7 @@ namespace LamaPon
             GraphicsDevice&,
             DirectX::FXMMATRIX,
             DirectX::CXMMATRIX) {}
-        virtual void OnRender2D(DirectX::SpriteBatch&, ID3D11ShaderResourceView*) {}
+        virtual void OnRender2D(const SpriteDrawContext&) {}
         virtual void OnCollisionEnter(const CollisionEvent&) {}
         virtual void OnCollisionStay(const CollisionEvent&) {}
         virtual void OnCollisionExit(const CollisionEvent&) {}

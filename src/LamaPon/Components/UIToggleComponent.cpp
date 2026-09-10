@@ -7,8 +7,6 @@
 #include "LamaPon/Input/InputSystem.h"
 #include "LamaPon/Scene/GameObject.h"
 
-#include <SpriteBatch.h>
-
 #include <algorithm>
 #include <utility>
 
@@ -169,8 +167,7 @@ namespace LamaPon
     }
 
     void UIToggleComponent::OnRender2D(
-        DirectX::SpriteBatch& spriteBatch,
-        ID3D11ShaderResourceView* whiteTexture)
+        const SpriteDrawContext& sprites)
     {
         using namespace DirectX;
 
@@ -199,14 +196,11 @@ namespace LamaPon
         }
         const auto premultipliedBox =
             Premultiply(boxColor);
-        spriteBatch.Draw(
-            whiteTexture,
-            rect.minimum,
-            nullptr,
-            XMLoadFloat4(&premultipliedBox),
-            0.0f,
-            {},
-            XMFLOAT2{ boxSize, boxSize });
+        SpriteDrawRequest boxRequest;
+        boxRequest.position = rect.minimum;
+        boxRequest.tint = premultipliedBox;
+        boxRequest.scale = { boxSize, boxSize };
+        static_cast<void>(sprites.Draw(boxRequest));
 
         if (m_isOn)
         {
@@ -218,52 +212,50 @@ namespace LamaPon
             }
             const auto premultipliedCheck =
                 Premultiply(checkColor);
-            spriteBatch.Draw(
-                whiteTexture,
-                XMFLOAT2{
+            SpriteDrawRequest checkRequest;
+            checkRequest.position = {
                     rect.minimum.x + inset,
-                    rect.minimum.y + inset },
-                nullptr,
-                XMLoadFloat4(&premultipliedCheck),
-                0.0f,
-                {},
-                XMFLOAT2{
-                    boxSize - inset * 2.0f,
-                    boxSize - inset * 2.0f });
+                    rect.minimum.y + inset };
+            checkRequest.tint = premultipliedCheck;
+            checkRequest.scale = {
+                boxSize - inset * 2.0f,
+                boxSize - inset * 2.0f };
+            static_cast<void>(sprites.Draw(checkRequest));
         }
 
         if (m_textTexture)
         {
-            auto* const textTextureView = m_graphics != nullptr
-                ? m_graphics->PinD3D11TextureForSpriteBatch(
-                    m_textTexture->resources.Acquire())
-                : nullptr;
+            const auto textResources =
+                m_textTexture->resources.Acquire();
+            const auto textTextureView = textResources
+                ? textResources->shaderResourceView
+                : GraphicsViewHandle{};
             const float labelLeft =
                 rect.minimum.x + boxSize
                 + boxSize * 0.25f;
             const float labelWidth =
                 rect.maximum.x - labelLeft;
-            if (textTextureView != nullptr
+            if (textTextureView
                 && labelWidth > 0.0f)
             {
-                spriteBatch.Draw(
-                    textTextureView,
-                    XMFLOAT2{
-                        labelLeft,
-                        rect.minimum.y },
-                    nullptr,
-                    // 白で焼いた文字へ色を掛けます。
-                    PremultipliedTextColor(m_textColor),
-                    0.0f,
-                    {},
-                    XMFLOAT2{
-                        labelWidth
-                            / static_cast<float>(
-                                m_textTexture->width),
-                        size.y
-                            / static_cast<float>(
-                                m_textTexture->height)
-                    });
+                SpriteDrawRequest textRequest;
+                textRequest.texture = textTextureView;
+                textRequest.position = {
+                    labelLeft,
+                    rect.minimum.y };
+                // 白で焼いた文字へ色を掛けます。
+                XMStoreFloat4(
+                    &textRequest.tint,
+                    PremultipliedTextColor(m_textColor));
+                textRequest.scale = {
+                    labelWidth
+                        / static_cast<float>(
+                            m_textTexture->width),
+                    size.y
+                        / static_cast<float>(
+                            m_textTexture->height)
+                };
+                static_cast<void>(sprites.Draw(textRequest));
             }
         }
     }

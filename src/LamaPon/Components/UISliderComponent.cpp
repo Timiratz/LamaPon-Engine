@@ -5,8 +5,6 @@
 #include "LamaPon/Input/InputSystem.h"
 #include "LamaPon/Scene/GameObject.h"
 
-#include <SpriteBatch.h>
-
 #include <algorithm>
 #include <cmath>
 
@@ -194,11 +192,8 @@ namespace LamaPon
     }
 
     void UISliderComponent::OnRender2D(
-        DirectX::SpriteBatch& spriteBatch,
-        ID3D11ShaderResourceView* whiteTexture)
+        const SpriteDrawContext& sprites)
     {
-        using namespace DirectX;
-
         const auto rect = ResolveWidgetRect(
             Owner(),
             m_graphics,
@@ -216,14 +211,11 @@ namespace LamaPon
         backgroundColor.w *= disabledAlpha;
         const auto premultipliedBackground =
             Premultiply(backgroundColor);
-        spriteBatch.Draw(
-            whiteTexture,
-            rect.minimum,
-            nullptr,
-            XMLoadFloat4(&premultipliedBackground),
-            0.0f,
-            {},
-            XMFLOAT2{ size.x, size.y });
+        SpriteDrawRequest request;
+        request.position = rect.minimum;
+        request.tint = premultipliedBackground;
+        request.scale = { size.x, size.y };
+        static_cast<void>(sprites.Draw(request));
 
         const float fillWidth =
             size.x * NormalizedValue();
@@ -233,14 +225,9 @@ namespace LamaPon
             fillColor.w *= disabledAlpha;
             const auto premultipliedFill =
                 Premultiply(fillColor);
-            spriteBatch.Draw(
-                whiteTexture,
-                rect.minimum,
-                nullptr,
-                XMLoadFloat4(&premultipliedFill),
-                0.0f,
-                {},
-                XMFLOAT2{ fillWidth, size.y });
+            request.tint = premultipliedFill;
+            request.scale = { fillWidth, size.y };
+            static_cast<void>(sprites.Draw(request));
         }
 
         // ハンドルは高さ基準の縦長四角形で描きます。
@@ -257,13 +244,9 @@ namespace LamaPon
         handleColor.w *= disabledAlpha;
         const auto premultipliedHandle =
             Premultiply(handleColor);
-        spriteBatch.Draw(
-            whiteTexture,
-            XMFLOAT2{ handleLeft, rect.minimum.y },
-            nullptr,
-            XMLoadFloat4(&premultipliedHandle),
-            0.0f,
-            {},
-            XMFLOAT2{ handleWidth, size.y });
+        request.position = { handleLeft, rect.minimum.y };
+        request.tint = premultipliedHandle;
+        request.scale = { handleWidth, size.y };
+        static_cast<void>(sprites.Draw(request));
     }
 }

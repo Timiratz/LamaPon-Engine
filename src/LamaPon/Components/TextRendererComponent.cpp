@@ -5,8 +5,6 @@
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Scene/GameObject.h"
 
-#include <SpriteBatch.h>
-
 #include <algorithm>
 #include <cmath>
 #include <utility>
@@ -140,8 +138,7 @@ namespace LamaPon
     }
 
     void TextRendererComponent::OnRender2D(
-        DirectX::SpriteBatch& spriteBatch,
-        ID3D11ShaderResourceView*)
+        const SpriteDrawContext& sprites)
     {
         if (!m_texture)
         {
@@ -205,21 +202,23 @@ namespace LamaPon
         // 文字テクスチャは白で焼いてあるので、色はここで掛けます
         // （こうすると色を変えてもテクスチャは作り直しになりません＝
         // フェードのような演出ができます）。
-        auto* const textureView = m_graphics != nullptr
-            ? m_graphics->PinD3D11TextureForSpriteBatch(
-                m_texture->resources.Acquire())
-            : nullptr;
-        if (textureView == nullptr)
+        const auto resources = m_texture->resources.Acquire();
+        const auto textureView = resources
+            ? resources->shaderResourceView
+            : GraphicsViewHandle{};
+        if (!textureView)
         {
             return;
         }
-        spriteBatch.Draw(
-            textureView,
-            position,
-            nullptr,
-            PremultipliedTextColor(m_color),
-            rotation,
-            origin,
-            scale);
+        SpriteDrawRequest request;
+        request.texture = textureView;
+        request.position = position;
+        XMStoreFloat4(
+            &request.tint,
+            PremultipliedTextColor(m_color));
+        request.rotation = rotation;
+        request.origin = origin;
+        request.scale = scale;
+        static_cast<void>(sprites.Draw(request));
     }
 }

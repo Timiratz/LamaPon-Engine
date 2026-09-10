@@ -321,7 +321,7 @@ namespace LamaPon
         [[nodiscard]] std::shared_ptr<const AnimatorController>
             ReloadAnimatorController(
                 const std::filesystem::path& path);
-        // 文字テクスチャは白で生成し、描画時にSpriteBatchの色を乗算します。
+        // 文字テクスチャは白で生成し、描画時にSprite requestの色を乗算します。
         // キャッシュキーに色を含めないため、同じ文字列では色が異なっても
         // 1枚のテクスチャを共有します。色の変化やフェードでもテクスチャを
         // 作り直す必要はありません。

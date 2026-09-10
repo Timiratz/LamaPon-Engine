@@ -57,6 +57,8 @@
 - API非依存Sprite passと描画requestの公開に伴い、Game Module APIを40へ更新。SDK反映後はゲーム用DLLの再ビルドが必要。
 - ローディング画面と起動ロゴをAPI非依存Sprite passへ移行し、高レベル描画手順をD3D11実装ファイルから分離。
 - デバッグオーバーレイをAPI非依存Sprite passへ移行し、文字textureの取得から描画完了までBackend世代を安全に固定。
+- Sceneと全2D / UI Componentの描画入口を`SpriteDrawContext`へ移行し、通常描画・カスタムShader・Sprite Mask・Light2D・UIシザーからDirectX 11のSpriteBatch受け渡しを除去。
+- `Component::OnRender2D`を含む公開描画ABIの変更に伴い、Game Module APIを41へ更新。SDK反映後はゲーム用DLLの再ビルドが必要。
 
 ### ファイル名の統一
 

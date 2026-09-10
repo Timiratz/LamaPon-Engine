@@ -95,9 +95,7 @@ namespace LamaPon
             GraphicsDevice& graphics) override;
         void OnUpdate(float deltaTime) override;
         void OnRender2D(
-            DirectX::SpriteBatch& spriteBatch,
-            ID3D11ShaderResourceView*
-                whiteTexture) override;
+            const SpriteDrawContext& sprites) override;
 
     private:
         void RefreshContentHeight() noexcept;

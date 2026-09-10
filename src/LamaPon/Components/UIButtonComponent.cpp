@@ -11,8 +11,6 @@
 #include "LamaPon/Scene/Scene.h"
 #include "LamaPon/Scene/SceneManager.h"
 
-#include <SpriteBatch.h>
-
 #include <algorithm>
 #include <cmath>
 #include <utility>
@@ -276,9 +274,7 @@ namespace LamaPon
     }
 
     void UIButtonComponent::OnRender2D(
-        DirectX::SpriteBatch& spriteBatch,
-        ID3D11ShaderResourceView*
-            whiteTexture)
+        const SpriteDrawContext& sprites)
     {
         using namespace DirectX;
 
@@ -335,36 +331,33 @@ namespace LamaPon
                 ? static_cast<float>(
                     m_texture->height)
                 : 1.0f;
-        auto* textureView = whiteTexture;
-        if (m_texture && m_graphics != nullptr)
+        GraphicsViewHandle textureView;
+        if (m_texture)
         {
-            if (auto* const resolved =
-                    m_graphics->PinD3D11TextureForSpriteBatch(
-                        m_texture->resources.Acquire()))
-            {
-                textureView = resolved;
-            }
+            const auto resources =
+                m_texture->resources.Acquire();
+            textureView = resources
+                ? resources->shaderResourceView
+                : GraphicsViewHandle{};
         }
-        spriteBatch.Draw(
-            textureView,
-            rect.minimum,
-            nullptr,
-            XMLoadFloat4(
-                &premultiplied),
-            0.0f,
-            {},
-            {
-                size.x / textureWidth,
-                size.y / textureHeight
-            });
+        SpriteDrawRequest backgroundRequest;
+        backgroundRequest.texture = textureView;
+        backgroundRequest.position = rect.minimum;
+        backgroundRequest.tint = premultiplied;
+        backgroundRequest.scale = {
+            size.x / textureWidth,
+            size.y / textureHeight
+        };
+        static_cast<void>(sprites.Draw(backgroundRequest));
 
         if (m_textTexture)
         {
-            auto* const textTextureView = m_graphics != nullptr
-                ? m_graphics->PinD3D11TextureForSpriteBatch(
-                    m_textTexture->resources.Acquire())
-                : nullptr;
-            if (textTextureView == nullptr)
+            const auto textResources =
+                m_textTexture->resources.Acquire();
+            const auto textTextureView = textResources
+                ? textResources->shaderResourceView
+                : GraphicsViewHandle{};
+            if (!textTextureView)
             {
                 return;
             }
@@ -375,14 +368,14 @@ namespace LamaPon
                     m_textTexture->height)
             };
             // 文字テクスチャは白で焼いてあるので色はここで掛けます。
-            spriteBatch.Draw(
-                textTextureView,
-                rect.minimum,
-                nullptr,
-                PremultipliedTextColor(m_textColor),
-                0.0f,
-                {},
-                labelScale);
+            SpriteDrawRequest textRequest;
+            textRequest.texture = textTextureView;
+            textRequest.position = rect.minimum;
+            XMStoreFloat4(
+                &textRequest.tint,
+                PremultipliedTextColor(m_textColor));
+            textRequest.scale = labelScale;
+            static_cast<void>(sprites.Draw(textRequest));
         }
     }
 

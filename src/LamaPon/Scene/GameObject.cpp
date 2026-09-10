@@ -723,8 +723,7 @@ namespace LamaPon
 
     void GameObject::Render2D(
         GraphicsDevice& graphics,
-        DirectX::SpriteBatch& spriteBatch,
-        ID3D11ShaderResourceView* whiteTexture)
+        const SpriteDrawContext& sprites)
     {
         if (!IsActiveInHierarchy())
         {
@@ -737,7 +736,7 @@ namespace LamaPon
 
             if (component->m_enabled)
             {
-                component->OnRender2D(spriteBatch, whiteTexture);
+                component->OnRender2D(sprites);
             }
         }
     }

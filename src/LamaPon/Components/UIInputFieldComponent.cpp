@@ -7,8 +7,6 @@
 #include "LamaPon/Input/InputSystem.h"
 #include "LamaPon/Scene/GameObject.h"
 
-#include <SpriteBatch.h>
-
 #include <algorithm>
 #include <cmath>
 #include <utility>
@@ -273,8 +271,7 @@ namespace LamaPon
     }
 
     void UIInputFieldComponent::OnRender2D(
-        DirectX::SpriteBatch& spriteBatch,
-        ID3D11ShaderResourceView* whiteTexture)
+        const SpriteDrawContext& sprites)
     {
         using namespace DirectX;
 
@@ -297,14 +294,11 @@ namespace LamaPon
         }
         const auto premultipliedBackground =
             Premultiply(backgroundColor);
-        spriteBatch.Draw(
-            whiteTexture,
-            rect.minimum,
-            nullptr,
-            XMLoadFloat4(&premultipliedBackground),
-            0.0f,
-            {},
-            XMFLOAT2{ size.x, size.y });
+        SpriteDrawRequest backgroundRequest;
+        backgroundRequest.position = rect.minimum;
+        backgroundRequest.tint = premultipliedBackground;
+        backgroundRequest.scale = { size.x, size.y };
+        static_cast<void>(sprites.Draw(backgroundRequest));
 
         const float padding = size.y * 0.15f;
         const bool showingPlaceholder = m_text.empty();
@@ -319,35 +313,36 @@ namespace LamaPon
                 : m_textColor);
         if (texture)
         {
-            auto* const textureView = m_graphics != nullptr
-                ? m_graphics->PinD3D11TextureForSpriteBatch(
-                    texture->resources.Acquire())
-                : nullptr;
+            const auto resources =
+                texture->resources.Acquire();
+            const auto textureView = resources
+                ? resources->shaderResourceView
+                : GraphicsViewHandle{};
             const float textWidth =
                 size.x - padding * 2.0f;
             const float textHeight =
                 size.y - padding * 2.0f;
-            if (textureView != nullptr
+            if (textureView
                 && textWidth > 0.0f
                 && textHeight > 0.0f)
             {
-                spriteBatch.Draw(
-                    textureView,
-                    XMFLOAT2{
-                        rect.minimum.x + padding,
-                        rect.minimum.y + padding },
-                    nullptr,
-                    textTint,
-                    0.0f,
-                    {},
-                    XMFLOAT2{
-                        textWidth
-                            / static_cast<float>(
-                                texture->width),
-                        textHeight
-                            / static_cast<float>(
-                                texture->height)
-                    });
+                SpriteDrawRequest textRequest;
+                textRequest.texture = textureView;
+                textRequest.position = {
+                    rect.minimum.x + padding,
+                    rect.minimum.y + padding };
+                XMStoreFloat4(
+                    &textRequest.tint,
+                    textTint);
+                textRequest.scale = {
+                    textWidth
+                        / static_cast<float>(
+                            texture->width),
+                    textHeight
+                        / static_cast<float>(
+                            texture->height)
+                };
+                static_cast<void>(sprites.Draw(textRequest));
             }
         }
 
@@ -357,18 +352,15 @@ namespace LamaPon
         {
             const auto premultipliedCaret =
                 Premultiply(m_textColor);
-            spriteBatch.Draw(
-                whiteTexture,
-                XMFLOAT2{
+            SpriteDrawRequest caretRequest;
+            caretRequest.position = {
                     rect.maximum.x - padding - 2.0f,
-                    rect.minimum.y + padding },
-                nullptr,
-                XMLoadFloat4(&premultipliedCaret),
-                0.0f,
-                {},
-                XMFLOAT2{
-                    2.0f,
-                    size.y - padding * 2.0f });
+                    rect.minimum.y + padding };
+            caretRequest.tint = premultipliedCaret;
+            caretRequest.scale = {
+                2.0f,
+                size.y - padding * 2.0f };
+            static_cast<void>(sprites.Draw(caretRequest));
         }
     }
 

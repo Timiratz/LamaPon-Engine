@@ -1042,6 +1042,9 @@ int main(const int argumentCount, char** arguments)
                 / "broken-shader.hlsl");
             const auto broken =
                 sampleSprite("sprite-error-broken");
+            Require(
+                !maskedSprite.ShaderError().empty(),
+                "The neutral custom sprite pass did not publish its shader error.");
             maskedSprite.SetShaderPath({});
             const auto repaired =
                 sampleSprite("sprite-error-repaired");
