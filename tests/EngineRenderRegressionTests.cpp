@@ -1326,7 +1326,7 @@ int main(const int argumentCount, char** arguments)
                     != nullptr
                 && computeDisplayHandle.Kind()
                     == LamaPon::GraphicsViewKind::ShaderResource
-                && graphics.ResolveD3D11ShaderResourceView(
+                && graphics.TryResolveD3D11ShaderResourceView(
                     computeDisplayHandle)
                     == computeDisplayTarget
                         .DisplayShaderResourceView(),

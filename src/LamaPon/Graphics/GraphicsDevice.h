@@ -458,11 +458,6 @@ namespace LamaPon
         {
             return m_whiteTextureView;
         }
-        // 移行中のD3D11 renderer向け非所有pointer解決です。返り値を使う間、
-        // 元handleを生存させてください。別Backend世代のhandleは拒否します。
-        [[nodiscard]] ID3D11ShaderResourceView*
-            ResolveD3D11ShaderResourceView(
-                const GraphicsViewHandle& view) const;
         // 描画時の互換経路です。empty/stale/別Backendのhandleは例外を
         // 外へ出さずnullptrへ倒し、旧Device resourceのbindを防ぎます。
         [[nodiscard]] ID3D11ShaderResourceView*
@@ -764,6 +759,12 @@ namespace LamaPon
         // 1互換期間残すprivate shimです。
         [[nodiscard]] ID3D11ShaderResourceView*
             WhiteTexture() const noexcept;
+        // API 45のGame Moduleが旧公開名を解決してからAPI不一致を
+        // 案内できるよう、throwing raw view resolverのシンボルだけを
+        // 1互換期間残すprivate shimです。
+        [[nodiscard]] ID3D11ShaderResourceView*
+            ResolveD3D11ShaderResourceView(
+                const GraphicsViewHandle& view) const;
         [[nodiscard]] std::uint64_t BeginD3D11SpritePass(
             const SpritePassDescription& description,
             bool neutralOwner,

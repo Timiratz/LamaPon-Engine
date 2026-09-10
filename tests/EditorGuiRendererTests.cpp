@@ -231,7 +231,7 @@ namespace
             texture,
             LamaPon::GraphicsTextureViewDescription{ 0, 1 });
         auto* const d3d11View =
-            graphics.ResolveD3D11ShaderResourceView(view);
+            graphics.TryResolveD3D11ShaderResourceView(view);
         Require(d3d11View != nullptr,
             "Editor GUI test texture view creation failed");
 
@@ -858,7 +858,7 @@ namespace
                 && previousWhiteView.Kind()
                     == LamaPon::GraphicsViewKind::ShaderResource
                 && previousInstanceBuffer
-                && graphics.ResolveD3D11ShaderResourceView(
+                && graphics.TryResolveD3D11ShaderResourceView(
                     previousWhiteView) == previousWhiteD3D11View
                 && reusedPreviousInstanceBuffer
                     == previousInstanceBuffer
@@ -925,7 +925,7 @@ namespace
                 graphics.IsInitialized()
                     && graphics.Device() == previousDevice.Get()
                     && graphics.TryAssets() == previousAssets
-                    && graphics.ResolveD3D11ShaderResourceView(
+                    && graphics.TryResolveD3D11ShaderResourceView(
                         previousWhiteView)
                         == previousWhiteD3D11View,
                 "Rejected reinitialization changed the active graphics state");
@@ -957,14 +957,6 @@ namespace
                 && previousWhiteView
                 && previousInstanceBuffer,
             "Backend shutdown invalidated externally owned handle lifetimes");
-        RequireThrowsExactly<std::invalid_argument>(
-            [&]
-            {
-                static_cast<void>(
-                    graphics.ResolveD3D11ShaderResourceView(
-                        previousWhiteView));
-            },
-            "A shader view from the previous backend generation was accepted");
         Require(
             graphics.TryResolveD3D11ShaderResourceView(
                 previousWhiteView) == nullptr,
@@ -1084,7 +1076,7 @@ namespace
             neutralTexture,
             LamaPon::GraphicsTextureViewDescription{ 1, 1 });
         auto* const nativeSmallestMipView =
-            graphics.ResolveD3D11ShaderResourceView(smallestMipView);
+            graphics.TryResolveD3D11ShaderResourceView(smallestMipView);
         Require(
             nativeSmallestMipView != nullptr,
             "The neutral texture mip view did not resolve to D3D11");
@@ -1192,7 +1184,7 @@ namespace
                 && builtInResources->texture
                 && builtInResources->shaderResourceView
                 && builtInResources->d3d11ShaderResourceView != nullptr
-                && graphics.ResolveD3D11ShaderResourceView(
+                && graphics.TryResolveD3D11ShaderResourceView(
                     builtInResources->shaderResourceView)
                     == builtInResources->d3d11ShaderResourceView.Get(),
             "Built-in texture handles diverged from the D3D11 mirror");
@@ -1207,7 +1199,7 @@ namespace
                 && textResources->texture
                 && textResources->shaderResourceView
                 && textResources->d3d11ShaderResourceView != nullptr
-                && graphics.ResolveD3D11ShaderResourceView(
+                && graphics.TryResolveD3D11ShaderResourceView(
                     textResources->shaderResourceView)
                     == textResources->d3d11ShaderResourceView.Get(),
             "Text texture handles diverged from the D3D11 mirror");
@@ -1313,7 +1305,7 @@ namespace
                 && ddsResources->texture
                 && ddsResources->shaderResourceView
                 && ddsResources->d3d11ShaderResourceView != nullptr
-                && graphics.ResolveD3D11ShaderResourceView(
+                && graphics.TryResolveD3D11ShaderResourceView(
                     ddsResources->shaderResourceView)
                     == ddsResources->d3d11ShaderResourceView.Get(),
             "DDS import did not enter the active backend generation");
@@ -1344,11 +1336,11 @@ namespace
                     != placeholderTextureHandle
                 && firstProgressiveResources->shaderResourceView
                     != placeholderViewHandle
-                && graphics.ResolveD3D11ShaderResourceView(
+                && graphics.TryResolveD3D11ShaderResourceView(
                     firstProgressiveResources->shaderResourceView)
                     == firstProgressiveResources
                         ->d3d11ShaderResourceView.Get()
-                && graphics.ResolveD3D11ShaderResourceView(
+                && graphics.TryResolveD3D11ShaderResourceView(
                     placeholderViewHandle) != nullptr,
             "The first progressive upload did not transactionally publish "
             "the final texture generation");
@@ -1366,7 +1358,7 @@ namespace
                 && finalProgressiveResources != nullptr
                 && finalProgressiveResources->texture
                     != placeholderTextureHandle
-                && graphics.ResolveD3D11ShaderResourceView(
+                && graphics.TryResolveD3D11ShaderResourceView(
                     finalProgressiveResources->shaderResourceView)
                     == finalProgressiveResources
                         ->d3d11ShaderResourceView.Get(),

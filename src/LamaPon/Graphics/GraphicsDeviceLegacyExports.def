@@ -7,5 +7,6 @@ EXPORTS
     ?PopUIScissor@GraphicsDevice@LamaPon@@QEAAXXZ=?PopUIScissor@GraphicsDevice@LamaPon@@AEAAXXZ
     ?PushUIScissor@GraphicsDevice@LamaPon@@QEAAXMMMM@Z=?PushUIScissor@GraphicsDevice@LamaPon@@AEAAXMMMM@Z
     ?ResolveD3D11Buffer@GraphicsDevice@LamaPon@@QEBAPEAUID3D11Buffer@@AEBVGraphicsBufferHandle@2@@Z=?ResolveD3D11Buffer@GraphicsDevice@LamaPon@@AEBAPEAUID3D11Buffer@@AEBVGraphicsBufferHandle@2@@Z
+    ?ResolveD3D11ShaderResourceView@GraphicsDevice@LamaPon@@QEBAPEAUID3D11ShaderResourceView@@AEBVGraphicsViewHandle@2@@Z=?ResolveD3D11ShaderResourceView@GraphicsDevice@LamaPon@@AEBAPEAUID3D11ShaderResourceView@@AEBVGraphicsViewHandle@2@@Z
     ?RenderTextureView@GraphicsDevice@LamaPon@@QEBAPEAUID3D11ShaderResourceView@@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Z=?RenderTextureView@GraphicsDevice@LamaPon@@AEBAPEAUID3D11ShaderResourceView@@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Z
     ?WhiteTexture@GraphicsDevice@LamaPon@@QEBAPEAUID3D11ShaderResourceView@@XZ=?WhiteTexture@GraphicsDevice@LamaPon@@AEBAPEAUID3D11ShaderResourceView@@XZ
