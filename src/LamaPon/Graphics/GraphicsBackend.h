@@ -308,6 +308,13 @@ namespace LamaPon
             const GraphicsTexture3DDescription& description,
             std::span<const GraphicsTextureSubresourceData>
                 initialData) = 0;
+
+        // 長寿命Componentが保持するviewを、Backend再初期化後に安全に
+        // 再生成できるよう、現在のresource domain所属かだけを調べます。
+        // native pointerの解決やpipeline変更は行いません。既存virtual
+        // slotを維持するため末尾へ追加します。
+        [[nodiscard]] virtual bool IsViewCurrent(
+            const GraphicsViewHandle& view) const noexcept = 0;
     };
 
     // activeApiはSelectGraphicsBackendで解決済みの値を渡します。

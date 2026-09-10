@@ -20,6 +20,7 @@
 #include <functional>
 #include <future>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -91,6 +92,7 @@ namespace LamaPon
     class ModelRendererComponent;
     class ParticleSystemComponent;
     struct LitTextureRequest;
+    struct ReflectionProbeEnvironment;
     struct ParticleDrawRequest;
     class SpriteEffect;
     class ShadowMap;
@@ -496,6 +498,8 @@ namespace LamaPon
         [[nodiscard]] GraphicsViewHandle CreateShaderResourceView(
             const GraphicsTextureHandle& texture,
             const GraphicsTextureViewDescription& description);
+        [[nodiscard]] bool IsGraphicsViewCurrent(
+            const GraphicsViewHandle& view) const noexcept;
         [[nodiscard]] AssetManager& Assets() const;
         [[nodiscard]] AssetManager* TryAssets() const noexcept;
         [[nodiscard]] AudioSystem& Audio() const;
@@ -522,11 +526,18 @@ namespace LamaPon
             TryGetPrefilteredEnvironmentViews(
                 const GraphicsViewHandle& source,
                 std::uint64_t cacheKey = 0) const noexcept;
-        // 環境資源の表現はまだD3D11ですが、SceneがDevice / Contextを
-        // 直接扱わないよう、復元・生成操作をこのfacadeへ集約します。
-        // 将来はBackend固有のopaque environment handleへ置き換えます。
-        [[nodiscard]] EnvironmentRenderer::OwnedPrefilteredEnvironment
-            TryLoadCachedEnvironment(std::uint64_t key) const;
+        // Reflection Probeの共有ベイク資源と結果をneutral境界から
+        // 扱います。Bake中のScene描画失敗は従来どおり呼び出し元へ
+        // 伝え、cache missだけはempty resultとして安全に扱います。
+        void PrepareEnvironmentProbeBake() const;
+        [[nodiscard]] PrefilteredEnvironmentViews
+            BakeReflectionProbeViews(
+                const EnvironmentProbeFaceRenderer& renderFace,
+                std::optional<std::uint64_t> cacheKey =
+                    std::nullopt) const;
+        [[nodiscard]] PrefilteredEnvironmentViews
+            TryLoadCachedEnvironmentViews(
+                std::uint64_t key) const noexcept;
         // [R, G, B] x probe x RGBAのfp16係数から、RGB別のRGBA16F
         // Texture3DをAPI非依存handleで3枚作ります。失敗時は全emptyです。
         [[nodiscard]] std::array<GraphicsViewHandle, 3>
@@ -562,6 +573,18 @@ namespace LamaPon
         bool TrySetLitEffectLighting(
             LitEffect& effect,
             const LightingState&& lighting) const = delete;
+        // オブジェクト単位のReflection Probeを同世代・正しいcube形状
+        // へ全解決してから、LitEffectへprimary/secondaryを一括反映します。
+        // probeまたは元Componentは直後のDraw完了までhandleを保持します。
+        [[nodiscard]] bool TrySetLitEffectReflectionProbe(
+            LitEffect& effect,
+            const ReflectionProbeEnvironment& probe) const noexcept;
+        bool TrySetLitEffectReflectionProbe(
+            LitEffect& effect,
+            ReflectionProbeEnvironment&& probe) const = delete;
+        bool TrySetLitEffectReflectionProbe(
+            LitEffect& effect,
+            const ReflectionProbeEnvironment&& probe) const = delete;
         [[nodiscard]] LitEffect& Lit() const;
         // スキニングモデル（glTF/FBX）用のLamaPon Lit。
         // カスタムShader未指定のモデルはSkinnedLitで描画します。
@@ -820,6 +843,10 @@ namespace LamaPon
                 std::uint32_t depth,
                 std::span<const std::uint16_t> coefficients)
                     const noexcept;
+        // API 57のGame Moduleが旧raw cache復元名を解決してからAPI
+        // 不一致を案内できるよう、binary symbolだけを残すprivate shim。
+        [[nodiscard]] EnvironmentRenderer::OwnedPrefilteredEnvironment
+            TryLoadCachedEnvironment(std::uint64_t key) const;
         // 移行途中のnative D3D11 viewを、共通描画経路が保持できる
         // Backend世代付きhandleへ変換するprivate shimです。
         // nullは正常な未設定としてempty handleを返します。

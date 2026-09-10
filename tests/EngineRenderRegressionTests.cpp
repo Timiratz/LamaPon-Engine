@@ -690,6 +690,20 @@ int main(const int argumentCount, char** arguments)
             "?GetPrefilteredEnvironment@EnvironmentRenderer@LamaPon@@"
             "QEAA?AUPrefilteredEnvironment@12@"
             "PEAUID3D11ShaderResourceView@@_K@Z";
+        constexpr char LegacyCachedEnvironmentSymbol[] =
+            "?TryLoadCachedEnvironment@GraphicsDevice@LamaPon@@"
+            "QEBA?AUOwnedPrefilteredEnvironment@EnvironmentRenderer@2@"
+            "_K@Z";
+        constexpr char LegacyPrepareProbeBakeSymbol[] =
+            "?PrepareProbeBake@EnvironmentRenderer@LamaPon@@QEAAXXZ";
+        constexpr char LegacyBakeReflectionProbeSymbol[] =
+            "?BakeReflectionProbe@EnvironmentRenderer@LamaPon@@"
+            "QEAA?AUOwnedPrefilteredEnvironment@12@"
+            "AEBV?$function@$$A6AXI@Z@std@@"
+            "V?$optional@_K@5@@Z";
+        constexpr char LegacyEnvironmentOverrideSymbol[] =
+            "?SetEnvironmentOverride@LitEffect@LamaPon@@"
+            "QEAAXAEBUReflectionProbeEnvironment@2@@Z";
         const auto runtimeModule = GetModuleHandleW(
             L"LamaPonRuntime.dll");
         Require(
@@ -732,6 +746,20 @@ int main(const int argumentCount, char** arguments)
                 runtimeModule,
                 LegacyPrefilteredEnvironmentSymbol) != nullptr,
             "The API 56 prefiltered-environment export alias is missing");
+        Require(
+            GetProcAddress(
+                runtimeModule,
+                LegacyCachedEnvironmentSymbol) != nullptr
+                && GetProcAddress(
+                    runtimeModule,
+                    LegacyPrepareProbeBakeSymbol) != nullptr
+                && GetProcAddress(
+                    runtimeModule,
+                    LegacyBakeReflectionProbeSymbol) != nullptr
+                && GetProcAddress(
+                    runtimeModule,
+                    LegacyEnvironmentOverrideSymbol) != nullptr,
+            "An API 57 Reflection Probe export alias is missing");
         Stage("asset-root");
         graphics.Assets().SetAssetRoot(
             LAMAPON_TEST_ASSET_DIR);
@@ -1257,6 +1285,128 @@ int main(const int argumentCount, char** arguments)
                 litEffect,
                 environmentLighting),
             "The neutral environment baseline could not be restored");
+
+        // Reflection Probeもprimary/secondaryの4本をneutral handleで
+        // 運び、全pairを検証した後だけオブジェクト単位のIBLへ差し替えます。
+        Stage("lit-neutral-reflection-probe");
+        Require(
+            graphics.IsGraphicsViewCurrent(
+                prefilteredEnvironment.specular)
+                && graphics.IsGraphicsViewCurrent(
+                    prefilteredEnvironment.irradiance),
+            "Fresh neutral IBL views were not current for their backend");
+        LamaPon::ReflectionProbeEnvironment reflectionProbe;
+        reflectionProbe.specular = prefilteredEnvironment.specular;
+        reflectionProbe.irradiance = prefilteredEnvironment.irradiance;
+        reflectionProbe.specularMaximumMip =
+            prefilteredEnvironment.specularMaximumMip;
+        reflectionProbe.intensity = 0.75f;
+        reflectionProbe.boxCenter = { 1.0f, 2.0f, 3.0f };
+        reflectionProbe.boxExtents = { 4.0f, 5.0f, 6.0f };
+        Require(
+            graphics.TrySetLitEffectReflectionProbe(
+                litEffect,
+                reflectionProbe),
+            "A valid neutral Reflection Probe was rejected");
+        litEffect.Apply(graphics.Context());
+        Require(
+            CapturePixelShaderView(graphics, 3u).Get()
+                    == graphics.TryResolveD3D11ShaderResourceView(
+                        prefilteredEnvironment.specular)
+                && CapturePixelShaderView(graphics, 6u).Get()
+                    == graphics.TryResolveD3D11ShaderResourceView(
+                        prefilteredEnvironment.irradiance)
+                && CapturePixelShaderView(graphics, 19u) == nullptr
+                && CapturePixelShaderView(graphics, 20u) == nullptr,
+            "A neutral Reflection Probe bound the wrong primary views");
+
+        auto blendedReflectionProbe = reflectionProbe;
+        blendedReflectionProbe.secondarySpecular =
+            prefilteredEnvironment.specular;
+        blendedReflectionProbe.secondaryIrradiance =
+            prefilteredEnvironment.irradiance;
+        blendedReflectionProbe.secondarySpecularMaximumMip =
+            prefilteredEnvironment.specularMaximumMip;
+        blendedReflectionProbe.secondaryBoxCenter =
+            { -1.0f, -2.0f, -3.0f };
+        blendedReflectionProbe.secondaryBoxExtents =
+            { 7.0f, 8.0f, 9.0f };
+        blendedReflectionProbe.secondaryWeight = 0.5f;
+        Require(
+            graphics.TrySetLitEffectReflectionProbe(
+                litEffect,
+                blendedReflectionProbe),
+            "A valid blended neutral Reflection Probe was rejected");
+        litEffect.Apply(graphics.Context());
+        Require(
+            CapturePixelShaderView(graphics, 19u).Get()
+                    == graphics.TryResolveD3D11ShaderResourceView(
+                        prefilteredEnvironment.specular)
+                && CapturePixelShaderView(graphics, 20u).Get()
+                    == graphics.TryResolveD3D11ShaderResourceView(
+                        prefilteredEnvironment.irradiance),
+            "Neutral secondary Reflection Probe views used the wrong slots");
+
+        auto incompleteReflectionProbe = reflectionProbe;
+        incompleteReflectionProbe.irradiance.Reset();
+        Require(
+            !graphics.TrySetLitEffectReflectionProbe(
+                litEffect,
+                incompleteReflectionProbe),
+            "An incomplete primary Reflection Probe pair was accepted");
+        auto swappedReflectionProbe = reflectionProbe;
+        std::swap(
+            swappedReflectionProbe.specular,
+            swappedReflectionProbe.irradiance);
+        Require(
+            !graphics.TrySetLitEffectReflectionProbe(
+                litEffect,
+                swappedReflectionProbe),
+            "Reflection Probe views with swapped shapes were accepted");
+        auto invalidReflectionProbeMip = reflectionProbe;
+        invalidReflectionProbeMip.specularMaximumMip += 1.0f;
+        Require(
+            !graphics.TrySetLitEffectReflectionProbe(
+                litEffect,
+                invalidReflectionProbeMip),
+            "A Reflection Probe with invalid mip metadata was accepted");
+        auto nonFiniteReflectionProbe = reflectionProbe;
+        nonFiniteReflectionProbe.intensity =
+            std::numeric_limits<float>::quiet_NaN();
+        Require(
+            !graphics.TrySetLitEffectReflectionProbe(
+                litEffect,
+                nonFiniteReflectionProbe),
+            "A non-finite Reflection Probe was accepted");
+        litEffect.Apply(graphics.Context());
+        Require(
+            CapturePixelShaderView(graphics, 19u).Get()
+                    == graphics.TryResolveD3D11ShaderResourceView(
+                        prefilteredEnvironment.specular)
+                && CapturePixelShaderView(graphics, 20u).Get()
+                    == graphics.TryResolveD3D11ShaderResourceView(
+                        prefilteredEnvironment.irradiance),
+            "A rejected Reflection Probe partially changed the Effect");
+
+        auto disabledSecondaryProbe = blendedReflectionProbe;
+        disabledSecondaryProbe.secondaryWeight = 0.0f;
+        disabledSecondaryProbe.secondarySpecular = litViews[0];
+        disabledSecondaryProbe.secondaryIrradiance.Reset();
+        Require(
+            graphics.TrySetLitEffectReflectionProbe(
+                litEffect,
+                disabledSecondaryProbe),
+            "Disabled secondary Probe handles were unnecessarily resolved");
+        litEffect.Apply(graphics.Context());
+        Require(
+            CapturePixelShaderView(graphics, 19u) == nullptr
+                && CapturePixelShaderView(graphics, 20u) == nullptr,
+            "Disabling a secondary Reflection Probe retained old bindings");
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                environmentLighting),
+            "The Sky IBL baseline could not be restored after Probe tests");
 
         // ボリューメトリック光のmain depthとcascade shadowもhandleで
         // 運び、検証に失敗した場合はping-pong先へ切り替えません。
@@ -1999,6 +2149,68 @@ int main(const int argumentCount, char** arguments)
                 CapturePixelShaderView(graphics, 3u) == nullptr
                     && CapturePixelShaderView(graphics, 6u) == nullptr,
                 "Disabled foreign environment retained IBL bindings");
+
+            Require(
+                !graphics.IsGraphicsViewCurrent(
+                    foreignShadowMap.ViewHandle()),
+                "A foreign view was reported as current for this backend");
+            Require(
+                graphics.TrySetLitEffectLighting(
+                    litEffect,
+                    environmentLighting)
+                    && graphics.TrySetLitEffectReflectionProbe(
+                        litEffect,
+                        reflectionProbe),
+                "The Reflection Probe baseline could not be restored");
+            litEffect.Apply(graphics.Context());
+            auto mixedReflectionProbe = reflectionProbe;
+            mixedReflectionProbe.specular =
+                foreignShadowMap.ViewHandle();
+            Require(
+                !graphics.TrySetLitEffectReflectionProbe(
+                    litEffect,
+                    mixedReflectionProbe),
+                "A foreign-generation Reflection Probe was accepted");
+            litEffect.Apply(graphics.Context());
+            Require(
+                CapturePixelShaderView(graphics, 3u).Get()
+                        == graphics.TryResolveD3D11ShaderResourceView(
+                            prefilteredEnvironment.specular)
+                    && CapturePixelShaderView(graphics, 6u).Get()
+                        == graphics.TryResolveD3D11ShaderResourceView(
+                            prefilteredEnvironment.irradiance),
+                "A rejected foreign Reflection Probe changed the Effect");
+            Require(
+                !graphics.TrySetLitEffectReflectionProbe(
+                    foreignEffect,
+                    reflectionProbe),
+                "A Reflection Probe accepted an Effect from another device");
+
+            Require(
+                graphics.TrySetLitEffectLighting(
+                    litEffect,
+                    environmentLighting),
+                "The Sky baseline could not be restored for an empty Probe");
+            LamaPon::ReflectionProbeEnvironment emptyReflectionProbe;
+            emptyReflectionProbe.secondarySpecular =
+                foreignShadowMap.ViewHandle();
+            emptyReflectionProbe.secondaryWeight = 1.0f;
+            Require(
+                graphics.TrySetLitEffectReflectionProbe(
+                    litEffect,
+                    emptyReflectionProbe),
+                "An empty Probe resolved stale secondary handles");
+            litEffect.Apply(graphics.Context());
+            Require(
+                CapturePixelShaderView(graphics, 3u).Get()
+                        == graphics.TryResolveD3D11ShaderResourceView(
+                            prefilteredEnvironment.specular)
+                    && CapturePixelShaderView(graphics, 6u).Get()
+                        == graphics.TryResolveD3D11ShaderResourceView(
+                            prefilteredEnvironment.irradiance)
+                    && CapturePixelShaderView(graphics, 19u) == nullptr
+                    && CapturePixelShaderView(graphics, 20u) == nullptr,
+                "An empty Probe did not preserve the shared Sky IBL");
             Require(
                 graphics.TrySetLitEffectLighting(
                     litEffect,
@@ -2265,7 +2477,8 @@ int main(const int argumentCount, char** arguments)
             Require(
                 importedViewDevice.Get() != foreignBackend.Device()
                     && staleHandleRejected
-                    && staleNativeViewRejected,
+                    && staleNativeViewRejected
+                    && !foreignBackend.IsViewCurrent(structuredHandle),
                 "A stale generic SRV crossed a backend generation boundary");
 
             // ParticleSystemから分離した共通serviceがneutral handleだけで
@@ -2413,6 +2626,11 @@ int main(const int argumentCount, char** arguments)
                 releasedParticleView0 == nullptr
                     && releasedParticleView1 == nullptr,
                 "Particle custom-shader resources remained bound");
+            const auto staleGenerationView =
+                particleTextureView;
+            Require(
+                foreignBackend.IsViewCurrent(staleGenerationView),
+                "A live backend rejected its own neutral view");
         }
         DestroyWindow(foreignWindow);
 
@@ -6546,6 +6764,22 @@ int main(const int argumentCount, char** arguments)
                         *probeObject.GetComponent<
                             LamaPon::
                                 ReflectionProbeComponent>();
+                    const auto& bakedEnvironment =
+                        probeComponent.BakedEnvironment();
+                    Require(
+                        bakedEnvironment.IsValid()
+                            && graphics.IsGraphicsViewCurrent(
+                                bakedEnvironment.specular)
+                            && graphics.IsGraphicsViewCurrent(
+                                bakedEnvironment.irradiance)
+                            && graphics
+                                .TryResolveD3D11ShaderResourceView(
+                                    bakedEnvironment.specular) != nullptr
+                            && graphics
+                                .TryResolveD3D11ShaderResourceView(
+                                    bakedEnvironment.irradiance) != nullptr,
+                        "Reflection Probe baking did not publish current"
+                        " neutral views");
                     std::cout
                         << "probe baked: "
                         << (probeComponent.IsBaked()

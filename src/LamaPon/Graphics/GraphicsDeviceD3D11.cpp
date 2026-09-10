@@ -113,6 +113,48 @@ namespace
             && (formatSupport & RequiredFormatSupport)
                 == RequiredFormatSupport;
     }
+
+    [[nodiscard]] LamaPon::PrefilteredEnvironmentViews
+        ImportPrefilteredEnvironmentViews(
+            LamaPon::D3D11Backend& backend,
+            const LamaPon::EnvironmentRenderer::
+                OwnedPrefilteredEnvironment& native)
+    {
+        constexpr auto ExpectedMaximumMip = static_cast<float>(
+            LamaPon::EnvironmentRenderer::
+                PrefilteredSpecularMipLevels - 1);
+        if (!IsCubeShaderResource(
+                backend.Device(),
+                native.specular.Get(),
+                DXGI_FORMAT_R16G16B16A16_FLOAT,
+                LamaPon::EnvironmentRenderer::PrefilteredSpecularSize,
+                LamaPon::EnvironmentRenderer::
+                    PrefilteredSpecularMipLevels)
+            || !IsCubeShaderResource(
+                backend.Device(),
+                native.irradiance.Get(),
+                DXGI_FORMAT_R16G16B16A16_FLOAT,
+                LamaPon::EnvironmentRenderer::
+                    PrefilteredIrradianceSize,
+                LamaPon::EnvironmentRenderer::
+                    PrefilteredIrradianceMipLevels)
+            || native.specularMaximumMip != ExpectedMaximumMip)
+        {
+            return {};
+        }
+
+        // 両方のimportが完了するまで結果へ公開せず、片方だけの
+        // Reflection ProbeがSceneへ渡らないようにします。
+        auto specular = backend.ImportShaderResourceViewHandle(
+            native.specular.Get());
+        auto irradiance = backend.ImportShaderResourceViewHandle(
+            native.irradiance.Get());
+        return {
+            std::move(specular),
+            std::move(irradiance),
+            native.specularMaximumMip
+        };
+    }
 }
 
 namespace LamaPon::Detail
@@ -440,6 +482,67 @@ namespace LamaPon
             const std::uint64_t key) const
     {
         return EnvironmentCache::TryLoad(Device(), key);
+    }
+
+    void GraphicsDevice::PrepareEnvironmentProbeBake() const
+    {
+        auto* const backend = AsD3D11Backend(m_backend.get());
+        if (backend == nullptr || backend->Device() == nullptr)
+        {
+            throw std::logic_error(
+                "Environment probe baking requires an active backend.");
+        }
+        Environment().PrepareProbeBake();
+    }
+
+    PrefilteredEnvironmentViews
+        GraphicsDevice::BakeReflectionProbeViews(
+            const EnvironmentProbeFaceRenderer& renderFace,
+            const std::optional<std::uint64_t> cacheKey) const
+    {
+        auto* const backend = AsD3D11Backend(m_backend.get());
+        if (backend == nullptr || backend->Device() == nullptr)
+        {
+            throw std::logic_error(
+                "Reflection probe baking requires an active backend.");
+        }
+
+        const auto native = Environment().BakeReflectionProbe(
+            renderFace,
+            cacheKey);
+        auto result = ImportPrefilteredEnvironmentViews(
+            *backend,
+            native);
+        if (!result.IsValid())
+        {
+            throw std::runtime_error(
+                "Reflection probe baking produced invalid environment views.");
+        }
+        return result;
+    }
+
+    PrefilteredEnvironmentViews
+        GraphicsDevice::TryLoadCachedEnvironmentViews(
+            const std::uint64_t key) const noexcept
+    {
+        auto* const backend = AsD3D11Backend(m_backend.get());
+        if (backend == nullptr || backend->Device() == nullptr)
+        {
+            return {};
+        }
+        try
+        {
+            const auto native = EnvironmentCache::TryLoad(
+                backend->Device(),
+                key);
+            return ImportPrefilteredEnvironmentViews(
+                *backend,
+                native);
+        }
+        catch (...)
+        {
+            return {};
+        }
     }
 
     PrefilteredEnvironmentViews

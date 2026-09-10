@@ -1833,6 +1833,19 @@ namespace LamaPon
         return payload->native.Get();
     }
 
+    bool D3D11Backend::IsViewCurrent(
+        const GraphicsViewHandle& view) const noexcept
+    {
+        using Detail::GraphicsResourceHandleAccess;
+        return IsInitialized()
+            && m_resourceDomain != nullptr
+            && view
+            && dynamic_cast<const D3D11ViewPayload*>(
+                GraphicsResourceHandleAccess::Payload(view)) != nullptr
+            && GraphicsResourceHandleAccess::Domain(view)
+                == m_resourceDomain.get();
+    }
+
     ID3D11Buffer* D3D11Backend::ResolveBuffer(
         const GraphicsBufferHandle& buffer) const
     {

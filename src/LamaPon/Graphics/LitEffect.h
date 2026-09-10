@@ -90,14 +90,6 @@ namespace LamaPon
                 ID3D11ShaderResourceView*,
                 LitMaterial::CustomTextureCount>&
                 textures) noexcept;
-        // リフレクションプローブ用。環境反射（t3/t6）をシーン共通の
-        // ものからプローブの結果へ差し替えます。SetLightingの後に
-        // 呼び、SetLightingを呼び直せば元へ戻ります。
-        //
-        // 2個目が入っていればt7/t8へ載せて重みで混ぜます。中身の
-        // 組み立てはScene::ReflectionProbeEnvironmentAtが行います。
-        void SetEnvironmentOverride(
-            const ReflectionProbeEnvironment& probe) noexcept;
         void SetBoneTransforms(
             const DirectX::XMMATRIX* transforms,
             std::size_t count) noexcept;
@@ -214,6 +206,22 @@ namespace LamaPon
         void SetLightingD3D11(
             const LightingState& lighting,
             const D3D11LightingViews& views) noexcept;
+
+        // API 57以前のpublic symbolをAPI不一致案内のため残すraw互換
+        // shimです。新しい呼び出しはGraphicsDeviceの検証bridgeを通り、
+        // この入口単体ではneutral handleをnative viewへ解決しません。
+        void SetEnvironmentOverride(
+            const ReflectionProbeEnvironment& probe) noexcept;
+        struct D3D11ReflectionProbeViews final
+        {
+            ID3D11ShaderResourceView* specular{};
+            ID3D11ShaderResourceView* irradiance{};
+            ID3D11ShaderResourceView* secondarySpecular{};
+            ID3D11ShaderResourceView* secondaryIrradiance{};
+        };
+        void SetEnvironmentOverrideD3D11(
+            const ReflectionProbeEnvironment& probe,
+            const D3D11ReflectionProbeViews& views) noexcept;
 
         [[nodiscard]] ID3D11SamplerState*
             ActiveMaterialSampler() const noexcept;

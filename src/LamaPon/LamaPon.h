@@ -78,6 +78,7 @@
 #include "LamaPon/Graphics/LitMaterial.h"
 #include "LamaPon/Graphics/LitMaterialAsset.h"
 #include "LamaPon/Graphics/LitTextureRequest.h"
+#include "LamaPon/Graphics/PrefilteredEnvironment.h"
 #include "LamaPon/Graphics/ShadowMap.h"
 #include "LamaPon/Graphics/SpriteRendering.h"
 #include "LamaPon/Graphics/TextLayout.h"

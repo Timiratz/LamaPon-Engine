@@ -60,6 +60,62 @@ namespace
             usage);
     }
 
+    [[nodiscard]] bool IsFinite(
+        const DirectX::XMFLOAT3& value) noexcept
+    {
+        return std::isfinite(value.x)
+            && std::isfinite(value.y)
+            && std::isfinite(value.z);
+    }
+
+    [[nodiscard]] bool TryResolvePrefilteredCube(
+        const LamaPon::GraphicsDevice& graphics,
+        const LamaPon::GraphicsViewHandle& handle,
+        const std::uint32_t expectedSize,
+        const std::uint32_t expectedMipLevels,
+        ID3D11ShaderResourceView*& resolved) noexcept
+    {
+        resolved = graphics.TryResolveD3D11ShaderResourceView(handle);
+        if (!handle || resolved == nullptr)
+        {
+            return false;
+        }
+
+        D3D11_SHADER_RESOURCE_VIEW_DESC viewDescription{};
+        resolved->GetDesc(&viewDescription);
+        if (viewDescription.Format
+                != DXGI_FORMAT_R16G16B16A16_FLOAT
+            || viewDescription.ViewDimension
+                != D3D11_SRV_DIMENSION_TEXTURECUBE
+            || viewDescription.TextureCube.MostDetailedMip != 0
+            || viewDescription.TextureCube.MipLevels
+                != expectedMipLevels)
+        {
+            return false;
+        }
+
+        Microsoft::WRL::ComPtr<ID3D11Resource> resource;
+        resolved->GetResource(resource.ReleaseAndGetAddressOf());
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+        if (resource == nullptr || FAILED(resource.As(&texture)))
+        {
+            return false;
+        }
+        D3D11_TEXTURE2D_DESC description{};
+        texture->GetDesc(&description);
+        return description.Width == expectedSize
+            && description.Height == expectedSize
+            && description.MipLevels == expectedMipLevels
+            && description.ArraySize == 6
+            && description.Format
+                == DXGI_FORMAT_R16G16B16A16_FLOAT
+            && description.SampleDesc.Count == 1
+            && (description.BindFlags
+                & D3D11_BIND_SHADER_RESOURCE) != 0
+            && (description.MiscFlags
+                & D3D11_RESOURCE_MISC_TEXTURECUBE) != 0;
+    }
+
 }
 
 namespace LamaPon
@@ -890,6 +946,91 @@ namespace LamaPon
             normal,
             pbrTextures);
         effect.SetCustomTextures(customTextures);
+        return true;
+    }
+
+    bool GraphicsDevice::TrySetLitEffectReflectionProbe(
+        LitEffect& effect,
+        const ReflectionProbeEnvironment& probe) const noexcept
+    {
+        if (!IsInitialized() || effect.m_context == nullptr)
+        {
+            return false;
+        }
+        Microsoft::WRL::ComPtr<ID3D11Device> effectDevice;
+        effect.m_context->GetDevice(
+            effectDevice.ReleaseAndGetAddressOf());
+        if (effectDevice.Get() != Device())
+        {
+            return false;
+        }
+
+        const bool hasSpecular = static_cast<bool>(probe.specular);
+        const bool hasIrradiance = static_cast<bool>(probe.irradiance);
+        if (!hasSpecular && !hasIrradiance)
+        {
+            // ProbeなしはSetLightingが設定したSky IBLを維持します。
+            // secondary側の古いhandleも無効なmetadataとして解決しません。
+            return true;
+        }
+        if (hasSpecular != hasIrradiance)
+        {
+            return false;
+        }
+
+        constexpr auto ExpectedMaximumMip = static_cast<float>(
+            EnvironmentRenderer::PrefilteredSpecularMipLevels - 1);
+        LitEffect::D3D11ReflectionProbeViews nativeViews;
+        if (!std::isfinite(probe.intensity)
+            || !std::isfinite(probe.specularMaximumMip)
+            || probe.specularMaximumMip != ExpectedMaximumMip
+            || !std::isfinite(probe.secondaryWeight)
+            || !IsFinite(probe.boxCenter)
+            || !IsFinite(probe.boxExtents)
+            || !TryResolvePrefilteredCube(
+                *this,
+                probe.specular,
+                EnvironmentRenderer::PrefilteredSpecularSize,
+                EnvironmentRenderer::PrefilteredSpecularMipLevels,
+                nativeViews.specular)
+            || !TryResolvePrefilteredCube(
+                *this,
+                probe.irradiance,
+                EnvironmentRenderer::PrefilteredIrradianceSize,
+                EnvironmentRenderer::PrefilteredIrradianceMipLevels,
+                nativeViews.irradiance))
+        {
+            return false;
+        }
+
+        if (probe.secondaryWeight > 0.0f)
+        {
+            if (!probe.secondarySpecular
+                || !probe.secondaryIrradiance
+                || !std::isfinite(
+                    probe.secondarySpecularMaximumMip)
+                || probe.secondarySpecularMaximumMip
+                    != ExpectedMaximumMip
+                || !IsFinite(probe.secondaryBoxCenter)
+                || !IsFinite(probe.secondaryBoxExtents)
+                || !TryResolvePrefilteredCube(
+                    *this,
+                    probe.secondarySpecular,
+                    EnvironmentRenderer::PrefilteredSpecularSize,
+                    EnvironmentRenderer::PrefilteredSpecularMipLevels,
+                    nativeViews.secondarySpecular)
+                || !TryResolvePrefilteredCube(
+                    *this,
+                    probe.secondaryIrradiance,
+                    EnvironmentRenderer::PrefilteredIrradianceSize,
+                    EnvironmentRenderer::PrefilteredIrradianceMipLevels,
+                    nativeViews.secondaryIrradiance))
+            {
+                return false;
+            }
+        }
+
+        effect.SetEnvironmentOverrideD3D11(probe, nativeViews);
         return true;
     }
 

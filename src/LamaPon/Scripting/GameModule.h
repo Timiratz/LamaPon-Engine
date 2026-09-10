@@ -13,11 +13,11 @@ namespace LamaPon
     // Game ModuleとRuntimeのABIを識別します。公開構造体のレイアウトや
     // 公開関数のシグネチャを変更した場合は、この値も更新してください。
     // GameModuleHostは完全一致を要求し、互換性のないDLLを読み込みません。
-    // API 57では共通Sky IBLのsource／事前フィルタviewを
-    // API非依存handleへ移し、同世代・形状の描画直前一括検証を
-    // 共通契約にしたため、
+    // API 58ではReflection Probeのベイク結果とprimary／secondary
+    // IBL viewをAPI非依存handleへ移し、Backend世代・cube形状を
+    // 描画直前に一括検証する共通契約にしたため、
     // ゲーム用DLLの再ビルドが必要です。
-    inline constexpr std::uint32_t GameModuleApiVersion = 57;
+    inline constexpr std::uint32_t GameModuleApiVersion = 58;
 
     using NativeScriptCreateFunction = void* (*)(
         GameObject* owner,

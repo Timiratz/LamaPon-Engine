@@ -2912,10 +2912,14 @@ namespace LamaPon
             DirectX::XMStoreFloat3(
                 &ownerPosition,
                 ownerWorldMatrix.r[3]);
-            effect.SetEnvironmentOverride(
-                Owner().GetScene()
-                    .ReflectionProbeEnvironmentAt(
-                        ownerPosition));
+            const auto probe = Owner().GetScene()
+                .ReflectionProbeEnvironmentAt(ownerPosition);
+            // Probe ComponentがDraw完了までneutral handleを保持します。
+            // stale/foreign ProbeはSky IBLへ安全にフォールバックします。
+            static_cast<void>(
+                m_graphics->TrySetLitEffectReflectionProbe(
+                    effect,
+                    probe));
         }
 
         const auto ownerWorld = Owner().WorldMatrix();

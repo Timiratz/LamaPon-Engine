@@ -140,6 +140,13 @@ namespace LamaPon
             description);
     }
 
+    bool GraphicsDevice::IsGraphicsViewCurrent(
+        const GraphicsViewHandle& view) const noexcept
+    {
+        return m_backend != nullptr
+            && m_backend->IsViewCurrent(view);
+    }
+
     void GraphicsDevice::BeginShadowMap(
         ShadowMap& shadowMap,
         const std::uint32_t cascadeIndex)

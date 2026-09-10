@@ -805,9 +805,14 @@ namespace LamaPon
         DirectX::XMStoreFloat3(&position, world.r[3]);
         // プローブの選択とブレンドの比率はScene側が決めます
         // （ModelRendererと同じ手順を1箇所に置くため）。
-        m_effect->SetEnvironmentOverride(
-            Owner().GetScene()
-                .ReflectionProbeEnvironmentAt(position));
+        const auto probe = Owner().GetScene()
+            .ReflectionProbeEnvironmentAt(position);
+        // Probe Componentが直後のDrawまでhandleを所有します。不正または
+        // staleなProbeは拒否し、直前のSetLightingによるSkyへ戻します。
+        static_cast<void>(
+            m_graphics->TrySetLitEffectReflectionProbe(
+                *m_effect,
+                probe));
     }
 
     void MeshRendererComponent::RefreshShader(

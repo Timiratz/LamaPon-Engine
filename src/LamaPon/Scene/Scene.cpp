@@ -7515,13 +7515,12 @@ namespace LamaPon
         // まだ焼けていないプローブは無いものとして扱います。
         // 空のキューブを「有効」として渡すと、Shaderがnullを読んで
         // 反射が真っ黒になります（ベイク前の1フレームで出ます）。
-        if (baked.specular == nullptr
-            || baked.irradiance == nullptr)
+        if (!baked.IsValid())
         {
             return result;
         }
-        result.specular = baked.specular.Get();
-        result.irradiance = baked.irradiance.Get();
+        result.specular = baked.specular;
+        result.irradiance = baked.irradiance;
         result.specularMaximumMip =
             baked.specularMaximumMip;
         result.intensity = primary->Intensity();
@@ -7548,15 +7547,14 @@ namespace LamaPon
         }
         const auto& secondaryBaked =
             secondary->BakedEnvironment();
-        if (secondaryBaked.specular == nullptr
-            || secondaryBaked.irradiance == nullptr)
+        if (!secondaryBaked.IsValid())
         {
             return result;
         }
         result.secondarySpecular =
-            secondaryBaked.specular.Get();
+            secondaryBaked.specular;
         result.secondaryIrradiance =
-            secondaryBaked.irradiance.Get();
+            secondaryBaked.irradiance;
         result.secondarySpecularMaximumMip =
             secondaryBaked.specularMaximumMip;
         result.secondaryBoxCenter =
@@ -7633,8 +7631,21 @@ namespace LamaPon
             auto* probe = gameObject->GetComponent<
                 ReflectionProbeComponent>();
             if (probe == nullptr
-                || !probe->IsEnabled()
-                || !probe->IsBakeRequested())
+                || !probe->IsEnabled())
+            {
+                continue;
+            }
+            // Graphics Backend再初期化後は旧resource domainのhandleを
+            // bindせず、次の描画で新しい世代へベイクし直します。
+            const auto& baked = probe->BakedEnvironment();
+            if (baked.IsValid()
+                && (!m_graphics.IsGraphicsViewCurrent(baked.specular)
+                    || !m_graphics.IsGraphicsViewCurrent(
+                        baked.irradiance)))
+            {
+                probe->RequestBake();
+            }
+            if (!probe->IsBakeRequested())
             {
                 continue;
             }
@@ -7648,7 +7659,7 @@ namespace LamaPon
             {
                 probe->MarkRestoreAttempted();
                 auto restored =
-                    m_graphics.TryLoadCachedEnvironment(
+                    m_graphics.TryLoadCachedEnvironmentViews(
                         ProbeEnvironmentCacheKey(
                             m_sceneManager != nullptr
                                 ? m_sceneManager
@@ -7673,7 +7684,7 @@ namespace LamaPon
 
         try
         {
-            m_graphics.Environment().PrepareProbeBake();
+            m_graphics.PrepareEnvironmentProbeBake();
         }
         catch (const std::exception& exception)
         {
@@ -7756,8 +7767,8 @@ namespace LamaPon
                             EnvironmentRenderer::
                                 ProbeBakeFaceSize) }
                     : std::nullopt;
-                auto baked = m_graphics.Environment()
-                    .BakeReflectionProbe(
+                auto baked = m_graphics
+                    .BakeReflectionProbeViews(
                         [this,
                          &eye,
                          &faceProjection](const std::uint32_t face)
@@ -7938,7 +7949,7 @@ namespace LamaPon
 
         try
         {
-            m_graphics.Environment().PrepareProbeBake();
+            m_graphics.PrepareEnvironmentProbeBake();
         }
         catch (const std::exception& exception)
         {

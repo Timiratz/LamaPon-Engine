@@ -508,7 +508,7 @@ int main()
         // 返さず、安全に空の結果へ倒します。
         LamaPon::GraphicsDevice graphics;
         Require(
-            !graphics.TryLoadCachedEnvironment(0).IsValid(),
+            !graphics.TryLoadCachedEnvironmentViews(0).IsValid(),
             "Environment cache restore must fail safely without a device");
         const std::array<std::uint16_t, 12> coefficients{};
         const auto neutralBakedGiViews =

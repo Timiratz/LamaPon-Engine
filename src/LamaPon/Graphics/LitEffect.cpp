@@ -959,10 +959,18 @@ namespace LamaPon
     void LitEffect::SetEnvironmentOverride(
         const ReflectionProbeEnvironment& probe) noexcept
     {
+        SetEnvironmentOverrideD3D11(probe, {});
+    }
+
+    void LitEffect::SetEnvironmentOverrideD3D11(
+        const ReflectionProbeEnvironment& probe,
+        const D3D11ReflectionProbeViews& views) noexcept
+    {
         // リフレクションプローブによる、オブジェクト単位のIBL
         // 差し替えです。SetLightingがシーン共通の環境を設定した後、
         // SetLighting後、描画直前にプローブ設定を適用します。
-        if (!probe.IsValid())
+        if (views.specular == nullptr
+            || views.irradiance == nullptr)
         {
             return;
         }
@@ -972,8 +980,8 @@ namespace LamaPon
             probe.specularMaximumMip,
             0.0f
         };
-        m_environmentTexture = probe.specular;
-        m_irradianceTexture = probe.irradiance;
+        m_environmentTexture = views.specular;
+        m_irradianceTexture = views.irradiance;
 
         // ボックス射影。3軸すべてが正のときだけ有効にします
         // （0を含むと箱の内側が定義できず、除算で破綻します）。
@@ -1002,7 +1010,9 @@ namespace LamaPon
 
         // 2個目のプローブ。混ぜないときは比率0にしておけば、
         // Shader側は1個目だけを読みます（テクスチャも外します）。
-        if (!probe.IsBlended())
+        if (views.secondarySpecular == nullptr
+            || views.secondaryIrradiance == nullptr
+            || !(probe.secondaryWeight > 0.0f))
         {
             m_secondaryEnvironmentTexture = nullptr;
             m_secondaryIrradianceTexture = nullptr;
@@ -1015,9 +1025,9 @@ namespace LamaPon
             return;
         }
         m_secondaryEnvironmentTexture =
-            probe.secondarySpecular;
+            views.secondarySpecular;
         m_secondaryIrradianceTexture =
-            probe.secondaryIrradiance;
+            views.secondaryIrradiance;
         m_lightingConstants
             .reflectionSecondaryBoxCenter = {
                 probe.secondaryBoxCenter.x,

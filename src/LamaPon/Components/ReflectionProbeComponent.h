@@ -1,9 +1,10 @@
 #pragma once
 
-#include "LamaPon/Graphics/EnvironmentRenderer.h"
+#include "LamaPon/Graphics/PrefilteredEnvironment.h"
 #include "LamaPon/Scene/Component.h"
 
 #include <algorithm>
+#include <utility>
 
 namespace LamaPon
 {
@@ -121,14 +122,12 @@ namespace LamaPon
 
         // Sceneのベイク処理だけが使います。
         void SetBakedEnvironment(
-            EnvironmentRenderer::OwnedPrefilteredEnvironment
-                baked) noexcept
+            PrefilteredEnvironmentViews baked) noexcept
         {
             m_baked = std::move(baked);
             m_bakeRequested = false;
         }
-        [[nodiscard]] const EnvironmentRenderer::
-            OwnedPrefilteredEnvironment&
+        [[nodiscard]] const PrefilteredEnvironmentViews&
             BakedEnvironment() const noexcept
         {
             return m_baked;
@@ -178,7 +177,6 @@ namespace LamaPon
         bool m_bakeRequested{ true };
         bool m_loadedFromScene{};
         bool m_restoreAttempted{};
-        EnvironmentRenderer::OwnedPrefilteredEnvironment
-            m_baked;
+        PrefilteredEnvironmentViews m_baked;
     };
 }

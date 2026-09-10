@@ -2,6 +2,7 @@
 
 #include "LamaPon/Graphics/EnvironmentSettings.h"
 #include "LamaPon/Graphics/GraphicsResource.h"
+#include "LamaPon/Graphics/PrefilteredEnvironment.h"
 
 #include <DirectXMath.h>
 #include <d3d11.h>
@@ -20,20 +21,6 @@ namespace LamaPon
     class D3D11Backend;
     class GraphicsDevice;
     class RenderTarget;
-
-    // 共通Sky IBLが公開するAPI非依存の事前フィルタ結果です。
-    // 2本は同じBackend世代で一組として生成・更新されます。
-    struct PrefilteredEnvironmentViews final
-    {
-        GraphicsViewHandle specular;
-        GraphicsViewHandle irradiance;
-        float specularMaximumMip{};
-
-        [[nodiscard]] bool IsValid() const noexcept
-        {
-            return specular && irradiance;
-        }
-    };
 
     class EnvironmentRenderer final
     {
@@ -312,17 +299,8 @@ namespace LamaPon
         // logic_errorになります。描画先の作成・clear・左右反転コピー・
         // 畳み込み・readbackはこのD3D11描画島の内部で完結します。
         static constexpr std::uint32_t ProbeBakeFaceSize = 128;
-        using ProbeFaceRenderer =
-            std::function<void(std::uint32_t face)>;
+        using ProbeFaceRenderer = EnvironmentProbeFaceRenderer;
 
-        // 複数プローブを処理する前に共有資源を作ります。失敗を一括して
-        // 扱いたい呼び出し側向けで、各Bake関数も未準備なら作成します。
-        void PrepareProbeBake();
-        [[nodiscard]] OwnedPrefilteredEnvironment
-            BakeReflectionProbe(
-                const ProbeFaceRenderer& renderFace,
-                std::optional<std::uint64_t> cacheKey =
-                    std::nullopt);
         [[nodiscard]] std::optional<std::array<float, 12>>
             BakeIrradianceProbe(
                 const ProbeFaceRenderer& renderFace);
@@ -361,6 +339,15 @@ namespace LamaPon
             GetPrefilteredEnvironment(
                 ID3D11ShaderResourceView* source,
                 std::uint64_t cacheKey = 0);
+
+        // API 57以前のraw Reflection Probe入口はbinary互換shimとして
+        // privateに残し、新しいSceneはGraphicsDevice facadeを通ります。
+        void PrepareProbeBake();
+        [[nodiscard]] OwnedPrefilteredEnvironment
+            BakeReflectionProbe(
+                const ProbeFaceRenderer& renderFace,
+                std::optional<std::uint64_t> cacheKey =
+                    std::nullopt);
 
         // includeSpecular=falseでスペキュラの畳み込みを飛ばします
         // （照度しか使わないGIベイク用）。
