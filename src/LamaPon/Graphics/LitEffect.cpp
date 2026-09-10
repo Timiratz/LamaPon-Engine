@@ -670,6 +670,16 @@ namespace LamaPon
         }
 
         const auto& shadow = lighting.directionalShadow;
+        const bool directionalShadowActive =
+            shadow.enabled
+            && views.directionalShadow != nullptr
+            && shadow.cascadeCount != 0
+            && shadow.lightIndex
+                < m_lightingConstants.lightCounts[0];
+        m_lightingConstants.lightCounts[3] =
+            directionalShadowActive
+                ? m_lightingConstants.lightCounts[3]
+                : 0u;
         m_lightingConstants.shadowViewProjections =
             shadow.lightViewProjections;
         m_lightingConstants.shadowCascadeSplits = {
@@ -679,25 +689,27 @@ namespace LamaPon
             shadow.cascadeSplits[3]
         };
         m_lightingConstants.shadowParameters = {
-            shadow.enabled
+            directionalShadowActive
                 ? static_cast<float>(shadow.lightIndex + 1)
                 : 0.0f,
             shadow.bias,
             shadow.normalBias,
             shadow.strength
         };
-        m_shadowTexture = shadow.enabled
+        m_shadowTexture = directionalShadowActive
             ? views.directionalShadow
             : nullptr;
 
         // スポットライトの影スロットを対応するライトへ紐付けます。
+        bool spotShadowActive{};
         for (std::size_t slot = 0;
             slot < MaximumSpotShadows;
             ++slot)
         {
             const auto& spotShadow =
                 lighting.spotShadows[slot];
-            if (!spotShadow.enabled
+            if (views.spotShadow == nullptr
+                || !spotShadow.enabled
                 || spotShadow.lightIndex < 0
                 || static_cast<std::size_t>(
                     spotShadow.lightIndex)
@@ -720,9 +732,10 @@ namespace LamaPon
                     spotShadow.lightIndex)]
                 .outerCosinePadding.y =
                 static_cast<float>(slot + 1);
+            spotShadowActive = true;
         }
         m_spotShadowTexture =
-            views.spotShadow;
+            spotShadowActive ? views.spotShadow : nullptr;
 
         const auto& pointShadow = lighting.pointShadow;
         const bool pointShadowActive =

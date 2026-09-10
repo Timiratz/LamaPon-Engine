@@ -24,11 +24,6 @@ namespace LamaPon
     class EnvironmentRenderer final
     {
     public:
-        EnvironmentRenderer(
-            ID3D11Device* device,
-            ID3D11DeviceContext* context,
-            AssetManager& assets,
-            const std::filesystem::path& shaderPath);
         ~EnvironmentRenderer();
 
         EnvironmentRenderer(const EnvironmentRenderer&) = delete;
@@ -335,7 +330,15 @@ namespace LamaPon
     private:
         friend class GraphicsDevice;
 
-        // EnvironmentRendererはまだD3D11 islandですが、公開constructorの
+        // 公開constructorから生成するとneutral viewの解決先を安全に
+        // 関連付けられないため、GraphicsDeviceだけが構築します。
+        EnvironmentRenderer(
+            ID3D11Device* device,
+            ID3D11DeviceContext* context,
+            AssetManager& assets,
+            const std::filesystem::path& shaderPath);
+
+        // EnvironmentRendererはまだD3D11 islandですが、既存constructorの
         // ABIを変えずにneutral inputの解決先だけを受け取ります。
         void AttachD3D11Backend(D3D11Backend* backend) noexcept
         {

@@ -76,12 +76,14 @@ namespace LamaPon
             m_environmentFailure,
             [this]
             {
-                auto renderer = std::make_unique<EnvironmentRenderer>(
-                    Device(),
-                    Context(),
-                    Assets(),
-                    Assets().ResolvePath(
-                        "shaders/LamaPonEnvironment.hlsl"));
+                auto renderer = std::unique_ptr<EnvironmentRenderer>{
+                    new EnvironmentRenderer(
+                        Device(),
+                        Context(),
+                        Assets(),
+                        Assets().ResolvePath(
+                            "shaders/LamaPonEnvironment.hlsl"))
+                };
                 renderer->AttachD3D11Backend(
                     dynamic_cast<D3D11Backend*>(m_backend.get()));
                 return renderer;
