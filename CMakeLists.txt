@@ -274,6 +274,8 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Online/CloudSaveClient.cpp
     src/LamaPon/Online/CloudSaveClient.h
     src/LamaPon/Online/CloudSave.h
+    src/LamaPon/Online/CloudSaveJournal.cpp
+    src/LamaPon/Online/CloudSaveJournal.h
     src/LamaPon/Online/OnlineHttpValidation.cpp
     src/LamaPon/Online/OnlineHttpValidation.h
     src/LamaPon/Online/OnlineServices.cpp
@@ -1285,6 +1287,29 @@ if(BUILD_TESTING)
         PROPERTIES LABELS "online;cloud-save;protocol"
     )
 
+    add_executable(LamaPonCloudSaveJournalTests
+        tests/CloudSaveJournalTests.cpp
+    )
+    target_link_libraries(
+        LamaPonCloudSaveJournalTests
+        PRIVATE
+            LamaPonRuntime
+            advapi32
+    )
+    target_compile_options(LamaPonCloudSaveJournalTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_test(
+        NAME CloudSaveJournalDurability
+        COMMAND LamaPonCloudSaveJournalTests
+    )
+    set_tests_properties(
+        CloudSaveJournalDurability
+        PROPERTIES LABELS "online;cloud-save;journal;durability"
+    )
+
     add_executable(LamaPonOnlineServicesTests
         tests/OnlineServicesTests.cpp
     )
@@ -1879,6 +1904,7 @@ install(
         PATTERN "DiscordAuth.h" EXCLUDE
         PATTERN "CloudSave.h" EXCLUDE
         PATTERN "CloudSaveClient.h" EXCLUDE
+        PATTERN "CloudSaveJournal.h" EXCLUDE
         PATTERN "OnlineHttpValidation.h" EXCLUDE
         PATTERN "SaveSlotValidation.h" EXCLUDE
         PATTERN "OnlineServicesTesting.h" EXCLUDE
