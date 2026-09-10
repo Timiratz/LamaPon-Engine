@@ -2,6 +2,7 @@
 
 #include "LamaPon/Assets/AssetManager.h"
 #include "LamaPon/Graphics/ClusteredLights.h"
+#include "LamaPon/Graphics/EnvironmentSettings.h"
 #include "LamaPon/Graphics/GpuProfiler.h"
 #include "LamaPon/Graphics/GraphicsBackend.h"
 #include "LamaPon/Graphics/Lighting.h"
@@ -31,6 +32,84 @@ namespace LamaPon
         return m_backend->CreateTexture2D(
             description,
             initialData);
+    }
+
+    GraphicsTextureHandle GraphicsDevice::CreateTexture3D(
+        const GraphicsTexture3DDescription& description,
+        const std::span<const GraphicsTextureSubresourceData>
+            initialData)
+    {
+        if (m_backend == nullptr)
+        {
+            throw std::logic_error(
+                "CreateTexture3D requires an initialized graphics backend.");
+        }
+        return m_backend->CreateTexture3D(
+            description,
+            initialData);
+    }
+
+    std::array<GraphicsViewHandle, 3>
+        GraphicsDevice::UploadBakedGlobalIlluminationViews(
+            const std::uint32_t width,
+            const std::uint32_t height,
+            const std::uint32_t depth,
+            const std::span<const std::uint16_t> coefficients)
+            const noexcept
+    {
+        std::array<GraphicsViewHandle, 3> createdViews;
+        const auto probeCount =
+            BakedGlobalIlluminationProbeCount(
+                width,
+                height,
+                depth);
+        if (m_backend == nullptr
+            || !probeCount.has_value()
+            || coefficients.size()
+                != *probeCount
+                    * BakedGlobalIlluminationCoefficientsPerProbe)
+        {
+            return createdViews;
+        }
+
+        try
+        {
+            const GraphicsTexture3DDescription description{
+                width,
+                height,
+                depth,
+                1,
+                GraphicsTextureFormat::Rgba16Float
+            };
+            const auto coefficientsPerChannel = *probeCount * 4;
+            for (std::size_t channel{};
+                channel < createdViews.size();
+                ++channel)
+            {
+                const auto channelCoefficients = coefficients.subspan(
+                    channel * coefficientsPerChannel,
+                    coefficientsPerChannel);
+                const std::array initialData{
+                    GraphicsTextureSubresourceData{
+                        std::as_bytes(channelCoefficients),
+                        width * 8u,
+                        width * height * 8u
+                    }
+                };
+                const auto texture = m_backend->CreateTexture3D(
+                    description,
+                    initialData);
+                createdViews[channel] =
+                    m_backend->CreateShaderResourceView(
+                        texture,
+                        GraphicsTextureViewDescription{ 0, 1 });
+            }
+        }
+        catch (...)
+        {
+            return {};
+        }
+        return createdViews;
     }
 
     void GraphicsDevice::UpdateTexture2D(

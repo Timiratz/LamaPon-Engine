@@ -1265,6 +1265,340 @@ namespace
             },
             "An out-of-range neutral texture view was accepted");
 
+        // Baked GIで使うimmutable 3D textureも、生成・view・所有・転送内容を
+        // API非依存handle経由で保ちます。
+        const std::array<std::uint16_t, 32> texture3DVoxels{
+            0x0000u, 0x0001u, 0x0002u, 0x0003u,
+            0x0010u, 0x0011u, 0x0012u, 0x0013u,
+            0x0020u, 0x0021u, 0x0022u, 0x0023u,
+            0x0030u, 0x0031u, 0x0032u, 0x0033u,
+            0x0100u, 0x0101u, 0x0102u, 0x0103u,
+            0x0110u, 0x0111u, 0x0112u, 0x0113u,
+            0x0120u, 0x0121u, 0x0122u, 0x0123u,
+            0x0130u, 0x0131u, 0x0132u, 0x0133u
+        };
+        const std::array texture3DInitialData{
+            LamaPon::GraphicsTextureSubresourceData{
+                std::as_bytes(std::span{ texture3DVoxels }),
+                16,
+                32
+            }
+        };
+        auto neutralTexture3D = graphics.CreateTexture3D(
+            LamaPon::GraphicsTexture3DDescription{
+                2,
+                2,
+                2,
+                1,
+                LamaPon::GraphicsTextureFormat::Rgba16Float
+            },
+            texture3DInitialData);
+        const auto texture3DView = graphics.CreateShaderResourceView(
+            neutralTexture3D,
+            LamaPon::GraphicsTextureViewDescription{ 0, 1 });
+        auto* const nativeTexture3DView =
+            graphics.TryResolveD3D11ShaderResourceView(texture3DView);
+        Require(
+            neutralTexture3D
+                && texture3DView
+                && texture3DView.Kind()
+                    == LamaPon::GraphicsViewKind::ShaderResource
+                && nativeTexture3DView != nullptr,
+            "The neutral Texture3D view did not resolve to D3D11");
+
+        D3D11_SHADER_RESOURCE_VIEW_DESC texture3DViewDescription{};
+        nativeTexture3DView->GetDesc(&texture3DViewDescription);
+        Microsoft::WRL::ComPtr<ID3D11Resource> texture3DResource;
+        nativeTexture3DView->GetResource(
+            texture3DResource.ReleaseAndGetAddressOf());
+        Microsoft::WRL::ComPtr<ID3D11Texture3D> nativeTexture3D;
+        Require(
+            SUCCEEDED(texture3DResource.As(&nativeTexture3D)),
+            "The neutral Texture3D view did not own a 3D texture");
+        D3D11_TEXTURE3D_DESC nativeTexture3DDescription{};
+        nativeTexture3D->GetDesc(&nativeTexture3DDescription);
+        Require(
+            texture3DViewDescription.Format
+                    == DXGI_FORMAT_R16G16B16A16_FLOAT
+                && texture3DViewDescription.ViewDimension
+                    == D3D11_SRV_DIMENSION_TEXTURE3D
+                && texture3DViewDescription.Texture3D.MostDetailedMip == 0
+                && texture3DViewDescription.Texture3D.MipLevels == 1
+                && nativeTexture3DDescription.Width == 2
+                && nativeTexture3DDescription.Height == 2
+                && nativeTexture3DDescription.Depth == 2
+                && nativeTexture3DDescription.MipLevels == 1
+                && nativeTexture3DDescription.Format
+                    == DXGI_FORMAT_R16G16B16A16_FLOAT
+                && nativeTexture3DDescription.Usage
+                    == D3D11_USAGE_IMMUTABLE,
+            "The neutral Texture3D description was not preserved");
+
+        auto stagingTexture3DDescription = nativeTexture3DDescription;
+        stagingTexture3DDescription.Usage = D3D11_USAGE_STAGING;
+        stagingTexture3DDescription.BindFlags = 0;
+        stagingTexture3DDescription.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        stagingTexture3DDescription.MiscFlags = 0;
+        Microsoft::WRL::ComPtr<ID3D11Texture3D> stagingTexture3D;
+        Require(
+            SUCCEEDED(graphics.Device()->CreateTexture3D(
+                &stagingTexture3DDescription,
+                nullptr,
+                stagingTexture3D.ReleaseAndGetAddressOf())),
+            "The Texture3D readback resource could not be created");
+        graphics.Context()->CopyResource(
+            stagingTexture3D.Get(),
+            nativeTexture3D.Get());
+        D3D11_MAPPED_SUBRESOURCE mappedTexture3D{};
+        Require(
+            SUCCEEDED(graphics.Context()->Map(
+                stagingTexture3D.Get(),
+                0,
+                D3D11_MAP_READ,
+                0,
+                &mappedTexture3D)),
+            "The neutral Texture3D could not be mapped for verification");
+        bool texture3DContentMatches = true;
+        for (std::uint32_t z{}; z < 2; ++z)
+        {
+            for (std::uint32_t y{}; y < 2; ++y)
+            {
+                const auto* const source = reinterpret_cast<
+                    const std::uint16_t*>(
+                        static_cast<const std::byte*>(
+                            mappedTexture3D.pData)
+                        + z * mappedTexture3D.DepthPitch
+                        + y * mappedTexture3D.RowPitch);
+                const auto sourceOffset =
+                    static_cast<std::size_t>((z * 2 + y) * 8);
+                for (std::size_t value{}; value < 8; ++value)
+                {
+                    texture3DContentMatches =
+                        texture3DContentMatches
+                        && source[value]
+                            == texture3DVoxels[sourceOffset + value];
+                }
+            }
+        }
+        graphics.Context()->Unmap(stagingTexture3D.Get(), 0);
+        Require(
+            texture3DContentMatches,
+            "The neutral Texture3D upload changed voxel data");
+
+        // depthだけが縮むmip chainも有効です。2D前提のmip上限計算へ
+        // 戻らないことと、Texture3Dの部分viewを確認します。
+        const std::array<std::uint16_t, 8> depthMip0{
+            0x1000u, 0x1001u, 0x1002u, 0x1003u,
+            0x1010u, 0x1011u, 0x1012u, 0x1013u
+        };
+        const std::array<std::uint16_t, 4> depthMip1{
+            0x2000u, 0x2001u, 0x2002u, 0x2003u
+        };
+        const std::array depthMipInitialData{
+            LamaPon::GraphicsTextureSubresourceData{
+                std::as_bytes(std::span{ depthMip0 }),
+                8,
+                8
+            },
+            LamaPon::GraphicsTextureSubresourceData{
+                std::as_bytes(std::span{ depthMip1 }),
+                8,
+                8
+            }
+        };
+        const auto depthMipTexture3D = graphics.CreateTexture3D(
+            LamaPon::GraphicsTexture3DDescription{
+                1,
+                1,
+                2,
+                2,
+                LamaPon::GraphicsTextureFormat::Rgba16Float
+            },
+            depthMipInitialData);
+        const auto depthMipView = graphics.CreateShaderResourceView(
+            depthMipTexture3D,
+            LamaPon::GraphicsTextureViewDescription{ 1, 1 });
+        auto* const nativeDepthMipView =
+            graphics.TryResolveD3D11ShaderResourceView(depthMipView);
+        D3D11_SHADER_RESOURCE_VIEW_DESC depthMipViewDescription{};
+        if (nativeDepthMipView != nullptr)
+        {
+            nativeDepthMipView->GetDesc(&depthMipViewDescription);
+        }
+        Require(
+            nativeDepthMipView != nullptr
+                && depthMipViewDescription.ViewDimension
+                    == D3D11_SRV_DIMENSION_TEXTURE3D
+                && depthMipViewDescription.Texture3D.MostDetailedMip == 1
+                && depthMipViewDescription.Texture3D.MipLevels == 1,
+            "A depth-only Texture3D mip range was not preserved");
+
+        RequireThrowsExactly<std::invalid_argument>(
+            [&]
+            {
+                static_cast<void>(graphics.CreateTexture3D(
+                    LamaPon::GraphicsTexture3DDescription{
+                        2,
+                        2,
+                        0,
+                        1,
+                        LamaPon::GraphicsTextureFormat::Rgba16Float
+                    },
+                    texture3DInitialData));
+            },
+            "A zero-depth neutral Texture3D was accepted");
+        RequireThrowsExactly<std::invalid_argument>(
+            [&]
+            {
+                static_cast<void>(graphics.CreateTexture3D(
+                    LamaPon::GraphicsTexture3DDescription{
+                        D3D11_REQ_TEXTURE3D_U_V_OR_W_DIMENSION + 1u,
+                        1,
+                        1,
+                        1,
+                        LamaPon::GraphicsTextureFormat::Rgba16Float
+                    },
+                    texture3DInitialData));
+            },
+            "An oversized neutral Texture3D was accepted");
+        RequireThrowsExactly<std::invalid_argument>(
+            [&]
+            {
+                static_cast<void>(graphics.CreateTexture3D(
+                    LamaPon::GraphicsTexture3DDescription{
+                        2,
+                        2,
+                        2,
+                        1,
+                        LamaPon::GraphicsTextureFormat::Rgba16Float
+                    },
+                    {}));
+            },
+            "A neutral Texture3D without subresources was accepted");
+        RequireThrowsExactly<std::invalid_argument>(
+            [&]
+            {
+                const std::array invalidInitialData{
+                    LamaPon::GraphicsTextureSubresourceData{
+                        std::as_bytes(std::span{ texture3DVoxels }),
+                        15,
+                        32
+                    }
+                };
+                static_cast<void>(graphics.CreateTexture3D(
+                    LamaPon::GraphicsTexture3DDescription{
+                        2,
+                        2,
+                        2,
+                        1,
+                        LamaPon::GraphicsTextureFormat::Rgba16Float
+                    },
+                    invalidInitialData));
+            },
+            "A neutral Texture3D with a short row pitch was accepted");
+        RequireThrowsExactly<std::invalid_argument>(
+            [&]
+            {
+                const std::array invalidInitialData{
+                    LamaPon::GraphicsTextureSubresourceData{
+                        std::as_bytes(std::span{ texture3DVoxels }),
+                        16,
+                        31
+                    }
+                };
+                static_cast<void>(graphics.CreateTexture3D(
+                    LamaPon::GraphicsTexture3DDescription{
+                        2,
+                        2,
+                        2,
+                        1,
+                        LamaPon::GraphicsTextureFormat::Rgba16Float
+                    },
+                    invalidInitialData));
+            },
+            "A neutral Texture3D with a short slice pitch was accepted");
+        RequireThrowsExactly<std::invalid_argument>(
+            [&]
+            {
+                const std::array invalidInitialData{
+                    LamaPon::GraphicsTextureSubresourceData{
+                        std::as_bytes(std::span{ texture3DVoxels })
+                            .first(63),
+                        16,
+                        32
+                    }
+                };
+                static_cast<void>(graphics.CreateTexture3D(
+                    LamaPon::GraphicsTexture3DDescription{
+                        2,
+                        2,
+                        2,
+                        1,
+                        LamaPon::GraphicsTextureFormat::Rgba16Float
+                    },
+                    invalidInitialData));
+            },
+            "A truncated neutral Texture3D volume was accepted");
+        RequireThrowsExactly<std::invalid_argument>(
+            [&]
+            {
+                static_cast<void>(graphics.CreateShaderResourceView(
+                    neutralTexture3D,
+                    LamaPon::GraphicsTextureViewDescription{ 1, 1 }));
+            },
+            "An out-of-range neutral Texture3D view was accepted");
+        neutralTexture3D.Reset();
+        Require(
+            graphics.TryResolveD3D11ShaderResourceView(texture3DView)
+                == nativeTexture3DView,
+            "A neutral Texture3D view did not retain its texture");
+
+        const std::array<std::uint16_t, 12> bakedGiCoefficients{
+            0x0000u, 0x0001u, 0x0002u, 0x0003u,
+            0x0010u, 0x0011u, 0x0012u, 0x0013u,
+            0x0020u, 0x0021u, 0x0022u, 0x0023u
+        };
+        const auto neutralBakedGiViews =
+            graphics.UploadBakedGlobalIlluminationViews(
+                1,
+                1,
+                1,
+                bakedGiCoefficients);
+        bool bakedGiViewsAreTexture3D = true;
+        for (const auto& view : neutralBakedGiViews)
+        {
+            auto* const nativeView =
+                graphics.TryResolveD3D11ShaderResourceView(view);
+            D3D11_SHADER_RESOURCE_VIEW_DESC description{};
+            if (nativeView == nullptr)
+            {
+                bakedGiViewsAreTexture3D = false;
+                continue;
+            }
+            nativeView->GetDesc(&description);
+            bakedGiViewsAreTexture3D = bakedGiViewsAreTexture3D
+                && view.Kind()
+                    == LamaPon::GraphicsViewKind::ShaderResource
+                && description.Format
+                    == DXGI_FORMAT_R16G16B16A16_FLOAT
+                && description.ViewDimension
+                    == D3D11_SRV_DIMENSION_TEXTURE3D;
+        }
+        Require(
+            bakedGiViewsAreTexture3D,
+            "Baked GI upload did not create three neutral Texture3D views");
+        const auto invalidBakedGiViews =
+            graphics.UploadBakedGlobalIlluminationViews(
+                1,
+                1,
+                1,
+                std::span{ bakedGiCoefficients }.first<11>());
+        Require(
+            !invalidBakedGiViews[0]
+                && !invalidBakedGiViews[1]
+                && !invalidBakedGiViews[2],
+            "An invalid Baked GI payload returned partial neutral views");
+
         // RuntimeのAssetManagerはactive Backendを受け取り、通常画像・文字・
         // DDSの所有権をneutral handleへ置きます。raw SRVは同じhandleを
         // 解決したDirectX 11互換mirrorでなければなりません。

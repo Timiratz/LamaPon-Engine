@@ -485,6 +485,10 @@ namespace LamaPon
             const GraphicsTexture2DDescription& description,
             std::span<const GraphicsTextureSubresourceData>
                 initialData);
+        [[nodiscard]] GraphicsTextureHandle CreateTexture3D(
+            const GraphicsTexture3DDescription& description,
+            std::span<const GraphicsTextureSubresourceData>
+                initialData);
         void UpdateTexture2D(
             const GraphicsTextureHandle& texture,
             std::uint32_t mipLevel,
@@ -526,6 +530,15 @@ namespace LamaPon
             std::uint32_t depth,
             std::span<const std::uint16_t> coefficients)
                 const noexcept;
+        // 上と同じ係数をAPI非依存Texture3Dへ作成する新経路です。旧raw
+        // 戻り値はGame Module互換期間中、この結果を解決して維持します。
+        [[nodiscard]] std::array<GraphicsViewHandle, 3>
+            UploadBakedGlobalIlluminationViews(
+                std::uint32_t width,
+                std::uint32_t height,
+                std::uint32_t depth,
+                std::span<const std::uint16_t> coefficients)
+                    const noexcept;
         // RendererがAPI固有SRVへ触れずにLitEffectへtextureを設定する
         // 移行用bridgeです。requestは直後の描画が終わるまで保持します。
         // 別DeviceのEffectまたは不正なnon-empty viewは、Effectを変更せず

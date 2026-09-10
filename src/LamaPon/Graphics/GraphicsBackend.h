@@ -301,6 +301,13 @@ namespace LamaPon
             std::uint32_t firstSlot,
             std::span<const GraphicsViewHandle> resources,
             const GraphicsViewHandle& fallback) noexcept = 0;
+
+        // 3D volumeの全mipを初期dataから生成します。既存virtual slotを
+        // 維持するため末尾へ追加します。
+        [[nodiscard]] virtual GraphicsTextureHandle CreateTexture3D(
+            const GraphicsTexture3DDescription& description,
+            std::span<const GraphicsTextureSubresourceData>
+                initialData) = 0;
     };
 
     // activeApiはSelectGraphicsBackendで解決済みの値を渡します。

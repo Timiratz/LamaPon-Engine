@@ -10,7 +10,7 @@
 
 namespace LamaPon
 {
-    // Backendへ渡す2D textureのpixel formatです。描画API固有のformat値を
+    // Backendへ渡すtextureのpixel formatです。描画API固有のformat値を
     // Asset/Rendererへ漏らさず、現在のruntime texture経路で必要な形式だけを
     // 共通化します。DDS等で必要な形式は移行時に末尾へ追加します。
     enum class GraphicsTextureFormat : std::uint8_t
@@ -19,7 +19,8 @@ namespace LamaPon
         Bgra8Unorm,
         Bc1Unorm,
         Bc3Unorm,
-        Bc5Unorm
+        Bc5Unorm,
+        Rgba16Float
     };
 
     // Immutableは全mipの初期dataを生成時に渡す静的texture、PerMipUpdateは
@@ -41,9 +42,21 @@ namespace LamaPon
             GraphicsTextureUpdateMode::Immutable };
     };
 
+    // 現段階の3D textureは全mipを生成時に渡すimmutable resourceです。
+    // 動的更新が必要になった時点で専用の更新契約を追加します。
+    struct GraphicsTexture3DDescription final
+    {
+        std::uint32_t width{};
+        std::uint32_t height{};
+        std::uint32_t depth{};
+        std::uint32_t mipLevels{ 1 };
+        GraphicsTextureFormat format{
+            GraphicsTextureFormat::Rgba8Unorm };
+    };
+
     // 呼び出し中だけ有効なCPU側転送範囲です。rowPitchは1行のbyte数、
-    // slicePitchは2D subresource全体のbyte数です。slicePitchが0なら
-    // bytes.size()を使います。
+    // slicePitchは隣接するdepth sliceまでのbyte数です。2Dでは0なら
+    // bytes.size()を使い、3Dでは明示値が必要です。
     struct GraphicsTextureSubresourceData final
     {
         std::span<const std::byte> bytes;
@@ -51,7 +64,7 @@ namespace LamaPon
         std::uint32_t slicePitch{};
     };
 
-    // textureのどのmip範囲をshaderから見せるかを表します。
+    // 2D / 3D textureのどのmip範囲をshaderから見せるかを表します。
     struct GraphicsTextureViewDescription final
     {
         std::uint32_t mostDetailedMip{};

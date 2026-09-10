@@ -139,6 +139,10 @@ namespace LamaPon
             std::uint32_t firstSlot,
             std::span<const GraphicsViewHandle> resources,
             const GraphicsViewHandle& fallback) noexcept override;
+        [[nodiscard]] GraphicsTextureHandle CreateTexture3D(
+            const GraphicsTexture3DDescription& description,
+            std::span<const GraphicsTextureSubresourceData>
+                initialData) override;
 
         // 既存のDirectX 11描画経路へ貸し出す非所有ポインターです。
         // GraphicsDeviceは移行期間中、従来のDevice/Context APIを

@@ -65,8 +65,8 @@ namespace
         D3D11_TEXTURE2D_DESC description{};
     };
 
-    // Texture3Dは現段階では既存D3D11資源をneutral viewへ取り込むための
-    // 所有payloadです。共通CreateTexture3D契約は次の段階で追加します。
+    // 共通Texture3D handleが所有するDirectX 11側の実体です。
+    // API固有型はこのBackend内部に閉じ込めます。
     class D3D11Texture3DPayload final
         : public LamaPon::Detail::GraphicsTexturePayload
     {
@@ -256,6 +256,8 @@ namespace
             return DXGI_FORMAT_BC3_UNORM;
         case LamaPon::GraphicsTextureFormat::Bc5Unorm:
             return DXGI_FORMAT_BC5_UNORM;
+        case LamaPon::GraphicsTextureFormat::Rgba16Float:
+            return DXGI_FORMAT_R16G16B16A16_FLOAT;
         default:
             throw std::invalid_argument(
                 "Unsupported graphics texture format.");
@@ -264,13 +266,15 @@ namespace
 
     [[nodiscard]] std::uint32_t MaximumMipLevels(
         std::uint32_t width,
-        std::uint32_t height) noexcept
+        std::uint32_t height,
+        std::uint32_t depth = 1) noexcept
     {
         std::uint32_t levels = 1;
-        while (width > 1 || height > 1)
+        while (width > 1 || height > 1 || depth > 1)
         {
             width = std::max(width / 2, 1u);
             height = std::max(height / 2, 1u);
+            depth = std::max(depth / 2, 1u);
             ++levels;
         }
         return levels;
@@ -297,6 +301,13 @@ namespace
                     "The texture row pitch cannot be represented.");
             }
             return { width * 4u, height };
+        case DXGI_FORMAT_R16G16B16A16_FLOAT:
+            if (width > std::numeric_limits<std::uint32_t>::max() / 8u)
+            {
+                throw std::invalid_argument(
+                    "The texture row pitch cannot be represented.");
+            }
+            return { width * 8u, height };
         case DXGI_FORMAT_BC1_UNORM:
             return {
                 std::max((width + 3u) / 4u, 1u) * 8u,
@@ -358,6 +369,55 @@ namespace
         {
             throw std::invalid_argument(
                 "The texture subresource byte range is too small.");
+        }
+    }
+
+    void ValidateTexture3DSubresourceData(
+        const D3D11_TEXTURE3D_DESC& texture,
+        const std::uint32_t mipLevel,
+        const LamaPon::GraphicsTextureSubresourceData& data)
+    {
+        if (mipLevel >= texture.MipLevels
+            || data.bytes.empty()
+            || data.rowPitch == 0
+            || data.slicePitch == 0)
+        {
+            throw std::invalid_argument(
+                "The Texture3D subresource data is incomplete.");
+        }
+
+        const auto mipWidth = std::max(
+            texture.Width >> mipLevel,
+            1u);
+        const auto mipHeight = std::max(
+            texture.Height >> mipLevel,
+            1u);
+        const auto mipDepth = std::max(
+            texture.Depth >> mipLevel,
+            1u);
+        const auto layout = RequiredTextureLayout(
+            texture.Format,
+            mipWidth,
+            mipHeight);
+        if (data.rowPitch < layout.minimumRowBytes)
+        {
+            throw std::invalid_argument(
+                "The Texture3D row pitch is too small.");
+        }
+        const auto requiredSliceBytes =
+            static_cast<std::uint64_t>(data.rowPitch)
+                * (layout.rowCount - 1u)
+            + layout.minimumRowBytes;
+        const auto requiredBytes =
+            static_cast<std::uint64_t>(data.slicePitch)
+                * (mipDepth - 1u)
+            + requiredSliceBytes;
+        if (requiredSliceBytes > data.slicePitch
+            || data.slicePitch > data.bytes.size()
+            || requiredBytes > data.bytes.size())
+        {
+            throw std::invalid_argument(
+                "The Texture3D subresource byte range is too small.");
         }
     }
 
@@ -1150,15 +1210,19 @@ namespace LamaPon
         const GraphicsTextureHandle& texture)
     {
         using Detail::GraphicsResourceHandleAccess;
-        const auto* const texturePayload =
+        const auto* const texture2DPayload =
             dynamic_cast<const D3D11TexturePayload*>(
-            GraphicsResourceHandleAccess::Payload(texture));
+                GraphicsResourceHandleAccess::Payload(texture));
+        const auto* const texture3DPayload =
+            dynamic_cast<const D3D11Texture3DPayload*>(
+                GraphicsResourceHandleAccess::Payload(texture));
         if (!IsInitialized() || m_resourceDomain == nullptr)
         {
             throw std::logic_error(
                 "CreateShaderResourceView requires an initialized backend.");
         }
-        if (texturePayload == nullptr
+        if ((texture2DPayload == nullptr
+                && texture3DPayload == nullptr)
             || GraphicsResourceHandleAccess::Domain(texture)
                 != m_resourceDomain.get())
         {
@@ -1171,7 +1235,9 @@ namespace LamaPon
             texture,
             GraphicsTextureViewDescription{
                 0,
-                texturePayload->description.MipLevels
+                texture2DPayload != nullptr
+                    ? texture2DPayload->description.MipLevels
+                    : texture3DPayload->description.MipLevels
             });
     }
 
@@ -1261,6 +1327,95 @@ namespace LamaPon
                 nativeDescription));
     }
 
+    GraphicsTextureHandle D3D11Backend::CreateTexture3D(
+        const GraphicsTexture3DDescription& description,
+        const std::span<const GraphicsTextureSubresourceData>
+            initialData)
+    {
+        if (!IsInitialized() || m_resourceDomain == nullptr)
+        {
+            throw std::logic_error(
+                "CreateTexture3D requires an initialized backend.");
+        }
+        if (description.width == 0
+            || description.height == 0
+            || description.depth == 0
+            || description.width
+                > D3D11_REQ_TEXTURE3D_U_V_OR_W_DIMENSION
+            || description.height
+                > D3D11_REQ_TEXTURE3D_U_V_OR_W_DIMENSION
+            || description.depth
+                > D3D11_REQ_TEXTURE3D_U_V_OR_W_DIMENSION
+            || description.mipLevels == 0
+            || description.mipLevels > MaximumMipLevels(
+                description.width,
+                description.height,
+                description.depth)
+            || initialData.size() != description.mipLevels)
+        {
+            throw std::invalid_argument(
+                "CreateTexture3D received an invalid description or "
+                "subresource count.");
+        }
+
+        const auto nativeFormat = ToDxgiFormat(description.format);
+        UINT formatSupport{};
+        constexpr UINT requiredFormatSupport =
+            D3D11_FORMAT_SUPPORT_TEXTURE3D
+            | D3D11_FORMAT_SUPPORT_SHADER_SAMPLE;
+        if (FAILED(m_device->CheckFormatSupport(
+                nativeFormat,
+                &formatSupport))
+            || (formatSupport & requiredFormatSupport)
+                != requiredFormatSupport)
+        {
+            throw std::invalid_argument(
+                "CreateTexture3D requires a shader-readable 3D texture "
+                "format supported by the active backend.");
+        }
+
+        D3D11_TEXTURE3D_DESC nativeDescription{};
+        nativeDescription.Width = description.width;
+        nativeDescription.Height = description.height;
+        nativeDescription.Depth = description.depth;
+        nativeDescription.MipLevels = description.mipLevels;
+        nativeDescription.Format = nativeFormat;
+        nativeDescription.Usage = D3D11_USAGE_IMMUTABLE;
+        nativeDescription.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+        std::vector<D3D11_SUBRESOURCE_DATA> nativeInitialData;
+        nativeInitialData.reserve(initialData.size());
+        for (std::size_t mipLevel{};
+            mipLevel < initialData.size();
+            ++mipLevel)
+        {
+            const auto& subresource = initialData[mipLevel];
+            ValidateTexture3DSubresourceData(
+                nativeDescription,
+                static_cast<std::uint32_t>(mipLevel),
+                subresource);
+            nativeInitialData.push_back(
+                D3D11_SUBRESOURCE_DATA{
+                    subresource.bytes.data(),
+                    subresource.rowPitch,
+                    subresource.slicePitch
+                });
+        }
+
+        Microsoft::WRL::ComPtr<ID3D11Texture3D> texture;
+        ThrowIfFailed(
+            m_device->CreateTexture3D(
+                &nativeDescription,
+                nativeInitialData.data(),
+                texture.ReleaseAndGetAddressOf()),
+            "ID3D11Device::CreateTexture3D");
+        return Detail::GraphicsResourceHandleAccess::MakeTexture(
+            std::make_shared<D3D11Texture3DPayload>(
+                m_resourceDomain,
+                std::move(texture),
+                nativeDescription));
+    }
+
     void D3D11Backend::UpdateTexture2D(
         const GraphicsTextureHandle& texture,
         const std::uint32_t mipLevel,
@@ -1309,17 +1464,25 @@ namespace LamaPon
             throw std::logic_error(
                 "CreateShaderResourceView requires an initialized backend.");
         }
-        const auto* const texturePayload =
+        const auto* const texture2DPayload =
             dynamic_cast<const D3D11TexturePayload*>(
                 GraphicsResourceHandleAccess::Payload(texture));
-        if (texturePayload == nullptr
+        const auto* const texture3DPayload =
+            dynamic_cast<const D3D11Texture3DPayload*>(
+                GraphicsResourceHandleAccess::Payload(texture));
+        const auto availableMipLevels = texture2DPayload != nullptr
+            ? texture2DPayload->description.MipLevels
+            : texture3DPayload != nullptr
+                ? texture3DPayload->description.MipLevels
+                : 0u;
+        if (availableMipLevels == 0
             || GraphicsResourceHandleAccess::Domain(texture)
                 != m_resourceDomain.get()
             || description.mipLevels == 0
             || description.mostDetailedMip
-                >= texturePayload->description.MipLevels
+                >= availableMipLevels
             || description.mipLevels
-                > texturePayload->description.MipLevels
+                > availableMipLevels
                     - description.mostDetailedMip)
         {
             throw std::invalid_argument(
@@ -1328,18 +1491,35 @@ namespace LamaPon
         }
 
         D3D11_SHADER_RESOURCE_VIEW_DESC nativeDescription{};
-        nativeDescription.Format =
-            texturePayload->description.Format;
-        nativeDescription.ViewDimension =
-            D3D11_SRV_DIMENSION_TEXTURE2D;
-        nativeDescription.Texture2D.MostDetailedMip =
-            description.mostDetailedMip;
-        nativeDescription.Texture2D.MipLevels =
-            description.mipLevels;
+        ID3D11Resource* nativeResource{};
+        if (texture2DPayload != nullptr)
+        {
+            nativeResource = texture2DPayload->native.Get();
+            nativeDescription.Format =
+                texture2DPayload->description.Format;
+            nativeDescription.ViewDimension =
+                D3D11_SRV_DIMENSION_TEXTURE2D;
+            nativeDescription.Texture2D.MostDetailedMip =
+                description.mostDetailedMip;
+            nativeDescription.Texture2D.MipLevels =
+                description.mipLevels;
+        }
+        else
+        {
+            nativeResource = texture3DPayload->native.Get();
+            nativeDescription.Format =
+                texture3DPayload->description.Format;
+            nativeDescription.ViewDimension =
+                D3D11_SRV_DIMENSION_TEXTURE3D;
+            nativeDescription.Texture3D.MostDetailedMip =
+                description.mostDetailedMip;
+            nativeDescription.Texture3D.MipLevels =
+                description.mipLevels;
+        }
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view;
         ThrowIfFailed(
             m_device->CreateShaderResourceView(
-                texturePayload->native.Get(),
+                nativeResource,
                 &nativeDescription,
                 view.ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateShaderResourceView");

@@ -522,6 +522,38 @@ int main()
                 && bakedGiViews[1] == nullptr
                 && bakedGiViews[2] == nullptr,
             "Baked GI upload must return an empty result without a device");
+        const auto neutralBakedGiViews =
+            graphics.UploadBakedGlobalIlluminationViews(
+                1,
+                1,
+                1,
+                coefficients);
+        Require(
+            !neutralBakedGiViews[0]
+                && !neutralBakedGiViews[1]
+                && !neutralBakedGiViews[2],
+            "Neutral Baked GI upload must return an empty result without a device");
+        RequireThrowsExactly<std::logic_error>(
+            [&]
+            {
+                const std::array initialData{
+                    LamaPon::GraphicsTextureSubresourceData{
+                        std::as_bytes(std::span{ coefficients }),
+                        8,
+                        8
+                    }
+                };
+                static_cast<void>(graphics.CreateTexture3D(
+                    LamaPon::GraphicsTexture3DDescription{
+                        1,
+                        1,
+                        1,
+                        1,
+                        LamaPon::GraphicsTextureFormat::Rgba16Float
+                    },
+                    initialData));
+            },
+            "Texture3D creation must require an initialized device");
 
         TestGraphicsOutputState outputState;
         RequireThrowsExactly<std::logic_error>(
