@@ -37,10 +37,10 @@ namespace LamaPon
 
     class AssetManager;
     class LitEffect;
+    struct LitTextureRequest;
     class SkeletalModel;
     struct ModelAsset;
     struct TextureAsset;
-    struct TextureResourceSnapshot;
     struct SkeletalPoseSample;
 
     struct AnimationEventNotification final
@@ -420,10 +420,9 @@ namespace LamaPon
         // Shaderが宣言した描画状態（合成・深度・カリング）を適用します。
         void ApplyShaderRenderState(
             const ShaderRenderState& state) const;
-        // 追加テクスチャのSRVと、その所有snapshotを同じ組で返します。
-        struct ResolvedCustomTextureViews;
-        [[nodiscard]] ResolvedCustomTextureViews
-            ResolveCustomTextureViews() const noexcept;
+        // 外部マテリアルの全textureをBackend-neutralな1要求へまとめます。
+        [[nodiscard]] LitTextureRequest
+            BuildLitTextureRequest() const noexcept;
         struct CommonLitResources;
 
         void ReloadModel();

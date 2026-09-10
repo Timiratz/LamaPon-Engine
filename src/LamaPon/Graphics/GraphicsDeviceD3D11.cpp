@@ -331,6 +331,25 @@ namespace LamaPon
         return backend->ResolveBuffer(buffer);
     }
 
+    GraphicsViewHandle
+        GraphicsDevice::ImportD3D11ShaderResourceView(
+            ID3D11ShaderResourceView* const view)
+    {
+        if (view == nullptr)
+        {
+            return {};
+        }
+        auto* const backend = AsD3D11Backend(m_backend.get());
+        if (backend == nullptr)
+        {
+            throw std::logic_error(
+                "Importing a DirectX 11 shader-resource view requires "
+                "an active DirectX 11 backend.");
+        }
+        auto imported = backend->ImportShaderResourceView(view);
+        return std::move(imported.second);
+    }
+
     EnvironmentRenderer::OwnedPrefilteredEnvironment
         GraphicsDevice::TryLoadCachedEnvironment(
             const std::uint64_t key) const

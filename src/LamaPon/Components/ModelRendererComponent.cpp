@@ -9,6 +9,7 @@
 #include "LamaPon/Graphics/Lighting.h"
 #include "LamaPon/Graphics/LitEffect.h"
 #include "LamaPon/Graphics/LitMaterialAsset.h"
+#include "LamaPon/Graphics/LitTextureRequest.h"
 #include "LamaPon/Graphics/SkeletalModel.h"
 #include "LamaPon/Scene/GameObject.h"
 #include "LamaPon/Scene/Scene.h"
@@ -32,6 +33,20 @@
 
 namespace
 {
+    [[nodiscard]] LamaPon::GraphicsViewHandle AcquireTextureView(
+        const std::shared_ptr<
+            const LamaPon::TextureAsset>& asset) noexcept
+    {
+        if (asset == nullptr)
+        {
+            return {};
+        }
+        const auto resources = asset->resources.Acquire();
+        return resources != nullptr
+            ? resources->shaderResourceView
+            : LamaPon::GraphicsViewHandle{};
+    }
+
     // テセレーションが使えるのは、四角パッチに割れる形状（Plane・
     // Cube）のMesh Rendererだけです。
     // モデルにはパッチで描く経路が無いので、ハル／ドメインは束ねられず、
@@ -198,6 +213,29 @@ namespace
 
 namespace LamaPon
 {
+    LitTextureRequest
+        ModelRendererComponent::BuildLitTextureRequest() const noexcept
+    {
+        LitTextureRequest request;
+        request.albedo = AcquireTextureView(m_albedoTexture);
+        request.normal = AcquireTextureView(m_normalTexture);
+        request.roughness = AcquireTextureView(m_roughnessTexture);
+        request.metallic = AcquireTextureView(m_metallicTexture);
+        request.occlusion = AcquireTextureView(m_occlusionTexture);
+        request.emissive = AcquireTextureView(m_emissiveTexture);
+        for (std::size_t index{};
+            index < request.customTextures.size();
+            ++index)
+        {
+            request.customTextures[index] =
+                AcquireTextureView(m_customTextures[index]);
+        }
+        request.occlusionStrength =
+            m_material.OcclusionStrength();
+        request.emissiveFactor = m_material.EmissiveColor();
+        return request;
+    }
+
     bool ModelRendererComponent::TryGetLocalBounds(
         Bounds3D& bounds) const noexcept
     {
@@ -270,36 +308,6 @@ namespace LamaPon
         }
     }
 
-    struct ModelRendererComponent::ResolvedCustomTextureViews final
-    {
-        std::array<
-            std::shared_ptr<const TextureResourceSnapshot>,
-            LitMaterial::CustomTextureCount> snapshots;
-        std::array<
-            ID3D11ShaderResourceView*,
-            LitMaterial::CustomTextureCount> views{};
-    };
-
-    ModelRendererComponent::ResolvedCustomTextureViews
-        ModelRendererComponent::ResolveCustomTextureViews() const noexcept
-    {
-        // 未設定の枠はnullptrにします（LitEffect側で白へ差し替え）。
-        ResolvedCustomTextureViews resolved{};
-        for (std::size_t index = 0;
-            index < resolved.views.size();
-            ++index)
-        {
-            resolved.snapshots[index] = m_customTextures[index]
-                ? m_customTextures[index]->resources.Acquire()
-                : nullptr;
-            resolved.views[index] = resolved.snapshots[index]
-                ? m_graphics->TryResolveD3D11ShaderResourceView(
-                    *resolved.snapshots[index])
-                : nullptr;
-        }
-        return resolved;
-    }
-
     struct ModelRendererComponent::CommonLitResources final
     {
         struct Part final
@@ -308,12 +316,8 @@ namespace LamaPon
             DirectX::ModelMeshPart* part{};
             Microsoft::WRL::ComPtr<ID3D11InputLayout>
                 inputLayout;
-            Microsoft::WRL::ComPtr<
-                ID3D11ShaderResourceView>
-                embeddedAlbedoTexture;
-            Microsoft::WRL::ComPtr<
-                ID3D11ShaderResourceView>
-                embeddedNormalTexture;
+            GraphicsViewHandle embeddedAlbedoTexture;
+            GraphicsViewHandle embeddedNormalTexture;
             DirectX::XMFLOAT4 embeddedDiffuseColor{
                 1.0f,
                 1.0f,
@@ -2832,10 +2836,26 @@ namespace LamaPon
                             0,
                             2,
                             embeddedViews);
-                    commonPart.embeddedAlbedoTexture.
-                        Attach(embeddedViews[0]);
-                    commonPart.embeddedNormalTexture.
-                        Attach(embeddedViews[1]);
+                    // PSGetShaderResourcesが加算した参照を先に両方とも
+                    // RAIIへ移します。片方のimportが例外になっても、もう
+                    // 片方を漏らしません。Partにはnative pointerではなく
+                    // Backend世代付きのneutral handleだけを残します。
+                    std::array<Microsoft::WRL::ComPtr<
+                        ID3D11ShaderResourceView>, 2>
+                        ownedEmbeddedViews;
+                    for (std::size_t index{};
+                        index < ownedEmbeddedViews.size();
+                        ++index)
+                    {
+                        ownedEmbeddedViews[index].Attach(
+                            embeddedViews[index]);
+                    }
+                    commonPart.embeddedAlbedoTexture =
+                        m_graphics->ImportD3D11ShaderResourceView(
+                            ownedEmbeddedViews[0].Get());
+                    commonPart.embeddedNormalTexture =
+                        m_graphics->ImportD3D11ShaderResourceView(
+                            ownedEmbeddedViews[1].Get());
                     if (const auto embeddedColor =
                             m_model->embeddedDiffuseColors.find(
                                 part->effect.get());
@@ -2879,8 +2899,8 @@ namespace LamaPon
                     resources->parts,
                     [](const CommonLitResources::Part& part)
                     {
-                        return part.embeddedAlbedoTexture
-                            != nullptr;
+                        return static_cast<bool>(
+                            part.embeddedAlbedoTexture);
                     });
             if (embeddedCount == 0)
             {
@@ -2997,28 +3017,7 @@ namespace LamaPon
             && effect.HasOccludedPass()
             && m_material.CustomParameter(4).w > 0.0f;
 
-        const auto albedoResources = m_albedoTexture
-            ? m_albedoTexture->resources.Acquire()
-            : nullptr;
-        const auto normalResources = m_normalTexture
-            ? m_normalTexture->resources.Acquire()
-            : nullptr;
-        auto* const albedoView = albedoResources
-            ? m_graphics->TryResolveD3D11ShaderResourceView(
-                *albedoResources)
-            : nullptr;
-        auto* const normalView = normalResources
-            ? m_graphics->TryResolveD3D11ShaderResourceView(
-                *normalResources)
-            : nullptr;
-        const auto pbrTextures = BuildPbrTextures(
-            *m_graphics,
-            m_roughnessTexture,
-            m_metallicTexture,
-            m_occlusionTexture,
-            m_emissiveTexture,
-            m_material);
-        const auto customTextures = ResolveCustomTextureViews();
+        const auto baseTextureRequest = BuildLitTextureRequest();
 
         for (const bool alphaPass : { false, true })
         {
@@ -3072,18 +3071,28 @@ namespace LamaPon
                     {
                         continue;
                     }
-                    effect.SetTextures(
-                        albedoResources
-                            ? albedoView
-                            : (part.embeddedAlbedoTexture
-                                ? part.embeddedAlbedoTexture.Get()
-                                : nullptr),
-                        normalResources
-                            ? normalView
-                            : part.embeddedNormalTexture.Get(),
-                        pbrTextures.values);
-                    effect.SetCustomTextures(
-                        customTextures.views);
+                    // 明示的な上書きが無いalbedo/normalだけ、モデル内蔵
+                    // textureで補います。requestはこのpartの全Drawが戻る
+                    // まで生存し、Backend固有resourceを強所有します。
+                    auto partTextureRequest = baseTextureRequest;
+                    if (!partTextureRequest.albedo)
+                    {
+                        partTextureRequest.albedo =
+                            part.embeddedAlbedoTexture;
+                    }
+                    if (!partTextureRequest.normal)
+                    {
+                        partTextureRequest.normal =
+                            part.embeddedNormalTexture;
+                    }
+                    if (!m_graphics->TrySetLitEffectTextures(
+                            effect,
+                            partTextureRequest))
+                    {
+                        // 前のpartのnative bindingを再利用した描画はせず、
+                        // stale / 別Backend世代のrequestを安全に拒否します。
+                        continue;
+                    }
                     if (m_preserveEmbeddedMaterialColor)
                     {
                         // 上書き色をTintとして扱い、CMO/SDKMESH内の

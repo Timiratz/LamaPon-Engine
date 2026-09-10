@@ -88,6 +88,7 @@ namespace LamaPon
     class DebugRenderer;
     class InputSystem;
     class LitEffect;
+    class ModelRendererComponent;
     struct LitTextureRequest;
     class SpriteEffect;
     class ShadowMap;
@@ -694,6 +695,7 @@ namespace LamaPon
 
     private:
         friend class Application;
+        friend class ModelRendererComponent;
         friend class Detail::SpriteRenderPassState;
 
         // 組み込みシェーダーの組み立てに失敗した時刻とエラーを保持します。
@@ -780,6 +782,12 @@ namespace LamaPon
         [[nodiscard]] ID3D11ShaderResourceView*
             ResolveD3D11ShaderResourceView(
                 const GraphicsViewHandle& view) const;
+        // DirectXTK11 modelに埋め込まれたnative viewを、共通Lit経路が
+        // 保持できるBackend世代付きhandleへ変換するprivate移行shimです。
+        // nullは正常な未設定としてempty handleを返します。
+        [[nodiscard]] GraphicsViewHandle
+            ImportD3D11ShaderResourceView(
+                ID3D11ShaderResourceView* view);
         // API 46のGame Moduleが旧公開名を解決してからAPI不一致を
         // 案内できるよう、外部callerのないD3D11具象facadeも
         // 1互換期間だけprivate shimとして残します。
