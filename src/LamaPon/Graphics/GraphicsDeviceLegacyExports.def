@@ -2,11 +2,13 @@ EXPORTS
     ?AcquireInstanceBuffer@GraphicsDevice@LamaPon@@QEAAPEAUID3D11Buffer@@PEBX_K@Z=?AcquireInstanceBuffer@GraphicsDevice@LamaPon@@AEAAPEAUID3D11Buffer@@PEBX_K@Z
     ?BeginSprites@GraphicsDevice@LamaPon@@QEAAAEAVSpriteBatch@DX11@DirectX@@AEBVpath@filesystem@std@@AEBV?$array@UXMFLOAT4@DirectX@@$07@8@PEA_KPEAV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@8@PEBUSprite2DLighting@2@@Z=?BeginSprites@GraphicsDevice@LamaPon@@AEAAAEAVSpriteBatch@DX11@DirectX@@AEBVpath@filesystem@std@@AEBV?$array@UXMFLOAT4@DirectX@@$07@8@PEA_KPEAV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@8@PEBUSprite2DLighting@2@@Z
     ?BeginSprites@GraphicsDevice@LamaPon@@QEAAAEAVSpriteBatch@DX11@DirectX@@XZ=?BeginSprites@GraphicsDevice@LamaPon@@AEAAAEAVSpriteBatch@DX11@DirectX@@XZ
+    ?Clusters@GraphicsDevice@LamaPon@@QEBAAEAVClusteredLights@2@XZ=?Clusters@GraphicsDevice@LamaPon@@AEBAAEAVClusteredLights@2@XZ
     ?EndSprites@GraphicsDevice@LamaPon@@QEAAXXZ=?EndSprites@GraphicsDevice@LamaPon@@AEAAXXZ
     ?PinD3D11TextureForSpriteBatch@GraphicsDevice@LamaPon@@QEAAPEAUID3D11ShaderResourceView@@V?$shared_ptr@$$CBUTextureResourceSnapshot@LamaPon@@@std@@@Z=?PinD3D11TextureForSpriteBatch@GraphicsDevice@LamaPon@@AEAAPEAUID3D11ShaderResourceView@@V?$shared_ptr@$$CBUTextureResourceSnapshot@LamaPon@@@std@@@Z
     ?PopUIScissor@GraphicsDevice@LamaPon@@QEAAXXZ=?PopUIScissor@GraphicsDevice@LamaPon@@AEAAXXZ
     ?PushUIScissor@GraphicsDevice@LamaPon@@QEAAXMMMM@Z=?PushUIScissor@GraphicsDevice@LamaPon@@AEAAXMMMM@Z
     ?ResolveD3D11Buffer@GraphicsDevice@LamaPon@@QEBAPEAUID3D11Buffer@@AEBVGraphicsBufferHandle@2@@Z=?ResolveD3D11Buffer@GraphicsDevice@LamaPon@@AEBAPEAUID3D11Buffer@@AEBVGraphicsBufferHandle@2@@Z
     ?ResolveD3D11ShaderResourceView@GraphicsDevice@LamaPon@@QEBAPEAUID3D11ShaderResourceView@@AEBVGraphicsViewHandle@2@@Z=?ResolveD3D11ShaderResourceView@GraphicsDevice@LamaPon@@AEBAPEAUID3D11ShaderResourceView@@AEBVGraphicsViewHandle@2@@Z
+    ?SpriteErrorPlaceholder@GraphicsDevice@LamaPon@@QEBAPEAVSpriteEffect@2@XZ=?SpriteErrorPlaceholder@GraphicsDevice@LamaPon@@AEBAPEAVSpriteEffect@2@XZ
     ?RenderTextureView@GraphicsDevice@LamaPon@@QEBAPEAUID3D11ShaderResourceView@@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Z=?RenderTextureView@GraphicsDevice@LamaPon@@AEBAPEAUID3D11ShaderResourceView@@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Z
     ?WhiteTexture@GraphicsDevice@LamaPon@@QEBAPEAUID3D11ShaderResourceView@@XZ=?WhiteTexture@GraphicsDevice@LamaPon@@AEBAPEAUID3D11ShaderResourceView@@XZ

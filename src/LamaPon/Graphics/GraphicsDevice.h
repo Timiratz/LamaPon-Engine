@@ -515,9 +515,6 @@ namespace LamaPon
             std::uint32_t depth,
             std::span<const std::uint16_t> coefficients)
                 const noexcept;
-        // クラスタライトカリング（Forward+）。初回アクセス時に
-        // Compute Shaderをコンパイルして作ります。
-        [[nodiscard]] ClusteredLights& Clusters() const;
         [[nodiscard]] LitEffect& Lit() const;
         // スキニングモデル（glTF/FBX）用のLamaPon Lit。
         // カスタムShader未指定のモデルはSkinnedLitで描画します。
@@ -527,9 +524,6 @@ namespace LamaPon
         // いない古いプロジェクトを開いた場合など）。
         [[nodiscard]] LitEffect* ShaderErrorPlaceholder(
             const bool skinned) const;
-        // 2D（スプライト／UI／パーティクル）用の同じもの。
-        [[nodiscard]] SpriteEffect*
-            SpriteErrorPlaceholder() const;
         // keywordsはバリアント（#pragma multi_compile）の選択です。
         // 組み合わせごとに別のLitEffectが作られ、それぞれ別々に
         // キャッシュされます。
@@ -765,6 +759,12 @@ namespace LamaPon
         [[nodiscard]] ID3D11ShaderResourceView*
             ResolveD3D11ShaderResourceView(
                 const GraphicsViewHandle& view) const;
+        // API 46のGame Moduleが旧公開名を解決してからAPI不一致を
+        // 案内できるよう、外部callerのないD3D11具象facadeも
+        // 1互換期間だけprivate shimとして残します。
+        [[nodiscard]] ClusteredLights& Clusters() const;
+        [[nodiscard]] SpriteEffect*
+            SpriteErrorPlaceholder() const;
         [[nodiscard]] std::uint64_t BeginD3D11SpritePass(
             const SpritePassDescription& description,
             bool neutralOwner,
