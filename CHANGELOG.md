@@ -40,6 +40,7 @@
 - `Scene` / `GraphicsDevice`の寿命契約変更に伴い、Game Module APIを36へ更新。SDK反映後はゲーム用DLLの再ビルドが必要。
 - Graphics Backend停止前に、AssetManagerの非同期モデル準備とmaterial shaderの暖機を明示的に完了させる。再初期化失敗時もAudioは保持する。
 - モデル準備の新規受付を終了境界で閉じ、進行中のworkerと結果回収をjoinする。再初期化後はAsset root・upload/cache予算・Input action設定を復元する。`AssetManager` / `RuntimeServices`のABI変更に伴い、Game Module APIを37へ更新。
+- Device / ContextやD3D11 resource resolverなどの互換facade実装を`GraphicsDeviceD3D11.cpp`へ分離し、共通の`GraphicsDevice`実装からD3D11 Backend型への直接依存を除去。
 
 ### ファイル名の統一
 
