@@ -61,6 +61,8 @@
 - `Component::OnRender2D`を含む公開描画ABIの変更に伴い、Game Module APIを41へ更新。SDK反映後はゲーム用DLLの再ビルドが必要。
 - 旧D3D11 `SpriteBatch`公開facadeを非公開化し、新規コードの2D描画入口を`SpriteRenderPass`へ統一。旧facadeに依存するAPI 41 Game Moduleが読み込み時に明確なAPI不一致案内へ到達できるよう、旧バイナリシンボルは1互換期間だけprivate shimとして維持。
 - 旧SpriteBatch facadeの公開API変更に伴い、Game Module APIを42へ更新。SDK反映後はゲーム用DLLの再ビルドが必要。
+- 名前付きRenderTextureのraw D3D11 SRV入口を非公開化し、表示resourceの取得を強所有の`GraphicsViewHandle`へ一本化。API 42 Game Module用の旧バイナリシンボルは1互換期間だけprivate shimとして維持。
+- raw RenderTexture view入口の公開API変更に伴い、Game Module APIを43へ更新。SDK反映後はゲーム用DLLの再ビルドが必要。
 
 ### ファイル名の統一
 

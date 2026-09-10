@@ -676,10 +676,6 @@ namespace LamaPon
         [[nodiscard]] GraphicsViewHandle
             RenderTextureViewHandle(
                 const std::string& name) const noexcept;
-        // 表示用SRV（描画完了後のコピー）。未作成ならnullptr。
-        [[nodiscard]] ID3D11ShaderResourceView*
-            RenderTextureView(
-                const std::string& name) const noexcept;
         bool ReleaseRenderTexture(
             const std::string& name);
         // Scene切り替えで作り直すため、まとめて解放します。
@@ -749,6 +745,13 @@ namespace LamaPon
             float maximumX,
             float maximumY);
         void PopUIScissor();
+        // API 42のGame Moduleが旧公開名を解決してからAPI不一致を
+        // 案内できるよう、binary symbolだけを1互換期間残す
+        // private shimです。新規コードはRenderTextureViewHandleを
+        // 使用します。
+        [[nodiscard]] ID3D11ShaderResourceView*
+            RenderTextureView(
+                const std::string& name) const noexcept;
         [[nodiscard]] std::uint64_t BeginD3D11SpritePass(
             const SpritePassDescription& description,
             bool neutralOwner,

@@ -1154,10 +1154,6 @@ int main(const int argumentCount, char** arguments)
         Stage("frame-render-texture");
         const auto renderTextureFrame = renderFrame();
         DumpFrame("render-texture", renderTextureFrame);
-        Require(
-            graphics.RenderTextureView("minimap")
-                != nullptr,
-            "The named render texture must exist after a frame.");
         const auto* minimapTarget =
             graphics.FindRenderTexture("minimap");
         Require(
@@ -1177,12 +1173,13 @@ int main(const int argumentCount, char** arguments)
                 == LamaPon::GraphicsViewKind::ShaderResource,
             "The render texture display handle must be a shader-resource view.");
         auto* const minimapRawView =
-            graphics.RenderTextureView("minimap");
+            minimapTarget->DisplayShaderResourceView();
         Require(
-            graphics.ResolveD3D11ShaderResourceView(
-                minimapViewHandle)
-                == minimapRawView,
-            "The neutral display handle must resolve to the legacy D3D11 view.");
+            minimapRawView != nullptr
+                && graphics.TryResolveD3D11ShaderResourceView(
+                    minimapViewHandle)
+                    == minimapRawView,
+            "The neutral display handle must resolve to the target display view.");
         auto& sameSizeMinimap =
             graphics.AcquireRenderTexture(
                 "minimap",
@@ -1210,8 +1207,7 @@ int main(const int argumentCount, char** arguments)
                 && graphics.FindRenderTexture("minimap")
                     == &sameSizeMinimap
                 && !sameSizeMinimap.IsValid()
-                && !graphics.RenderTextureViewHandle("minimap")
-                && graphics.RenderTextureView("minimap") == nullptr,
+                && !graphics.RenderTextureViewHandle("minimap"),
             "A failed named target resize must preserve the object while "
             "invalidating its current views.");
         auto& recoveredMinimap =
@@ -1222,13 +1218,14 @@ int main(const int argumentCount, char** arguments)
         const auto recoveredMinimapViewHandle =
             graphics.RenderTextureViewHandle("minimap");
         auto* const recoveredMinimapRawView =
-            graphics.RenderTextureView("minimap");
+            recoveredMinimap.DisplayShaderResourceView();
         Require(
             &recoveredMinimap == &sameSizeMinimap
                 && recoveredMinimap.IsValid()
                 && recoveredMinimapViewHandle
                 && recoveredMinimapViewHandle != minimapViewHandle
-                && graphics.ResolveD3D11ShaderResourceView(
+                && recoveredMinimapRawView != nullptr
+                && graphics.TryResolveD3D11ShaderResourceView(
                     recoveredMinimapViewHandle)
                     == recoveredMinimapRawView,
             "A failed named target resize must recover on the next acquire.");
@@ -1282,7 +1279,7 @@ int main(const int argumentCount, char** arguments)
         const auto resizedMinimapViewHandle =
             graphics.RenderTextureViewHandle("minimap");
         auto* const resizedMinimapRawView =
-            graphics.RenderTextureView("minimap");
+            sameSizeMinimap.DisplayShaderResourceView();
         Require(
             sameSizeMinimap.Width() == ResizedRenderTextureSize
                 && sameSizeMinimap.Height()
@@ -1290,13 +1287,14 @@ int main(const int argumentCount, char** arguments)
                 && resizedMinimapViewHandle
                 && resizedMinimapViewHandle
                     != recoveredMinimapViewHandle
-                && graphics.ResolveD3D11ShaderResourceView(
+                && resizedMinimapRawView != nullptr
+                && graphics.TryResolveD3D11ShaderResourceView(
                     resizedMinimapViewHandle)
                     == resizedMinimapRawView,
             "Resizing a named target directly must refresh its display handle.");
         Require(
             graphics.ReleaseRenderTexture("minimap")
-                && graphics.RenderTextureView("minimap")
+                && graphics.FindRenderTexture("minimap")
                     == nullptr
                 && !graphics.RenderTextureViewHandle(
                     "minimap"),
@@ -1304,12 +1302,12 @@ int main(const int argumentCount, char** arguments)
         Require(
             minimapViewHandle.Kind()
                     == LamaPon::GraphicsViewKind::ShaderResource
-                && graphics.ResolveD3D11ShaderResourceView(
+                && graphics.TryResolveD3D11ShaderResourceView(
                     minimapViewHandle)
                     == minimapRawView
                 && resizedMinimapViewHandle.Kind()
                     == LamaPon::GraphicsViewKind::ShaderResource
-                && graphics.ResolveD3D11ShaderResourceView(
+                && graphics.TryResolveD3D11ShaderResourceView(
                     resizedMinimapViewHandle)
                     == resizedMinimapRawView,
             "A retained display handle must remain safe after registry release.");
