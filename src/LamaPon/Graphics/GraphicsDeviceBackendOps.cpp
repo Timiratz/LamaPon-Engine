@@ -202,6 +202,18 @@ namespace LamaPon
             offset);
     }
 
+    bool GraphicsDevice::TryBindPixelShaderResources(
+        const std::uint32_t firstSlot,
+        const std::span<const GraphicsViewHandle> resources,
+        const GraphicsViewHandle& fallback) noexcept
+    {
+        return m_backend != nullptr
+            && m_backend->TryBindPixelShaderResources(
+                firstSlot,
+                resources,
+                fallback);
+    }
+
     void GraphicsDevice::EndFrame()
     {
         // Presentより前に流します。デバイスを失う描画があった場合、

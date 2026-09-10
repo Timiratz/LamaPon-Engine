@@ -740,9 +740,6 @@ namespace LamaPon
             m_graphics->Context();
         const auto whiteTextureView =
             m_graphics->WhiteTextureViewHandle();
-        auto* const whiteTexture =
-            m_graphics->TryResolveD3D11ShaderResourceView(
-                whiteTextureView);
         const float blendFactor[]{
             0.0f,
             0.0f,
@@ -780,19 +777,15 @@ namespace LamaPon
             m_auxiliaryTexture
                 ? m_auxiliaryTexture->resources.Acquire()
                 : nullptr;
-        auto* const textureView = textureResources
-            ? m_graphics->TryResolveD3D11ShaderResourceView(
-                *textureResources)
-            : nullptr;
-        auto* const auxiliaryTextureView =
-            auxiliaryTextureResources
-                ? m_graphics->TryResolveD3D11ShaderResourceView(
-                    *auxiliaryTextureResources)
-                : nullptr;
-        m_effect->SetTexture(
-            textureView != nullptr
-                ? textureView
-                : whiteTexture);
+        const auto textureView = textureResources
+            ? textureResources->shaderResourceView
+            : GraphicsViewHandle{};
+        const auto auxiliaryTextureView = auxiliaryTextureResources
+            ? auxiliaryTextureResources->shaderResourceView
+            : GraphicsViewHandle{};
+        // BasicEffectが前回のraw SRVを再bindしないよう毎回明示的に
+        // 外し、全EffectのApply後にneutral handleをbindします。
+        m_effect->SetTexture(nullptr);
         m_effect->Apply(context);
         context->IASetInputLayout(
             m_inputLayout->value.Get());
@@ -806,23 +799,21 @@ namespace LamaPon
                     m_customParameters,
                     &m_shaderGeneration,
                     &m_shaderError);
-            if (customShaderApplied)
-            {
-                ID3D11ShaderResourceView* resources[]{
-                    textureView != nullptr
-                        ? textureView
-                        : whiteTexture,
-                    auxiliaryTextureView != nullptr
-                        ? auxiliaryTextureView
-                        : whiteTexture
-                };
-                context->PSSetShaderResources(
-                    0,
-                    static_cast<UINT>(
-                        std::size(resources)),
-                    resources);
-            }
         }
+
+        const std::array textureViews{
+            textureView,
+            auxiliaryTextureView
+        };
+        const auto boundViews = customShaderApplied
+            ? std::span<const GraphicsViewHandle>{ textureViews }
+            : std::span<const GraphicsViewHandle>{
+                textureViews.data(), 1 };
+        static_cast<void>(
+            m_graphics->TryBindPixelShaderResources(
+                0,
+                boundViews,
+                whiteTextureView));
 
         m_batch->Begin();
         for (const std::size_t particleIndex :
@@ -958,15 +949,12 @@ namespace LamaPon
 
         if (customShaderApplied)
         {
-            ID3D11ShaderResourceView* resources[]{
-                nullptr,
-                nullptr
-            };
-            context->PSSetShaderResources(
-                0,
-                static_cast<UINT>(
-                    std::size(resources)),
-                resources);
+            const std::array<GraphicsViewHandle, 2>
+                emptyViews{};
+            static_cast<void>(
+                m_graphics->TryBindPixelShaderResources(
+                    0,
+                    emptyViews));
         }
 
         context->OMSetBlendState(

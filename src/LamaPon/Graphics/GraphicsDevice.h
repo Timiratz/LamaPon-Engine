@@ -249,6 +249,13 @@ namespace LamaPon
             std::uint32_t slot,
             std::uint32_t stride,
             std::uint32_t offset = 0);
+        // API非依存viewをpixel shaderへbindします。empty / stale /
+        // 異種viewはentryごとにfallbackへ倒し、範囲不正や未初期化では
+        // pipeline stateを変更せずfalseを返します。
+        [[nodiscard]] bool TryBindPixelShaderResources(
+            std::uint32_t firstSlot,
+            std::span<const GraphicsViewHandle> resources,
+            const GraphicsViewHandle& fallback = {}) noexcept;
         // 深度だけを書くパスに切り替えます。レンダラーはライティングと
         // ピクセルシェーダーを省いた描画を行います。
         // 種別を分けているのは、メインビューの深度プリパスだけは

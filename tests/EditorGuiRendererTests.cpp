@@ -206,6 +206,19 @@ namespace
         return result;
     }
 
+    [[nodiscard]] Microsoft::WRL::ComPtr<
+        ID3D11ShaderResourceView> CaptureBoundPixelShaderResource(
+            LamaPon::GraphicsDevice& graphics,
+            const UINT slot)
+    {
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> result;
+        graphics.Context()->PSGetShaderResources(
+            slot,
+            1,
+            result.ReleaseAndGetAddressOf());
+        return result;
+    }
+
     void PublishSolidTexture(
         LamaPon::TextureAsset& asset,
         LamaPon::GraphicsDevice& graphics,
@@ -826,6 +839,28 @@ namespace
             previousWhiteD3D11View != nullptr
                 && graphics.AdditiveBlendPreservingAlpha() != nullptr,
             "DirectX 11 compatibility resources were not created");
+        constexpr UINT PixelShaderResourceTestSlot =
+            D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT - 1;
+        const std::array<LamaPon::GraphicsViewHandle, 1>
+            missingPixelShaderResource{};
+        Require(
+            graphics.TryBindPixelShaderResources(
+                PixelShaderResourceTestSlot,
+                missingPixelShaderResource,
+                previousWhiteView)
+                && CaptureBoundPixelShaderResource(
+                    graphics,
+                    PixelShaderResourceTestSlot).Get()
+                    == previousWhiteD3D11View,
+            "Neutral pixel shader resource fallback was not bound");
+        Require(
+            graphics.TryBindPixelShaderResources(
+                PixelShaderResourceTestSlot,
+                missingPixelShaderResource)
+                && CaptureBoundPixelShaderResource(
+                    graphics,
+                    PixelShaderResourceTestSlot) == nullptr,
+            "An empty neutral pixel shader resource did not unbind its slot");
         const LamaPon::TextureResourceSnapshot
             previousWhiteResources{
                 previousWhiteTexture,
@@ -941,6 +976,65 @@ namespace
         auto* const rebuiltWhiteD3D11View =
             graphics.TryResolveD3D11ShaderResourceView(
                 rebuiltWhiteView);
+        const std::array stalePixelShaderResource{
+            previousWhiteView
+        };
+        Require(
+            graphics.TryBindPixelShaderResources(
+                PixelShaderResourceTestSlot,
+                stalePixelShaderResource,
+                rebuiltWhiteView)
+                && CaptureBoundPixelShaderResource(
+                    graphics,
+                    PixelShaderResourceTestSlot).Get()
+                    == rebuiltWhiteD3D11View,
+            "A stale pixel shader resource did not use the current fallback");
+        Require(
+            graphics.TryBindPixelShaderResources(
+                PixelShaderResourceTestSlot,
+                stalePixelShaderResource,
+                previousWhiteView)
+                && CaptureBoundPixelShaderResource(
+                    graphics,
+                    PixelShaderResourceTestSlot) == nullptr,
+            "Invalid pixel shader resource and fallback did not bind null");
+        Require(
+            graphics.TryBindPixelShaderResources(
+                PixelShaderResourceTestSlot,
+                missingPixelShaderResource,
+                rebuiltWhiteView),
+            "The pixel shader resource baseline could not be restored");
+        const std::array overflowPixelShaderResources{
+            rebuiltWhiteView,
+            rebuiltWhiteView
+        };
+        Require(
+            !graphics.TryBindPixelShaderResources(
+                PixelShaderResourceTestSlot,
+                overflowPixelShaderResources,
+                rebuiltWhiteView)
+                && CaptureBoundPixelShaderResource(
+                    graphics,
+                    PixelShaderResourceTestSlot).Get()
+                    == rebuiltWhiteD3D11View,
+            "An overflowing pixel shader resource range changed pipeline state");
+        Require(
+            graphics.TryBindPixelShaderResources(
+                PixelShaderResourceTestSlot,
+                std::span<const LamaPon::GraphicsViewHandle>{})
+                && CaptureBoundPixelShaderResource(
+                    graphics,
+                    PixelShaderResourceTestSlot).Get()
+                    == rebuiltWhiteD3D11View,
+            "An empty pixel shader resource range was not a no-op");
+        Require(
+            graphics.TryBindPixelShaderResources(
+                PixelShaderResourceTestSlot,
+                missingPixelShaderResource)
+                && CaptureBoundPixelShaderResource(
+                    graphics,
+                    PixelShaderResourceTestSlot) == nullptr,
+            "Neutral pixel shader resource cleanup failed");
         Require(
             graphics.StartupRenderingApi()
                     == LamaPon::RenderingApi::DirectX11

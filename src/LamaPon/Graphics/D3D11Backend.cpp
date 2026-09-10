@@ -1452,6 +1452,84 @@ namespace LamaPon
             &nativeOffset);
     }
 
+    bool D3D11Backend::TryBindPixelShaderResources(
+        const std::uint32_t firstSlot,
+        const std::span<const GraphicsViewHandle> resources,
+        const GraphicsViewHandle& fallback) noexcept
+    {
+        if (!IsInitialized()
+            || m_context == nullptr
+            || m_resourceDomain == nullptr)
+        {
+            return false;
+        }
+
+        constexpr std::size_t MaximumSlots =
+            D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT;
+        const auto first = static_cast<std::size_t>(firstSlot);
+        if (first >= MaximumSlots
+            || resources.size() > MaximumSlots - first)
+        {
+            return false;
+        }
+        if (resources.empty())
+        {
+            return true;
+        }
+
+        std::array<
+            ID3D11ShaderResourceView*,
+            D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT>
+            nativeResources{};
+        ID3D11ShaderResourceView* nativeFallback{};
+        bool fallbackResolved = false;
+        const auto resolveFallback = [&]() noexcept
+        {
+            if (fallbackResolved)
+            {
+                return nativeFallback;
+            }
+            fallbackResolved = true;
+            if (!fallback)
+            {
+                return nativeFallback;
+            }
+            try
+            {
+                nativeFallback = ResolveShaderResourceView(fallback);
+            }
+            catch (...)
+            {
+                nativeFallback = nullptr;
+            }
+            return nativeFallback;
+        };
+
+        for (std::size_t index{}; index < resources.size(); ++index)
+        {
+            if (!resources[index])
+            {
+                nativeResources[index] = resolveFallback();
+                continue;
+            }
+            try
+            {
+                nativeResources[index] =
+                    ResolveShaderResourceView(resources[index]);
+            }
+            catch (...)
+            {
+                nativeResources[index] = resolveFallback();
+            }
+        }
+
+        m_context->PSSetShaderResources(
+            static_cast<UINT>(firstSlot),
+            static_cast<UINT>(resources.size()),
+            nativeResources.data());
+        return true;
+    }
+
     ID3D11ShaderResourceView* D3D11Backend::ResolveShaderResourceView(
         const GraphicsViewHandle& view) const
     {

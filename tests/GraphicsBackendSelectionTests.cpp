@@ -164,6 +164,12 @@ static_assert(noexcept(std::declval<
 static_assert(noexcept(std::declval<
     LamaPon::GraphicsBackend&>()
         .ProfilerBackend()));
+static_assert(noexcept(std::declval<
+    LamaPon::GraphicsBackend&>()
+        .TryBindPixelShaderResources(
+            0,
+            std::span<const LamaPon::GraphicsViewHandle>{},
+            std::declval<const LamaPon::GraphicsViewHandle&>())));
 
 int main()
 {
@@ -380,6 +386,14 @@ int main()
                     0);
             },
             "Binding a vertex buffer requires an initialized backend");
+        const std::array<LamaPon::GraphicsViewHandle, 1>
+            emptyShaderResources{};
+        Require(
+            !backend->TryBindPixelShaderResources(
+                0,
+                emptyShaderResources,
+                {}),
+            "An uninitialized backend accepted pixel shader resources");
 
         RequireThrowsExactly<std::invalid_argument>(
             []
