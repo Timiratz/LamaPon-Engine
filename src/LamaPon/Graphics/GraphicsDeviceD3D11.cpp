@@ -2,6 +2,7 @@
 #include "LamaPon/Graphics/GraphicsDeviceState.h"
 
 #include "LamaPon/Assets/AssetManager.h"
+#include "LamaPon/Graphics/ClusteredLights.h"
 #include "LamaPon/Graphics/D3D11Backend.h"
 #include "LamaPon/Graphics/EnvironmentCache.h"
 #include "LamaPon/Graphics/EnvironmentSettings.h"
@@ -9,6 +10,7 @@
 #include "LamaPon/Graphics/GraphicsRenderServices.h"
 #include "LamaPon/Graphics/RenderTarget.h"
 #include "LamaPon/Graphics/ShaderRenderState.h"
+#include "LamaPon/Graphics/ShadowMap.h"
 
 #include <CommonStates.h>
 #include <SpriteBatch.h>
@@ -190,6 +192,7 @@ namespace LamaPon::Detail
 
     void GraphicsDeviceD3D11Resources::Reset() noexcept
     {
+        ResetHighLevelResources();
         spriteShaderCallback = {};
         spriteBatchOwner = D3D11SpriteBatchOwner::None;
         spriteBatchToken = 0;
@@ -207,6 +210,69 @@ namespace LamaPon::Detail
         spriteBatch.reset();
     }
 
+    void GraphicsDeviceD3D11Resources::QuiesceShaderWork() noexcept
+    {
+        const auto waitForShaders = [](auto& entries) noexcept
+        {
+            for (auto& [path, entry] : entries)
+            {
+                static_cast<void>(path);
+                if (!entry || !entry->warming.valid())
+                {
+                    continue;
+                }
+                try
+                {
+                    entry->warming.wait();
+                }
+                catch (...)
+                {
+                    // ResetHighLevelResources consumes any stored failure.
+                }
+            }
+        };
+        waitForShaders(materialShaders);
+        waitForShaders(skinnedMaterialShaders);
+    }
+
+    void GraphicsDeviceD3D11Resources::
+        ResetHighLevelResources() noexcept
+    {
+        QuiesceShaderWork();
+        // Callbackとpinsはshader cache/effectへの一時参照を持つため、
+        // それらの所有者より先に解放します。
+        spriteShaderCallback = {};
+        spriteViewPins.clear();
+        spriteTexturePins.clear();
+        // QueueはScreenEffect cache内の要素をraw pointerで参照します。
+        queuedScreenEffects.clear();
+        shadowMap.reset();
+        spotShadowMap.reset();
+        pointShadowMap.reset();
+        skinnedMaterialShaders.clear();
+        materialShaders.clear();
+        spriteShaders.clear();
+        screenShaders.clear();
+        computeShaders.clear();
+        litEffect.reset();
+        skinnedLitEffect.reset();
+        errorEffect.reset();
+        skinnedErrorEffect.reset();
+        spriteErrorEffect.reset();
+        errorEffectUnavailable = false;
+        skinnedErrorEffectUnavailable = false;
+        spriteErrorEffectUnavailable = false;
+        litFailure = {};
+        skinnedLitFailure = {};
+        environmentFailure = {};
+        clustersFailure = {};
+        environmentRenderer.reset();
+        clusteredLights.reset();
+        skyPrefilteredSpecular.Reset();
+        skyPrefilteredIrradiance.Reset();
+        skyPrefilteredMaximumMip = 0.0f;
+    }
+
     GraphicsDeviceApiResources::GraphicsDeviceApiResources() = default;
 
     GraphicsDeviceApiResources::~GraphicsDeviceApiResources()
@@ -216,6 +282,10 @@ namespace LamaPon::Detail
 
     void GraphicsDeviceApiResources::Reset() noexcept
     {
+        if (d3d11)
+        {
+            d3d11->ResetHighLevelResources();
+        }
         // serviceはBackendとD3D11 API資源を参照するため先に破棄します。
         renderServices.reset();
         if (d3d11)

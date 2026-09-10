@@ -6,6 +6,7 @@
 #include "LamaPon/Graphics/ClusteredLights.h"
 #include "LamaPon/Graphics/D3D11Backend.h"
 #include "LamaPon/Graphics/EnvironmentRenderer.h"
+#include "LamaPon/Graphics/GraphicsDeviceApiResources.h"
 #include "LamaPon/Graphics/LitEffect.h"
 #include "LamaPon/Graphics/SpriteEffect.h"
 
@@ -72,9 +73,10 @@ namespace LamaPon
     EnvironmentRenderer&
         GraphicsDevice::Environment() const
     {
+        auto& resources = RequireD3D11ApiResources();
         return BuildBuiltIn(
-            m_state->m_environmentRenderer,
-            m_state->m_environmentFailure,
+            resources.environmentRenderer,
+            resources.environmentFailure,
             [this]
             {
                 auto renderer = std::unique_ptr<EnvironmentRenderer>{
@@ -93,7 +95,8 @@ namespace LamaPon
 
     ClusteredLights& GraphicsDevice::Clusters() const
     {
-        if (!m_state->m_clusteredLights)
+        auto& resources = RequireD3D11ApiResources();
+        if (!resources.clusteredLights)
         {
             // カリングCSがプロジェクトに無い場合は、互換性維持のため
             // エンジン同梱のアセットから読み込みます。
@@ -108,8 +111,8 @@ namespace LamaPon
                     / relativePath;
             }
             return BuildBuiltIn(
-                m_state->m_clusteredLights,
-                m_state->m_clustersFailure,
+                resources.clusteredLights,
+                resources.clustersFailure,
                 [this, shaderPath]
                 {
                     return std::make_unique<ClusteredLights>(
@@ -118,14 +121,15 @@ namespace LamaPon
                         shaderPath);
                 });
         }
-        return *m_state->m_clusteredLights;
+        return *resources.clusteredLights;
     }
 
     LitEffect& GraphicsDevice::Lit() const
     {
+        auto& resources = RequireD3D11ApiResources();
         return BuildBuiltIn(
-            m_state->m_litEffect,
-            m_state->m_litFailure,
+            resources.litEffect,
+            resources.litFailure,
             [this]
             {
                 return std::make_unique<LitEffect>(
@@ -139,9 +143,10 @@ namespace LamaPon
 
     LitEffect& GraphicsDevice::SkinnedLit() const
     {
+        auto& resources = RequireD3D11ApiResources();
         return BuildBuiltIn(
-            m_state->m_skinnedLitEffect,
-            m_state->m_skinnedLitFailure,
+            resources.skinnedLitEffect,
+            resources.skinnedLitFailure,
             [this]
             {
                 return std::make_unique<LitEffect>(
@@ -157,11 +162,12 @@ namespace LamaPon
     LitEffect* GraphicsDevice::ShaderErrorPlaceholder(
         const bool skinned) const
     {
+        auto& resources = RequireD3D11ApiResources();
         auto& effect =
-            skinned ? m_state->m_skinnedErrorEffect : m_state->m_errorEffect;
+            skinned ? resources.skinnedErrorEffect : resources.errorEffect;
         auto& unavailable = skinned
-            ? m_state->m_skinnedErrorEffectUnavailable
-            : m_state->m_errorEffectUnavailable;
+            ? resources.skinnedErrorEffectUnavailable
+            : resources.errorEffectUnavailable;
         // 代替シェーダーを設定した回数をFrameStatisticsへ記録します。
         if (effect)
         {
@@ -206,14 +212,15 @@ namespace LamaPon
 
     SpriteEffect* GraphicsDevice::SpriteErrorPlaceholder() const
     {
+        auto& resources = RequireD3D11ApiResources();
         // 3D側と同じく、渡した回数を数えます
         // （FrameStatistics::shaderFallbackDrawsを参照）。
-        if (m_state->m_spriteErrorEffect)
+        if (resources.spriteErrorEffect)
         {
             ++m_state->m_frameStatistics.shaderFallbackDraws;
-            return m_state->m_spriteErrorEffect.get();
+            return resources.spriteErrorEffect.get();
         }
-        if (m_state->m_spriteErrorEffectUnavailable)
+        if (resources.spriteErrorEffectUnavailable)
         {
             return nullptr;
         }
@@ -229,7 +236,7 @@ namespace LamaPon
 
         try
         {
-            m_state->m_spriteErrorEffect =
+            resources.spriteErrorEffect =
                 std::make_unique<SpriteEffect>(
                     Device(),
                     Context(),
@@ -238,10 +245,10 @@ namespace LamaPon
         }
         catch (const std::exception&)
         {
-            m_state->m_spriteErrorEffectUnavailable = true;
+            resources.spriteErrorEffectUnavailable = true;
             return nullptr;
         }
         ++m_state->m_frameStatistics.shaderFallbackDraws;
-        return m_state->m_spriteErrorEffect.get();
+        return resources.spriteErrorEffect.get();
     }
 }

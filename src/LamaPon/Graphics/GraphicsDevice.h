@@ -727,6 +727,7 @@ namespace LamaPon
         friend class ParticleSystemComponent;
         friend class SkeletalModel;
         friend class Detail::GraphicsDeviceD3D11Access;
+        friend struct Detail::GraphicsDeviceD3D11Resources;
         friend class Detail::SpriteRenderPassState;
 
         // API 64以前のGame Moduleが旧public名を解決してAPI不一致案内へ

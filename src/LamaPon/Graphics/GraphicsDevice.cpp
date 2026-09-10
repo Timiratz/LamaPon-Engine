@@ -252,28 +252,10 @@ namespace LamaPon
     {
         // Shader workers borrow AssetManager, so join them while both the
         // AssetManager and graphics backend are still alive.
-        const auto waitForShaders = [](auto& entries) noexcept
+        if (auto* const resources = TryD3D11ApiResources())
         {
-            for (auto& [path, entry] : entries)
-            {
-                static_cast<void>(path);
-                if (!entry || !entry->warming.valid())
-                {
-                    continue;
-                }
-                try
-                {
-                    entry->warming.wait();
-                }
-                catch (...)
-                {
-                    // Resource release continues; clearing the entry below
-                    // consumes any stored compilation failure.
-                }
-            }
-        };
-        waitForShaders(m_state->m_materialShaders);
-        waitForShaders(m_state->m_skinnedMaterialShaders);
+            resources->QuiesceShaderWork();
+        }
 
         if (m_state->m_services)
         {
@@ -297,33 +279,14 @@ namespace LamaPon
             // 描画状態だけを解除し、COM本体は最後まで保持します。
             m_state->m_backend->PrepareForResourceRelease();
         }
-        m_state->m_shadowMap.reset();
-        m_state->m_spotShadowMap.reset();
-        m_state->m_pointShadowMap.reset();
+        if (auto* const resources = TryD3D11ApiResources())
+        {
+            resources->ResetHighLevelResources();
+        }
         m_state->m_instanceBuffer.Reset();
         m_state->m_depthPass = DepthPassKind::None;
-        m_state->m_skinnedMaterialShaders.clear();
-        m_state->m_materialShaders.clear();
-        m_state->m_spriteShaders.clear();
-        m_state->m_screenShaders.clear();
-        m_state->m_computeShaders.clear();
-        m_state->m_queuedScreenEffects.clear();
-        m_state->m_litEffect.reset();
-        m_state->m_skinnedLitEffect.reset();
-        m_state->m_errorEffect.reset();
-        m_state->m_skinnedErrorEffect.reset();
-        m_state->m_spriteErrorEffect.reset();
-        m_state->m_errorEffectUnavailable = false;
-        m_state->m_skinnedErrorEffectUnavailable = false;
-        m_state->m_spriteErrorEffectUnavailable = false;
-        m_state->m_litFailure = {};
-        m_state->m_skinnedLitFailure = {};
-        m_state->m_environmentFailure = {};
-        m_state->m_clustersFailure = {};
         m_state->m_sceneCompositionTarget.reset();
         ClearRenderTextures();
-        m_state->m_environmentRenderer.reset();
-        m_state->m_clusteredLights.reset();
         m_state->m_debugRenderer.reset();
         if (preserveAudio)
         {
@@ -485,13 +448,14 @@ namespace LamaPon
             *m_state->m_backend);
         m_state->m_debugRenderer = std::make_unique<DebugRenderer>(
             m_state->m_backend->CreateDebugDrawingBackend());
-        m_state->m_shadowMap = std::make_unique<ShadowMap>();
-        m_state->m_spotShadowMap = std::make_unique<ShadowMap>();
-        m_state->m_pointShadowMap = std::make_unique<ShadowMap>();
+        auto& d3d11Resources = RequireD3D11ApiResources();
+        d3d11Resources.shadowMap = std::make_unique<ShadowMap>();
+        d3d11Resources.spotShadowMap = std::make_unique<ShadowMap>();
+        d3d11Resources.pointShadowMap = std::make_unique<ShadowMap>();
         if (m_state->m_graphicsSettings.shadowsEnabled)
         {
             m_state->m_backend->InitializeShadowMap(
-                *m_state->m_shadowMap,
+                *d3d11Resources.shadowMap,
                 m_state->m_graphicsSettings.shadowResolution,
                 m_state->m_graphicsSettings.shadowCascadeLimit,
                 false);
@@ -502,13 +466,13 @@ namespace LamaPon
                         / 2u,
                     256u);
             m_state->m_backend->InitializeShadowMap(
-                *m_state->m_spotShadowMap,
+                *d3d11Resources.spotShadowMap,
                 localShadowResolution,
                 static_cast<std::uint32_t>(
                     MaximumSpotShadows),
                 false);
             m_state->m_backend->InitializeShadowMap(
-                *m_state->m_pointShadowMap,
+                *d3d11Resources.pointShadowMap,
                 localShadowResolution,
                 6u,
                 true);
@@ -631,16 +595,17 @@ namespace LamaPon
             m_state->m_lightingState.spotShadowTexture.Reset();
             m_state->m_lightingState.pointShadow.enabled = false;
             m_state->m_lightingState.pointShadow.texture.Reset();
-            m_state->m_shadowMap =
+            auto& d3d11Resources = RequireD3D11ApiResources();
+            d3d11Resources.shadowMap =
                 std::make_unique<ShadowMap>();
-            m_state->m_spotShadowMap =
+            d3d11Resources.spotShadowMap =
                 std::make_unique<ShadowMap>();
-            m_state->m_pointShadowMap =
+            d3d11Resources.pointShadowMap =
                 std::make_unique<ShadowMap>();
             if (m_state->m_graphicsSettings.shadowsEnabled)
             {
                 m_state->m_backend->InitializeShadowMap(
-                    *m_state->m_shadowMap,
+                    *d3d11Resources.shadowMap,
                     m_state->m_graphicsSettings.shadowResolution,
                     m_state->m_graphicsSettings.shadowCascadeLimit,
                     false);
@@ -650,13 +615,13 @@ namespace LamaPon
                             .shadowResolution / 2u,
                         256u);
                 m_state->m_backend->InitializeShadowMap(
-                    *m_state->m_spotShadowMap,
+                    *d3d11Resources.spotShadowMap,
                     localShadowResolution,
                     static_cast<std::uint32_t>(
                         MaximumSpotShadows),
                     false);
                 m_state->m_backend->InitializeShadowMap(
-                    *m_state->m_pointShadowMap,
+                    *d3d11Resources.pointShadowMap,
                     localShadowResolution,
                     6u,
                     true);
@@ -741,35 +706,38 @@ namespace LamaPon
 
     ShadowMap& GraphicsDevice::Shadows() const
     {
-        if (!m_state->m_shadowMap)
+        auto* const resources = TryD3D11ApiResources();
+        if (resources == nullptr || !resources->shadowMap)
         {
             throw std::logic_error(
                 "GraphicsDevice has not been initialized.");
         }
 
-        return *m_state->m_shadowMap;
+        return *resources->shadowMap;
     }
 
     ShadowMap& GraphicsDevice::SpotShadows() const
     {
-        if (!m_state->m_spotShadowMap)
+        auto* const resources = TryD3D11ApiResources();
+        if (resources == nullptr || !resources->spotShadowMap)
         {
             throw std::logic_error(
                 "GraphicsDevice has not been initialized.");
         }
 
-        return *m_state->m_spotShadowMap;
+        return *resources->spotShadowMap;
     }
 
     ShadowMap& GraphicsDevice::PointShadows() const
     {
-        if (!m_state->m_pointShadowMap)
+        auto* const resources = TryD3D11ApiResources();
+        if (resources == nullptr || !resources->pointShadowMap)
         {
             throw std::logic_error(
                 "GraphicsDevice has not been initialized.");
         }
 
-        return *m_state->m_pointShadowMap;
+        return *resources->pointShadowMap;
     }
 
     void GraphicsDevice::CreateWhiteTexture()

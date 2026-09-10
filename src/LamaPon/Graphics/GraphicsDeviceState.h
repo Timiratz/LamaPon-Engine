@@ -22,6 +22,9 @@ namespace LamaPon
 
         // Device / Context / SwapChainとバックバッファ資源の所有者です。
         std::unique_ptr<GraphicsBackend> m_backend;
+        // Shader workerを含むAPI固有資源より長く生存させます。Stateの
+        // 自動破棄でもAssetManagerがworkerより先に消えない宣言順です。
+        std::unique_ptr<RuntimeServices> m_services;
         // SpriteBatchや固定機能state等のAPI固有資源です。
         std::unique_ptr<Detail::GraphicsDeviceApiResources>
             m_apiResources;
@@ -31,13 +34,7 @@ namespace LamaPon
         DepthPassKind m_depthPass{ DepthPassKind::None };
         GpuProfiler m_gpuProfiler;
 
-        // 既存のAssets/Audio/Input APIを保つ高レベル所有者です。
-        std::unique_ptr<RuntimeServices> m_services;
         std::unique_ptr<DebugRenderer> m_debugRenderer;
-        mutable std::unique_ptr<EnvironmentRenderer>
-            m_environmentRenderer;
-        mutable std::unique_ptr<ClusteredLights>
-            m_clusteredLights;
         std::unique_ptr<RenderTarget> m_sceneCompositionTarget;
         DirectX::XMFLOAT4X4 m_sceneProjection{
             1.0f, 0.0f, 0.0f, 0.0f,
@@ -49,50 +46,14 @@ namespace LamaPon
             std::string,
             std::unique_ptr<RenderTarget>>
             m_renderTextures;
-        mutable std::unique_ptr<LitEffect> m_litEffect;
-        mutable std::unique_ptr<LitEffect> m_skinnedLitEffect;
-        mutable std::unique_ptr<LitEffect> m_errorEffect;
-        mutable std::unique_ptr<LitEffect> m_skinnedErrorEffect;
-        mutable std::unique_ptr<SpriteEffect> m_spriteErrorEffect;
-        mutable bool m_errorEffectUnavailable{};
-        mutable bool m_skinnedErrorEffectUnavailable{};
-        mutable bool m_spriteErrorEffectUnavailable{};
-        mutable BuiltInFailure m_litFailure;
-        mutable BuiltInFailure m_skinnedLitFailure;
-        mutable BuiltInFailure m_environmentFailure;
-        mutable BuiltInFailure m_clustersFailure;
-        mutable std::unordered_map<
-            std::filesystem::path,
-            std::unique_ptr<MaterialShaderEntry>>
-            m_materialShaders;
-        mutable std::unordered_map<
-            std::filesystem::path,
-            std::unique_ptr<MaterialShaderEntry>>
-            m_skinnedMaterialShaders;
         mutable std::unordered_map<
             std::filesystem::path,
             ShaderVariantDeclaration>
             m_shaderVariants;
         bool m_asyncShaderCompilation{ true };
         mutable std::uint64_t m_materialShaderGeneration{};
-        mutable std::unordered_map<
-            std::filesystem::path,
-            std::unique_ptr<SpriteShaderEntry>>
-            m_spriteShaders;
         mutable std::uint64_t m_spriteShaderGeneration{};
-        mutable std::unordered_map<
-            std::filesystem::path,
-            std::unique_ptr<ScreenShaderEntry>>
-            m_screenShaders;
         mutable std::uint64_t m_screenShaderGeneration{};
-        std::vector<QueuedScreenEffect> m_queuedScreenEffects;
-        mutable std::unordered_map<
-            std::filesystem::path,
-            std::unique_ptr<ComputeShaderEntry>>
-            m_computeShaders;
-        std::unique_ptr<ShadowMap> m_shadowMap;
-        std::unique_ptr<ShadowMap> m_spotShadowMap;
-        std::unique_ptr<ShadowMap> m_pointShadowMap;
         LightingState m_lightingState;
         GraphicsSettings m_graphicsSettings =
             GraphicsSettingsForPreset(GraphicsQualityPreset::High);

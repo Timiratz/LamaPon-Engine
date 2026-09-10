@@ -932,7 +932,8 @@ if(BUILD_TESTING)
     target_link_libraries(LamaPonEditorGuiRendererTests
         PRIVATE LamaPonEditor DearImGui)
     target_compile_definitions(LamaPonEditorGuiRendererTests PRIVATE
-        LAMAPON_TEST_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets")
+        LAMAPON_TEST_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets"
+        LAMAPON_TEST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
     target_compile_options(LamaPonEditorGuiRendererTests PRIVATE
         $<$<CXX_COMPILER_ID:MSVC>:/W4>
         $<$<CXX_COMPILER_ID:MSVC>:/permissive->

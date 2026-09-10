@@ -9,6 +9,7 @@
 #include "LamaPon/Graphics/EnvironmentSettings.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Graphics/GraphicsDeviceD3D11Access.h"
+#include "LamaPon/Graphics/LitEffect.h"
 #include "LamaPon/Graphics/LitMaterial.h"
 #include "LamaPon/Graphics/RenderTarget.h"
 #include "LamaPon/Graphics/ShadowMap.h"
@@ -20,8 +21,10 @@
 
 #include <Windows.h>
 #include <CommonStates.h>
+#include <DirectXPackedVector.h>
 #include <imgui.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -268,6 +271,66 @@ namespace
             1,
             result.ReleaseAndGetAddressOf());
         return result;
+    }
+
+    [[nodiscard]] std::array<float, 4>
+        CaptureTexturePixel(
+            LamaPon::GraphicsDevice& graphics,
+            ID3D11Texture2D* const texture,
+            const std::uint32_t x,
+            const std::uint32_t y)
+    {
+        Require(texture != nullptr,
+            "A texture readback was requested without a texture");
+        D3D11_TEXTURE2D_DESC description{};
+        texture->GetDesc(&description);
+        Require(
+            description.Format == DXGI_FORMAT_R16G16B16A16_FLOAT
+                && x < description.Width
+                && y < description.Height,
+            "A texture readback used an unsupported format or coordinate");
+
+        description.Usage = D3D11_USAGE_STAGING;
+        description.BindFlags = 0;
+        description.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        description.MiscFlags = 0;
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> staging;
+        Require(
+            SUCCEEDED(D3D11Access::Device(graphics)->CreateTexture2D(
+                &description,
+                nullptr,
+                staging.ReleaseAndGetAddressOf())),
+            "A texture staging resource could not be created");
+        D3D11Access::Context(graphics)->CopyResource(
+            staging.Get(),
+            texture);
+
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        Require(
+            SUCCEEDED(D3D11Access::Context(graphics)->Map(
+                staging.Get(),
+                0,
+                D3D11_MAP_READ,
+                0,
+                &mapped)),
+            "A texture staging resource could not be mapped");
+        const auto* const source =
+            static_cast<const std::uint8_t*>(mapped.pData)
+            + static_cast<std::size_t>(y) * mapped.RowPitch
+            + static_cast<std::size_t>(x) * 8u;
+        const auto* const halves = reinterpret_cast<
+            const DirectX::PackedVector::HALF*>(source);
+        std::array<float, 4> pixel{};
+        std::transform(
+            halves,
+            halves + pixel.size(),
+            pixel.begin(),
+            [](const DirectX::PackedVector::HALF value)
+            {
+                return DirectX::PackedVector::XMConvertHalfToFloat(value);
+            });
+        D3D11Access::Context(graphics)->Unmap(staging.Get(), 0);
+        return pixel;
     }
 
     void PublishSolidTexture(
@@ -535,6 +598,22 @@ namespace
                 "A default opaque GraphicsDevice changed its public state");
             auto* const fileOnlyAssets =
                 &initiallyGuardedGraphics.Assets();
+            const std::filesystem::path uninitializedShaderPath{
+                L"uninitialized-shader.hlsl" };
+            initiallyGuardedGraphics.InvalidateComputeEffectShader(
+                uninitializedShaderPath);
+            initiallyGuardedGraphics.InvalidateScreenEffectShader(
+                uninitializedShaderPath);
+            initiallyGuardedGraphics.InvalidateMaterialShader(
+                uninitializedShaderPath);
+            initiallyGuardedGraphics.InvalidateSpriteShader(
+                uninitializedShaderPath);
+            initiallyGuardedGraphics.InvalidateCustomPixelShader(
+                uninitializedShaderPath);
+            Require(
+                !initiallyGuardedGraphics.IsShaderCompiling(
+                    uninitializedShaderPath),
+                "An uninitialized graphics device reported shader work");
             RequireThrowsExactly<std::logic_error>(
                 [&]
                 {
@@ -885,12 +964,30 @@ namespace
                 Width,
                 Height,
                 LamaPon::RenderingApi::DirectX11);
+            asyncGraphics.Assets().SetAssetRoot(
+                std::filesystem::path{ LAMAPON_TEST_ASSET_DIR });
             const auto modelPath =
                 std::filesystem::path{ LAMAPON_TEST_ASSET_DIR }
                 / L"models/arrow.cmo";
             Require(
                 asyncGraphics.Assets().PrepareModelAsync(modelPath),
                 "Background model preparation did not start");
+            const auto asyncShaderPath =
+                std::filesystem::path{ LAMAPON_TEST_ASSET_DIR }
+                / L"shaders/LamaPonCustomMaterial.hlsl";
+            std::uint64_t asyncShaderGeneration{};
+            std::string asyncShaderError;
+            static_cast<void>(asyncGraphics.MaterialShader(
+                asyncShaderPath,
+                asyncShaderGeneration,
+                asyncShaderError));
+            Require(
+                asyncShaderError.empty()
+                    && asyncShaderGeneration == 0
+                    && asyncGraphics.IsShaderCompiling(asyncShaderPath),
+                asyncShaderError.empty()
+                    ? "Background material shader compilation did not start"
+                    : asyncShaderError.c_str());
             asyncGraphics.Initialize(
                 window.Get(),
                 Width,
@@ -955,6 +1052,8 @@ namespace
             Width,
             Height,
             LamaPon::RenderingApi::DirectX12Experimental);
+        graphics.Assets().SetAssetRoot(
+            std::filesystem::path{ LAMAPON_TEST_ASSET_DIR });
         Require(
             graphics.StartupRenderingApi()
                     == LamaPon::RenderingApi::DirectX12Experimental
@@ -980,6 +1079,236 @@ namespace
             previousWhiteD3D11View != nullptr
                 && D3D11Access::AdditiveBlendPreservingAlpha(graphics) != nullptr,
             "DirectX 11 compatibility resources were not created");
+
+        // Device世代へ属する遅延D3D11資源をすべて作ってから同じ
+        // GraphicsDeviceを再初期化し、cacheと一時queueが残らないことを
+        // 確認します。設定とgeneration counterはCPU側の継続状態です。
+        graphics.SetAsyncShaderCompilationEnabled(false);
+        const auto materialShaderPath =
+            std::filesystem::path{ LAMAPON_TEST_ASSET_DIR }
+            / L"shaders/LamaPonCustomMaterial.hlsl";
+        const auto spriteShaderPath =
+            std::filesystem::path{ LAMAPON_TEST_ASSET_DIR }
+            / L"shaders/LamaPonSpriteMask.hlsl";
+        const auto screenShaderPath =
+            std::filesystem::path{ LAMAPON_TEST_FIXTURE_DIR }
+            / L"bright-dot.hlsl";
+        const std::array<DirectX::XMFLOAT4, 8>
+            shaderParameters{};
+        std::uint64_t previousMaterialShaderGeneration{};
+        std::string shaderError;
+        static_cast<void>(graphics.MaterialShader(
+            materialShaderPath,
+            previousMaterialShaderGeneration,
+            shaderError));
+        Require(
+            previousMaterialShaderGeneration != 0
+                && shaderError.empty(),
+            "The pre-reinitialization material shader was not cached");
+        std::uint64_t previousSkinnedMaterialShaderGeneration{};
+        shaderError.clear();
+        auto* const previousSkinnedMaterialShader =
+            graphics.SkinnedMaterialShader(
+                materialShaderPath,
+                previousSkinnedMaterialShaderGeneration,
+                shaderError);
+        Require(
+            previousSkinnedMaterialShader != nullptr
+                && previousSkinnedMaterialShader->IsSkinned()
+                && previousSkinnedMaterialShaderGeneration != 0
+                && shaderError.empty(),
+            "The pre-reinitialization skinned material shader was not cached");
+        previousSkinnedMaterialShader->Apply(
+            D3D11Access::Context(graphics));
+        Microsoft::WRL::ComPtr<ID3D11PixelShader>
+            previousSkinnedMaterialPixelShader;
+        D3D11Access::Context(graphics)->PSGetShader(
+            previousSkinnedMaterialPixelShader.ReleaseAndGetAddressOf(),
+            nullptr,
+            nullptr);
+        Microsoft::WRL::ComPtr<ID3D11Device>
+            previousSkinnedMaterialShaderDevice;
+        if (previousSkinnedMaterialPixelShader)
+        {
+            previousSkinnedMaterialPixelShader->GetDevice(
+                previousSkinnedMaterialShaderDevice.ReleaseAndGetAddressOf());
+        }
+        Require(
+            previousSkinnedMaterialShaderDevice.Get()
+                == previousDevice.Get(),
+            "The skinned material shader did not use the old device");
+        graphics.Lit().Apply(D3D11Access::Context(graphics));
+        Microsoft::WRL::ComPtr<ID3D11PixelShader>
+            previousLitPixelShader;
+        D3D11Access::Context(graphics)->PSGetShader(
+            previousLitPixelShader.ReleaseAndGetAddressOf(),
+            nullptr,
+            nullptr);
+        Microsoft::WRL::ComPtr<ID3D11Device>
+            previousLitShaderDevice;
+        if (previousLitPixelShader)
+        {
+            previousLitPixelShader->GetDevice(
+                previousLitShaderDevice.ReleaseAndGetAddressOf());
+        }
+        graphics.SkinnedLit().Apply(D3D11Access::Context(graphics));
+        Microsoft::WRL::ComPtr<ID3D11PixelShader>
+            previousSkinnedLitPixelShader;
+        D3D11Access::Context(graphics)->PSGetShader(
+            previousSkinnedLitPixelShader.ReleaseAndGetAddressOf(),
+            nullptr,
+            nullptr);
+        Microsoft::WRL::ComPtr<ID3D11Device>
+            previousSkinnedLitShaderDevice;
+        if (previousSkinnedLitPixelShader)
+        {
+            previousSkinnedLitPixelShader->GetDevice(
+                previousSkinnedLitShaderDevice.ReleaseAndGetAddressOf());
+        }
+
+        std::uint64_t previousSpriteShaderGeneration{};
+        shaderError.clear();
+        Require(
+            graphics.ApplyCustomPixelShader(
+                spriteShaderPath,
+                shaderParameters,
+                &previousSpriteShaderGeneration,
+                &shaderError)
+                && previousSpriteShaderGeneration != 0
+                && shaderError.empty(),
+            "The pre-reinitialization sprite shader was not cached");
+        LamaPon::ScreenEffectRequest queuedScreenEffect;
+        queuedScreenEffect.shader = screenShaderPath;
+        queuedScreenEffect.customParameters[0] = {
+            0.05f, 6.0f, 0.0f, 0.0f };
+        std::uint64_t previousScreenShaderGeneration{};
+        shaderError.clear();
+        Require(
+            graphics.QueueScreenEffect(
+                queuedScreenEffect,
+                &previousScreenShaderGeneration,
+                &shaderError)
+                && previousScreenShaderGeneration != 0
+                && shaderError.empty(),
+            "The pre-reinitialization screen shader was not queued");
+
+        LamaPon::ComputeEffectRequest computeEffect;
+        computeEffect.shader =
+            std::filesystem::path{ LAMAPON_TEST_FIXTURE_DIR }
+            / L"compute-probe.hlsl";
+        computeEffect.outputTexture = "api66ComputeProbe";
+        computeEffect.outputWidth = 16;
+        computeEffect.outputHeight = 16;
+        computeEffect.customParameters[0] = {
+            0.75f, 0.0f, 0.0f, 0.0f };
+        std::string computeError;
+        Require(
+            graphics.DispatchComputeEffect(
+                computeEffect,
+                &computeError),
+            ("The pre-reinitialization compute shader did not run: "
+                + computeError).c_str());
+        const auto* const previousComputeTarget =
+            graphics.FindRenderTexture(computeEffect.outputTexture);
+        const auto previousComputeView = previousComputeTarget != nullptr
+            ? previousComputeTarget->DisplayViewHandle()
+            : LamaPon::GraphicsViewHandle{};
+        Require(
+            previousComputeView
+                && graphics.IsGraphicsViewCurrent(previousComputeView),
+            "The compute output was not created on the old device");
+        const auto previousComputePixel = CaptureTexturePixel(
+            graphics,
+            previousComputeTarget->DisplayTexture(),
+            2,
+            8);
+        Require(
+            std::abs(previousComputePixel[0] - 0.75f) <= 0.02f
+                && previousComputePixel[1] <= 0.02f
+                && previousComputePixel[2] <= 0.02f,
+            "The compute shader did not write through the old context");
+
+        const auto previousShadowView =
+            graphics.Shadows().ViewHandle();
+        const auto previousSpotShadowView =
+            graphics.SpotShadows().ViewHandle();
+        const auto previousPointShadowView =
+            graphics.PointShadows().ViewHandle();
+        LamaPon::LightingState previousClusteredLighting;
+        previousClusteredLighting.clusteredLights.push_back({
+            { 0.0f, 0.0f, 2.0f, 10.0f },
+            { 1.0f, 1.0f, 1.0f, 1.0f },
+            {},
+            {}
+        });
+        const auto identityMatrix = DirectX::XMMatrixIdentity();
+        const auto projectionMatrix = DirectX::XMMatrixPerspectiveFovRH(
+            DirectX::XM_PIDIV4,
+            static_cast<float>(Width) / static_cast<float>(Height),
+            0.1f,
+            100.0f);
+        graphics.UpdateClusteredLights(
+            previousClusteredLighting,
+            identityMatrix,
+            projectionMatrix,
+            Width,
+            Height);
+        const std::array previousClusteredViews{
+            previousClusteredLighting.clustered.lights,
+            previousClusteredLighting.clustered.lightIndices,
+            previousClusteredLighting.clustered.clusterCounts
+        };
+        Require(
+            previousLitShaderDevice.Get() == previousDevice.Get()
+                && previousSkinnedLitShaderDevice.Get()
+                    == previousDevice.Get(),
+            "A built-in Lit effect did not use the old device");
+        Require(
+            previousShadowView
+                && previousSpotShadowView
+                && previousPointShadowView
+                && graphics.IsGraphicsViewCurrent(previousShadowView)
+                && graphics.IsGraphicsViewCurrent(previousSpotShadowView)
+                && graphics.IsGraphicsViewCurrent(previousPointShadowView),
+            "The shadow maps were not created on the old device");
+        Require(
+            std::ranges::all_of(
+                previousClusteredViews,
+                [&graphics](const auto& view)
+                {
+                    return graphics.IsGraphicsViewCurrent(view);
+                }),
+            "Clustered-light views were not created on the old device");
+
+        constexpr float resourceClearColor[]{
+            0.0f, 0.0f, 0.0f, 1.0f };
+        LamaPon::SkySettings enabledSkySettings;
+        enabledSkySettings.enabled = true;
+        D3D11Access::Context(graphics)->PSSetShader(
+            nullptr,
+            nullptr,
+            0);
+        graphics.DrawSky(
+            identityMatrix,
+            projectionMatrix,
+            enabledSkySettings);
+        Microsoft::WRL::ComPtr<ID3D11PixelShader>
+            previousSkyPixelShader;
+        D3D11Access::Context(graphics)->PSGetShader(
+            previousSkyPixelShader.ReleaseAndGetAddressOf(),
+            nullptr,
+            nullptr);
+        Microsoft::WRL::ComPtr<ID3D11Device>
+            previousSkyShaderDevice;
+        if (previousSkyPixelShader)
+        {
+            previousSkyPixelShader->GetDevice(
+                previousSkyShaderDevice.ReleaseAndGetAddressOf());
+        }
+        Require(
+            previousSkyShaderDevice.Get() == previousDevice.Get(),
+            "The pre-reinitialization environment used another device");
+
         constexpr UINT PixelShaderResourceTestSlot =
             D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT - 1;
         const std::array<LamaPon::GraphicsViewHandle, 1>
@@ -1107,6 +1436,14 @@ namespace
                 "Rejected reinitialization changed the active graphics state");
         }
 
+        previousLitPixelShader.Reset();
+        previousLitShaderDevice.Reset();
+        previousSkinnedLitPixelShader.Reset();
+        previousSkinnedLitShaderDevice.Reset();
+        previousSkinnedMaterialPixelShader.Reset();
+        previousSkinnedMaterialShaderDevice.Reset();
+        previousSkyPixelShader.Reset();
+        previousSkyShaderDevice.Reset();
         graphics.Initialize(
             window.Get(),
             Width,
@@ -1117,6 +1454,273 @@ namespace
         auto* const rebuiltWhiteD3D11View =
             D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                 rebuiltWhiteView);
+
+        const auto rebuiltShadowView =
+            graphics.Shadows().ViewHandle();
+        const auto rebuiltSpotShadowView =
+            graphics.SpotShadows().ViewHandle();
+        const auto rebuiltPointShadowView =
+            graphics.PointShadows().ViewHandle();
+        LamaPon::LightingState rebuiltClusteredLighting;
+        rebuiltClusteredLighting.clusteredLights.push_back({
+            { 0.0f, 0.0f, 2.0f, 10.0f },
+            { 1.0f, 1.0f, 1.0f, 1.0f },
+            {},
+            {}
+        });
+        graphics.UpdateClusteredLights(
+            rebuiltClusteredLighting,
+            identityMatrix,
+            projectionMatrix,
+            Width,
+            Height);
+        const std::array rebuiltClusteredViews{
+            rebuiltClusteredLighting.clustered.lights,
+            rebuiltClusteredLighting.clustered.lightIndices,
+            rebuiltClusteredLighting.clustered.clusterCounts
+        };
+        Require(
+            !graphics.IsAsyncShaderCompilationEnabled()
+                && rebuiltShadowView
+                && rebuiltSpotShadowView
+                && rebuiltPointShadowView
+                && rebuiltShadowView != previousShadowView
+                && rebuiltSpotShadowView != previousSpotShadowView
+                && rebuiltPointShadowView != previousPointShadowView
+                && !graphics.IsGraphicsViewCurrent(previousShadowView)
+                && !graphics.IsGraphicsViewCurrent(previousSpotShadowView)
+                && !graphics.IsGraphicsViewCurrent(previousPointShadowView)
+                && graphics.IsGraphicsViewCurrent(rebuiltShadowView)
+                && graphics.IsGraphicsViewCurrent(rebuiltSpotShadowView)
+                && graphics.IsGraphicsViewCurrent(rebuiltPointShadowView)
+                && std::ranges::all_of(
+                    rebuiltClusteredViews,
+                    [&graphics](const auto& view)
+                    {
+                        return graphics.IsGraphicsViewCurrent(view);
+                    })
+                && !graphics.IsGraphicsViewCurrent(
+                    previousClusteredViews[0])
+                && !graphics.IsGraphicsViewCurrent(
+                    previousClusteredViews[1])
+                && !graphics.IsGraphicsViewCurrent(
+                    previousClusteredViews[2])
+                && !graphics.IsGraphicsViewCurrent(previousComputeView)
+                && graphics.FindRenderTexture(
+                    computeEffect.outputTexture) == nullptr,
+            "Reinitialization retained D3D11 shadow, cluster, or compute resources");
+
+        graphics.Lit().Apply(D3D11Access::Context(graphics));
+        Microsoft::WRL::ComPtr<ID3D11PixelShader>
+            rebuiltLitPixelShader;
+        D3D11Access::Context(graphics)->PSGetShader(
+            rebuiltLitPixelShader.ReleaseAndGetAddressOf(),
+            nullptr,
+            nullptr);
+        Microsoft::WRL::ComPtr<ID3D11Device>
+            rebuiltLitShaderDevice;
+        if (rebuiltLitPixelShader)
+        {
+            rebuiltLitPixelShader->GetDevice(
+                rebuiltLitShaderDevice.ReleaseAndGetAddressOf());
+        }
+        graphics.SkinnedLit().Apply(D3D11Access::Context(graphics));
+        Microsoft::WRL::ComPtr<ID3D11PixelShader>
+            rebuiltSkinnedLitPixelShader;
+        D3D11Access::Context(graphics)->PSGetShader(
+            rebuiltSkinnedLitPixelShader.ReleaseAndGetAddressOf(),
+            nullptr,
+            nullptr);
+        Microsoft::WRL::ComPtr<ID3D11Device>
+            rebuiltSkinnedLitShaderDevice;
+        if (rebuiltSkinnedLitPixelShader)
+        {
+            rebuiltSkinnedLitPixelShader->GetDevice(
+                rebuiltSkinnedLitShaderDevice.ReleaseAndGetAddressOf());
+        }
+        graphics.BeginFrame(resourceClearColor);
+        D3D11Access::Context(graphics)->PSSetShader(
+            nullptr,
+            nullptr,
+            0);
+        graphics.DrawSky(
+            identityMatrix,
+            projectionMatrix,
+            enabledSkySettings);
+        Microsoft::WRL::ComPtr<ID3D11PixelShader>
+            rebuiltSkyPixelShader;
+        D3D11Access::Context(graphics)->PSGetShader(
+            rebuiltSkyPixelShader.ReleaseAndGetAddressOf(),
+            nullptr,
+            nullptr);
+        Microsoft::WRL::ComPtr<ID3D11Device>
+            rebuiltSkyShaderDevice;
+        if (rebuiltSkyPixelShader)
+        {
+            rebuiltSkyPixelShader->GetDevice(
+                rebuiltSkyShaderDevice.ReleaseAndGetAddressOf());
+        }
+        graphics.EndFrame();
+        Require(
+            rebuiltLitShaderDevice.Get() == D3D11Access::Device(graphics)
+                && rebuiltLitShaderDevice.Get() != previousDevice.Get()
+                && rebuiltSkinnedLitShaderDevice.Get()
+                    == D3D11Access::Device(graphics)
+                && rebuiltSkinnedLitShaderDevice.Get()
+                    != previousDevice.Get()
+                && rebuiltSkyShaderDevice.Get() == D3D11Access::Device(graphics)
+                && rebuiltSkyShaderDevice.Get() != previousDevice.Get(),
+            "Reinitialized built-in effects retained the old device");
+
+        // 旧queueは旧ScreenEffectへのraw pointerを持っていました。
+        // 新しいeffectを作る前にpost processを通し、queueがcacheより
+        // 先に空になっていることを描画経路でも確認します。
+        graphics.BeginFrame(resourceClearColor);
+        graphics.BeginSceneComposition(resourceClearColor);
+        graphics.EndSceneComposition(
+            LamaPon::BloomSettings{},
+            LamaPon::ColorGradingSettings{});
+        std::uint32_t emptyQueueWidth{};
+        std::uint32_t emptyQueueHeight{};
+        const auto emptyQueuePixels = graphics.CaptureBackBuffer(
+            emptyQueueWidth,
+            emptyQueueHeight);
+        graphics.EndFrame();
+        Require(
+            emptyQueueWidth == Width && emptyQueueHeight == Height,
+            "The empty post-process queue changed the output size");
+        RequirePixelNear(
+            emptyQueuePixels,
+            Width / 2u,
+            Height / 2u,
+            { 0u, 0u, 0u },
+            "A queued screen effect survived graphics reinitialization");
+
+        std::uint64_t rebuiltMaterialShaderGeneration{};
+        shaderError.clear();
+        static_cast<void>(graphics.MaterialShader(
+            materialShaderPath,
+            rebuiltMaterialShaderGeneration,
+            shaderError));
+        Require(
+            rebuiltMaterialShaderGeneration
+                    > previousMaterialShaderGeneration
+                && shaderError.empty(),
+            "The material shader cache did not rebuild monotonically");
+        std::uint64_t rebuiltSkinnedMaterialShaderGeneration{};
+        shaderError.clear();
+        auto* const rebuiltSkinnedMaterialShader =
+            graphics.SkinnedMaterialShader(
+                materialShaderPath,
+                rebuiltSkinnedMaterialShaderGeneration,
+                shaderError);
+        Require(
+            rebuiltSkinnedMaterialShader != nullptr
+                && rebuiltSkinnedMaterialShader->IsSkinned()
+                && rebuiltSkinnedMaterialShaderGeneration
+                    > previousSkinnedMaterialShaderGeneration
+                && shaderError.empty(),
+            "The skinned material shader cache did not rebuild monotonically");
+        rebuiltSkinnedMaterialShader->Apply(
+            D3D11Access::Context(graphics));
+        Microsoft::WRL::ComPtr<ID3D11PixelShader>
+            rebuiltSkinnedMaterialPixelShader;
+        D3D11Access::Context(graphics)->PSGetShader(
+            rebuiltSkinnedMaterialPixelShader.ReleaseAndGetAddressOf(),
+            nullptr,
+            nullptr);
+        Microsoft::WRL::ComPtr<ID3D11Device>
+            rebuiltSkinnedMaterialShaderDevice;
+        if (rebuiltSkinnedMaterialPixelShader)
+        {
+            rebuiltSkinnedMaterialPixelShader->GetDevice(
+                rebuiltSkinnedMaterialShaderDevice.ReleaseAndGetAddressOf());
+        }
+        Require(
+            rebuiltSkinnedMaterialShaderDevice.Get()
+                    == D3D11Access::Device(graphics)
+                && rebuiltSkinnedMaterialShaderDevice.Get()
+                    != previousDevice.Get(),
+            "The rebuilt skinned material shader retained the old device");
+
+        computeError.clear();
+        Require(
+            graphics.DispatchComputeEffect(
+                computeEffect,
+                &computeError),
+            ("The rebuilt compute shader did not run: "
+                + computeError).c_str());
+        const auto* const rebuiltComputeTarget =
+            graphics.FindRenderTexture(computeEffect.outputTexture);
+        const auto rebuiltComputeView = rebuiltComputeTarget != nullptr
+            ? rebuiltComputeTarget->DisplayViewHandle()
+            : LamaPon::GraphicsViewHandle{};
+        Require(
+            rebuiltComputeView
+                && rebuiltComputeView != previousComputeView
+                && graphics.IsGraphicsViewCurrent(rebuiltComputeView),
+            "The compute shader cache did not rebuild on the current device");
+        const auto rebuiltComputePixel = CaptureTexturePixel(
+            graphics,
+            rebuiltComputeTarget->DisplayTexture(),
+            2,
+            8);
+        Require(
+            std::abs(rebuiltComputePixel[0] - 0.75f) <= 0.02f
+                && rebuiltComputePixel[1] <= 0.02f
+                && rebuiltComputePixel[2] <= 0.02f,
+            "The compute shader did not write through the current context");
+        std::uint64_t rebuiltSpriteShaderGeneration{};
+        shaderError.clear();
+        Require(
+            graphics.ApplyCustomPixelShader(
+                spriteShaderPath,
+                shaderParameters,
+                &rebuiltSpriteShaderGeneration,
+                &shaderError)
+                && rebuiltSpriteShaderGeneration
+                    > previousSpriteShaderGeneration
+                && shaderError.empty(),
+            "The sprite shader cache did not rebuild monotonically");
+        std::uint64_t rebuiltScreenShaderGeneration{};
+        shaderError.clear();
+        Require(
+            graphics.QueueScreenEffect(
+                queuedScreenEffect,
+                &rebuiltScreenShaderGeneration,
+                &shaderError)
+                && rebuiltScreenShaderGeneration
+                    > previousScreenShaderGeneration
+                && shaderError.empty(),
+            "The screen shader cache did not rebuild monotonically");
+        graphics.BeginFrame(resourceClearColor);
+        graphics.BeginSceneComposition(resourceClearColor);
+        graphics.EndSceneComposition(
+            LamaPon::BloomSettings{},
+            LamaPon::ColorGradingSettings{});
+        std::uint32_t rebuiltScreenWidth{};
+        std::uint32_t rebuiltScreenHeight{};
+        const auto rebuiltScreenPixels = graphics.CaptureBackBuffer(
+            rebuiltScreenWidth,
+            rebuiltScreenHeight);
+        graphics.EndFrame();
+        const auto rebuiltScreenCenter =
+            (static_cast<std::size_t>(Height / 2u) * Width
+                + Width / 2u) * 4u;
+        Require(
+            rebuiltScreenWidth == Width
+                && rebuiltScreenHeight == Height
+                && rebuiltScreenCenter + 2u
+                    < rebuiltScreenPixels.size()
+                && (static_cast<unsigned int>(
+                        rebuiltScreenPixels[rebuiltScreenCenter])
+                    + static_cast<unsigned int>(
+                        rebuiltScreenPixels[rebuiltScreenCenter + 1u])
+                    + static_cast<unsigned int>(
+                        rebuiltScreenPixels[rebuiltScreenCenter + 2u]))
+                    > 300u,
+            "The rebuilt screen shader cache did not render");
+
         const std::array stalePixelShaderResource{
             previousWhiteView
         };

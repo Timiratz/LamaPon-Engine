@@ -158,7 +158,7 @@ namespace LamaPon
 
         const auto absolutePath = Assets().ResolvePath(
             description.pixelShader).lexically_normal();
-        auto& entry = m_state->m_spriteShaders[absolutePath];
+        auto& entry = RequireD3D11ApiResources().spriteShaders[absolutePath];
         if (!entry)
         {
             entry = std::make_unique<SpriteShaderEntry>();
@@ -296,7 +296,7 @@ namespace LamaPon
 
         const auto absolutePath =
             Assets().ResolvePath(shaderPath).lexically_normal();
-        auto& entry = m_state->m_spriteShaders[absolutePath];
+        auto& entry = RequireD3D11ApiResources().spriteShaders[absolutePath];
         if (!entry)
         {
             entry = std::make_unique<SpriteShaderEntry>();
@@ -410,7 +410,7 @@ namespace LamaPon
     {
         // 対象地点にエフェクトが無い場合は、深度変換係数の計算を省略します。
         if (std::ranges::none_of(
-                m_state->m_queuedScreenEffects,
+                RequireD3D11ApiResources().queuedScreenEffects,
                 [point](const QueuedScreenEffect& queued)
                 {
                     return queued.point == point;
@@ -446,7 +446,7 @@ namespace LamaPon
         const auto whiteTextureView = WhiteTextureViewHandle();
         auto* const whiteTexture =
             TryResolveD3D11ShaderResourceView(whiteTextureView);
-        for (const auto& queued : m_state->m_queuedScreenEffects)
+        for (const auto& queued : RequireD3D11ApiResources().queuedScreenEffects)
         {
             if (queued.effect == nullptr
                 || queued.point != point)
@@ -486,7 +486,7 @@ namespace LamaPon
         // 現在の地点で適用したエフェクトだけを取り除きます。同じフレームの
         // 後続地点に登録されたエフェクトはキューへ残します。
         std::erase_if(
-            m_state->m_queuedScreenEffects,
+            RequireD3D11ApiResources().queuedScreenEffects,
             [point](const QueuedScreenEffect& queued)
             {
                 return queued.point == point;
@@ -514,7 +514,7 @@ namespace LamaPon
         const auto absolutePath =
             Assets().ResolvePath(request.shader)
                 .lexically_normal();
-        auto& entry = m_state->m_screenShaders[absolutePath];
+        auto& entry = RequireD3D11ApiResources().screenShaders[absolutePath];
         if (!entry)
         {
             entry = std::make_unique<ScreenShaderEntry>();
@@ -611,7 +611,7 @@ namespace LamaPon
                         request.auxiliaryTextures[index]);
             }
         }
-        m_state->m_queuedScreenEffects.emplace_back(
+        RequireD3D11ApiResources().queuedScreenEffects.emplace_back(
             std::move(queued));
         return true;
     }
@@ -642,7 +642,7 @@ namespace LamaPon
         const auto absolutePath =
             Assets().ResolvePath(request.shader)
                 .lexically_normal();
-        auto& entry = m_state->m_computeShaders[absolutePath];
+        auto& entry = RequireD3D11ApiResources().computeShaders[absolutePath];
         if (!entry)
         {
             entry = std::make_unique<ComputeShaderEntry>();
@@ -783,16 +783,16 @@ namespace LamaPon
     void GraphicsDevice::InvalidateComputeEffectShader(
         const std::filesystem::path& shaderPath) const
     {
-        if (shaderPath.empty() || !TryAssets())
+        auto* const resources = TryD3D11ApiResources();
+        if (shaderPath.empty() || !TryAssets() || resources == nullptr)
         {
             return;
         }
         const auto absolutePath =
             Assets().ResolvePath(shaderPath)
                 .lexically_normal();
-        const auto found =
-            m_state->m_computeShaders.find(absolutePath);
-        if (found != m_state->m_computeShaders.end()
+        const auto found = resources->computeShaders.find(absolutePath);
+        if (found != resources->computeShaders.end()
             && found->second)
         {
             found->second->forceReload = true;
@@ -802,16 +802,16 @@ namespace LamaPon
     void GraphicsDevice::InvalidateScreenEffectShader(
         const std::filesystem::path& shaderPath) const
     {
-        if (shaderPath.empty() || !TryAssets())
+        auto* const resources = TryD3D11ApiResources();
+        if (shaderPath.empty() || !TryAssets() || resources == nullptr)
         {
             return;
         }
         const auto absolutePath =
             Assets().ResolvePath(shaderPath)
                 .lexically_normal();
-        const auto found =
-            m_state->m_screenShaders.find(absolutePath);
-        if (found != m_state->m_screenShaders.end()
+        const auto found = resources->screenShaders.find(absolutePath);
+        if (found != resources->screenShaders.end()
             && found->second)
         {
             found->second->forceReload = true;
@@ -822,7 +822,8 @@ namespace LamaPon
         const std::filesystem::path& shaderPath,
         const ShaderKeywordSet& keywords) const
     {
-        if (shaderPath.empty())
+        const auto* const resources = TryD3D11ApiResources();
+        if (shaderPath.empty() || resources == nullptr)
         {
             return false;
         }
@@ -839,8 +840,8 @@ namespace LamaPon
                     absolutePath.wstring()
                     + L"?"
                     + Utf8ToWide(variantKey));
-        const auto found = m_state->m_materialShaders.find(cacheKey);
-        return found != m_state->m_materialShaders.end()
+        const auto found = resources->materialShaders.find(cacheKey);
+        return found != resources->materialShaders.end()
             && found->second->pending;
     }
 
@@ -1693,7 +1694,7 @@ namespace LamaPon
                     absolutePath.wstring()
                     + L"?"
                     + Utf8ToWide(variantKey));
-        auto& entry = m_state->m_materialShaders[cacheKey];
+        auto& entry = RequireD3D11ApiResources().materialShaders[cacheKey];
         if (!entry)
         {
             entry = std::make_unique<MaterialShaderEntry>();
@@ -1889,7 +1890,7 @@ namespace LamaPon
                     absolutePath.wstring()
                     + L"?"
                     + Utf8ToWide(variantKey));
-        auto& entry = m_state->m_skinnedMaterialShaders[cacheKey];
+        auto& entry = RequireD3D11ApiResources().skinnedMaterialShaders[cacheKey];
         if (!entry)
         {
             entry = std::make_unique<MaterialShaderEntry>();
@@ -1999,10 +2000,15 @@ namespace LamaPon
         // 宣言そのものも読み直します（multi_compileの行を
         // 足し引きしたときに追従するため）。
         m_state->m_shaderVariants.erase(absolutePath);
+        auto* const resources = TryD3D11ApiResources();
+        if (resources == nullptr)
+        {
+            return;
+        }
         // バリアントごとに別エントリーなので、そのHLSLから作られた
         // ものを全部立て直します（キーは「パス?キーワード」）。
         const auto prefix = absolutePath.wstring();
-        for (auto& [key, value] : m_state->m_materialShaders)
+        for (auto& [key, value] : resources->materialShaders)
         {
             const auto text = key.wstring();
             if (text == prefix
@@ -2013,7 +2019,7 @@ namespace LamaPon
                 value->forceReload = true;
             }
         }
-        for (auto& [key, value] : m_state->m_skinnedMaterialShaders)
+        for (auto& [key, value] : resources->skinnedMaterialShaders)
         {
             const auto text = key.wstring();
             if (text == prefix
@@ -2029,15 +2035,15 @@ namespace LamaPon
     void GraphicsDevice::InvalidateSpriteShader(
         const std::filesystem::path& shaderPath) const
     {
-        if (shaderPath.empty())
+        auto* const resources = TryD3D11ApiResources();
+        if (shaderPath.empty() || resources == nullptr)
         {
             return;
         }
         const auto absolutePath =
             Assets().ResolvePath(shaderPath).lexically_normal();
-        const auto found =
-            m_state->m_spriteShaders.find(absolutePath);
-        if (found != m_state->m_spriteShaders.end())
+        const auto found = resources->spriteShaders.find(absolutePath);
+        if (found != resources->spriteShaders.end())
         {
             found->second->forceReload = true;
         }

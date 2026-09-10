@@ -1,12 +1,15 @@
 #pragma once
 
+#include "LamaPon/Graphics/GraphicsDeviceShaderState.h"
 #include "LamaPon/Graphics/GraphicsResource.h"
 #include <d3d11.h>
 #include <wrl/client.h>
 
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 namespace DirectX
@@ -50,6 +53,54 @@ namespace LamaPon
 
             // 部分初期化の巻き戻しと通常終了の両方から安全に呼べます。
             void Reset() noexcept;
+            // Shader workerはAssetManagerとDeviceを借用します。両方が
+            // 生存している間に明示的に停止します。
+            void QuiesceShaderWork() noexcept;
+            // Device世代に属する高レベルD3D11資源だけを破棄します。
+            // SpriteBatch/CommonStates等の描画serviceはResetが後で破棄します。
+            void ResetHighLevelResources() noexcept;
+
+            mutable std::unique_ptr<EnvironmentRenderer>
+                environmentRenderer;
+            mutable std::unique_ptr<ClusteredLights>
+                clusteredLights;
+            mutable std::unique_ptr<LitEffect> litEffect;
+            mutable std::unique_ptr<LitEffect> skinnedLitEffect;
+            mutable std::unique_ptr<LitEffect> errorEffect;
+            mutable std::unique_ptr<LitEffect> skinnedErrorEffect;
+            mutable std::unique_ptr<SpriteEffect> spriteErrorEffect;
+            mutable bool errorEffectUnavailable{};
+            mutable bool skinnedErrorEffectUnavailable{};
+            mutable bool spriteErrorEffectUnavailable{};
+            mutable GraphicsDevice::BuiltInFailure litFailure;
+            mutable GraphicsDevice::BuiltInFailure skinnedLitFailure;
+            mutable GraphicsDevice::BuiltInFailure environmentFailure;
+            mutable GraphicsDevice::BuiltInFailure clustersFailure;
+            mutable std::unordered_map<
+                std::filesystem::path,
+                std::unique_ptr<GraphicsDevice::MaterialShaderEntry>>
+                materialShaders;
+            mutable std::unordered_map<
+                std::filesystem::path,
+                std::unique_ptr<GraphicsDevice::MaterialShaderEntry>>
+                skinnedMaterialShaders;
+            mutable std::unordered_map<
+                std::filesystem::path,
+                std::unique_ptr<GraphicsDevice::SpriteShaderEntry>>
+                spriteShaders;
+            mutable std::unordered_map<
+                std::filesystem::path,
+                std::unique_ptr<GraphicsDevice::ScreenShaderEntry>>
+                screenShaders;
+            std::vector<GraphicsDevice::QueuedScreenEffect>
+                queuedScreenEffects;
+            mutable std::unordered_map<
+                std::filesystem::path,
+                std::unique_ptr<GraphicsDevice::ComputeShaderEntry>>
+                computeShaders;
+            std::unique_ptr<ShadowMap> shadowMap;
+            std::unique_ptr<ShadowMap> spotShadowMap;
+            std::unique_ptr<ShadowMap> pointShadowMap;
 
             std::unique_ptr<DirectX::SpriteBatch> spriteBatch;
             std::vector<std::shared_ptr<
