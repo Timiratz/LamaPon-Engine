@@ -2,6 +2,7 @@
 
 #include "LamaPon/Graphics/Lighting.h"
 #include "LamaPon/Graphics/EnvironmentSettings.h"
+#include "LamaPon/Graphics/GraphicsDeviceResourceLease.h"
 // VolumetricLightFrameを値で持つため（ポスト処理へ受け渡す情報）。
 #include "LamaPon/Graphics/RenderPipeline.h"
 // ReflectionProbeEnvironmentを値で返すため。
@@ -95,7 +96,7 @@ namespace LamaPon
     class Scene final
     {
     public:
-        explicit Scene(GraphicsDevice& graphics) noexcept;
+        explicit Scene(GraphicsDevice& graphics);
         ~Scene();
 
         Scene(const Scene&) = delete;
@@ -693,6 +694,10 @@ namespace LamaPon
             std::filesystem::path sourcePath);
 
         GraphicsDevice& m_graphics;
+        // SceneManagerのasync workerと全Componentより後に破棄される
+        // （memberの逆順破棄）よう、これらより先に宣言します。
+        GraphicsDeviceResourceLease
+            m_graphicsResourceLease;
         std::unique_ptr<SceneManager>
             m_sceneManager;
         std::vector<std::unique_ptr<GameObject>> m_gameObjects;

@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <stdexcept>
+#include <utility>
 
 namespace
 {
@@ -45,6 +46,9 @@ namespace LamaPon
                 "The DirectX 11 editor GUI renderer requires an ImGui context.");
         }
 
+        // Device / Contextを読む前に取得し、raw pointerの取得と
+        // ImGui初期化の間へBackend transitionが割り込まないようにします。
+        auto resourceLease = graphics.AcquireResourceLease();
         auto* const device = graphics.Device();
         auto* const context = graphics.Context();
         if (device == nullptr || context == nullptr)
@@ -60,6 +64,7 @@ namespace LamaPon
                 "Failed to initialize the DirectX 11 Dear ImGui renderer.");
         }
         m_graphics = &graphics;
+        m_graphicsResourceLease = std::move(resourceLease);
         m_imguiContext = imguiContext;
         m_initialized = true;
     }
@@ -143,6 +148,7 @@ namespace LamaPon
         {
             m_frameTexturePins.clear();
             m_graphics = nullptr;
+            m_graphicsResourceLease.Reset();
             return;
         }
 
@@ -160,5 +166,7 @@ namespace LamaPon
         m_graphics = nullptr;
         m_imguiContext = nullptr;
         m_initialized = false;
+        // ImGui_ImplDX11_Shutdownが内部resourceを解放した後で返します。
+        m_graphicsResourceLease.Reset();
     }
 }

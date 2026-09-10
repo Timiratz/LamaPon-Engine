@@ -6328,6 +6328,20 @@ int RunTest(const std::string_view suite)
                     == "Async transition target",
             "Asynchronous scene cancellation failed.");
 
+        // Sceneのdestructorは、まだ実行中かもしれないworkerへcancelを
+        // 要求してjoinしてからGraphicsDevice resource leaseを返します。
+        // scopeを即座に抜けてもAssetManagerの借用が残らないことを確認します。
+        {
+            LamaPon::Scene shortLivedScene(graphics);
+            Require(
+                shortLivedScene.Scenes().RequestLoadAsync(
+                    transitionPath),
+                "Short-lived asynchronous scene load did not start.");
+        }
+        Require(
+            graphics.Assets().FileExists(transitionPath),
+            "Destroying a loading Scene invalidated AssetManager access.");
+
         // 追加シーンの読み込みと破棄を検証します。
         const auto additivePath =
             outputPath.parent_path()

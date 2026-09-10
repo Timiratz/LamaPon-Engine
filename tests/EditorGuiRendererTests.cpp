@@ -6,6 +6,7 @@
 #include "LamaPon/Graphics/LitMaterial.h"
 #include "LamaPon/Graphics/RenderTarget.h"
 #include "LamaPon/Graphics/ShadowMap.h"
+#include "LamaPon/Scene/Scene.h"
 
 #include <Windows.h>
 #include <SpriteBatch.h>
@@ -21,6 +22,7 @@
 #include <span>
 #include <stdexcept>
 #include <thread>
+#include <type_traits>
 #include <typeinfo>
 #include <vector>
 
@@ -311,6 +313,89 @@ namespace
         HiddenWindow window;
         LamaPon::GraphicsDevice::SetPreferWarpAdapter(true);
 
+        // GPU初期化前でもfile-only AssetManagerとScene async loadは使える
+        // ため、初回Initializeもlive ownerがいれば安全側で拒否します。
+        {
+            LamaPon::GraphicsDevice initiallyGuardedGraphics;
+            auto* const fileOnlyAssets =
+                &initiallyGuardedGraphics.Assets();
+            {
+                LamaPon::Scene initialScene(
+                    initiallyGuardedGraphics);
+                RequireThrowsExactly<std::logic_error>(
+                    [&]
+                    {
+                        initiallyGuardedGraphics.Initialize(
+                            window.Get(),
+                            Width,
+                            Height,
+                            LamaPon::RenderingApi::DirectX11);
+                    },
+                    "Initial graphics setup accepted a live Scene");
+                Require(
+                    !initiallyGuardedGraphics.IsInitialized()
+                        && initiallyGuardedGraphics.TryAssets()
+                            == fileOnlyAssets,
+                    "Rejected initial setup replaced the file-only AssetManager");
+            }
+            auto resourceLease =
+                initiallyGuardedGraphics.AcquireResourceLease();
+            auto movedResourceLease = std::move(resourceLease);
+            Require(
+                !resourceLease && movedResourceLease,
+                "Moving a graphics resource lease changed its ownership count");
+            RequireThrowsExactly<std::logic_error>(
+                [&]
+                {
+                    initiallyGuardedGraphics.Initialize(
+                        window.Get(),
+                        Width,
+                        Height,
+                        LamaPon::RenderingApi::DirectX11);
+                },
+                "A moved graphics resource lease did not block initialization");
+            movedResourceLease.Reset();
+            movedResourceLease.Reset();
+            initiallyGuardedGraphics.Initialize(
+                window.Get(),
+                Width,
+                Height,
+                LamaPon::RenderingApi::DirectX11);
+            Require(
+                initiallyGuardedGraphics.IsInitialized(),
+                "Resetting the final resource lease did not reopen initialization");
+
+            ImGuiContextScope initialRendererContext;
+            auto initialRenderer =
+                LamaPon::CreateEditorGuiRenderer(
+                    initiallyGuardedGraphics.ActiveRenderingApi());
+            initialRenderer->Initialize(
+                initiallyGuardedGraphics);
+            Microsoft::WRL::ComPtr<ID3D11Device>
+                initialRendererDevice =
+                    initiallyGuardedGraphics.Device();
+            RequireThrowsExactly<std::logic_error>(
+                [&]
+                {
+                    initiallyGuardedGraphics.Initialize(
+                        window.Get(),
+                        Width,
+                        Height,
+                        LamaPon::RenderingApi::DirectX11);
+                },
+                "Graphics initialization accepted an active editor renderer");
+            initialRenderer->Shutdown();
+            initiallyGuardedGraphics.Initialize(
+                window.Get(),
+                Width,
+                Height,
+                LamaPon::RenderingApi::DirectX11);
+            Require(
+                initiallyGuardedGraphics.Device()
+                    != initialRendererDevice.Get(),
+                "Editor renderer shutdown did not release its resource lease");
+        }
+
         LamaPon::GraphicsDevice failedGraphics;
         RequireThrows<std::runtime_error>(
             [&]
@@ -393,6 +478,33 @@ namespace
             graphics.TryResolveD3D11ShaderResourceView(
                 incompleteNeutralResources) == nullptr,
             "An incomplete neutral snapshot fell back to its raw D3D11 view");
+
+        // SceneとそのComponentは旧Device世代のAssetManager / Effect等を
+        // 保持します。再起動前提の設定を実行中に適用しようとしても、
+        // 現在の状態を一切破棄する前に拒否されることを確認します。
+        auto* const previousAssets = graphics.TryAssets();
+        {
+            LamaPon::Scene liveScene(graphics);
+            RequireThrowsExactly<std::logic_error>(
+                [&]
+                {
+                    graphics.Initialize(
+                        window.Get(),
+                        Width,
+                        Height,
+                        LamaPon::RenderingApi::DirectX11);
+                },
+                "Graphics reinitialization accepted a live Scene");
+            Require(
+                graphics.IsInitialized()
+                    && graphics.Device() == previousDevice.Get()
+                    && graphics.TryAssets() == previousAssets
+                    && graphics.ResolveD3D11ShaderResourceView(
+                        previousWhiteView)
+                        == graphics.WhiteTexture(),
+                "Rejected reinitialization changed the active graphics state");
+        }
+
         graphics.Initialize(
             window.Get(),
             Width,
@@ -948,15 +1060,6 @@ namespace
         ImGuiContextScope imguiContext;
         auto renderer = LamaPon::CreateEditorGuiRenderer(
             graphics.ActiveRenderingApi());
-        auto modelPreviewRenderer =
-            LamaPon::CreateEditorModelPreviewRenderer(
-                graphics.ActiveRenderingApi(),
-                graphics);
-        Require(
-            modelPreviewRenderer != nullptr
-                && modelPreviewRenderer->Api()
-                    == LamaPon::RenderingApi::DirectX11,
-            "The active API must create the DirectX 11 model preview renderer");
 
         constexpr std::array<std::uint8_t, 4> assetColor{
             224u, 48u, 32u, 255u };
@@ -1140,6 +1243,22 @@ namespace
         renderer->Initialize(graphics);
         Require(renderer->IsInitialized(),
             "DirectX 11 editor GUI renderer initialization failed");
+        Microsoft::WRL::ComPtr<ID3D11Device>
+            rendererDevice = graphics.Device();
+        RequireThrowsExactly<std::logic_error>(
+            [&]
+            {
+                graphics.Initialize(
+                    window.Get(),
+                    Width,
+                    Height,
+                    LamaPon::RenderingApi::DirectX11);
+            },
+            "Graphics reinitialization accepted an active editor GUI renderer");
+        Require(
+            graphics.Device() == rendererDevice.Get()
+                && renderer->IsInitialized(),
+            "Rejected editor GUI reinitialization changed active state");
 
         renderer->NewFrame();
         ImGui::NewFrame();
@@ -1381,6 +1500,15 @@ namespace
             { assetColor[0], assetColor[1], assetColor[2] },
             "SpriteBatch must retain the texture snapshot until EndSprites");
 
+        auto modelPreviewRenderer =
+            LamaPon::CreateEditorModelPreviewRenderer(
+                graphics.ActiveRenderingApi(),
+                graphics);
+        Require(
+            modelPreviewRenderer != nullptr
+                && modelPreviewRenderer->Api()
+                    == LamaPon::RenderingApi::DirectX11,
+            "The active API must create the DirectX 11 model preview renderer");
         LamaPon::ModelAsset emptyModel;
         const LamaPon::LitMaterial previewMaterial{
             DirectX::XMFLOAT4{
@@ -1540,6 +1668,17 @@ namespace
             "Editor GUI renderer destructor must release backend data");
     }
 }
+
+static_assert(!std::is_copy_constructible_v<
+    LamaPon::GraphicsDeviceResourceLease>);
+static_assert(!std::is_copy_assignable_v<
+    LamaPon::GraphicsDeviceResourceLease>);
+static_assert(std::is_nothrow_move_constructible_v<
+    LamaPon::GraphicsDeviceResourceLease>);
+static_assert(std::is_nothrow_move_assignable_v<
+    LamaPon::GraphicsDeviceResourceLease>);
+static_assert(std::is_nothrow_destructible_v<
+    LamaPon::GraphicsDeviceResourceLease>);
 
 int main()
 {

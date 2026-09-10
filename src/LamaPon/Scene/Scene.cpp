@@ -1542,8 +1542,10 @@ namespace
 
 namespace LamaPon
 {
-    Scene::Scene(GraphicsDevice& graphics) noexcept
+    Scene::Scene(GraphicsDevice& graphics)
         : m_graphics(graphics)
+        , m_graphicsResourceLease(
+            graphics.AcquireResourceLease())
         , m_sceneManager(
             std::make_unique<SceneManager>(
                 *this,

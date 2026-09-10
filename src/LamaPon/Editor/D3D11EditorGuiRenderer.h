@@ -1,6 +1,7 @@
 #pragma once
 
 #include "LamaPon/Editor/EditorGuiRenderer.h"
+#include "LamaPon/Graphics/GraphicsDeviceResourceLease.h"
 
 #include <d3d11.h>
 #include <wrl/client.h>
@@ -47,6 +48,8 @@ namespace LamaPon
         void RequireCurrentContext() const;
 
         GraphicsDevice* m_graphics{};
+        GraphicsDeviceResourceLease
+            m_graphicsResourceLease;
         ImGuiContext* m_imguiContext{};
         std::vector<Microsoft::WRL::ComPtr<
             ID3D11ShaderResourceView>> m_frameTexturePins;

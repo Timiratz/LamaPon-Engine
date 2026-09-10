@@ -35,6 +35,9 @@
 - texture resource契約と`TextureAsset` / `AssetManager` / `RuntimeServices`のABI変更に伴い、Game Module APIを34へ更新。SDK反映後はゲーム用DLLの再ビルドが必要。
 - Texture/Viewを単一の不変snapshotとしてatomicに公開し、段階upload中も同じ世代のresourceだけを描画する。ImGuiとSpriteBatchは遅延描画完了までresourceを保持する。
 - `TextureAsset` / `TextTextureAsset`のresource公開ABI変更に伴い、Game Module APIを35へ更新。SDK反映後はゲーム用DLLの再ビルドが必要。
+- Sceneと外部renderer向けの`GraphicsDeviceResourceLease`を追加。SceneやEditor GUI等の旧Device資源所有者が生きている再初期化は、現在のBackendやAssetManagerを破棄する前に拒否する。
+- Scene破棄時は非同期Scene読み込みのcancelとjoinを明示し、AssetManagerより先にworkerを終了する。
+- `Scene` / `GraphicsDevice`の寿命契約変更に伴い、Game Module APIを36へ更新。SDK反映後はゲーム用DLLの再ビルドが必要。
 
 ### ファイル名の統一
 

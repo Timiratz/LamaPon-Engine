@@ -704,11 +704,13 @@ namespace LamaPon
     };
 
     GraphicsDevice::GraphicsDevice()
-        : m_services(std::make_unique<RuntimeServices>())
+        : m_resourceLeaseState(CreateResourceLeaseState())
+        , m_services(std::make_unique<RuntimeServices>())
     {
     }
     GraphicsDevice::~GraphicsDevice()
     {
+        CloseResourceLeaseGate();
         Shutdown();
     }
 
@@ -847,6 +849,10 @@ namespace LamaPon
         const std::uint32_t height,
         RenderingApi requestedApi)
     {
+        // Sceneや独自rendererが旧Device資源を持つ間は、何も破棄する
+        // 前に拒否します。描画API変更はプロセス再起動で反映する契約です。
+        BeginResourceTransition();
+
         // 再初期化では、旧Deviceから作った高レベル資源を先にすべて
         // 破棄します。Backendだけを差し替えると、旧DeviceのSRVや
         // BlendStateが新しいContextへ残り得るためです。
@@ -865,8 +871,10 @@ namespace LamaPon
             // 部分初期化したBackendや高レベル資源を残さず、
             // IsInitialized()が失敗後にtrueを返すことも防ぎます。
             ReleaseResources(false);
+            EndResourceTransition();
             throw;
         }
+        EndResourceTransition();
     }
 
     void GraphicsDevice::InitializeResources(

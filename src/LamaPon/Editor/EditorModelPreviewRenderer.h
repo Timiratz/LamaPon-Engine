@@ -40,7 +40,8 @@ namespace LamaPon
     // activeApiにはGraphicsDeviceで解決済みの実効APIを渡します。
     // 現段階で生成できるモデルプレビューrendererはDirectX 11だけです。
     // graphicsは返されたrendererより長く生存させ、DrawModel時には
-    // 初期化済みである必要があります。
+    // 初期化済みである必要があります。描画呼び出し中はresource leaseを
+    // 保持し、並行するGraphicsDeviceの再初期化を拒否します。
     [[nodiscard]] std::unique_ptr<EditorModelPreviewRenderer>
         CreateEditorModelPreviewRenderer(
             RenderingApi activeApi,

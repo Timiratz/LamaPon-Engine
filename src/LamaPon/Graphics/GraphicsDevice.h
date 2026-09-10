@@ -3,6 +3,7 @@
 #include "LamaPon/Graphics/EnvironmentRenderer.h"
 #include "LamaPon/Graphics/GpuProfiler.h"
 #include "LamaPon/Graphics/GraphicsBackend.h"
+#include "LamaPon/Graphics/GraphicsDeviceResourceLease.h"
 #include "LamaPon/Graphics/Lighting.h"
 #include "LamaPon/Graphics/GraphicsQuality.h"
 #include "LamaPon/Graphics/ShaderVariants.h"
@@ -174,6 +175,12 @@ namespace LamaPon
 
         GraphicsDevice(const GraphicsDevice&) = delete;
         GraphicsDevice& operator=(const GraphicsDevice&) = delete;
+
+        // このDeviceから作られたresourceを外部で保持する期間のleaseです。
+        // Sceneは自動で保持します。独自renderer等も、再初期化を安全に
+        // 拒否させる必要がある場合はresourceより長く保持してください。
+        [[nodiscard]] GraphicsDeviceResourceLease
+            AcquireResourceLease();
 
         void Initialize(HWND window, std::uint32_t width, std::uint32_t height);
         // 同じインスタンスの再初期化はGraphicsDevice自身が所有するGPU
@@ -714,6 +721,12 @@ namespace LamaPon
             Factory&& factory) const;
 
         void Shutdown() noexcept;
+        [[nodiscard]] static std::shared_ptr<
+            Detail::GraphicsDeviceResourceLeaseState>
+            CreateResourceLeaseState();
+        void BeginResourceTransition();
+        void EndResourceTransition() noexcept;
+        void CloseResourceLeaseGate() noexcept;
         void ReleaseResources(bool preserveAudio) noexcept;
         void InitializeResources(
             HWND window,
@@ -729,6 +742,13 @@ namespace LamaPon
         void ApplyQueuedScreenEffects(
             RenderTarget& target,
             ScreenEffectPoint point);
+
+        // 外部resource ownerの数と再初期化中フラグを1つの同期境界で
+        // 管理します。lease側もstateを共有するため、破棄順を誤っても
+        // leaseの後始末自体が解放済みGraphicsDeviceへ触れません。
+        std::shared_ptr<
+            Detail::GraphicsDeviceResourceLeaseState>
+            m_resourceLeaseState;
 
         // Device / Context / SwapChainとバックバッファ資源の所有者です。
         // 現在はD3D11Backendだけを生成し、D3D12はrenderer移行完了まで

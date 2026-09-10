@@ -26,6 +26,10 @@ namespace LamaPon
         const LitMaterial& material,
         const bool wireframe)
     {
+        // このrenderer自身はGPU resourceを所有しません。Drawの間だけ
+        // Device / Context世代を固定し、初期化前のfactory生成は妨げません。
+        const auto resourceLease =
+            m_graphics.AcquireResourceLease();
         auto* const context = m_graphics.Context();
         if (context == nullptr)
         {

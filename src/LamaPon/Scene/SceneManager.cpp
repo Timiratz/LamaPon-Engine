@@ -18,6 +18,27 @@
 
 namespace LamaPon
 {
+    SceneManager::~SceneManager() noexcept
+    {
+        CancelPending();
+        if (!m_asyncFuture.valid())
+        {
+            return;
+        }
+        try
+        {
+            // std::launch::asyncのfutureもdestructorで待ちますが、
+            // AssetManagerを借用するworkerをSceneのresource leaseより
+            // 確実に先に終了させる契約をここで明示します。
+            static_cast<void>(m_asyncFuture.get());
+        }
+        catch (...)
+        {
+            // destructorでは終了待ちだけを保証し、読み込み失敗は
+            // ProcessPendingの通常経路へ任せます。
+        }
+    }
+
     SceneManager::SceneManager(
         Scene& scene,
         GraphicsDevice& graphics) noexcept

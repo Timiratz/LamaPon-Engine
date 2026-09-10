@@ -16,6 +16,7 @@ namespace LamaPon
     // Dear ImGuiの描画API固有処理をEditorLayerから分離するための
     // 最小契約です。Win32側の入力・フレーム処理は含みません。
     // InitializeしたImGui contextはShutdown完了まで生存させます。
+    // 初期化中はGraphicsDevice resource leaseも保持します。
     class EditorGuiRenderer
     {
     public:
