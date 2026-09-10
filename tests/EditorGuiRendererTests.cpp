@@ -9,6 +9,7 @@
 #include "LamaPon/Graphics/ShadowMap.h"
 #include "LamaPon/Input/InputSystem.h"
 #include "LamaPon/Scene/Scene.h"
+#include "LamaPon/Scene/SceneManager.h"
 
 #include <Windows.h>
 #include <CommonStates.h>
@@ -2291,6 +2292,94 @@ namespace
             8u,
             { 255u, 0u, 255u },
             "A missing sprite shader did not draw its error placeholder");
+
+        LamaPon::SceneLoadingScreenSettings loadingScreenSettings;
+        loadingScreenSettings.message.clear();
+        loadingScreenSettings.showPercentage = false;
+        loadingScreenSettings.backgroundColor = {
+            1.0f, 0.0f, 0.0f, 0.5f };
+        loadingScreenSettings.barBackgroundColor = {
+            0.0f, 1.0f, 0.0f, 1.0f };
+        loadingScreenSettings.barFillColor = {
+            0.0f, 0.0f, 1.0f, 1.0f };
+        graphics.BeginFrame(scissorClearColor);
+        graphics.DrawLoadingScreen(
+            0.5f,
+            loadingScreenSettings,
+            Width,
+            Height);
+        std::uint32_t loadingScreenWidth{};
+        std::uint32_t loadingScreenHeight{};
+        const auto loadingScreenPixels = graphics.CaptureBackBuffer(
+            loadingScreenWidth,
+            loadingScreenHeight);
+        graphics.EndFrame();
+        Require(
+            loadingScreenWidth == Width
+                && loadingScreenHeight == Height,
+            "Loading screen test did not capture the back buffer");
+        RequirePixelNear(
+            loadingScreenPixels,
+            2u,
+            2u,
+            { 64u, 0u, 0u },
+            "The neutral loading screen lost its background color");
+        RequirePixelNear(
+            loadingScreenPixels,
+            24u,
+            48u,
+            { 0u, 0u, 255u },
+            "The neutral loading screen lost its progress fill");
+        RequirePixelNear(
+            loadingScreenPixels,
+            72u,
+            48u,
+            { 0u, 255u, 0u },
+            "The neutral loading screen lost its progress background");
+
+        const auto startupLogoPath =
+            std::filesystem::path(LAMAPON_TEST_ASSET_DIR)
+            / L"textures/LamaPonEngineLogo.png";
+        graphics.BeginFrame(scissorClearColor);
+        graphics.DrawStartupLogo(
+            startupLogoPath,
+            Width,
+            Height);
+        std::uint32_t startupLogoWidth{};
+        std::uint32_t startupLogoHeight{};
+        const auto startupLogoPixels = graphics.CaptureBackBuffer(
+            startupLogoWidth,
+            startupLogoHeight);
+        graphics.EndFrame();
+        std::size_t startupLogoColoredPixels{};
+        for (std::size_t offset = 0;
+            offset + 3u < startupLogoPixels.size();
+            offset += 4u)
+        {
+            if (startupLogoPixels[offset]
+                    + startupLogoPixels[offset + 1u]
+                    + startupLogoPixels[offset + 2u] > 24u)
+            {
+                ++startupLogoColoredPixels;
+            }
+        }
+        Require(
+            startupLogoWidth == Width
+                && startupLogoHeight == Height
+                && startupLogoColoredPixels >= 16u,
+            "The neutral startup logo did not reach the back buffer");
+        RequirePixelNear(
+            startupLogoPixels,
+            48u,
+            19u,
+            { 132u, 214u, 255u },
+            "The neutral startup logo lost its placement or texture color");
+        RequirePixelNear(
+            startupLogoPixels,
+            20u,
+            20u,
+            { 0u, 0u, 0u },
+            "The neutral startup logo exceeded its scaled bounds");
 
         auto modelPreviewRenderer =
             LamaPon::CreateEditorModelPreviewRenderer(
