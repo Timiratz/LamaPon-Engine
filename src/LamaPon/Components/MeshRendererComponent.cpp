@@ -1187,7 +1187,7 @@ namespace LamaPon
             albedoResources
                 ? m_graphics->TryResolveD3D11ShaderResourceView(
                     *albedoResources)
-                : m_graphics->WhiteTexture(),
+                : nullptr,
             normalResources
                 ? m_graphics->TryResolveD3D11ShaderResourceView(
                     *normalResources)
@@ -1451,7 +1451,7 @@ namespace LamaPon
             albedoResources
                 ? m_graphics->TryResolveD3D11ShaderResourceView(
                     *albedoResources)
-                : m_graphics->WhiteTexture(),
+                : nullptr,
             normalResources
                 ? m_graphics->TryResolveD3D11ShaderResourceView(
                     *normalResources)

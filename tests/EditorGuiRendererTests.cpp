@@ -813,21 +813,24 @@ namespace
         // Backend差し替え前に遅延生成資源も作り、同じGraphicsDeviceを
         // 再初期化した後の描画で旧Device由来の資源が残らないことを
         // このテスト全体で確認します。
-        Require(
-            graphics.WhiteTexture() != nullptr
-                && graphics.AdditiveBlendPreservingAlpha() != nullptr,
-            "DirectX 11 compatibility resources were not created");
         Microsoft::WRL::ComPtr<ID3D11Device> previousDevice =
             graphics.Device();
         const auto previousWhiteTexture =
             graphics.WhiteTextureHandle();
         const auto previousWhiteView =
             graphics.WhiteTextureViewHandle();
+        auto* const previousWhiteD3D11View =
+            graphics.TryResolveD3D11ShaderResourceView(
+                previousWhiteView);
+        Require(
+            previousWhiteD3D11View != nullptr
+                && graphics.AdditiveBlendPreservingAlpha() != nullptr,
+            "DirectX 11 compatibility resources were not created");
         const LamaPon::TextureResourceSnapshot
             previousWhiteResources{
                 previousWhiteTexture,
                 previousWhiteView,
-                graphics.WhiteTexture()
+                previousWhiteD3D11View
             };
         const std::array<float, 4> instanceData{
             1.0f, 2.0f, 3.0f, 4.0f };
@@ -856,7 +859,7 @@ namespace
                     == LamaPon::GraphicsViewKind::ShaderResource
                 && previousInstanceBuffer
                 && graphics.ResolveD3D11ShaderResourceView(
-                    previousWhiteView) == graphics.WhiteTexture()
+                    previousWhiteView) == previousWhiteD3D11View
                 && reusedPreviousInstanceBuffer
                     == previousInstanceBuffer
                 && previousBoundInstanceBuffer.buffer
@@ -895,7 +898,7 @@ namespace
             incompleteNeutralResources{
                 previousWhiteTexture,
                 {},
-                graphics.WhiteTexture()
+                previousWhiteD3D11View
             };
         Require(
             graphics.TryResolveD3D11ShaderResourceView(
@@ -924,7 +927,7 @@ namespace
                     && graphics.TryAssets() == previousAssets
                     && graphics.ResolveD3D11ShaderResourceView(
                         previousWhiteView)
-                        == graphics.WhiteTexture(),
+                        == previousWhiteD3D11View,
                 "Rejected reinitialization changed the active graphics state");
         }
 
@@ -933,6 +936,11 @@ namespace
             Width,
             Height,
             LamaPon::RenderingApi::DirectX11);
+        const auto rebuiltWhiteView =
+            graphics.WhiteTextureViewHandle();
+        auto* const rebuiltWhiteD3D11View =
+            graphics.TryResolveD3D11ShaderResourceView(
+                rebuiltWhiteView);
         Require(
             graphics.StartupRenderingApi()
                     == LamaPon::RenderingApi::DirectX11
@@ -940,7 +948,7 @@ namespace
                     == LamaPon::RenderingApi::DirectX11
                 && graphics.RenderingApiFallback()
                     == LamaPon::RenderingApiFallbackReason::None
-                && graphics.WhiteTexture() != nullptr
+                && rebuiltWhiteD3D11View != nullptr
                 && graphics.AdditiveBlendPreservingAlpha() != nullptr
                 && graphics.Device() != previousDevice.Get(),
             "GraphicsDevice reinitialization did not rebuild DirectX 11 resources");
@@ -994,7 +1002,7 @@ namespace
                     == rebuiltInstanceHandle
                 && graphics.WhiteTextureHandle()
                     != previousWhiteTexture
-                && graphics.WhiteTextureViewHandle()
+                && rebuiltWhiteView
                     != previousWhiteView
                 && rebuiltBoundInstanceBuffer.buffer
                 && rebuiltBoundInstanceBuffer.buffer.Get()
@@ -1394,7 +1402,7 @@ namespace
         Microsoft::WRL::ComPtr<ID3D11Device> whiteDevice;
         Microsoft::WRL::ComPtr<ID3D11Device> blendDevice;
         Microsoft::WRL::ComPtr<ID3D11Device> instanceDevice;
-        graphics.WhiteTexture()->GetDevice(
+        rebuiltWhiteD3D11View->GetDevice(
             whiteDevice.ReleaseAndGetAddressOf());
         graphics.AdditiveBlendPreservingAlpha()->GetDevice(
             blendDevice.ReleaseAndGetAddressOf());
@@ -1545,7 +1553,7 @@ namespace
         // t0〜t15を解除して、深度を次の描画先として安全に使える状態へ
         // 戻します。
         std::array<ID3D11ShaderResourceView*, 16> testResources{};
-        testResources.fill(graphics.WhiteTexture());
+        testResources.fill(rebuiltWhiteD3D11View);
         graphics.Context()->PSSetShaderResources(
             0,
             static_cast<UINT>(testResources.size()),

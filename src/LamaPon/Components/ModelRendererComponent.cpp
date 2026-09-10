@@ -2662,7 +2662,7 @@ namespace LamaPon
                 effect.SetTextures(
                     primitive.texture
                         ? primitive.texture.Get()
-                        : m_graphics->WhiteTexture(),
+                        : nullptr,
                     primitive.normalTexture.Get(),
                     pbr);
                 effect.SetCustomTextures({});
@@ -3077,7 +3077,7 @@ namespace LamaPon
                             ? albedoView
                             : (part.embeddedAlbedoTexture
                                 ? part.embeddedAlbedoTexture.Get()
-                                : m_graphics->WhiteTexture()),
+                                : nullptr),
                         normalResources
                             ? normalView
                             : part.embeddedNormalTexture.Get(),

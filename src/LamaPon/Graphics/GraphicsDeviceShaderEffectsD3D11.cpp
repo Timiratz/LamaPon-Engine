@@ -381,6 +381,9 @@ namespace LamaPon
             0.0f,
             0.0f
         };
+        const auto whiteTextureView = WhiteTextureViewHandle();
+        auto* const whiteTexture =
+            TryResolveD3D11ShaderResourceView(whiteTextureView);
         for (const auto& queued : m_queuedScreenEffects)
         {
             if (queued.effect == nullptr
@@ -409,7 +412,7 @@ namespace LamaPon
                     : nullptr;
                 auxiliaryViews[index] = resolved != nullptr
                     ? resolved
-                    : WhiteTexture();
+                    : whiteTexture;
             }
             target.ApplyScreenEffect(
                 *queued.effect,
@@ -675,13 +678,16 @@ namespace LamaPon
             const TextureResourceSnapshot>, 2>
             inputResources{};
         std::array<ID3D11ShaderResourceView*, 2> inputs{};
+        const auto whiteTextureView = WhiteTextureViewHandle();
+        auto* const whiteTexture =
+            TryResolveD3D11ShaderResourceView(whiteTextureView);
         for (std::size_t index = 0;
             index < request.inputTextures.size();
             ++index)
         {
             if (request.inputTextures[index].empty())
             {
-                inputs[index] = WhiteTexture();
+                inputs[index] = whiteTexture;
                 continue;
             }
             const auto texture = Assets().LoadTexture(
@@ -695,7 +701,7 @@ namespace LamaPon
                 : nullptr;
             inputs[index] = resolved != nullptr
                 ? resolved
-                : WhiteTexture();
+                : whiteTexture;
         }
 
         GpuProfiler::SectionScope computeSection{

@@ -738,6 +738,11 @@ namespace LamaPon
             m_graphics->States();
         auto* context =
             m_graphics->Context();
+        const auto whiteTextureView =
+            m_graphics->WhiteTextureViewHandle();
+        auto* const whiteTexture =
+            m_graphics->TryResolveD3D11ShaderResourceView(
+                whiteTextureView);
         const float blendFactor[]{
             0.0f,
             0.0f,
@@ -787,8 +792,7 @@ namespace LamaPon
         m_effect->SetTexture(
             textureView != nullptr
                 ? textureView
-                : m_graphics->
-                    WhiteTexture());
+                : whiteTexture);
         m_effect->Apply(context);
         context->IASetInputLayout(
             m_inputLayout->value.Get());
@@ -807,10 +811,10 @@ namespace LamaPon
                 ID3D11ShaderResourceView* resources[]{
                     textureView != nullptr
                         ? textureView
-                        : m_graphics->WhiteTexture(),
+                        : whiteTexture,
                     auxiliaryTextureView != nullptr
                         ? auxiliaryTextureView
-                        : m_graphics->WhiteTexture()
+                        : whiteTexture
                 };
                 context->PSSetShaderResources(
                     0,

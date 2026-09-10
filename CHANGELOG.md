@@ -65,6 +65,7 @@
 - raw RenderTexture view入口の公開API変更に伴い、Game Module APIを43へ更新。SDK反映後はゲーム用DLLの再ビルドが必要。
 - 共有instance vertex bufferの更新とbindを`GraphicsBufferHandle`経由のBackend共通契約へ移し、Mesh / Model rendererからraw `ID3D11Buffer`の受け渡しを除去。
 - raw instance buffer取得・resolver入口を非公開化し、API 43 Game Module用の旧バイナリシンボルを1互換期間だけprivate shimとして維持。公開Backend / Device契約の変更に伴い、Game Module APIを44へ更新。
+- 白テクスチャのraw D3D11 SRV参照をneutral view handle経由へ移行し、公開`WhiteTexture()`を非公開化。API 44 Game Module用の旧バイナリシンボルは1互換期間だけprivate shimとして維持し、Game Module APIを45へ更新。
 
 ### ファイル名の統一
 

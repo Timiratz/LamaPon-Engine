@@ -13,10 +13,10 @@ namespace LamaPon
     // Game ModuleとRuntimeのABIを識別します。公開構造体のレイアウトや
     // 公開関数のシグネチャを変更した場合は、この値も更新してください。
     // GameModuleHostは完全一致を要求し、互換性のないDLLを読み込みません。
-    // API 44では共有instance bufferの生成・bindをneutral handle
-    // 経路へ統一したため、
+    // API 45ではraw white texture view入口を非公開化し、
+    // neutral handleから解決する経路へ統一したため、
     // ゲーム用DLLの再ビルドが必要です。
-    inline constexpr std::uint32_t GameModuleApiVersion = 44;
+    inline constexpr std::uint32_t GameModuleApiVersion = 45;
 
     using NativeScriptCreateFunction = void* (*)(
         GameObject* owner,
