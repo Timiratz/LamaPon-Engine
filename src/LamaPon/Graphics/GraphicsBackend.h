@@ -38,7 +38,7 @@ namespace LamaPon
 
     // 起動経路ごとの描画機能要件です。EditorやCLIのように完全な
     // rendererを使う経路は既定のFullRendererを選び、D3D12 bootstrapは
-    // Gameの実験的なclear/present検証だけで明示的に許可します。
+    // Gameの実験的なScene 2D/UI描画経路だけで明示的に許可します。
     enum class GraphicsStartupProfile : std::uint8_t
     {
         FullRenderer,

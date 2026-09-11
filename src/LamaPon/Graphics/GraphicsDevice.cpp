@@ -493,7 +493,7 @@ namespace LamaPon
                 Logger::Instance().Warning(
                     "DirectX 12 Experimental bootstrapで起動しています。"
                     "現在はclear / present / resize / capture、texture、"
-                    "既定shaderのSprite描画に対応し、3D Scene、custom "
+                    "Sceneの2D/UI描画に対応し、3D Mesh/Model、custom "
                     "shader、offscreen描画は未対応です。");
             }
         };

@@ -366,7 +366,9 @@ namespace LamaPon
         }
 
         std::unique_ptr<DirectX::GeometricPrimitive> primitive;
-        if (m_graphics != nullptr)
+        if (m_graphics != nullptr
+            && m_graphics->ActiveRenderingApi()
+                == RenderingApi::DirectX11)
         {
             // GPU作成が失敗した場合は、現在表示中のメッシュとCPU側の
             // データを両方そのまま残す（強い例外保証）。
@@ -396,7 +398,9 @@ namespace LamaPon
             return;
         }
         std::unique_ptr<DirectX::GeometricPrimitive> primitive;
-        if (m_graphics != nullptr)
+        if (m_graphics != nullptr
+            && m_graphics->ActiveRenderingApi()
+                == RenderingApi::DirectX11)
         {
             primitive = CreatePrimitiveShape(
                 Detail::GraphicsDeviceD3D11Access::Context(
@@ -966,11 +970,16 @@ namespace LamaPon
                 m_assets);
         }
 
-        BuildActivePrimitive(graphics);
-
-        BuildTessellationPatches(graphics);
-
-        RefreshShader(false);
+        // D3D11のGeometricPrimitive / EffectはD3D12 deviceでは作りません。
+        // MaterialとtextureはAPI非依存なので読み込みを続け、次段階の
+        // D3D12 3D rendererが同じComponentデータを利用できる状態にします。
+        if (graphics.ActiveRenderingApi()
+            == RenderingApi::DirectX11)
+        {
+            BuildActivePrimitive(graphics);
+            BuildTessellationPatches(graphics);
+            RefreshShader(false);
+        }
 
         if (!m_material.AlbedoTexture().empty())
         {

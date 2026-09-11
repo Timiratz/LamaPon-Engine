@@ -315,51 +315,6 @@ namespace LamaPon
             Time::Detail::AdvanceFrame(deltaTime);
             Profiler::Instance().BeginFrame();
 
-            if (d3d12ExperimentalBootstrap)
-            {
-                // D3D12 Experimentalは現在、clear / presentとSprite描画を
-                // 検証するbootstrap段階です。Windowのメッセージ、Input、
-                // フレームペーシングは通常どおり維持しますが、D3D11前提の
-                // Layer、Scene、UI、Overlayへは一切入れません。
-                {
-                    LAMAPON_PROFILE_SCOPE("Input");
-                    m_graphics.Input().Update(true);
-                }
-                {
-                    LAMAPON_PROFILE_SCOPE("Render");
-                    m_graphics.BeginFrame(m_clearColor);
-                    if (m_startupSplashScreenEnabled)
-                    {
-                        // Scene描画の代わりに、起動ロゴでtexture読み込みと
-                        // D3D12のSprite pipelineを実際の画面へ通します。
-                        try
-                        {
-                            m_graphics.DrawStartupLogo();
-                        }
-                        catch (const std::exception& exception)
-                        {
-                            ReportRenderFailure(exception.what());
-                        }
-                    }
-                    m_graphics.EndFrame();
-                }
-
-                const auto cpuEnd =
-                    std::chrono::steady_clock::now();
-                const float cpuMilliseconds =
-                    std::chrono::duration<float, std::milli>(
-                        cpuEnd - currentTime).count();
-                m_graphics.RecordFrameStatistics(
-                    rawDeltaTime,
-                    cpuMilliseconds);
-                Profiler::Instance().EndFrame();
-                PaceFrame(
-                    currentTime,
-                    m_graphics.Settings()
-                        .targetFrameRate);
-                continue;
-            }
-
             {
                 LAMAPON_PROFILE_SCOPE("Audio");
                 try
@@ -451,17 +406,24 @@ namespace LamaPon
                     // 継続します。
                     try
                     {
-                        m_graphics.BeginSceneComposition(
-                            m_clearColor);
-                        // 3DだけをHDRターゲットへ描き、UIは色変換後に
-                        // 重ねる。ターゲットを渡すのは、深度プリパスと
-                        // SSAOをライティングより前に走らせるためです。
-                        m_scene->RenderMainCamera(
-                            m_graphics.AspectRatio(),
-                            false,
-                            m_graphics.SceneCompositionTarget());
-                        m_graphics.EndSceneComposition(
-                            m_scene->PostProcessFrameData());
+                        if (!d3d12ExperimentalBootstrap)
+                        {
+                            m_graphics.BeginSceneComposition(
+                                m_clearColor);
+                            // 3DだけをHDRターゲットへ描き、UIは色変換後に
+                            // 重ねる。ターゲットを渡すのは、深度プリパスと
+                            // SSAOをライティングより前に走らせるためです。
+                            m_scene->RenderMainCamera(
+                                m_graphics.AspectRatio(),
+                                false,
+                                m_graphics.SceneCompositionTarget());
+                            m_graphics.EndSceneComposition(
+                                m_scene->PostProcessFrameData());
+                        }
+                        // D3D12 Experimentalではoffscreen / 3D pipelineが
+                        // 未実装のため、実シーンの2D/UIだけをprimary outputへ
+                        // 直接描きます。Game ModuleとSimulationは上の共通経路で
+                        // 通常どおり動作します。
                         m_scene->Render2D();
                         const auto& scenes =
                             m_scene->Scenes();
@@ -483,10 +445,13 @@ namespace LamaPon
                         }
                         // F1でデバッグオーバーレイを表示します
                         // （timeScaleの影響を受けないよう実時間で更新）。
-                        m_debugOverlay.Update(
-                            m_graphics,
-                            *m_scene,
-                            rawDeltaTime);
+                        if (!d3d12ExperimentalBootstrap)
+                        {
+                            m_debugOverlay.Update(
+                                m_graphics,
+                                *m_scene,
+                                rawDeltaTime);
+                        }
                     }
                     catch (const std::exception& exception)
                     {

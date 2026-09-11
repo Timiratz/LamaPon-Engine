@@ -65,8 +65,8 @@ int WINAPI wWinMain(
             settings.windowHeight,
             settings.gameName);
 
-        // D3D12 Experimentalは、D3D11前提のscene rendererを作らずに
-        // clear/presentとSprite描画だけを検証する起動プロファイルです。
+        // D3D12 Experimentalは、D3D11前提の3D/offscreen rendererを
+        // 作らずに実シーンのSimulationと2D/UI描画を動かす起動プロファイルです。
         // 実際にD3D12 backendが作れない環境ではGraphicsDeviceがD3D11へ
         // フォールバックするため、その場合は従来の完全なゲームを起動します。
         const auto graphicsStartupProfile =
@@ -88,8 +88,7 @@ int WINAPI wWinMain(
         const auto gameModulePath =
             LamaPon::ExecutableDirectory()
             / L"LamaPonGameModule.dll";
-        if (!d3d12ExperimentalBootstrap
-            && std::filesystem::is_regular_file(gameModulePath)
+        if (std::filesystem::is_regular_file(gameModulePath)
             && !application.GameModule().IsLoaded())
         {
             throw std::runtime_error(
@@ -104,29 +103,6 @@ int WINAPI wWinMain(
             settings.physics);
         application.Input().SetActions(
             settings.inputActions);
-
-        if (d3d12ExperimentalBootstrap)
-        {
-            // 実効D3D12 backendではまだScene rendererを初期化しません。
-            // --validate-startupは、clear/presentと（有効なら）起動ロゴの
-            // Sprite描画が成功することを1フレームだけ検証して終了します。
-            if (validateStartup)
-            {
-                ShowWindow(application.WindowHandle(), SW_HIDE);
-                constexpr float bootstrapClearColor[4]{
-                    0.025f, 0.035f, 0.055f, 1.0f };
-                application.Graphics().BeginFrame(
-                    bootstrapClearColor);
-                if (settings.splashScreenEnabled)
-                {
-                    application.Graphics().DrawStartupLogo();
-                }
-                application.Graphics().EndFrame();
-                return 0;
-            }
-
-            return application.Run();
-        }
 
         application.ActiveScene().SetRegisteredTags(
             settings.tags);
@@ -152,6 +128,20 @@ int WINAPI wWinMain(
                         throw std::runtime_error(script->LastError());
                     }
                 }
+            }
+            if (d3d12ExperimentalBootstrap)
+            {
+                // D3D12でも実シーンの初期化・Script更新・2D/UI描画までを
+                // 無人起動検証に含めます。3Dは次段階のpipeline実装まで
+                // primary outputのclear色を背景として使用します。
+                constexpr float experimentalClearColor[4]{
+                    0.025f, 0.035f, 0.055f, 1.0f };
+                application.Graphics().BeginFrame(
+                    experimentalClearColor);
+                scene.Render2D();
+                application.Graphics().EndFrame();
+                LamaPon::Logger::Instance().Info(
+                    "DirectX 12 ExperimentalでSceneの2D/UI描画を検証しました。");
             }
             return 0;
         }

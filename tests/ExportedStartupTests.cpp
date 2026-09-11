@@ -95,14 +95,22 @@ int main()
             "A project without a module must not acquire the sample module.");
         RunExportedGame(result.executablePath);
 
-        // DirectX 12 Experimentalを選んだゲームは、clear / presentとSprite描画を
-        // 行うbootstrap起動へ入ります。起動ロゴを有効にし、ロゴ画像が同梱されて
-        // いればtexture転送とSprite描画も通します。D3D12を初期化できない環境では
-        // D3D11へ戻りますが、どちらの場合もbootstrap経路を通ったことを起動ログで
-        // 確かめます。
+        // DirectX 12 Experimentalでも、実シーンを読み込んでText/Imageの
+        // Componentを初期化し、2D/UI Spriteを1フレーム描画します。
+        std::ofstream(assets / settings.startupScene, std::ios::trunc)
+            << R"({"format":"LamaPonScene","objects":[
+                {"id":1,"name":"Panel","transform":{"position":[0,0,0],"scale":[1,1,1]},"components":[
+                    {"type":"UIRectTransform","anchorMin":[0.5,0.5],"anchorMax":[0.5,0.5],"pivot":[0.5,0.5],"anchoredPosition":[0,0],"sizeDelta":[320,120]},
+                    {"type":"UIImage","color":[0.1,0.3,0.7,1.0],"sortOrder":1}
+                ]},
+                {"id":2,"name":"Label","transform":{"position":[0,0,0],"scale":[1,1,1]},"components":[
+                    {"type":"UIRectTransform","anchorMin":[0.5,0.5],"anchorMax":[0.5,0.5],"pivot":[0.5,0.5],"anchoredPosition":[0,0],"sizeDelta":[280,64]},
+                    {"type":"TextRenderer","text":"DirectX 12 Scene UI","fontFamily":"Segoe UI","fontSize":28,"color":[1,1,1,1],"layoutSize":[280,64],"sortOrder":2}
+                ]}
+            ]})";
         options.projectSettings.graphics.renderingApi =
             LamaPon::RenderingApi::DirectX12Experimental;
-        options.projectSettings.splashScreenEnabled = true;
+        options.projectSettings.splashScreenEnabled = false;
         options.outputDirectory = root / "d3d12-experimental";
         result = LamaPon::ExportGamePackage(options);
         const auto runtimeLog =
@@ -116,6 +124,9 @@ int main()
         Require(runtimeLogText.find("DirectX 12 Experimental bootstrap")
                 != std::string::npos,
             "The exported DirectX 12 Experimental game did not use its bootstrap startup path.");
+        Require(runtimeLogText.find("Sceneの2D/UI描画を検証")
+                != std::string::npos,
+            "The exported DirectX 12 Experimental game did not render its scene UI.");
         std::cout << "Exported startup tests passed.\n";
         return 0;
     }

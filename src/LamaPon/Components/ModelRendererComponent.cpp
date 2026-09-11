@@ -1475,6 +1475,14 @@ namespace LamaPon
     {
         m_assets = &graphics.Assets();
         m_graphics = &graphics;
+        if (graphics.ActiveRenderingApi()
+            != RenderingApi::DirectX11)
+        {
+            // Model / skeletal GPU資源はまだD3D11実装です。D3D12の
+            // Scene/UI段階ではComponent自体を保持し、D3D11 objectへ
+            // 触れずに安全にスキップします。
+            return;
+        }
         m_context = Detail::GraphicsDeviceD3D11Access::Context(graphics);
         m_states = &Detail::GraphicsDeviceD3D11Access::States(graphics);
 

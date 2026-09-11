@@ -164,7 +164,7 @@ GPUが無い・正しく動かない環境（仮想マシン、リモートデ�
 - ビルドプロファイル（Windows／Web）と書き出し先の設定画面への入口
 
 Rendering APIの既定はDirectX 11です。変更は実行中に切り替わらず、エディターまたはゲームの再起動後に反映されます。
-DirectX 12 Experimentalは段階実装中です。書き出したゲームで選ぶと、現在はD3D12で画面のクリアと表示（clear／present／resize）、起動ロゴ（起動ロゴを有効にした場合）のSprite描画を行う起動検証モードになり、3D Scene・UIはまだ描画されません。
+DirectX 12 Experimentalは段階実装中です。書き出したゲームで選ぶと、D3D12で画面のクリアと表示（clear／present／resize）を行い、起動Scene、Game Module、Simulationを動かしてSprite／Text／Imageなどの2D／UIを描画します。3D Mesh／Model、影、ポストエフェクト、custom shaderはまだ描画されません。
 D3D12を初期化できない環境では、DirectX 11へ自動的にフォールバックして通常どおり起動します。
 エディターとCLIは完全なレンダラーが必要なため、DirectX 12 Experimentalを選んでもDirectX 11で起動します。
 
