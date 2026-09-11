@@ -317,10 +317,10 @@ namespace LamaPon
 
             if (d3d12ExperimentalBootstrap)
             {
-                // D3D12 Experimentalは現在、swap chainをclearしてpresentする
-                // bootstrap段階です。Windowのメッセージ、Input、フレーム
-                // ペーシングは通常どおり維持しますが、D3D11前提のLayer、
-                // Scene、UI、Overlayへは一切入れません。
+                // D3D12 Experimentalは現在、clear / presentとSprite描画を
+                // 検証するbootstrap段階です。Windowのメッセージ、Input、
+                // フレームペーシングは通常どおり維持しますが、D3D11前提の
+                // Layer、Scene、UI、Overlayへは一切入れません。
                 {
                     LAMAPON_PROFILE_SCOPE("Input");
                     m_graphics.Input().Update(true);
@@ -328,6 +328,19 @@ namespace LamaPon
                 {
                     LAMAPON_PROFILE_SCOPE("Render");
                     m_graphics.BeginFrame(m_clearColor);
+                    if (m_startupSplashScreenEnabled)
+                    {
+                        // Scene描画の代わりに、起動ロゴでtexture読み込みと
+                        // D3D12のSprite pipelineを実際の画面へ通します。
+                        try
+                        {
+                            m_graphics.DrawStartupLogo();
+                        }
+                        catch (const std::exception& exception)
+                        {
+                            ReportRenderFailure(exception.what());
+                        }
+                    }
                     m_graphics.EndFrame();
                 }
 

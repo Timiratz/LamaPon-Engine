@@ -95,11 +95,14 @@ int main()
             "A project without a module must not acquire the sample module.");
         RunExportedGame(result.executablePath);
 
-        // DirectX 12 Experimentalを選んだゲームは、D3D12のclear / presentだけを
-        // 行うbootstrap起動へ入ります。D3D12を初期化できない環境ではD3D11へ
-        // 戻りますが、どちらの場合もbootstrap経路を通ったことを起動ログで確かめます。
+        // DirectX 12 Experimentalを選んだゲームは、clear / presentとSprite描画を
+        // 行うbootstrap起動へ入ります。起動ロゴを有効にし、ロゴ画像が同梱されて
+        // いればtexture転送とSprite描画も通します。D3D12を初期化できない環境では
+        // D3D11へ戻りますが、どちらの場合もbootstrap経路を通ったことを起動ログで
+        // 確かめます。
         options.projectSettings.graphics.renderingApi =
             LamaPon::RenderingApi::DirectX12Experimental;
+        options.projectSettings.splashScreenEnabled = true;
         options.outputDirectory = root / "d3d12-experimental";
         result = LamaPon::ExportGamePackage(options);
         const auto runtimeLog =

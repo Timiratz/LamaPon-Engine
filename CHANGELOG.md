@@ -7,6 +7,7 @@
 - Project SettingsのGraphicsへ`Auto` / `DirectX 11` / `DirectX 12 Experimental`の選択を追加。既定は従来どおりDirectX 11で、変更は次回起動時に反映する。
 - Editor / CLIなど完全なrendererが必要な起動経路では、DirectX 12 Experimentalを選んでも安全にDirectX 11へフォールバックする。将来のD3D11 / D3D12バックエンド分離に備えて起動時の選択経路を追加。
 - 書き出したゲームでDirectX 12 Experimentalを選ぶと、D3D12 Backendでclear / present / resizeだけを行うbootstrap起動を追加（Scene・UIは未描画）。D3D12の初期化に失敗した場合は資源をすべて解放してDirectX 11の通常起動へフォールバックする。起動経路の描画要件を表す`GraphicsStartupProfile`を追加し、既定の`FullRenderer`では従来どおりDirectX 11を選ぶ。
+- DirectX 12 Backendへtexture資源（2D texture生成・mip単位更新・Shader Resource View）と、GPUの完了までresourceとdescriptorを保持する遅延解放を追加。`BeginSpritePass`は実効APIがDirectX 12の場合にD3D12の既定Sprite pipelineへ送り、DirectXTK SpriteBatchと同じ座標・UV・blend・scissor規則で描画する。D3D12 bootstrapのゲームは起動ロゴを表示でき、custom sprite shaderは既定pipelineへフォールバックする。
 - `GraphicsDevice`のAPI固有資源所有を抽象interface化し、D3D11のEffect・Shader・Sprite・Shadow・render serviceを単一の具象世代へ集約。停止・再生成・破棄を共通境界から呼ぶ構造へ移行。
 - Effect・Shader cache・Shadow・Environment・Clustered LightsなどDevice世代に属する高水準資源をD3D11内部所有へ分離。非同期Shader workerをAssetManagerより先に停止し、再初期化時に旧Device資源と未消費Screen Effect queueを安全に破棄する。
 - `GraphicsDevice`のnative D3D11 Device / Context / CommonStates / view resolverを非公開化し、D3D11描画島とテストだけがSDK非公開bridgeから利用する境界へ移行。API 64 Game Module向けの旧public binary symbolを維持し、Game Module APIを65へ更新。

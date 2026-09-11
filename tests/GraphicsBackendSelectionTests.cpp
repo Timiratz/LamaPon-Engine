@@ -739,14 +739,126 @@ int main()
                 ReinitializedHeight,
                 { 0.05f, 0.45f, 0.85f, 1.0f },
                 false);
+
+            // Sprite描画が使うtexture資源は、D3D11と同じdescription /
+            // subresource契約でD3D12の同期upload経路へ送ります。
+            const auto solidTexture =
+                d3d12Backend->CreateSolidRgba8Texture(
+                    { 255u, 64u, 32u, 255u });
+            const auto solidView =
+                d3d12Backend->CreateShaderResourceView(solidTexture);
+            Require(
+                solidTexture
+                    && solidView
+                    && solidView.Kind()
+                        == LamaPon::GraphicsViewKind::ShaderResource
+                    && d3d12Backend->IsViewCurrent(solidView),
+                "The DirectX 12 backend did not create a current texture view");
+            RequireThrowsExactly<std::invalid_argument>(
+                [&]
+                {
+                    static_cast<void>(d3d12Backend->CreateTexture2D(
+                        LamaPon::GraphicsTexture2DDescription{ 2u, 2u, 1u },
+                        {}));
+                },
+                "An immutable DirectX 12 texture was accepted without data");
+            const std::array<std::uint8_t, 4> updatePixel{
+                1u, 2u, 3u, 4u };
+            RequireThrowsExactly<std::invalid_argument>(
+                [&]
+                {
+                    d3d12Backend->UpdateTexture2D(
+                        solidTexture,
+                        0u,
+                        { std::as_bytes(std::span{ updatePixel }), 4u, 4u });
+                },
+                "An immutable DirectX 12 texture accepted an update");
+
+            const LamaPon::GraphicsTexture2DDescription progressiveDescription{
+                4u,
+                2u,
+                3u,
+                LamaPon::GraphicsTextureFormat::Rgba8Unorm,
+                LamaPon::GraphicsTextureUpdateMode::PerMipUpdate
+            };
+            const auto progressiveTexture =
+                d3d12Backend->CreateTexture2D(progressiveDescription, {});
+            const std::array<std::uint8_t, 8> mip1Pixels{
+                5u, 6u, 7u, 8u, 9u, 10u, 11u, 12u };
+            std::array<std::uint8_t, 32> mip0Pixels{};
+            for (std::size_t index{}; index < mip0Pixels.size(); ++index)
+            {
+                mip0Pixels[index] = static_cast<std::uint8_t>(index);
+            }
+            // 段階uploadと同じく、粗いmipから描画用stateのまま更新します。
+            d3d12Backend->UpdateTexture2D(
+                progressiveTexture,
+                2u,
+                { std::as_bytes(std::span{ updatePixel }), 4u, 4u });
+            d3d12Backend->UpdateTexture2D(
+                progressiveTexture,
+                1u,
+                { std::as_bytes(std::span{ mip1Pixels }), 8u, 8u });
+            d3d12Backend->UpdateTexture2D(
+                progressiveTexture,
+                0u,
+                { std::as_bytes(std::span{ mip0Pixels }), 16u, 32u });
+            const auto coarseView = d3d12Backend->CreateShaderResourceView(
+                progressiveTexture,
+                { 1u, 2u });
+            Require(
+                d3d12Backend->IsViewCurrent(coarseView),
+                "A partial DirectX 12 mip view was not current");
+            RequireThrowsExactly<std::invalid_argument>(
+                [&]
+                {
+                    static_cast<void>(d3d12Backend->CreateShaderResourceView(
+                        progressiveTexture,
+                        { 2u, 2u }));
+                },
+                "A DirectX 12 view accepted an out-of-range mip span");
+            RequireThrowsExactly<std::invalid_argument>(
+                [&]
+                {
+                    d3d12Backend->UpdateTexture2D(
+                        progressiveTexture,
+                        3u,
+                        { std::as_bytes(std::span{ updatePixel }), 4u, 4u });
+                },
+                "A DirectX 12 texture accepted an out-of-range mip update");
+
+            // 記録中のframeより先にhandleを破棄しても、GPUの完了まで
+            // resourceとdescriptorを遅延解放してPresentできます。
+            {
+                const std::array frameColor{ 0.3f, 0.2f, 0.1f, 1.0f };
+                d3d12Backend->BindAndClearBackBuffer(frameColor.data());
+                {
+                    const auto transientView =
+                        d3d12Backend->CreateShaderResourceView(
+                            d3d12Backend->CreateSolidRgba8Texture(
+                                { 0u, 255u, 0u, 255u }));
+                    Require(
+                        d3d12Backend->IsViewCurrent(transientView),
+                        "A transient DirectX 12 view was not current");
+                }
+                d3d12Backend->DrainDebugMessages();
+                d3d12Backend->Present(false);
+            }
+
             d3d12Backend->PrepareForResourceRelease();
             d3d12Backend->Shutdown();
+            // Shutdown後に残ったhandleは現在の世代ではなく、破棄も安全です。
+            Require(
+                !d3d12Backend->IsViewCurrent(solidView)
+                    && !d3d12Backend->IsViewCurrent(coarseView),
+                "A DirectX 12 view remained current after shutdown");
         }
 
         // Gameだけが明示的に許可するD3D12 bootstrapは、D3D11の
-        // native rendererを初期化せず、clear / capture / present / resize
-        // と空のscene facadeだけを安全に提供します。D3D12を初期化できない
-        // 環境では同じprofileでもD3D11へ一度だけフォールバックします。
+        // native rendererを初期化せず、clear / capture / present / resize、
+        // Sprite用texture、空のscene facadeを安全に提供します。D3D12を
+        // 初期化できない環境では同じprofileでもD3D11へ一度だけ
+        // フォールバックします。
         {
             constexpr std::uint32_t BootstrapWidth = 53u;
             constexpr std::uint32_t BootstrapHeight = 31u;
@@ -781,10 +893,10 @@ int main()
                         == LamaPon::RenderingApiFallbackReason::None,
                     "An active DirectX 12 bootstrap reported a fallback");
                 Require(
-                    !bootstrapGraphics.WhiteTextureHandle()
-                        && !bootstrapGraphics.WhiteTextureViewHandle(),
-                    "The DirectX 12 bootstrap unexpectedly created D3D11 "
-                    "white texture resources");
+                    bootstrapGraphics.WhiteTextureHandle()
+                        && bootstrapGraphics.WhiteTextureViewHandle(),
+                    "The DirectX 12 bootstrap did not create its sprite "
+                    "fallback white texture");
                 Require(
                     !bootstrapGraphics.Shadows().IsValid()
                         && !bootstrapGraphics.SpotShadows().IsValid()

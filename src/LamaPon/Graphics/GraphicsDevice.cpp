@@ -471,10 +471,9 @@ namespace LamaPon
             }
             const bool d3d12Bootstrap = selection.activeApi
                 == RenderingApi::DirectX12Experimental;
-            if (!d3d12Bootstrap)
-            {
-                CreateWhiteTexture();
-            }
+            // Spriteのtexture無しdrawが使うfallbackです。D3D12でも同じ
+            // API非依存handleで作ります。
+            CreateWhiteTexture();
             CreateApiResources(m_state->m_backend->Api());
             m_state->m_services->Initialize(
                 Device(),
@@ -493,8 +492,9 @@ namespace LamaPon
             {
                 Logger::Instance().Warning(
                     "DirectX 12 Experimental bootstrapで起動しています。"
-                    "現在はclear / present / resize / captureのみ対応し、"
-                    "Scene、UI、GPU asset uploadは未対応です。");
+                    "現在はclear / present / resize / capture、texture、"
+                    "既定shaderのSprite描画に対応し、3D Scene、custom "
+                    "shader、offscreen描画は未対応です。");
             }
         };
 

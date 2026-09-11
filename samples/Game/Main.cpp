@@ -66,7 +66,7 @@ int WINAPI wWinMain(
             settings.gameName);
 
         // D3D12 Experimentalは、D3D11前提のscene rendererを作らずに
-        // swap chainのclear/presentだけを検証する起動プロファイルです。
+        // clear/presentとSprite描画だけを検証する起動プロファイルです。
         // 実際にD3D12 backendが作れない環境ではGraphicsDeviceがD3D11へ
         // フォールバックするため、その場合は従来の完全なゲームを起動します。
         const auto graphicsStartupProfile =
@@ -108,8 +108,8 @@ int WINAPI wWinMain(
         if (d3d12ExperimentalBootstrap)
         {
             // 実効D3D12 backendではまだScene rendererを初期化しません。
-            // --validate-startupは、最低限のclear/presentが成功することを
-            // 1フレームだけ検証して終了します。
+            // --validate-startupは、clear/presentと（有効なら）起動ロゴの
+            // Sprite描画が成功することを1フレームだけ検証して終了します。
             if (validateStartup)
             {
                 ShowWindow(application.WindowHandle(), SW_HIDE);
@@ -117,6 +117,10 @@ int WINAPI wWinMain(
                     0.025f, 0.035f, 0.055f, 1.0f };
                 application.Graphics().BeginFrame(
                     bootstrapClearColor);
+                if (settings.splashScreenEnabled)
+                {
+                    application.Graphics().DrawStartupLogo();
+                }
                 application.Graphics().EndFrame();
                 return 0;
             }

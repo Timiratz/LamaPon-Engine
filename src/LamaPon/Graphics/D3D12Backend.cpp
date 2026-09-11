@@ -2,17 +2,23 @@
 
 #include "LamaPon/Core/Log.h"
 #include "LamaPon/Graphics/DebugRenderer.h"
+#include "LamaPon/Graphics/DxgiTextureLayout.h"
 
 #include <Windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace
@@ -138,6 +144,379 @@ namespace
     };
 }
 
+namespace LamaPon::Detail
+{
+    // D3D12 Backend世代のresource domainです。handleは任意のthreadで最後の
+    // 参照を失い得るため、GPUがまだ参照し得るresourceやdescriptorは直接
+    // 解放せず、退避時点で次に発行されるframe fenceの完了まで保持します。
+    class D3D12ResourceDomain final
+        : public GraphicsResourceDomain
+    {
+    public:
+        static constexpr std::uint32_t ShaderResourceCapacity = 16384u;
+
+        D3D12ResourceDomain(
+            Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> shaderResourceHeap,
+            const std::uint32_t descriptorSize)
+            : m_shaderResourceHeap(std::move(shaderResourceHeap))
+            , m_cpuStart(
+                m_shaderResourceHeap->GetCPUDescriptorHandleForHeapStart())
+            , m_gpuStart(
+                m_shaderResourceHeap->GetGPUDescriptorHandleForHeapStart())
+            , m_descriptorSize(descriptorSize)
+        {
+        }
+
+        [[nodiscard]] ID3D12DescriptorHeap*
+            ShaderResourceHeap() const noexcept
+        {
+            return m_shaderResourceHeap.Get();
+        }
+
+        [[nodiscard]] std::uint32_t AllocateShaderResourceSlot()
+        {
+            std::scoped_lock lock(m_mutex);
+            if (m_closed)
+            {
+                throw std::logic_error(
+                    "The D3D12 resource domain has been shut down.");
+            }
+            if (!m_freeSlots.empty())
+            {
+                const auto slot = m_freeSlots.back();
+                m_freeSlots.pop_back();
+                return slot;
+            }
+            if (m_nextSlot >= ShaderResourceCapacity)
+            {
+                throw std::runtime_error(
+                    "The D3D12 shader resource descriptor heap is full.");
+            }
+            return m_nextSlot++;
+        }
+
+        // handleへ公開する前に生成が失敗したslotはGPUから参照されて
+        // いないため、fenceを待たずに再利用へ戻します。
+        void ReleaseUnpublishedShaderResourceSlot(
+            const std::uint32_t slot) noexcept
+        {
+            try
+            {
+                std::scoped_lock lock(m_mutex);
+                m_freeSlots.push_back(slot);
+            }
+            catch (...)
+            {
+                // 戻せないslotは再利用しないだけで、安全性は損ないません。
+            }
+        }
+
+        [[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE
+            ShaderResourceCpuHandle(
+                const std::uint32_t slot) const noexcept
+        {
+            auto handle = m_cpuStart;
+            handle.ptr += static_cast<SIZE_T>(slot) * m_descriptorSize;
+            return handle;
+        }
+
+        [[nodiscard]] D3D12_GPU_DESCRIPTOR_HANDLE
+            ShaderResourceGpuHandle(
+                const std::uint32_t slot) const noexcept
+        {
+            auto handle = m_gpuStart;
+            handle.ptr += static_cast<UINT64>(slot) * m_descriptorSize;
+            return handle;
+        }
+
+        void PublishNextFrameFenceValue(
+            const std::uint64_t value) noexcept
+        {
+            m_nextFrameFenceValue.store(value);
+        }
+
+        // 記録中のframe command listは次に発行されるfenceより前に実行
+        // されるため、その値の完了後ならresourceとdescriptorを解放できます。
+        void Retire(
+            Microsoft::WRL::ComPtr<ID3D12Resource> resource,
+            const std::optional<std::uint32_t> slot) noexcept
+        {
+            RetiredResource retired{
+                m_nextFrameFenceValue.load(),
+                std::move(resource),
+                slot.value_or(0u),
+                slot.has_value()
+            };
+            try
+            {
+                std::scoped_lock lock(m_mutex);
+                if (!m_closed)
+                {
+                    m_retired.push_back(std::move(retired));
+                    return;
+                }
+                if (retired.hasSlot)
+                {
+                    m_freeSlots.push_back(retired.slot);
+                }
+            }
+            catch (...)
+            {
+                // 退避先を確保できなければ、GPUが参照中かもしれない
+                // resourceを解放せず意図的に保持し続けます。
+                if (retired.resource != nullptr)
+                {
+                    retired.resource->AddRef();
+                }
+            }
+        }
+
+        void CollectCompleted(
+            const std::uint64_t completedValue) noexcept
+        {
+            std::vector<RetiredResource> released;
+            try
+            {
+                std::scoped_lock lock(m_mutex);
+                const auto pending = std::partition(
+                    m_retired.begin(),
+                    m_retired.end(),
+                    [completedValue](
+                        const RetiredResource& entry) noexcept
+                    {
+                        return entry.fenceValue <= completedValue;
+                    });
+                const auto completedCount = static_cast<std::size_t>(
+                    std::distance(m_retired.begin(), pending));
+                if (completedCount == 0)
+                {
+                    return;
+                }
+                // 途中で失敗して同じslotを二重に戻さないよう、確保を
+                // 先に済ませてから状態を変更します。
+                released.reserve(completedCount);
+                m_freeSlots.reserve(
+                    m_freeSlots.size() + completedCount);
+                for (auto entry = m_retired.begin();
+                    entry != pending;
+                    ++entry)
+                {
+                    if (entry->hasSlot)
+                    {
+                        m_freeSlots.push_back(entry->slot);
+                    }
+                    released.push_back(std::move(*entry));
+                }
+                m_retired.erase(m_retired.begin(), pending);
+            }
+            catch (...)
+            {
+                // 解放できなかった項目は次回の回収で再試行します。
+            }
+        }
+
+        // GPUの停止後に呼びます。退避中の資源を解放し、以後の退避は
+        // 即時解放へ切り替えます。
+        void Close() noexcept
+        {
+            std::vector<RetiredResource> released;
+            try
+            {
+                std::scoped_lock lock(m_mutex);
+                m_closed = true;
+                released.swap(m_retired);
+            }
+            catch (...)
+            {
+                // lockを取得できない場合、退避中の資源は保持したままにします。
+            }
+            m_shaderResourceHeap.Reset();
+        }
+
+    private:
+        struct RetiredResource final
+        {
+            std::uint64_t fenceValue{};
+            Microsoft::WRL::ComPtr<ID3D12Resource> resource;
+            std::uint32_t slot{};
+            bool hasSlot{};
+        };
+
+        Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_shaderResourceHeap;
+        D3D12_CPU_DESCRIPTOR_HANDLE m_cpuStart{};
+        D3D12_GPU_DESCRIPTOR_HANDLE m_gpuStart{};
+        std::uint32_t m_descriptorSize{};
+        std::mutex m_mutex;
+        std::vector<std::uint32_t> m_freeSlots;
+        std::vector<RetiredResource> m_retired;
+        std::atomic<std::uint64_t> m_nextFrameFenceValue{ 1u };
+        std::uint32_t m_nextSlot{};
+        bool m_closed{};
+    };
+}
+
+namespace
+{
+    // 共通Texture handleが所有するDirectX 12側の実体です。
+    class D3D12TexturePayload final
+        : public LamaPon::Detail::GraphicsTexturePayload
+    {
+    public:
+        D3D12TexturePayload(
+            const std::shared_ptr<LamaPon::Detail::D3D12ResourceDomain>&
+                resourceDomain,
+            Microsoft::WRL::ComPtr<ID3D12Resource> texture,
+            const LamaPon::GraphicsTexture2DDescription&
+                textureDescription,
+            const DXGI_FORMAT textureFormat)
+            : GraphicsTexturePayload(resourceDomain)
+            , native(std::move(texture))
+            , description(textureDescription)
+            , format(textureFormat)
+        {
+        }
+
+        ~D3D12TexturePayload() noexcept override
+        {
+            static_cast<LamaPon::Detail::D3D12ResourceDomain&>(
+                *Domain()).Retire(std::move(native), std::nullopt);
+        }
+
+        Microsoft::WRL::ComPtr<ID3D12Resource> native;
+        LamaPon::GraphicsTexture2DDescription description;
+        DXGI_FORMAT format{};
+    };
+
+    // shader-visible heap内のSRV descriptorです。参照先textureは基底の
+    // GraphicsViewPayloadが強所有します。
+    class D3D12ShaderResourceViewPayload final
+        : public LamaPon::Detail::GraphicsViewPayload
+    {
+    public:
+        D3D12ShaderResourceViewPayload(
+            const std::shared_ptr<LamaPon::Detail::D3D12ResourceDomain>&
+                resourceDomain,
+            LamaPon::GraphicsTextureHandle texture,
+            const std::uint32_t descriptorSlot,
+            const std::uint32_t textureWidth,
+            const std::uint32_t textureHeight)
+            : GraphicsViewPayload(
+                resourceDomain,
+                LamaPon::GraphicsViewKind::ShaderResource,
+                std::move(texture))
+            , slot(descriptorSlot)
+            , width(textureWidth)
+            , height(textureHeight)
+        {
+        }
+
+        ~D3D12ShaderResourceViewPayload() noexcept override
+        {
+            static_cast<LamaPon::Detail::D3D12ResourceDomain&>(
+                *Domain()).Retire(nullptr, slot);
+        }
+
+        std::uint32_t slot{};
+        std::uint32_t width{};
+        std::uint32_t height{};
+    };
+
+    [[nodiscard]] const D3D12TexturePayload* TryTexturePayload(
+        const LamaPon::GraphicsTextureHandle& texture,
+        const LamaPon::Detail::GraphicsResourceDomain* const domain) noexcept
+    {
+        using LamaPon::Detail::GraphicsResourceHandleAccess;
+        if (domain == nullptr
+            || GraphicsResourceHandleAccess::Domain(texture) != domain)
+        {
+            return nullptr;
+        }
+        return dynamic_cast<const D3D12TexturePayload*>(
+            GraphicsResourceHandleAccess::Payload(texture));
+    }
+
+    [[nodiscard]] const D3D12ShaderResourceViewPayload*
+        TryShaderResourceViewPayload(
+            const LamaPon::GraphicsViewHandle& view,
+            const LamaPon::Detail::GraphicsResourceDomain* const domain) noexcept
+    {
+        using LamaPon::Detail::GraphicsResourceHandleAccess;
+        if (domain == nullptr
+            || GraphicsResourceHandleAccess::Domain(view) != domain)
+        {
+            return nullptr;
+        }
+        return dynamic_cast<const D3D12ShaderResourceViewPayload*>(
+            GraphicsResourceHandleAccess::Payload(view));
+    }
+
+    [[nodiscard]] std::uint64_t AlignUp(
+        const std::uint64_t value,
+        const std::uint64_t alignment)
+    {
+        if (value
+            > std::numeric_limits<std::uint64_t>::max()
+                - (alignment - 1u))
+        {
+            throw std::length_error(
+                "The D3D12 upload size cannot be aligned.");
+        }
+        return (value + alignment - 1u) & ~(alignment - 1u);
+    }
+
+    void WaitForFenceCompletion(
+        ID3D12Device* const device,
+        ID3D12Fence* const fence,
+        const HANDLE event,
+        const std::uint64_t value)
+    {
+        if (value == 0)
+        {
+            return;
+        }
+        const std::uint64_t completedValue =
+            fence->GetCompletedValue();
+        if (completedValue
+            == std::numeric_limits<std::uint64_t>::max())
+        {
+            ThrowHResult(
+                DXGI_ERROR_DEVICE_REMOVED,
+                "ID3D12Fence::GetCompletedValue",
+                device);
+        }
+        if (completedValue >= value)
+        {
+            return;
+        }
+        ThrowIfFailed(
+            fence->SetEventOnCompletion(value, event),
+            "ID3D12Fence::SetEventOnCompletion",
+            device);
+        if (WaitForSingleObject(event, INFINITE)
+            != WAIT_OBJECT_0)
+        {
+            throw std::runtime_error(
+                "Waiting for the D3D12 fence failed.");
+        }
+        const std::uint64_t completedAfterWait =
+            fence->GetCompletedValue();
+        if (completedAfterWait
+            == std::numeric_limits<std::uint64_t>::max())
+        {
+            ThrowHResult(
+                DXGI_ERROR_DEVICE_REMOVED,
+                "ID3D12Fence::GetCompletedValue",
+                device);
+        }
+        if (completedAfterWait < value)
+        {
+            throw std::runtime_error(
+                "The D3D12 fence event fired before the requested "
+                "value completed.");
+        }
+    }
+}
+
 namespace LamaPon
 {
     D3D12Backend::D3D12Backend() = default;
@@ -164,6 +543,10 @@ namespace LamaPon
             && m_commandList != nullptr
             && m_fence != nullptr
             && m_fenceEvent != nullptr
+            && m_resourceDomain != nullptr
+            && m_uploadCommandList != nullptr
+            && m_uploadFence != nullptr
+            && m_uploadFenceEvent != nullptr
             && !m_terminalFailure;
     }
 
@@ -478,6 +861,32 @@ namespace LamaPon
                     "CreateEventW failed for the D3D12 fence.");
             }
 
+            // Sprite等が参照するtexture viewは1枚のshader-visible heapへ
+            // 置き、描画時はdescriptor tableとしてbindします。
+            D3D12_DESCRIPTOR_HEAP_DESC shaderResourceHeapDescription{};
+            shaderResourceHeapDescription.Type =
+                D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+            shaderResourceHeapDescription.NumDescriptors =
+                Detail::D3D12ResourceDomain::ShaderResourceCapacity;
+            shaderResourceHeapDescription.Flags =
+                D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+            Microsoft::WRL::ComPtr<ID3D12DescriptorHeap>
+                shaderResourceHeap;
+            ThrowIfFailed(
+                m_device->CreateDescriptorHeap(
+                    &shaderResourceHeapDescription,
+                    IID_PPV_ARGS(shaderResourceHeap.GetAddressOf())),
+                "ID3D12Device::CreateDescriptorHeap(SRV)",
+                m_device.Get());
+            m_resourceDomain =
+                std::make_shared<Detail::D3D12ResourceDomain>(
+                    std::move(shaderResourceHeap),
+                    m_device->GetDescriptorHandleIncrementSize(
+                        D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV));
+            m_resourceDomain->PublishNextFrameFenceValue(
+                m_nextFenceValue);
+            CreateUploadContext();
+
             CreateSizeDependentResources(width, height);
         }
         catch (...)
@@ -510,6 +919,18 @@ namespace LamaPon
     void D3D12Backend::Shutdown() noexcept
     {
         PrepareForResourceRelease();
+        // GPUの完了を待った後で、handleが退避したresource / descriptorを
+        // 解放します。以後に破棄されるhandleは即時解放されます。
+        if (m_resourceDomain != nullptr)
+        {
+            m_resourceDomain->Close();
+            m_resourceDomain.reset();
+        }
+        for (auto& arena : m_frameUploadArenas)
+        {
+            arena.clear();
+        }
+        ReleaseUploadContext();
         ReleaseSizeDependentResources();
         m_infoQueue.Reset();
         m_commandList.Reset();
@@ -713,7 +1134,7 @@ namespace LamaPon
                     : 0u);
             if (submittedCommands)
             {
-                const std::uint64_t value = m_nextFenceValue++;
+                const std::uint64_t value = ReserveFrameFenceValue();
                 ThrowIfFailed(
                     m_commandQueue->Signal(m_fence.Get(), value),
                     "ID3D12CommandQueue::Signal",
@@ -729,6 +1150,7 @@ namespace LamaPon
             }
             m_currentBackBufferIndex =
                 m_swapChain->GetCurrentBackBufferIndex();
+            CollectRetiredResources();
         }
         catch (...)
         {
@@ -931,6 +1353,10 @@ namespace LamaPon
             m_swapChain->GetCurrentBackBufferIndex();
         WaitForFence(
             m_frameFenceValues[m_currentBackBufferIndex]);
+        // このallocatorで記録したframeがGPUで完了した後だけ、同じframeの
+        // upload領域を再利用します。
+        ResetFrameUploadArena(m_currentBackBufferIndex);
+        CollectRetiredResources();
         auto* const allocator =
             m_commandAllocators[m_currentBackBufferIndex].Get();
         ThrowIfFailed(
@@ -999,7 +1425,7 @@ namespace LamaPon
 
     std::uint64_t D3D12Backend::SignalCurrentBackBuffer()
     {
-        const std::uint64_t value = m_nextFenceValue++;
+        const std::uint64_t value = ReserveFrameFenceValue();
         ThrowIfFailed(
             m_commandQueue->Signal(m_fence.Get(), value),
             "ID3D12CommandQueue::Signal",
@@ -1010,55 +1436,16 @@ namespace LamaPon
 
     void D3D12Backend::WaitForFence(const std::uint64_t value)
     {
-        if (value == 0)
-        {
-            return;
-        }
-        const std::uint64_t completedValue =
-            m_fence->GetCompletedValue();
-        if (completedValue
-            == std::numeric_limits<std::uint64_t>::max())
-        {
-            ThrowHResult(
-                DXGI_ERROR_DEVICE_REMOVED,
-                "ID3D12Fence::GetCompletedValue",
-                m_device.Get());
-        }
-        if (completedValue >= value)
-        {
-            return;
-        }
-        ThrowIfFailed(
-            m_fence->SetEventOnCompletion(value, m_fenceEvent),
-            "ID3D12Fence::SetEventOnCompletion",
-            m_device.Get());
-        if (WaitForSingleObject(m_fenceEvent, INFINITE)
-            != WAIT_OBJECT_0)
-        {
-            throw std::runtime_error(
-                "Waiting for the D3D12 fence failed.");
-        }
-        const std::uint64_t completedAfterWait =
-            m_fence->GetCompletedValue();
-        if (completedAfterWait
-            == std::numeric_limits<std::uint64_t>::max())
-        {
-            ThrowHResult(
-                DXGI_ERROR_DEVICE_REMOVED,
-                "ID3D12Fence::GetCompletedValue",
-                m_device.Get());
-        }
-        if (completedAfterWait < value)
-        {
-            throw std::runtime_error(
-                "The D3D12 fence event fired before the requested "
-                "value completed.");
-        }
+        WaitForFenceCompletion(
+            m_device.Get(),
+            m_fence.Get(),
+            m_fenceEvent,
+            value);
     }
 
     void D3D12Backend::WaitForGpu()
     {
-        const std::uint64_t value = m_nextFenceValue++;
+        const std::uint64_t value = ReserveFrameFenceValue();
         ThrowIfFailed(
             m_commandQueue->Signal(m_fence.Get(), value),
             "ID3D12CommandQueue::Signal(wait)",
@@ -1075,6 +1462,418 @@ namespace LamaPon
             CloseAndExecuteOpenCommands();
         }
         WaitForGpu();
+    }
+
+    std::uint64_t D3D12Backend::ReserveFrameFenceValue() noexcept
+    {
+        const std::uint64_t value = m_nextFenceValue++;
+        // 以後に退避されたresourceは、この後に発行される値の完了まで
+        // 保持されます。
+        if (m_resourceDomain != nullptr)
+        {
+            m_resourceDomain->PublishNextFrameFenceValue(
+                m_nextFenceValue);
+        }
+        return value;
+    }
+
+    void D3D12Backend::CollectRetiredResources() noexcept
+    {
+        if (m_resourceDomain == nullptr || m_fence == nullptr)
+        {
+            return;
+        }
+        const std::uint64_t completedValue =
+            m_fence->GetCompletedValue();
+        // device removal中は完了を判定できないため、Shutdownまで保持します。
+        if (completedValue
+            == std::numeric_limits<std::uint64_t>::max())
+        {
+            return;
+        }
+        m_resourceDomain->CollectCompleted(completedValue);
+    }
+
+    void D3D12Backend::ResetFrameUploadArena(
+        const std::size_t index) noexcept
+    {
+        for (auto& chunk : m_frameUploadArenas[index])
+        {
+            chunk.used = 0;
+        }
+    }
+
+    void D3D12Backend::CreateUploadContext()
+    {
+        ThrowIfFailed(
+            m_device->CreateCommandAllocator(
+                D3D12_COMMAND_LIST_TYPE_DIRECT,
+                IID_PPV_ARGS(
+                    m_uploadCommandAllocator.ReleaseAndGetAddressOf())),
+            "ID3D12Device::CreateCommandAllocator(upload)",
+            m_device.Get());
+        ThrowIfFailed(
+            m_device->CreateCommandList(
+                0,
+                D3D12_COMMAND_LIST_TYPE_DIRECT,
+                m_uploadCommandAllocator.Get(),
+                nullptr,
+                IID_PPV_ARGS(
+                    m_uploadCommandList.ReleaseAndGetAddressOf())),
+            "ID3D12Device::CreateCommandList(upload)",
+            m_device.Get());
+        ThrowIfFailed(
+            m_uploadCommandList->Close(),
+            "ID3D12GraphicsCommandList::Close(upload)",
+            m_device.Get());
+        ThrowIfFailed(
+            m_device->CreateFence(
+                0,
+                D3D12_FENCE_FLAG_NONE,
+                IID_PPV_ARGS(m_uploadFence.ReleaseAndGetAddressOf())),
+            "ID3D12Device::CreateFence(upload)",
+            m_device.Get());
+        m_uploadFenceEvent = CreateEventW(
+            nullptr,
+            FALSE,
+            FALSE,
+            nullptr);
+        if (m_uploadFenceEvent == nullptr)
+        {
+            throw std::runtime_error(
+                "CreateEventW failed for the D3D12 upload fence.");
+        }
+    }
+
+    void D3D12Backend::ReleaseUploadContext() noexcept
+    {
+        m_uploadCommandList.Reset();
+        m_uploadCommandAllocator.Reset();
+        m_uploadFence.Reset();
+        if (m_uploadFenceEvent != nullptr)
+        {
+            CloseHandle(m_uploadFenceEvent);
+            m_uploadFenceEvent = nullptr;
+        }
+        m_nextUploadFenceValue = 1;
+        m_retainedUploadResources.clear();
+    }
+
+    void D3D12Backend::SubmitTextureUpload(
+        const Microsoft::WRL::ComPtr<ID3D12Resource>& texture,
+        const std::uint32_t firstMipLevel,
+        const std::span<const GraphicsTextureSubresourceData> data,
+        const bool updateExistingTexture)
+    {
+        const auto description = texture->GetDesc();
+        const auto subresourceCount = static_cast<UINT>(data.size());
+        std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> footprints(
+            subresourceCount);
+        std::vector<UINT> rowCounts(subresourceCount);
+        std::vector<UINT64> rowSizes(subresourceCount);
+        UINT64 totalBytes{};
+        m_device->GetCopyableFootprints(
+            &description,
+            firstMipLevel,
+            subresourceCount,
+            0,
+            footprints.data(),
+            rowCounts.data(),
+            rowSizes.data(),
+            &totalBytes);
+        if (totalBytes == 0
+            || totalBytes == std::numeric_limits<UINT64>::max())
+        {
+            throw std::invalid_argument(
+                "The D3D12 texture upload has no copyable footprint.");
+        }
+
+        const auto uploadHeap = HeapProperties(D3D12_HEAP_TYPE_UPLOAD);
+        const auto stagingDescription = BufferDescription(totalBytes);
+        Microsoft::WRL::ComPtr<ID3D12Resource> staging;
+        ThrowIfFailed(
+            m_device->CreateCommittedResource(
+                &uploadHeap,
+                D3D12_HEAP_FLAG_NONE,
+                &stagingDescription,
+                D3D12_RESOURCE_STATE_GENERIC_READ,
+                nullptr,
+                IID_PPV_ARGS(staging.GetAddressOf())),
+            "ID3D12Device::CreateCommittedResource(texture upload)",
+            m_device.Get());
+        void* mapped{};
+        const D3D12_RANGE noRead{};
+        ThrowIfFailed(
+            staging->Map(0, &noRead, &mapped),
+            "ID3D12Resource::Map(texture upload)",
+            m_device.Get());
+        try
+        {
+            for (UINT index{}; index < subresourceCount; ++index)
+            {
+                const auto mipLevel = firstMipLevel + index;
+                const auto layout = Detail::RequiredTextureLayout(
+                    description.Format,
+                    std::max(
+                        static_cast<std::uint32_t>(
+                            description.Width >> mipLevel),
+                        1u),
+                    std::max(description.Height >> mipLevel, 1u));
+                const auto& footprint = footprints[index];
+                if (rowCounts[index] < layout.rowCount
+                    || footprint.Footprint.RowPitch
+                        < layout.minimumRowBytes)
+                {
+                    throw std::runtime_error(
+                        "The D3D12 texture footprint is smaller than its "
+                        "upload layout.");
+                }
+                // 呼び出し側のrow pitchとD3D12のfootprintは一致しないため、
+                // 1行ずつ必要なbyte数だけを詰め直します。
+                const auto& subresource = data[index];
+                for (std::uint32_t row{}; row < layout.rowCount; ++row)
+                {
+                    std::memcpy(
+                        static_cast<std::byte*>(mapped)
+                            + footprint.Offset
+                            + static_cast<std::size_t>(row)
+                                * footprint.Footprint.RowPitch,
+                        subresource.bytes.data()
+                            + static_cast<std::size_t>(row)
+                                * subresource.rowPitch,
+                        layout.minimumRowBytes);
+                }
+            }
+        }
+        catch (...)
+        {
+            staging->Unmap(0, nullptr);
+            throw;
+        }
+        staging->Unmap(0, nullptr);
+
+        std::scoped_lock lock(m_uploadMutex);
+        if (m_uploadCommandList == nullptr)
+        {
+            throw std::logic_error(
+                "Texture upload requires an initialized D3D12 backend.");
+        }
+        bool executed{};
+        try
+        {
+            ThrowIfFailed(
+                m_uploadCommandAllocator->Reset(),
+                "ID3D12CommandAllocator::Reset(upload)",
+                m_device.Get());
+            ThrowIfFailed(
+                m_uploadCommandList->Reset(
+                    m_uploadCommandAllocator.Get(),
+                    nullptr),
+                "ID3D12GraphicsCommandList::Reset(upload)",
+                m_device.Get());
+            const auto transition = [this, &texture](
+                const UINT subresource,
+                const D3D12_RESOURCE_STATES before,
+                const D3D12_RESOURCE_STATES after)
+            {
+                D3D12_RESOURCE_BARRIER barrier{};
+                barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                barrier.Transition.pResource = texture.Get();
+                barrier.Transition.Subresource = subresource;
+                barrier.Transition.StateBefore = before;
+                barrier.Transition.StateAfter = after;
+                m_uploadCommandList->ResourceBarrier(1, &barrier);
+            };
+            // 既存textureは描画用にPIXEL_SHADER_RESOURCEへ置いているため、
+            // 更新するmipだけを一時的にcopy先へ切り替えます。
+            if (updateExistingTexture)
+            {
+                for (UINT index{}; index < subresourceCount; ++index)
+                {
+                    transition(
+                        firstMipLevel + index,
+                        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                        D3D12_RESOURCE_STATE_COPY_DEST);
+                }
+            }
+            for (UINT index{}; index < subresourceCount; ++index)
+            {
+                D3D12_TEXTURE_COPY_LOCATION destination{};
+                destination.pResource = texture.Get();
+                destination.Type =
+                    D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                destination.SubresourceIndex = firstMipLevel + index;
+                D3D12_TEXTURE_COPY_LOCATION source{};
+                source.pResource = staging.Get();
+                source.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+                source.PlacedFootprint = footprints[index];
+                m_uploadCommandList->CopyTextureRegion(
+                    &destination,
+                    0,
+                    0,
+                    0,
+                    &source,
+                    nullptr);
+            }
+            if (updateExistingTexture)
+            {
+                for (UINT index{}; index < subresourceCount; ++index)
+                {
+                    transition(
+                        firstMipLevel + index,
+                        D3D12_RESOURCE_STATE_COPY_DEST,
+                        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+                }
+            }
+            else
+            {
+                transition(
+                    D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                    D3D12_RESOURCE_STATE_COPY_DEST,
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            }
+            ThrowIfFailed(
+                m_uploadCommandList->Close(),
+                "ID3D12GraphicsCommandList::Close(upload)",
+                m_device.Get());
+            ID3D12CommandList* commandLists[]{
+                m_uploadCommandList.Get() };
+            m_commandQueue->ExecuteCommandLists(1, commandLists);
+            executed = true;
+            const std::uint64_t value = m_nextUploadFenceValue++;
+            ThrowIfFailed(
+                m_commandQueue->Signal(m_uploadFence.Get(), value),
+                "ID3D12CommandQueue::Signal(upload)",
+                m_device.Get());
+            WaitForFenceCompletion(
+                m_device.Get(),
+                m_uploadFence.Get(),
+                m_uploadFenceEvent,
+                value);
+        }
+        catch (...)
+        {
+            if (executed)
+            {
+                // GPUが参照中かもしれない転送元と転送先を、Shutdownまで
+                // 保持します。
+                try
+                {
+                    m_retainedUploadResources.push_back(staging);
+                    m_retainedUploadResources.push_back(texture);
+                }
+                catch (...)
+                {
+                    staging->AddRef();
+                    texture->AddRef();
+                }
+            }
+            m_terminalFailure = true;
+            throw;
+        }
+    }
+
+    ID3D12GraphicsCommandList* D3D12Backend::BeginFrameCommands()
+    {
+        BindBackBuffer();
+        return m_commandList.Get();
+    }
+
+    ID3D12DescriptorHeap*
+        D3D12Backend::ShaderResourceDescriptorHeap() const noexcept
+    {
+        return m_resourceDomain != nullptr
+            ? m_resourceDomain->ShaderResourceHeap()
+            : nullptr;
+    }
+
+    std::optional<D3D12Backend::ShaderResourceBinding>
+        D3D12Backend::TryResolveShaderResource(
+            const GraphicsViewHandle& view) const noexcept
+    {
+        const auto* const payload = TryShaderResourceViewPayload(
+            view,
+            m_resourceDomain.get());
+        if (payload == nullptr)
+        {
+            return std::nullopt;
+        }
+        return ShaderResourceBinding{
+            m_resourceDomain->ShaderResourceGpuHandle(payload->slot),
+            payload->width,
+            payload->height
+        };
+    }
+
+    D3D12Backend::FrameUploadAllocation D3D12Backend::AllocateFrameUpload(
+        const std::uint64_t bytes,
+        const std::uint64_t alignment)
+    {
+        if (!IsInitialized() || !m_commandListOpen)
+        {
+            throw std::logic_error(
+                "AllocateFrameUpload requires an open D3D12 frame "
+                "command list.");
+        }
+        if (bytes == 0
+            || alignment == 0
+            || (alignment & (alignment - 1u)) != 0)
+        {
+            throw std::invalid_argument(
+                "AllocateFrameUpload requires a non-empty size and a "
+                "power-of-two alignment.");
+        }
+
+        auto& arena = m_frameUploadArenas[m_currentBackBufferIndex];
+        for (auto& chunk : arena)
+        {
+            const auto offset = AlignUp(chunk.used, alignment);
+            if (offset <= chunk.capacity
+                && bytes <= chunk.capacity - offset)
+            {
+                chunk.used = offset + bytes;
+                return {
+                    chunk.resource.Get(),
+                    offset,
+                    chunk.resource->GetGPUVirtualAddress() + offset,
+                    chunk.data + offset
+                };
+            }
+        }
+
+        constexpr std::uint64_t MinimumChunkBytes = 1024u * 1024u;
+        FrameUploadChunk chunk;
+        chunk.capacity = std::max(
+            AlignUp(bytes, 64u * 1024u),
+            MinimumChunkBytes);
+        const auto uploadHeap = HeapProperties(D3D12_HEAP_TYPE_UPLOAD);
+        const auto description = BufferDescription(chunk.capacity);
+        ThrowIfFailed(
+            m_device->CreateCommittedResource(
+                &uploadHeap,
+                D3D12_HEAP_FLAG_NONE,
+                &description,
+                D3D12_RESOURCE_STATE_GENERIC_READ,
+                nullptr,
+                IID_PPV_ARGS(chunk.resource.GetAddressOf())),
+            "ID3D12Device::CreateCommittedResource(frame upload)",
+            m_device.Get());
+        void* mapped{};
+        const D3D12_RANGE noRead{};
+        ThrowIfFailed(
+            chunk.resource->Map(0, &noRead, &mapped),
+            "ID3D12Resource::Map(frame upload)",
+            m_device.Get());
+        chunk.data = static_cast<std::byte*>(mapped);
+        chunk.used = bytes;
+        arena.push_back(std::move(chunk));
+        const auto& added = arena.back();
+        return {
+            added.resource.Get(),
+            0u,
+            added.resource->GetGPUVirtualAddress(),
+            added.data
+        };
     }
 
     std::vector<std::uint8_t>
@@ -1350,15 +2149,48 @@ namespace LamaPon
     }
 
     GraphicsTextureHandle D3D12Backend::CreateSolidRgba8Texture(
-        const std::array<std::uint8_t, 4>&)
+        const std::array<std::uint8_t, 4>& color)
     {
-        ThrowUnsupported("CreateSolidRgba8Texture");
+        const GraphicsTexture2DDescription description{
+            1,
+            1,
+            1,
+            GraphicsTextureFormat::Rgba8Unorm
+        };
+        const std::array initialData{
+            GraphicsTextureSubresourceData{
+                std::as_bytes(std::span{ color }),
+                static_cast<std::uint32_t>(color.size()),
+                static_cast<std::uint32_t>(color.size())
+            }
+        };
+        return CreateTexture2D(description, initialData);
     }
 
     GraphicsViewHandle D3D12Backend::CreateShaderResourceView(
-        const GraphicsTextureHandle&)
+        const GraphicsTextureHandle& texture)
     {
-        ThrowUnsupported("CreateShaderResourceView");
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "CreateShaderResourceView requires an initialized D3D12 "
+                "backend.");
+        }
+        const auto* const payload = TryTexturePayload(
+            texture,
+            m_resourceDomain.get());
+        if (payload == nullptr)
+        {
+            throw std::invalid_argument(
+                "CreateShaderResourceView requires a texture from this "
+                "backend generation.");
+        }
+        return CreateShaderResourceView(
+            texture,
+            GraphicsTextureViewDescription{
+                0,
+                payload->description.mipLevels
+            });
     }
 
     bool D3D12Backend::UpdateDynamicVertexBuffer(
@@ -1369,25 +2201,191 @@ namespace LamaPon
     }
 
     GraphicsTextureHandle D3D12Backend::CreateTexture2D(
-        const GraphicsTexture2DDescription&,
-        std::span<const GraphicsTextureSubresourceData>)
+        const GraphicsTexture2DDescription& description,
+        const std::span<const GraphicsTextureSubresourceData>
+            initialData)
     {
-        ThrowUnsupported("CreateTexture2D");
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "CreateTexture2D requires an initialized D3D12 backend.");
+        }
+        if (description.width == 0
+            || description.height == 0
+            || description.width > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION
+            || description.height > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION
+            || description.mipLevels == 0
+            || description.mipLevels > Detail::MaximumTextureMipLevels(
+                description.width,
+                description.height)
+            || (description.updateMode
+                    != GraphicsTextureUpdateMode::Immutable
+                && description.updateMode
+                    != GraphicsTextureUpdateMode::PerMipUpdate)
+            || (description.updateMode
+                    == GraphicsTextureUpdateMode::Immutable
+                && initialData.empty())
+            || (!initialData.empty()
+                && initialData.size() != description.mipLevels))
+        {
+            throw std::invalid_argument(
+                "CreateTexture2D received an invalid description or "
+                "subresource count.");
+        }
+        const auto format = Detail::ToDxgiTextureFormat(
+            description.format);
+        for (std::size_t mipLevel{};
+            mipLevel < initialData.size();
+            ++mipLevel)
+        {
+            Detail::ValidateTexture2DSubresourceData(
+                format,
+                description.width,
+                description.height,
+                description.mipLevels,
+                static_cast<std::uint32_t>(mipLevel),
+                initialData[mipLevel]);
+        }
+
+        D3D12_RESOURCE_DESC nativeDescription{};
+        nativeDescription.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        nativeDescription.Width = description.width;
+        nativeDescription.Height = description.height;
+        nativeDescription.DepthOrArraySize = 1;
+        nativeDescription.MipLevels =
+            static_cast<UINT16>(description.mipLevels);
+        nativeDescription.Format = format;
+        nativeDescription.SampleDesc.Count = 1;
+        nativeDescription.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        nativeDescription.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+        // 初期dataの無いPerMipUpdate textureは、UpdateTexture2Dが前提と
+        // する描画用stateで作ります。dataがある場合はcopy先で作り、転送
+        // 完了時に同じstateへ移します。
+        const auto domain = m_resourceDomain;
+        const bool uploadInitialData = !initialData.empty();
+        const auto defaultHeap = HeapProperties(D3D12_HEAP_TYPE_DEFAULT);
+        Microsoft::WRL::ComPtr<ID3D12Resource> texture;
+        ThrowIfFailed(
+            m_device->CreateCommittedResource(
+                &defaultHeap,
+                D3D12_HEAP_FLAG_NONE,
+                &nativeDescription,
+                uploadInitialData
+                    ? D3D12_RESOURCE_STATE_COPY_DEST
+                    : D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                nullptr,
+                IID_PPV_ARGS(texture.GetAddressOf())),
+            "ID3D12Device::CreateCommittedResource(texture)",
+            m_device.Get());
+        if (uploadInitialData)
+        {
+            SubmitTextureUpload(
+                texture,
+                0u,
+                initialData,
+                false);
+        }
+        return Detail::GraphicsResourceHandleAccess::MakeTexture(
+            std::make_shared<D3D12TexturePayload>(
+                domain,
+                std::move(texture),
+                description,
+                format));
     }
 
     void D3D12Backend::UpdateTexture2D(
-        const GraphicsTextureHandle&,
-        std::uint32_t,
-        const GraphicsTextureSubresourceData&)
+        const GraphicsTextureHandle& texture,
+        const std::uint32_t mipLevel,
+        const GraphicsTextureSubresourceData& data)
     {
-        ThrowUnsupported("UpdateTexture2D");
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "UpdateTexture2D requires an initialized D3D12 backend.");
+        }
+        const auto* const payload = TryTexturePayload(
+            texture,
+            m_resourceDomain.get());
+        if (payload == nullptr
+            || payload->description.updateMode
+                != GraphicsTextureUpdateMode::PerMipUpdate)
+        {
+            throw std::invalid_argument(
+                "UpdateTexture2D requires valid data and a texture from "
+                "this backend generation.");
+        }
+        Detail::ValidateTexture2DSubresourceData(
+            payload->format,
+            payload->description.width,
+            payload->description.height,
+            payload->description.mipLevels,
+            mipLevel,
+            data);
+        SubmitTextureUpload(
+            payload->native,
+            mipLevel,
+            std::span{ &data, 1u },
+            true);
     }
 
     GraphicsViewHandle D3D12Backend::CreateShaderResourceView(
-        const GraphicsTextureHandle&,
-        const GraphicsTextureViewDescription&)
+        const GraphicsTextureHandle& texture,
+        const GraphicsTextureViewDescription& description)
     {
-        ThrowUnsupported("CreateShaderResourceView");
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "CreateShaderResourceView requires an initialized D3D12 "
+                "backend.");
+        }
+        const auto* const payload = TryTexturePayload(
+            texture,
+            m_resourceDomain.get());
+        const auto availableMipLevels = payload != nullptr
+            ? payload->description.mipLevels
+            : 0u;
+        if (availableMipLevels == 0
+            || description.mipLevels == 0
+            || description.mostDetailedMip >= availableMipLevels
+            || description.mipLevels
+                > availableMipLevels - description.mostDetailedMip)
+        {
+            throw std::invalid_argument(
+                "CreateShaderResourceView requires a valid mip range and "
+                "a texture from this backend generation.");
+        }
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC nativeDescription{};
+        nativeDescription.Format = payload->format;
+        nativeDescription.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        nativeDescription.Shader4ComponentMapping =
+            D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        nativeDescription.Texture2D.MostDetailedMip =
+            description.mostDetailedMip;
+        nativeDescription.Texture2D.MipLevels = description.mipLevels;
+
+        const auto domain = m_resourceDomain;
+        const auto slot = domain->AllocateShaderResourceSlot();
+        try
+        {
+            m_device->CreateShaderResourceView(
+                payload->native.Get(),
+                &nativeDescription,
+                domain->ShaderResourceCpuHandle(slot));
+            return Detail::GraphicsResourceHandleAccess::MakeView(
+                std::make_shared<D3D12ShaderResourceViewPayload>(
+                    domain,
+                    texture,
+                    slot,
+                    payload->description.width,
+                    payload->description.height));
+        }
+        catch (...)
+        {
+            domain->ReleaseUnpublishedShaderResourceSlot(slot);
+            throw;
+        }
     }
 
     GraphicsViewHandle D3D12Backend::CreateOffscreenDisplayView(
@@ -1421,9 +2419,11 @@ namespace LamaPon
     }
 
     bool D3D12Backend::IsViewCurrent(
-        const GraphicsViewHandle&) const noexcept
+        const GraphicsViewHandle& view) const noexcept
     {
-        return false;
+        return TryShaderResourceViewPayload(
+            view,
+            m_resourceDomain.get()) != nullptr;
     }
 
     void D3D12Backend::InitializeClusteredLights(

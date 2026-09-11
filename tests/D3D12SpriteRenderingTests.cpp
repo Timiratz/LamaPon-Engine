@@ -1,0 +1,502 @@
+#include "LamaPon/Assets/AssetManager.h"
+#include "LamaPon/Core/Log.h"
+#include "LamaPon/Graphics/GraphicsDevice.h"
+#include "LamaPon/Graphics/SpriteRendering.h"
+#include "LamaPon/Scene/SceneManager.h"
+
+#include <Windows.h>
+#include <objbase.h>
+
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <iostream>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+namespace
+{
+    // 2の累乗にしてviewport変換の係数を誤差なく表し、D3D11とD3D12の
+    // 頂点位置が同じ丸めになるようにします。
+    constexpr std::uint32_t CanvasWidth = 256u;
+    constexpr std::uint32_t CanvasHeight = 128u;
+
+    void Require(const bool condition, const std::string& message)
+    {
+        if (!condition)
+        {
+            throw std::runtime_error(message);
+        }
+    }
+
+    class HiddenWindow final
+    {
+    public:
+        HiddenWindow(
+            const std::uint32_t width,
+            const std::uint32_t height)
+            : m_instance(GetModuleHandleW(nullptr))
+        {
+            WNDCLASSEXW windowClass{};
+            windowClass.cbSize = sizeof(windowClass);
+            windowClass.lpfnWndProc = DefWindowProcW;
+            windowClass.hInstance = m_instance;
+            windowClass.lpszClassName = ClassName;
+            m_class = RegisterClassExW(&windowClass);
+            if (m_class == 0)
+            {
+                throw std::runtime_error(
+                    "The sprite rendering test window class could not be "
+                    "registered");
+            }
+
+            m_window = CreateWindowExW(
+                0,
+                ClassName,
+                L"LamaPonD3D12SpriteRenderingTests",
+                WS_OVERLAPPEDWINDOW,
+                0,
+                0,
+                static_cast<int>(width),
+                static_cast<int>(height),
+                nullptr,
+                nullptr,
+                m_instance,
+                nullptr);
+            if (m_window == nullptr)
+            {
+                UnregisterClassW(ClassName, m_instance);
+                m_class = 0;
+                throw std::runtime_error(
+                    "The sprite rendering test window could not be created");
+            }
+        }
+
+        ~HiddenWindow()
+        {
+            if (m_window != nullptr)
+            {
+                DestroyWindow(m_window);
+            }
+            if (m_class != 0)
+            {
+                UnregisterClassW(ClassName, m_instance);
+            }
+        }
+
+        HiddenWindow(const HiddenWindow&) = delete;
+        HiddenWindow& operator=(const HiddenWindow&) = delete;
+
+        [[nodiscard]] HWND Get() const noexcept
+        {
+            return m_window;
+        }
+
+    private:
+        static constexpr const wchar_t* ClassName =
+            L"LamaPonD3D12SpriteRenderingTests";
+
+        HINSTANCE m_instance{};
+        ATOM m_class{};
+        HWND m_window{};
+    };
+
+    struct Capture final
+    {
+        std::uint32_t width{};
+        std::uint32_t height{};
+        std::vector<std::uint8_t> pixels;
+    };
+
+    [[nodiscard]] DirectX::XMFLOAT4 Premultiplied(
+        const DirectX::XMFLOAT4& color) noexcept
+    {
+        return {
+            color.x * color.w,
+            color.y * color.w,
+            color.z * color.w,
+            color.w
+        };
+    }
+
+    void DrawRectangle(
+        const LamaPon::SpriteRenderPass& pass,
+        const float x,
+        const float y,
+        const float width,
+        const float height,
+        const DirectX::XMFLOAT4& color)
+    {
+        LamaPon::SpriteDrawRequest request;
+        request.position = { x, y };
+        request.scale = { width, height };
+        request.tint = Premultiplied(color);
+        Require(pass.Draw(request), "A sprite rectangle was rejected");
+    }
+
+    // D3D11とD3D12の両方で、同じ順序・同じ内容のSprite passを描きます。
+    // 文字texture、source rectangle、原点、回転、flip、負のscale、入れ子の
+    // scissor、各blend mode、End無しのpass破棄までを1枚へまとめます。
+    void DrawSpriteScene(LamaPon::GraphicsDevice& graphics)
+    {
+        LamaPon::SceneLoadingScreenSettings loading;
+        loading.enabled = true;
+        loading.message = "Loading";
+        loading.showPercentage = true;
+        graphics.DrawLoadingScreen(
+            0.4f,
+            loading,
+            CanvasWidth,
+            CanvasHeight);
+
+        const auto circle = graphics.Assets().LoadTexture("builtin/circle");
+        const auto circleResources = circle != nullptr
+            ? circle->resources.Acquire()
+            : nullptr;
+        Require(
+            circleResources != nullptr
+                && circleResources->shaderResourceView,
+            "The built-in circle texture has no shader resource view");
+        const auto circleView = circleResources->shaderResourceView;
+
+        {
+            auto pass = graphics.BeginSpritePass();
+            DrawRectangle(
+                pass,
+                6.0f,
+                8.0f,
+                40.0f,
+                18.0f,
+                { 0.9f, 0.2f, 0.1f, 1.0f });
+            DrawRectangle(
+                pass,
+                28.0f,
+                14.0f,
+                36.0f,
+                30.0f,
+                { 0.1f, 0.3f, 0.9f, 0.5f });
+
+            LamaPon::SpriteDrawRequest rotated;
+            rotated.texture = circleView;
+            rotated.hasSourceRectangle = true;
+            rotated.sourceRectangle = { 32, 48, 224, 208 };
+            rotated.position = { 96.0f, 40.0f };
+            rotated.origin = { 96.0f, 80.0f };
+            rotated.scale = { 0.2f, 0.25f };
+            rotated.rotation = 0.6f;
+            rotated.flip = LamaPon::SpriteFlip::Horizontal;
+            rotated.tint = { 0.2f, 0.9f, 0.3f, 1.0f };
+            Require(
+                pass.Draw(rotated),
+                "A rotated source-rectangle sprite was rejected");
+
+            LamaPon::SpriteDrawRequest whole;
+            whole.texture = circleView;
+            whole.position = { 150.0f, 6.0f };
+            whole.origin = { 20.0f, 10.0f };
+            whole.scale = { 0.18f, 0.12f };
+            whole.flip = LamaPon::SpriteFlip::Both;
+            whole.tint = { 1.0f, 0.8f, 0.2f, 0.8f };
+            Require(pass.Draw(whole), "A whole-texture sprite was rejected");
+
+            // 負のscaleは通常passでは裏向きとしてcullされ、UI clipping用の
+            // scissor passではD3D11と同じく描かれます。
+            auto mirrored = whole;
+            mirrored.position = { 230.0f, 70.0f };
+            mirrored.scale = { -0.1f, 0.1f };
+            mirrored.flip = LamaPon::SpriteFlip::None;
+            Require(pass.Draw(mirrored), "A mirrored sprite was rejected");
+
+            Require(
+                pass.PushScissor({ 12.5f, 60.0f, 120.0f, 118.0f }),
+                "A sprite scissor was rejected");
+            DrawRectangle(
+                pass,
+                0.0f,
+                50.0f,
+                256.0f,
+                78.0f,
+                { 0.8f, 0.8f, 0.2f, 0.6f });
+            auto clipped = mirrored;
+            clipped.position = { 100.0f, 70.0f };
+            Require(pass.Draw(clipped), "A clipped sprite was rejected");
+            Require(
+                pass.PushScissor({ 30.0f, 40.0f, 200.0f, 90.0f }),
+                "A nested sprite scissor was rejected");
+            DrawRectangle(
+                pass,
+                0.0f,
+                0.0f,
+                256.0f,
+                128.0f,
+                { 0.1f, 0.9f, 0.9f, 0.4f });
+            Require(pass.PopScissor(), "A nested sprite scissor was not popped");
+            Require(pass.PopScissor(), "A sprite scissor was not popped");
+            Require(
+                !pass.PopScissor(),
+                "An empty sprite scissor stack was popped");
+            DrawRectangle(
+                pass,
+                200.0f,
+                100.0f,
+                50.0f,
+                20.0f,
+                { 0.5f, 0.1f, 0.6f, 1.0f });
+
+            LamaPon::SpriteDrawRequest emptySource;
+            emptySource.hasSourceRectangle = true;
+            emptySource.sourceRectangle = { 4, 4, 4, 8 };
+            Require(
+                !pass.Draw(emptySource),
+                "An empty source rectangle was accepted");
+            pass.End();
+        }
+
+        const std::array blendModes{
+            LamaPon::SpriteBlendMode::Additive,
+            LamaPon::SpriteBlendMode::AlphaBlend,
+            LamaPon::SpriteBlendMode::Opaque
+        };
+        for (std::size_t index{}; index < blendModes.size(); ++index)
+        {
+            LamaPon::SpritePassDescription description;
+            description.blend = blendModes[index];
+            auto pass = graphics.BeginSpritePass(description);
+            const float offset = static_cast<float>(index) * 18.0f;
+            LamaPon::SpriteDrawRequest request;
+            request.texture = circleView;
+            request.position = { 140.0f + offset, 64.0f + offset * 0.5f };
+            request.scale = { 0.16f, 0.16f };
+            request.tint = { 0.6f, 0.3f, 0.9f, 0.55f };
+            Require(pass.Draw(request), "A blended sprite was rejected");
+            DrawRectangle(
+                pass,
+                120.0f + offset,
+                96.0f,
+                14.0f,
+                10.0f,
+                { 0.9f, 0.9f, 0.9f, 0.35f });
+            pass.End();
+        }
+
+        // EndせずにSpriteRenderPassを破棄しても、SpriteBatchと同じく積んだ
+        // Spriteを描いてpassを閉じます。
+        {
+            auto pass = graphics.BeginSpritePass();
+            DrawRectangle(
+                pass,
+                180.0f,
+                30.0f,
+                20.0f,
+                20.0f,
+                { 0.0f, 1.0f, 0.0f, 1.0f });
+        }
+    }
+
+    void RequireD3D12CustomShaderFallback(
+        LamaPon::GraphicsDevice& graphics)
+    {
+        LamaPon::SpritePassDescription description;
+        description.pixelShader = "shaders/LamaPonSpriteLit.hlsl";
+        auto pass = graphics.BeginSpritePass(description);
+        const auto status = pass.ShaderStatus();
+        Require(
+            status.fallback
+                    == LamaPon::SpriteShaderFallback::DefaultPipeline
+                && !status.error.empty(),
+            "A DirectX 12 custom sprite shader did not report its default "
+            "pipeline fallback");
+        pass.End();
+    }
+
+    [[nodiscard]] Capture RenderCapture(
+        const LamaPon::RenderingApi api,
+        const LamaPon::GraphicsStartupProfile profile)
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            api,
+            profile);
+        Require(
+            graphics.ActiveRenderingApi() == api,
+            "The requested rendering API did not start on WARP");
+        Require(
+            static_cast<bool>(graphics.WhiteTextureViewHandle()),
+            "The graphics device has no sprite fallback texture");
+
+        constexpr float ClearColor[4]{ 0.08f, 0.12f, 0.18f, 1.0f };
+        Capture capture;
+        graphics.BeginFrame(ClearColor);
+        DrawSpriteScene(graphics);
+        capture.pixels = graphics.CaptureBackBuffer(
+            capture.width,
+            capture.height);
+        if (api == LamaPon::RenderingApi::DirectX12Experimental)
+        {
+            Require(
+                graphics.IsD3D12ExperimentalBootstrap(),
+                "The DirectX 12 sprite test did not use the bootstrap path");
+            RequireD3D12CustomShaderFallback(graphics);
+        }
+        graphics.EndFrame();
+
+        // 2フレーム目は別のframe allocator、upload領域、遅延解放済みの
+        // descriptorを通っても同じ画像になることを確かめます。
+        graphics.BeginFrame(ClearColor);
+        DrawSpriteScene(graphics);
+        std::uint32_t secondWidth{};
+        std::uint32_t secondHeight{};
+        const auto secondPixels = graphics.CaptureBackBuffer(
+            secondWidth,
+            secondHeight);
+        graphics.EndFrame();
+        Require(
+            secondWidth == capture.width
+                && secondHeight == capture.height
+                && secondPixels == capture.pixels,
+            "A repeated sprite frame did not reproduce the first frame");
+        return capture;
+    }
+
+    void RequireNoD3D12DebugErrors()
+    {
+        for (const auto& entry : LamaPon::Logger::Instance().Snapshot())
+        {
+            if (entry.level == LamaPon::LogLevel::Error
+                && entry.message.starts_with("D3D12:"))
+            {
+                throw std::runtime_error(
+                    "The DirectX 12 debug layer reported an error: "
+                    + entry.message);
+            }
+        }
+    }
+
+    void RequireMatchingCaptures(
+        const Capture& d3d11,
+        const Capture& d3d12)
+    {
+        const std::size_t expectedBytes =
+            static_cast<std::size_t>(CanvasWidth) * CanvasHeight * 4u;
+        Require(
+            d3d11.width == CanvasWidth
+                && d3d11.height == CanvasHeight
+                && d3d12.width == CanvasWidth
+                && d3d12.height == CanvasHeight
+                && d3d11.pixels.size() == expectedBytes
+                && d3d12.pixels.size() == expectedBytes,
+            "The sprite captures have unexpected dimensions");
+
+        // 不透明な赤い矩形の中心は、どちらのBackendでも赤くなります。
+        const std::size_t rectangleCenter =
+            (17u * static_cast<std::size_t>(CanvasWidth) + 26u) * 4u;
+        Require(
+            d3d12.pixels[rectangleCenter] > 180u
+                && d3d12.pixels[rectangleCenter + 1u] < 90u,
+            "The DirectX 12 sprite capture did not contain the red rectangle");
+
+        // WARP上の同じ演算でも、最終丸めの1段差だけは許容します。
+        constexpr int ChannelTolerance = 2;
+        std::size_t mismatchedPixels{};
+        std::size_t firstMismatch =
+            std::numeric_limits<std::size_t>::max();
+        int largestDifference{};
+        for (std::size_t pixel{}; pixel < expectedBytes / 4u; ++pixel)
+        {
+            int pixelDifference{};
+            for (std::size_t channel{}; channel < 4u; ++channel)
+            {
+                const auto offset = pixel * 4u + channel;
+                pixelDifference = std::max(
+                    pixelDifference,
+                    std::abs(
+                        static_cast<int>(d3d11.pixels[offset])
+                        - static_cast<int>(d3d12.pixels[offset])));
+            }
+            largestDifference = std::max(
+                largestDifference,
+                pixelDifference);
+            if (pixelDifference > ChannelTolerance)
+            {
+                ++mismatchedPixels;
+                firstMismatch = std::min(firstMismatch, pixel);
+            }
+        }
+        if (mismatchedPixels == 0)
+        {
+            return;
+        }
+
+        const auto describe = [&](const Capture& capture)
+        {
+            const auto offset = firstMismatch * 4u;
+            return std::to_string(capture.pixels[offset]) + ","
+                + std::to_string(capture.pixels[offset + 1u]) + ","
+                + std::to_string(capture.pixels[offset + 2u]) + ","
+                + std::to_string(capture.pixels[offset + 3u]);
+        };
+        throw std::runtime_error(
+            "DirectX 12 sprite output differed from DirectX 11 in "
+            + std::to_string(mismatchedPixels)
+            + " pixels (largest channel difference "
+            + std::to_string(largestDifference)
+            + "; first at "
+            + std::to_string(firstMismatch % CanvasWidth)
+            + ","
+            + std::to_string(firstMismatch / CanvasWidth)
+            + " D3D11="
+            + describe(d3d11)
+            + " D3D12="
+            + describe(d3d12)
+            + ")");
+    }
+}
+
+int main()
+{
+    // AssetManagerのWIC / DirectWrite factoryと文字textureはCOMを使います。
+    const HRESULT comResult =
+        CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    const bool uninitialize = SUCCEEDED(comResult);
+    int result = 0;
+    try
+    {
+        LamaPon::GraphicsDevice::SetPreferWarpAdapter(true);
+        const auto d3d11 = RenderCapture(
+            LamaPon::RenderingApi::DirectX11,
+            LamaPon::GraphicsStartupProfile::FullRenderer);
+
+        // D3D12側だけdebug layerを有効にし、描画中のvalidation errorを
+        // 描画結果の一致とは別に検出します。
+        LamaPon::Logger::Instance().Clear();
+        LamaPon::GraphicsDevice::SetEnableDebugLayer(true);
+        const auto d3d12 = RenderCapture(
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::
+                AllowD3D12ExperimentalBootstrap);
+        LamaPon::GraphicsDevice::SetEnableDebugLayer(false);
+        RequireNoD3D12DebugErrors();
+        RequireMatchingCaptures(d3d11, d3d12);
+        std::cout << "D3D12 sprite rendering tests passed.\n";
+    }
+    catch (const std::exception& error)
+    {
+        std::cerr << error.what() << '\n';
+        result = 1;
+    }
+    LamaPon::GraphicsDevice::SetEnableDebugLayer(false);
+    LamaPon::GraphicsDevice::SetPreferWarpAdapter(false);
+    if (uninitialize)
+    {
+        CoUninitialize();
+    }
+    return result;
+}

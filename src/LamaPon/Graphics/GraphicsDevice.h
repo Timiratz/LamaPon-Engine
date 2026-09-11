@@ -353,8 +353,8 @@ namespace LamaPon
         // 起動時の要求と生成されたBackendが異なる理由です。
         [[nodiscard]] RenderingApiFallbackReason
             RenderingApiFallback() const noexcept;
-        // trueはD3D12 Experimentalのclear/present/resizeだけを利用する
-        // Game bootstrapです。Scene/UI/asset GPU uploadはまだ利用できません。
+        // trueはD3D12 Experimentalのclear/present/resizeとSprite描画だけを
+        // 利用するGame bootstrapです。3D SceneとUI Componentはまだ描けません。
         [[nodiscard]] bool IsD3D12ExperimentalBootstrap() const noexcept;
         [[nodiscard]] const FrameStatistics&
             FrameStats() const noexcept;

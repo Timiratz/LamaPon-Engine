@@ -298,6 +298,9 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Graphics/D3D11Backend.h
     src/LamaPon/Graphics/D3D12Backend.cpp
     src/LamaPon/Graphics/D3D12Backend.h
+    src/LamaPon/Graphics/D3D12SpriteRenderer.cpp
+    src/LamaPon/Graphics/D3D12SpriteRenderer.h
+    src/LamaPon/Graphics/DxgiTextureLayout.h
     src/LamaPon/Graphics/D3D11ClusteredLightsState.cpp
     src/LamaPon/Graphics/D3D11ClusteredLightsState.h
     src/LamaPon/Graphics/D3D11RenderServices.cpp
@@ -968,6 +971,19 @@ if(BUILD_TESTING)
     set_tests_properties(GraphicsBackendSelectionIsolation PROPERTIES
         LABELS "graphics"
         TIMEOUT 60)
+    # 同じSprite passをD3D11とD3D12のWARPで描き、画素とdebug layerを比べます。
+    add_executable(LamaPonD3D12SpriteRenderingTests
+        tests/D3D12SpriteRenderingTests.cpp)
+    target_link_libraries(LamaPonD3D12SpriteRenderingTests PRIVATE LamaPonRuntime)
+    target_compile_options(LamaPonD3D12SpriteRenderingTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
+    add_test(NAME D3D12SpriteRenderingWarp
+        COMMAND LamaPonD3D12SpriteRenderingTests)
+    set_tests_properties(D3D12SpriteRenderingWarp PROPERTIES
+        LABELS "graphics"
+        TIMEOUT 120)
     add_executable(LamaPonAudioOggProbe
         tests/AudioOggProbe.cpp
     )
@@ -1836,6 +1852,8 @@ install(
         PATTERN "D3D11RenderTargetState.h" EXCLUDE
         PATTERN "D3D11ShadowMapState.h" EXCLUDE
         PATTERN "D3D12Backend.h" EXCLUDE
+        PATTERN "D3D12SpriteRenderer.h" EXCLUDE
+        PATTERN "DxgiTextureLayout.h" EXCLUDE
         PATTERN "GraphicsRenderServices.h" EXCLUDE
         PATTERN "GraphicsDeviceResourceLeaseState.h" EXCLUDE
         PATTERN "GraphicsDeviceShaderState.h" EXCLUDE

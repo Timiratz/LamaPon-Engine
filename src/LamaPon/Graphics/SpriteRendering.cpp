@@ -1,6 +1,8 @@
 #include "LamaPon/Graphics/SpriteRendering.h"
 
+#include "LamaPon/Graphics/D3D12SpriteRenderer.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
+#include "LamaPon/Graphics/GraphicsDeviceD3D12Resources.h"
 #include "LamaPon/Graphics/GraphicsDeviceResourceLease.h"
 #include "LamaPon/Graphics/GraphicsDeviceResourceLeaseState.h"
 #include "LamaPon/Graphics/GraphicsDeviceState.h"
@@ -50,9 +52,14 @@ namespace LamaPon::Detail
             return m_status;
         }
 
-        void Activate(const std::uint64_t token) noexcept
+        // d3d12Rendererはpassのleaseが再初期化を拒否する間だけ生存する
+        // DirectX 12 driverです。nullptrならD3D11 driverへ送ります。
+        void Activate(
+            const std::uint64_t token,
+            D3D12SpriteRenderer* const d3d12Renderer = nullptr) noexcept
         {
             m_token = token;
+            m_d3d12Renderer = d3d12Renderer;
             m_phase = Phase::Active;
         }
 
@@ -89,6 +96,10 @@ namespace LamaPon::Detail
                 return false;
             }
             RequireRenderThread();
+            if (m_d3d12Renderer != nullptr)
+            {
+                return m_d3d12Renderer->Draw(m_token, request);
+            }
             return m_gate->owner->DrawD3D11Sprite(
                 m_token,
                 request);
@@ -109,6 +120,10 @@ namespace LamaPon::Detail
                 return false;
             }
             RequireRenderThread();
+            if (m_d3d12Renderer != nullptr)
+            {
+                return m_d3d12Renderer->PushScissor(m_token, rectangle);
+            }
             return m_gate->owner->PushD3D11SpriteScissor(
                 m_token,
                 rectangle);
@@ -128,6 +143,10 @@ namespace LamaPon::Detail
                 return false;
             }
             RequireRenderThread();
+            if (m_d3d12Renderer != nullptr)
+            {
+                return m_d3d12Renderer->PopScissor(m_token);
+            }
             return m_gate->owner->PopD3D11SpriteScissor(
                 m_token);
         }
@@ -158,7 +177,14 @@ namespace LamaPon::Detail
                     RequireRenderThread();
                     try
                     {
-                        m_gate->owner->EndD3D11SpritePass(m_token);
+                        if (m_d3d12Renderer != nullptr)
+                        {
+                            m_d3d12Renderer->End(m_token);
+                        }
+                        else
+                        {
+                            m_gate->owner->EndD3D11SpritePass(m_token);
+                        }
                         m_phase = Phase::Ended;
                     }
                     catch (...)
@@ -198,7 +224,14 @@ namespace LamaPon::Detail
                     && m_gate->owner != nullptr
                     && std::this_thread::get_id() == m_renderThread)
                 {
-                    m_gate->owner->AbortD3D11SpritePass(m_token);
+                    if (m_d3d12Renderer != nullptr)
+                    {
+                        m_d3d12Renderer->Abort(m_token);
+                    }
+                    else
+                    {
+                        m_gate->owner->AbortD3D11SpritePass(m_token);
+                    }
                 }
                 m_phase = Phase::Failed;
             }
@@ -238,6 +271,7 @@ namespace LamaPon::Detail
         GraphicsDeviceResourceLease m_lease;
         std::thread::id m_renderThread;
         std::uint64_t m_token{};
+        D3D12SpriteRenderer* m_d3d12Renderer{};
         Phase m_phase{ Phase::Prepared };
         SpriteShaderStatus m_status;
     };
@@ -362,9 +396,8 @@ namespace LamaPon
     SpriteRenderPass GraphicsDevice::BeginSpritePass(
         const SpritePassDescription& description)
     {
-        // TODO: D3D12Backend実装後はActiveRenderingApiに対応する
-        // Sprite driverを選択します。現状は起動選択で必ずD3D11へ
-        // fallbackするため、未実装設定でもこの経路は安全です。
+        // 実効APIのSprite driverを選びます。D3D12 driverはAPI資源が所有し、
+        // passのleaseが再初期化を拒否する間だけ参照します。
         auto state = std::make_shared<
             Detail::SpriteRenderPassState>(
                 m_state->m_resourceLeaseState,
@@ -377,13 +410,33 @@ namespace LamaPon
                 throw std::logic_error(
                     "GraphicsDevice is shutting down.");
             }
-            const auto token = BeginD3D11SpritePass(
-                description,
-                true,
-                &state->MutableStatus(),
-                nullptr,
-                nullptr);
-            state->Activate(token);
+            if (auto* const d3d12Resources = dynamic_cast<
+                    Detail::GraphicsDeviceD3D12Resources*>(
+                        m_state->m_apiResources.get()))
+            {
+                auto* const renderer =
+                    d3d12Resources->TrySpriteRenderer();
+                if (renderer == nullptr)
+                {
+                    throw std::logic_error(
+                        "The DirectX 12 sprite renderer is not initialized.");
+                }
+                const auto token = renderer->Begin(
+                    description,
+                    m_state->m_whiteTextureView,
+                    state->MutableStatus());
+                state->Activate(token, renderer);
+            }
+            else
+            {
+                const auto token = BeginD3D11SpritePass(
+                    description,
+                    true,
+                    &state->MutableStatus(),
+                    nullptr,
+                    nullptr);
+                state->Activate(token);
+            }
         }
         return SpriteRenderPass{ std::move(state) };
     }

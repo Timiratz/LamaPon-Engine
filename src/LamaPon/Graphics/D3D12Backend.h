@@ -1,7 +1,7 @@
 #pragma once
 
-// DirectX 12の起動・swap chain lifecycleを先行して検証するための
-// Runtime内部Backendです。描画資源と高水準pipelineは後続段階で実装します。
+// DirectX 12の起動・swap chain lifecycleと、Sprite描画に必要なtexture資源を
+// 扱うRuntime内部Backendです。3D描画pipelineは後続段階で実装します。
 #include "LamaPon/Graphics/GraphicsBackend.h"
 
 #include <d3d12.h>
@@ -10,12 +10,22 @@
 #include <wrl/client.h>
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <span>
 #include <vector>
 
 namespace LamaPon
 {
+    namespace Detail
+    {
+        class D3D12ResourceDomain;
+    }
+
     class D3D12Backend final : public GraphicsBackend
     {
     public:
@@ -142,22 +152,94 @@ namespace LamaPon
             AssetManager& assets,
             const std::filesystem::path& shaderPath) override;
 
+        // D3D12描画島（Sprite renderer等）だけが使うRuntime内部入口です。
+        // 共通Backend契約へは追加せず、このheaderもSDKへinstallしません。
+        struct ShaderResourceBinding final
+        {
+            D3D12_GPU_DESCRIPTOR_HANDLE descriptor{};
+            // viewが参照するtextureの最上位mipの寸法です。
+            std::uint32_t width{};
+            std::uint32_t height{};
+        };
+
+        // 現在のframe command listがGPUで完了するまで有効なupload領域です。
+        struct FrameUploadAllocation final
+        {
+            ID3D12Resource* resource{};
+            std::uint64_t offset{};
+            D3D12_GPU_VIRTUAL_ADDRESS gpuAddress{};
+            std::byte* data{};
+        };
+
+        static constexpr DXGI_FORMAT PrimaryColorFormat =
+            DXGI_FORMAT_R8G8B8A8_UNORM;
+        static constexpr DXGI_FORMAT PrimaryDepthFormat =
+            DXGI_FORMAT_D24_UNORM_S8_UINT;
+
+        [[nodiscard]] ID3D12Device* Device() const noexcept
+        {
+            return m_device.Get();
+        }
+        // frame command listを開いてprimary outputをbindし、記録先を返します。
+        [[nodiscard]] ID3D12GraphicsCommandList* BeginFrameCommands();
+        [[nodiscard]] ID3D12DescriptorHeap*
+            ShaderResourceDescriptorHeap() const noexcept;
+        // 別Backend世代やShaderResource以外のviewはnulloptです。
+        [[nodiscard]] std::optional<ShaderResourceBinding>
+            TryResolveShaderResource(
+                const GraphicsViewHandle& view) const noexcept;
+        // BeginFrameCommandsの後、同じframeの記録中だけ呼べます。
+        [[nodiscard]] FrameUploadAllocation AllocateFrameUpload(
+            std::uint64_t bytes,
+            std::uint64_t alignment);
+        [[nodiscard]] const D3D12_VIEWPORT&
+            PrimaryViewport() const noexcept
+        {
+            return m_viewport;
+        }
+        [[nodiscard]] const D3D12_RECT&
+            PrimaryScissorRectangle() const noexcept
+        {
+            return m_scissorRect;
+        }
+
     private:
         static constexpr std::size_t BackBufferCount = 2;
+
+        struct FrameUploadChunk final
+        {
+            Microsoft::WRL::ComPtr<ID3D12Resource> resource;
+            std::byte* data{};
+            std::uint64_t capacity{};
+            std::uint64_t used{};
+        };
 
         void CreateSizeDependentResources(
             std::uint32_t width,
             std::uint32_t height);
         void ReleaseSizeDependentResources() noexcept;
+        void CreateUploadContext();
+        void ReleaseUploadContext() noexcept;
         void OpenCommandList();
         void TransitionCurrentBackBuffer(
             D3D12_RESOURCE_STATES state);
         void BindPrimaryOutput();
         void CloseAndExecuteOpenCommands();
+        [[nodiscard]] std::uint64_t ReserveFrameFenceValue() noexcept;
         [[nodiscard]] std::uint64_t SignalCurrentBackBuffer();
         void WaitForFence(std::uint64_t value);
         void WaitForGpu();
         void DrainGpu();
+        void CollectRetiredResources() noexcept;
+        void ResetFrameUploadArena(std::size_t index) noexcept;
+        // 転送元bufferを作ってCPU dataを詰め、専用command listで同期転送
+        // します。Asset準備workerからも呼べるよう、frame command listとは
+        // 独立したallocator / fenceを使います。
+        void SubmitTextureUpload(
+            const Microsoft::WRL::ComPtr<ID3D12Resource>& texture,
+            std::uint32_t firstMipLevel,
+            std::span<const GraphicsTextureSubresourceData> data,
+            bool updateExistingTexture);
         [[nodiscard]] std::vector<std::uint8_t>
             CaptureBackBufferImpl(
                 std::uint32_t& width,
@@ -197,10 +279,28 @@ namespace LamaPon
         D3D12_RECT m_scissorRect{};
         bool m_tearingAllowed{};
         bool m_commandListOpen{};
-        bool m_terminalFailure{};
+        // texture uploadはworker threadからも終端状態へ遷移させます。
+        std::atomic_bool m_terminalFailure{ false };
         // Execute後にfence signal/waitが失敗しても、GPUが参照し得る
         // readback資源をShutdownまで保持します。
         std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>
             m_retainedSubmissionResources;
+
+        // handleが最後の参照を失ったresource / descriptorを、GPUの完了まで
+        // 退避するBackend世代のdomainです。
+        std::shared_ptr<Detail::D3D12ResourceDomain> m_resourceDomain;
+        // back bufferごとのframe allocatorと同じ寿命で再利用します。
+        std::array<std::vector<FrameUploadChunk>, BackBufferCount>
+            m_frameUploadArenas;
+        std::mutex m_uploadMutex;
+        Microsoft::WRL::ComPtr<ID3D12CommandAllocator>
+            m_uploadCommandAllocator;
+        Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList>
+            m_uploadCommandList;
+        Microsoft::WRL::ComPtr<ID3D12Fence> m_uploadFence;
+        HANDLE m_uploadFenceEvent{};
+        std::uint64_t m_nextUploadFenceValue{ 1 };
+        std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>
+            m_retainedUploadResources;
     };
 }

@@ -1,5 +1,7 @@
 #include "LamaPon/Graphics/GraphicsDeviceD3D12Resources.h"
 
+#include "LamaPon/Graphics/D3D12Backend.h"
+#include "LamaPon/Graphics/D3D12SpriteRenderer.h"
 #include "LamaPon/Graphics/GraphicsBackend.h"
 #include "LamaPon/Graphics/ShadowMap.h"
 
@@ -9,7 +11,12 @@
 
 namespace LamaPon::Detail
 {
-    GraphicsDeviceD3D12Resources::GraphicsDeviceD3D12Resources() = default;
+    GraphicsDeviceD3D12Resources::GraphicsDeviceD3D12Resources(
+        D3D12Backend& backend)
+        : m_spriteRenderer(
+            std::make_unique<D3D12SpriteRenderer>(backend))
+    {
+    }
 
     GraphicsDeviceD3D12Resources::~GraphicsDeviceD3D12Resources() noexcept
     {
@@ -25,6 +32,7 @@ namespace LamaPon::Detail
     void GraphicsDeviceD3D12Resources::ResetHighLevelResources() noexcept
     {
         QuiesceResourceWork();
+        m_spriteRenderer.reset();
         m_directionalShadowMap.reset();
         m_spotShadowMap.reset();
         m_pointShadowMap.reset();
@@ -85,17 +93,24 @@ namespace LamaPon::Detail
         return m_pointShadowMap.get();
     }
 
+    D3D12SpriteRenderer*
+        GraphicsDeviceD3D12Resources::TrySpriteRenderer() noexcept
+    {
+        return m_spriteRenderer.get();
+    }
+
     std::unique_ptr<GraphicsDeviceApiResources>
         CreateD3D12GraphicsDeviceApiResources(
             GraphicsBackend& backend)
     {
-        if (backend.Api() != RenderingApi::DirectX12Experimental
-            || !backend.IsInitialized())
+        auto* const d3d12Backend = dynamic_cast<D3D12Backend*>(&backend);
+        if (d3d12Backend == nullptr || !d3d12Backend->IsInitialized())
         {
             throw std::invalid_argument(
                 "DirectX 12 API resources require an initialized DirectX "
                 "12 backend.");
         }
-        return std::make_unique<GraphicsDeviceD3D12Resources>();
+        return std::make_unique<GraphicsDeviceD3D12Resources>(
+            *d3d12Backend);
     }
 }

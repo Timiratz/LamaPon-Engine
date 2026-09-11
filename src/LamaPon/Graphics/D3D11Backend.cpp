@@ -6,6 +6,7 @@
 #include "LamaPon/Graphics/D3D11RenderTargetState.h"
 #include "LamaPon/Graphics/D3D11ShadowMapState.h"
 #include "LamaPon/Graphics/DebugRenderer.h"
+#include "LamaPon/Graphics/DxgiTextureLayout.h"
 #include "LamaPon/Graphics/GpuProfiler.h"
 #include "LamaPon/Graphics/RenderTarget.h"
 #include "LamaPon/Graphics/ShadowMap.h"
@@ -244,88 +245,24 @@ namespace
         }
     }
 
+    // format変換とsubresource検証はD3D12 Backendと同じ規則を共有します。
+    using LamaPon::Detail::RequiredTextureLayout;
+
     [[nodiscard]] DXGI_FORMAT ToDxgiFormat(
         const LamaPon::GraphicsTextureFormat format)
     {
-        switch (format)
-        {
-        case LamaPon::GraphicsTextureFormat::Rgba8Unorm:
-            return DXGI_FORMAT_R8G8B8A8_UNORM;
-        case LamaPon::GraphicsTextureFormat::Bgra8Unorm:
-            return DXGI_FORMAT_B8G8R8A8_UNORM;
-        case LamaPon::GraphicsTextureFormat::Bc1Unorm:
-            return DXGI_FORMAT_BC1_UNORM;
-        case LamaPon::GraphicsTextureFormat::Bc3Unorm:
-            return DXGI_FORMAT_BC3_UNORM;
-        case LamaPon::GraphicsTextureFormat::Bc5Unorm:
-            return DXGI_FORMAT_BC5_UNORM;
-        case LamaPon::GraphicsTextureFormat::Rgba16Float:
-            return DXGI_FORMAT_R16G16B16A16_FLOAT;
-        default:
-            throw std::invalid_argument(
-                "Unsupported graphics texture format.");
-        }
+        return LamaPon::Detail::ToDxgiTextureFormat(format);
     }
 
     [[nodiscard]] std::uint32_t MaximumMipLevels(
-        std::uint32_t width,
-        std::uint32_t height,
-        std::uint32_t depth = 1) noexcept
-    {
-        std::uint32_t levels = 1;
-        while (width > 1 || height > 1 || depth > 1)
-        {
-            width = std::max(width / 2, 1u);
-            height = std::max(height / 2, 1u);
-            depth = std::max(depth / 2, 1u);
-            ++levels;
-        }
-        return levels;
-    }
-
-    struct TextureSubresourceLayout final
-    {
-        std::uint32_t minimumRowBytes{};
-        std::uint32_t rowCount{};
-    };
-
-    [[nodiscard]] TextureSubresourceLayout RequiredTextureLayout(
-        const DXGI_FORMAT format,
         const std::uint32_t width,
-        const std::uint32_t height)
+        const std::uint32_t height,
+        const std::uint32_t depth = 1) noexcept
     {
-        switch (format)
-        {
-        case DXGI_FORMAT_R8G8B8A8_UNORM:
-        case DXGI_FORMAT_B8G8R8A8_UNORM:
-            if (width > std::numeric_limits<std::uint32_t>::max() / 4u)
-            {
-                throw std::invalid_argument(
-                    "The texture row pitch cannot be represented.");
-            }
-            return { width * 4u, height };
-        case DXGI_FORMAT_R16G16B16A16_FLOAT:
-            if (width > std::numeric_limits<std::uint32_t>::max() / 8u)
-            {
-                throw std::invalid_argument(
-                    "The texture row pitch cannot be represented.");
-            }
-            return { width * 8u, height };
-        case DXGI_FORMAT_BC1_UNORM:
-            return {
-                std::max((width + 3u) / 4u, 1u) * 8u,
-                std::max((height + 3u) / 4u, 1u)
-            };
-        case DXGI_FORMAT_BC3_UNORM:
-        case DXGI_FORMAT_BC5_UNORM:
-            return {
-                std::max((width + 3u) / 4u, 1u) * 16u,
-                std::max((height + 3u) / 4u, 1u)
-            };
-        default:
-            throw std::invalid_argument(
-                "The texture format has no upload layout.");
-        }
+        return LamaPon::Detail::MaximumTextureMipLevels(
+            width,
+            height,
+            depth);
     }
 
     void ValidateTextureSubresourceData(
@@ -333,46 +270,13 @@ namespace
         const std::uint32_t mipLevel,
         const LamaPon::GraphicsTextureSubresourceData& data)
     {
-        if (mipLevel >= texture.MipLevels
-            || data.bytes.empty()
-            || data.rowPitch == 0
-            || (data.slicePitch == 0
-                && data.bytes.size()
-                    > std::numeric_limits<UINT>::max()))
-        {
-            throw std::invalid_argument(
-                "The texture subresource data is incomplete.");
-        }
-
-        const auto mipWidth = std::max(
-            texture.Width >> mipLevel,
-            1u);
-        const auto mipHeight = std::max(
-            texture.Height >> mipLevel,
-            1u);
-        const auto layout = RequiredTextureLayout(
+        LamaPon::Detail::ValidateTexture2DSubresourceData(
             texture.Format,
-            mipWidth,
-            mipHeight);
-        if (data.rowPitch < layout.minimumRowBytes)
-        {
-            throw std::invalid_argument(
-                "The texture subresource row pitch is too small.");
-        }
-        const auto requiredBytes =
-            static_cast<std::uint64_t>(data.rowPitch)
-                * (layout.rowCount - 1u)
-            + layout.minimumRowBytes;
-        const auto slicePitch = data.slicePitch != 0
-            ? static_cast<std::uint64_t>(data.slicePitch)
-            : static_cast<std::uint64_t>(data.bytes.size());
-        if (requiredBytes > data.bytes.size()
-            || requiredBytes > slicePitch
-            || slicePitch > data.bytes.size())
-        {
-            throw std::invalid_argument(
-                "The texture subresource byte range is too small.");
-        }
+            texture.Width,
+            texture.Height,
+            texture.MipLevels,
+            mipLevel,
+            data);
     }
 
     void ValidateTexture3DSubresourceData(

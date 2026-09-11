@@ -1,19 +1,26 @@
 #pragma once
 
-// DirectX 12 ExperimentalのGraphicsDevice資源です。現段階では
-// 高水準rendererを実装せず、D3D11 native objectを持たない起動用の
-// 安全なplaceholderだけを所有します。SDKにはインストールしません。
+// DirectX 12 ExperimentalのGraphicsDevice資源です。現段階ではSprite描画の
+// 既定pipelineと、影を持たない安全なShadowMap facadeを所有します。
+// D3D11 native objectは持たず、SDKにもインストールしません。
 #include "LamaPon/Graphics/GraphicsDeviceApiResources.h"
 
 #include <memory>
 
+namespace LamaPon
+{
+    class D3D12Backend;
+}
+
 namespace LamaPon::Detail
 {
+    class D3D12SpriteRenderer;
+
     class GraphicsDeviceD3D12Resources final
         : public GraphicsDeviceApiResources
     {
     public:
-        GraphicsDeviceD3D12Resources();
+        explicit GraphicsDeviceD3D12Resources(D3D12Backend& backend);
         ~GraphicsDeviceD3D12Resources() noexcept override;
 
         GraphicsDeviceD3D12Resources(
@@ -40,7 +47,11 @@ namespace LamaPon::Detail
         [[nodiscard]] ShadowMap*
             TryPointShadowMap() const noexcept override;
 
+        // SpriteRenderPassのD3D12 driverです。資源解放後はnullptrです。
+        [[nodiscard]] D3D12SpriteRenderer* TrySpriteRenderer() noexcept;
+
     private:
+        std::unique_ptr<D3D12SpriteRenderer> m_spriteRenderer;
         // Sceneの影判定はShadowMap accessorを常に取得できることを前提に
         // するため、Experimental段階でも空のfacadeを保持します。
         std::unique_ptr<ShadowMap> m_directionalShadowMap;
