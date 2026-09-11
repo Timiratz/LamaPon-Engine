@@ -1,8 +1,12 @@
 #include "LamaPon/Assets/AssetManager.h"
+#include "LamaPon/Components/CameraComponent.h"
+#include "LamaPon/Components/MeshRendererComponent.h"
 #include "LamaPon/Core/Log.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Graphics/SpriteRendering.h"
+#include "LamaPon/Scene/Scene.h"
 #include "LamaPon/Scene/SceneManager.h"
+#include "LamaPon/Scene/GameObject.h"
 
 #include <Windows.h>
 #include <objbase.h>
@@ -380,6 +384,85 @@ namespace
         }
     }
 
+    void RequireD3D12PrimitiveScene()
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap);
+        LamaPon::Scene scene(graphics);
+        auto& cameraObject = scene.CreateGameObject("MainCamera");
+        cameraObject.GetTransform().position = { 0.0f, 0.0f, 4.0f };
+        auto& camera = cameraObject.AddComponent<LamaPon::CameraComponent>();
+        scene.SetMainCamera(camera);
+
+        const std::array shapes{
+            LamaPon::PrimitiveShape::Cube,
+            LamaPon::PrimitiveShape::Sphere,
+            LamaPon::PrimitiveShape::Cylinder,
+            LamaPon::PrimitiveShape::Plane };
+        for (std::size_t index{}; index < shapes.size(); ++index)
+        {
+            auto& object = scene.CreateGameObject("Primitive");
+            object.GetTransform().position = {
+                -1.35f + static_cast<float>(index) * 0.9f,
+                0.0f,
+                0.0f };
+            object.GetTransform().scale = { 0.7f, 0.7f, 0.7f };
+            if (shapes[index] == LamaPon::PrimitiveShape::Plane)
+            {
+                object.GetTransform().SetEulerAngles(
+                    DirectX::XM_PIDIV2, 0.0f, 0.0f);
+            }
+            object.AddComponent<LamaPon::MeshRendererComponent>(
+                shapes[index],
+                DirectX::XMFLOAT4{ 0.95f, 0.2f, 0.12f, 1.0f });
+        }
+
+        auto& proceduralObject = scene.CreateGameObject("Procedural");
+        proceduralObject.GetTransform().position = { 0.0f, 0.85f, 0.0f };
+        auto& procedural = proceduralObject.AddComponent<
+            LamaPon::MeshRendererComponent>(
+                LamaPon::PrimitiveShape::Cube,
+                DirectX::XMFLOAT4{ 0.1f, 0.85f, 0.25f, 1.0f });
+        procedural.SetProceduralMesh(
+            {
+                { { -0.4f, -0.3f, 0.0f }, { 0, 0, 1 }, { 0, 1 } },
+                { { 0.0f, 0.4f, 0.0f }, { 0, 0, 1 }, { 0.5f, 0 } },
+                { { 0.4f, -0.3f, 0.0f }, { 0, 0, 1 }, { 1, 1 } }
+            },
+            { 0, 1, 2 });
+
+        constexpr float clearColor[4]{ 0.02f, 0.03f, 0.05f, 1.0f };
+        graphics.BeginFrame(clearColor);
+        scene.RenderMainCamera(
+            static_cast<float>(CanvasWidth) / CanvasHeight,
+            false,
+            nullptr);
+        std::uint32_t width{};
+        std::uint32_t height{};
+        const auto pixels = graphics.CaptureBackBuffer(width, height);
+        graphics.EndFrame();
+        Require(
+            width == CanvasWidth && height == CanvasHeight,
+            "The DirectX 12 primitive capture has unexpected dimensions");
+        std::size_t coloredPixels{};
+        for (std::size_t offset{}; offset + 3u < pixels.size(); offset += 4u)
+        {
+            if (pixels[offset] > 45u || pixels[offset + 1u] > 45u)
+            {
+                ++coloredPixels;
+            }
+        }
+        Require(
+            coloredPixels > 300u,
+            "The DirectX 12 scene did not render its primitive meshes");
+    }
+
     void RequireMatchingCaptures(
         const Capture& d3d11,
         const Capture& d3d12)
@@ -482,6 +565,7 @@ int main()
             LamaPon::RenderingApi::DirectX12Experimental,
             LamaPon::GraphicsStartupProfile::
                 AllowD3D12ExperimentalBootstrap);
+        RequireD3D12PrimitiveScene();
         LamaPon::GraphicsDevice::SetEnableDebugLayer(false);
         RequireNoD3D12DebugErrors();
         RequireMatchingCaptures(d3d11, d3d12);

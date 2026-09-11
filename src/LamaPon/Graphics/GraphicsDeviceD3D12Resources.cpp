@@ -1,8 +1,10 @@
 #include "LamaPon/Graphics/GraphicsDeviceD3D12Resources.h"
 
 #include "LamaPon/Graphics/D3D12Backend.h"
+#include "LamaPon/Graphics/D3D12RenderServices.h"
 #include "LamaPon/Graphics/D3D12SpriteRenderer.h"
 #include "LamaPon/Graphics/GraphicsBackend.h"
+#include "LamaPon/Graphics/GraphicsRenderServices.h"
 #include "LamaPon/Graphics/ShadowMap.h"
 
 #include <memory>
@@ -15,6 +17,7 @@ namespace LamaPon::Detail
         D3D12Backend& backend)
         : m_spriteRenderer(
             std::make_unique<D3D12SpriteRenderer>(backend))
+        , m_renderServices(CreateD3D12GraphicsRenderServices(backend))
     {
     }
 
@@ -25,14 +28,15 @@ namespace LamaPon::Detail
 
     void GraphicsDeviceD3D12Resources::QuiesceResourceWork() noexcept
     {
-        // D3D12 Experimentalにはまだshader workerやrender serviceがなく、
-        // Backendを借用する非同期作業も開始しません。
+        // D3D12 render serviceは同期描画だけを行い、Backendを借用する
+        // 非同期作業は開始しません。
     }
 
     void GraphicsDeviceD3D12Resources::ResetHighLevelResources() noexcept
     {
         QuiesceResourceWork();
         m_spriteRenderer.reset();
+        m_renderServices.reset();
         m_directionalShadowMap.reset();
         m_spotShadowMap.reset();
         m_pointShadowMap.reset();
@@ -46,8 +50,7 @@ namespace LamaPon::Detail
     GraphicsRenderServices*
         GraphicsDeviceD3D12Resources::TryRenderServices() noexcept
     {
-        // ParticleなどのD3D11-only rendererは呼び出し側がfalseへ倒します。
-        return nullptr;
+        return m_renderServices.get();
     }
 
     void GraphicsDeviceD3D12Resources::RecreateShadowMaps(

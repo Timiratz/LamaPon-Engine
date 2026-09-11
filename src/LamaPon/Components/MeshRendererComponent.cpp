@@ -4,6 +4,7 @@
 #include "LamaPon/Components/ReflectionProbeComponent.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Graphics/GraphicsDeviceD3D11Access.h"
+#include "LamaPon/Graphics/GraphicsRenderServices.h"
 #include "LamaPon/Graphics/LitEffect.h"
 #include "LamaPon/Graphics/LitMaterialAsset.h"
 #include "LamaPon/Graphics/LitTextureRequest.h"
@@ -1036,6 +1037,62 @@ namespace LamaPon
         if (m_instancedThisPass)
         {
             m_instancedThisPass = false;
+            return;
+        }
+        if (m_graphics != nullptr
+            && m_graphics->ActiveRenderingApi()
+                == RenderingApi::DirectX12Experimental)
+        {
+            PrimitiveDrawRequest request;
+            switch (m_shape)
+            {
+            case PrimitiveShape::Cube:
+                request.shape = PrimitiveRenderShape::Cube;
+                break;
+            case PrimitiveShape::Sphere:
+                request.shape = PrimitiveRenderShape::Sphere;
+                break;
+            case PrimitiveShape::Cylinder:
+                request.shape = PrimitiveRenderShape::Cylinder;
+                break;
+            case PrimitiveShape::Plane:
+                request.shape = PrimitiveRenderShape::Plane;
+                break;
+            default:
+                return;
+            }
+
+            std::vector<PrimitiveRenderVertex> proceduralVertices;
+            if (HasProceduralMesh())
+            {
+                request.shape = PrimitiveRenderShape::Procedural;
+                proceduralVertices.reserve(m_proceduralVertices.size());
+                for (const auto& vertex : m_proceduralVertices)
+                {
+                    proceduralVertices.push_back({
+                        vertex.position,
+                        vertex.normal,
+                        vertex.textureCoordinate });
+                }
+                request.vertices = proceduralVertices;
+                request.indices = m_proceduralIndices;
+            }
+            DirectX::XMStoreFloat4x4(
+                &request.world,
+                Owner().WorldMatrix());
+            DirectX::XMStoreFloat4x4(&request.view, view);
+            DirectX::XMStoreFloat4x4(&request.projection, projection);
+            request.baseColor = m_material.BaseColor();
+            const auto textures = BuildLitTextureRequest();
+            request.albedo = textures.albedo;
+            request.fallbackTexture =
+                m_graphics->WhiteTextureViewHandle();
+            request.alphaBlend =
+                m_worldOverlay || request.baseColor.w < 1.0f;
+            request.depthTest = !m_worldOverlay;
+            request.depthWrite =
+                request.depthTest && !request.alphaBlend;
+            static_cast<void>(m_graphics->DrawPrimitive(request));
             return;
         }
         RefreshShader(false);

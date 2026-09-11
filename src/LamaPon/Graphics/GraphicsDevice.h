@@ -91,10 +91,12 @@ namespace LamaPon
     class InputSystem;
     class LitEffect;
     class ModelRendererComponent;
+    class MeshRendererComponent;
     class ParticleSystemComponent;
     struct LitTextureRequest;
     struct ReflectionProbeEnvironment;
     struct ParticleDrawRequest;
+    struct PrimitiveDrawRequest;
     class SpriteEffect;
     class ShadowMap;
     class RenderTarget;
@@ -736,6 +738,7 @@ namespace LamaPon
     private:
         friend class Application;
         friend class ModelRendererComponent;
+        friend class MeshRendererComponent;
         friend class ParticleSystemComponent;
         friend class SkeletalModel;
         friend class Detail::GraphicsDeviceD3D11Access;
@@ -888,6 +891,8 @@ namespace LamaPon
             const std::array<DirectX::XMFLOAT4, 8>& customParameters,
             std::uint64_t* shaderGeneration,
             std::string* shaderError);
+        [[nodiscard]] bool DrawPrimitive(
+            const PrimitiveDrawRequest& request);
         // API 46のGame Moduleが旧公開名を解決してからAPI不一致を
         // 案内できるよう、外部callerのないD3D11具象facadeも
         // 1互換期間だけprivate shimとして残します。

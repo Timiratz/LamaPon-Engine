@@ -420,10 +420,16 @@ namespace LamaPon
                             m_graphics.EndSceneComposition(
                                 m_scene->PostProcessFrameData());
                         }
-                        // D3D12 Experimentalではoffscreen / 3D pipelineが
-                        // 未実装のため、実シーンの2D/UIだけをprimary outputへ
-                        // 直接描きます。Game ModuleとSimulationは上の共通経路で
-                        // 通常どおり動作します。
+                        else
+                        {
+                            // D3D12 Experimentalは最小3D pipelineをprimary
+                            // outputへ直接描きます。HDR/post-processは未実装です。
+                            m_scene->RenderMainCamera(
+                                m_graphics.AspectRatio(),
+                                false,
+                                nullptr);
+                        }
+                        // UIは両APIとも3Dの後へ重ねます。
                         m_scene->Render2D();
                         const auto& scenes =
                             m_scene->Scenes();

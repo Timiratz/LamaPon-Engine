@@ -6,6 +6,16 @@
 
 namespace LamaPon
 {
+    bool GraphicsDevice::DrawPrimitive(
+        const PrimitiveDrawRequest& request)
+    {
+        auto* const renderServices = m_state->m_apiResources != nullptr
+            ? m_state->m_apiResources->TryRenderServices()
+            : nullptr;
+        return renderServices != nullptr
+            && renderServices->DrawPrimitive(request);
+    }
+
     bool GraphicsDevice::DrawParticles(
         const ParticleDrawRequest& request,
         const std::filesystem::path& shaderPath,

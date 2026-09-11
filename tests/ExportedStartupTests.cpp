@@ -124,9 +124,9 @@ int main()
         Require(runtimeLogText.find("DirectX 12 Experimental bootstrap")
                 != std::string::npos,
             "The exported DirectX 12 Experimental game did not use its bootstrap startup path.");
-        Require(runtimeLogText.find("Sceneの2D/UI描画を検証")
+        Require(runtimeLogText.find("Sceneの3Dと2D/UI描画を検証")
                 != std::string::npos,
-            "The exported DirectX 12 Experimental game did not render its scene UI.");
+            "The exported DirectX 12 Experimental game did not render its scene.");
         std::cout << "Exported startup tests passed.\n";
         return 0;
     }

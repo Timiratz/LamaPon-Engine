@@ -1,6 +1,6 @@
 #pragma once
 
-// DirectX 12 ExperimentalのGraphicsDevice資源です。現段階ではSprite描画の
+// DirectX 12 ExperimentalのGraphicsDevice資源です。Sprite／最小3D Meshの
 // 既定pipelineと、影を持たない安全なShadowMap facadeを所有します。
 // D3D11 native objectは持たず、SDKにもインストールしません。
 #include "LamaPon/Graphics/GraphicsDeviceApiResources.h"
@@ -52,6 +52,7 @@ namespace LamaPon::Detail
 
     private:
         std::unique_ptr<D3D12SpriteRenderer> m_spriteRenderer;
+        std::unique_ptr<GraphicsRenderServices> m_renderServices;
         // Sceneの影判定はShadowMap accessorを常に取得できることを前提に
         // するため、Experimental段階でも空のfacadeを保持します。
         std::unique_ptr<ShadowMap> m_directionalShadowMap;

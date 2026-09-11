@@ -1558,6 +1558,12 @@ namespace LamaPon
 
     bool ModelRendererComponent::HasPreRender3DPass()
     {
+        if (m_graphics != nullptr
+            && m_graphics->ActiveRenderingApi()
+                != RenderingApi::DirectX11)
+        {
+            return false;
+        }
         RefreshShader(false);
         return !m_wireframe
             && UsesCommonLit()
@@ -1584,6 +1590,12 @@ namespace LamaPon
         if (m_instancedThisPass)
         {
             m_instancedThisPass = false;
+            return;
+        }
+        if (m_graphics != nullptr
+            && m_graphics->ActiveRenderingApi()
+                != RenderingApi::DirectX11)
+        {
             return;
         }
         RefreshShader(false);

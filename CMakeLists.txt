@@ -298,6 +298,8 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Graphics/D3D11Backend.h
     src/LamaPon/Graphics/D3D12Backend.cpp
     src/LamaPon/Graphics/D3D12Backend.h
+    src/LamaPon/Graphics/D3D12RenderServices.cpp
+    src/LamaPon/Graphics/D3D12RenderServices.h
     src/LamaPon/Graphics/D3D12SpriteRenderer.cpp
     src/LamaPon/Graphics/D3D12SpriteRenderer.h
     src/LamaPon/Graphics/DxgiTextureLayout.h
@@ -1853,6 +1855,7 @@ install(
         PATTERN "D3D11ShadowMapState.h" EXCLUDE
         PATTERN "D3D12Backend.h" EXCLUDE
         PATTERN "D3D12SpriteRenderer.h" EXCLUDE
+        PATTERN "D3D12RenderServices.h" EXCLUDE
         PATTERN "DxgiTextureLayout.h" EXCLUDE
         PATTERN "GraphicsRenderServices.h" EXCLUDE
         PATTERN "GraphicsDeviceResourceLeaseState.h" EXCLUDE

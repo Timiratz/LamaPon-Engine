@@ -131,17 +131,20 @@ int WINAPI wWinMain(
             }
             if (d3d12ExperimentalBootstrap)
             {
-                // D3D12でも実シーンの初期化・Script更新・2D/UI描画までを
-                // 無人起動検証に含めます。3Dは次段階のpipeline実装まで
-                // primary outputのclear色を背景として使用します。
+                // D3D12でも実シーンの初期化・Script更新・最小3D・2D/UI
+                // 描画を無人起動検証に含めます。
                 constexpr float experimentalClearColor[4]{
                     0.025f, 0.035f, 0.055f, 1.0f };
                 application.Graphics().BeginFrame(
                     experimentalClearColor);
+                scene.RenderMainCamera(
+                    application.Graphics().AspectRatio(),
+                    false,
+                    nullptr);
                 scene.Render2D();
                 application.Graphics().EndFrame();
                 LamaPon::Logger::Instance().Info(
-                    "DirectX 12 ExperimentalでSceneの2D/UI描画を検証しました。");
+                    "DirectX 12 ExperimentalでSceneの3Dと2D/UI描画を検証しました。");
             }
             return 0;
         }

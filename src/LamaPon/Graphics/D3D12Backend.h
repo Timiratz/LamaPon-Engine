@@ -1,7 +1,7 @@
 #pragma once
 
-// DirectX 12の起動・swap chain lifecycleと、Sprite描画に必要なtexture資源を
-// 扱うRuntime内部Backendです。3D描画pipelineは後続段階で実装します。
+// DirectX 12の起動・swap chain lifecycleと、Sprite／最小3D Mesh描画に
+// 必要なtexture資源を扱うRuntime内部Backendです。
 #include "LamaPon/Graphics/GraphicsBackend.h"
 
 #include <d3d12.h>

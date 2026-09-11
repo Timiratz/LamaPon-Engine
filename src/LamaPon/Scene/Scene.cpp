@@ -6111,6 +6111,36 @@ namespace LamaPon
         const bool include2D,
         RenderTarget* target)
     {
+        if (m_graphics.ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            // Experimentalの最小3D経路はprimary outputへ直接描きます。
+            // D3D11専用の影・深度プリパス・HDR/post-processは通さず、
+            // Componentが送るAPI-neutral draw requestだけを処理します。
+            static_cast<void>(target);
+            const BooleanStateScope interpolationScope{
+                m_renderingInterpolatedTransforms,
+                true
+            };
+            if (m_mainCamera != nullptr && m_mainCamera->IsEnabled())
+            {
+                const auto view = m_mainCamera->ViewMatrix();
+                const auto projection =
+                    m_mainCamera->ProjectionMatrix(aspectRatio);
+                for (const auto& gameObject : m_gameObjects)
+                {
+                    gameObject->Render3D(
+                        m_graphics,
+                        view,
+                        projection);
+                }
+            }
+            if (include2D)
+            {
+                Render2D();
+            }
+            return;
+        }
         // ベイク待ちのプローブはフレームの頭で焼きます（この後の
         // 描画からすぐ反射に使えるように）。
         BakePendingReflectionProbes();
