@@ -65,6 +65,7 @@ XAudio2を使い、Web版はEmscripten、WebGL、Web Audioへ置き換えます�
 | 物理 | 基本的な重力、AABB衝突、トリガー、Box／Mesh Raycastに対応 |
 | 画像 | WebPを使用。PNG、JPEG、GIF、BMP、DDS、TGA、TIFFは自動変換 |
 | 3Dモデル | FBX、glTF、GLB、OBJなどをGLB 2.0へ自動変換 |
+| Discordログイン、クラウドセーブ | 未対応。Windows x64ランタイムだけで利用可能 |
 | HLSL、Direct3D、XAudio2、Win32 API | Web版では使用不可 |
 | 高度なシェーダー、影、ポスト処理 | 未対応。機能に応じて警告または拒否 |
 | `std::thread`／pthreads | 現在のプロファイルでは動作を保証しない |
@@ -72,6 +73,11 @@ XAudio2を使い、Web版はEmscripten、WebGL、Web Audioへ置き換えます�
 `webgl2-basic-2d`は2D向け、`webgl2-basic-3d`は基本的な3D向けです。
 WebGL2を優先し、対応状況に応じてWebGL1またはソフトウェア描画へ切り替えます。
 ブラウザー、GPU、タブの状態、自動再生制限によってWindows版と結果が異なる場合があります。
+
+プロジェクト設定でオンラインサービスを有効にしても、ポータブルWebランタイムへ認証・同期機能は
+追加されません。Web版を配布する場合は現在オンライン機能を無効にし、Windows版だけで利用して
+ください。対応範囲とバックエンド構成は[Discordログインとクラウドセーブ](online-services.md)を
+参照してください。
 
 WebGLの圧縮テクスチャはブラウザーとGPUによって対応状況が異なるため、Windows版の
 BC圧縮データをそのまま使いません。詳しくは

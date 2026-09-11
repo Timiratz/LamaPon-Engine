@@ -380,6 +380,17 @@ const int hitPoints = enemy->GetInt("hitPoints");
 
 作り方と読み方は[データアセット](data-assets.md)を参照してください。
 
+### Discordログインとクラウドセーブ
+
+`Script`から`SignInWithDiscord()`でブラウザーログインを開始し、`OnlineState()`と
+`IsOnlineSignedIn()`で非同期の完了を確認できます。ログイン後のPlayerPrefsとセーブスロットは
+内部プレイヤーIDごとの領域へ保存され、バックエンドへ同期されます。
+`CloudSyncStatus()`、`CloudConflicts()`、`ResolveCloudConflict()`で同期状態と競合を扱い、
+中断した永続化処理は`PersistenceRecoveryStatus()`のrevisionを使って復元または破棄します。
+
+バックエンドが別途必要です。設定、API一覧、安全上の注意、通信契約は
+[Discordログインとクラウドセーブ](online-services.md)を参照してください。
+
 エンジンはDLLを`.lamapon-hot-reload`へシャドウコピーして読み込むため、エディターを終了せずに`LamaPonGameModule`を再ビルドできます。
 更新は約0.5秒ごとに検出され、実行中インスタンスをSerializeして破棄した後、新しいDLLで復元します。
 Inspectorの「Moduleを再読み込み」から手動実行することもできます。

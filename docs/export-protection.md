@@ -109,7 +109,14 @@ APIキーやサーバーの認証情報を配布物へ入れないでくださ�
 配布物の中にあるものは最終的に読めます。サーバーが要る仕組みは、
 **サーバー側で認証する**設計にしてください。
 
+Discordログインを使う場合も、Discordの`client_secret`やDiscord access tokenを
+`project.json`、`LamaPonGame.json`、Game Module、アセットへ入れてはいけません。
+ゲームには公開してよいバックエンドURLとゲーム／環境IDだけを置き、OAuthの秘密と
+セーブ所有権の判定はバックエンドで扱います。詳しくは
+[Discordログインとクラウドセーブ](online-services.md)を参照してください。
+
 ## 関連
 
 - [シェーダー](shaders.md) — 「書き出しでHLSLソースを外す」の説明
 - [プロジェクト設定](project.md)
+- [Discordログインとクラウドセーブ](online-services.md)
