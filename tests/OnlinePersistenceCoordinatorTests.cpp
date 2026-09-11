@@ -4,6 +4,7 @@
 #include "LamaPon/Core/SaveData.h"
 #include "LamaPon/Editor/PersistencePanelState.h"
 #include "LamaPon/Online/CloudSaveClient.h"
+#include "LamaPon/Online/CloudSaveJournal.h"
 #include "LamaPon/Online/OnlinePersistenceCoordinator.h"
 #include "LamaPon/Online/OnlineServicesTesting.h"
 #include "LamaPon/Online/CloudSaveSynchronizer.h"
@@ -11,6 +12,7 @@
 #include <Windows.h>
 #include <nlohmann/json.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <deque>
@@ -18,6 +20,7 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -422,6 +425,16 @@ namespace
         std::ofstream output(path, std::ios::binary | std::ios::trunc);
         output << text;
         Require(static_cast<bool>(output), "Could not write test fixture.");
+    }
+
+    std::string ReadText(const std::filesystem::path& path)
+    {
+        std::ifstream input(path, std::ios::binary);
+        Require(static_cast<bool>(input), "Could not read test fixture.");
+        return {
+            std::istreambuf_iterator<char>(input),
+            std::istreambuf_iterator<char>()
+        };
     }
 
     void ConfigureCoordinator(Coordinator& coordinator)
@@ -897,11 +910,15 @@ namespace
             }),
             "A quarantined account released its process lifetime lease early.");
 
+        const auto recovery = coordinator.RecoveryStatus();
         lock.Close();
-        coordinator.EndFrame();
         Require(
-            !coordinator.HasQuarantinedAccount(),
-            "Quarantined account did not retry after storage recovered.");
+            recovery.revision != 0
+                && coordinator.RestorePendingRecovery(recovery.revision)
+                    == LamaPon::Detail::
+                        OnlinePersistenceRecoveryOperationResult::Succeeded
+                && !coordinator.HasQuarantinedAccount(),
+            "Explicit Restore reported a completed memory Save as stale.");
 
         LamaPon::PlayerPrefs verification(accountPath);
         verification.Load();
@@ -1078,23 +1095,89 @@ namespace
             }),
             "A checkpoint-failed quarantine released its account lease.");
 
+        const auto recovery = coordinator.RecoveryStatus();
+        Require(
+            recovery.revision != 0
+                && coordinator.RestorePendingRecovery(recovery.revision)
+                    != LamaPon::Detail::
+                        OnlinePersistenceRecoveryOperationResult::Succeeded
+                && coordinator.HasPendingRecovery(),
+            "A locked checkpoint was incorrectly reported as recovered.");
         lock.Close();
+        Require(
+            coordinator.RestorePendingRecovery(recovery.revision)
+                    == LamaPon::Detail::
+                        OnlinePersistenceRecoveryOperationResult::Succeeded
+                && !coordinator.HasPendingRecovery(),
+            "A durable checkpoint plan could not be retried after lock recovery.");
+        auto peerPrepared = peer.PrepareAccount("checkpoint-player");
+        Require(
+            peerPrepared.IsValid()
+                && peer.CommitPrepared(std::move(peerPrepared))
+                && peer.Journal()
+                && peer.Journal()->HasLocalDeleteIntent(
+                    LamaPon::CloudSaveResource::SaveSlot(
+                        "checkpoint-slot")),
+            "Checkpoint recovery did not preserve intent or release the account lease.");
+        static_cast<void>(peer.DetachToGuest());
+    }
+
+    void TestUndeterminedDetachCheckpointRemainsFailClosed()
+    {
+        const auto root = CaseRoot("checkpoint-scan-failure");
+        const LamaPon::PersistenceProfiles profiles(
+            root,
+            "coordinator-game",
+            "test");
+        const auto account = profiles.Account("checkpoint-scan-player");
+        {
+            LamaPon::SaveDataStore seed(account.saveDataDirectory);
+            seed.SaveJson("scan-slot", R"({"value":1})");
+        }
+
+        LamaPon::PlayerPrefs preferences(root / L"PlayerPrefs.json");
+        preferences.Load();
+        LamaPon::SaveDataStore saves(root / L"Saves");
+        Coordinator coordinator(preferences, saves, root);
+        ConfigureCloudCoordinator(coordinator);
+        auto prepared = coordinator.PrepareAccount(
+            "checkpoint-scan-player",
+            "checkpoint-access");
+        Require(
+            coordinator.CommitPrepared(std::move(prepared)),
+            "Could not activate the checkpoint scan fixture.");
+
+        WriteText(saves.SlotPath("scan-slot"), "{not-json");
+        Require(
+            coordinator.DetachToGuest()
+                    == DetachResult::QuarantinedAccount
+                && coordinator.HasPendingRecovery(),
+            "An undetermined detach checkpoint was not quarantined.");
+        const auto recovery = coordinator.RecoveryStatus();
+        Require(
+            recovery.state
+                    == LamaPon::Detail::
+                        OnlinePersistenceRecoveryState::UnavailableSidecar
+                && recovery.revision != 0,
+            "An undetermined checkpoint incorrectly exposed Restore.");
+
+        {
+            LamaPon::SaveDataStore repaired(account.saveDataDirectory);
+            repaired.SaveJson("scan-slot", R"({"value":2})");
+        }
         coordinator.EndFrame();
         Require(
             coordinator.HasPendingRecovery()
-                && Throws([&]
-                {
-                    static_cast<void>(peer.PrepareAccount(
-                        "checkpoint-player"));
-                }),
-            "A checkpoint failure was silently cleared without resolution.");
+                && coordinator.RestorePendingRecovery(recovery.revision)
+                    == LamaPon::Detail::
+                        OnlinePersistenceRecoveryOperationResult::Failed,
+            "A checkpoint with no determined operation plan auto-recovered.");
         Require(
-            coordinator.DiscardPendingRecovery(),
-            "Could not explicitly discard a failed checkpoint quarantine.");
-        auto peerPrepared = peer.PrepareAccount("checkpoint-player");
-        Require(
-            peerPrepared.IsValid(),
-            "Explicit discard did not release the quarantined account lease.");
+            coordinator.DiscardPendingRecovery(recovery.revision)
+                    == LamaPon::Detail::
+                        OnlinePersistenceRecoveryOperationResult::Succeeded
+                && !coordinator.HasPendingRecovery(),
+            "Explicit discard could not release an undetermined checkpoint.");
     }
 
     void TestCleanLoadFailureDoesNotPermanentlyBlockProfiles()
@@ -1182,37 +1265,28 @@ namespace
                         == "memory-snapshot",
                 "Dirty PlayerPrefs reload failure lost its memory state.");
 
-            // sidecar targetを共有不可で保持してpublishを一度失敗させ、
-            // memory quarantineが維持されることを確認します。
+            // activation時はMissingだったsidecarを外部writerが先に作成した
+            // 場合、内容がmemory snapshotと偶然同一でも所有物として採用・
+            // 上書きせず、memory quarantineを維持します。
             const auto blockedRecoverySidecar =
                 account.rootDirectory / L"Recovery.prefs";
-            WriteText(blockedRecoverySidecar, "blocked");
-            FileHandle recoveryBlocker;
-            recoveryBlocker.value = CreateFileW(
-                blockedRecoverySidecar.c_str(),
-                GENERIC_READ,
-                0,
-                nullptr,
-                OPEN_EXISTING,
-                FILE_ATTRIBUTE_NORMAL,
-                nullptr);
-            Require(
-                recoveryBlocker.value != INVALID_HANDLE_VALUE,
-                "Could not lock recovery sidecar target.");
+            const auto externalSnapshot = preferences.SerializeToJson();
+            WriteText(blockedRecoverySidecar, externalSnapshot);
             Require(
                 coordinator.DetachToGuest()
                         == DetachResult::QuarantinedAccount
                     && coordinator.RecoveryState()
                         == LamaPon::Detail::
-                            OnlinePersistenceRecoveryState::MemorySnapshot
+                            OnlinePersistenceRecoveryState::UnavailableSidecar
                     && coordinator.HasQuarantinedAccount()
                     && coordinator.HasPendingRecovery()
+                    && ReadText(blockedRecoverySidecar)
+                        == externalSnapshot
                     && preferences.FilePath()
                         == root / L"PlayerPrefs.json"
                     && preferences.GetString("owner") == "guest",
                 "Failed sidecar publish discarded dirty account memory.");
 
-            recoveryBlocker.Close();
             std::error_code removeError;
             std::filesystem::remove(
                 blockedRecoverySidecar,
@@ -1220,12 +1294,23 @@ namespace
             Require(
                 !removeError,
                 "Could not unblock recovery sidecar target.");
+            LamaPon::Detail::SetOnlinePersistenceRecoveryTestFailPoint(
+                LamaPon::Detail::OnlinePersistenceRecoveryTestFailPoint::
+                    AfterSidecarPublishBeforeVerification);
+            coordinator.EndFrame();
+            Require(
+                coordinator.RecoveryState()
+                        == LamaPon::Detail::
+                            OnlinePersistenceRecoveryState::MemorySnapshot
+                    && coordinator.HasQuarantinedAccount()
+                    && std::filesystem::exists(blockedRecoverySidecar),
+                "An ambiguous sidecar publish discarded memory before strict verification.");
             const auto recoveryDeadline =
                 std::chrono::steady_clock::now()
                 + std::chrono::seconds(10);
             while (coordinator.RecoveryState()
-                    == LamaPon::Detail::
-                        OnlinePersistenceRecoveryState::MemorySnapshot
+                    != LamaPon::Detail::
+                        OnlinePersistenceRecoveryState::DurableSidecar
                 && std::chrono::steady_clock::now()
                     < recoveryDeadline)
             {
@@ -1331,14 +1416,19 @@ namespace
         LamaPon::SaveDataStore saves(root / L"Saves");
         Coordinator coordinator(preferences, saves, root);
         ConfigureCoordinator(coordinator);
+        const bool prepareRejected = Throws([&]
+        {
+            static_cast<void>(
+                coordinator.PrepareAccount("discard-player"));
+        });
+        const auto discardStatus = coordinator.RecoveryStatus();
+        const auto discardResult = coordinator.DiscardPendingRecovery(
+            discardStatus.revision);
         Require(
-            Throws([&]
-            {
-                static_cast<void>(
-                    coordinator.PrepareAccount("discard-player"));
-            })
-                && coordinator.HasPendingRecovery()
-                && coordinator.DiscardPendingRecovery()
+            prepareRejected
+                && discardResult
+                    == LamaPon::Detail::
+                        OnlinePersistenceRecoveryOperationResult::Succeeded
                 && !coordinator.HasPendingRecovery()
                 && !std::filesystem::exists(sidecarPath),
             "Explicit recovery discard did not remove only the sidecar.");
@@ -1356,10 +1446,123 @@ namespace
             })
                 && coordinator.RecoveryState()
                     == LamaPon::Detail::
-                        OnlinePersistenceRecoveryState::UnavailableSidecar
-                && coordinator.DiscardPendingRecovery()
+                        OnlinePersistenceRecoveryState::UnavailableSidecar,
+            "Corrupt recovery sidecar was not detected.");
+        const auto corrupt = coordinator.RecoveryStatus();
+        WriteText(sidecarPath, "{different-corrupt-json");
+        const auto changedCorrupt = coordinator.RecoveryStatus();
+        Require(
+            changedCorrupt.revision != corrupt.revision
+                && coordinator.DiscardPendingRecovery(corrupt.revision)
+                    == LamaPon::Detail::
+                        OnlinePersistenceRecoveryOperationResult::Stale
+                && coordinator.DiscardPendingRecovery(
+                    changedCorrupt.revision)
+                    == LamaPon::Detail::
+                        OnlinePersistenceRecoveryOperationResult::Succeeded
                 && !std::filesystem::exists(sidecarPath),
-            "Explicit discard could not remove a corrupt sidecar under its profile lease.");
+            "A latest-revision explicit discard could not remove the observed replacement.");
+        WriteText(sidecarPath, "{not-json");
+        Require(
+            Throws([&]
+            {
+                (void)coordinator.PrepareAccount("discard-player");
+            }),
+            "A second corrupt recovery incident was not detected.");
+        const auto restoredCorrupt = coordinator.RecoveryStatus();
+        Require(
+            restoredCorrupt.revision != 0
+                && coordinator.DiscardPendingRecovery(
+                    restoredCorrupt.revision)
+                    == LamaPon::Detail::
+                        OnlinePersistenceRecoveryOperationResult::Succeeded
+                && !std::filesystem::exists(sidecarPath),
+            "Explicit discard could not remove an unchanged corrupt sidecar under its profile lease.");
+    }
+
+    void TestMemoryRecoveryDiscardPromotesExistingSidecar()
+    {
+        const auto run = [](
+            const std::string_view caseName,
+            const bool externalSidecar)
+        {
+            const auto root = CaseRoot(caseName);
+            const LamaPon::PersistenceProfiles profiles(
+                root,
+                "coordinator-game",
+                "test");
+            const auto account = profiles.Account("discard-memory-player");
+            const auto sidecarPath =
+                account.rootDirectory / L"Recovery.prefs";
+
+            LamaPon::PlayerPrefs preferences(root / L"PlayerPrefs.json");
+            preferences.Load();
+            LamaPon::SaveDataStore saves(root / L"Saves");
+            Coordinator coordinator(preferences, saves, root);
+            ConfigureCoordinator(coordinator);
+            auto prepared = coordinator.PrepareAccount(
+                "discard-memory-player");
+            Require(
+                coordinator.CommitPrepared(std::move(prepared)),
+                "Could not activate the memory discard fixture.");
+
+            preferences.SetString("unsaved", "memory-snapshot");
+            WriteText(account.playerPrefsFile, "{not-json");
+            Require(
+                Throws([&] { preferences.Reload(); })
+                    && preferences.HasLoadFailure()
+                    && preferences.IsDirty(),
+                "Could not create a dirty load-failure snapshot.");
+
+            if (externalSidecar)
+            {
+                LamaPon::PlayerPrefs external(sidecarPath);
+                external.Load();
+                external.SetString("owner", "external-sidecar");
+                external.Save();
+            }
+            else
+            {
+                LamaPon::Detail::SetOnlinePersistenceRecoveryTestFailPoint(
+                    LamaPon::Detail::
+                        OnlinePersistenceRecoveryTestFailPoint::
+                            AfterSidecarPublishBeforeVerification);
+            }
+
+            Require(
+                coordinator.DetachToGuest()
+                        == DetachResult::QuarantinedAccount
+                    && coordinator.HasPendingRecovery()
+                    && std::filesystem::exists(sidecarPath),
+                "Memory recovery collision was not quarantined.");
+            const auto preserved = ReadText(sidecarPath);
+            const auto first = coordinator.RecoveryStatus();
+            Require(
+                first.revision != 0
+                    && coordinator.DiscardPendingRecovery(first.revision)
+                        == LamaPon::Detail::
+                            OnlinePersistenceRecoveryOperationResult::Succeeded
+                    && coordinator.HasPendingRecovery()
+                    && std::filesystem::exists(sidecarPath)
+                    && ReadText(sidecarPath) == preserved,
+                "First-stage discard removed or replaced the observed sidecar.");
+
+            const auto promoted = coordinator.RecoveryStatus();
+            Require(
+                promoted.revision != first.revision
+                    && promoted.state
+                        == LamaPon::Detail::
+                            OnlinePersistenceRecoveryState::DurableSidecar
+                    && coordinator.DiscardPendingRecovery(promoted.revision)
+                        == LamaPon::Detail::
+                            OnlinePersistenceRecoveryOperationResult::Succeeded
+                    && !coordinator.HasPendingRecovery()
+                    && !std::filesystem::exists(sidecarPath),
+                "Promoted recovery incident could not be discarded explicitly.");
+        };
+
+        run("discard-memory-external", true);
+        run("discard-memory-published", false);
     }
 
     void TestRecoverySidecarResolutionReacquiresProfileLease()
@@ -1424,6 +1627,524 @@ namespace
             second.CommitPrepared(std::move(secondPrepared)),
             "Peer could not activate after recovery owner released its lease.");
         static_cast<void>(second.DetachToGuest());
+    }
+
+    void TestEmptyAndOversizedRecoverySidecarsCanBeDiscardedSafely()
+    {
+        const auto root = CaseRoot("recovery-corrupt-availability");
+        const LamaPon::PersistenceProfiles profiles(
+            root,
+            "coordinator-game",
+            "test");
+        const auto account = profiles.Account("corrupt-sidecar-player");
+        const auto sidecarPath = account.rootDirectory / L"Recovery.prefs";
+        LamaPon::PlayerPrefs preferences(root / L"PlayerPrefs.json");
+        preferences.Load();
+        LamaPon::SaveDataStore saves(root / L"Saves");
+        Coordinator coordinator(preferences, saves, root);
+        ConfigureCoordinator(coordinator);
+
+        WriteText(sidecarPath, {});
+        Require(
+            Throws([&]
+            {
+                (void)coordinator.PrepareAccount(
+                    "corrupt-sidecar-player");
+            }),
+            "An empty recovery sidecar was not quarantined.");
+        const auto empty = coordinator.RecoveryStatus();
+        Require(
+            empty.revision != 0u
+                && coordinator.DiscardPendingRecovery(empty.revision)
+                    == LamaPon::Detail::
+                        OnlinePersistenceRecoveryOperationResult::Succeeded
+                && !coordinator.HasPendingRecovery()
+                && !std::filesystem::exists(sidecarPath),
+            "An unchanged empty recovery sidecar could not be discarded.");
+
+        const std::string oversized(
+            LamaPon::CloudPreferencesMaxBytes + 1u,
+            'a');
+        WriteText(sidecarPath, oversized);
+        Require(
+            Throws([&]
+            {
+                (void)coordinator.PrepareAccount(
+                    "corrupt-sidecar-player");
+            }),
+            "An oversized recovery sidecar was not quarantined.");
+        const auto unchangedLarge = coordinator.RecoveryStatus();
+        Require(
+            coordinator.DiscardPendingRecovery(unchangedLarge.revision)
+                    == LamaPon::Detail::
+                        OnlinePersistenceRecoveryOperationResult::Succeeded
+                && !std::filesystem::exists(sidecarPath),
+            "An unchanged oversized recovery sidecar could not be discarded.");
+
+        WriteText(sidecarPath, oversized);
+        Require(
+            Throws([&]
+            {
+                (void)coordinator.PrepareAccount(
+                    "corrupt-sidecar-player");
+            }),
+            "The replacement recovery incident was not quarantined.");
+        const auto beforeReplacement = coordinator.RecoveryStatus();
+        const auto replacementPath =
+            account.rootDirectory / L"Recovery.replacement";
+        WriteText(
+            replacementPath,
+            std::string(oversized.size(), 'b'));
+        Require(
+            MoveFileExW(
+                replacementPath.c_str(),
+                sidecarPath.c_str(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE,
+            "Oversized recovery replacement could not be published.");
+        const auto afterReplacement = coordinator.RecoveryStatus();
+        Require(
+            afterReplacement.revision != beforeReplacement.revision
+                && coordinator.DiscardPendingRecovery(
+                    beforeReplacement.revision)
+                    == LamaPon::Detail::
+                        OnlinePersistenceRecoveryOperationResult::Stale
+                && coordinator.DiscardPendingRecovery(
+                    afterReplacement.revision)
+                    == LamaPon::Detail::
+                        OnlinePersistenceRecoveryOperationResult::Succeeded
+                && !std::filesystem::exists(sidecarPath)
+                && !coordinator.HasPendingRecovery(),
+            "The latest observed oversized replacement could not be discarded safely.");
+
+        WriteText(sidecarPath, oversized);
+        Require(
+            Throws([&]
+            {
+                (void)coordinator.PrepareAccount(
+                    "corrupt-sidecar-player");
+            }),
+            "The missing-sidecar recovery incident was not quarantined.");
+        const auto beforeMissing = coordinator.RecoveryStatus();
+        std::error_code removeError;
+        std::filesystem::remove(sidecarPath, removeError);
+        Require(!removeError, "Recovery sidecar removal fixture failed.");
+        const auto missing = coordinator.RecoveryStatus();
+        Require(
+            missing.revision != beforeMissing.revision
+                && coordinator.DiscardPendingRecovery(missing.revision)
+                    == LamaPon::Detail::
+                        OnlinePersistenceRecoveryOperationResult::Succeeded
+                && !coordinator.HasPendingRecovery(),
+            "An already-missing sidecar kept recovery permanently blocked.");
+    }
+
+    void TestPublicRecoveryRevisionAndOperationGuards()
+    {
+        const auto root = CaseRoot("public-recovery-api");
+        LamaPon::PlayerPrefs preferences(root / L"PlayerPrefs.json");
+        preferences.Load();
+        LamaPon::SaveDataStore saves(root / L"Saves");
+        auto backend = std::make_shared<ScriptedBackend>(
+            std::deque<LamaPon::HttpResponse>{
+                JsonResponse(
+                    201u,
+                    {
+                        { "transactionId", "recovery-busy" },
+                        { "pollToken", "recovery-busy-poll" },
+                        {
+                            "authorizationUrl",
+                            "https://login.example.test/recovery-busy"
+                        },
+                        { "expiresIn", 300u },
+                        { "pollInterval", 1u }
+                    })
+            },
+            0u);
+        auto services = LamaPon::Detail::OnlineServicesTestAccess::Create(
+            OnlineConfiguration(),
+            [backend](const LamaPon::HttpRequest& request)
+            {
+                return backend->Send(request);
+            },
+            std::make_unique<MemoryTokenStore>(
+                std::make_shared<TokenStoreState>()));
+        LamaPon::Detail::OnlinePersistenceAccess::Attach(
+            *services,
+            preferences,
+            saves,
+            root);
+        auto* const coordinator =
+            LamaPon::Detail::OnlinePersistenceAccess::Coordinator(*services);
+        Require(coordinator != nullptr, "Recovery API coordinator is missing.");
+
+        const LamaPon::PersistenceProfiles profiles(
+            root,
+            "coordinator-game",
+            "test");
+        const auto account = profiles.Account("public-recovery-player");
+        const auto sidecarPath = account.rootDirectory / L"Recovery.prefs";
+        const auto writeSidecar = [&](const std::string_view value)
+        {
+            LamaPon::PlayerPrefs sidecar(sidecarPath);
+            sidecar.Load();
+            sidecar.SetString("snapshot", std::string(value));
+            sidecar.Save();
+        };
+        writeSidecar("first");
+        Require(
+            Throws([&]
+            {
+                (void)coordinator->PrepareAccount("public-recovery-player");
+            }),
+            "Recovery API fixture was not detected.");
+        const auto first = services->PersistenceRecoveryStatus();
+        Require(
+            first.state
+                    == LamaPon::OnlinePersistenceRecoveryState::DurableSidecar
+                && first.revision != 0
+                && services->PersistenceRecoveryStatus().revision
+                    == first.revision,
+            "Recovery status did not expose a stable nonzero revision.");
+
+        const auto requestsBefore = backend->Requests().size();
+        Require(
+            !services->BeginDiscordSignIn()
+                && services->LastErrorCode()
+                    == "persistence_recovery_required"
+                && backend->Requests().size() == requestsBefore,
+            "Pending recovery did not reject sign-in before HTTP dispatch.");
+        LamaPon::OnlineServiceConfiguration disabled;
+        Require(
+            Throws([&]
+            {
+                services->Configure(disabled);
+            })
+                && coordinator->IsNamespaceEnabled()
+                && services->PersistenceRecoveryStatus().revision
+                    == first.revision,
+            "Pending recovery changed namespace during rejected Configure.");
+
+        LamaPon::PlayerPrefs expectedSidecar(sidecarPath);
+        const auto expectedDocument =
+            LamaPon::Detail::LocalPersistenceDocuments::ReadPlayerPrefs(
+                expectedSidecar);
+        writeSidecar("tampered");
+        const auto changed = services->PersistenceRecoveryStatus();
+        Require(
+            expectedDocument.state
+                    == LamaPon::Detail::LocalPersistenceDocumentState::Loaded
+                && changed.state
+                    == LamaPon::OnlinePersistenceRecoveryState::UnavailableSidecar
+                && changed.revision != first.revision
+                && services->DiscardPersistence(first.revision)
+                    == LamaPon::OnlinePersistenceOperationResult::Stale
+                && services->RestorePersistence(changed.revision)
+                    == LamaPon::OnlinePersistenceOperationResult::Failed,
+            "Sidecar replacement was adopted by Restore as a trusted snapshot.");
+        Require(
+            services->DiscardPersistence(changed.revision)
+                    == LamaPon::OnlinePersistenceOperationResult::Succeeded
+                && services->PersistenceRecoveryStatus().state
+                    == LamaPon::OnlinePersistenceRecoveryState::None
+                && !std::filesystem::exists(sidecarPath),
+            "Latest-revision replacement discard failed.");
+
+        // revision counterはNoneを公開する間も内部で巻き戻さず、別incident
+        // に旧UI tokenが一致するABAを防ぎます。
+        writeSidecar("second");
+        Require(
+            Throws([&]
+            {
+                (void)coordinator->PrepareAccount("public-recovery-player");
+            }),
+            "Second recovery incident was not detected.");
+        const auto second = services->PersistenceRecoveryStatus();
+        Require(
+            second.revision != 0
+                && second.revision != first.revision
+                && services->DiscardPersistence(first.revision)
+                    == LamaPon::OnlinePersistenceOperationResult::Stale
+                && services->DiscardPersistence(second.revision)
+                    == LamaPon::OnlinePersistenceOperationResult::Succeeded,
+            "Recovery revision allowed a stale cross-incident operation.");
+
+        Require(
+            services->BeginDiscordSignIn(),
+            "Could not start Busy recovery ordering fixture.");
+        backend->WaitUntilRequestBlocked();
+        writeSidecar("busy-third");
+        Require(
+            Throws([&]
+            {
+                (void)coordinator->PrepareAccount("public-recovery-player");
+            }),
+            "Busy recovery incident was not detected.");
+        const auto busyRecovery = services->PersistenceRecoveryStatus();
+        Require(
+            services->DiscardPersistence(first.revision)
+                    == LamaPon::OnlinePersistenceOperationResult::Stale
+                && services->DiscardPersistence(busyRecovery.revision)
+                    == LamaPon::OnlinePersistenceOperationResult::Busy,
+            "Recovery stale revision was not checked before Busy.");
+        backend->ReleaseBlockedRequest();
+        UpdateUntil(
+            *services,
+            [&]
+            {
+                return services->State()
+                    == LamaPon::OnlineAccountState::WaitingForAuthorization;
+            },
+            "Busy recovery login start did not finish.");
+        services->CancelDiscordSignIn();
+        const auto currentRecovery = services->PersistenceRecoveryStatus();
+        Require(
+            services->DiscardPersistence(currentRecovery.revision)
+                == LamaPon::OnlinePersistenceOperationResult::Succeeded,
+            "Recovery could not be discarded after Busy ended.");
+    }
+
+    void TestPublicCloudConflictRegistryAndResolution()
+    {
+        const auto root = CaseRoot("public-cloud-conflicts");
+        LamaPon::PlayerPrefs preferences(root / L"PlayerPrefs.json");
+        preferences.Load();
+        LamaPon::SaveDataStore saves(root / L"Saves");
+
+        auto authorized = SessionJson(
+            "public-cloud-access",
+            "public-cloud-refresh",
+            "public-cloud-player",
+            900u);
+        authorized["status"] = "authorized";
+        const auto refreshed = SessionJson(
+            "public-cloud-access-2",
+            "public-cloud-refresh-2",
+            "public-cloud-player",
+            900u);
+        auto backend = std::make_shared<ScriptedBackend>(
+            std::deque<LamaPon::HttpResponse>{
+                JsonResponse(
+                    201u,
+                    {
+                        { "transactionId", "public-cloud-login" },
+                        { "pollToken", "public-cloud-poll" },
+                        {
+                            "authorizationUrl",
+                            "https://login.example.test/public-cloud"
+                        },
+                        { "expiresIn", 300u },
+                        { "pollInterval", 1u }
+                    }),
+                JsonResponse(200u, authorized),
+                JsonResponse(200u, refreshed),
+                JsonResponse(204u)
+            },
+            2u);
+        auto services = LamaPon::Detail::OnlineServicesTestAccess::Create(
+            OnlineConfiguration(),
+            [backend](const LamaPon::HttpRequest& request)
+            {
+                return backend->Send(request);
+            },
+            std::make_unique<MemoryTokenStore>(
+                std::make_shared<TokenStoreState>()));
+        LamaPon::Detail::OnlinePersistenceAccess::Attach(
+            *services,
+            preferences,
+            saves,
+            root);
+        CompleteDiscordLogin(*services);
+        UpdateUntil(
+            *services,
+            [&]
+            {
+                return services->State()
+                    == LamaPon::OnlineAccountState::SignedIn;
+            },
+            "Public cloud conflict login did not complete.");
+
+        preferences.SetString("local", "preferences");
+        preferences.Save();
+        saves.SaveJson("public-slot", R"({"local":"slot"})");
+        auto* const coordinator =
+            LamaPon::Detail::OnlinePersistenceAccess::Coordinator(*services);
+        auto* const journal = coordinator ? coordinator->Journal() : nullptr;
+        Require(journal != nullptr, "Public cloud journal is missing.");
+        const auto preferencesDocument =
+            LamaPon::Detail::LocalPersistenceDocuments::ReadPlayerPrefs(
+                preferences);
+        const auto slotDocument =
+            LamaPon::Detail::LocalPersistenceDocuments::ReadSaveData(
+                saves,
+                "public-slot");
+        Require(
+            preferencesDocument.state
+                    == LamaPon::Detail::LocalPersistenceDocumentState::Loaded
+                && slotDocument.state
+                    == LamaPon::Detail::LocalPersistenceDocumentState::Loaded,
+            "Public cloud local fixtures were not readable.");
+
+        const auto preferencesResource =
+            LamaPon::CloudSaveResource::Preferences();
+        const auto slotResource =
+            LamaPon::CloudSaveResource::SaveSlot("public-slot");
+        constexpr std::string_view PreferencesMutation =
+            "11111111-1111-4111-8111-111111111111";
+        constexpr std::string_view SlotMutation =
+            "22222222-2222-4222-8222-222222222222";
+        journal->QueuePut(
+            preferencesResource,
+            preferencesDocument.bytes,
+            PreferencesMutation);
+        journal->RecordConflict(
+            preferencesResource,
+            PreferencesMutation,
+            { preferencesResource, "\"remote-prefs\"", true, {}, {} });
+        journal->QueuePut(
+            slotResource,
+            slotDocument.bytes,
+            SlotMutation);
+        journal->RecordConflict(
+            slotResource,
+            SlotMutation,
+            { slotResource, "\"remote-slot\"", true, {}, {} });
+
+        const auto first = services->CloudConflicts();
+        const auto second = services->CloudConflicts();
+        Require(
+            first.size() == 2u && second.size() == 2u,
+            "Public conflict enumeration lost journal conflicts.");
+        const auto findByKind = [](const auto& conflicts, const auto kind)
+        {
+            return std::find_if(
+                conflicts.begin(),
+                conflicts.end(),
+                [kind](const LamaPon::OnlineCloudConflict& conflict)
+                {
+                    return conflict.kind == kind;
+                });
+        };
+        const auto firstPreferences = findByKind(
+            first,
+            LamaPon::OnlineCloudResourceKind::Preferences);
+        const auto firstSlot = findByKind(
+            first,
+            LamaPon::OnlineCloudResourceKind::SaveSlot);
+        const auto secondPreferences = findByKind(
+            second,
+            LamaPon::OnlineCloudResourceKind::Preferences);
+        const auto secondSlot = findByKind(
+            second,
+            LamaPon::OnlineCloudResourceKind::SaveSlot);
+        const auto canonicalOpaque = [](const std::string_view value)
+        {
+            return value.size() == 32u
+                && value.find_first_not_of("0123456789abcdef")
+                    == std::string_view::npos;
+        };
+        Require(
+            firstPreferences != first.end()
+                && firstSlot != first.end()
+                && secondPreferences != second.end()
+                && secondSlot != second.end()
+                && canonicalOpaque(firstPreferences->id)
+                && canonicalOpaque(firstSlot->id)
+                && firstPreferences->id == secondPreferences->id
+                && firstSlot->id == secondSlot->id
+                && firstPreferences->id != PreferencesMutation
+                && firstSlot->id != SlotMutation
+                && firstPreferences->slot.empty()
+                && firstPreferences->localByteLength
+                    == preferencesDocument.bytes.size()
+                && firstPreferences->remoteDeleted
+                && firstSlot->slot == "public-slot"
+                && firstSlot->localByteLength == slotDocument.bytes.size()
+                && firstSlot->remoteDeleted,
+            "Public conflict DTO exposed unstable or incorrect metadata.");
+        Require(
+            services->ResolveCloudConflict(
+                "stale-opaque-id",
+                LamaPon::OnlineCloudConflictResolution::UseLocal)
+                    == LamaPon::OnlinePersistenceOperationResult::Stale,
+            "Unknown conflict ID was not rejected as stale.");
+
+        services->Update(850.0f);
+        backend->WaitUntilRequestBlocked();
+        Require(
+            services->RequestCloudSync()
+                    == LamaPon::OnlinePersistenceOperationResult::Busy
+                && services->ResolveCloudConflict(
+                firstPreferences->id,
+                LamaPon::OnlineCloudConflictResolution::UseLocal)
+                    == LamaPon::OnlinePersistenceOperationResult::Busy
+                && services->CloudConflicts().front().id
+                    == firstPreferences->id,
+            "A valid conflict ID was not preserved while auth was Busy.");
+        auto* const synchronizer = coordinator->Synchronizer();
+        Require(synchronizer != nullptr, "Public cloud synchronizer is missing.");
+        synchronizer->ResolveConflict(
+            preferencesResource,
+            PreferencesMutation,
+            LamaPon::Detail::CloudSaveConflictResolution::UseRemote);
+        Require(
+            services->ResolveCloudConflict(
+                firstPreferences->id,
+                LamaPon::OnlineCloudConflictResolution::UseLocal)
+                    == LamaPon::OnlinePersistenceOperationResult::Stale,
+            "A disappeared conflict was reported Busy instead of Stale.");
+        const auto remainingWhileBusy = services->CloudConflicts();
+        Require(
+            remainingWhileBusy.size() == 1u
+                && remainingWhileBusy.front().id == firstSlot->id,
+            "Pruning a stale conflict invalidated an unrelated ID.");
+        backend->ReleaseBlockedRequest();
+        UpdateUntil(
+            *services,
+            [&]
+            {
+                return services->State()
+                    == LamaPon::OnlineAccountState::SignedIn;
+            },
+            "Public conflict refresh did not complete.");
+        Require(
+            services->ResolveCloudConflict(
+                firstSlot->id,
+                LamaPon::OnlineCloudConflictResolution::UseLocal)
+                    == LamaPon::OnlinePersistenceOperationResult::Succeeded,
+            "Public UseLocal conflict resolution failed.");
+        const auto remaining = services->CloudConflicts();
+        Require(
+            remaining.empty(),
+            "Resolved conflicts remained in the public registry.");
+
+        preferences.SetString("local", "after-resolution");
+        preferences.Save();
+        const auto recreatedPreferences =
+            LamaPon::Detail::LocalPersistenceDocuments::ReadPlayerPrefs(
+                preferences);
+        constexpr std::string_view SignOutMutation =
+            "33333333-3333-4333-8333-333333333333";
+        journal->QueuePut(
+            preferencesResource,
+            recreatedPreferences.bytes,
+            SignOutMutation,
+            std::optional<std::string>{ "\"remote-prefs\"" });
+        journal->RecordConflict(
+            preferencesResource,
+            SignOutMutation,
+            { preferencesResource, "\"remote-prefs\"", true, {}, {} });
+        const auto beforeSignOut = services->CloudConflicts();
+        Require(
+            beforeSignOut.size() == 1u,
+            "Sign-out conflict fixture was not published.");
+        const auto staleAfterSignOut = beforeSignOut.front().id;
+        services->SignOut();
+        Require(
+            services->ResolveCloudConflict(
+                staleAfterSignOut,
+                LamaPon::OnlineCloudConflictResolution::UseRemote)
+                    == LamaPon::OnlinePersistenceOperationResult::Stale,
+            "Sign-out did not invalidate conflict IDs before Busy checks.");
     }
 
     void TestCredentialSaveFailureRollsBackAndRevokesSession()
@@ -1499,6 +2220,115 @@ namespace
                     requests.back(),
                     L"rejected-access-token"),
             "Credential Save failure exposed or retained a session.");
+    }
+
+    void TestRequestCloudSyncReportsBusyAndTerminalStop()
+    {
+        const auto root = CaseRoot("public-cloud-request-state");
+        LamaPon::PlayerPrefs preferences(root / L"PlayerPrefs.json");
+        preferences.Load();
+        LamaPon::SaveDataStore saves(root / L"Saves");
+        auto authorized = SessionJson(
+            "request-cloud-access",
+            "request-cloud-refresh",
+            "request-cloud-player",
+            900u);
+        authorized["status"] = "authorized";
+        auto requestCount = std::make_shared<std::atomic_size_t>();
+        auto services = LamaPon::Detail::OnlineServicesTestAccess::Create(
+            OnlineConfiguration(),
+            [authorized, requestCount](const LamaPon::HttpRequest& request)
+            {
+                requestCount->fetch_add(1u, std::memory_order_relaxed);
+                if (request.url.ends_with(L"/v1/auth/login/start"))
+                {
+                    return JsonResponse(
+                        201u,
+                        {
+                            { "transactionId", "request-cloud-login" },
+                            { "pollToken", "request-cloud-poll" },
+                            {
+                                "authorizationUrl",
+                                "https://login.example.test/request-cloud"
+                            },
+                            { "expiresIn", 300u },
+                            { "pollInterval", 1u }
+                        });
+                }
+                if (request.url.ends_with(L"/v1/auth/login/complete"))
+                {
+                    return JsonResponse(200u, authorized);
+                }
+                if (request.url.ends_with(
+                        L"/v1/cloud-saves/manifest"))
+                {
+                    return EmptyCloudManifestResponse();
+                }
+                if (request.url.ends_with(L"/v1/auth/session/logout"))
+                {
+                    return JsonResponse(204u);
+                }
+                LamaPon::HttpResponse unexpected;
+                unexpected.transportError = "Unexpected request.";
+                return unexpected;
+            },
+            std::make_unique<MemoryTokenStore>(
+                std::make_shared<TokenStoreState>()));
+        LamaPon::Detail::OnlinePersistenceAccess::Attach(
+            *services,
+            preferences,
+            saves,
+            root);
+        CompleteDiscordLogin(*services);
+        const auto idleDeadline = std::chrono::steady_clock::now()
+            + std::chrono::seconds(10);
+        while ((services->State()
+                    != LamaPon::OnlineAccountState::SignedIn
+                || services->CloudSyncStatus().state
+                    != LamaPon::OnlineCloudSyncState::Idle)
+            && std::chrono::steady_clock::now() < idleDeadline)
+        {
+            services->Update(0.0f);
+            LamaPon::Detail::OnlinePersistenceAccess::EndFrame(*services);
+            std::this_thread::yield();
+        }
+        const auto initialCloudStatus = services->CloudSyncStatus();
+        if (services->State() != LamaPon::OnlineAccountState::SignedIn
+            || initialCloudStatus.state
+                != LamaPon::OnlineCloudSyncState::Idle)
+        {
+            throw std::runtime_error(
+                "Cloud request fixture did not become idle (state="
+                + std::to_string(static_cast<int>(initialCloudStatus.state))
+                + ", stop="
+                + std::to_string(
+                    static_cast<int>(initialCloudStatus.stopReason))
+                + ", requests="
+                + std::to_string(requestCount->load())
+                + ").");
+        }
+
+        WriteText(preferences.FilePath(), "{corrupt-local");
+        Require(
+            services->RequestCloudSync()
+                == LamaPon::OnlinePersistenceOperationResult::Succeeded,
+            "A healthy synchronizer rejected an explicit request.");
+        const auto stoppedDeadline = std::chrono::steady_clock::now()
+            + std::chrono::seconds(10);
+        while (services->CloudSyncStatus().state
+                    != LamaPon::OnlineCloudSyncState::Stopped
+            && std::chrono::steady_clock::now() < stoppedDeadline)
+        {
+            services->Update(0.0f);
+            LamaPon::Detail::OnlinePersistenceAccess::EndFrame(*services);
+            std::this_thread::yield();
+        }
+        Require(
+            services->CloudSyncStatus().state
+                    == LamaPon::OnlineCloudSyncState::Stopped
+                && services->RequestCloudSync()
+                == LamaPon::OnlinePersistenceOperationResult::Failed,
+            "A terminally stopped synchronizer reported request success.");
     }
 
     void TestFailedCredentialSaveKeepsPriorCommitPendingUntilDeleted()
@@ -3611,10 +4441,16 @@ int main()
         run("save quarantine", TestFailedAccountSaveIsQuarantinedAndRetried);
         run("detach delete checkpoint", TestImmediateDetachCheckpointsBaselineLessDelete);
         run("checkpoint quarantine", TestFailedDetachCheckpointKeepsAccountLeaseUntilDiscard);
+        run("checkpoint scan failure", TestUndeterminedDetachCheckpointRemainsFailClosed);
         run("clean load failure", TestCleanLoadFailureDoesNotPermanentlyBlockProfiles);
         run("dirty recovery", TestDirtyLoadFailureUsesRecoverableStrictSidecar);
         run("recovery discard", TestExplicitRecoveryDiscardPreservesOriginal);
+        run("memory recovery discard", TestMemoryRecoveryDiscardPromotesExistingSidecar);
+        run("corrupt recovery availability", TestEmptyAndOversizedRecoverySidecarsCanBeDiscardedSafely);
         run("recovery sidecar lease", TestRecoverySidecarResolutionReacquiresProfileLease);
+        run("public recovery API", TestPublicRecoveryRevisionAndOperationGuards);
+        run("public cloud conflict API", TestPublicCloudConflictRegistryAndResolution);
+        run("public cloud request state", TestRequestCloudSyncReportsBusyAndTerminalStop);
         run("credential rollback", TestCredentialSaveFailureRollsBackAndRevokesSession);
         run("failed credential pending", TestFailedCredentialSaveKeepsPriorCommitPendingUntilDeleted);
         run("immediate signout", TestSignOutImmediatelyRestoresGuestAndReloginRestoresAccount);

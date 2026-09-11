@@ -3,6 +3,7 @@
 #include "LamaPon/Core/PersistenceProfiles.h"
 #include "LamaPon/Online/CloudSave.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -83,6 +84,32 @@ namespace LamaPon::Detail
         std::string sha256;
     };
 
+    enum class CloudSaveDeleteIntentOperationKind : std::uint8_t
+    {
+        Record,
+        Clear
+    };
+
+    struct CloudSaveDeleteIntentOperation final
+    {
+        CloudSaveResource resource;
+        CloudSaveDeleteIntentOperationKind kind{
+            CloudSaveDeleteIntentOperationKind::Record
+        };
+    };
+
+    // UI bridge向けのmetadata-only viewです。full content/ETag/hashを
+    // 複製せず、expectedMutationIdもOnlineServicesより外へ出しません。
+    struct CloudSaveConflictSummary final
+    {
+        CloudSaveResource resource;
+        std::string expectedMutationId;
+        bool localDeleted{};
+        std::size_t localByteLength{};
+        bool remoteDeleted{};
+        std::size_t remoteByteLength{};
+    };
+
     enum class CloudSaveConflictResolution : std::uint8_t
     {
         UseRemote,
@@ -142,6 +169,12 @@ namespace LamaPon::Detail
         // 得た後はQueueDeleteが同じgeneration更新でintentをpendingへ昇格します。
         void RecordLocalDeleteIntent(const CloudSaveResource& resource);
         void ClearLocalDeleteIntent(const CloudSaveResource& resource);
+        // detachで確定したRecord/Clear列を1generationのみで
+        // publishします。全resourceを検証してnext stateへ適用した
+        // 後にPersistを1回だけ行うため、crash後に部分列が残る
+        // ことはありません。
+        void ApplyLocalDeleteIntentOperations(
+            const std::vector<CloudSaveDeleteIntentOperation>& operations);
         [[nodiscard]] bool HasLocalDeleteIntent(
             const CloudSaveResource& resource) const;
 
@@ -176,6 +209,8 @@ namespace LamaPon::Detail
         // conflict中も旧mutationをそのまま返します。
         [[nodiscard]] std::optional<CloudSavePendingMutation> Pending(
             const CloudSaveResource& resource) const;
+        [[nodiscard]] std::vector<CloudSaveConflictSummary>
+            ConflictSummaries() const;
         [[nodiscard]] std::vector<CloudSaveResource> Resources() const;
         [[nodiscard]] bool HasPending(
             const CloudSaveResource& resource) const;

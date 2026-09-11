@@ -552,10 +552,19 @@ namespace LamaPon::Detail
             EraseSecret(accountStorageKey);
         }
 
+        void InvalidateConflictDescriptors() noexcept
+        {
+            conflictDescriptors.clear();
+            conflictDescriptorGeneration =
+                (std::numeric_limits<std::uint64_t>::max)();
+            conflictDescriptorProfileEpoch = 0u;
+        }
+
         void DetachNoThrow() noexcept
         {
             ++sessionSerial;
             RetireActiveMailbox();
+            InvalidateConflictDescriptors();
             journal = nullptr;
             profileEpoch = 0u;
             ClearAccountStorageKey();
@@ -567,6 +576,7 @@ namespace LamaPon::Detail
             validatedJournalGeneration.reset();
             reconcileRequested = false;
             deleteIntentCapturePending = false;
+            failedDetachCheckpointRecovery = {};
             retryAttempt = 0u;
             authorizedWireSuccessPending = false;
             status = {};
@@ -798,6 +808,11 @@ namespace LamaPon::Detail
             const CloudSaveResource* localIdentity = nullptr);
         void PrepareLocalDelete(const CloudSaveResource& resource);
         void NoteRemoteDeletion(const CloudSaveResource& resource) noexcept;
+        [[nodiscard]] std::vector<CloudSaveDeleteIntentOperation>
+            DetermineLocalDeleteIntentOperations(
+                const LocalInventory& inventory);
+        void ApplyLocalDeleteIntentOperations(
+            const std::vector<CloudSaveDeleteIntentOperation>& operations);
         void CaptureDurableLocalDeleteIntents();
         void ValidateJournalDocuments();
         void QueueLocalMutation(
@@ -854,6 +869,15 @@ namespace LamaPon::Detail
         LocalInventory lastObservedInventory;
         bool hasLastObservedInventory{};
         bool authorizedWireSuccessPending{};
+        CloudSaveDetachCheckpointRecovery failedDetachCheckpointRecovery;
+        // UI照会ごとにjournalのfull conflict contentを複製しないよう、
+        // generation単位で安全なmetadataだけを保持します。
+        mutable std::uint64_t conflictDescriptorGeneration{
+            (std::numeric_limits<std::uint64_t>::max)()
+        };
+        mutable std::uint64_t conflictDescriptorProfileEpoch{};
+        mutable std::vector<CloudSaveConflictDescriptor>
+            conflictDescriptors;
     };
 
     LocalInventory
@@ -1190,14 +1214,15 @@ namespace LamaPon::Detail
         reconcileRequested = true;
     }
 
-    void CloudSaveSynchronizer::Implementation::
-        CaptureDurableLocalDeleteIntents()
+    std::vector<CloudSaveDeleteIntentOperation>
+        CloudSaveSynchronizer::Implementation::
+        DetermineLocalDeleteIntentOperations(
+            const LocalInventory& inventory)
     {
-        const auto inventory = ReadLocalInventory();
-        if (status.state == CloudSaveSynchronizerState::Halted)
-        {
-            return;
-        }
+        std::vector<CloudSaveDeleteIntentOperation> operations;
+        operations.reserve(
+            lastObservedInventory.resources.size()
+            + inventory.resources.size());
         if (hasLastObservedInventory)
         {
             for (const auto& previous : lastObservedInventory.resources)
@@ -1215,7 +1240,10 @@ namespace LamaPon::Detail
                     // ETag未取得期間用のintentを重ねて復活させません。
                     if (!journal->Pending(previous.resource))
                     {
-                        journal->RecordLocalDeleteIntent(previous.resource);
+                        operations.push_back({
+                            previous.resource,
+                            CloudSaveDeleteIntentOperationKind::Record
+                        });
                     }
                 }
             }
@@ -1225,9 +1253,33 @@ namespace LamaPon::Detail
             if (current.document.state == LocalPersistenceDocumentState::Loaded
                 && journal->HasLocalDeleteIntent(current.resource))
             {
-                journal->ClearLocalDeleteIntent(current.resource);
+                operations.push_back({
+                    current.resource,
+                    CloudSaveDeleteIntentOperationKind::Clear
+                });
             }
         }
+        return operations;
+    }
+
+    void CloudSaveSynchronizer::Implementation::
+        ApplyLocalDeleteIntentOperations(
+            const std::vector<CloudSaveDeleteIntentOperation>& operations)
+    {
+        journal->ApplyLocalDeleteIntentOperations(operations);
+    }
+
+    void CloudSaveSynchronizer::Implementation::
+        CaptureDurableLocalDeleteIntents()
+    {
+        const auto inventory = ReadLocalInventory();
+        if (status.state == CloudSaveSynchronizerState::Halted)
+        {
+            return;
+        }
+        const auto operations =
+            DetermineLocalDeleteIntentOperations(inventory);
+        ApplyLocalDeleteIntentOperations(operations);
         lastObservedInventory = inventory;
         hasLastObservedInventory = true;
     }
@@ -1990,6 +2042,7 @@ namespace LamaPon::Detail
         CheckpointLocalStateForDetach()
     {
         RequireOwner();
+        failedDetachCheckpointRecovery = {};
         if (!journal)
         {
             return;
@@ -2005,14 +2058,26 @@ namespace LamaPon::Detail
         status.state = CloudSaveSynchronizerState::Synchronizing;
         status.stopReason = CloudSaveSynchronizerStopReason::None;
         status.retryAtMilliseconds = 0u;
-        CaptureDurableLocalDeleteIntents();
+        const auto inventory = ReadLocalInventory();
         if (status.state == CloudSaveSynchronizerState::Halted)
         {
             throw std::runtime_error(
                 "Local persistence could not be checkpointed.");
         }
+        auto operations =
+            DetermineLocalDeleteIntentOperations(inventory);
+        // ここから先は操作列全体を1世代でpublishします。失敗した場合も
+        // 全操作をcallerへ移し、新しいjournal instanceへ冪等再適用します。
+        failedDetachCheckpointRecovery.operations =
+            std::move(operations);
+        failedDetachCheckpointRecovery.operationsDetermined = true;
+        ApplyLocalDeleteIntentOperations(
+            failedDetachCheckpointRecovery.operations);
+        lastObservedInventory = inventory;
+        hasLastObservedInventory = true;
         deleteIntentCapturePending = false;
         reconcileRequested = false;
+        failedDetachCheckpointRecovery = {};
     }
 
     void CloudSaveSynchronizer::Implementation::Tick(
@@ -2339,6 +2404,7 @@ namespace LamaPon::Detail
         auto state = std::move(prepared.m_state);
         ++implementation.sessionSerial;
         implementation.RetireActiveMailbox();
+        implementation.InvalidateConflictDescriptors();
         implementation.journal = state->journal;
         implementation.profileEpoch = profileEpoch;
         implementation.ClearAccountStorageKey();
@@ -2353,6 +2419,7 @@ namespace LamaPon::Detail
         implementation.validatedJournalGeneration.reset();
         implementation.reconcileRequested = true;
         implementation.deleteIntentCapturePending = false;
+        implementation.failedDetachCheckpointRecovery = {};
         implementation.retryAttempt = 0u;
         implementation.authorizedWireSuccessPending = false;
         implementation.status = {};
@@ -2364,6 +2431,14 @@ namespace LamaPon::Detail
     void CloudSaveSynchronizer::Detach() noexcept
     {
         m_implementation->DetachNoThrow();
+    }
+
+    CloudSaveDetachCheckpointRecovery
+        CloudSaveSynchronizer::TakeFailedDetachCheckpointRecovery() noexcept
+    {
+        return std::exchange(
+            m_implementation->failedDetachCheckpointRecovery,
+            CloudSaveDetachCheckpointRecovery{});
     }
 
     void CloudSaveSynchronizer::CheckpointLocalStateForDetach()
@@ -2551,6 +2626,15 @@ namespace LamaPon::Detail
             throw std::logic_error(
                 "Cloud save synchronizer is not attached.");
         }
+        const auto pending = implementation.journal->Pending(resource);
+        const auto conflict = implementation.journal->Conflict(resource);
+        if (!pending || !conflict
+            || pending->mutationId != expectedMutationId)
+        {
+            // stale UI操作はwire busyより先に判定します。古いopaque IDを
+            // 待てば有効になる操作として扱いません。
+            throw std::logic_error("Cloud save conflict is stale.");
+        }
         if (implementation.activeMailbox || implementation.retiredMailbox)
         {
             throw std::logic_error(
@@ -2568,14 +2652,6 @@ namespace LamaPon::Detail
             throw std::runtime_error(
                 "Local persistence is unavailable for conflict resolution.");
         }
-        const auto pending = implementation.journal->Pending(resource);
-        const auto conflict = implementation.journal->Conflict(resource);
-        if (!pending || !conflict
-            || pending->mutationId != expectedMutationId)
-        {
-            throw std::logic_error("Cloud save conflict is stale.");
-        }
-
         if (resolution == CloudSaveConflictResolution::UseRemote)
         {
             try
@@ -2658,6 +2734,44 @@ namespace LamaPon::Detail
     CloudSaveSynchronizerStatus CloudSaveSynchronizer::Status() const noexcept
     {
         return m_implementation->status;
+    }
+
+    std::vector<CloudSaveConflictDescriptor>
+        CloudSaveSynchronizer::Conflicts() const
+    {
+        const auto& implementation = *m_implementation;
+        implementation.RequireOwner();
+        std::vector<CloudSaveConflictDescriptor> result;
+        if (!implementation.journal)
+        {
+            return result;
+        }
+        const auto generation = implementation.journal->Generation();
+        if (implementation.conflictDescriptorGeneration == generation
+            && implementation.conflictDescriptorProfileEpoch
+                == implementation.profileEpoch)
+        {
+            return implementation.conflictDescriptors;
+        }
+        const auto summaries =
+            implementation.journal->ConflictSummaries();
+        result.reserve(summaries.size());
+        for (const auto& summary : summaries)
+        {
+            result.push_back({
+                summary.resource,
+                summary.expectedMutationId,
+                summary.localDeleted,
+                summary.localByteLength,
+                summary.remoteDeleted,
+                summary.remoteByteLength
+            });
+        }
+        implementation.conflictDescriptors = result;
+        implementation.conflictDescriptorGeneration = generation;
+        implementation.conflictDescriptorProfileEpoch =
+            implementation.profileEpoch;
+        return result;
     }
 
     bool CloudSaveSynchronizer::IsAttached() const noexcept

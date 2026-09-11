@@ -15,6 +15,7 @@
 #include <atomic>
 #include <cmath>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <ranges>
 #include <stdexcept>
@@ -27,6 +28,7 @@ namespace
 {
     using Json = nlohmann::json;
     using LamaPon::Detail::LocalPersistenceDocument;
+    using LamaPon::Detail::LocalPersistenceDocumentIdentity;
     using LamaPon::Detail::LocalPersistenceDocumentState;
 
     constexpr std::size_t MaximumJsonDepth = 64u;
@@ -336,6 +338,65 @@ namespace
             && (attributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0u
             && (attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0u
             && OwnerIsAllowed(directory, security);
+    }
+
+    std::optional<LamaPon::Detail::LocalPersistenceDocumentIdentity>
+        CaptureDocumentIdentity(
+        const HANDLE file,
+        const bool completeBytes) noexcept
+    {
+        BY_HANDLE_FILE_INFORMATION information{};
+        FILE_BASIC_INFO basic{};
+        FILE_ID_INFO fileId{};
+        if (GetFileInformationByHandle(file, &information) == FALSE
+            || GetFileInformationByHandleEx(
+                file,
+                FileBasicInfo,
+                &basic,
+                sizeof(basic)) == FALSE
+            || GetFileInformationByHandleEx(
+                file,
+                FileIdInfo,
+                &fileId,
+                sizeof(fileId)) == FALSE)
+        {
+            return std::nullopt;
+        }
+
+        std::array<std::uint8_t, 16u> identifier{};
+        std::copy_n(
+            fileId.FileId.Identifier,
+            identifier.size(),
+            identifier.begin());
+        ULARGE_INTEGER byteLength{};
+        byteLength.HighPart = information.nFileSizeHigh;
+        byteLength.LowPart = information.nFileSizeLow;
+        ULARGE_INTEGER lastWrite{};
+        lastWrite.HighPart = information.ftLastWriteTime.dwHighDateTime;
+        lastWrite.LowPart = information.ftLastWriteTime.dwLowDateTime;
+        return LamaPon::Detail::LocalPersistenceDocumentIdentity{
+            fileId.VolumeSerialNumber,
+            identifier,
+            byteLength.QuadPart,
+            static_cast<std::int64_t>(lastWrite.QuadPart),
+            basic.ChangeTime.QuadPart,
+            true,
+            completeBytes
+        };
+    }
+
+    bool SameCapturedFile(
+        const LamaPon::Detail::LocalPersistenceDocumentIdentity& left,
+        const LamaPon::Detail::LocalPersistenceDocumentIdentity& right)
+        noexcept
+    {
+        return left.valid
+            && right.valid
+            && left.volumeSerial == right.volumeSerial
+            && left.fileId == right.fileId
+            && left.byteLength == right.byteLength
+            && left.lastWriteTime == right.lastWriteTime
+            && left.changeTime == right.changeTime;
     }
 
     bool ProtectFileHandle(
@@ -873,6 +934,109 @@ namespace
                     std::numeric_limits<std::int64_t>::max());
     }
 
+    LocalPersistenceDocument ReadOpenDocument(
+        const HANDLE file,
+        const RestrictedSecurity& security,
+        const std::size_t maximumBytes,
+        const std::optional<std::string_view> saveSlot)
+    {
+        if (!IsSafeFileHandle(file, security))
+        {
+            return { LocalPersistenceDocumentState::Unavailable, {} };
+        }
+        auto before = CaptureDocumentIdentity(file, false);
+        if (!before)
+        {
+            return { LocalPersistenceDocumentState::Unavailable, {} };
+        }
+        if (before->byteLength == 0u)
+        {
+            return {
+                LocalPersistenceDocumentState::Corrupt,
+                {},
+                LocalPersistenceDocumentIdentity{
+                    before->volumeSerial,
+                    before->fileId,
+                    before->byteLength,
+                    before->lastWriteTime,
+                    before->changeTime,
+                    true,
+                    true
+                }
+            };
+        }
+        if (before->byteLength > maximumBytes)
+        {
+            return {
+                LocalPersistenceDocumentState::Corrupt,
+                {},
+                *before
+            };
+        }
+        LARGE_INTEGER beginning{};
+        if (SetFilePointerEx(
+                file,
+                beginning,
+                nullptr,
+                FILE_BEGIN) == FALSE)
+        {
+            return { LocalPersistenceDocumentState::Unavailable, {} };
+        }
+        std::vector<std::uint8_t> bytes(
+            static_cast<std::size_t>(before->byteLength));
+        std::size_t offset{};
+        while (offset < bytes.size())
+        {
+            const auto remaining = std::min<std::size_t>(
+                bytes.size() - offset,
+                std::numeric_limits<DWORD>::max());
+            DWORD read{};
+            if (ReadFile(
+                    file,
+                    bytes.data() + offset,
+                    static_cast<DWORD>(remaining),
+                    &read,
+                    nullptr) == FALSE
+                || read == 0u)
+            {
+                return { LocalPersistenceDocumentState::Unavailable, {} };
+            }
+            offset += read;
+        }
+        auto after = CaptureDocumentIdentity(file, true);
+        if (!after || !SameCapturedFile(*before, *after))
+        {
+            return { LocalPersistenceDocumentState::Unavailable, {} };
+        }
+        const std::string_view text(
+            reinterpret_cast<const char*>(bytes.data()),
+            bytes.size());
+        try
+        {
+            if (saveSlot)
+            {
+                LamaPon::Detail::ValidateSaveDataFullDocument(*saveSlot, text);
+            }
+            else
+            {
+                LamaPon::Detail::ValidatePlayerPrefsFullDocument(text);
+            }
+        }
+        catch (...)
+        {
+            return {
+                LocalPersistenceDocumentState::Corrupt,
+                std::move(bytes),
+                *after
+            };
+        }
+        return {
+            LocalPersistenceDocumentState::Loaded,
+            std::move(bytes),
+            *after
+        };
+    }
+
     LocalPersistenceDocument ReadDocument(
         const std::filesystem::path& path,
         const std::size_t maximumBytes,
@@ -910,62 +1074,11 @@ namespace
                 {}
             };
         }
-        FILE_STANDARD_INFO standard{};
-        if (!IsSafeFileHandle(file.value, security)
-            || GetFileInformationByHandleEx(
-                file.value,
-                FileStandardInfo,
-                &standard,
-                sizeof(standard)) == FALSE)
-        {
-            return { LocalPersistenceDocumentState::Unavailable, {} };
-        }
-        if (standard.EndOfFile.QuadPart <= 0
-            || standard.EndOfFile.QuadPart
-                > static_cast<LONGLONG>(maximumBytes))
-        {
-            return { LocalPersistenceDocumentState::Corrupt, {} };
-        }
-        std::vector<std::uint8_t> bytes(
-            static_cast<std::size_t>(standard.EndOfFile.QuadPart));
-        std::size_t offset{};
-        while (offset < bytes.size())
-        {
-            const auto remaining = std::min<std::size_t>(
-                bytes.size() - offset,
-                std::numeric_limits<DWORD>::max());
-            DWORD read{};
-            if (ReadFile(
-                    file.value,
-                    bytes.data() + offset,
-                    static_cast<DWORD>(remaining),
-                    &read,
-                    nullptr) == FALSE
-                || read == 0u)
-            {
-                return { LocalPersistenceDocumentState::Unavailable, {} };
-            }
-            offset += read;
-        }
-        const std::string_view text(
-            reinterpret_cast<const char*>(bytes.data()),
-            bytes.size());
-        try
-        {
-            if (saveSlot)
-            {
-                LamaPon::Detail::ValidateSaveDataFullDocument(*saveSlot, text);
-            }
-            else
-            {
-                LamaPon::Detail::ValidatePlayerPrefsFullDocument(text);
-            }
-        }
-        catch (...)
-        {
-            return { LocalPersistenceDocumentState::Corrupt, {} };
-        }
-        return { LocalPersistenceDocumentState::Loaded, std::move(bytes) };
+        return ReadOpenDocument(
+            file.value,
+            security,
+            maximumBytes,
+            saveSlot);
     }
 
     bool EndsWithSaveSuffix(const std::wstring_view name)
@@ -992,19 +1105,31 @@ namespace
         if (observed.state == LocalPersistenceDocumentState::Loaded)
         {
             return current.state == LocalPersistenceDocumentState::Loaded
-                && current.bytes == observed.bytes;
+                && current.bytes == observed.bytes
+                && current.identity.valid
+                && observed.identity.valid
+                && current.identity == observed.identity;
         }
         if (observed.state == LocalPersistenceDocumentState::Missing)
         {
             return current.state == LocalPersistenceDocumentState::Missing;
         }
+        if (observed.state == LocalPersistenceDocumentState::Corrupt
+            && observed.identity.valid)
+        {
+            return current.state == LocalPersistenceDocumentState::Corrupt
+                && current.identity == observed.identity
+                && (!observed.identity.completeBytes
+                    || current.bytes == observed.bytes);
+        }
         throw std::invalid_argument(
             "Conditional persistence requires a readable observation.");
     }
 
-    void PublishDocumentWithHeldLock(
+    bool PublishDocumentWithHeldLock(
         const std::filesystem::path& targetPath,
-        const std::string_view bytes)
+        const std::string_view bytes,
+        const bool replaceExisting = true)
     {
         (void)ValidateExistingTarget(targetPath);
         const auto stagePath = WithSuffix(targetPath, L".writing");
@@ -1018,34 +1143,163 @@ namespace
         if (MoveFileExW(
                 stagePath.c_str(),
                 targetPath.c_str(),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE)
+                MOVEFILE_WRITE_THROUGH
+                    | (replaceExisting ? MOVEFILE_REPLACE_EXISTING : 0u))
+            == FALSE)
+        {
+            const auto error = GetLastError();
+            if (!replaceExisting
+                && (error == ERROR_ALREADY_EXISTS
+                    || error == ERROR_FILE_EXISTS))
+            {
+                return false;
+            }
+            ThrowPersistenceFailure();
+        }
+        return true;
+    }
+
+    void DeleteOpenDocumentWithHeldLock(
+        const std::filesystem::path& targetPath,
+        const HANDLE target,
+        const RestrictedSecurity& security)
+    {
+        const auto deletingPath = WithSuffix(targetPath, L".deleting");
+        {
+            FileHandle stale(CreateFileW(
+                deletingPath.c_str(),
+                DELETE | FILE_READ_ATTRIBUTES | READ_CONTROL,
+                FILE_SHARE_READ,
+                nullptr,
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+                nullptr));
+            if (stale.value != INVALID_HANDLE_VALUE)
+            {
+                if (!IsSafeFileHandle(stale.value, security))
+                {
+                    ThrowPersistenceFailure();
+                }
+                FILE_DISPOSITION_INFO disposition{ TRUE };
+                if (SetFileInformationByHandle(
+                        stale.value,
+                        FileDispositionInfo,
+                        &disposition,
+                        sizeof(disposition)) == FALSE)
+                {
+                    ThrowPersistenceFailure();
+                }
+            }
+            else if (!IsMissingError(GetLastError()))
+            {
+                ThrowPersistenceFailure();
+            }
+        }
+
+        std::filesystem::path absoluteDeletingPath;
+        try
+        {
+            absoluteDeletingPath = std::filesystem::absolute(
+                deletingPath).lexically_normal();
+        }
+        catch (...)
         {
             ThrowPersistenceFailure();
         }
+        const auto fileName = absoluteDeletingPath.native();
+        if (fileName.empty()
+            || fileName.size()
+                > std::numeric_limits<DWORD>::max() / sizeof(wchar_t))
+        {
+            ThrowPersistenceFailure();
+        }
+        const auto fileNameBytes = static_cast<DWORD>(
+            fileName.size() * sizeof(wchar_t));
+        const auto renameBytes = sizeof(FILE_RENAME_INFO)
+            + static_cast<std::size_t>(fileNameBytes);
+        if (renameBytes > std::numeric_limits<DWORD>::max())
+        {
+            ThrowPersistenceFailure();
+        }
+        auto renameStorage = std::make_unique<std::byte[]>(renameBytes);
+        auto* const rename = reinterpret_cast<FILE_RENAME_INFO*>(
+            renameStorage.get());
+        rename->ReplaceIfExists = FALSE;
+        rename->RootDirectory = nullptr;
+        rename->FileNameLength = fileNameBytes;
+        std::copy(
+            reinterpret_cast<const std::byte*>(fileName.data()),
+            reinterpret_cast<const std::byte*>(fileName.data())
+                + fileNameBytes,
+            reinterpret_cast<std::byte*>(rename->FileName));
+
+        // 検証済みの同一handleをcommit pointまで保持するため、path再openに
+        // よる差替えTOCTOUを作りません。rename後の`.deleting`はselector外で、
+        // crash時にも公開側はMissingとして一貫します。
+        // FileRenameInfoにはWRITE_THROUGH flagがないため、内容を
+        // rename前にdurability barrierへ通し、rename後も同一handleを
+        // flushしてdirectory metadataのpublishを耐久化します。
+        if (FlushFileBuffers(target) == FALSE)
+        {
+            ThrowPersistenceFailure();
+        }
+        if (SetFileInformationByHandle(
+                target,
+                FileRenameInfo,
+                rename,
+                static_cast<DWORD>(renameBytes)) == FALSE)
+        {
+            ThrowPersistenceFailure();
+        }
+        // ここで失敗しても公開pathは既にMissingです。曖昧に
+        // 成功扱いせずgeneric failureを返し、selector外の
+        // `.deleting`を次回の安全なcleanupに残します。
+        if (FlushFileBuffers(target) == FALSE)
+        {
+            ThrowPersistenceFailure();
+        }
+        FILE_DISPOSITION_INFO disposition{ TRUE };
+        // renameが論理commit pointです。cleanup失敗時は安全なstale
+        // `.deleting`として次回処理に残します。
+        (void)SetFileInformationByHandle(
+            target,
+            FileDispositionInfo,
+            &disposition,
+            sizeof(disposition));
     }
 
     bool DeleteDocumentWithHeldLock(
         const std::filesystem::path& targetPath)
     {
-        if (!ValidateExistingTarget(targetPath))
-        {
-            return false;
-        }
-        const auto deletingPath = WithSuffix(targetPath, L".deleting");
-        if (ValidateExistingTarget(deletingPath)
-            && DeleteFileW(deletingPath.c_str()) == FALSE)
+        RestrictedSecurity security;
+        if (!security.Initialize())
         {
             ThrowPersistenceFailure();
         }
-        if (MoveFileExW(
-                targetPath.c_str(),
-                deletingPath.c_str(),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE)
+        FileHandle target(CreateFileW(
+            targetPath.c_str(),
+            GENERIC_WRITE | DELETE | FILE_READ_ATTRIBUTES | READ_CONTROL,
+            FILE_SHARE_READ,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+            nullptr));
+        if (target.value == INVALID_HANDLE_VALUE)
+        {
+            if (IsMissingError(GetLastError()))
+            {
+                return false;
+            }
+            ThrowPersistenceFailure();
+        }
+        if (!IsSafeFileHandle(target.value, security))
         {
             ThrowPersistenceFailure();
         }
-        // renameがcommit pointです。stale `.deleting`はreaderが無視します。
-        (void)DeleteFileW(deletingPath.c_str());
+        DeleteOpenDocumentWithHeldLock(
+            targetPath,
+            target.value,
+            security);
         return true;
     }
 }
@@ -1164,7 +1418,7 @@ namespace LamaPon::Detail
     {
         EnsureParentDirectory(targetPath);
         auto lock = AcquireTargetLock(targetPath);
-        PublishDocumentWithHeldLock(targetPath, bytes);
+        static_cast<void>(PublishDocumentWithHeldLock(targetPath, bytes));
     }
 
     bool DurableDeleteLocalDocument(
@@ -1204,7 +1458,10 @@ namespace LamaPon::Detail
                 ? std::nullopt
                 : std::optional<std::string_view>{ saveSlot });
         if (current.state == LocalPersistenceDocumentState::Unavailable
-            || current.state == LocalPersistenceDocumentState::Corrupt)
+            || (current.state == LocalPersistenceDocumentState::Corrupt
+                && (observed.state
+                        != LocalPersistenceDocumentState::Corrupt
+                    || current.bytes.empty())))
         {
             ThrowPersistenceFailure();
         }
@@ -1212,7 +1469,14 @@ namespace LamaPon::Detail
         {
             return LocalPersistenceConditionalApplyResult::LocalChanged;
         }
-        PublishDocumentWithHeldLock(targetPath, bytes);
+        if (!PublishDocumentWithHeldLock(
+                targetPath,
+                bytes,
+                observed.state
+                    != LocalPersistenceDocumentState::Missing))
+        {
+            return LocalPersistenceConditionalApplyResult::LocalChanged;
+        }
         return LocalPersistenceConditionalApplyResult::Applied;
     }
 
@@ -1241,14 +1505,41 @@ namespace LamaPon::Detail
         }
         ValidateParentDirectory(parent);
         auto lock = AcquireTargetLock(targetPath);
-        const auto current = ReadDocument(
-            targetPath,
+        RestrictedSecurity security;
+        if (!security.Initialize())
+        {
+            ThrowPersistenceFailure();
+        }
+        FileHandle target(CreateFileW(
+            targetPath.c_str(),
+            GENERIC_READ | GENERIC_WRITE | DELETE
+                | FILE_READ_ATTRIBUTES | READ_CONTROL,
+            FILE_SHARE_READ,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+            nullptr));
+        if (target.value == INVALID_HANDLE_VALUE)
+        {
+            if (IsMissingError(GetLastError()))
+            {
+                return observed.state == LocalPersistenceDocumentState::Missing
+                    ? LocalPersistenceConditionalApplyResult::Applied
+                    : LocalPersistenceConditionalApplyResult::LocalChanged;
+            }
+            ThrowPersistenceFailure();
+        }
+        const auto current = ReadOpenDocument(
+            target.value,
+            security,
             maximumBytes,
             saveSlot.empty()
                 ? std::nullopt
                 : std::optional<std::string_view>{ saveSlot });
         if (current.state == LocalPersistenceDocumentState::Unavailable
-            || current.state == LocalPersistenceDocumentState::Corrupt)
+            || (current.state == LocalPersistenceDocumentState::Corrupt
+                && observed.state
+                    != LocalPersistenceDocumentState::Corrupt))
         {
             ThrowPersistenceFailure();
         }
@@ -1256,7 +1547,10 @@ namespace LamaPon::Detail
         {
             return LocalPersistenceConditionalApplyResult::LocalChanged;
         }
-        (void)DeleteDocumentWithHeldLock(targetPath);
+        DeleteOpenDocumentWithHeldLock(
+            targetPath,
+            target.value,
+            security);
         return LocalPersistenceConditionalApplyResult::Applied;
     }
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -16,6 +17,23 @@ namespace LamaPon
 
 namespace LamaPon::Detail
 {
+    struct LocalPersistenceDocumentIdentity final
+    {
+        std::uint64_t volumeSerial{};
+        std::array<std::uint8_t, 16u> fileId{};
+        std::uint64_t byteLength{};
+        std::int64_t lastWriteTime{};
+        std::int64_t changeTime{};
+        bool valid{};
+        // trueならbytesは空fileを含めた全内容です。falseのCorruptは
+        // oversizeのため、固定サイズfile identityだけを保持します。
+        bool completeBytes{};
+
+        friend bool operator==(
+            const LocalPersistenceDocumentIdentity&,
+            const LocalPersistenceDocumentIdentity&) = default;
+    };
+
     // Cloud同期が曖昧な既存Load APIを使わず、diskの状態をfail-closedで
     // 判定するための内部状態です。
     enum class LocalPersistenceDocumentState : std::uint8_t
@@ -31,8 +49,11 @@ namespace LamaPon::Detail
         LocalPersistenceDocumentState state{
             LocalPersistenceDocumentState::Unavailable
         };
-        // Loadedのときだけ、検証済みfull documentのbyte列を保持します。
+        // Loadedでは検証済みfull document、Corruptでは上限内で安全に
+        // 読み切れたraw bytesを保持します。後者はconditional discardの
+        // 同一性確認専用で、JSONとして利用してはいけません。
         std::vector<std::uint8_t> bytes;
+        LocalPersistenceDocumentIdentity identity;
     };
 
     struct LocalPersistenceSlotListing final
@@ -185,6 +206,10 @@ namespace LamaPon::Detail
         std::string_view bytes);
     [[nodiscard]] bool DurableDeleteLocalDocument(
         const std::filesystem::path& targetPath);
+    // conditional操作は同じtarget lockを使うLamaPon writer間のCASです。
+    // lock protocolを無視して保存先を直接書き換える外部processとの原子的CASは
+    // Win32のpath replaceでは提供できません。ただしMissing観測へのpublishは
+    // no-replaceとし、後から現れた外部fileを上書きしません。
     [[nodiscard]] LocalPersistenceConditionalApplyResult
         DurablePublishLocalDocumentIfUnchanged(
         const std::filesystem::path& targetPath,

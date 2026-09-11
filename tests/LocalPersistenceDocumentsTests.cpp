@@ -305,6 +305,105 @@ namespace
             "SaveData did not return after its full document became durable.");
     }
 
+    void TestCorruptDocumentIdentitySupportsSafeDiscard()
+    {
+        const auto directory = TestRoot() / L"corrupt-identity";
+        std::filesystem::create_directories(directory);
+        const auto path = directory / L"Recovery.prefs";
+        LamaPon::PlayerPrefs sidecar(path);
+
+        WriteText(path, {});
+        const auto empty = Documents::ReadPlayerPrefs(sidecar);
+        Require(
+            empty.state == State::Corrupt
+                && empty.bytes.empty()
+                && empty.identity.valid
+                && empty.identity.completeBytes
+                && empty.identity.byteLength == 0u,
+            "An empty corrupt document was not recorded as complete bytes.");
+        Require(
+            LamaPon::Detail::DurableDeleteLocalDocumentIfUnchanged(
+                path,
+                empty,
+                LamaPon::CloudPreferencesMaxBytes)
+                    == LamaPon::Detail::
+                        LocalPersistenceConditionalApplyResult::Applied
+                && !std::filesystem::exists(path),
+            "An unchanged empty corrupt document could not be discarded.");
+
+        const std::string oversized(
+            LamaPon::CloudPreferencesMaxBytes + 1u,
+            'a');
+        WriteText(path, oversized);
+        const auto large = Documents::ReadPlayerPrefs(sidecar);
+        Require(
+            large.state == State::Corrupt
+                && large.bytes.empty()
+                && large.identity.valid
+                && !large.identity.completeBytes
+                && large.identity.byteLength == oversized.size(),
+            "An oversized document was fully read or lacked a bounded identity.");
+        Require(
+            LamaPon::Detail::DurableDeleteLocalDocumentIfUnchanged(
+                path,
+                large,
+                LamaPon::CloudPreferencesMaxBytes)
+                    == LamaPon::Detail::
+                        LocalPersistenceConditionalApplyResult::Applied
+                && !std::filesystem::exists(path),
+            "An unchanged oversized corrupt document could not be discarded.");
+
+        WriteText(path, oversized);
+        const auto beforeReplacement = Documents::ReadPlayerPrefs(sidecar);
+        const auto replacementPath = directory / L"replacement";
+        WriteText(
+            replacementPath,
+            std::string(oversized.size(), 'b'));
+        Require(
+            MoveFileExW(
+                replacementPath.c_str(),
+                path.c_str(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE,
+            "Oversized replacement fixture could not be published.");
+        Require(
+            LamaPon::Detail::DurableDeleteLocalDocumentIfUnchanged(
+                path,
+                beforeReplacement,
+                LamaPon::CloudPreferencesMaxBytes)
+                    == LamaPon::Detail::
+                        LocalPersistenceConditionalApplyResult::LocalChanged
+                && std::filesystem::exists(path)
+                && std::filesystem::file_size(path) == oversized.size(),
+            "A replaced oversized document was deleted by stale identity.");
+
+        RemoveExact(path);
+        WriteText(path, RemotePreferences);
+        const auto observed = Documents::ReadPlayerPrefs(sidecar);
+        const auto blocker = CreateFileW(
+            path.c_str(),
+            GENERIC_READ,
+            FILE_SHARE_READ,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr);
+        Require(
+            blocker != INVALID_HANDLE_VALUE,
+            "Conditional delete sharing fixture could not be opened.");
+        const bool rejected = Throws([&]
+        {
+            (void)LamaPon::Detail::
+                DurableDeleteLocalDocumentIfUnchanged(
+                    path,
+                    observed,
+                    LamaPon::CloudPreferencesMaxBytes);
+        });
+        CloseHandle(blocker);
+        Require(
+            rejected && std::filesystem::exists(path),
+            "Conditional delete did not retain its DELETE-capable exact handle contract.");
+    }
+
     void TestRemoteApplyStrongGuaranteeAndIdentity()
     {
         const auto directory = TestRoot() / L"remote";
@@ -651,13 +750,26 @@ int main()
     try
     {
         ResetRoot();
-        TestReadStatesAndStrictSchema();
-        TestDurableBarriersAndConcurrentWriterContract();
-        TestRemoteApplyStrongGuaranteeAndIdentity();
-        TestConditionalRemoteApplyRejectsNewerLocalCommit();
-        TestObserverOrderingAndOwnership();
-        TestHardLinksFailBeforeMutation();
-        TestAncestorReparseIsRejectedWhenSupported();
+        const auto run = [](const char* name, const auto test)
+        {
+            try
+            {
+                test();
+            }
+            catch (const std::exception& exception)
+            {
+                throw std::runtime_error(
+                    std::string(name) + ": " + exception.what());
+            }
+        };
+        run("strict read", TestReadStatesAndStrictSchema);
+        run("durability", TestDurableBarriersAndConcurrentWriterContract);
+        run("corrupt identity", TestCorruptDocumentIdentitySupportsSafeDiscard);
+        run("remote apply", TestRemoteApplyStrongGuaranteeAndIdentity);
+        run("conditional apply", TestConditionalRemoteApplyRejectsNewerLocalCommit);
+        run("observer", TestObserverOrderingAndOwnership);
+        run("hard links", TestHardLinksFailBeforeMutation);
+        run("ancestor reparse", TestAncestorReparseIsRejectedWhenSupported);
         LamaPon::Detail::SetLocalPersistenceTestFailPoint(
             LamaPon::Detail::LocalPersistenceTestFailPoint::None);
         std::error_code cleanupError;

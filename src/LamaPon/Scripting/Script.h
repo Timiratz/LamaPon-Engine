@@ -581,6 +581,74 @@ namespace LamaPon
                 : std::string{};
         }
 
+        // クラウド同期の公開状態だけをScriptへ中継します。ETag、token、
+        // 保存先pathなどの内部情報はOnlineServices側で公開DTOから除外済みです。
+        [[nodiscard]] OnlineCloudSyncStatus CloudSyncStatus() const noexcept
+        {
+            const auto* online = ActiveOnlineServices();
+            return online != nullptr
+                ? online->CloudSyncStatus()
+                : OnlineCloudSyncStatus{};
+        }
+
+        [[nodiscard]] std::vector<OnlineCloudConflict>
+            CloudConflicts() const
+        {
+            const auto* online = ActiveOnlineServices();
+            return online != nullptr
+                ? online->CloudConflicts()
+                : std::vector<OnlineCloudConflict>{};
+        }
+
+        [[nodiscard]] OnlinePersistenceOperationResult
+            RequestCloudSync() const noexcept
+        {
+            auto* online = ActiveOnlineServices();
+            return online != nullptr
+                ? online->RequestCloudSync()
+                : OnlinePersistenceOperationResult::Unavailable;
+        }
+
+        [[nodiscard]] OnlinePersistenceOperationResult
+            ResolveCloudConflict(
+            const std::string_view conflictId,
+            const OnlineCloudConflictResolution resolution) const noexcept
+        {
+            auto* online = ActiveOnlineServices();
+            return online != nullptr
+                ? online->ResolveCloudConflict(conflictId, resolution)
+                : OnlinePersistenceOperationResult::Unavailable;
+        }
+
+        [[nodiscard]] OnlinePersistenceRecoveryStatus
+            PersistenceRecoveryStatus() const noexcept
+        {
+            const auto* online = ActiveOnlineServices();
+            return online != nullptr
+                ? online->PersistenceRecoveryStatus()
+                : OnlinePersistenceRecoveryStatus{};
+        }
+
+        [[nodiscard]] OnlinePersistenceOperationResult
+            RestorePersistence(
+            const std::uint64_t expectedRevision) const noexcept
+        {
+            auto* online = ActiveOnlineServices();
+            return online != nullptr
+                ? online->RestorePersistence(expectedRevision)
+                : OnlinePersistenceOperationResult::Unavailable;
+        }
+
+        [[nodiscard]] OnlinePersistenceOperationResult
+            DiscardPersistence(
+            const std::uint64_t expectedRevision) const noexcept
+        {
+            auto* online = ActiveOnlineServices();
+            return online != nullptr
+                ? online->DiscardPersistence(expectedRevision)
+                : OnlinePersistenceOperationResult::Unavailable;
+        }
+
         // 設定値の保存（アプリを終了しても残ります）
         //
         // ハイスコアや「音量」「クリアしたステージ」のような小さな値を

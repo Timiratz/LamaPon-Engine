@@ -1030,6 +1030,88 @@ namespace
                 "Clearing a local delete intent discarded its baseline.");
         }
     }
+
+    void TestLocalDeleteIntentBatchIsSingleGeneration()
+    {
+        const auto trusted = TrustedPath("delete-intent-batch");
+        auto journal = MakeJournal(trusted);
+        const auto preferences =
+            LamaPon::CloudSaveResource::Preferences();
+        const auto slot =
+            LamaPon::CloudSaveResource::SaveSlot("batch-slot");
+        const std::vector<LamaPon::Detail::CloudSaveDeleteIntentOperation>
+            records{
+                {
+                    preferences,
+                    LamaPon::Detail::
+                        CloudSaveDeleteIntentOperationKind::Record
+                },
+                {
+                    slot,
+                    LamaPon::Detail::
+                        CloudSaveDeleteIntentOperationKind::Record
+                }
+            };
+
+        const auto initialGeneration = journal->Generation();
+        LamaPon::Detail::SetCloudSaveJournalTestFailPoint(
+            LamaPon::Detail::CloudSaveJournalTestFailPoint::BeforeNextFlush);
+        Require(
+            Throws([&]
+            {
+                journal->ApplyLocalDeleteIntentOperations(records);
+            })
+                && journal->Generation() == initialGeneration
+                && !journal->HasLocalDeleteIntent(preferences)
+                && !journal->HasLocalDeleteIntent(slot),
+            "A failed delete-intent batch published a partial operation list.");
+
+        journal = MakeJournal(trusted);
+        journal->ApplyLocalDeleteIntentOperations(records);
+        Require(
+            journal->Generation() == initialGeneration + 1u
+                && journal->HasLocalDeleteIntent(preferences)
+                && journal->HasLocalDeleteIntent(slot),
+            "A delete-intent batch did not publish in one generation.");
+
+        const auto recordedGeneration = journal->Generation();
+        Require(
+            Throws([&]
+            {
+                journal->ApplyLocalDeleteIntentOperations({
+                    {
+                        LamaPon::CloudSaveResource::SaveSlot("Batch-Slot"),
+                        LamaPon::Detail::
+                            CloudSaveDeleteIntentOperationKind::Record
+                    },
+                    {
+                        LamaPon::CloudSaveResource::SaveSlot("batch-slot"),
+                        LamaPon::Detail::
+                            CloudSaveDeleteIntentOperationKind::Clear
+                    }
+                });
+            })
+                && journal->Generation() == recordedGeneration,
+            "An ambiguous delete-intent batch changed the journal.");
+
+        journal->ApplyLocalDeleteIntentOperations({
+            {
+                preferences,
+                LamaPon::Detail::
+                    CloudSaveDeleteIntentOperationKind::Clear
+            },
+            {
+                slot,
+                LamaPon::Detail::
+                    CloudSaveDeleteIntentOperationKind::Clear
+            }
+        });
+        Require(
+            journal->Generation() == recordedGeneration + 1u
+                && !journal->HasLocalDeleteIntent(preferences)
+                && !journal->HasLocalDeleteIntent(slot),
+            "A delete-intent clear batch was not atomic.");
+    }
 }
 
 int main()
@@ -1048,6 +1130,7 @@ int main()
         TestBindingSchemaAndContentFailClosed();
         TestTrustedPathAndAccountNonCreation();
         TestLocalDeleteIntentAndVersionOneMigration();
+        TestLocalDeleteIntentBatchIsSingleGeneration();
         std::error_code cleanupError;
         std::filesystem::remove_all(TestRoot(), cleanupError);
         Require(!cleanupError, "Journal test final cleanup failed.");

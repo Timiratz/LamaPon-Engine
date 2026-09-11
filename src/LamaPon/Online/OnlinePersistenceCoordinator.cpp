@@ -13,6 +13,7 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <stdexcept>
 #include <thread>
@@ -21,13 +22,44 @@
 
 namespace
 {
+    using LamaPon::Detail::LocalPersistenceDocument;
+    using LamaPon::Detail::LocalPersistenceDocumentIdentity;
     using LamaPon::Detail::LocalPersistenceDocumentState;
+
+    std::atomic<LamaPon::Detail::OnlinePersistenceRecoveryTestFailPoint>
+        RecoveryTestFailPoint{};
 
     [[nodiscard]] bool IsReadableLocalState(
         const LocalPersistenceDocumentState state) noexcept
     {
         return state == LocalPersistenceDocumentState::Loaded
             || state == LocalPersistenceDocumentState::Missing;
+    }
+
+    [[nodiscard]] bool SameRecoveryObservation(
+        const LocalPersistenceDocumentState leftState,
+        const std::vector<std::uint8_t>& leftBytes,
+        const LocalPersistenceDocumentIdentity& leftIdentity,
+        const LocalPersistenceDocumentState rightState,
+        const std::vector<std::uint8_t>& rightBytes,
+        const LocalPersistenceDocumentIdentity& rightIdentity) noexcept
+    {
+        if (leftState != rightState)
+        {
+            return false;
+        }
+        if (leftState == LocalPersistenceDocumentState::Missing
+            || leftState == LocalPersistenceDocumentState::Unavailable)
+        {
+            return true;
+        }
+        if (leftIdentity.completeBytes && rightIdentity.completeBytes)
+        {
+            return leftBytes == rightBytes;
+        }
+        return leftIdentity.valid
+            && rightIdentity.valid
+            && leftIdentity == rightIdentity;
     }
 
     [[noreturn]] void ThrowUnavailableAccountDocument()
@@ -74,6 +106,12 @@ namespace
 
 namespace LamaPon::Detail
 {
+    void SetOnlinePersistenceRecoveryTestFailPoint(
+        const OnlinePersistenceRecoveryTestFailPoint failPoint) noexcept
+    {
+        RecoveryTestFailPoint.store(failPoint, std::memory_order_release);
+    }
+
     struct PreparedOnlineAccount::State final
     {
         OnlinePersistenceCoordinator* owner{};
@@ -86,6 +124,7 @@ namespace LamaPon::Detail
         std::filesystem::path accountSaveDirectory;
         std::filesystem::path guestSaveDirectory;
         std::filesystem::path recoverySidecarPath;
+        LocalPersistenceDocument recoverySidecarObservation;
     };
 
     PreparedOnlineAccount::PreparedOnlineAccount() noexcept = default;
@@ -181,6 +220,38 @@ namespace LamaPon::Detail
             {
                 ++profileEpoch;
             }
+        }
+
+        void AdvanceRecoveryRevision() noexcept
+        {
+            ++recoveryRevisionCounter;
+            if (recoveryRevisionCounter == 0)
+            {
+                ++recoveryRevisionCounter;
+            }
+            recoveryRevision = recoveryRevisionCounter;
+        }
+
+        [[nodiscard]] bool SetLastRecoveryObservation(
+            const LocalPersistenceDocumentState state,
+            std::vector<std::uint8_t> bytes,
+            const LocalPersistenceDocumentIdentity identity = {}) noexcept
+        {
+            if (SameRecoveryObservation(
+                    lastRecoverySidecarState,
+                    lastRecoverySidecarObservedBytes,
+                    lastRecoverySidecarIdentity,
+                    state,
+                    bytes,
+                    identity))
+            {
+                return false;
+            }
+            lastRecoverySidecarState = state;
+            lastRecoverySidecarObservedBytes.swap(bytes);
+            lastRecoverySidecarIdentity = identity;
+            AdvanceRecoveryRevision();
+            return true;
         }
 
         [[nodiscard]] bool AccountActive() const noexcept
@@ -283,6 +354,12 @@ namespace LamaPon::Detail
             {
                 return;
             }
+            // recoveryのbinding材料を消すと明示restore/discardが不能になる
+            // ため、解決前のnamespace無効化は何も変更しません。
+            if (HasPendingRecovery())
+            {
+                return;
+            }
             static_cast<void>(DetachToGuest());
             if (synchronizer)
             {
@@ -378,6 +455,7 @@ namespace LamaPon::Detail
                 auto pendingProfile =
                     std::make_unique<PersistenceProfilePaths>(*profile);
                 auto observedBytes = recovered.bytes;
+                auto lastObservedBytes = observedBytes;
                 quarantinedProfile = std::move(pendingProfile);
                 quarantinedJournal = std::move(preparedJournal);
                 quarantinedProfileSessionLease =
@@ -385,6 +463,12 @@ namespace LamaPon::Detail
                 recoverySidecarPath = std::move(recoveryPath);
                 recoverySidecarState = recovered.state;
                 recoverySidecarObservedBytes = std::move(observedBytes);
+                recoverySidecarIdentity = recovered.identity;
+                lastRecoverySidecarState = recoverySidecarState;
+                lastRecoverySidecarObservedBytes =
+                    std::move(lastObservedBytes);
+                lastRecoverySidecarIdentity = recovered.identity;
+                AdvanceRecoveryRevision();
                 ThrowUnavailableAccountDocument();
             }
             auto accountPreferences =
@@ -446,6 +530,7 @@ namespace LamaPon::Detail
             state->guestSaveDirectory = saves->Directory();
             state->recoverySidecarPath =
                 MakeRecoverySidecarPath(*profile);
+            state->recoverySidecarObservation = std::move(recovered);
             state->profile = std::move(profile);
             state->preferences = std::move(accountPreferences);
             state->journal = std::move(preparedJournal);
@@ -516,6 +601,8 @@ namespace LamaPon::Detail
             guestSaveDirectory = std::move(state->guestSaveDirectory);
             activeRecoverySidecarPath =
                 std::move(state->recoverySidecarPath);
+            activeRecoverySidecarObservation =
+                std::move(state->recoverySidecarObservation);
 
             LocalPersistenceDocuments::SwapPlayerPrefsLoadedState(
                 *preferences,
@@ -572,6 +659,7 @@ namespace LamaPon::Detail
             }
 
             bool cloudCheckpointFailed{};
+            CloudSaveDetachCheckpointRecovery cloudCheckpointRecovery;
             if (synchronizer)
             {
                 try
@@ -582,6 +670,8 @@ namespace LamaPon::Detail
                 }
                 catch (...)
                 {
+                    cloudCheckpointRecovery = synchronizer
+                        ->TakeFailedDetachCheckpointRecovery();
                     // dirty PlayerPrefsのpublish自体が失敗した場合はmemory
                     // quarantineがaccount leaseを保持し、EndFrame Save成功後に
                     // 解決できます。deleteはcommit前WAL済みなので、同じdirty
@@ -626,6 +716,8 @@ namespace LamaPon::Detail
                 std::move(activeProfileSessionLease);
             auto detachedRecoveryPath =
                 std::move(activeRecoverySidecarPath);
+            auto detachedRecoveryObservation =
+                std::move(activeRecoverySidecarObservation);
             localCommitObserved = false;
             observerFailed = false;
 
@@ -655,20 +747,81 @@ namespace LamaPon::Detail
                     // checkpoint不能を「初期Missing」として再ログインさせず、
                     // 明示discardまでjournalとaccount leaseを保持します。
                     quarantinedJournal = std::move(detachedJournal);
+                    quarantinedCloudCheckpointRecovery =
+                        std::move(cloudCheckpointRecovery);
                     quarantinedCloudCheckpointFailure = true;
                 }
                 quarantinedLoadFailure =
                     quarantinedPreferences->HasLoadFailure();
+                AdvanceRecoveryRevision();
                 if (quarantinedLoadFailure)
                 {
                     recoverySidecarPath =
                         std::move(detachedRecoveryPath);
+                    recoverySidecarCreationObservation =
+                        std::move(detachedRecoveryObservation);
+                    recoverySidecarState =
+                        recoverySidecarCreationObservation.state;
+                    recoverySidecarObservedBytes.clear();
+                    recoverySidecarIdentity =
+                        recoverySidecarCreationObservation.identity;
+                    lastRecoverySidecarState = recoverySidecarState;
+                    lastRecoverySidecarObservedBytes.clear();
+                    lastRecoverySidecarIdentity =
+                        recoverySidecarIdentity;
+                    recoverySidecarCreationBlocked = false;
+                    recoverySidecarPublicationPending = false;
                     static_cast<void>(PersistRecoverySidecar());
                 }
                 return OnlinePersistenceDetachResult::QuarantinedAccount;
             }
 
             return OnlinePersistenceDetachResult::SavedAccount;
+        }
+
+        [[nodiscard]] bool RetryQuarantinedCloudCheckpoint() noexcept
+        {
+            if (!quarantinedCloudCheckpointFailure)
+            {
+                return true;
+            }
+            if (!quarantinedJournal
+                || !quarantinedProfile
+                || !quarantinedCloudCheckpointRecovery
+                    .operationsDetermined)
+            {
+                // strict inventoryから操作列を確定できなかった
+                // incidentは自動で解放しません。明示discardだけが
+                // account leaseを放棄できます。
+                return false;
+            }
+            try
+            {
+                // Persistが曖昧に失敗したjournal instanceはblockedになる
+                // ため再利用しません。保持中のprofile session lease下で
+                // diskからfresh instanceを構築し、batch全件成功後にだけ
+                // quarantineのjournalを差し替えます。
+                auto retryJournal = std::make_unique<CloudSaveJournal>(
+                    trustedUserDataDirectory,
+                    *quarantinedProfile,
+                    configuredGameId,
+                    configuredEnvironmentId,
+                    backendBaseUrl,
+                    allowInsecureLoopback);
+                retryJournal->ApplyLocalDeleteIntentOperations(
+                    quarantinedCloudCheckpointRecovery.operations);
+                quarantinedJournal = std::move(retryJournal);
+            }
+            catch (...)
+            {
+                // batchは1generationでpublishされるため、失敗時は
+                // 0件か全件です。曖昧成功も同じ列の再適用で
+                // 冪等に回復します。
+                return false;
+            }
+            quarantinedCloudCheckpointFailure = false;
+            quarantinedCloudCheckpointRecovery = {};
+            return true;
         }
 
         void EndFrame() noexcept
@@ -725,6 +878,7 @@ namespace LamaPon::Detail
             {
                 return;
             }
+            static_cast<void>(RetryQuarantinedCloudCheckpoint());
             if (quarantinedPreferences->HasLoadFailure())
             {
                 if (!quarantinedPreferences->IsDirty())
@@ -803,14 +957,49 @@ namespace LamaPon::Detail
             {
                 return false;
             }
+            std::string snapshot;
             try
             {
-                const auto snapshot =
-                    quarantinedPreferences->SerializeToJson();
+                snapshot = quarantinedPreferences->SerializeToJson();
                 ValidatePlayerPrefsFullDocument(snapshot);
-                DurablePublishLocalDocument(
-                    recoverySidecarPath,
-                    snapshot);
+                const auto publishResult =
+                    DurablePublishLocalDocumentIfUnchanged(
+                        recoverySidecarPath,
+                        recoverySidecarCreationObservation,
+                        snapshot,
+                        CloudPreferencesMaxBytes);
+                if (publishResult
+                    == LocalPersistenceConditionalApplyResult::Applied)
+                {
+                    // publish後のstrict再読だけが一時失敗した場合に限り、
+                    // 次回同一bytesを自分の曖昧成功として採用できます。
+                    recoverySidecarPublicationPending = true;
+                    if (RecoveryTestFailPoint.exchange(
+                            OnlinePersistenceRecoveryTestFailPoint::None,
+                            std::memory_order_acq_rel)
+                        == OnlinePersistenceRecoveryTestFailPoint::
+                            AfterSidecarPublishBeforeVerification)
+                    {
+                        throw std::runtime_error(
+                            "Recovery verification test failure.");
+                    }
+                }
+                if (publishResult
+                        == LocalPersistenceConditionalApplyResult::LocalChanged
+                    && !recoverySidecarPublicationPending)
+                {
+                    // activation時のMissing観測後に別fileが現れた場合は、
+                    // 内容が偶然同じでも所有物とはみなさずmemoryを保持します。
+                    recoverySidecarCreationBlocked = true;
+                    PlayerPrefs currentSidecar(recoverySidecarPath);
+                    auto current = LocalPersistenceDocuments::ReadPlayerPrefs(
+                        currentSidecar);
+                    static_cast<void>(SetLastRecoveryObservation(
+                        current.state,
+                        std::move(current.bytes),
+                        current.identity));
+                    return false;
+                }
 
                 // publish後もStage7Aのsecure strict readerでfull bytesを
                 // 再検証し、書いたsnapshotと一致する場合だけmemoryを
@@ -828,13 +1017,32 @@ namespace LamaPon::Detail
                         reinterpret_cast<const std::uint8_t*>(
                             snapshot.data())))
                 {
+                    recoverySidecarCreationBlocked =
+                        !SameRecoveryObservation(
+                            recoverySidecarCreationObservation.state,
+                            recoverySidecarCreationObservation.bytes,
+                            recoverySidecarCreationObservation.identity,
+                            document.state,
+                            document.bytes,
+                            document.identity);
+                    static_cast<void>(SetLastRecoveryObservation(
+                        document.state,
+                        std::move(document.bytes),
+                        document.identity));
                     return false;
                 }
+                auto expectedBytes = document.bytes;
                 auto observedBytes = document.bytes;
                 recoverySidecarState =
                     LocalPersistenceDocumentState::Loaded;
-                recoverySidecarObservedBytes =
-                    std::move(observedBytes);
+                recoverySidecarObservedBytes.swap(expectedBytes);
+                recoverySidecarIdentity = document.identity;
+                lastRecoverySidecarState =
+                    LocalPersistenceDocumentState::Loaded;
+                lastRecoverySidecarObservedBytes.swap(observedBytes);
+                lastRecoverySidecarIdentity = document.identity;
+                recoverySidecarCreationBlocked = false;
+                recoverySidecarPublicationPending = false;
                 quarantinedPreferences.reset();
                 // strictに再読できるdurable sidecarへsnapshotを退避した時点で、
                 // 元account fileを旧memoryから自動更新する経路はなくなります。
@@ -843,11 +1051,51 @@ namespace LamaPon::Detail
                     quarantinedProfileSessionLease.reset();
                 }
                 quarantinedLoadFailure = false;
+                // expected bytesを固定したままmemory snapshotからdurable
+                // sidecarへ状態が変わりました。
+                AdvanceRecoveryRevision();
                 return true;
             }
             catch (...)
             {
-                // 元fileは保護したままmemory snapshotを維持します。
+                // 元fileは保護したままmemory snapshotを維持し、sidecarの
+                // 現在状態だけをbounded strict readで更新します。
+                try
+                {
+                    PlayerPrefs currentSidecar(recoverySidecarPath);
+                    auto current = LocalPersistenceDocuments::ReadPlayerPrefs(
+                        currentSidecar);
+                    const bool pendingSnapshotMatches =
+                        recoverySidecarPublicationPending
+                        && current.state
+                            == LocalPersistenceDocumentState::Loaded
+                        && current.bytes.size() == snapshot.size()
+                        && std::equal(
+                            current.bytes.begin(),
+                            current.bytes.end(),
+                            reinterpret_cast<const std::uint8_t*>(
+                                snapshot.data()));
+                    recoverySidecarCreationBlocked =
+                        !pendingSnapshotMatches
+                        && !SameRecoveryObservation(
+                            recoverySidecarCreationObservation.state,
+                            recoverySidecarCreationObservation.bytes,
+                            recoverySidecarCreationObservation.identity,
+                            current.state,
+                            current.bytes,
+                            current.identity);
+                    static_cast<void>(SetLastRecoveryObservation(
+                        current.state,
+                        std::move(current.bytes),
+                        current.identity));
+                }
+                catch (...)
+                {
+                    recoverySidecarCreationBlocked = true;
+                    static_cast<void>(SetLastRecoveryObservation(
+                        LocalPersistenceDocumentState::Unavailable,
+                        {}));
+                }
                 return false;
             }
         }
@@ -863,47 +1111,186 @@ namespace LamaPon::Detail
         {
             if (quarantinedPreferences)
             {
-                return OnlinePersistenceRecoveryState::MemorySnapshot;
+                return (quarantinedCloudCheckpointFailure
+                            && !quarantinedCloudCheckpointRecovery
+                                .operationsDetermined)
+                        || recoverySidecarCreationBlocked
+                    ? OnlinePersistenceRecoveryState::UnavailableSidecar
+                    : OnlinePersistenceRecoveryState::MemorySnapshot;
             }
             if (!quarantinedProfile)
             {
                 return OnlinePersistenceRecoveryState::None;
             }
             return recoverySidecarState
-                    == LocalPersistenceDocumentState::Loaded
+                        == LocalPersistenceDocumentState::Loaded
+                    && SameRecoveryObservation(
+                        recoverySidecarState,
+                        recoverySidecarObservedBytes,
+                        recoverySidecarIdentity,
+                        lastRecoverySidecarState,
+                        lastRecoverySidecarObservedBytes,
+                        lastRecoverySidecarIdentity)
                 ? OnlinePersistenceRecoveryState::DurableSidecar
                 : OnlinePersistenceRecoveryState::UnavailableSidecar;
+        }
+
+        [[nodiscard]] OnlinePersistenceRecoverySnapshot
+            RecoveryStatus() noexcept
+        {
+            if (!IsOwnerThread())
+            {
+                return {
+                    OnlinePersistenceRecoveryState::UnavailableSidecar,
+                    recoveryRevision
+                };
+            }
+            if (!HasPendingRecovery())
+            {
+                recoveryRevision = 0;
+                return {};
+            }
+            if (quarantinedPreferences)
+            {
+                if (quarantinedLoadFailure
+                    && !recoverySidecarPath.empty())
+                {
+                    try
+                    {
+                        PlayerPrefs sidecar(recoverySidecarPath);
+                        auto document =
+                            LocalPersistenceDocuments::ReadPlayerPrefs(
+                                sidecar);
+                        bool pendingSnapshotMatches{};
+                        if (recoverySidecarPublicationPending
+                            && document.state
+                                == LocalPersistenceDocumentState::Loaded)
+                        {
+                            const auto snapshot =
+                                quarantinedPreferences->SerializeToJson();
+                            pendingSnapshotMatches =
+                                document.bytes.size() == snapshot.size()
+                                && std::equal(
+                                    document.bytes.begin(),
+                                    document.bytes.end(),
+                                    reinterpret_cast<const std::uint8_t*>(
+                                        snapshot.data()));
+                        }
+                        recoverySidecarCreationBlocked =
+                            !pendingSnapshotMatches
+                            && !SameRecoveryObservation(
+                                recoverySidecarCreationObservation.state,
+                                recoverySidecarCreationObservation.bytes,
+                                recoverySidecarCreationObservation.identity,
+                                document.state,
+                                document.bytes,
+                                document.identity);
+                        static_cast<void>(SetLastRecoveryObservation(
+                            document.state,
+                            std::move(document.bytes),
+                            document.identity));
+                    }
+                    catch (...)
+                    {
+                        recoverySidecarCreationBlocked = true;
+                        static_cast<void>(SetLastRecoveryObservation(
+                            LocalPersistenceDocumentState::Unavailable,
+                            {}));
+                    }
+                }
+                return {
+                    RecoveryState(),
+                    recoveryRevision
+                };
+            }
+
+            try
+            {
+                if (recoverySidecarPath.empty())
+                {
+                    static_cast<void>(SetLastRecoveryObservation(
+                        LocalPersistenceDocumentState::Unavailable,
+                        {}));
+                }
+                else
+                {
+                    PlayerPrefs sidecar(recoverySidecarPath);
+                    auto document =
+                        LocalPersistenceDocuments::ReadPlayerPrefs(sidecar);
+                    static_cast<void>(SetLastRecoveryObservation(
+                        document.state,
+                        std::move(document.bytes),
+                        document.identity));
+                }
+            }
+            catch (...)
+            {
+                static_cast<void>(SetLastRecoveryObservation(
+                    LocalPersistenceDocumentState::Unavailable,
+                    {}));
+            }
+            return { RecoveryState(), recoveryRevision };
         }
 
         void ClearPendingRecovery() noexcept
         {
             quarantinedPreferences.reset();
             quarantinedJournal.reset();
+            quarantinedCloudCheckpointRecovery = {};
             quarantinedProfileSessionLease.reset();
             quarantinedProfile.reset();
             recoverySidecarPath.clear();
+            recoverySidecarCreationObservation = {};
             recoverySidecarObservedBytes.clear();
+            recoverySidecarIdentity = {};
             recoverySidecarState =
                 LocalPersistenceDocumentState::Missing;
+            lastRecoverySidecarObservedBytes.clear();
+            lastRecoverySidecarIdentity = {};
+            lastRecoverySidecarState =
+                LocalPersistenceDocumentState::Missing;
+            recoveryRevision = 0;
+            recoverySidecarCreationBlocked = false;
+            recoverySidecarPublicationPending = false;
             quarantinedLoadFailure = false;
             quarantinedCloudCheckpointFailure = false;
         }
 
-        [[nodiscard]] bool RestorePendingRecovery() noexcept
+        [[nodiscard]] OnlinePersistenceRecoveryOperationResult
+            RestorePendingRecovery(
+            const std::uint64_t expectedRevision) noexcept
         {
             if (!IsOwnerThread())
             {
-                return false;
+                return OnlinePersistenceRecoveryOperationResult::Failed;
+            }
+            if (expectedRevision == 0
+                || expectedRevision != recoveryRevision)
+            {
+                return OnlinePersistenceRecoveryOperationResult::Stale;
             }
             if (quarantinedPreferences)
             {
                 EndFrame();
+                // この明示Restoreがmemory Save/checkpoint再適用を完了し
+                // quarantineを解放した場合は、Clearによるrevision=0を
+                // staleとせずこの操作の成功として返します。
+                if (!HasPendingRecovery())
+                {
+                    return OnlinePersistenceRecoveryOperationResult::Succeeded;
+                }
+            }
+            if (expectedRevision != recoveryRevision)
+            {
+                return OnlinePersistenceRecoveryOperationResult::Stale;
             }
             if (quarantinedPreferences
                 || !quarantinedProfile
                 || recoverySidecarPath.empty())
             {
-                return false;
+                return HasPendingRecovery()
+                    ? OnlinePersistenceRecoveryOperationResult::Failed
+                    : OnlinePersistenceRecoveryOperationResult::Unavailable;
             }
             try
             {
@@ -932,10 +1319,21 @@ namespace LamaPon::Detail
                         != LocalPersistenceDocumentState::Loaded
                     || recoverySidecarState
                         != LocalPersistenceDocumentState::Loaded
-                    || document.bytes != recoverySidecarObservedBytes)
+                    || !SameRecoveryObservation(
+                        recoverySidecarState,
+                        recoverySidecarObservedBytes,
+                        recoverySidecarIdentity,
+                        document.state,
+                        document.bytes,
+                        document.identity))
                 {
-                    recoverySidecarState = document.state;
-                    return false;
+                    const bool changed = SetLastRecoveryObservation(
+                        document.state,
+                        std::move(document.bytes),
+                        document.identity);
+                    return changed
+                        ? OnlinePersistenceRecoveryOperationResult::Stale
+                        : OnlinePersistenceRecoveryOperationResult::Failed;
                 }
 
                 // 明示操作だけが元fileを更新します。適用が成功した後に
@@ -951,23 +1349,41 @@ namespace LamaPon::Detail
                         CloudPreferencesMaxBytes)
                     != LocalPersistenceConditionalApplyResult::Applied)
                 {
-                    return false;
+                    static_cast<void>(RecoveryStatus());
+                    return recoveryRevision != expectedRevision
+                        ? OnlinePersistenceRecoveryOperationResult::Stale
+                        : OnlinePersistenceRecoveryOperationResult::Failed;
                 }
                 ClearPendingRecovery();
                 AdvanceEpoch();
-                return true;
+                return OnlinePersistenceRecoveryOperationResult::Succeeded;
+            }
+            catch (const CloudSaveJournalBusyError&)
+            {
+                return OnlinePersistenceRecoveryOperationResult::Busy;
             }
             catch (...)
             {
-                return false;
+                return OnlinePersistenceRecoveryOperationResult::Failed;
             }
         }
 
-        [[nodiscard]] bool DiscardPendingRecovery() noexcept
+        [[nodiscard]] OnlinePersistenceRecoveryOperationResult
+            DiscardPendingRecovery(
+            const std::uint64_t expectedRevision) noexcept
         {
-            if (!IsOwnerThread() || !HasPendingRecovery())
+            if (!IsOwnerThread())
             {
-                return false;
+                return OnlinePersistenceRecoveryOperationResult::Failed;
+            }
+            if (expectedRevision == 0
+                || expectedRevision != recoveryRevision)
+            {
+                return OnlinePersistenceRecoveryOperationResult::Stale;
+            }
+            if (!HasPendingRecovery())
+            {
+                return OnlinePersistenceRecoveryOperationResult::Unavailable;
             }
             try
             {
@@ -989,51 +1405,109 @@ namespace LamaPon::Detail
                 if (!recoverySidecarPath.empty())
                 {
                     PlayerPrefs sidecar(recoverySidecarPath);
-                    const auto document =
+                    auto document =
                         LocalPersistenceDocuments::ReadPlayerPrefs(sidecar);
-                    if (recoverySidecarState
-                            == LocalPersistenceDocumentState::Loaded)
+                    const bool matchesLatestObservation =
+                        SameRecoveryObservation(
+                            lastRecoverySidecarState,
+                            lastRecoverySidecarObservedBytes,
+                            lastRecoverySidecarIdentity,
+                            document.state,
+                            document.bytes,
+                            document.identity);
+                    if (!matchesLatestObservation)
                     {
-                        if (document.state
-                                != LocalPersistenceDocumentState::Loaded
-                            || document.bytes
-                                != recoverySidecarObservedBytes
-                            || DurableDeleteLocalDocumentIfUnchanged(
+                        const bool changed = SetLastRecoveryObservation(
+                            document.state,
+                            std::move(document.bytes),
+                            document.identity);
+                        return changed || recoveryRevision != expectedRevision
+                            ? OnlinePersistenceRecoveryOperationResult::Stale
+                            : OnlinePersistenceRecoveryOperationResult::Failed;
+                    }
+
+                    if (document.state
+                        == LocalPersistenceDocumentState::Missing)
+                    {
+                        // 別process等が既にsidecarを削除済みなら、最新revision
+                        // での明示discardは冪等にquarantineだけを解放します。
+                    }
+                    else if (document.state
+                            == LocalPersistenceDocumentState::Loaded
+                        || document.state
+                            == LocalPersistenceDocumentState::Corrupt)
+                    {
+                        if (quarantinedPreferences)
+                        {
+                            // memory snapshotの保護中にsidecarが現れた場合、
+                            // 最初のDiscardはmemoryだけを破棄し、外部fileを
+                            // 消さず新しいrecovery incidentとして昇格します。
+                            // publicationPendingの自分のsnapshotも同じ二段階
+                            // 解決とし、曖昧成功時に誤削除しません。
+                            quarantinedPreferences.reset();
+                            quarantinedLoadFailure = false;
+                            recoverySidecarState = document.state;
+                            recoverySidecarObservedBytes =
+                                std::move(document.bytes);
+                            recoverySidecarIdentity = document.identity;
+                            recoverySidecarCreationObservation = {};
+                            recoverySidecarCreationBlocked = false;
+                            recoverySidecarPublicationPending = false;
+                            AdvanceRecoveryRevision();
+                            return OnlinePersistenceRecoveryOperationResult::Succeeded;
+                        }
+
+                        // durable incidentの外部置換も、最新revisionが現在の
+                        // documentを観測した後の明示Discardなら、その同一
+                        // handleだけを条件付き削除します。Restoreは依然として
+                        // original snapshotと一致しない置換を採用しません。
+                        // emptyを含む完全raw bytes、またはoversizeの固定size
+                        // file identityが一致する対象だけを同一handleで削除します。
+                        if (DurableDeleteLocalDocumentIfUnchanged(
                                 recoverySidecarPath,
                                 document,
                                 CloudPreferencesMaxBytes)
-                                != LocalPersistenceConditionalApplyResult::Applied)
+                            != LocalPersistenceConditionalApplyResult::Applied)
                         {
-                            return false;
-                        }
-                    }
-                    else if (recoverySidecarState
-                        == LocalPersistenceDocumentState::Corrupt)
-                    {
-                        // profile lease保持中に同じstrict分類であることを再確認し、
-                        // 内容を解釈せず明示discardだけを許可します。
-                        if (document.state
-                                != LocalPersistenceDocumentState::Corrupt
-                            || !DurableDeleteLocalDocument(
-                                recoverySidecarPath))
-                        {
-                            return false;
+                            static_cast<void>(RecoveryStatus());
+                            return recoveryRevision != expectedRevision
+                                ? OnlinePersistenceRecoveryOperationResult::Stale
+                                : OnlinePersistenceRecoveryOperationResult::Failed;
                         }
                     }
                     else
                     {
-                        // ACL/reparse/share errorは修復されるまで触りません。
-                        return false;
+                        return OnlinePersistenceRecoveryOperationResult::Failed;
                     }
                 }
                 ClearPendingRecovery();
                 AdvanceEpoch();
-                return true;
+                return OnlinePersistenceRecoveryOperationResult::Succeeded;
+            }
+            catch (const CloudSaveJournalBusyError&)
+            {
+                return OnlinePersistenceRecoveryOperationResult::Busy;
             }
             catch (...)
             {
-                return false;
+                return OnlinePersistenceRecoveryOperationResult::Failed;
             }
+        }
+
+        [[nodiscard]] bool RestorePendingRecovery() noexcept
+        {
+            const auto status = RecoveryStatus();
+            return status.revision != 0
+                && RestorePendingRecovery(status.revision)
+                    == OnlinePersistenceRecoveryOperationResult::Succeeded;
+        }
+
+        [[nodiscard]] bool DiscardPendingRecovery() noexcept
+        {
+            const auto status = RecoveryStatus();
+            return status.revision != 0
+                && DiscardPendingRecovery(status.revision)
+                    == OnlinePersistenceRecoveryOperationResult::Succeeded;
         }
 
         [[nodiscard]] static bool ObserveLocalCommit(
@@ -1176,19 +1650,31 @@ namespace LamaPon::Detail
         std::unique_ptr<PlayerPrefs> suspendedGuestPreferences;
         std::filesystem::path guestSaveDirectory;
         std::filesystem::path activeRecoverySidecarPath;
+        LocalPersistenceDocument activeRecoverySidecarObservation;
         std::unique_ptr<CloudSaveJournal> journal;
         std::unique_ptr<CloudSaveProfileSessionLease>
             activeProfileSessionLease;
         std::unique_ptr<PersistenceProfilePaths> quarantinedProfile;
         std::unique_ptr<PlayerPrefs> quarantinedPreferences;
         std::unique_ptr<CloudSaveJournal> quarantinedJournal;
+        CloudSaveDetachCheckpointRecovery
+            quarantinedCloudCheckpointRecovery;
         std::unique_ptr<CloudSaveProfileSessionLease>
             quarantinedProfileSessionLease;
         std::filesystem::path recoverySidecarPath;
+        LocalPersistenceDocument recoverySidecarCreationObservation;
         std::vector<std::uint8_t> recoverySidecarObservedBytes;
+        LocalPersistenceDocumentIdentity recoverySidecarIdentity;
         LocalPersistenceDocumentState recoverySidecarState{
             LocalPersistenceDocumentState::Missing
         };
+        std::vector<std::uint8_t> lastRecoverySidecarObservedBytes;
+        LocalPersistenceDocumentIdentity lastRecoverySidecarIdentity;
+        LocalPersistenceDocumentState lastRecoverySidecarState{
+            LocalPersistenceDocumentState::Missing
+        };
+        std::uint64_t recoveryRevisionCounter{};
+        std::uint64_t recoveryRevision{};
         bool allowInsecureLoopback{};
         bool localCommitObserved{};
         bool observerFailed{};
@@ -1199,6 +1685,8 @@ namespace LamaPon::Detail
         std::uint64_t nextPeriodicReconcileMilliseconds{};
         bool quarantinedLoadFailure{};
         bool quarantinedCloudCheckpointFailure{};
+        bool recoverySidecarCreationBlocked{};
+        bool recoverySidecarPublicationPending{};
     };
 
     OnlinePersistenceCoordinator::OnlinePersistenceCoordinator(
@@ -1289,6 +1777,12 @@ namespace LamaPon::Detail
         return m_implementation->RecoveryState();
     }
 
+    OnlinePersistenceRecoverySnapshot
+        OnlinePersistenceCoordinator::RecoveryStatus() noexcept
+    {
+        return m_implementation->RecoveryStatus();
+    }
+
     const std::filesystem::path&
         OnlinePersistenceCoordinator::RecoverySidecarPath() const noexcept
     {
@@ -1303,6 +1797,20 @@ namespace LamaPon::Detail
     bool OnlinePersistenceCoordinator::DiscardPendingRecovery() noexcept
     {
         return m_implementation->DiscardPendingRecovery();
+    }
+
+    OnlinePersistenceRecoveryOperationResult
+        OnlinePersistenceCoordinator::RestorePendingRecovery(
+        const std::uint64_t expectedRevision) noexcept
+    {
+        return m_implementation->RestorePendingRecovery(expectedRevision);
+    }
+
+    OnlinePersistenceRecoveryOperationResult
+        OnlinePersistenceCoordinator::DiscardPendingRecovery(
+        const std::uint64_t expectedRevision) noexcept
+    {
+        return m_implementation->DiscardPendingRecovery(expectedRevision);
     }
 
     std::uint64_t OnlinePersistenceCoordinator::ProfileEpoch() const noexcept

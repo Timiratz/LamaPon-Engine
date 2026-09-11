@@ -1,4 +1,5 @@
 #include "LamaPon/Editor/EditorExtensionRegistry.h"
+#include "LamaPon/Editor/PersistencePanelState.h"
 
 #include <iostream>
 #include <stdexcept>
@@ -14,6 +15,60 @@ namespace
             throw std::runtime_error(message);
         }
     }
+
+    void TestPersistenceConfirmationFences()
+    {
+        using LamaPon::Detail::PersistenceConfirmationKind;
+        LamaPon::Detail::PersistencePanelState state(
+            L"C:/test/guest/PlayerPrefs.json",
+            L"C:/test/guest/Saves");
+
+        state.BeginConflictConfirmation(
+            PersistenceConfirmationKind::RetryLocal,
+            "test-conflict");
+        Require(
+            !state.SynchronizeOnlineConfirmation(true, true, 0),
+            "A current cloud conflict confirmation was invalidated.");
+        Require(
+            state.SynchronizeOnlineConfirmation(true, false, 0)
+                && state.OnlineConfirmationKind()
+                    == PersistenceConfirmationKind::None
+                && state.CloseOnlineConfirmationPopupRequested(),
+            "A removed cloud conflict kept its confirmation active.");
+        state.AcknowledgeCloseOnlineConfirmationPopup();
+
+        state.BeginConflictConfirmation(
+            PersistenceConfirmationKind::UseRemote,
+            "test-conflict");
+        Require(
+            state.SynchronizeOnlineConfirmation(false, true, 0),
+            "Signing out kept an account conflict confirmation active.");
+        state.AcknowledgeCloseOnlineConfirmationPopup();
+
+        state.BeginRecoveryConfirmation(
+            PersistenceConfirmationKind::Restore,
+            41);
+        Require(
+            !state.SynchronizeOnlineConfirmation(false, false, 41),
+            "A current recovery confirmation was invalidated.");
+        Require(
+            state.SynchronizeOnlineConfirmation(false, false, 42)
+                && state.CloseOnlineConfirmationPopupRequested(),
+            "A stale recovery revision kept its confirmation active.");
+        state.AcknowledgeCloseOnlineConfirmationPopup();
+
+        state.BeginRecoveryConfirmation(
+            PersistenceConfirmationKind::Discard,
+            42);
+        Require(
+            state.SynchronizeBinding(
+                L"C:/test/account/PlayerPrefs.json",
+                L"C:/test/account/Saves")
+                && state.OnlineConfirmationKind()
+                    == PersistenceConfirmationKind::None
+                && state.CloseOnlineConfirmationPopupRequested(),
+            "A profile binding change kept its confirmation active.");
+    }
 }
 
 int main()
@@ -21,6 +76,8 @@ int main()
     int result{};
     try
     {
+        TestPersistenceConfirmationFences();
+
         LamaPon::EditorExtensionRegistry registry;
         int attachCount{};
         int updateCount{};

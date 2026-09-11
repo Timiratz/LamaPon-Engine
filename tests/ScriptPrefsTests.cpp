@@ -26,6 +26,14 @@ namespace
     class PrefsProbe final : public LamaPon::Script
     {
     public:
+        using Script::CloudConflicts;
+        using Script::CloudSyncStatus;
+        using Script::DiscardPersistence;
+        using Script::PersistenceRecoveryStatus;
+        using Script::RequestCloudSync;
+        using Script::ResolveCloudConflict;
+        using Script::RestorePersistence;
+
         void SaveBest(const std::int64_t value) const
         {
             SaveInteger("bestScore", value);
@@ -102,6 +110,7 @@ namespace
     void TestWithoutApplicationIsHarmless()
     {
         LamaPon::SetActivePlayerPrefs(nullptr);
+        LamaPon::SetActiveOnlineServices(nullptr);
         Require(
             LamaPon::ActivePlayerPrefs() == nullptr,
             "there must be no active prefs");
@@ -118,6 +127,25 @@ namespace
         Require(
             probe.Name() == "ななし",
             "text reads must fall back to the default");
+        Require(
+            probe.CloudSyncStatus().state
+                    == LamaPon::OnlineCloudSyncState::Unavailable
+                && probe.CloudConflicts().empty()
+                && probe.PersistenceRecoveryStatus().state
+                    == LamaPon::OnlinePersistenceRecoveryState::None,
+            "cloud status must use safe defaults without an application");
+        Require(
+            probe.RequestCloudSync()
+                    == LamaPon::OnlinePersistenceOperationResult::Unavailable
+                && probe.ResolveCloudConflict(
+                    "opaque-but-inactive",
+                    LamaPon::OnlineCloudConflictResolution::UseRemote)
+                    == LamaPon::OnlinePersistenceOperationResult::Unavailable
+                && probe.RestorePersistence(1u)
+                    == LamaPon::OnlinePersistenceOperationResult::Unavailable
+                && probe.DiscardPersistence(1u)
+                    == LamaPon::OnlinePersistenceOperationResult::Unavailable,
+            "cloud operations must be harmless without an application");
     }
 }
 

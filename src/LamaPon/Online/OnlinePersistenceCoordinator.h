@@ -34,6 +34,32 @@ namespace LamaPon::Detail
         UnavailableSidecar
     };
 
+    struct OnlinePersistenceRecoverySnapshot final
+    {
+        OnlinePersistenceRecoveryState state{
+            OnlinePersistenceRecoveryState::None
+        };
+        std::uint64_t revision{};
+    };
+
+    enum class OnlinePersistenceRecoveryOperationResult : std::uint8_t
+    {
+        Succeeded,
+        Unavailable,
+        Busy,
+        Stale,
+        Failed
+    };
+
+    enum class OnlinePersistenceRecoveryTestFailPoint : std::uint8_t
+    {
+        None,
+        AfterSidecarPublishBeforeVerification
+    };
+
+    void SetOnlinePersistenceRecoveryTestFailPoint(
+        OnlinePersistenceRecoveryTestFailPoint failPoint) noexcept;
+
     // PrepareAccountでI/Oと割当をすべて終え、CommitPreparedの
     // noexcept切り替えまで運ぶmove-only transactionです。
     class PreparedOnlineAccount final
@@ -116,6 +142,8 @@ namespace LamaPon::Detail
         [[nodiscard]] bool HasPendingRecovery() const noexcept;
         [[nodiscard]] OnlinePersistenceRecoveryState
             RecoveryState() const noexcept;
+        [[nodiscard]] OnlinePersistenceRecoverySnapshot
+            RecoveryStatus() noexcept;
         [[nodiscard]] const std::filesystem::path&
             RecoverySidecarPath() const noexcept;
 
@@ -124,6 +152,10 @@ namespace LamaPon::Detail
         // discardはsnapshotを明示的に破棄します。
         [[nodiscard]] bool RestorePendingRecovery() noexcept;
         [[nodiscard]] bool DiscardPendingRecovery() noexcept;
+        [[nodiscard]] OnlinePersistenceRecoveryOperationResult
+            RestorePendingRecovery(std::uint64_t expectedRevision) noexcept;
+        [[nodiscard]] OnlinePersistenceRecoveryOperationResult
+            DiscardPendingRecovery(std::uint64_t expectedRevision) noexcept;
         [[nodiscard]] std::uint64_t ProfileEpoch() const noexcept;
         [[nodiscard]] std::string_view
             ActiveAccountStorageKey() const noexcept;

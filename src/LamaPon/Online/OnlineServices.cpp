@@ -2,11 +2,20 @@
 
 #include "LamaPon/Online/DiscordAuth.h"
 #include "LamaPon/Online/CloudSaveClient.h"
+#include "LamaPon/Online/CloudSaveSynchronizer.h"
 #include "LamaPon/Online/OnlinePersistenceCoordinator.h"
 #include "LamaPon/Online/OnlineServicesTesting.h"
 #include "LamaPon/Online/WindowsOnlinePlatform.h"
+#include "LamaPon/Core/SaveSlotValidation.h"
+
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
+#include <bcrypt.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <limits>
@@ -15,6 +24,7 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace
 {
@@ -70,7 +80,8 @@ namespace
             || code == "browser_launch_failed"
             || code == "persistence_activation_failed"
             || code == "account_identity_changed"
-            || code == "account_save_failed";
+            || code == "account_save_failed"
+            || code == "persistence_recovery_required";
     }
 
     std::string PublicErrorCode(const std::string_view code)
@@ -142,7 +153,42 @@ namespace
         {
             return "アカウントのPlayerPrefsを保存できませんでした。";
         }
+        if (code == "persistence_recovery_required")
+        {
+            return "未解決のセーブデータ復旧を先に完了してください。";
+        }
         return "オンライン認証に失敗しました。";
+    }
+
+    [[nodiscard]] std::uint64_t SteadyMilliseconds() noexcept
+    {
+        const auto count = std::chrono::duration_cast<
+            std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        return count > 0 ? static_cast<std::uint64_t>(count) : 0u;
+    }
+
+    [[nodiscard]] std::string GenerateOpaqueConflictId()
+    {
+        std::array<unsigned char, 16> randomBytes{};
+        if (BCryptGenRandom(
+                nullptr,
+                randomBytes.data(),
+                static_cast<ULONG>(randomBytes.size()),
+                BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0)
+        {
+            throw std::runtime_error(
+                "Opaque conflict identifier generation failed.");
+        }
+        static constexpr char Hex[] = "0123456789abcdef";
+        std::string result(randomBytes.size() * 2u, '0');
+        for (std::size_t index = 0; index < randomBytes.size(); ++index)
+        {
+            result[index * 2u] = Hex[randomBytes[index] >> 4u];
+            result[index * 2u + 1u] = Hex[randomBytes[index] & 0x0fu];
+        }
+        SecureZeroMemory(randomBytes.data(), randomBytes.size());
+        return result;
     }
 
     bool InvalidRefreshTokenError(
@@ -439,6 +485,171 @@ namespace LamaPon
                 || state == OnlineAccountState::RestoringSession
                 || state == OnlineAccountState::RefreshingSession
                 || state == OnlineAccountState::SigningOut;
+        }
+
+        struct CloudConflictBinding final
+        {
+            std::string opaqueId;
+            std::uint64_t profileEpoch{};
+            Detail::CloudSaveConflictDescriptor descriptor;
+        };
+
+        [[nodiscard]] static bool SameResource(
+            const CloudSaveResource& left,
+            const CloudSaveResource& right) noexcept
+        {
+            if (left.kind != right.kind)
+            {
+                return false;
+            }
+            return left.kind == CloudSaveResourceKind::Preferences
+                ? left.slot.empty() && right.slot.empty()
+                : Detail::EquivalentSaveSlotNames(
+                    left.slot,
+                    right.slot);
+        }
+
+        [[nodiscard]] static bool SameConflictIdentity(
+            const CloudConflictBinding& binding,
+            const std::uint64_t profileEpoch,
+            const Detail::CloudSaveConflictDescriptor& descriptor) noexcept
+        {
+            return binding.profileEpoch == profileEpoch
+                && SameResource(
+                    binding.descriptor.resource,
+                    descriptor.resource)
+                && binding.descriptor.expectedMutationId
+                    == descriptor.expectedMutationId;
+        }
+
+        void ClearCloudConflictRegistry() noexcept
+        {
+            for (auto& binding : cloudConflictRegistry)
+            {
+                EraseSecret(binding.descriptor.expectedMutationId);
+            }
+            cloudConflictRegistry.clear();
+        }
+
+        [[nodiscard]] std::vector<OnlineCloudConflict>
+            RefreshCloudConflictRegistry()
+        {
+            if (!persistenceCoordinator
+                || !persistenceCoordinator->IsAccountActive())
+            {
+                ClearCloudConflictRegistry();
+                return {};
+            }
+            auto* const synchronizer =
+                persistenceCoordinator->Synchronizer();
+            if (!synchronizer || !synchronizer->IsAttached())
+            {
+                ClearCloudConflictRegistry();
+                return {};
+            }
+
+            const auto epoch = persistenceCoordinator->ProfileEpoch();
+            const auto descriptors = synchronizer->Conflicts();
+            std::vector<CloudConflictBinding> nextRegistry;
+            std::vector<OnlineCloudConflict> publicConflicts;
+            nextRegistry.reserve(descriptors.size());
+            publicConflicts.reserve(descriptors.size());
+            for (const auto& descriptor : descriptors)
+            {
+                std::string opaqueId;
+                const auto existing = std::find_if(
+                    cloudConflictRegistry.begin(),
+                    cloudConflictRegistry.end(),
+                    [&](const CloudConflictBinding& binding)
+                    {
+                        return SameConflictIdentity(
+                            binding,
+                            epoch,
+                            descriptor);
+                    });
+                if (existing != cloudConflictRegistry.end())
+                {
+                    opaqueId = existing->opaqueId;
+                }
+                else
+                {
+                    for (unsigned int attempt = 0; attempt < 16u; ++attempt)
+                    {
+                        opaqueId = GenerateOpaqueConflictId();
+                        const auto collision = [&](const auto& binding)
+                        {
+                            return binding.opaqueId == opaqueId;
+                        };
+                        if (std::none_of(
+                                cloudConflictRegistry.begin(),
+                                cloudConflictRegistry.end(),
+                                collision)
+                            && std::none_of(
+                                nextRegistry.begin(),
+                                nextRegistry.end(),
+                                collision))
+                        {
+                            break;
+                        }
+                        opaqueId.clear();
+                    }
+                    if (opaqueId.empty())
+                    {
+                        throw std::runtime_error(
+                            "Opaque conflict identifier collision.");
+                    }
+                }
+
+                const auto publicKind = descriptor.resource.kind
+                        == CloudSaveResourceKind::Preferences
+                    ? OnlineCloudResourceKind::Preferences
+                    : OnlineCloudResourceKind::SaveSlot;
+                publicConflicts.push_back({
+                    opaqueId,
+                    publicKind,
+                    descriptor.resource.slot,
+                    descriptor.localDeleted,
+                    descriptor.localByteLength,
+                    descriptor.remoteDeleted,
+                    descriptor.remoteByteLength
+                });
+                nextRegistry.push_back({ opaqueId, epoch, descriptor });
+            }
+            ClearCloudConflictRegistry();
+            cloudConflictRegistry.swap(nextRegistry);
+            return publicConflicts;
+        }
+
+        [[nodiscard]] CloudConflictBinding* FindConflictBinding(
+            const std::string_view opaqueId) noexcept
+        {
+            const auto found = std::find_if(
+                cloudConflictRegistry.begin(),
+                cloudConflictRegistry.end(),
+                [&](const CloudConflictBinding& binding)
+                {
+                    return binding.opaqueId == opaqueId;
+                });
+            return found == cloudConflictRegistry.end()
+                ? nullptr
+                : &*found;
+        }
+
+        void EraseCloudConflictBinding(
+            const std::string_view opaqueId) noexcept
+        {
+            const auto found = std::find_if(
+                cloudConflictRegistry.begin(),
+                cloudConflictRegistry.end(),
+                [&](const CloudConflictBinding& binding)
+                {
+                    return binding.opaqueId == opaqueId;
+                });
+            if (found != cloudConflictRegistry.end())
+            {
+                EraseSecret(found->descriptor.expectedMutationId);
+                cloudConflictRegistry.erase(found);
+            }
         }
 
         void ClearError() noexcept
@@ -862,6 +1073,8 @@ namespace LamaPon
 
         void DetachAccountPersistence() noexcept
         {
+            // UIへ渡したopaque IDはsign-out/Detach開始時点で失効します。
+            ClearCloudConflictRegistry();
             if (!persistenceCoordinator)
             {
                 return;
@@ -1061,6 +1274,7 @@ namespace LamaPon
                         throw std::runtime_error(
                             "Prepared persistence transaction became stale.");
                     }
+                    ClearCloudConflictRegistry();
                 }
             }
             catch (...)
@@ -1835,6 +2049,7 @@ namespace LamaPon
         std::shared_ptr<AsyncMailbox> inFlight;
         std::unique_ptr<Detail::OnlinePersistenceCoordinator>
             persistenceCoordinator;
+        std::vector<CloudConflictBinding> cloudConflictRegistry;
         std::shared_ptr<Detail::IRefreshTokenStore> refreshTokenStore;
         std::unique_ptr<Detail::IAuthorizationLauncher>
             authorizationLauncher;
@@ -1908,6 +2123,15 @@ namespace LamaPon
         OnlineServiceConfiguration configuration)
     {
         auto& implementation = *m_implementation;
+        if (implementation.persistenceCoordinator
+            && implementation.persistenceCoordinator
+                ->HasPendingRecovery())
+        {
+            // empty configurationを含め、binding材料や資格情報へ触れる前に
+            // fail-closedで拒否します。
+            throw std::logic_error(
+                "Resolve pending persistence recovery before configuring.");
+        }
         if (implementation.IsBusy()
             || implementation.inFlight
             || implementation.state == OnlineAccountState::SignedIn
@@ -1992,6 +2216,11 @@ namespace LamaPon
                 implementation.persistenceCoordinator->DisableNamespace();
             }
         }
+
+        // Coordinator namespace commitが成功した後だけ旧profile由来の
+        // process-local conflict IDを失効させます。失敗したConfigureでは
+        // registryを維持します。
+        implementation.ClearCloudConflictRegistry();
 
         implementation.AdvanceGeneration();
         implementation.ClearLoginTransaction();
@@ -2079,6 +2308,15 @@ namespace LamaPon
             implementation.errorCode = "not_configured";
             implementation.errorMessage =
                 "オンラインサービスが設定されていません。";
+            return false;
+        }
+        if (implementation.persistenceCoordinator
+            && implementation.persistenceCoordinator
+                ->HasPendingRecovery())
+        {
+            // credential lease取得やHTTP worker起動より前に拒否します。
+            implementation.SetFixedError(
+                "persistence_recovery_required");
             return false;
         }
         if (implementation.IsBusy()
@@ -2329,6 +2567,316 @@ namespace LamaPon
         return m_implementation->errorMessage;
     }
 
+    OnlineCloudSyncStatus OnlineServices::CloudSyncStatus() const noexcept
+    {
+        const auto& implementation = *m_implementation;
+        if (!implementation.persistenceCoordinator
+            || !implementation.persistenceCoordinator->IsAccountActive())
+        {
+            return {};
+        }
+        auto* const synchronizer =
+            implementation.persistenceCoordinator->Synchronizer();
+        if (!synchronizer || !synchronizer->IsAttached())
+        {
+            return {};
+        }
+
+        const auto internal = synchronizer->Status();
+        OnlineCloudSyncStatus result;
+        switch (internal.state)
+        {
+        case Detail::CloudSaveSynchronizerState::Detached:
+            result.state = OnlineCloudSyncState::Unavailable;
+            break;
+        case Detail::CloudSaveSynchronizerState::Idle:
+            result.state = OnlineCloudSyncState::Idle;
+            break;
+        case Detail::CloudSaveSynchronizerState::Synchronizing:
+            result.state = OnlineCloudSyncState::Synchronizing;
+            break;
+        case Detail::CloudSaveSynchronizerState::BackingOff:
+            result.state = OnlineCloudSyncState::WaitingToRetry;
+            break;
+        case Detail::CloudSaveSynchronizerState::Conflict:
+            result.state = OnlineCloudSyncState::Conflict;
+            break;
+        case Detail::CloudSaveSynchronizerState::Unauthorized:
+            result.state = OnlineCloudSyncState::Unauthorized;
+            break;
+        case Detail::CloudSaveSynchronizerState::Halted:
+            result.state = OnlineCloudSyncState::Stopped;
+            break;
+        }
+        switch (internal.stopReason)
+        {
+        case Detail::CloudSaveSynchronizerStopReason::None:
+            result.stopReason = OnlineCloudSyncStopReason::None;
+            break;
+        case Detail::CloudSaveSynchronizerStopReason::LocalUnavailable:
+            result.stopReason = OnlineCloudSyncStopReason::LocalUnavailable;
+            break;
+        case Detail::CloudSaveSynchronizerStopReason::LocalCorrupt:
+            result.stopReason = OnlineCloudSyncStopReason::LocalCorrupt;
+            break;
+        case Detail::CloudSaveSynchronizerStopReason::RemoteRejected:
+            result.stopReason = OnlineCloudSyncStopReason::RemoteRejected;
+            break;
+        case Detail::CloudSaveSynchronizerStopReason::InvalidRemoteResponse:
+            result.stopReason =
+                OnlineCloudSyncStopReason::InvalidRemoteResponse;
+            break;
+        case Detail::CloudSaveSynchronizerStopReason::JournalFailure:
+            result.stopReason = OnlineCloudSyncStopReason::JournalFailure;
+            break;
+        case Detail::CloudSaveSynchronizerStopReason::InternalFailure:
+            result.stopReason = OnlineCloudSyncStopReason::InternalFailure;
+            break;
+        }
+        const auto now = SteadyMilliseconds();
+        if (internal.retryAtMilliseconds > now)
+        {
+            const auto remainingMilliseconds =
+                internal.retryAtMilliseconds - now;
+            result.retryAfterSeconds = static_cast<float>(
+                static_cast<double>(remainingMilliseconds) / 1000.0);
+        }
+        result.conflictCount = internal.conflictCount;
+        return result;
+    }
+
+    std::vector<OnlineCloudConflict>
+        OnlineServices::CloudConflicts() const
+    {
+        try
+        {
+            return m_implementation->RefreshCloudConflictRegistry();
+        }
+        catch (...)
+        {
+            // path/token/ETag/mutation IDを含み得る内部例外を公開しません。
+            throw std::runtime_error(
+                "Cloud conflict enumeration failed.");
+        }
+    }
+
+    OnlinePersistenceOperationResult
+        OnlineServices::RequestCloudSync() noexcept
+    {
+        auto& implementation = *m_implementation;
+        if (!implementation.persistenceCoordinator
+            || !implementation.persistenceCoordinator->IsAccountActive())
+        {
+            return OnlinePersistenceOperationResult::Unavailable;
+        }
+        auto* const synchronizer =
+            implementation.persistenceCoordinator->Synchronizer();
+        if (!synchronizer || !synchronizer->IsAttached())
+        {
+            return OnlinePersistenceOperationResult::Unavailable;
+        }
+        if (implementation.IsBusy() || implementation.inFlight)
+        {
+            return OnlinePersistenceOperationResult::Busy;
+        }
+        if (synchronizer->Status().state
+            == Detail::CloudSaveSynchronizerState::Halted)
+        {
+            return OnlinePersistenceOperationResult::Failed;
+        }
+        try
+        {
+            synchronizer->RequestReconcile();
+            return OnlinePersistenceOperationResult::Succeeded;
+        }
+        catch (...)
+        {
+            return OnlinePersistenceOperationResult::Failed;
+        }
+    }
+
+    OnlinePersistenceOperationResult
+        OnlineServices::ResolveCloudConflict(
+        const std::string_view conflictId,
+        const OnlineCloudConflictResolution resolution) noexcept
+    {
+        auto& implementation = *m_implementation;
+        auto* const binding =
+            implementation.FindConflictBinding(conflictId);
+        if (!binding
+            || !implementation.persistenceCoordinator
+            || !implementation.persistenceCoordinator->IsAccountActive())
+        {
+            return OnlinePersistenceOperationResult::Stale;
+        }
+        auto* const synchronizer =
+            implementation.persistenceCoordinator->Synchronizer();
+        if (!synchronizer || !synchronizer->IsAttached())
+        {
+            return OnlinePersistenceOperationResult::Stale;
+        }
+
+        try
+        {
+            // stale判定をwire/auth Busyより先に行います。
+            const auto currentConflicts = synchronizer->Conflicts();
+            const auto current = std::find_if(
+                currentConflicts.begin(),
+                currentConflicts.end(),
+                [&](const Detail::CloudSaveConflictDescriptor& descriptor)
+                {
+                    return Implementation::SameConflictIdentity(
+                        *binding,
+                        implementation.persistenceCoordinator
+                            ->ProfileEpoch(),
+                        descriptor);
+                });
+            if (current == currentConflicts.end())
+            {
+                implementation.EraseCloudConflictBinding(conflictId);
+                return OnlinePersistenceOperationResult::Stale;
+            }
+            if (implementation.IsBusy()
+                || implementation.inFlight
+                || synchronizer->HasInFlightRequest())
+            {
+                return OnlinePersistenceOperationResult::Busy;
+            }
+
+            Detail::CloudSaveConflictResolution internalResolution;
+            switch (resolution)
+            {
+            case OnlineCloudConflictResolution::UseLocal:
+                internalResolution =
+                    Detail::CloudSaveConflictResolution::RetryLocal;
+                break;
+            case OnlineCloudConflictResolution::UseRemote:
+                internalResolution =
+                    Detail::CloudSaveConflictResolution::UseRemote;
+                break;
+            default:
+                return OnlinePersistenceOperationResult::Failed;
+            }
+            // Resolve中のvector変更に備え、参照は呼出し後に使いません。
+            const auto resource = binding->descriptor.resource;
+            const auto mutationId =
+                binding->descriptor.expectedMutationId;
+            synchronizer->ResolveConflict(
+                resource,
+                mutationId,
+                internalResolution);
+            implementation.EraseCloudConflictBinding(conflictId);
+            return OnlinePersistenceOperationResult::Succeeded;
+        }
+        catch (...)
+        {
+            return OnlinePersistenceOperationResult::Failed;
+        }
+    }
+
+    OnlinePersistenceRecoveryStatus
+        OnlineServices::PersistenceRecoveryStatus() const noexcept
+    {
+        const auto& implementation = *m_implementation;
+        if (!implementation.persistenceCoordinator)
+        {
+            return {};
+        }
+        const auto internal =
+            implementation.persistenceCoordinator->RecoveryStatus();
+        OnlinePersistenceRecoveryStatus result;
+        result.revision = internal.revision;
+        switch (internal.state)
+        {
+        case Detail::OnlinePersistenceRecoveryState::None:
+            result.state = OnlinePersistenceRecoveryState::None;
+            result.revision = 0;
+            break;
+        case Detail::OnlinePersistenceRecoveryState::MemorySnapshot:
+            result.state = OnlinePersistenceRecoveryState::MemorySnapshot;
+            break;
+        case Detail::OnlinePersistenceRecoveryState::DurableSidecar:
+            result.state = OnlinePersistenceRecoveryState::DurableSidecar;
+            break;
+        case Detail::OnlinePersistenceRecoveryState::UnavailableSidecar:
+            result.state =
+                OnlinePersistenceRecoveryState::UnavailableSidecar;
+            break;
+        }
+        return result;
+    }
+
+    namespace
+    {
+        [[nodiscard]] OnlinePersistenceOperationResult MapRecoveryResult(
+            const Detail::OnlinePersistenceRecoveryOperationResult result)
+                noexcept
+        {
+            switch (result)
+            {
+            case Detail::OnlinePersistenceRecoveryOperationResult::Succeeded:
+                return OnlinePersistenceOperationResult::Succeeded;
+            case Detail::OnlinePersistenceRecoveryOperationResult::Unavailable:
+                return OnlinePersistenceOperationResult::Unavailable;
+            case Detail::OnlinePersistenceRecoveryOperationResult::Busy:
+                return OnlinePersistenceOperationResult::Busy;
+            case Detail::OnlinePersistenceRecoveryOperationResult::Stale:
+                return OnlinePersistenceOperationResult::Stale;
+            case Detail::OnlinePersistenceRecoveryOperationResult::Failed:
+                return OnlinePersistenceOperationResult::Failed;
+            }
+            return OnlinePersistenceOperationResult::Failed;
+        }
+    }
+
+    OnlinePersistenceOperationResult OnlineServices::RestorePersistence(
+        const std::uint64_t expectedRevision) noexcept
+    {
+        auto& implementation = *m_implementation;
+        if (!implementation.persistenceCoordinator)
+        {
+            return OnlinePersistenceOperationResult::Unavailable;
+        }
+        const auto status =
+            implementation.persistenceCoordinator->RecoveryStatus();
+        if (expectedRevision == 0
+            || expectedRevision != status.revision)
+        {
+            return OnlinePersistenceOperationResult::Stale;
+        }
+        if (implementation.IsBusy() || implementation.inFlight)
+        {
+            return OnlinePersistenceOperationResult::Busy;
+        }
+        return MapRecoveryResult(
+            implementation.persistenceCoordinator
+                ->RestorePendingRecovery(expectedRevision));
+    }
+
+    OnlinePersistenceOperationResult OnlineServices::DiscardPersistence(
+        const std::uint64_t expectedRevision) noexcept
+    {
+        auto& implementation = *m_implementation;
+        if (!implementation.persistenceCoordinator)
+        {
+            return OnlinePersistenceOperationResult::Unavailable;
+        }
+        const auto status =
+            implementation.persistenceCoordinator->RecoveryStatus();
+        if (expectedRevision == 0
+            || expectedRevision != status.revision)
+        {
+            return OnlinePersistenceOperationResult::Stale;
+        }
+        if (implementation.IsBusy() || implementation.inFlight)
+        {
+            return OnlinePersistenceOperationResult::Busy;
+        }
+        return MapRecoveryResult(
+            implementation.persistenceCoordinator
+                ->DiscardPendingRecovery(expectedRevision));
+    }
+
     namespace Detail
     {
         std::unique_ptr<OnlineServices>
@@ -2451,6 +2999,7 @@ namespace LamaPon
         OnlinePersistenceDetachResult OnlinePersistenceAccess::Detach(
             OnlineServices& services) noexcept
         {
+            services.m_implementation->ClearCloudConflictRegistry();
             auto* const coordinator =
                 services.m_implementation->persistenceCoordinator.get();
             return coordinator

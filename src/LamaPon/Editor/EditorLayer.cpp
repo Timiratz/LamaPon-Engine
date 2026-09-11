@@ -41,6 +41,7 @@
 #include "LamaPon/Graphics/RenderPipeline.h"
 #include "LamaPon/Editor/UiRecorder.h"
 #include "LamaPon/Input/InputSystem.h"
+#include "LamaPon/Online/OnlineServices.h"
 #include "LamaPon/Scene/Scene.h"
 #include "LamaPon/Scene/SceneManager.h"
 
@@ -90,6 +91,104 @@ namespace
     // 新しい公式サイトが決まったら、このURLだけを差し替えます。
     constexpr wchar_t OnlineManualUrl[] =
         L"https://lamapon-wiki.lamapon.workers.dev";
+    constexpr char OnlinePersistenceConfirmationPopup[] =
+        "操作の確認##OnlinePersistenceConfirmation";
+
+    [[nodiscard]] const char* OnlineAccountStateLabel(
+        const LamaPon::OnlineAccountState state) noexcept
+    {
+        using enum LamaPon::OnlineAccountState;
+        switch (state)
+        {
+        case Unconfigured:
+            return "未設定";
+        case SignedOut:
+            return "サインアウト済み";
+        case StartingSignIn:
+            return "ログインを開始しています";
+        case WaitingForAuthorization:
+            return "ブラウザーでの認証を待っています";
+        case PollingAuthorization:
+            return "認証結果を確認しています";
+        case SignedIn:
+            return "ログイン済み";
+        case SigningOut:
+            return "サインアウトしています";
+        case Error:
+            return "認証エラー";
+        case RestoringSession:
+            return "保存済みセッションを復元しています";
+        case RefreshingSession:
+            return "セッションを更新しています";
+        }
+        return "不明";
+    }
+
+    [[nodiscard]] const char* OnlineCloudSyncStateLabel(
+        const LamaPon::OnlineCloudSyncState state) noexcept
+    {
+        using enum LamaPon::OnlineCloudSyncState;
+        switch (state)
+        {
+        case Unavailable:
+            return "利用できません";
+        case Idle:
+            return "待機中";
+        case Synchronizing:
+            return "同期しています";
+        case WaitingToRetry:
+            return "再試行を待っています";
+        case Conflict:
+            return "競合の解決を待っています";
+        case Unauthorized:
+            return "セッションを確認しています";
+        case Stopped:
+            return "停止しました";
+        }
+        return "不明";
+    }
+
+    [[nodiscard]] const char* OnlineCloudSyncStopReasonLabel(
+        const LamaPon::OnlineCloudSyncStopReason reason) noexcept
+    {
+        using enum LamaPon::OnlineCloudSyncStopReason;
+        switch (reason)
+        {
+        case None:
+            return "なし";
+        case LocalUnavailable:
+            return "端末のセーブデータを読み取れません";
+        case LocalCorrupt:
+            return "端末のセーブデータを検証できません";
+        case RemoteRejected:
+            return "クラウドが操作を受理しませんでした";
+        case InvalidRemoteResponse:
+            return "クラウドの応答を検証できません";
+        case JournalFailure:
+            return "同期状態を保存できません";
+        case InternalFailure:
+            return "同期処理を続けられません";
+        }
+        return "同期処理を続けられません";
+    }
+
+    [[nodiscard]] const char* OnlineRecoveryStateLabel(
+        const LamaPon::OnlinePersistenceRecoveryState state) noexcept
+    {
+        using enum LamaPon::OnlinePersistenceRecoveryState;
+        switch (state)
+        {
+        case None:
+            return "復旧待ちのデータはありません";
+        case MemorySnapshot:
+            return "保護したデータを安全な領域へ退避しています";
+        case DurableSidecar:
+            return "保護したデータを復元または破棄できます";
+        case UnavailableSidecar:
+            return "保護したデータを読み取れません";
+        }
+        return "復旧状態を確認できません";
+    }
 
     bool HasSceneExtension(const std::filesystem::path& path)
     {
@@ -226,6 +325,7 @@ namespace LamaPon
         Scene& scene,
         PlayerPrefs& playerPrefs,
         SaveDataStore& saveData,
+        OnlineServices& onlineServices,
         std::filesystem::path scenePath,
         std::filesystem::path engineRoot,
         std::string buildConfiguration)
@@ -234,6 +334,7 @@ namespace LamaPon
         , m_scene(scene)
         , m_playerPrefs(playerPrefs)
         , m_saveData(saveData)
+        , m_onlineServices(onlineServices)
         , m_persistencePanelState(
             playerPrefs.FilePath(),
             saveData.Directory())
@@ -4479,28 +4580,465 @@ namespace LamaPon
                 m_saveData.Directory()));
         if (!open)
         {
+            m_persistencePanelState.DismissOnlineConfirmation();
             return;
         }
 
+        const auto accountState = m_onlineServices.State();
+        const bool onlineAccountActive =
+            m_onlineServices.IsSignedIn();
+        const auto syncStatus =
+            m_onlineServices.CloudSyncStatus();
+        std::vector<OnlineCloudConflict> cloudConflicts;
+        bool cloudConflictsAvailable = true;
+        try
+        {
+            cloudConflicts = m_onlineServices.CloudConflicts();
+        }
+        catch (const std::exception&)
+        {
+            // ID生成やsnapshot取得の失敗内容はUIへ流さず、既存の
+            // 確認対象も「消失」と同じfail-closedで閉じます。
+            cloudConflictsAvailable = false;
+        }
+        const auto recoveryStatus =
+            m_onlineServices.PersistenceRecoveryStatus();
+        const auto confirmationKind =
+            m_persistencePanelState.OnlineConfirmationKind();
+        const bool confirmingConflict =
+            confirmationKind
+                == Detail::PersistenceConfirmationKind::UseRemote
+            || confirmationKind
+                == Detail::PersistenceConfirmationKind::RetryLocal;
+        bool confirmationConflictStillExists = false;
+        if (confirmingConflict)
+        {
+            const auto& confirmationConflictId =
+                m_persistencePanelState.ConfirmationConflictId();
+            confirmationConflictStillExists =
+                std::ranges::any_of(
+                    cloudConflicts,
+                    [&confirmationConflictId](const auto& conflict)
+                    {
+                        return conflict.id == confirmationConflictId;
+                    });
+        }
+        static_cast<void>(
+            m_persistencePanelState.SynchronizeOnlineConfirmation(
+                onlineAccountActive,
+                confirmationConflictStillExists,
+                recoveryStatus.revision));
+
         ImGui::SetNextWindowSize(
-            ImVec2{ 720.0f, 260.0f },
+            ImVec2{ 720.0f, 620.0f },
             ImGuiCond_FirstUseEver);
         if (!ImGui::Begin(
             "セーブデータ",
                 &open,
                 ImGuiWindowFlags_NoCollapse))
         {
+            m_persistencePanelState.DismissOnlineConfirmation();
             ImGui::End();
             return;
         }
         const bool closeStaleDeleteAllPopup =
             m_persistencePanelState.CloseDeleteAllPopupRequested();
+        bool closeStaleOnlinePopup =
+            m_persistencePanelState.
+                CloseOnlineConfirmationPopupRequested();
+        if (closeStaleOnlinePopup
+            && !ImGui::IsPopupOpen(
+                OnlinePersistenceConfirmationPopup))
+        {
+            m_persistencePanelState.
+                AcknowledgeCloseOnlineConfirmationPopup();
+            closeStaleOnlinePopup = false;
+        }
 
+        const auto reportOnlineOperationResult =
+            [this](
+                const OnlinePersistenceOperationResult result,
+                const char* const successMessage)
+            {
+                switch (result)
+                {
+                case OnlinePersistenceOperationResult::Succeeded:
+                    SetStatus(successMessage);
+                    break;
+                case OnlinePersistenceOperationResult::Unavailable:
+                    SetStatus(
+                        "現在の状態では操作できません",
+                        true);
+                    break;
+                case OnlinePersistenceOperationResult::Busy:
+                    SetStatus(
+                        "別のオンライン操作を処理しています",
+                        true);
+                    break;
+                case OnlinePersistenceOperationResult::Stale:
+                    SetStatus(
+                        "対象の状態が更新されました。もう一度選択してください",
+                        true);
+                    break;
+                case OnlinePersistenceOperationResult::Failed:
+                    SetStatus(
+                        "オンライン操作を完了できませんでした",
+                        true);
+                    break;
+                }
+            };
+
+        ImGui::SeparatorText("オンラインアカウント");
+        ImGui::Text(
+            "状態: %s",
+            OnlineAccountStateLabel(accountState));
+        if (onlineAccountActive)
+        {
+            const auto& displayName =
+                m_onlineServices.Player().displayName;
+            if (displayName.empty())
+            {
+                ImGui::TextUnformatted(
+                    "アカウント: ログイン済み");
+            }
+            else
+            {
+                ImGui::Text(
+                    "アカウント: %s",
+                    displayName.c_str());
+            }
+        }
+
+        const bool recoveryPending =
+            recoveryStatus.state
+            != OnlinePersistenceRecoveryState::None;
+        switch (accountState)
+        {
+        case OnlineAccountState::Unconfigured:
+            ImGui::TextDisabled(
+                "プロジェクト設定でオンライン接続を設定してください");
+            if (ImGui::Button("オンライン設定を開く"))
+            {
+                m_projectSettingsCategory = 8;
+                OpenProjectSettingsDialog();
+            }
+            break;
+        case OnlineAccountState::SignedOut:
+        case OnlineAccountState::Error:
+            ImGui::BeginDisabled(recoveryPending);
+            if (ImGui::Button("Discordでログイン"))
+            {
+                bool started = false;
+                try
+                {
+                    started =
+                        m_onlineServices.BeginDiscordSignIn();
+                }
+                catch (const std::exception&)
+                {
+                    // 例外本文へ接続先や内部状態が含まれ得るため、
+                    // 直後の固定messageだけを表示します。
+                }
+                SetStatus(
+                    started
+                        ? "Discordログインを開始しました"
+                        : "Discordログインを開始できませんでした",
+                    !started);
+            }
+            ImGui::EndDisabled();
+            if (recoveryPending)
+            {
+                ImGui::SameLine();
+                ImGui::TextDisabled(
+                    "先に保護データを復元または破棄してください");
+            }
+            break;
+        case OnlineAccountState::StartingSignIn:
+        case OnlineAccountState::WaitingForAuthorization:
+        case OnlineAccountState::PollingAuthorization:
+            if (ImGui::Button("ログインをキャンセル"))
+            {
+                m_onlineServices.CancelDiscordSignIn();
+                SetStatus("Discordログインをキャンセルしました");
+            }
+            break;
+        case OnlineAccountState::SignedIn:
+        case OnlineAccountState::RefreshingSession:
+            if (ImGui::Button("サインアウト"))
+            {
+                try
+                {
+                    m_onlineServices.SignOut();
+                    SetStatus("サインアウトを開始しました");
+                }
+                catch (const std::exception&)
+                {
+                    SetStatus(
+                        "サインアウトを開始できませんでした",
+                        true);
+                }
+            }
+            break;
+        case OnlineAccountState::SigningOut:
+        case OnlineAccountState::RestoringSession:
+            break;
+        }
+
+        ImGui::SeparatorText("クラウド同期");
+        ImGui::Text(
+            "状態: %s",
+            OnlineCloudSyncStateLabel(syncStatus.state));
+        if (syncStatus.state
+                == OnlineCloudSyncState::WaitingToRetry
+            && syncStatus.retryAfterSeconds > 0.0f)
+        {
+            ImGui::TextDisabled(
+                "約%.0f秒後に再試行します",
+                syncStatus.retryAfterSeconds);
+        }
+        if (syncStatus.stopReason
+            != OnlineCloudSyncStopReason::None)
+        {
+            ImGui::TextWrapped(
+                "理由: %s",
+                OnlineCloudSyncStopReasonLabel(
+                    syncStatus.stopReason));
+        }
+        ImGui::BeginDisabled(!onlineAccountActive);
+        if (ImGui::Button("今すぐ同期"))
+        {
+            reportOnlineOperationResult(
+                m_onlineServices.RequestCloudSync(),
+                "クラウド同期を要求しました");
+        }
+        ImGui::EndDisabled();
+
+        ImGui::SeparatorText("保護データの復旧");
         ImGui::TextWrapped(
-            "保存先: %s",
-            PathToUtf8(
-                m_playerPrefs.FilePath().
-                    parent_path()).c_str());
+            "%s",
+            OnlineRecoveryStateLabel(recoveryStatus.state));
+        if (recoveryPending)
+        {
+            const bool restoreAvailable =
+                recoveryStatus.state
+                    == OnlinePersistenceRecoveryState::MemorySnapshot
+                || recoveryStatus.state
+                    == OnlinePersistenceRecoveryState::DurableSidecar;
+            ImGui::BeginDisabled(!restoreAvailable);
+            if (ImGui::Button("保護データを復元"))
+            {
+                m_persistencePanelState.BeginRecoveryConfirmation(
+                    Detail::PersistenceConfirmationKind::Restore,
+                    recoveryStatus.revision);
+                ImGui::OpenPopup(
+                    OnlinePersistenceConfirmationPopup);
+            }
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            if (ImGui::Button("保護データを破棄"))
+            {
+                m_persistencePanelState.BeginRecoveryConfirmation(
+                    Detail::PersistenceConfirmationKind::Discard,
+                    recoveryStatus.revision);
+                ImGui::OpenPopup(
+                    OnlinePersistenceConfirmationPopup);
+            }
+            if (!restoreAvailable)
+            {
+                ImGui::TextDisabled(
+                    "読み取り可能になるまで復元は実行できません");
+            }
+        }
+
+        ImGui::SeparatorText("同期の競合");
+        if (!cloudConflictsAvailable)
+        {
+            ImGui::TextDisabled("競合情報を確認できません");
+        }
+        else if (cloudConflicts.empty())
+        {
+            ImGui::TextDisabled("未解決の競合はありません");
+        }
+        else
+        {
+            ImGui::TextDisabled(
+                "%zu件の競合があります",
+                cloudConflicts.size());
+            for (std::size_t index = 0;
+                index < cloudConflicts.size();
+                ++index)
+            {
+                const auto& conflict = cloudConflicts[index];
+                // process-local opaque IDはImGui内部の安定keyにだけ使い、
+                // label・status・recording textへは渡しません。
+                ImGui::PushID(conflict.id.c_str());
+                if (conflict.kind
+                    == OnlineCloudResourceKind::Preferences)
+                {
+                    ImGui::TextUnformatted("PlayerPrefs");
+                }
+                else
+                {
+                    ImGui::Text(
+                        "セーブスロット: %s",
+                        conflict.slot.c_str());
+                }
+                ImGui::TextDisabled(
+                    "端末側: %s / クラウド側: %s",
+                    conflict.localDeleted
+                        ? "削除済み"
+                        : "保存データあり",
+                    conflict.remoteDeleted
+                        ? "削除済み"
+                        : "保存データあり");
+                if (ImGui::SmallButton("クラウド版を使用"))
+                {
+                    m_persistencePanelState.BeginConflictConfirmation(
+                        Detail::PersistenceConfirmationKind::UseRemote,
+                        conflict.id);
+                    ImGui::OpenPopup(
+                        OnlinePersistenceConfirmationPopup);
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton(
+                        "競合時点の端末版を再送"))
+                {
+                    m_persistencePanelState.BeginConflictConfirmation(
+                        Detail::PersistenceConfirmationKind::RetryLocal,
+                        conflict.id);
+                    ImGui::OpenPopup(
+                        OnlinePersistenceConfirmationPopup);
+                }
+                ImGui::PopID();
+            }
+        }
+
+        if (ImGui::BeginPopupModal(
+                OnlinePersistenceConfirmationPopup,
+                nullptr,
+                ImGuiWindowFlags_AlwaysAutoResize))
+        {
+            const auto pendingKind =
+                m_persistencePanelState.OnlineConfirmationKind();
+            if (closeStaleOnlinePopup
+                || pendingKind
+                    == Detail::PersistenceConfirmationKind::None)
+            {
+                ImGui::CloseCurrentPopup();
+                m_persistencePanelState.
+                    AcknowledgeCloseOnlineConfirmationPopup();
+            }
+            else
+            {
+                switch (pendingKind)
+                {
+                case Detail::PersistenceConfirmationKind::UseRemote:
+                    ImGui::TextWrapped(
+                        "端末の競合版をクラウド版で置き換えます。"
+                        "クラウド側が削除済みの場合は端末側も削除されます。");
+                    break;
+                case Detail::PersistenceConfirmationKind::RetryLocal:
+                    ImGui::TextWrapped(
+                        "競合が起きた時点の端末版をクラウドへ再送します。"
+                        "競合後の端末変更は、解決後の同期対象として残ります。");
+                    break;
+                case Detail::PersistenceConfirmationKind::Restore:
+                    ImGui::TextWrapped(
+                        "保護したデータを元のオンラインアカウントへ復元します。"
+                        "現在の保存内容は上書きされます。");
+                    break;
+                case Detail::PersistenceConfirmationKind::Discard:
+                    ImGui::TextWrapped(
+                        "保護したデータを完全に破棄します。"
+                        "この操作は取り消せません。");
+                    break;
+                case Detail::PersistenceConfirmationKind::None:
+                    break;
+                }
+
+                if (ImGui::Button("実行する"))
+                {
+                    OnlinePersistenceOperationResult result{
+                        OnlinePersistenceOperationResult::Failed
+                    };
+                    const char* successMessage =
+                        "オンライン操作を完了しました";
+                    switch (pendingKind)
+                    {
+                    case Detail::PersistenceConfirmationKind::UseRemote:
+                        result = m_onlineServices.ResolveCloudConflict(
+                            m_persistencePanelState.
+                                ConfirmationConflictId(),
+                            OnlineCloudConflictResolution::UseRemote);
+                        successMessage =
+                            "クラウド版を端末へ反映しました";
+                        break;
+                    case Detail::PersistenceConfirmationKind::RetryLocal:
+                        result = m_onlineServices.ResolveCloudConflict(
+                            m_persistencePanelState.
+                                ConfirmationConflictId(),
+                            OnlineCloudConflictResolution::UseLocal);
+                        successMessage =
+                            "競合時点の端末版を再送キューへ戻しました";
+                        break;
+                    case Detail::PersistenceConfirmationKind::Restore:
+                        result = m_onlineServices.RestorePersistence(
+                            m_persistencePanelState.
+                                ConfirmationRecoveryRevision());
+                        successMessage =
+                            "保護データを復元しました";
+                        break;
+                    case Detail::PersistenceConfirmationKind::Discard:
+                        result = m_onlineServices.DiscardPersistence(
+                            m_persistencePanelState.
+                                ConfirmationRecoveryRevision());
+                        successMessage =
+                            "保護データを破棄しました";
+                        break;
+                    case Detail::PersistenceConfirmationKind::None:
+                        break;
+                    }
+                    reportOnlineOperationResult(
+                        result,
+                        successMessage);
+                    m_persistencePanelState.
+                        DismissOnlineConfirmation();
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("キャンセル"))
+                {
+                    m_persistencePanelState.
+                        DismissOnlineConfirmation();
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+            ImGui::EndPopup();
+        }
+        else if (closeStaleOnlinePopup
+            && !ImGui::IsPopupOpen(
+                OnlinePersistenceConfirmationPopup))
+        {
+            m_persistencePanelState.
+                AcknowledgeCloseOnlineConfirmationPopup();
+        }
+
+        ImGui::SeparatorText("ローカル保存");
+        if (onlineAccountActive)
+        {
+            ImGui::TextUnformatted(
+                "プロファイル: オンラインアカウント（アカウント専用・固定）");
+        }
+        else
+        {
+            ImGui::TextUnformatted("プロファイル: ゲスト");
+            ImGui::TextWrapped(
+                "保存先: %s",
+                PathToUtf8(
+                    m_playerPrefs.FilePath().
+                        parent_path()).c_str());
+        }
+
         const auto persistenceBindingRevision =
             m_persistencePanelState.BindingRevision();
         ImGui::PushID(static_cast<int>(
@@ -4516,9 +5054,11 @@ namespace LamaPon
                 SetStatus(
                     "PlayerPrefsを保存しました");
             }
-            catch (const std::exception& exception)
+            catch (const std::exception&)
             {
-                SetStatus(exception.what(), true);
+                SetStatus(
+                    "PlayerPrefsを保存できませんでした",
+                    true);
             }
         }
         ImGui::SameLine();
@@ -4530,25 +5070,30 @@ namespace LamaPon
                 SetStatus(
                     "PlayerPrefsを再読み込みしました");
             }
-            catch (const std::exception& exception)
+            catch (const std::exception&)
             {
-                SetStatus(exception.what(), true);
+                SetStatus(
+                    "PlayerPrefsを再読み込みできませんでした",
+                    true);
             }
         }
-        ImGui::SameLine();
-        if (ImGui::Button("保存フォルダーを開く"))
+        if (!onlineAccountActive)
         {
-            std::filesystem::create_directories(
-                m_playerPrefs.FilePath().
-                    parent_path());
-            ShellExecuteW(
-                m_window,
-                L"open",
-                m_playerPrefs.FilePath().
-                    parent_path().c_str(),
-                nullptr,
-                nullptr,
-                SW_SHOWNORMAL);
+            ImGui::SameLine();
+            if (ImGui::Button("保存フォルダーを開く"))
+            {
+                std::filesystem::create_directories(
+                    m_playerPrefs.FilePath().
+                        parent_path());
+                ShellExecuteW(
+                    m_window,
+                    L"open",
+                    m_playerPrefs.FilePath().
+                        parent_path().c_str(),
+                    nullptr,
+                    nullptr,
+                    SW_SHOWNORMAL);
+            }
         }
         ImGui::SameLine();
         ImGui::TextDisabled(
@@ -4684,9 +5229,11 @@ namespace LamaPon
                 SetStatus(
                     "PlayerPrefsを更新しました");
             }
-            catch (const std::exception& exception)
+            catch (const std::exception&)
             {
-                SetStatus(exception.what(), true);
+                SetStatus(
+                    "PlayerPrefsを更新できませんでした",
+                    true);
             }
         }
         ImGui::PopID();
@@ -4768,9 +5315,11 @@ namespace LamaPon
                             : "{}",
                         _TRUNCATE);
                 }
-                catch (const std::exception& exception)
+                catch (const std::exception&)
                 {
-                    SetStatus(exception.what(), true);
+                    SetStatus(
+                        "セーブスロットを読み込めませんでした",
+                        true);
                 }
             }
         }
@@ -4798,9 +5347,11 @@ namespace LamaPon
                 SetStatus(
                     "セーブスロットを保存しました");
             }
-            catch (const std::exception& exception)
+            catch (const std::exception&)
             {
-                SetStatus(exception.what(), true);
+                SetStatus(
+                    "セーブスロットを保存できませんでした",
+                    true);
             }
         }
         ImGui::SameLine();
@@ -4818,9 +5369,11 @@ namespace LamaPon
                 SetStatus(
                     "セーブスロットを削除しました");
             }
-            catch (const std::exception& exception)
+            catch (const std::exception&)
             {
-                SetStatus(exception.what(), true);
+                SetStatus(
+                    "セーブスロットを削除できませんでした",
+                    true);
             }
         }
         ImGui::EndDisabled();

@@ -10,6 +10,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace LamaPon
 {
@@ -55,8 +56,28 @@ namespace LamaPon::Detail
         std::size_t conflictCount{};
     };
 
+    struct CloudSaveConflictDescriptor final
+    {
+        CloudSaveResource resource;
+        std::string expectedMutationId;
+        bool localDeleted{};
+        std::size_t localByteLength{};
+        bool remoteDeleted{};
+        std::size_t remoteByteLength{};
+    };
+
     using CloudSaveMutationIdGenerator =
         std::function<std::string()>;
+
+    // detach checkpointはjournal publishを始める前に操作列全体を確定します。
+    // 操作列は1世代のbatchとしてpublishします。失敗後は新しいjournal
+    // instanceへ同じ列を冪等に再適用します。strict local scan自体が
+    // 成立しなかった場合はoperationsDetermined=falseです。
+    struct CloudSaveDetachCheckpointRecovery final
+    {
+        bool operationsDetermined{};
+        std::vector<CloudSaveDeleteIntentOperation> operations;
+    };
 
     class PreparedCloudSaveAttachment final
     {
@@ -132,7 +153,12 @@ namespace LamaPon::Detail
         // delete intentだけをjournalへdurable checkpointします。networkは
         // 開始しません。失敗時はcallerがjournal/profile leaseを保持したまま
         // quarantineし、明示解決まで同accountを再公開してはいけません。
+        // productionのpre-delete WALを故意に迂回し、さらにbatch publish
+        // 開始前のI/O失敗中にprocessがcrashした場合の意図復元は
+        // 保証外です。通常のSaveData::DeleteSlotはpre-delete WALを使います。
         void CheckpointLocalStateForDetach();
+        [[nodiscard]] CloudSaveDetachCheckpointRecovery
+            TakeFailedDetachCheckpointRecovery() noexcept;
         void Detach() noexcept;
 
         // 同一accountのproactive refresh用です。旧inflightを待たずstale化し、
@@ -158,6 +184,11 @@ namespace LamaPon::Detail
             CloudSaveConflictResolution resolution);
 
         [[nodiscard]] CloudSaveSynchronizerStatus Status() const noexcept;
+        // 公開DTOを組み立てるmain-thread bridgeです。ETag/content/hashは
+        // 返さず、expectedMutationIdもOnlineServicesのopaque ID registry
+        // より外へ出しません。
+        [[nodiscard]] std::vector<CloudSaveConflictDescriptor>
+            Conflicts() const;
         [[nodiscard]] bool IsAttached() const noexcept;
         [[nodiscard]] bool HasInFlightRequest() const noexcept;
         // 200/204/412等、Bearerが認可されたwire応答をmain threadで

@@ -2313,6 +2313,88 @@ namespace
             journal.Generation() == 0u,
             "Destroyed synchronizer's worker touched the journal.");
     }
+
+    void TestConflictDescriptorCacheIsInvalidatedAcrossAttachments()
+    {
+        const auto trustedA = TrustedPath("descriptor-cache-a");
+        const auto trustedB = TrustedPath("descriptor-cache-b");
+        const auto profileA = Profile(trustedA);
+        const auto profileB = Profile(trustedB);
+        LamaPon::PlayerPrefs preferences(profileA.playerPrefsFile);
+        preferences.SetInteger("value", 1);
+        preferences.Save();
+        LamaPon::SaveDataStore saves(profileA.saveDataDirectory);
+        Journal journalA(
+            trustedA,
+            profileA,
+            "sync-game",
+            "staging",
+            "https://online.example.test/tenant/");
+        Journal journalB(
+            trustedB,
+            profileB,
+            "sync-game",
+            "staging",
+            "https://online.example.test/tenant/");
+
+        const auto preferencesBytes =
+            Documents::ReadPlayerPrefs(preferences).bytes;
+        const auto slotBytes = Bytes(
+            R"({"format":"LamaPonSaveData","version":1,"slot":"other-slot","data":{}})");
+        const auto preferencesResource =
+            LamaPon::CloudSaveResource::Preferences();
+        const auto slotResource =
+            LamaPon::CloudSaveResource::SaveSlot("other-slot");
+        journalA.QueuePut(
+            preferencesResource,
+            preferencesBytes,
+            MutationIds[0]);
+        journalA.RecordConflict(
+            preferencesResource,
+            MutationIds[0],
+            Tombstone(preferencesResource, "\"remote-a\""));
+        journalB.QueuePut(slotResource, slotBytes, MutationIds[1]);
+        journalB.RecordConflict(
+            slotResource,
+            MutationIds[1],
+            Tombstone(slotResource, "\"remote-b\""));
+        Require(
+            journalA.Generation() == journalB.Generation(),
+            "Descriptor cache journals did not share a generation fixture.");
+
+        ScriptedBackend backend;
+        auto idIndex = std::make_shared<std::size_t>(2u);
+        Synchronizer synchronizer(
+            preferences,
+            saves,
+            MakeClient(backend),
+            IdGenerator(idIndex));
+        synchronizer.Attach(
+            journalA,
+            77u,
+            std::string(AccountKey),
+            std::string(Token));
+        const auto first = synchronizer.Conflicts();
+        synchronizer.Detach();
+        preferences.Rebind(profileB.playerPrefsFile);
+        saves.Rebind(profileB.saveDataDirectory);
+        synchronizer.Attach(
+            journalB,
+            77u,
+            std::string(AccountKey),
+            std::string(Token));
+        const auto second = synchronizer.Conflicts();
+        Require(
+            first.size() == 1u
+                && first.front().resource.kind
+                    == LamaPon::CloudSaveResourceKind::Preferences
+                && second.size() == 1u
+                && second.front().resource.kind
+                    == LamaPon::CloudSaveResourceKind::SaveSlot
+                && second.front().resource.slot == "other-slot",
+            "Conflict descriptor cache leaked across attachments.");
+        synchronizer.Detach();
+    }
 }
 
 int main()
@@ -2351,6 +2433,7 @@ int main()
         run("pending shrink priority", TestPendingMutationsDispatchShrinkBeforeGrowth);
         run("detach", TestDetachDiscardsStaleWorkerWithoutBlocking);
         run("destructor", TestDestructorDoesNotJoinWorker);
+        run("descriptor cache", TestConflictDescriptorCacheIsInvalidatedAcrossAttachments);
         ResetTestRoot();
         std::cout << "Cloud save synchronizer tests passed.\n";
         return 0;

@@ -2709,43 +2709,98 @@ namespace LamaPon::Detail
     void CloudSaveJournal::RecordLocalDeleteIntent(
         const CloudSaveResource& resource)
     {
-        m_implementation->EnsureAvailable();
-        (void)MaximumContentBytes(resource);
-        auto next = m_implementation->state;
-        auto index = FindEntry(next.entries, resource);
-        if (index == next.entries.size())
-        {
-            Entry entry;
-            entry.resource = resource;
-            next.entries.push_back(std::move(entry));
-            index = next.entries.size() - 1u;
-        }
-        if (next.entries[index].localDeleteIntent)
-        {
-            return;
-        }
-        next.entries[index].localDeleteIntent = true;
-        m_implementation->Persist(std::move(next));
+        ApplyLocalDeleteIntentOperations({ {
+            resource,
+            CloudSaveDeleteIntentOperationKind::Record
+        } });
     }
 
     void CloudSaveJournal::ClearLocalDeleteIntent(
         const CloudSaveResource& resource)
     {
+        ApplyLocalDeleteIntentOperations({ {
+            resource,
+            CloudSaveDeleteIntentOperationKind::Clear
+        } });
+    }
+
+    void CloudSaveJournal::ApplyLocalDeleteIntentOperations(
+        const std::vector<CloudSaveDeleteIntentOperation>& operations)
+    {
         m_implementation->EnsureAvailable();
-        (void)MaximumContentBytes(resource);
-        auto next = m_implementation->state;
-        const auto index = FindEntry(next.entries, resource);
-        if (index == next.entries.size()
-            || !next.entries[index].localDeleteIntent)
+        if (operations.empty())
         {
             return;
         }
-        auto& entry = next.entries[index];
-        entry.localDeleteIntent = false;
-        if (!entry.baseline && !entry.pending && !entry.conflict)
+
+        std::vector<CloudSaveResource> resources;
+        resources.reserve(operations.size());
+        for (const auto& operation : operations)
         {
-            next.entries.erase(next.entries.begin()
-                + static_cast<std::ptrdiff_t>(index));
+            (void)MaximumContentBytes(operation.resource);
+            if (operation.kind
+                    != CloudSaveDeleteIntentOperationKind::Record
+                && operation.kind
+                    != CloudSaveDeleteIntentOperationKind::Clear)
+            {
+                throw std::invalid_argument(
+                    "Cloud save delete intent operation is invalid.");
+            }
+            if (std::ranges::any_of(
+                    resources,
+                    [&operation](const CloudSaveResource& existing)
+                    {
+                        return EquivalentResources(
+                            existing,
+                            operation.resource);
+                    }))
+            {
+                throw std::invalid_argument(
+                    "Cloud save delete intent operations are ambiguous.");
+            }
+            resources.push_back(operation.resource);
+        }
+
+        auto next = m_implementation->state;
+        bool changed{};
+        for (const auto& operation : operations)
+        {
+            auto index = FindEntry(next.entries, operation.resource);
+            if (operation.kind
+                == CloudSaveDeleteIntentOperationKind::Record)
+            {
+                if (index == next.entries.size())
+                {
+                    Entry entry;
+                    entry.resource = operation.resource;
+                    next.entries.push_back(std::move(entry));
+                    index = next.entries.size() - 1u;
+                }
+                if (!next.entries[index].localDeleteIntent)
+                {
+                    next.entries[index].localDeleteIntent = true;
+                    changed = true;
+                }
+                continue;
+            }
+
+            if (index == next.entries.size()
+                || !next.entries[index].localDeleteIntent)
+            {
+                continue;
+            }
+            auto& entry = next.entries[index];
+            entry.localDeleteIntent = false;
+            changed = true;
+            if (!entry.baseline && !entry.pending && !entry.conflict)
+            {
+                next.entries.erase(next.entries.begin()
+                    + static_cast<std::ptrdiff_t>(index));
+            }
+        }
+        if (!changed)
+        {
+            return;
         }
         m_implementation->Persist(std::move(next));
     }
@@ -2932,6 +2987,34 @@ namespace LamaPon::Detail
         return index == m_implementation->state.entries.size()
             ? std::nullopt
             : m_implementation->state.entries[index].pending;
+    }
+
+    std::vector<CloudSaveConflictSummary>
+        CloudSaveJournal::ConflictSummaries() const
+    {
+        m_implementation->EnsureAvailable();
+        std::vector<CloudSaveConflictSummary> result;
+        result.reserve(m_implementation->state.entries.size());
+        for (const auto& entry : m_implementation->state.entries)
+        {
+            if (!entry.pending || !entry.conflict)
+            {
+                continue;
+            }
+            result.push_back({
+                entry.resource,
+                entry.pending->mutationId,
+                entry.pending->kind == CloudSavePendingKind::Delete,
+                entry.pending->kind == CloudSavePendingKind::Delete
+                    ? 0u
+                    : entry.pending->content.size(),
+                entry.conflict->deleted,
+                entry.conflict->deleted
+                    ? 0u
+                    : entry.conflict->content.size()
+            });
+        }
+        return result;
     }
 
     std::vector<CloudSaveResource> CloudSaveJournal::Resources() const

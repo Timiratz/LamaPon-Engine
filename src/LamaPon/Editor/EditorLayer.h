@@ -41,6 +41,7 @@ namespace LamaPon
     class BgmLoopPanel;
     class GameExportDialog;
     class GraphicsDevice;
+    class OnlineServices;
     class PlayerPrefs;
     class SaveDataStore;
     class Scene;
@@ -73,6 +74,7 @@ namespace LamaPon
             Scene& scene,
             PlayerPrefs& playerPrefs,
             SaveDataStore& saveData,
+            OnlineServices& onlineServices,
             std::filesystem::path scenePath,
             std::filesystem::path engineRoot,
             std::string buildConfiguration);
@@ -708,6 +710,7 @@ namespace LamaPon
         Scene& m_scene;
         PlayerPrefs& m_playerPrefs;
         SaveDataStore& m_saveData;
+        OnlineServices& m_onlineServices;
         Detail::PersistencePanelState m_persistencePanelState;
         std::filesystem::path m_scenePath;
         std::filesystem::path m_engineRoot;
