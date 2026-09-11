@@ -1,214 +1,83 @@
 #include "LamaPon/Graphics/ShadowMap.h"
+#include "LamaPon/Graphics/D3D11ShadowMapState.h"
+#include "LamaPon/Graphics/ShadowMapBackendState.h"
 
-#include <algorithm>
-#include <stdexcept>
-#include <string>
+#include <utility>
 
 namespace
 {
-    void ThrowIfFailed(
-        const HRESULT result,
-        const char* operation)
+    [[nodiscard]] const LamaPon::Detail::D3D11ShadowMapState*
+        AsD3D11State(
+            const LamaPon::Detail::ShadowMapBackendState* const state)
+        noexcept
     {
-        if (FAILED(result))
-        {
-            throw std::runtime_error(
-                std::string{ operation }
-                + " failed with HRESULT "
-                + std::to_string(
-                    static_cast<unsigned long>(result)));
-        }
+        return dynamic_cast<
+            const LamaPon::Detail::D3D11ShadowMapState*>(state);
     }
 }
 
 namespace LamaPon
 {
-    ID3D11ShaderResourceView*
-        ShadowMap::ShaderResourceView() const noexcept
+    Detail::ShadowMapBackendState*
+        Detail::ShadowMapBackendAccess::Get(
+            ShadowMap& shadowMap) noexcept
     {
-        return m_shaderResourceView.Get();
+        return shadowMap.m_backendState.get();
     }
 
-    void ShadowMap::Initialize(
-        ID3D11Device* device,
-        const std::uint32_t resolution,
-        const std::uint32_t cascadeCount,
-        const bool cube)
+    const Detail::ShadowMapBackendState*
+        Detail::ShadowMapBackendAccess::Get(
+            const ShadowMap& shadowMap) noexcept
     {
-        if (device == nullptr)
-        {
-            throw std::invalid_argument(
-                "ShadowMap requires a Direct3D device.");
-        }
-
-        // 再初期化の途中で失敗しても旧世代と新世代の資源を混在させず、
-        // IsValid()が必ずfalseになる状態から作り直します。
-        m_view.Reset();
-        m_texture.Reset();
-        m_depthStencilViews.clear();
-        m_shaderResourceView.Reset();
-        m_savedRenderTarget.Reset();
-        m_savedDepthStencil.Reset();
-        m_viewport = {};
-        m_savedViewport = {};
-        m_resolution = 0;
-        m_hasSavedViewport = false;
-        m_rendering = false;
-
-        m_resolution = std::max(resolution, 1u);
-        const auto sliceCount = cube
-            ? 6u
-            : std::clamp(cascadeCount, 1u, 4u);
-
-        D3D11_TEXTURE2D_DESC textureDescription{};
-        textureDescription.Width = m_resolution;
-        textureDescription.Height = m_resolution;
-        textureDescription.MipLevels = 1;
-        textureDescription.ArraySize = sliceCount;
-        textureDescription.Format = DXGI_FORMAT_R32_TYPELESS;
-        textureDescription.SampleDesc.Count = 1;
-        textureDescription.Usage = D3D11_USAGE_DEFAULT;
-        textureDescription.BindFlags =
-            D3D11_BIND_DEPTH_STENCIL
-            | D3D11_BIND_SHADER_RESOURCE;
-        if (cube)
-        {
-            textureDescription.MiscFlags =
-                D3D11_RESOURCE_MISC_TEXTURECUBE;
-        }
-
-        ThrowIfFailed(
-            device->CreateTexture2D(
-                &textureDescription,
-                nullptr,
-                m_texture.ReleaseAndGetAddressOf()),
-            "ID3D11Device::CreateTexture2D(shadow map)");
-
-        D3D11_DEPTH_STENCIL_VIEW_DESC depthViewDescription{};
-        depthViewDescription.Format = DXGI_FORMAT_D32_FLOAT;
-        depthViewDescription.ViewDimension =
-            D3D11_DSV_DIMENSION_TEXTURE2DARRAY;
-        depthViewDescription.Texture2DArray.ArraySize = 1;
-        m_depthStencilViews.clear();
-        m_depthStencilViews.resize(sliceCount);
-        for (std::uint32_t index = 0;
-            index < sliceCount;
-            ++index)
-        {
-            depthViewDescription.Texture2DArray.
-                FirstArraySlice = index;
-            ThrowIfFailed(
-                device->CreateDepthStencilView(
-                    m_texture.Get(),
-                    &depthViewDescription,
-                    m_depthStencilViews[index].
-                        ReleaseAndGetAddressOf()),
-                "ID3D11Device::CreateDepthStencilView(shadow cascade)");
-        }
-
-        D3D11_SHADER_RESOURCE_VIEW_DESC resourceViewDescription{};
-        resourceViewDescription.Format = DXGI_FORMAT_R32_FLOAT;
-        if (cube)
-        {
-            resourceViewDescription.ViewDimension =
-                D3D11_SRV_DIMENSION_TEXTURECUBE;
-            resourceViewDescription.TextureCube.MipLevels =
-                1;
-        }
-        else
-        {
-            resourceViewDescription.ViewDimension =
-                D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
-            resourceViewDescription.Texture2DArray.MipLevels
-                = 1;
-            resourceViewDescription.Texture2DArray.ArraySize
-                = sliceCount;
-        }
-        ThrowIfFailed(
-            device->CreateShaderResourceView(
-                m_texture.Get(),
-                &resourceViewDescription,
-                m_shaderResourceView.ReleaseAndGetAddressOf()),
-            "ID3D11Device::CreateShaderResourceView(shadow map)");
-
-        m_viewport.TopLeftX = 0.0f;
-        m_viewport.TopLeftY = 0.0f;
-        m_viewport.Width =
-            static_cast<float>(m_resolution);
-        m_viewport.Height =
-            static_cast<float>(m_resolution);
-        m_viewport.MinDepth = 0.0f;
-        m_viewport.MaxDepth = 1.0f;
+        return shadowMap.m_backendState.get();
     }
 
-    void ShadowMap::Begin(
-        ID3D11DeviceContext* context,
-        const std::uint32_t cascadeIndex)
+    void Detail::ShadowMapBackendAccess::Publish(
+        ShadowMap& shadowMap,
+        std::unique_ptr<ShadowMapBackendState> state) noexcept
     {
-        if (context == nullptr
-            || !IsValid()
-            || m_rendering
-            || cascadeIndex >= m_depthStencilViews.size())
-        {
-            return;
-        }
-
-        m_savedRenderTarget.Reset();
-        m_savedDepthStencil.Reset();
-        context->OMGetRenderTargets(
-            1,
-            m_savedRenderTarget.ReleaseAndGetAddressOf(),
-            m_savedDepthStencil.ReleaseAndGetAddressOf());
-
-        UINT viewportCount = 1;
-        context->RSGetViewports(
-            &viewportCount,
-            &m_savedViewport);
-        m_hasSavedViewport = viewportCount != 0;
-
-        // 書き込み先になり得る影SRV（t2〜t5）を全て外します。
-        ID3D11ShaderResourceView* nullShadow[]{
-            nullptr, nullptr, nullptr, nullptr };
-        context->PSSetShaderResources(2, 4, nullShadow);
-        context->OMSetRenderTargets(
-            0,
-            nullptr,
-            m_depthStencilViews[cascadeIndex].Get());
-        context->RSSetViewports(1, &m_viewport);
-        context->ClearDepthStencilView(
-            m_depthStencilViews[cascadeIndex].Get(),
-            D3D11_CLEAR_DEPTH,
-            1.0f,
-            0);
-        m_rendering = true;
+        shadowMap.m_backendState = std::move(state);
     }
 
-    void ShadowMap::End(ID3D11DeviceContext* context)
+    ShadowMap::ShadowMap() noexcept = default;
+
+    ShadowMap::~ShadowMap() noexcept = default;
+
+    GraphicsViewHandle ShadowMap::ViewHandle() const noexcept
     {
-        if (context == nullptr || !m_rendering)
-        {
-            return;
-        }
+        return m_backendState != nullptr
+            ? m_backendState->m_view
+            : GraphicsViewHandle{};
+    }
 
-        ID3D11RenderTargetView* renderTargets[]{
-            m_savedRenderTarget.Get()
-        };
-        context->OMSetRenderTargets(
-            m_savedRenderTarget != nullptr ? 1u : 0u,
-            m_savedRenderTarget != nullptr
-                ? renderTargets
-                : nullptr,
-            m_savedDepthStencil.Get());
-        if (m_hasSavedViewport)
-        {
-            context->RSSetViewports(
-                1,
-                &m_savedViewport);
-        }
+    std::uint32_t ShadowMap::Resolution() const noexcept
+    {
+        return m_backendState != nullptr
+            ? m_backendState->m_resolution
+            : 0u;
+    }
 
-        m_savedRenderTarget.Reset();
-        m_savedDepthStencil.Reset();
-        m_hasSavedViewport = false;
-        m_rendering = false;
+    std::uint32_t ShadowMap::CascadeCount() const noexcept
+    {
+        return m_backendState != nullptr
+            ? m_backendState->m_cascadeCount
+            : 0u;
+    }
+
+    bool ShadowMap::IsValid() const noexcept
+    {
+        return m_backendState != nullptr
+            && m_backendState->m_initialized
+            && m_backendState->m_view
+            && m_backendState->m_resolution > 0
+            && m_backendState->m_cascadeCount > 0;
+    }
+
+    void* ShadowMap::LegacyNativeView() const noexcept
+    {
+        const auto* const state = AsD3D11State(m_backendState.get());
+        return state != nullptr
+            ? state->ShaderResourceView()
+            : nullptr;
     }
 }

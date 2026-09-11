@@ -2,6 +2,7 @@
 
 #include "LamaPon/Core/Log.h"
 #include "LamaPon/Graphics/ClusteredLights.h"
+#include "LamaPon/Graphics/D3D11ShadowMapState.h"
 #include "LamaPon/Graphics/DebugRenderer.h"
 #include "LamaPon/Graphics/GpuProfiler.h"
 #include "LamaPon/Graphics/RenderTarget.h"
@@ -1020,14 +1021,58 @@ namespace LamaPon
                 "InitializeShadowMap requires an initialized backend.");
         }
 
-        shadowMap.Initialize(
+        auto* const previousState =
+            Detail::ShadowMapBackendAccess::Get(shadowMap);
+        auto* const previous = dynamic_cast<
+            Detail::D3D11ShadowMapState*>(previousState);
+        const bool restorePrevious =
+            previousState != nullptr && previousState->m_rendering;
+        if (restorePrevious)
+        {
+            if (previous == nullptr)
+            {
+                throw std::logic_error(
+                    "Cannot replace a shadow map while another graphics "
+                    "API is rendering it.");
+            }
+            try
+            {
+                if (ResolveShaderResourceView(previous->m_view)
+                    != previous->ShaderResourceView())
+                {
+                    throw std::invalid_argument(
+                        "Shadow map belongs to another backend.");
+                }
+            }
+            catch (const std::invalid_argument&)
+            {
+                throw std::logic_error(
+                    "Cannot replace a shadow map while it is rendering "
+                    "on another backend.");
+            }
+        }
+
+        auto state =
+            std::make_unique<Detail::D3D11ShadowMapState>();
+        state->Initialize(
             m_device.Get(),
             resolution,
             cascadeCount,
             cube);
         auto view = ImportShaderResourceViewHandle(
-            shadowMap.m_shaderResourceView.Get());
-        shadowMap.m_view = std::move(view);
+            state->ShaderResourceView());
+        state->m_view = std::move(view);
+
+        // Begin中の同一Backend mapを置換する場合も、旧描画先とviewportを
+        // 復元してから完成済みstateへ切り替えます。作成・登録に失敗した
+        // 場合はこの地点へ来ないため、旧stateはそのままEndできます。
+        if (restorePrevious)
+        {
+            previous->End(m_context.Get());
+        }
+        Detail::ShadowMapBackendAccess::Publish(
+            shadowMap,
+            std::move(state));
     }
 
     void D3D11Backend::BeginShadowMap(
@@ -1046,12 +1091,20 @@ namespace LamaPon
                 "DirectX 11 context.");
         }
 
+        auto* const state = dynamic_cast<
+            Detail::D3D11ShadowMapState*>(
+                Detail::ShadowMapBackendAccess::Get(shadowMap));
+        if (state == nullptr || !state->HasNativeResources())
+        {
+            return;
+        }
+
         try
         {
-            if (ResolveShaderResourceView(shadowMap.m_view)
-                == shadowMap.m_shaderResourceView.Get())
+            if (ResolveShaderResourceView(state->m_view)
+                == state->ShaderResourceView())
             {
-                shadowMap.Begin(m_context.Get(), cascadeIndex);
+                state->Begin(m_context.Get(), cascadeIndex);
             }
         }
         catch (const std::invalid_argument&)
@@ -1075,12 +1128,20 @@ namespace LamaPon
                 "DirectX 11 context.");
         }
 
+        auto* const state = dynamic_cast<
+            Detail::D3D11ShadowMapState*>(
+                Detail::ShadowMapBackendAccess::Get(shadowMap));
+        if (state == nullptr || !state->HasNativeResources())
+        {
+            return;
+        }
+
         try
         {
-            if (ResolveShaderResourceView(shadowMap.m_view)
-                == shadowMap.m_shaderResourceView.Get())
+            if (ResolveShaderResourceView(state->m_view)
+                == state->ShaderResourceView())
             {
-                shadowMap.End(m_context.Get());
+                state->End(m_context.Get());
             }
         }
         catch (const std::invalid_argument&)

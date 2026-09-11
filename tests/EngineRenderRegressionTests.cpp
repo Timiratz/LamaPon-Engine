@@ -867,8 +867,20 @@ int main(const int argumentCount, char** arguments)
                 "QEBAPEAUID3D11ShaderResourceView@@"
                 "AEBUTextureResourceSnapshot@2@@Z"
         };
+        constexpr std::array Api66ShadowMapSymbols{
+            "??0ShadowMap@LamaPon@@QEAA@XZ",
+            "??1ShadowMap@LamaPon@@QEAA@XZ",
+            "?ViewHandle@ShadowMap@LamaPon@@"
+                "QEBA?AVGraphicsViewHandle@2@XZ",
+            "?Resolution@ShadowMap@LamaPon@@QEBAIXZ",
+            "?CascadeCount@ShadowMap@LamaPon@@QEBAIXZ",
+            "?IsValid@ShadowMap@LamaPon@@QEBA_NXZ"
+        };
         const auto runtimeModule = GetModuleHandleW(
             L"LamaPonRuntime.dll");
+        const auto legacyShadowMapViewAddress = GetProcAddress(
+            runtimeModule,
+            LegacyShadowMapViewSymbol);
         Require(
             runtimeModule != nullptr
                 && GetProcAddress(
@@ -900,9 +912,7 @@ int main(const int argumentCount, char** arguments)
             GetProcAddress(
                 runtimeModule,
                 LegacyRenderTargetDepthViewSymbol) != nullptr
-                && GetProcAddress(
-                    runtimeModule,
-                LegacyShadowMapViewSymbol) != nullptr,
+                && legacyShadowMapViewAddress != nullptr,
             "An API 55 shadow or depth-view export alias is missing");
         Require(
             GetProcAddress(
@@ -974,12 +984,46 @@ int main(const int argumentCount, char** arguments)
                 GetProcAddress(runtimeModule, symbol) != nullptr,
                 "An API 65 D3D11 compatibility export alias is missing");
         }
+        for (const auto* const symbol : Api66ShadowMapSymbols)
+        {
+            Require(
+                GetProcAddress(runtimeModule, symbol) != nullptr,
+                "An API 66 opaque ShadowMap export is missing");
+        }
         using LegacyEnvironmentAccessor =
             LamaPon::EnvironmentRenderer* (__fastcall*)(
                 const LamaPon::GraphicsDevice*);
         const auto legacyEnvironmentAccessor =
             reinterpret_cast<LegacyEnvironmentAccessor>(
                 legacyEnvironmentAccessorAddress);
+        using LegacyShadowMapViewAccessor =
+            ID3D11ShaderResourceView* (__fastcall*)(
+                const LamaPon::ShadowMap*);
+        const auto legacyShadowMapView =
+            reinterpret_cast<LegacyShadowMapViewAccessor>(
+                legacyShadowMapViewAddress);
+
+        static_assert(
+            std::is_nothrow_default_constructible_v<
+                LamaPon::ShadowMap>);
+        static_assert(
+            std::is_nothrow_destructible_v<LamaPon::ShadowMap>);
+        static_assert(!std::is_copy_constructible_v<LamaPon::ShadowMap>);
+        static_assert(!std::is_move_constructible_v<LamaPon::ShadowMap>);
+        static_assert(
+            sizeof(LamaPon::ShadowMap) <= 16,
+            "ShadowMap leaked native backend state into its public layout");
+        Stage("shadow-map-opaque-state");
+        {
+            LamaPon::ShadowMap opaqueShadowMap;
+            Require(
+                !opaqueShadowMap.IsValid()
+                    && !opaqueShadowMap.ViewHandle()
+                    && opaqueShadowMap.Resolution() == 0u
+                    && opaqueShadowMap.CascadeCount() == 0u
+                    && legacyShadowMapView(&opaqueShadowMap) == nullptr,
+                "A default opaque ShadowMap changed its empty semantics");
+        }
 
         static_assert(
             std::is_nothrow_default_constructible_v<
@@ -2466,6 +2510,181 @@ int main(const int argumentCount, char** arguments)
                 true,
                 false
             });
+
+            // ShadowMapのnative stateは完成した単位でのみ差し替えます。
+            // 初回作成と置換のどちらが失敗しても、部分的なstateを
+            // 公開せず、Begin中の旧stateは元の描画先へ戻せます。
+            const auto verifyShadowMapTransactionalState = [&]
+            {
+                Stage("shadow-map-transactional-state");
+                LamaPon::ShadowMap transactionalShadowMap;
+                bool initialShadowCreationRejected{};
+                try
+                {
+                    foreignBackend.InitializeShadowMap(
+                        transactionalShadowMap,
+                        D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION + 1u, 1u, false);
+                }
+                catch (const std::invalid_argument&)
+                {
+                    initialShadowCreationRejected = true;
+                }
+                Require(initialShadowCreationRejected,
+                        "An oversized first ShadowMap creation was accepted");
+                Require(!transactionalShadowMap.IsValid() &&
+                            !transactionalShadowMap.ViewHandle() &&
+                            transactionalShadowMap.Resolution() == 0u &&
+                            transactionalShadowMap.CascadeCount() == 0u,
+                        "A failed first ShadowMap creation published partial "
+                        "state");
+
+                foreignBackend.InitializeShadowMap(transactionalShadowMap, 0u,
+                                                   0u, false);
+                const auto firstTransactionalShadowView =
+                    transactionalShadowMap.ViewHandle();
+                auto* const firstTransactionalNativeView =
+                    foreignBackend.ResolveShaderResourceView(
+                        firstTransactionalShadowView);
+                Require(firstTransactionalNativeView != nullptr,
+                        "The opaque ShadowMap did not publish a native view");
+                Require(legacyShadowMapView(&transactionalShadowMap) ==
+                            firstTransactionalNativeView,
+                        "The legacy ShadowMap view alias did not reach the "
+                        "opaque D3D11 state");
+                D3D11_SHADER_RESOURCE_VIEW_DESC firstShadowDescription{};
+                firstTransactionalNativeView->GetDesc(&firstShadowDescription);
+                Require(transactionalShadowMap.IsValid() &&
+                            firstTransactionalShadowView &&
+                            firstTransactionalShadowView.Kind() ==
+                                LamaPon::GraphicsViewKind::ShaderResource &&
+                            transactionalShadowMap.Resolution() == 1u &&
+                            transactionalShadowMap.CascadeCount() == 1u &&
+                            firstShadowDescription.ViewDimension ==
+                                D3D11_SRV_DIMENSION_TEXTURE2DARRAY &&
+                            firstShadowDescription.Texture2DArray.ArraySize ==
+                                1u,
+                        "The opaque ShadowMap did not publish its clamped "
+                        "metadata");
+
+                foreignBackend.BindBackBuffer();
+                auto transactionalOutput =
+                    PrefilterPipelineState::Capture(foreignBackend.Context());
+                foreignBackend.BeginShadowMap(transactionalShadowMap, 0u);
+                Microsoft::WRL::ComPtr<ID3D11RenderTargetView>
+                    activeShadowColor;
+                Microsoft::WRL::ComPtr<ID3D11DepthStencilView>
+                    activeShadowDepth;
+                foreignBackend.Context()->OMGetRenderTargets(
+                    1, activeShadowColor.ReleaseAndGetAddressOf(),
+                    activeShadowDepth.ReleaseAndGetAddressOf());
+                D3D11_VIEWPORT activeShadowViewport{};
+                UINT activeShadowViewportCount = 1;
+                foreignBackend.Context()->RSGetViewports(
+                    &activeShadowViewportCount, &activeShadowViewport);
+                Require(activeShadowColor == nullptr &&
+                            activeShadowDepth != nullptr &&
+                            activeShadowViewportCount == 1u &&
+                            activeShadowViewport.Width == 1.0f &&
+                            activeShadowViewport.Height == 1.0f,
+                        "Beginning an opaque ShadowMap did not bind its depth "
+                        "slice");
+
+                foreignBackend.InitializeShadowMap(transactionalShadowMap, 4u,
+                                                   8u, false);
+                const auto replacementShadowView =
+                    transactionalShadowMap.ViewHandle();
+                Require(
+                    transactionalOutput.Matches(foreignBackend.Context()) &&
+                        transactionalShadowMap.IsValid() &&
+                        transactionalShadowMap.Resolution() == 4u &&
+                        transactionalShadowMap.CascadeCount() == 4u &&
+                        replacementShadowView &&
+                        replacementShadowView != firstTransactionalShadowView &&
+                        foreignBackend.IsViewCurrent(
+                            firstTransactionalShadowView) &&
+                        foreignBackend.IsViewCurrent(replacementShadowView) &&
+                        foreignBackend.ResolveShaderResourceView(
+                            firstTransactionalShadowView) != nullptr,
+                    "Replacing an active ShadowMap did not restore output or "
+                    "publish one complete state");
+
+                foreignBackend.BeginShadowMap(transactionalShadowMap, 3u);
+                bool replacementShadowCreationRejected{};
+                try
+                {
+                    foreignBackend.InitializeShadowMap(
+                        transactionalShadowMap,
+                        D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION + 1u, 1u, false);
+                }
+                catch (const std::invalid_argument&)
+                {
+                    replacementShadowCreationRejected = true;
+                }
+                const bool failedReplacementPreservedState =
+                    transactionalShadowMap.IsValid() &&
+                    transactionalShadowMap.Resolution() == 4u &&
+                    transactionalShadowMap.CascadeCount() == 4u &&
+                    transactionalShadowMap.ViewHandle() ==
+                        replacementShadowView;
+                foreignBackend.EndShadowMap(transactionalShadowMap);
+                Require(
+                    replacementShadowCreationRejected &&
+                        failedReplacementPreservedState &&
+                        transactionalOutput.Matches(foreignBackend.Context()),
+                    "A failed active ShadowMap replacement changed its state "
+                    "or lost the saved output");
+                // 後段で同じHWNDのswap chainを再作成するため、back bufferを
+                // 強参照するsnapshotは検証直後に解放します。
+                transactionalOutput = {};
+
+                // 別Backendが描画中のstateは、そのBackendのcontextでEndする
+                // 必要があります。所有していないcontextへsaved viewを渡さず、
+                // 元stateを保持したまま明示的に拒否します。
+                auto& primaryActiveShadowMap = graphics.Shadows();
+                const auto primaryActiveShadowView =
+                    primaryActiveShadowMap.ViewHandle();
+                const auto primaryActiveShadowResolution =
+                    primaryActiveShadowMap.Resolution();
+                const auto primaryActiveShadowCascades =
+                    primaryActiveShadowMap.CascadeCount();
+                const auto primaryOutput = PrefilterPipelineState::Capture(
+                    D3D11Access::Context(graphics));
+                graphics.BeginShadowMap(primaryActiveShadowMap, 0u);
+                bool foreignActiveReplacementRejected{};
+                bool foreignActiveReplacementWrongException{};
+                try
+                {
+                    foreignBackend.InitializeShadowMap(primaryActiveShadowMap,
+                                                       2u, 2u, false);
+                }
+                catch (const std::logic_error&)
+                {
+                    foreignActiveReplacementRejected = true;
+                }
+                catch (...)
+                {
+                    foreignActiveReplacementWrongException = true;
+                }
+                const bool foreignReplacementPreservedState =
+                    primaryActiveShadowMap.IsValid() &&
+                    primaryActiveShadowMap.ViewHandle() ==
+                        primaryActiveShadowView &&
+                    primaryActiveShadowMap.Resolution() ==
+                        primaryActiveShadowResolution &&
+                    primaryActiveShadowMap.CascadeCount() ==
+                        primaryActiveShadowCascades &&
+                    graphics.IsGraphicsViewCurrent(primaryActiveShadowView) &&
+                    !foreignBackend.IsViewCurrent(primaryActiveShadowView);
+                graphics.EndShadowMap(primaryActiveShadowMap);
+                Require(
+                    foreignActiveReplacementRejected &&
+                        !foreignActiveReplacementWrongException &&
+                        foreignReplacementPreservedState &&
+                        primaryOutput.Matches(D3D11Access::Context(graphics)),
+                    "A foreign Backend replaced an active ShadowMap or "
+                    "restored it through the wrong context");
+            };
+
             auto invalidLitTextures = litTextures;
             const auto foreignTexture =
                 foreignBackend.CreateSolidRgba8Texture(
@@ -3315,6 +3534,8 @@ int main(const int argumentCount, char** arguments)
                     && staleNativeViewRejected
                     && !foreignBackend.IsViewCurrent(structuredHandle),
                 "A stale generic SRV crossed a backend generation boundary");
+
+            verifyShadowMapTransactionalState();
 
             // ParticleSystemから分離した共通serviceがneutral handleだけで
             // D3D11へ描画し、従来と同じ主要stateへ戻すことを固定します。
