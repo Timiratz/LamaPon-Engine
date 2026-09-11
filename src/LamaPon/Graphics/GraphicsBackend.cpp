@@ -1,6 +1,7 @@
 #include "LamaPon/Graphics/GraphicsBackend.h"
 
 #include "LamaPon/Graphics/D3D11Backend.h"
+#include "LamaPon/Graphics/D3D12Backend.h"
 
 #include <stdexcept>
 
@@ -40,13 +41,16 @@ namespace LamaPon
     std::unique_ptr<GraphicsBackend>
         CreateGraphicsBackend(const RenderingApi activeApi)
     {
-        // TODO: D3D12Backend実装後は、ここでactiveApiに応じた
-        // 具象Backendを生成する。未実装中は選択段階でD3D11へ倒す。
-        if (activeApi == RenderingApi::DirectX11)
+        switch (activeApi)
         {
+        case RenderingApi::DirectX11:
             return std::make_unique<D3D11Backend>();
+        case RenderingApi::DirectX12Experimental:
+            return std::make_unique<D3D12Backend>();
+        case RenderingApi::Auto:
+        default:
+            throw std::logic_error(
+                "The requested graphics backend is not implemented.");
         }
-        throw std::logic_error(
-            "The requested graphics backend is not implemented.");
     }
 }

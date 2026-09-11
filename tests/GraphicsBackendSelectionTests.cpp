@@ -5,7 +5,10 @@
 #include "LamaPon/Graphics/RenderTarget.h"
 #include "LamaPon/Graphics/ShadowMap.h"
 
+#include <Windows.h>
+
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <iostream>
 #include <stdexcept>
@@ -17,6 +20,77 @@
 
 namespace
 {
+    class HiddenWindow final
+    {
+    public:
+        HiddenWindow(
+            const std::uint32_t width,
+            const std::uint32_t height)
+            : m_instance(GetModuleHandleW(nullptr))
+        {
+            WNDCLASSEXW windowClass{};
+            windowClass.cbSize = sizeof(windowClass);
+            windowClass.lpfnWndProc = DefWindowProcW;
+            windowClass.hInstance = m_instance;
+            windowClass.lpszClassName = ClassName;
+            m_class = RegisterClassExW(&windowClass);
+            if (m_class == 0)
+            {
+                throw std::runtime_error(
+                    "The D3D12 WARP test window class could not be registered");
+            }
+
+            m_window = CreateWindowExW(
+                0,
+                ClassName,
+                L"LamaPonD3D12BackendTests",
+                WS_OVERLAPPEDWINDOW,
+                0,
+                0,
+                static_cast<int>(width),
+                static_cast<int>(height),
+                nullptr,
+                nullptr,
+                m_instance,
+                nullptr);
+            if (m_window == nullptr)
+            {
+                UnregisterClassW(ClassName, m_instance);
+                m_class = 0;
+                throw std::runtime_error(
+                    "The D3D12 WARP test window could not be created");
+            }
+        }
+
+        ~HiddenWindow()
+        {
+            if (m_window != nullptr)
+            {
+                DestroyWindow(m_window);
+            }
+            if (m_class != 0)
+            {
+                UnregisterClassW(ClassName, m_instance);
+            }
+        }
+
+        HiddenWindow(const HiddenWindow&) = delete;
+        HiddenWindow& operator=(const HiddenWindow&) = delete;
+
+        [[nodiscard]] HWND Get() const noexcept
+        {
+            return m_window;
+        }
+
+    private:
+        static constexpr const wchar_t* ClassName =
+            L"LamaPonGraphicsBackendSelectionD3D12Warp";
+
+        HINSTANCE m_instance{};
+        ATOM m_class{};
+        HWND m_window{};
+    };
+
     class TestGraphicsOutputState final
         : public LamaPon::GraphicsOutputState
     {
@@ -118,6 +192,52 @@ namespace
     void Require(const bool condition, const char* message)
     {
         if (!condition) throw std::runtime_error(message);
+    }
+
+    void RequireClearColor(
+        LamaPon::GraphicsBackend& backend,
+        const std::uint32_t expectedWidth,
+        const std::uint32_t expectedHeight,
+        const std::array<float, 4>& color,
+        const bool vSyncEnabled)
+    {
+        backend.BindAndClearBackBuffer(color.data());
+
+        std::uint32_t capturedWidth{};
+        std::uint32_t capturedHeight{};
+        const auto pixels = backend.CaptureBackBuffer(
+            capturedWidth,
+            capturedHeight);
+        Require(
+            capturedWidth == expectedWidth
+                && capturedHeight == expectedHeight,
+            "D3D12 back-buffer capture returned unexpected dimensions");
+        Require(
+            pixels.size()
+                == static_cast<std::size_t>(capturedWidth)
+                    * capturedHeight * 4u,
+            "D3D12 back-buffer capture returned an unexpected byte count");
+
+        std::array<int, 4> expected{};
+        for (std::size_t channel{}; channel < expected.size(); ++channel)
+        {
+            expected[channel] = static_cast<int>(std::lround(
+                color[channel] * 255.0f));
+        }
+        for (std::size_t offset{}; offset < pixels.size(); offset += 4u)
+        {
+            for (std::size_t channel{}; channel < expected.size(); ++channel)
+            {
+                Require(
+                    std::abs(
+                        static_cast<int>(pixels[offset + channel])
+                        - expected[channel]) <= 1,
+                    "D3D12 WARP did not preserve the requested clear color");
+            }
+        }
+
+        backend.DrainDebugMessages();
+        backend.Present(vSyncEnabled);
     }
 
     template <typename Exception, typename Function>
@@ -394,6 +514,172 @@ int main()
                 emptyShaderResources,
                 {}),
             "An uninitialized backend accepted pixel shader resources");
+
+        // DirectX 12はまだGraphicsDeviceの実描画経路へ選択しませんが、
+        // bootstrap backend自体はWARPでdevice / swap chain / command
+        // submissionを独立検証します。画面を表示する必要はありません。
+        {
+            constexpr std::uint32_t D3D12Width = 64u;
+            constexpr std::uint32_t D3D12Height = 48u;
+            HiddenWindow window{ D3D12Width, D3D12Height };
+            auto d3d12Backend = LamaPon::CreateGraphicsBackend(
+                LamaPon::RenderingApi::DirectX12Experimental);
+            Require(
+                d3d12Backend != nullptr
+                    && d3d12Backend->Api()
+                        == LamaPon::RenderingApi::DirectX12Experimental,
+                "The DirectX 12 factory returned an incompatible backend");
+            Require(
+                !d3d12Backend->IsInitialized()
+                    && !d3d12Backend->TearingAllowed(),
+                "A new DirectX 12 backend exposed initialized state");
+            const auto emptyD3D12Memory =
+                d3d12Backend->QueryVideoMemoryStatistics();
+            Require(
+                !emptyD3D12Memory.adapterAvailable
+                    && !emptyD3D12Memory.descriptionAvailable
+                    && !emptyD3D12Memory.localBudgetAvailable
+                    && !emptyD3D12Memory.nonLocalBudgetAvailable
+                    && emptyD3D12Memory.dedicatedBytes == 0u
+                    && emptyD3D12Memory.sharedSystemBytes == 0u,
+                "An uninitialized DirectX 12 backend reported adapter state");
+
+            const LamaPon::GraphicsBackendCreateInfo d3d12CreateInfo{
+                static_cast<void*>(window.Get()),
+                D3D12Width,
+                D3D12Height,
+                true,
+                false
+            };
+            d3d12Backend->Initialize(d3d12CreateInfo);
+            Require(
+                d3d12Backend->IsInitialized(),
+                "The DirectX 12 WARP backend did not initialize");
+            const bool tearingAllowed =
+                d3d12Backend->TearingAllowed();
+            const auto d3d12Memory =
+                d3d12Backend->QueryVideoMemoryStatistics();
+            Require(
+                d3d12Memory.adapterAvailable
+                    && d3d12Memory.descriptionAvailable,
+                "The DirectX 12 WARP adapter was not reported");
+            Require(
+                (d3d12Memory.localBudgetAvailable
+                    || (d3d12Memory.localUsageBytes == 0u
+                        && d3d12Memory.localBudgetBytes == 0u))
+                    && (d3d12Memory.nonLocalBudgetAvailable
+                        || (d3d12Memory.nonLocalUsageBytes == 0u
+                            && d3d12Memory.nonLocalBudgetBytes == 0u)),
+                "Unavailable DirectX 12 memory budgets contained values");
+
+            RequireClearColor(
+                *d3d12Backend,
+                D3D12Width,
+                D3D12Height,
+                { 0.125f, 0.375f, 0.625f, 1.0f },
+                false);
+
+            // Captureは同期を伴うため、その後はcapture無しで両方の
+            // frame allocatorを複数回再利用します。Resizeが直後の
+            // outstanding submissionを待てなければWARP/debug layerで
+            // allocator resetやResizeBuffersの事故になります。
+            constexpr std::array<std::array<float, 4>, 6> FrameColors{
+                std::array{ 0.10f, 0.20f, 0.30f, 1.0f },
+                std::array{ 0.20f, 0.30f, 0.40f, 1.0f },
+                std::array{ 0.30f, 0.40f, 0.50f, 1.0f },
+                std::array{ 0.40f, 0.50f, 0.60f, 1.0f },
+                std::array{ 0.50f, 0.60f, 0.70f, 1.0f },
+                std::array{ 0.60f, 0.70f, 0.80f, 1.0f }
+            };
+            for (std::size_t frame{}; frame < FrameColors.size(); ++frame)
+            {
+                d3d12Backend->BindAndClearBackBuffer(
+                    FrameColors[frame].data());
+                d3d12Backend->DrainDebugMessages();
+                d3d12Backend->Present(frame % 2u != 0u);
+            }
+
+            d3d12Backend->Resize(0u, D3D12Height);
+            RequireClearColor(
+                *d3d12Backend,
+                D3D12Width,
+                D3D12Height,
+                { 0.75f, 0.25f, 0.50f, 1.0f },
+                true);
+
+            constexpr std::uint32_t ResizedWidth = 37u;
+            constexpr std::uint32_t ResizedHeight = 19u;
+            d3d12Backend->Resize(ResizedWidth, ResizedHeight);
+            Require(
+                d3d12Backend->IsInitialized()
+                    && d3d12Backend->TearingAllowed() == tearingAllowed,
+                "DirectX 12 resize changed device or tearing state");
+            RequireClearColor(
+                *d3d12Backend,
+                ResizedWidth,
+                ResizedHeight,
+                { 0.80f, 0.40f, 0.20f, 1.0f },
+                false);
+            // 同じ寸法のResizeもback-buffer参照やallocator状態を壊しません。
+            d3d12Backend->Resize(ResizedWidth, ResizedHeight);
+            RequireClearColor(
+                *d3d12Backend,
+                ResizedWidth,
+                ResizedHeight,
+                { 0.20f, 0.70f, 0.35f, 1.0f },
+                true);
+
+            LamaPon::RenderTarget unsupportedTarget;
+            RequireThrowsExactly<std::logic_error>(
+                [&]
+                {
+                    d3d12Backend->ResizeOffscreenTarget(
+                        unsupportedTarget,
+                        4u,
+                        4u);
+                },
+                "The DirectX 12 bootstrap silently accepted an unsupported "
+                "offscreen operation");
+
+            d3d12Backend->PrepareForResourceRelease();
+            d3d12Backend->PrepareForResourceRelease();
+            Require(
+                d3d12Backend->IsInitialized(),
+                "Preparing DirectX 12 resources unexpectedly shut down the backend");
+            d3d12Backend->Shutdown();
+            d3d12Backend->Shutdown();
+            Require(
+                !d3d12Backend->IsInitialized()
+                    && !d3d12Backend->TearingAllowed(),
+                "DirectX 12 shutdown was not idempotent");
+            const auto shutdownD3D12Memory =
+                d3d12Backend->QueryVideoMemoryStatistics();
+            Require(
+                !shutdownD3D12Memory.adapterAvailable
+                    && !shutdownD3D12Memory.descriptionAvailable,
+                "DirectX 12 shutdown retained adapter diagnostics");
+
+            constexpr std::uint32_t ReinitializedWidth = 23u;
+            constexpr std::uint32_t ReinitializedHeight = 11u;
+            d3d12Backend->Initialize({
+                static_cast<void*>(window.Get()),
+                ReinitializedWidth,
+                ReinitializedHeight,
+                true,
+                false
+            });
+            Require(
+                d3d12Backend->IsInitialized(),
+                "The DirectX 12 backend could not reinitialize after shutdown");
+            RequireClearColor(
+                *d3d12Backend,
+                ReinitializedWidth,
+                ReinitializedHeight,
+                { 0.05f, 0.45f, 0.85f, 1.0f },
+                false);
+            d3d12Backend->PrepareForResourceRelease();
+            d3d12Backend->Shutdown();
+        }
 
         RequireThrowsExactly<std::invalid_argument>(
             []

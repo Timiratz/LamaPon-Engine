@@ -294,6 +294,8 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Graphics/GraphicsDeviceResourceLeaseState.h
     src/LamaPon/Graphics/D3D11Backend.cpp
     src/LamaPon/Graphics/D3D11Backend.h
+    src/LamaPon/Graphics/D3D12Backend.cpp
+    src/LamaPon/Graphics/D3D12Backend.h
     src/LamaPon/Graphics/D3D11ClusteredLightsState.cpp
     src/LamaPon/Graphics/D3D11ClusteredLightsState.h
     src/LamaPon/Graphics/D3D11RenderServices.cpp
@@ -569,6 +571,7 @@ target_link_libraries(LamaPonRuntime
         bcrypt
         dbghelp
         d3d11
+        d3d12
         d3dcompiler
         dxgi
         dxguid
@@ -960,6 +963,9 @@ if(BUILD_TESTING)
             $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
         add_test(NAME ${test_name}Isolation COMMAND LamaPon${test_name}Tests)
     endforeach()
+    set_tests_properties(GraphicsBackendSelectionIsolation PROPERTIES
+        LABELS "graphics"
+        TIMEOUT 60)
     add_executable(LamaPonAudioOggProbe
         tests/AudioOggProbe.cpp
     )
@@ -1826,6 +1832,7 @@ install(
         PATTERN "D3D11ClusteredLightsState.h" EXCLUDE
         PATTERN "D3D11RenderTargetState.h" EXCLUDE
         PATTERN "D3D11ShadowMapState.h" EXCLUDE
+        PATTERN "D3D12Backend.h" EXCLUDE
         PATTERN "GraphicsRenderServices.h" EXCLUDE
         PATTERN "GraphicsDeviceResourceLeaseState.h" EXCLUDE
         PATTERN "GraphicsDeviceShaderState.h" EXCLUDE

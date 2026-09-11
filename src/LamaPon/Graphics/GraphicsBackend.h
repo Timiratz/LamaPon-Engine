@@ -327,8 +327,8 @@ namespace LamaPon
             const std::filesystem::path& shaderPath) = 0;
     };
 
-    // activeApiはSelectGraphicsBackendで解決済みの値を渡します。
-    // 現段階で生成できる具象BackendはDirectX 11だけです。
+    // 通常起動ではSelectGraphicsBackendで解決済みの値を渡します。
+    // DirectX 12 Experimentalは段階実装中の内部Backendも生成できます。
     [[nodiscard]] std::unique_ptr<GraphicsBackend>
         CreateGraphicsBackend(RenderingApi activeApi);
 }
