@@ -514,6 +514,7 @@ namespace LamaPon
         void DrawProjectSettingsInputSection();
         void DrawProjectSettingsScriptingSection();
         void DrawProjectSettingsBuildSection();
+        void DrawProjectSettingsOnlineSection();
         [[nodiscard]] bool SaveProjectSettingsDraft();
         void BrowseForScriptEditor();
         [[nodiscard]] std::filesystem::path ProjectSettingsPath() const;
@@ -761,6 +762,12 @@ namespace LamaPon
         std::array<char, 512> m_projectGameIconBuffer{};
         std::array<int, 2> m_projectWindowSize{ 1280, 720 };
         bool m_projectSplashScreenDraft{ true };
+        OnlineProjectSettings m_projectOnlineDraft;
+        std::array<char, 2049>
+            m_projectOnlineServiceBaseUrlBuffer{};
+        std::array<char, 129> m_projectOnlineGameIdBuffer{};
+        std::array<char, 65>
+            m_projectOnlineEnvironmentIdBuffer{};
         // プロジェクト設定で選択中のカテゴリー（0=ゲーム）。
         int m_projectSettingsCategory{};
         std::optional<GameExportTarget>

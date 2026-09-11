@@ -8,6 +8,7 @@
 #include <fstream>
 #include <stdexcept>
 #include <string_view>
+#include <utility>
 
 namespace
 {
@@ -66,6 +67,22 @@ int WINAPI wWinMain(
             settings.gameName);
 
         application.Initialize(instance);
+        // 無人の配布検証では外部サービスへ接続しません。通常起動時だけ、
+        // project.jsonから書き出された公開接続情報を適用します。
+        if (!validateStartup && settings.online.enabled)
+        {
+            LamaPon::OnlineServiceConfiguration online;
+            online.serviceBaseUrl =
+                settings.online.serviceBaseUrl;
+            online.allowInsecureLoopback =
+                settings.online.allowInsecureLoopback;
+            online.gameId = settings.online.gameId;
+            online.environmentId =
+                settings.online.environmentId;
+            online.openAuthorizationBrowser =
+                settings.online.openAuthorizationBrowser;
+            application.Online().Configure(std::move(online));
+        }
         // Game Moduleが存在するのに互換性などで読めなかった場合、Sceneを
         // 続けて表示すると「背景だけで止まった」ように見えます。配布ゲーム
         // では起動を止め、既にApplicationが記録した具体的な理由を画面へ
@@ -94,6 +111,14 @@ int WINAPI wWinMain(
         {
             // 配布物を別プロセスで検証するための無人実行です。
             // DLL・暗号鍵・シーンを実際に読み、失敗は終了コードへ返します。
+            // オンライン設定が有効な配布物でも、検証プロセスは認証情報を
+            // 読まず外部通信を始めないことを状態として固定します。
+            if (application.Online().State()
+                != LamaPon::OnlineAccountState::Unconfigured)
+            {
+                throw std::runtime_error(
+                    "Startup validation unexpectedly configured online services.");
+            }
             ShowWindow(application.WindowHandle(), SW_HIDE);
             auto& scene = application.ActiveScene();
             if (!scene.Scenes().RequestLoad(settings.startupScene)

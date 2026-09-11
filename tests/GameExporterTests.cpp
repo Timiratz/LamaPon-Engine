@@ -314,6 +314,12 @@ int main()
                 }
             }
         };
+        projectSettings.online.enabled = true;
+        projectSettings.online.serviceBaseUrl =
+            "https://online.example.test/v1";
+        projectSettings.online.gameId = "com.example.export-test";
+        projectSettings.online.environmentId = "production";
+        projectSettings.online.openAuthorizationBrowser = false;
 
         // 書き出し時にシェーダーが事前コンパイルされることを見るため、
         // 本物としてコンパイルできるHLSLを1本置きます。#includeも
@@ -778,6 +784,26 @@ int main()
             settings.at("gameName").get<std::string>()
                 == "日本語ゲーム",
             "Game name was not exported.");
+        const auto& onlineSettings = settings.at("online");
+        Require(
+            onlineSettings.size() == 6
+                && onlineSettings.at("enabled").get<bool>()
+                && onlineSettings.at("serviceBaseUrl")
+                    .get<std::string>()
+                    == projectSettings.online.serviceBaseUrl
+                && onlineSettings.at("gameId")
+                    .get<std::string>()
+                    == projectSettings.online.gameId
+                && onlineSettings.at("environmentId")
+                    .get<std::string>() == "production"
+                && !onlineSettings.at("allowInsecureLoopback")
+                    .get<bool>()
+                && !onlineSettings.at("openAuthorizationBrowser")
+                    .get<bool>()
+                && !onlineSettings.contains("client_secret")
+                && !onlineSettings.contains("accessToken")
+                && !onlineSettings.contains("refreshToken"),
+            "Only public online connection settings may be exported.");
         Require(
             settings.at("window").at("width").get<int>()
                 == 1600
@@ -828,7 +854,17 @@ int main()
                 && loadedSettings.inputActions[0]
                     .bindings[0].control
                     == LamaPon::InputControl::
-                        KeyboardLeftShift,
+                        KeyboardLeftShift
+                && loadedSettings.online.enabled
+                && loadedSettings.online.serviceBaseUrl
+                    == projectSettings.online.serviceBaseUrl
+                && loadedSettings.online.gameId
+                    == projectSettings.online.gameId
+                && loadedSettings.online.environmentId
+                    == "production"
+                && !loadedSettings.online.allowInsecureLoopback
+                && !loadedSettings.online
+                    .openAuthorizationBrowser,
             "Exported project settings did not round-trip.");
 
         bool invalidSettingsRejected = false;
@@ -846,6 +882,43 @@ int main()
         Require(
             invalidSettingsRejected,
             "Invalid project settings were accepted.");
+
+        // Editorでlocalhostを使う明示的な開発設定は有効ですが、同じ
+        // スイッチを有効なまま配布物へ入れることはできません。
+        {
+            auto developmentSettings = projectSettings;
+            developmentSettings.online.serviceBaseUrl =
+                "http://localhost:8090";
+            developmentSettings.online.allowInsecureLoopback = true;
+            LamaPon::ValidateProjectSettings(
+                developmentSettings,
+                LamaPon::ProjectSettingsFileType::Project);
+
+            bool rejected = false;
+            try
+            {
+                static_cast<void>(
+                    LamaPon::ExportGamePackage(
+                        LamaPon::GameExportOptions{
+                            runtimeDirectory,
+                            assetDirectory,
+                            root / "dist" / "InsecureOnline",
+                            developmentSettings
+                        }));
+            }
+            catch (const std::exception&)
+            {
+                rejected = true;
+            }
+            Require(
+                rejected,
+                "Game export accepted an enabled insecure-loopback"
+                " online setting.");
+            Require(
+                !std::filesystem::exists(
+                    root / "dist" / "InsecureOnline"),
+                "Rejected online settings created a partial export.");
+        }
 
         invalidSettingsRejected = false;
         try

@@ -307,6 +307,7 @@ class WebExportToolTests(unittest.TestCase):
                 web["scenePath"],
                 "/assets/scenes/Main.scene.json",
             )
+
             self.assertEqual(
                 web["assetIncludePaths"],
                 ["scenes", "textures"],
@@ -328,6 +329,155 @@ class WebExportToolTests(unittest.TestCase):
             self.assertEqual(
                 json.loads(project_path.read_text(encoding="utf-8")),
                 source_document,
+            )
+
+    def test_lamapon_web_export_validates_online_settings_before_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project_path = root / ".lamapon" / "project.json"
+            project_path.parent.mkdir()
+            valid = {
+                "enabled": True,
+                "serviceBaseUrl": "https://online.example.test",
+                "gameId": "com.example.web-test",
+                "environmentId": "production",
+                "allowInsecureLoopback": False,
+                "openAuthorizationBrowser": True,
+            }
+            invalid_cases = [
+                ("not-object", None),
+                ("enabled-type", {**valid, "enabled": 1}),
+                ("url-type", {**valid, "serviceBaseUrl": False}),
+                ("game-type", {**valid, "gameId": 7}),
+                ("environment-type", {**valid, "environmentId": []}),
+                ("insecure-type", {
+                    **valid, "allowInsecureLoopback": "true",
+                }),
+                ("browser-type", {
+                    **valid, "openAuthorizationBrowser": 1,
+                }),
+                ("missing-url", {**valid, "serviceBaseUrl": ""}),
+                ("missing-game", {**valid, "gameId": ""}),
+                ("missing-environment", {
+                    **valid, "environmentId": "",
+                }),
+                ("http-remote", {
+                    **valid,
+                    "serviceBaseUrl": "http://example.test",
+                }),
+                ("http-loopback", {
+                    **valid,
+                    "serviceBaseUrl": "http://localhost:8080",
+                    "allowInsecureLoopback": True,
+                }),
+                ("https-development-switch", {
+                    **valid,
+                    "allowInsecureLoopback": True,
+                }),
+                ("disabled-http-loopback", {
+                    **valid,
+                    "enabled": False,
+                    "serviceBaseUrl": "http://127.0.0.1:8080",
+                    "allowInsecureLoopback": True,
+                }),
+                ("url-userinfo", {
+                    **valid,
+                    "serviceBaseUrl": "https://user@example.test",
+                }),
+                ("url-query", {
+                    **valid,
+                    "serviceBaseUrl": "https://example.test/api?mode=1",
+                }),
+                ("url-fragment", {
+                    **valid,
+                    "serviceBaseUrl": "https://example.test/api#part",
+                }),
+                ("url-control", {
+                    **valid,
+                    "serviceBaseUrl": "https://example.test/\rheader",
+                }),
+                ("url-empty-authority", {
+                    **valid,
+                    "serviceBaseUrl": "https:///api",
+                }),
+                ("url-too-long", {
+                    **valid,
+                    "serviceBaseUrl": "https://" + "a" * 2041,
+                }),
+                ("game-characters", {**valid, "gameId": "bad/game"}),
+                ("game-non-ascii", {**valid, "gameId": "ゲーム"}),
+                ("game-too-long", {**valid, "gameId": "g" * 129}),
+                ("environment-characters", {
+                    **valid, "environmentId": "bad environment",
+                }),
+                ("environment-too-long", {
+                    **valid, "environmentId": "e" * 65,
+                }),
+            ]
+
+            for name, online in invalid_cases:
+                with self.subTest(name=name):
+                    project_path.write_text(
+                        json.dumps({
+                            "format": "LamaPonProject",
+                            "online": online,
+                        }),
+                        encoding="utf-8",
+                    )
+                    output = root / "outputs" / name
+                    with mock.patch.object(sys, "argv", [
+                        str(TOOL_PATH),
+                        str(project_path),
+                        "--output",
+                        str(output),
+                        "--dry-run",
+                    ]):
+                        with self.assertRaises(EXPORT_WEB.ExportError):
+                            EXPORT_WEB.main()
+                    self.assertFalse(
+                        output.exists(),
+                        "invalid online settings created Web output",
+                    )
+
+    def test_lamapon_web_online_settings_drop_secrets_and_normalize_url(self):
+        with tempfile.TemporaryDirectory() as directory:
+            project_path = Path(directory) / ".lamapon" / "project.json"
+            project_path.parent.mkdir()
+            online = {
+                "enabled": True,
+                "serviceBaseUrl": "https://online.example.test/api///",
+                "gameId": "com.example.web-test",
+                "environmentId": "staging_2",
+                "allowInsecureLoopback": False,
+                "openAuthorizationBrowser": False,
+                "client_secret": "must-not-ship",
+                "accessToken": "must-not-ship",
+                "refreshToken": "must-not-ship",
+            }
+            project_path.write_text(
+                json.dumps({
+                    "format": "LamaPonProject",
+                    "online": online,
+                }),
+                encoding="utf-8",
+            )
+
+            _, loaded = EXPORT_WEB.load_project(project_path)
+
+            self.assertEqual(
+                set(loaded["online"]),
+                {
+                    "enabled",
+                    "serviceBaseUrl",
+                    "gameId",
+                    "environmentId",
+                    "allowInsecureLoopback",
+                    "openAuthorizationBrowser",
+                },
+            )
+            self.assertEqual(
+                loaded["online"]["serviceBaseUrl"],
+                "https://online.example.test/api",
             )
 
     def test_portable_target_compiles_original_sources_and_stages_assets(self):

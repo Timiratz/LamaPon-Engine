@@ -695,7 +695,12 @@ namespace LamaPon
                 "Export directory cannot contain the runtime directory",
                 outputDirectory);
         }
-        ValidateProjectSettings(options.projectSettings);
+        // 開発用HTTP loopback許可を含むオンライン設定は、配布物を
+        // 作り始める前に拒否します。staging作成後まで遅らせると、
+        // 長いシェーダー処理を終えてから失敗してしまいます。
+        ValidateProjectSettings(
+            options.projectSettings,
+            ProjectSettingsFileType::GamePackage);
 
         const auto gameExecutable =
             runtimeDirectory / L"LamaPonGame.exe";

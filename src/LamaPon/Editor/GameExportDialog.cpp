@@ -63,6 +63,11 @@ namespace LamaPon
             m_success.clear();
             m_completedOutput.clear();
             if (m_path[0] == '\0') throw std::runtime_error("出力先フォルダーを指定してください。");
+            // Windows/Webのどちらも配布物です。ローカル開発用HTTPを
+            // 有効なオンライン設定と一緒に外へ出しません。
+            ValidateProjectSettings(
+                context.settings,
+                ProjectSettingsFileType::GamePackage);
             context.prepareScene();
             if (m_target == GameExportTarget::Web)
             {

@@ -411,6 +411,24 @@ int WINAPI wWinMain(
             projectSettings.gameName);
 
         application.Initialize(instance);
+        // セーフモードと自動UI検証では、保存済みセッションの復元を含む
+        // 外部通信を開始しません。通常のEditor起動だけで有効化します。
+        if (!safeMode
+            && !unattended
+            && projectSettings.online.enabled)
+        {
+            LamaPon::OnlineServiceConfiguration online;
+            online.serviceBaseUrl =
+                projectSettings.online.serviceBaseUrl;
+            online.allowInsecureLoopback =
+                projectSettings.online.allowInsecureLoopback;
+            online.gameId = projectSettings.online.gameId;
+            online.environmentId =
+                projectSettings.online.environmentId;
+            online.openAuthorizationBrowser =
+                projectSettings.online.openAuthorizationBrowser;
+            application.Online().Configure(std::move(online));
+        }
         application.Graphics().SetGraphicsSettings(
             projectSettings.graphics);
         application.Input().SetActions(

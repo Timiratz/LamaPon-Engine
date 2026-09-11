@@ -40,6 +40,21 @@ namespace LamaPon
         GamePackage
     };
 
+    // プロジェクトへ保存してよいオンライン接続設定です。
+    // Discordのclient_secretやaccess/refresh tokenはゲームへ置かず、
+    // serviceBaseUrlで指定したLamaPon用バックエンドだけが保持します。
+    struct OnlineProjectSettings final
+    {
+        bool enabled{};
+        std::string serviceBaseUrl;
+        std::string gameId;
+        std::string environmentId{ "production" };
+        // ローカル開発用です。配布用GamePackageでは有効なオンライン
+        // 設定と一緒に保存できません。
+        bool allowInsecureLoopback{};
+        bool openAuthorizationBrowser{ true };
+    };
+
     struct ProjectSettings final
     {
         std::string gameName{ "LamaPon Game" };
@@ -97,10 +112,18 @@ namespace LamaPon
         PhysicsSettings physics;
         // 最初のシーンを読み込んでいる間、LamaPonのロゴを表示します。
         bool splashScreenEnabled{ true };
+        // ABIを保つため、新しい設定は必ず末尾へ追加します。
+        OnlineProjectSettings online;
     };
 
     void ValidateProjectSettings(
         const ProjectSettings& settings);
+
+    // 保存先固有の制約も検証します。GamePackageでは、オンラインを
+    // 有効にしたままHTTP loopback許可を配布することを拒否します。
+    void ValidateProjectSettings(
+        const ProjectSettings& settings,
+        ProjectSettingsFileType fileType);
 
     [[nodiscard]] ProjectSettings LoadProjectSettings(
         const std::filesystem::path& path);

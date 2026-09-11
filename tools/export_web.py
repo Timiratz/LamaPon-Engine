@@ -471,6 +471,165 @@ def lamapon_project_root(project_path: Path, project: dict[str, Any]) -> Path:
     return project_path.parent.resolve()
 
 
+def _online_url_authority(value: str, scheme: str) -> str:
+    if not value.startswith(scheme):
+        return ""
+    begin = len(scheme)
+    ends = [
+        value.find(marker, begin)
+        for marker in "/?#"
+        if value.find(marker, begin) >= 0
+    ]
+    end = min(ends) if ends else len(value)
+    return value[begin:end]
+
+
+def _is_online_loopback_url(value: str) -> bool:
+    authority = _online_url_authority(value, "http://")
+    for host in ("127.0.0.1", "localhost", "[::1]"):
+        if authority == host:
+            return True
+        if authority.startswith(f"{host}:"):
+            port = authority[len(host) + 1:]
+            if port and port.isascii() and port.isdigit():
+                return True
+    return False
+
+
+def _normalize_online_service_base_url(
+    value: str,
+    allow_insecure_loopback: bool,
+) -> str:
+    value = value.rstrip("/")
+    secure = value.startswith("https://")
+    allowed_loopback = (
+        allow_insecure_loopback and _is_online_loopback_url(value)
+    )
+    authority = _online_url_authority(
+        value,
+        "https://" if secure else "http://",
+    )
+    try:
+        byte_length = len(value.encode("utf-8"))
+    except UnicodeEncodeError as error:
+        raise ExportError(
+            "Online service URL must be valid UTF-8 text."
+        ) from error
+    if (
+        (not secure and not allowed_loopback)
+        or not authority
+        or "@" in authority
+        or byte_length > 2048
+        or "?" in value
+        or "#" in value
+        or any(ord(character) <= 0x20 or ord(character) == 0x7F
+               for character in value)
+    ):
+        raise ExportError(
+            "Online service URL must be an HTTPS base URL without "
+            "userinfo, query, fragment, or control characters."
+        )
+    return value
+
+
+def _is_safe_online_namespace(value: str, maximum_bytes: int) -> bool:
+    return (
+        bool(value)
+        and len(value) <= maximum_bytes
+        and value.isascii()
+        and all(character.isalnum() or character in "._-"
+                for character in value)
+    )
+
+
+def validate_lamapon_online_for_web(project: dict[str, Any]) -> None:
+    if "online" not in project:
+        return
+    online = project["online"]
+    if not isinstance(online, dict):
+        raise ExportError(
+            "LamaPonProject online settings must be an object."
+        )
+
+    defaults: dict[str, Any] = {
+        "enabled": False,
+        "serviceBaseUrl": "",
+        "gameId": "",
+        "environmentId": "production",
+        "allowInsecureLoopback": False,
+        "openAuthorizationBrowser": True,
+    }
+    expected_types = {
+        "enabled": bool,
+        "serviceBaseUrl": str,
+        "gameId": str,
+        "environmentId": str,
+        "allowInsecureLoopback": bool,
+        "openAuthorizationBrowser": bool,
+    }
+    normalized = {
+        name: online.get(name, default)
+        for name, default in defaults.items()
+    }
+    for name, expected in expected_types.items():
+        if type(normalized[name]) is not expected:
+            raise ExportError(
+                f"LamaPonProject online.{name} has an invalid type."
+            )
+
+    enabled = normalized["enabled"]
+    service_base_url = normalized["serviceBaseUrl"]
+    game_id = normalized["gameId"]
+    environment_id = normalized["environmentId"]
+    allow_insecure = normalized["allowInsecureLoopback"]
+    if enabled and not service_base_url:
+        raise ExportError(
+            "Enabled online services require a service URL."
+        )
+    if enabled and not game_id:
+        raise ExportError(
+            "Enabled online services require a game ID."
+        )
+    if enabled and not environment_id:
+        raise ExportError(
+            "Enabled online services require an environment ID."
+        )
+    if enabled and allow_insecure:
+        raise ExportError(
+            "Web export cannot enable online services while allowing "
+            "insecure loopback HTTP."
+        )
+    if service_base_url:
+        service_base_url = _normalize_online_service_base_url(
+            service_base_url,
+            allow_insecure,
+        )
+        # Webは配布物なので、Projectで明示的に許可したlocalhostも
+        # パッケージへ持ち出しません。
+        if not service_base_url.startswith("https://"):
+            raise ExportError(
+                "Web export cannot use insecure loopback HTTP."
+            )
+        normalized["serviceBaseUrl"] = service_base_url
+    if game_id and not _is_safe_online_namespace(game_id, 128):
+        raise ExportError(
+            "Online game ID must use 1 to 128 ASCII letters, digits, "
+            "'.', '_', or '-'."
+        )
+    if environment_id and not _is_safe_online_namespace(
+        environment_id,
+        64,
+    ):
+        raise ExportError(
+            "Online environment ID must use 1 to 64 ASCII letters, "
+            "digits, '.', '_', or '-'."
+        )
+
+    # C++のGamePackage保存と同様に、許可した6項目だけを後段へ渡し、
+    # 手編集で混入したclient_secretやtokenをWeb出力へ残しません。
+    project["online"] = normalized
+
+
 def load_project(project_path: Path) -> tuple[Path, dict[str, Any]]:
     if not project_path.is_file():
         raise ExportError(f"Project file was not found: {project_path}")
@@ -483,6 +642,8 @@ def load_project(project_path: Path) -> tuple[Path, dict[str, Any]]:
         ) from error
     if not isinstance(project, dict):
         raise ExportError("The project root must be a JSON object.")
+    if is_lamapon_project(project_path, project):
+        validate_lamapon_online_for_web(project)
     return project_path.parent, project
 
 

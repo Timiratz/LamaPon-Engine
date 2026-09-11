@@ -2,6 +2,7 @@
 
 #include "LamaPon/Core/DocumentMigration.h"
 #include "LamaPon/Core/PathUtils.h"
+#include "LamaPon/Online/OnlineHttpValidation.h"
 
 #include <nlohmann/json.hpp>
 
@@ -189,6 +190,52 @@ namespace LamaPon
             }
         }
         ValidateInputActions(settings.inputActions);
+
+        if (!settings.online.serviceBaseUrl.empty())
+        {
+            static_cast<void>(
+                Detail::NormalizeOnlineServiceBaseUrl(
+                    settings.online.serviceBaseUrl,
+                    settings.online.allowInsecureLoopback));
+        }
+        if (!settings.online.gameId.empty()
+            && !Detail::IsSafeOnlineNamespaceId(
+                settings.online.gameId,
+                128))
+        {
+            throw std::invalid_argument(
+                "Online game ID must use 1 to 128 ASCII letters, digits, '.', '_', or '-'.");
+        }
+        if (!settings.online.environmentId.empty()
+            && !Detail::IsSafeOnlineNamespaceId(
+                settings.online.environmentId,
+                64))
+        {
+            throw std::invalid_argument(
+                "Online environment ID must use 1 to 64 ASCII letters, digits, '.', '_', or '-'.");
+        }
+        if (settings.online.enabled
+            && (settings.online.serviceBaseUrl.empty()
+                || settings.online.gameId.empty()
+                || settings.online.environmentId.empty()))
+        {
+            throw std::invalid_argument(
+                "Enabled online services require a service URL, game ID, and environment ID.");
+        }
+    }
+
+    void ValidateProjectSettings(
+        const ProjectSettings& settings,
+        const ProjectSettingsFileType fileType)
+    {
+        ValidateProjectSettings(settings);
+        if (fileType == ProjectSettingsFileType::GamePackage
+            && settings.online.enabled
+            && settings.online.allowInsecureLoopback)
+        {
+            throw std::invalid_argument(
+                "An exported game cannot enable online services while allowing insecure loopback HTTP.");
+        }
     }
 
     ProjectSettings LoadProjectSettings(
@@ -250,6 +297,33 @@ namespace LamaPon
             document.value(
                 "inspectorDecimals",
                 settings.inspectorDecimals);
+        if (const auto online = document.find("online");
+            online != document.end())
+        {
+            if (!online->is_object())
+            {
+                throw std::runtime_error(
+                    "Online settings must be a JSON object.");
+            }
+            settings.online.enabled = online->value(
+                "enabled",
+                settings.online.enabled);
+            settings.online.serviceBaseUrl = online->value(
+                "serviceBaseUrl",
+                settings.online.serviceBaseUrl);
+            settings.online.gameId = online->value(
+                "gameId",
+                settings.online.gameId);
+            settings.online.environmentId = online->value(
+                "environmentId",
+                settings.online.environmentId);
+            settings.online.allowInsecureLoopback = online->value(
+                "allowInsecureLoopback",
+                settings.online.allowInsecureLoopback);
+            settings.online.openAuthorizationBrowser = online->value(
+                "openAuthorizationBrowser",
+                settings.online.openAuthorizationBrowser);
+        }
         if (const auto graphics = document.find("graphics");
             graphics != document.end()
             && graphics->is_object())
@@ -532,7 +606,12 @@ namespace LamaPon
                     std::move(action));
             }
         }
-        ValidateProjectSettings(settings);
+        const auto fileType = document.value(
+            "format",
+            std::string{}) == "LamaPonGame"
+            ? ProjectSettingsFileType::GamePackage
+            : ProjectSettingsFileType::Project;
+        ValidateProjectSettings(settings, fileType);
         return settings;
     }
 
@@ -541,7 +620,7 @@ namespace LamaPon
         const ProjectSettings& settings,
         const ProjectSettingsFileType fileType)
     {
-        ValidateProjectSettings(settings);
+        ValidateProjectSettings(settings, fileType);
         if (!path.parent_path().empty())
         {
             std::filesystem::create_directories(
@@ -613,6 +692,29 @@ namespace LamaPon
             {
                 "splashScreenEnabled",
                 settings.splashScreenEnabled
+            },
+            {
+                "online",
+                {
+                    { "enabled", settings.online.enabled },
+                    {
+                        "serviceBaseUrl",
+                        settings.online.serviceBaseUrl
+                    },
+                    { "gameId", settings.online.gameId },
+                    {
+                        "environmentId",
+                        settings.online.environmentId
+                    },
+                    {
+                        "allowInsecureLoopback",
+                        settings.online.allowInsecureLoopback
+                    },
+                    {
+                        "openAuthorizationBrowser",
+                        settings.online.openAuthorizationBrowser
+                    }
+                }
             },
             {
                 "graphics",

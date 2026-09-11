@@ -343,6 +343,22 @@ namespace LamaPon
         m_projectInspectorDecimalsDraft =
             static_cast<int>(
                 m_projectSettings.inspectorDecimals);
+        m_projectOnlineDraft = m_projectSettings.online;
+        strncpy_s(
+            m_projectOnlineServiceBaseUrlBuffer.data(),
+            m_projectOnlineServiceBaseUrlBuffer.size(),
+            m_projectSettings.online.serviceBaseUrl.c_str(),
+            _TRUNCATE);
+        strncpy_s(
+            m_projectOnlineGameIdBuffer.data(),
+            m_projectOnlineGameIdBuffer.size(),
+            m_projectSettings.online.gameId.c_str(),
+            _TRUNCATE);
+        strncpy_s(
+            m_projectOnlineEnvironmentIdBuffer.data(),
+            m_projectOnlineEnvironmentIdBuffer.size(),
+            m_projectSettings.online.environmentId.c_str(),
+            _TRUNCATE);
         // ダイアログを開くたびに検出し直すことで、ダイアログを
         // 開いたまま新しくエディターをインストールした場合にも
         // 対応します（頻繁に呼ばれる処理ではないため許容範囲）。
@@ -496,6 +512,67 @@ namespace LamaPon
             "既定の1は「0.0」表示で、ざっと確認するのに読みやすい\n"
             "桁数です。表示だけを丸めるので、入力した値はそのまま\n"
             "保持されます。");
+    }
+
+    void EditorLayer::DrawProjectSettingsOnlineSection()
+    {
+        ImGui::TextUnformatted("オンライン");
+        ImGui::Separator();
+        ImGui::Checkbox(
+            "Discordアカウント連携を有効にする",
+            &m_projectOnlineDraft.enabled);
+        ImGui::TextWrapped(
+            "Discordログインとクラウドセーブには、ゲームから直接Discordへ秘密情報を送るのではなく、認証と保存を担当するLamaPon用バックエンドが必要です。");
+        ImGui::Spacing();
+
+        ImGui::SetNextItemWidth(520.0f);
+        ImGui::InputText(
+            "サービスURL",
+            m_projectOnlineServiceBaseUrlBuffer.data(),
+            m_projectOnlineServiceBaseUrlBuffer.size());
+        ImGui::TextDisabled(
+            "例: https://online.example.com （末尾の / は省略可）");
+
+        ImGui::SetNextItemWidth(360.0f);
+        ImGui::InputText(
+            "ゲームID",
+            m_projectOnlineGameIdBuffer.data(),
+            m_projectOnlineGameIdBuffer.size());
+        ImGui::TextDisabled(
+            "名前を変えても変わらないID。英数字と . _ - を使用できます。\n"
+            "例: com.example.my-game");
+
+        ImGui::SetNextItemWidth(240.0f);
+        ImGui::InputText(
+            "環境ID",
+            m_projectOnlineEnvironmentIdBuffer.data(),
+            m_projectOnlineEnvironmentIdBuffer.size());
+        ImGui::TextDisabled(
+            "production / staging など。環境ごとにアカウントとセーブを分離します。");
+
+        ImGui::Checkbox(
+            "ログイン時に既定ブラウザーを開く",
+            &m_projectOnlineDraft.openAuthorizationBrowser);
+        ImGui::Checkbox(
+            "ローカル開発用HTTPを許可",
+            &m_projectOnlineDraft.allowInsecureLoopback);
+        ImGui::PushStyleColor(
+            ImGuiCol_Text,
+            ImVec4{ 1.0f, 0.65f, 0.25f, 1.0f });
+        ImGui::TextWrapped(
+            "HTTPは127.0.0.1 / localhost / [::1]だけに制限され、オンラインを有効にした配布ビルドでは拒否されます。");
+        ImGui::PopStyleColor();
+
+        ImGui::Spacing();
+        ImGui::SeparatorText("セキュリティ");
+        ImGui::PushStyleColor(
+            ImGuiCol_Text,
+            ImVec4{ 1.0f, 0.45f, 0.35f, 1.0f });
+        ImGui::TextWrapped(
+            "Discord client_secret、access token、refresh tokenをここやproject.jsonへ置かないでください。");
+        ImGui::PopStyleColor();
+        ImGui::TextWrapped(
+            "client_secretはバックエンドの環境変数またはシークレット管理へ保存します。ゲームに入れると、配布ファイルから誰でも取り出せます。");
     }
 
     void EditorLayer::DrawProjectSettingsBuildSection()
@@ -1736,6 +1813,13 @@ namespace LamaPon
                         m_projectInspectorDecimalsDraft,
                         0,
                         6));
+            settings.online = m_projectOnlineDraft;
+            settings.online.serviceBaseUrl =
+                m_projectOnlineServiceBaseUrlBuffer.data();
+            settings.online.gameId =
+                m_projectOnlineGameIdBuffer.data();
+            settings.online.environmentId =
+                m_projectOnlineEnvironmentIdBuffer.data();
             ValidateProjectSettings(settings);
 
             const auto startupScene =
@@ -1813,7 +1897,7 @@ namespace LamaPon
         }
 
         // 左のカテゴリー一覧と右の内容ペインへ分割します。
-        constexpr std::array<const char*, 8> categories{
+        constexpr std::array<const char*, 9> categories{
             "ゲーム",
             "グラフィック",
             "ビューポート設定",
@@ -1821,7 +1905,8 @@ namespace LamaPon
             "タグ",
             "入力",
             "スクリプト",
-            "ビルドプロファイル"
+            "ビルドプロファイル",
+            "オンライン"
         };
         ImGui::BeginChild(
             "ProjectSettingsCategories",
@@ -1874,6 +1959,9 @@ namespace LamaPon
             break;
         case 7:
             DrawProjectSettingsBuildSection();
+            break;
+        case 8:
+            DrawProjectSettingsOnlineSection();
             break;
         default:
             DrawProjectSettingsGameSection();

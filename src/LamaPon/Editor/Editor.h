@@ -20,7 +20,7 @@ namespace LamaPon
         // コンソールを持たないので、stdoutの代わりにここへ書きます。
         std::filesystem::path reportPath;
         // 撮る前に開いておくUI。空なら既定レイアウトのまま。
-        //   "project-settings:<ゲーム|グラフィック|ビューポート設定|物理|タグ|入力|スクリプト>"
+        //   "project-settings:<ゲーム|グラフィック|ビューポート設定|物理|タグ|入力|スクリプト|ビルドプロファイル|オンライン>"
         //   "inspector:<GameObject名>"
         std::string show;
         // 撮影するフレーム番号。UIのレイアウトとフォントが落ち着く
