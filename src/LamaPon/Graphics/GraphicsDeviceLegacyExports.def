@@ -20,6 +20,7 @@ EXPORTS
     ?SetEnvironmentOverride@LitEffect@LamaPon@@QEAAXAEBUReflectionProbeEnvironment@2@@Z=?SetEnvironmentOverride@LitEffect@LamaPon@@AEAAXAEBUReflectionProbeEnvironment@2@@Z
     ?GetPrefilteredEnvironment@EnvironmentRenderer@LamaPon@@QEAA?AUPrefilteredEnvironment@12@PEAUID3D11ShaderResourceView@@_K@Z=?GetPrefilteredEnvironment@EnvironmentRenderer@LamaPon@@AEAA?AUPrefilteredEnvironment@12@PEAUID3D11ShaderResourceView@@_K@Z
     ?ShaderResourceView@ShadowMap@LamaPon@@QEBAPEAUID3D11ShaderResourceView@@XZ=?LegacyNativeView@ShadowMap@LamaPon@@AEBAPEAXXZ
+    ??0ClusteredLights@LamaPon@@QEAA@PEAUID3D11Device@@AEAVAssetManager@1@AEBVpath@filesystem@std@@@Z=LamaPonConstructLegacyClusteredLights
     ?AmbientOcclusionShaderResourceView@RenderTarget@LamaPon@@QEBAPEAUID3D11ShaderResourceView@@XZ=?AmbientOcclusionShaderResourceView@RenderTarget@LamaPon@@AEBAPEAUID3D11ShaderResourceView@@XZ
     ?ColorHistoryShaderResourceView@RenderTarget@LamaPon@@QEBAPEAUID3D11ShaderResourceView@@XZ=?ColorHistoryShaderResourceView@RenderTarget@LamaPon@@AEBAPEAUID3D11ShaderResourceView@@XZ
     ?ReflectionDepthPyramidShaderResourceView@RenderTarget@LamaPon@@QEBAPEAUID3D11ShaderResourceView@@XZ=?ReflectionDepthPyramidShaderResourceView@RenderTarget@LamaPon@@AEBAPEAUID3D11ShaderResourceView@@XZ

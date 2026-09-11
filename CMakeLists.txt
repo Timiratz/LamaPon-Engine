@@ -294,6 +294,8 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Graphics/GraphicsDeviceResourceLeaseState.h
     src/LamaPon/Graphics/D3D11Backend.cpp
     src/LamaPon/Graphics/D3D11Backend.h
+    src/LamaPon/Graphics/D3D11ClusteredLightsState.cpp
+    src/LamaPon/Graphics/D3D11ClusteredLightsState.h
     src/LamaPon/Graphics/D3D11RenderServices.cpp
     src/LamaPon/Graphics/D3D11RenderTargetState.cpp
     src/LamaPon/Graphics/D3D11ShadowMapState.cpp
@@ -324,6 +326,7 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Components/RenderCullingComponent.h
     src/LamaPon/Graphics/ClusteredLights.cpp
     src/LamaPon/Graphics/ClusteredLights.h
+    src/LamaPon/Graphics/ClusteredLightsBackendState.h
     src/LamaPon/Graphics/ComputeEffect.cpp
     src/LamaPon/Graphics/ComputeEffect.h
     src/LamaPon/Graphics/TemporalJitter.cpp
@@ -1819,12 +1822,14 @@ install(
         PATTERN "GraphicsDeviceApiResources.h" EXCLUDE
         PATTERN "GraphicsDeviceD3D11Access.h" EXCLUDE
         PATTERN "GraphicsDeviceD3D11Resources.h" EXCLUDE
+        PATTERN "D3D11ClusteredLightsState.h" EXCLUDE
         PATTERN "D3D11ShadowMapState.h" EXCLUDE
         PATTERN "GraphicsRenderServices.h" EXCLUDE
         PATTERN "GraphicsDeviceResourceLeaseState.h" EXCLUDE
         PATTERN "GraphicsDeviceShaderState.h" EXCLUDE
         PATTERN "GraphicsDeviceState.h" EXCLUDE
         PATTERN "RenderTargetBackendState.h" EXCLUDE
+        PATTERN "ClusteredLightsBackendState.h" EXCLUDE
         PATTERN "ShadowMapBackendState.h" EXCLUDE
 )
 install(

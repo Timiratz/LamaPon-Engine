@@ -77,8 +77,6 @@ namespace LamaPon
 
             mutable std::unique_ptr<EnvironmentRenderer>
                 environmentRenderer;
-            mutable std::unique_ptr<ClusteredLights>
-                clusteredLights;
             mutable std::unique_ptr<LitEffect> litEffect;
             mutable std::unique_ptr<LitEffect> skinnedLitEffect;
             mutable std::unique_ptr<LitEffect> errorEffect;
@@ -90,7 +88,6 @@ namespace LamaPon
             mutable GraphicsDevice::BuiltInFailure litFailure;
             mutable GraphicsDevice::BuiltInFailure skinnedLitFailure;
             mutable GraphicsDevice::BuiltInFailure environmentFailure;
-            mutable GraphicsDevice::BuiltInFailure clustersFailure;
             mutable std::unordered_map<
                 std::filesystem::path,
                 std::unique_ptr<GraphicsDevice::MaterialShaderEntry>>

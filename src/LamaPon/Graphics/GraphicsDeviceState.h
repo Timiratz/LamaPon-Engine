@@ -35,6 +35,8 @@ namespace LamaPon
         GpuProfiler m_gpuProfiler;
 
         std::unique_ptr<DebugRenderer> m_debugRenderer;
+        mutable std::unique_ptr<ClusteredLights> m_clusteredLights;
+        mutable BuiltInFailure m_clustersFailure;
         std::unique_ptr<RenderTarget> m_sceneCompositionTarget;
         DirectX::XMFLOAT4X4 m_sceneProjection{
             1.0f, 0.0f, 0.0f, 0.0f,

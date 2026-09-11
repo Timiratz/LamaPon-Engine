@@ -2,7 +2,6 @@
 #include "LamaPon/Graphics/GraphicsDeviceState.h"
 
 #include "LamaPon/Assets/AssetManager.h"
-#include "LamaPon/Graphics/ClusteredLights.h"
 #include "LamaPon/Graphics/D3D11Backend.h"
 #include "LamaPon/Graphics/EnvironmentCache.h"
 #include "LamaPon/Graphics/EnvironmentSettings.h"
@@ -270,9 +269,7 @@ namespace LamaPon::Detail
         litFailure = {};
         skinnedLitFailure = {};
         environmentFailure = {};
-        clustersFailure = {};
         environmentRenderer.reset();
-        clusteredLights.reset();
         skyPrefilteredSpecular.Reset();
         skyPrefilteredIrradiance.Reset();
         skyPrefilteredMaximumMip = 0.0f;

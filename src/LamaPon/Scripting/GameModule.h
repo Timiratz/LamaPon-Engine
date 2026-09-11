@@ -13,10 +13,10 @@ namespace LamaPon
     // Game ModuleとRuntimeのABIを識別します。公開構造体のレイアウトや
     // 公開関数のシグネチャを変更した場合は、この値も更新してください。
     // GameModuleHostは完全一致を要求し、互換性のないDLLを読み込みません。
-    // API 66ではShadowMapのnative D3D11所有状態をBackend専用pImplへ
-    // 移し、公開レイアウトをAPI-neutralにしたため、ゲーム用DLLの
-    // 再ビルドが必要です。
-    inline constexpr std::uint32_t GameModuleApiVersion = 66;
+    // API 67ではClusteredLightsのnative D3D11所有状態をBackend専用
+    // pImplへ移し、公開レイアウトをAPI-neutralにしたため、ゲーム用
+    // DLLの再ビルドが必要です。
+    inline constexpr std::uint32_t GameModuleApiVersion = 67;
 
     using NativeScriptCreateFunction = void* (*)(
         GameObject* owner,

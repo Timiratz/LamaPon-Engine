@@ -8,6 +8,7 @@
 // レンダーテクスチャの解像度を確認するため、RenderTargetの実体が必要です
 // （LamaPon.hはGraphicsDevice経由の前方宣言しか持ちません）。
 #include "LamaPon/Assets/GltfImporter.h"
+#include "LamaPon/Graphics/ClusteredLights.h"
 #include "LamaPon/Graphics/EnvironmentCache.h"
 #include "LamaPon/Graphics/DebugRenderer.h"
 #include "LamaPon/Graphics/D3D11Backend.h"
@@ -692,6 +693,13 @@ int main(const int argumentCount, char** arguments)
         constexpr char LegacyShadowMapViewSymbol[] =
             "?ShaderResourceView@ShadowMap@LamaPon@@"
             "QEBAPEAUID3D11ShaderResourceView@@XZ";
+        constexpr char LegacyClusteredLightsConstructorSymbol[] =
+            "??0ClusteredLights@LamaPon@@QEAA@"
+            "PEAUID3D11Device@@AEAVAssetManager@1@"
+            "AEBVpath@filesystem@std@@@Z";
+        constexpr char LegacyClustersAccessorSymbol[] =
+            "?Clusters@GraphicsDevice@LamaPon@@"
+            "QEBAAEAVClusteredLights@2@XZ";
         constexpr char LegacyPrefilteredEnvironmentSymbol[] =
             "?GetPrefilteredEnvironment@EnvironmentRenderer@LamaPon@@"
             "QEAA?AUPrefilteredEnvironment@12@"
@@ -876,11 +884,21 @@ int main(const int argumentCount, char** arguments)
             "?CascadeCount@ShadowMap@LamaPon@@QEBAIXZ",
             "?IsValid@ShadowMap@LamaPon@@QEBA_NXZ"
         };
+        constexpr std::array Api67ClusteredLightsSymbols{
+            "??0ClusteredLights@LamaPon@@QEAA@XZ",
+            "??1ClusteredLights@LamaPon@@QEAA@XZ"
+        };
         const auto runtimeModule = GetModuleHandleW(
             L"LamaPonRuntime.dll");
         const auto legacyShadowMapViewAddress = GetProcAddress(
             runtimeModule,
             LegacyShadowMapViewSymbol);
+        const auto legacyClustersAccessorAddress = GetProcAddress(
+            runtimeModule,
+            LegacyClustersAccessorSymbol);
+        const auto legacyClusteredLightsConstructorAddress = GetProcAddress(
+            runtimeModule,
+            LegacyClusteredLightsConstructorSymbol);
         Require(
             runtimeModule != nullptr
                 && GetProcAddress(
@@ -990,6 +1008,16 @@ int main(const int argumentCount, char** arguments)
                 GetProcAddress(runtimeModule, symbol) != nullptr,
                 "An API 66 opaque ShadowMap export is missing");
         }
+        Require(
+            legacyClusteredLightsConstructorAddress != nullptr
+                && legacyClustersAccessorAddress != nullptr,
+            "An API 66 ClusteredLights compatibility export is missing");
+        for (const auto* const symbol : Api67ClusteredLightsSymbols)
+        {
+            Require(
+                GetProcAddress(runtimeModule, symbol) != nullptr,
+                "An API 67 opaque ClusteredLights export is missing");
+        }
         using LegacyEnvironmentAccessor =
             LamaPon::EnvironmentRenderer* (__fastcall*)(
                 const LamaPon::GraphicsDevice*);
@@ -1002,6 +1030,58 @@ int main(const int argumentCount, char** arguments)
         const auto legacyShadowMapView =
             reinterpret_cast<LegacyShadowMapViewAccessor>(
                 legacyShadowMapViewAddress);
+        using LegacyClustersAccessor =
+            LamaPon::ClusteredLights* (__fastcall*)(
+                const LamaPon::GraphicsDevice*);
+        const auto legacyClustersAccessor =
+            reinterpret_cast<LegacyClustersAccessor>(
+                legacyClustersAccessorAddress);
+        using LegacyClusteredLightsConstructor =
+            void* (__fastcall*)(void*, void*, void*, const void*);
+        const auto legacyClusteredLightsConstructor =
+            reinterpret_cast<LegacyClusteredLightsConstructor>(
+                legacyClusteredLightsConstructorAddress);
+
+        // API 66のinline destructorが安全に空の旧layoutを破棄できるよう、
+        // loader互換constructorは旧storage全体を初期化します。
+        constexpr auto LegacyClusteredLightsSize =
+            10u * sizeof(void*)
+            + 3u * sizeof(LamaPon::GraphicsViewHandle);
+        alignas(void*) std::array<
+            unsigned char,
+            LegacyClusteredLightsSize> legacyClusteredLightsStorage;
+        legacyClusteredLightsStorage.fill(0xA5u);
+        Require(
+            legacyClusteredLightsConstructor(
+                legacyClusteredLightsStorage.data(),
+                nullptr,
+                nullptr,
+                nullptr) == legacyClusteredLightsStorage.data()
+                && std::ranges::all_of(
+                    legacyClusteredLightsStorage,
+                    [](const unsigned char value)
+                    {
+                        return value == 0u;
+                    }),
+            "The API 66 ClusteredLights loader shim left unsafe storage");
+
+        static_assert(
+            std::is_nothrow_default_constructible_v<
+                LamaPon::ClusteredLights>);
+        static_assert(
+            std::is_nothrow_destructible_v<LamaPon::ClusteredLights>);
+        static_assert(
+            !std::is_copy_constructible_v<LamaPon::ClusteredLights>);
+        static_assert(
+            !std::is_copy_assignable_v<LamaPon::ClusteredLights>);
+        static_assert(
+            !std::is_move_constructible_v<LamaPon::ClusteredLights>);
+        static_assert(
+            !std::is_move_assignable_v<LamaPon::ClusteredLights>);
+        static_assert(
+            sizeof(LamaPon::ClusteredLights) <= 16,
+            "ClusteredLights leaked native backend state into its public "
+            "layout");
 
         static_assert(
             std::is_nothrow_default_constructible_v<
@@ -2259,6 +2339,14 @@ int main(const int argumentCount, char** arguments)
                     / static_cast<float>(Height),
                 0.1f,
                 100.0f);
+        DirectX::XMFLOAT4X4 clusteredViewValues{};
+        DirectX::XMFLOAT4X4 clusteredProjectionValues{};
+        DirectX::XMStoreFloat4x4(
+            &clusteredViewValues,
+            clusteredView);
+        DirectX::XMStoreFloat4x4(
+            &clusteredProjectionValues,
+            clusteredProjection);
         graphics.UpdateClusteredLights(
             clusteredLighting,
             clusteredView,
@@ -2503,13 +2591,161 @@ int main(const int argumentCount, char** arguments)
         ID3D11Texture2D* retainedBackendLifetimeTexture{};
         {
             LamaPon::D3D11Backend foreignBackend;
-            foreignBackend.Initialize({
+            const LamaPon::GraphicsBackendCreateInfo
+                foreignBackendCreateInfo{
                 foreignWindow,
                 Width,
                 Height,
                 true,
                 false
-            });
+            };
+            foreignBackend.Initialize(foreignBackendCreateInfo);
+
+            // ClusteredLightsはdefault facadeを安全な未設定として扱い、
+            // native資源と3本のviewは完成後にだけ一括公開します。
+            Stage("clustered-lights-backend-state");
+            const auto clusteredResultIsClear =
+                [](const LamaPon::LightingState& state)
+                {
+                    return !state.clustered.enabled
+                        && state.clustered.lightCount == 0u
+                        && !state.clustered.lights
+                        && !state.clustered.lightIndices
+                        && !state.clustered.clusterCounts;
+                };
+            const auto clusteredShaderPath =
+                graphics.Assets().ResolvePath(
+                    "shaders/LamaPonLightCulling.hlsl");
+            const auto missingClusteredShaderPath =
+                graphics.Assets().ResolvePath(
+                    "shaders/Api67MissingLightCulling.hlsl");
+            LamaPon::ClusteredLights transactionalClusteredLights;
+            auto defaultClusteredLighting = clusteredLighting;
+            foreignBackend.UpdateClusteredLights(
+                transactionalClusteredLights,
+                defaultClusteredLighting,
+                clusteredViewValues,
+                clusteredProjectionValues,
+                Width,
+                Height);
+            Require(
+                clusteredResultIsClear(defaultClusteredLighting),
+                "A default ClusteredLights facade retained an old result");
+
+            bool initialClusteredCreationRejected{};
+            try
+            {
+                foreignBackend.InitializeClusteredLights(
+                    transactionalClusteredLights,
+                    graphics.Assets(),
+                    missingClusteredShaderPath);
+            }
+            catch (const std::runtime_error&)
+            {
+                initialClusteredCreationRejected = true;
+            }
+            auto failedInitialClusteredLighting = clusteredLighting;
+            foreignBackend.UpdateClusteredLights(
+                transactionalClusteredLights,
+                failedInitialClusteredLighting,
+                clusteredViewValues,
+                clusteredProjectionValues,
+                Width,
+                Height);
+            Require(
+                initialClusteredCreationRejected
+                    && clusteredResultIsClear(
+                        failedInitialClusteredLighting),
+                "A failed first ClusteredLights initialization published "
+                "partial state");
+
+            foreignBackend.InitializeClusteredLights(
+                transactionalClusteredLights,
+                graphics.Assets(),
+                clusteredShaderPath);
+            auto transactionalClusteredLighting = clusteredLighting;
+            foreignBackend.UpdateClusteredLights(
+                transactionalClusteredLights,
+                transactionalClusteredLighting,
+                clusteredViewValues,
+                clusteredProjectionValues,
+                Width,
+                Height);
+            const std::array transactionalClusteredViews{
+                transactionalClusteredLighting.clustered.lights,
+                transactionalClusteredLighting.clustered.lightIndices,
+                transactionalClusteredLighting.clustered.clusterCounts
+            };
+            Require(
+                transactionalClusteredLighting.clustered.enabled
+                    && transactionalClusteredLighting.clustered.lightCount
+                        == 1u
+                    && std::ranges::all_of(
+                        transactionalClusteredViews,
+                        [&foreignBackend](const auto& clusteredViewHandle)
+                        {
+                            return foreignBackend.IsViewCurrent(
+                                clusteredViewHandle);
+                        }),
+                "ClusteredLights did not publish one complete backend state");
+
+            bool replacementClusteredCreationRejected{};
+            try
+            {
+                foreignBackend.InitializeClusteredLights(
+                    transactionalClusteredLights,
+                    graphics.Assets(),
+                    missingClusteredShaderPath);
+            }
+            catch (const std::runtime_error&)
+            {
+                replacementClusteredCreationRejected = true;
+            }
+            auto preservedClusteredLighting = clusteredLighting;
+            foreignBackend.UpdateClusteredLights(
+                transactionalClusteredLights,
+                preservedClusteredLighting,
+                clusteredViewValues,
+                clusteredProjectionValues,
+                Width,
+                Height);
+            Require(
+                replacementClusteredCreationRejected
+                    && preservedClusteredLighting.clustered.lights
+                        == transactionalClusteredViews[0]
+                    && preservedClusteredLighting.clustered.lightIndices
+                        == transactionalClusteredViews[1]
+                    && preservedClusteredLighting.clustered.clusterCounts
+                        == transactionalClusteredViews[2],
+                "A failed ClusteredLights replacement changed the last "
+                "complete state");
+
+            // 別Backendのstateはnative contextへ渡さず、出力だけを安全な
+            // fallbackへ戻します。旧Clusters symbolも実際に転送確認します。
+            auto* const primaryClusteredLights =
+                legacyClustersAccessor(&graphics);
+            Require(
+                primaryClusteredLights != nullptr,
+                "The legacy GraphicsDevice::Clusters alias returned null");
+            auto foreignClusteredLighting = clusteredLighting;
+            foreignBackend.UpdateClusteredLights(
+                *primaryClusteredLights,
+                foreignClusteredLighting,
+                clusteredViewValues,
+                clusteredProjectionValues,
+                Width,
+                Height);
+            Require(
+                clusteredResultIsClear(foreignClusteredLighting)
+                    && std::ranges::all_of(
+                        clusteredViews,
+                        [&graphics](const auto& clusteredViewHandle)
+                        {
+                            return graphics.IsGraphicsViewCurrent(
+                                clusteredViewHandle);
+                        }),
+                "A foreign ClusteredLights state reached the native context "
+                "or changed its owner");
 
             // ShadowMapのnative stateは完成した単位でのみ差し替えます。
             // 初回作成と置換のどちらが失敗しても、部分的なstateを
@@ -3499,13 +3735,65 @@ int main(const int argumentCount, char** arguments)
             // viewとして解決・再取り込みすることはできません。
             Microsoft::WRL::ComPtr<ID3D11Device> importedViewDevice =
                 foreignBackend.Device();
-            foreignBackend.Initialize({
-                foreignWindow,
+            foreignBackend.Initialize(foreignBackendCreateInfo);
+
+            // 同じBackend instanceを再初期化しても旧世代のcluster stateは
+            // native contextへ渡さず、明示的な再初期化後に回復します。
+            auto staleClusteredLighting = clusteredLighting;
+            foreignBackend.UpdateClusteredLights(
+                transactionalClusteredLights,
+                staleClusteredLighting,
+                clusteredViewValues,
+                clusteredProjectionValues,
                 Width,
-                Height,
-                true,
-                false
-            });
+                Height);
+            Require(
+                clusteredResultIsClear(staleClusteredLighting)
+                    && std::ranges::none_of(
+                        transactionalClusteredViews,
+                        [&foreignBackend](const auto& clusteredViewHandle)
+                        {
+                            return foreignBackend.IsViewCurrent(
+                                clusteredViewHandle);
+                        }),
+                "A stale ClusteredLights state survived backend "
+                "reinitialization");
+
+            foreignBackend.InitializeClusteredLights(
+                transactionalClusteredLights,
+                graphics.Assets(),
+                clusteredShaderPath);
+            auto recoveredClusteredLighting = clusteredLighting;
+            foreignBackend.UpdateClusteredLights(
+                transactionalClusteredLights,
+                recoveredClusteredLighting,
+                clusteredViewValues,
+                clusteredProjectionValues,
+                Width,
+                Height);
+            const std::array recoveredClusteredViews{
+                recoveredClusteredLighting.clustered.lights,
+                recoveredClusteredLighting.clustered.lightIndices,
+                recoveredClusteredLighting.clustered.clusterCounts
+            };
+            Require(
+                recoveredClusteredLighting.clustered.enabled
+                    && recoveredClusteredLighting.clustered.lightCount == 1u
+                    && std::ranges::all_of(
+                        recoveredClusteredViews,
+                        [&foreignBackend](const auto& clusteredViewHandle)
+                        {
+                            return foreignBackend.IsViewCurrent(
+                                clusteredViewHandle);
+                        })
+                    && recoveredClusteredViews[0]
+                        != transactionalClusteredViews[0]
+                    && recoveredClusteredViews[1]
+                        != transactionalClusteredViews[1]
+                    && recoveredClusteredViews[2]
+                        != transactionalClusteredViews[2],
+                "ClusteredLights did not recover on the new backend "
+                "generation");
             bool staleHandleRejected{};
             try
             {

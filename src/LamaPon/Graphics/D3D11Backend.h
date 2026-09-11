@@ -145,6 +145,10 @@ namespace LamaPon
                 initialData) override;
         [[nodiscard]] bool IsViewCurrent(
             const GraphicsViewHandle& view) const noexcept override;
+        void InitializeClusteredLights(
+            ClusteredLights& clusteredLights,
+            AssetManager& assets,
+            const std::filesystem::path& shaderPath) override;
 
         // 既存のDirectX 11描画経路へ貸し出す非所有ポインターです。
         // GraphicsDeviceは移行期間中、従来のDevice/Context APIを

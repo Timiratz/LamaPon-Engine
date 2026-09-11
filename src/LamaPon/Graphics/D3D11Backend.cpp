@@ -2,6 +2,7 @@
 
 #include "LamaPon/Core/Log.h"
 #include "LamaPon/Graphics/ClusteredLights.h"
+#include "LamaPon/Graphics/D3D11ClusteredLightsState.h"
 #include "LamaPon/Graphics/D3D11ShadowMapState.h"
 #include "LamaPon/Graphics/DebugRenderer.h"
 #include "LamaPon/Graphics/GpuProfiler.h"
@@ -1170,34 +1171,63 @@ namespace LamaPon
                 "DirectX 11 context.");
         }
 
-        if (!clusteredLights.m_lightView
-            || !clusteredLights.m_indexListView
-            || !clusteredLights.m_countView)
+        // default構築、別Backend、古いBackend世代のfacadeは安全な
+        // 未設定状態として扱います。pipelineには触れません。
+        lighting.clustered = {};
+        auto* const state = dynamic_cast<
+            Detail::D3D11ClusteredLightsState*>(
+                Detail::ClusteredLightsBackendAccess::Get(
+                    clusteredLights));
+        if (state == nullptr
+            || !state->HasNativeResources()
+            || !IsViewCurrent(state->m_lightView)
+            || !IsViewCurrent(state->m_indexListView)
+            || !IsViewCurrent(state->m_countView))
         {
-            // 3本すべてを作れてからownerへ反映し、途中失敗で
-            // LightingStateへ不完全な組み合わせを出さないようにします。
-            auto lightView = ImportShaderResourceViewHandle(
-                clusteredLights.m_lightShaderResourceView.Get());
-            auto indexListView = ImportShaderResourceViewHandle(
-                clusteredLights.m_indexListShaderResourceView.Get());
-            auto countView = ImportShaderResourceViewHandle(
-                clusteredLights.m_countShaderResourceView.Get());
-            clusteredLights.m_lightView = std::move(lightView);
-            clusteredLights.m_indexListView =
-                std::move(indexListView);
-            clusteredLights.m_countView = std::move(countView);
+            return;
         }
 
         const auto viewMatrix = DirectX::XMLoadFloat4x4(&view);
         const auto projectionMatrix =
             DirectX::XMLoadFloat4x4(&projection);
-        clusteredLights.Update(
+        state->Update(
             m_context.Get(),
             lighting,
             viewMatrix,
             projectionMatrix,
             width,
             height);
+    }
+
+    void D3D11Backend::InitializeClusteredLights(
+        ClusteredLights& clusteredLights,
+        AssetManager& assets,
+        const std::filesystem::path& shaderPath)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "InitializeClusteredLights requires an initialized "
+                "backend.");
+        }
+
+        // native資源と3本のneutral viewを一時stateへ全て作り、完成した
+        // 世代だけをfacadeへ公開します。途中失敗時は既存stateを保ちます。
+        auto state = std::make_unique<
+            Detail::D3D11ClusteredLightsState>();
+        state->Initialize(m_device.Get(), assets, shaderPath);
+        auto lightView = ImportShaderResourceViewHandle(
+            state->LightShaderResourceView());
+        auto indexListView = ImportShaderResourceViewHandle(
+            state->IndexListShaderResourceView());
+        auto countView = ImportShaderResourceViewHandle(
+            state->CountShaderResourceView());
+        state->m_lightView = std::move(lightView);
+        state->m_indexListView = std::move(indexListView);
+        state->m_countView = std::move(countView);
+        Detail::ClusteredLightsBackendAccess::Publish(
+            clusteredLights,
+            std::move(state));
     }
 
     std::unique_ptr<GraphicsOutputState>

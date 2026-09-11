@@ -5,6 +5,7 @@
 #include "LamaPon/Audio/AudioSystem.h"
 #include "LamaPon/Core/Log.h"
 #include "LamaPon/Core/RuntimeServices.h"
+#include "LamaPon/Graphics/ClusteredLights.h"
 #include "LamaPon/Graphics/DebugRenderer.h"
 #include "LamaPon/Graphics/GraphicsDeviceApiResources.h"
 #include "LamaPon/Graphics/RenderTarget.h"
@@ -281,6 +282,9 @@ namespace LamaPon
         }
         m_state->m_instanceBuffer.Reset();
         m_state->m_depthPass = DepthPassKind::None;
+        m_state->m_lightingState = {};
+        m_state->m_clusteredLights.reset();
+        m_state->m_clustersFailure = {};
         m_state->m_sceneCompositionTarget.reset();
         ClearRenderTextures();
         m_state->m_debugRenderer.reset();
@@ -295,7 +299,6 @@ namespace LamaPon
         ResetApiResources();
         m_state->m_whiteTextureView.Reset();
         m_state->m_whiteTexture.Reset();
-        m_state->m_lightingState = {};
         if (m_state->m_backend)
         {
             m_state->m_backend->Shutdown();

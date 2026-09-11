@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <span>
@@ -18,6 +19,7 @@ namespace DirectX
 
 namespace LamaPon
 {
+    class AssetManager;
     class ClusteredLights;
     class DebugDrawingBackend;
     class GpuProfilerBackend;
@@ -206,8 +208,8 @@ namespace LamaPon
         virtual void EndShadowMap(
             ShadowMap& shadowMap) = 0;
         // Forward+用のライト一覧をGPUへ送り、クラスタごとの番号表を
-        // lightingへ設定します。ClusteredLightsの資源表現は現時点では
-        // D3D11のままで、将来Backend別の資源へ置き換えるための操作境界です。
+        // lightingへ設定します。native資源はClusteredLightsのopaque
+        // Backend stateに閉じ込め、共通契約へAPI固有型を出しません。
         virtual void UpdateClusteredLights(
             ClusteredLights& clusteredLights,
             LightingState& lighting,
@@ -315,6 +317,14 @@ namespace LamaPon
         // slotを維持するため末尾へ追加します。
         [[nodiscard]] virtual bool IsViewCurrent(
             const GraphicsViewHandle& view) const noexcept = 0;
+
+        // Forward+資源のnative表現を具象Backendへ閉じ込めます。既存の
+        // virtual slotを維持するため末尾へ追加します。実装は全資源と
+        // neutral viewを完成させてからownerへ一度に公開します。
+        virtual void InitializeClusteredLights(
+            ClusteredLights& clusteredLights,
+            AssetManager& assets,
+            const std::filesystem::path& shaderPath) = 0;
     };
 
     // activeApiはSelectGraphicsBackendで解決済みの値を渡します。

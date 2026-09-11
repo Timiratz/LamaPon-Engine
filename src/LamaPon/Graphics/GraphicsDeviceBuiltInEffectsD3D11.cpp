@@ -95,8 +95,7 @@ namespace LamaPon
 
     ClusteredLights& GraphicsDevice::Clusters() const
     {
-        auto& resources = RequireD3D11ApiResources();
-        if (!resources.clusteredLights)
+        if (!m_state->m_clusteredLights)
         {
             // カリングCSがプロジェクトに無い場合は、互換性維持のため
             // エンジン同梱のアセットから読み込みます。
@@ -111,17 +110,20 @@ namespace LamaPon
                     / relativePath;
             }
             return BuildBuiltIn(
-                resources.clusteredLights,
-                resources.clustersFailure,
+                m_state->m_clusteredLights,
+                m_state->m_clustersFailure,
                 [this, shaderPath]
                 {
-                    return std::make_unique<ClusteredLights>(
-                        Device(),
+                    auto clusteredLights =
+                        std::make_unique<ClusteredLights>();
+                    m_state->m_backend->InitializeClusteredLights(
+                        *clusteredLights,
                         Assets(),
                         shaderPath);
+                    return clusteredLights;
                 });
         }
-        return *resources.clusteredLights;
+        return *m_state->m_clusteredLights;
     }
 
     LitEffect& GraphicsDevice::Lit() const
