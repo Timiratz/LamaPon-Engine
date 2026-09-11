@@ -412,7 +412,11 @@ int WINAPI wWinMain(
 
         application.Initialize(
             instance,
-            projectSettings.graphics.renderingApi);
+            projectSettings.graphics.renderingApi,
+            // EditorのLayer/ImGuiはD3D11 rendererを前提にしています。
+            // D3D12 Experimentalをproject設定で選んでも、ここでは
+            // GraphicsDeviceがD3D11へ安全にフォールバックします。
+            LamaPon::GraphicsStartupProfile::FullRenderer);
         application.Graphics().SetGraphicsSettings(
             projectSettings.graphics);
         application.Input().SetActions(

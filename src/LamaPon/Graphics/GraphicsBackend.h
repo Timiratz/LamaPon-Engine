@@ -36,6 +36,15 @@ namespace LamaPon
         UnknownApi
     };
 
+    // 起動経路ごとの描画機能要件です。EditorやCLIのように完全な
+    // rendererを使う経路は既定のFullRendererを選び、D3D12 bootstrapは
+    // Gameの実験的なclear/present検証だけで明示的に許可します。
+    enum class GraphicsStartupProfile : std::uint8_t
+    {
+        FullRenderer,
+        AllowD3D12ExperimentalBootstrap
+    };
+
     struct GraphicsBackendSelection final
     {
         RenderingApi requestedApi{
@@ -46,11 +55,18 @@ namespace LamaPon
             RenderingApiFallbackReason::None };
     };
 
-    // 設定値から、現時点で安全に起動できるBackendを選びます。
-    // 未実装のAPIは要求値を残したままDirectX 11へ倒します。
+    // 設定値から、完全な描画機能を安全に起動できるBackendを選びます。
+    // 既定では未実装のAPIを要求値のままDirectX 11へ倒します。
     [[nodiscard]] GraphicsBackendSelection
         SelectGraphicsBackend(
             RenderingApi requestedApi) noexcept;
+    // D3D12のpresentation bootstrapを明示的に許可するGame起動だけで
+    // DirectX12Experimentalを選びます。完全なrendererを必要とする
+    // Editor / CLIはFullRendererを指定してD3D11 fallbackを保ちます。
+    [[nodiscard]] GraphicsBackendSelection
+        SelectGraphicsBackend(
+            RenderingApi requestedApi,
+            GraphicsStartupProfile profile) noexcept;
 
     struct GraphicsBackendCreateInfo final
     {

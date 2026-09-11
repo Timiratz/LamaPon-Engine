@@ -122,6 +122,16 @@ namespace LamaPon
         return m_state->m_renderingApiFallbackReason;
     }
 
+    bool GraphicsDevice::IsD3D12ExperimentalBootstrap() const noexcept
+    {
+        return IsInitialized()
+            && m_state->m_graphicsStartupProfile
+                == GraphicsStartupProfile::
+                    AllowD3D12ExperimentalBootstrap
+            && ActiveRenderingApi()
+                == RenderingApi::DirectX12Experimental;
+    }
+
     const FrameStatistics& GraphicsDevice::FrameStats() const noexcept
     {
         return m_state->m_frameStatistics;
@@ -338,6 +348,21 @@ namespace LamaPon
         const std::uint32_t height,
         RenderingApi requestedApi)
     {
+        Initialize(
+            window,
+            width,
+            height,
+            requestedApi,
+            GraphicsStartupProfile::FullRenderer);
+    }
+
+    void GraphicsDevice::Initialize(
+        const HWND window,
+        const std::uint32_t width,
+        const std::uint32_t height,
+        const RenderingApi requestedApi,
+        const GraphicsStartupProfile profile)
+    {
         // Sceneや独自rendererが旧Device資源を持つ間は、何も破棄する
         // 前に拒否します。描画API変更はプロセス再起動で反映する契約です。
         BeginResourceTransition();
@@ -353,7 +378,8 @@ namespace LamaPon
                 window,
                 width,
                 height,
-                requestedApi);
+                requestedApi,
+                profile);
         }
         catch (...)
         {
@@ -372,86 +398,139 @@ namespace LamaPon
         const HWND window,
         const std::uint32_t width,
         const std::uint32_t height,
-        RenderingApi requestedApi)
+        const RenderingApi requestedApi,
+        const GraphicsStartupProfile profile)
     {
-
         // Backend選択はここへ集約します。ProjectSettingsや各起動経路は
         // 要求値を渡すだけにし、実効APIとフォールバック理由を一箇所で
         // 決定します。
-        const GraphicsBackendSelection selection =
-            SelectGraphicsBackend(requestedApi);
-        switch (selection.fallbackReason)
+        const auto initializeCandidate =
+            [this, window, width, height, profile](
+                const GraphicsBackendSelection& selection)
         {
-        case RenderingApiFallbackReason::None:
-            break;
-        case RenderingApiFallbackReason::NotImplemented:
-            Logger::Instance().Warning(
-                "DirectX 12 Experimentalは未実装のため、"
-                "DirectX 11へフォールバックして起動します。");
-            break;
-        case RenderingApiFallbackReason::UnknownApi:
-            Logger::Instance().Warning(
-                "不明なRendering APIが指定されたため、"
-                "DirectX 11へフォールバックして起動します。");
-            break;
-        case RenderingApiFallbackReason::Unsupported:
-            Logger::Instance().Warning(
-                "選択されたRendering APIを現在の環境で使用できないため、"
-                "DirectX 11へフォールバックして起動します。");
-            break;
-        case RenderingApiFallbackReason::InitializationFailed:
-            Logger::Instance().Warning(
-                "選択されたRendering APIの初期化に失敗したため、"
-                "DirectX 11へフォールバックして起動します。");
-            break;
-        }
-        m_state->m_startupRenderingApi = selection.requestedApi;
-        m_state->m_renderingApiFallbackReason =
-            selection.fallbackReason;
-        m_state->m_graphicsSettings.renderingApi =
-            selection.requestedApi;
+            switch (selection.fallbackReason)
+            {
+            case RenderingApiFallbackReason::None:
+                break;
+            case RenderingApiFallbackReason::NotImplemented:
+                Logger::Instance().Warning(
+                    "DirectX 12 Experimentalの完全なrendererは未実装のため、"
+                    "DirectX 11へフォールバックして起動します。");
+                break;
+            case RenderingApiFallbackReason::UnknownApi:
+                Logger::Instance().Warning(
+                    "不明なRendering APIが指定されたため、"
+                    "DirectX 11へフォールバックして起動します。");
+                break;
+            case RenderingApiFallbackReason::Unsupported:
+                Logger::Instance().Warning(
+                    "選択されたRendering APIを現在の環境で使用できないため、"
+                    "DirectX 11へフォールバックして起動します。");
+                break;
+            case RenderingApiFallbackReason::InitializationFailed:
+                Logger::Instance().Warning(
+                    "DirectX 12 Experimentalの初期化に失敗したため、"
+                    "DirectX 11へフォールバックして起動します。");
+                break;
+            }
+            m_state->m_startupRenderingApi = selection.requestedApi;
+            m_state->m_renderingApiFallbackReason =
+                selection.fallbackReason;
+            m_state->m_graphicsStartupProfile = profile;
+            m_state->m_graphicsSettings.renderingApi =
+                selection.requestedApi;
 
-        m_state->m_width = std::max(width, 1u);
-        m_state->m_height = std::max(height, 1u);
-        m_state->m_uiWidth = m_state->m_width;
-        m_state->m_uiHeight = m_state->m_height;
-        m_state->m_sprite2DOffset = {};
+            m_state->m_width = std::max(width, 1u);
+            m_state->m_height = std::max(height, 1u);
+            m_state->m_uiWidth = m_state->m_width;
+            m_state->m_uiHeight = m_state->m_height;
+            m_state->m_sprite2DOffset = {};
 
-        // 同じGraphicsDeviceを再初期化する場合も、旧Backendを
-        // 破棄する前にprofilerの非所有参照を外します。
-        m_state->m_gpuProfiler.Detach();
-        m_state->m_backend = CreateGraphicsBackend(
-            selection.activeApi);
-        m_state->m_backend->Initialize(GraphicsBackendCreateInfo{
-            static_cast<void*>(window),
-            m_state->m_width,
-            m_state->m_height,
-            s_preferWarpAdapter,
-            s_enableDebugLayer
-        });
-        m_state->m_gpuProfiler.Attach(
-            m_state->m_backend->ProfilerBackend());
+            // 同じGraphicsDeviceを再初期化する場合も、旧Backendを
+            // 破棄する前にprofilerの非所有参照を外します。
+            m_state->m_gpuProfiler.Detach();
+            m_state->m_backend = CreateGraphicsBackend(
+                selection.activeApi);
+            m_state->m_backend->Initialize(GraphicsBackendCreateInfo{
+                static_cast<void*>(window),
+                m_state->m_width,
+                m_state->m_height,
+                s_preferWarpAdapter,
+                s_enableDebugLayer
+            });
+            m_state->m_gpuProfiler.Attach(
+                m_state->m_backend->ProfilerBackend());
 
-        RefreshMemoryStatistics(true);
-        // エディター外でもFPS制限の状態を確認できるよう、ログへ記録します。
-        if (!TearingAllowed())
+            RefreshMemoryStatistics(true);
+            // エディター外でもFPS制限の状態を確認できるよう、ログへ記録します。
+            if (!TearingAllowed())
+            {
+                Logger::Instance().Info(
+                    "ティアリング許可が使えない環境です。VSyncを切っても"
+                    "モニターのリフレッシュレートがFPSの上限になります。");
+            }
+            const bool d3d12Bootstrap = selection.activeApi
+                == RenderingApi::DirectX12Experimental;
+            if (!d3d12Bootstrap)
+            {
+                CreateWhiteTexture();
+            }
+            CreateApiResources(m_state->m_backend->Api());
+            m_state->m_services->Initialize(
+                Device(),
+                Context(),
+                window,
+                m_state->m_graphicsSettings.runtimeTextureCompression,
+                *m_state->m_backend);
+            m_state->m_debugRenderer = std::make_unique<DebugRenderer>(
+                m_state->m_backend->CreateDebugDrawingBackend());
+            m_state->m_apiResources->RecreateShadowMaps(
+                *m_state->m_backend,
+                m_state->m_graphicsSettings);
+            m_state->m_sceneCompositionTarget =
+                std::make_unique<RenderTarget>();
+            if (d3d12Bootstrap)
+            {
+                Logger::Instance().Warning(
+                    "DirectX 12 Experimental bootstrapで起動しています。"
+                    "現在はclear / present / resize / captureのみ対応し、"
+                    "Scene、UI、GPU asset uploadは未対応です。");
+            }
+        };
+
+        const auto selection = SelectGraphicsBackend(
+            requestedApi,
+            profile);
+        try
         {
-            Logger::Instance().Info(
-                "ティアリング許可が使えない環境です。VSyncを切っても"
-                "モニターのリフレッシュレートがFPSの上限になります。");
+            initializeCandidate(selection);
         }
-        CreateWhiteTexture();
-        CreateApiResources(m_state->m_backend->Api());
-        m_state->m_services->Initialize(Device(), Context(), window,
-            m_state->m_graphicsSettings.runtimeTextureCompression,
-            *m_state->m_backend);
-        m_state->m_debugRenderer = std::make_unique<DebugRenderer>(
-            m_state->m_backend->CreateDebugDrawingBackend());
-        m_state->m_apiResources->RecreateShadowMaps(
-            *m_state->m_backend,
-            m_state->m_graphicsSettings);
-        m_state->m_sceneCompositionTarget =
-            std::make_unique<RenderTarget>();
+        catch (const std::runtime_error& exception)
+        {
+            const bool retryWithD3D11 = selection.activeApi
+                == RenderingApi::DirectX12Experimental
+                && profile
+                    == GraphicsStartupProfile::
+                        AllowD3D12ExperimentalBootstrap;
+            if (!retryWithD3D11)
+            {
+                throw;
+            }
+
+            Logger::Instance().Warning(
+                std::string(
+                    "DirectX 12 Experimental bootstrapを開始できないため、"
+                    "DirectX 11へフォールバックします: ")
+                + exception.what());
+            // backendだけを差し替えず、AssetManager/DebugRenderer/Profilerが
+            // 借用するD3D12資源を正しい順序で全て解放してから再試行します。
+            ReleaseResources(true);
+            initializeCandidate({
+                selection.requestedApi,
+                RenderingApi::DirectX11,
+                RenderingApiFallbackReason::InitializationFailed
+            });
+        }
     }
 
     void GraphicsDevice::RefreshMemoryStatistics(

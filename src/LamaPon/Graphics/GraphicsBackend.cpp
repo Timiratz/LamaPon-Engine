@@ -10,6 +10,15 @@ namespace LamaPon
     GraphicsBackendSelection SelectGraphicsBackend(
         const RenderingApi requestedApi) noexcept
     {
+        return SelectGraphicsBackend(
+            requestedApi,
+            GraphicsStartupProfile::FullRenderer);
+    }
+
+    GraphicsBackendSelection SelectGraphicsBackend(
+        const RenderingApi requestedApi,
+        const GraphicsStartupProfile profile) noexcept
+    {
         switch (requestedApi)
         {
         case RenderingApi::Auto:
@@ -25,6 +34,16 @@ namespace LamaPon
                 RenderingApiFallbackReason::None
             };
         case RenderingApi::DirectX12Experimental:
+            if (profile
+                == GraphicsStartupProfile::
+                    AllowD3D12ExperimentalBootstrap)
+            {
+                return {
+                    RenderingApi::DirectX12Experimental,
+                    RenderingApi::DirectX12Experimental,
+                    RenderingApiFallbackReason::None
+                };
+            }
             return {
                 RenderingApi::DirectX12Experimental,
                 RenderingApi::DirectX11,

@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <stdexcept>
 #include <string>
 
@@ -93,6 +94,25 @@ int main()
         Require(!std::filesystem::exists(result.outputDirectory / "LamaPonGameModule.dll"),
             "A project without a module must not acquire the sample module.");
         RunExportedGame(result.executablePath);
+
+        // DirectX 12 Experimentalを選んだゲームは、D3D12のclear / presentだけを
+        // 行うbootstrap起動へ入ります。D3D12を初期化できない環境ではD3D11へ
+        // 戻りますが、どちらの場合もbootstrap経路を通ったことを起動ログで確かめます。
+        options.projectSettings.graphics.renderingApi =
+            LamaPon::RenderingApi::DirectX12Experimental;
+        options.outputDirectory = root / "d3d12-experimental";
+        result = LamaPon::ExportGamePackage(options);
+        const auto runtimeLog =
+            result.executablePath.parent_path() / "LamaPon.log";
+        std::filesystem::remove(runtimeLog);
+        RunExportedGame(result.executablePath);
+        std::ifstream runtimeLogFile(runtimeLog, std::ios::binary);
+        const std::string runtimeLogText{
+            std::istreambuf_iterator<char>(runtimeLogFile),
+            std::istreambuf_iterator<char>() };
+        Require(runtimeLogText.find("DirectX 12 Experimental bootstrap")
+                != std::string::npos,
+            "The exported DirectX 12 Experimental game did not use its bootstrap startup path.");
         std::cout << "Exported startup tests passed.\n";
         return 0;
     }

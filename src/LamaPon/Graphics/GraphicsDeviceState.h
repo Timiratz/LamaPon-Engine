@@ -72,5 +72,7 @@ namespace LamaPon
             RenderingApi::DirectX11 };
         RenderingApiFallbackReason m_renderingApiFallbackReason{
             RenderingApiFallbackReason::None };
+        GraphicsStartupProfile m_graphicsStartupProfile{
+            GraphicsStartupProfile::FullRenderer };
     };
 }

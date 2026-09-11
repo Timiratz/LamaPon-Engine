@@ -5,6 +5,7 @@
 #include "LamaPon/Graphics/D3D11Backend.h"
 #include "LamaPon/Graphics/EnvironmentCache.h"
 #include "LamaPon/Graphics/EnvironmentSettings.h"
+#include "LamaPon/Graphics/GraphicsDeviceD3D12Resources.h"
 #include "LamaPon/Graphics/GraphicsDeviceD3D11Resources.h"
 #include "LamaPon/Graphics/GraphicsRenderServices.h"
 #include "LamaPon/Graphics/Lighting.h"
@@ -385,8 +386,12 @@ namespace LamaPon
                     Context(),
                     *m_state->m_backend);
             break;
-        case RenderingApi::Auto:
         case RenderingApi::DirectX12Experimental:
+            resources =
+                Detail::CreateD3D12GraphicsDeviceApiResources(
+                    *m_state->m_backend);
+            break;
+        case RenderingApi::Auto:
         default:
             throw std::logic_error(
                 "API resources for the active rendering API are not "

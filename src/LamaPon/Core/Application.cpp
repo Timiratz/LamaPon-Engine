@@ -139,6 +139,17 @@ namespace LamaPon
         const HINSTANCE instance,
         const RenderingApi requestedApi)
     {
+        Initialize(
+            instance,
+            requestedApi,
+            GraphicsStartupProfile::FullRenderer);
+    }
+
+    void Application::Initialize(
+        const HINSTANCE instance,
+        const RenderingApi requestedApi,
+        const GraphicsStartupProfile startupProfile)
+    {
         const auto executableDirectory = ExecutableDirectory();
         if (executableDirectory.empty())
         {
@@ -187,7 +198,8 @@ namespace LamaPon
             m_window.Handle(),
             m_window.ClientWidth(),
             m_window.ClientHeight(),
-            requestedApi);
+            requestedApi,
+            startupProfile);
         m_graphics.Assets().SetAssetRoot(
             executableDirectory / L"assets");
         // 書き出し時に同梱した事前コンパイル済みシェーダー。これが
@@ -281,6 +293,8 @@ namespace LamaPon
 
         MSG message{};
         auto previousTime = std::chrono::steady_clock::now();
+        const bool d3d12ExperimentalBootstrap =
+            m_graphics.IsD3D12ExperimentalBootstrap();
 
         while (message.message != WM_QUIT)
         {
@@ -300,6 +314,38 @@ namespace LamaPon
                 std::min(rawDeltaTime, 0.1f);
             Time::Detail::AdvanceFrame(deltaTime);
             Profiler::Instance().BeginFrame();
+
+            if (d3d12ExperimentalBootstrap)
+            {
+                // D3D12 Experimentalは現在、swap chainをclearしてpresentする
+                // bootstrap段階です。Windowのメッセージ、Input、フレーム
+                // ペーシングは通常どおり維持しますが、D3D11前提のLayer、
+                // Scene、UI、Overlayへは一切入れません。
+                {
+                    LAMAPON_PROFILE_SCOPE("Input");
+                    m_graphics.Input().Update(true);
+                }
+                {
+                    LAMAPON_PROFILE_SCOPE("Render");
+                    m_graphics.BeginFrame(m_clearColor);
+                    m_graphics.EndFrame();
+                }
+
+                const auto cpuEnd =
+                    std::chrono::steady_clock::now();
+                const float cpuMilliseconds =
+                    std::chrono::duration<float, std::milli>(
+                        cpuEnd - currentTime).count();
+                m_graphics.RecordFrameStatistics(
+                    rawDeltaTime,
+                    cpuMilliseconds);
+                Profiler::Instance().EndFrame();
+                PaceFrame(
+                    currentTime,
+                    m_graphics.Settings()
+                        .targetFrameRate);
+                continue;
+            }
 
             {
                 LAMAPON_PROFILE_SCOPE("Audio");

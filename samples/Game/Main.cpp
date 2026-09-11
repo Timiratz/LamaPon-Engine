@@ -65,10 +65,22 @@ int WINAPI wWinMain(
             settings.windowHeight,
             settings.gameName);
 
+        // D3D12 Experimentalは、D3D11前提のscene rendererを作らずに
+        // swap chainのclear/presentだけを検証する起動プロファイルです。
+        // 実際にD3D12 backendが作れない環境ではGraphicsDeviceがD3D11へ
+        // フォールバックするため、その場合は従来の完全なゲームを起動します。
+        const auto graphicsStartupProfile =
+            settings.graphics.renderingApi
+                == LamaPon::RenderingApi::DirectX12Experimental
+            ? LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap
+            : LamaPon::GraphicsStartupProfile::FullRenderer;
         // 描画APIはデバイス初期化時にだけ選択し、実行中は切り替えません。
         application.Initialize(
             instance,
-            settings.graphics.renderingApi);
+            settings.graphics.renderingApi,
+            graphicsStartupProfile);
+        const bool d3d12ExperimentalBootstrap =
+            application.Graphics().IsD3D12ExperimentalBootstrap();
         // Game Moduleが存在するのに互換性などで読めなかった場合、Sceneを
         // 続けて表示すると「背景だけで止まった」ように見えます。配布ゲーム
         // では起動を止め、既にApplicationが記録した具体的な理由を画面へ
@@ -76,7 +88,8 @@ int WINAPI wWinMain(
         const auto gameModulePath =
             LamaPon::ExecutableDirectory()
             / L"LamaPonGameModule.dll";
-        if (std::filesystem::is_regular_file(gameModulePath)
+        if (!d3d12ExperimentalBootstrap
+            && std::filesystem::is_regular_file(gameModulePath)
             && !application.GameModule().IsLoaded())
         {
             throw std::runtime_error(
@@ -91,6 +104,26 @@ int WINAPI wWinMain(
             settings.physics);
         application.Input().SetActions(
             settings.inputActions);
+
+        if (d3d12ExperimentalBootstrap)
+        {
+            // 実効D3D12 backendではまだScene rendererを初期化しません。
+            // --validate-startupは、最低限のclear/presentが成功することを
+            // 1フレームだけ検証して終了します。
+            if (validateStartup)
+            {
+                ShowWindow(application.WindowHandle(), SW_HIDE);
+                constexpr float bootstrapClearColor[4]{
+                    0.025f, 0.035f, 0.055f, 1.0f };
+                application.Graphics().BeginFrame(
+                    bootstrapClearColor);
+                application.Graphics().EndFrame();
+                return 0;
+            }
+
+            return application.Run();
+        }
+
         application.ActiveScene().SetRegisteredTags(
             settings.tags);
         if (validateStartup)

@@ -274,6 +274,8 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Graphics/GraphicsDevice.cpp
     src/LamaPon/Graphics/GraphicsDevice.h
     src/LamaPon/Graphics/GraphicsDeviceApiResources.h
+    src/LamaPon/Graphics/GraphicsDeviceD3D12Resources.cpp
+    src/LamaPon/Graphics/GraphicsDeviceD3D12Resources.h
     src/LamaPon/Graphics/GraphicsDeviceD3D11Resources.h
     src/LamaPon/Graphics/GraphicsRenderServices.h
     src/LamaPon/Graphics/GraphicsDeviceShaderState.h
@@ -1829,6 +1831,7 @@ install(
         PATTERN "GraphicsDeviceApiResources.h" EXCLUDE
         PATTERN "GraphicsDeviceD3D11Access.h" EXCLUDE
         PATTERN "GraphicsDeviceD3D11Resources.h" EXCLUDE
+        PATTERN "GraphicsDeviceD3D12Resources.h" EXCLUDE
         PATTERN "D3D11ClusteredLightsState.h" EXCLUDE
         PATTERN "D3D11RenderTargetState.h" EXCLUDE
         PATTERN "D3D11ShadowMapState.h" EXCLUDE

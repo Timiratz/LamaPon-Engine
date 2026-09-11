@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
+#include <memory>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -119,6 +121,21 @@ namespace
         }
         return name;
     }
+
+    // D3D12 bootstrapではdebug line用のpipelineをまだ持たないため、
+    // GraphicsDeviceのDebugRenderer契約だけを満たすno-op sinkです。
+    // Scene/UI描画を有効にするものではありません。
+    class D3D12BootstrapDebugDrawingBackend final
+        : public LamaPon::DebugDrawingBackend
+    {
+    public:
+        void DrawLines(
+            std::span<const LamaPon::DebugLine>,
+            const DirectX::XMFLOAT4X4&,
+            const DirectX::XMFLOAT4X4&) override
+        {
+        }
+    };
 }
 
 namespace LamaPon
@@ -1323,7 +1340,13 @@ namespace LamaPon
     std::unique_ptr<DebugDrawingBackend>
         D3D12Backend::CreateDebugDrawingBackend()
     {
-        ThrowUnsupported("CreateDebugDrawingBackend");
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "CreateDebugDrawingBackend requires an initialized "
+                "D3D12 backend.");
+        }
+        return std::make_unique<D3D12BootstrapDebugDrawingBackend>();
     }
 
     GraphicsTextureHandle D3D12Backend::CreateSolidRgba8Texture(

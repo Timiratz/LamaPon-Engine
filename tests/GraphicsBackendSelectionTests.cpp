@@ -6,6 +6,7 @@
 #include "LamaPon/Graphics/ShadowMap.h"
 
 #include <Windows.h>
+#include <objbase.h>
 
 #include <array>
 #include <cmath>
@@ -274,10 +275,52 @@ namespace
         Require(selection.fallbackReason == expectedFallbackReason,
             "Rendering backend selection returned an unexpected fallback reason");
     }
+
+    void CheckSelection(
+        const LamaPon::RenderingApi requestedApi,
+        const LamaPon::GraphicsStartupProfile profile,
+        const LamaPon::RenderingApi expectedRequestedApi,
+        const LamaPon::RenderingApi expectedActiveApi,
+        const LamaPon::RenderingApiFallbackReason expectedFallbackReason)
+    {
+        const auto selection = LamaPon::SelectGraphicsBackend(
+            requestedApi,
+            profile);
+        Require(selection.requestedApi == expectedRequestedApi,
+            "Profiled rendering backend selection returned an unexpected "
+            "requested API");
+        Require(selection.activeApi == expectedActiveApi,
+            "Profiled rendering backend selection returned an unexpected "
+            "active API");
+        Require(selection.fallbackReason == expectedFallbackReason,
+            "Profiled rendering backend selection returned an unexpected "
+            "fallback reason");
+    }
+
+    class ScopedWarpAdapterPreference final
+    {
+    public:
+        ScopedWarpAdapterPreference()
+        {
+            LamaPon::GraphicsDevice::SetPreferWarpAdapter(true);
+        }
+
+        ~ScopedWarpAdapterPreference()
+        {
+            LamaPon::GraphicsDevice::SetPreferWarpAdapter(false);
+        }
+
+        ScopedWarpAdapterPreference(const ScopedWarpAdapterPreference&) = delete;
+        ScopedWarpAdapterPreference& operator=(
+            const ScopedWarpAdapterPreference&) = delete;
+    };
 }
 
 static_assert(noexcept(LamaPon::SelectGraphicsBackend(
     LamaPon::RenderingApi::DirectX11)));
+static_assert(noexcept(LamaPon::SelectGraphicsBackend(
+    LamaPon::RenderingApi::DirectX12Experimental,
+    LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap)));
 static_assert(noexcept(std::declval<
     const LamaPon::GraphicsBackend&>()
         .QueryVideoMemoryStatistics()));
@@ -293,6 +336,12 @@ static_assert(noexcept(std::declval<
 
 int main()
 {
+    // D3D12 bootstrapを含むGraphicsDeviceはAssetManagerのWIC factoryを
+    // 作るため、COMを初期化してから検証します。
+    const HRESULT comResult =
+        CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    const bool uninitialize = SUCCEEDED(comResult);
+    int result = 0;
     try
     {
         CheckSelection(
@@ -310,6 +359,19 @@ int main()
             LamaPon::RenderingApi::DirectX12Experimental,
             LamaPon::RenderingApi::DirectX11,
             LamaPon::RenderingApiFallbackReason::NotImplemented);
+        CheckSelection(
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::FullRenderer,
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::RenderingApi::DirectX11,
+            LamaPon::RenderingApiFallbackReason::NotImplemented);
+        CheckSelection(
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::
+                AllowD3D12ExperimentalBootstrap,
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::RenderingApiFallbackReason::None);
         CheckSelection(
             static_cast<LamaPon::RenderingApi>(-1),
             LamaPon::RenderingApi::DirectX11,
@@ -681,6 +743,124 @@ int main()
             d3d12Backend->Shutdown();
         }
 
+        // Gameだけが明示的に許可するD3D12 bootstrapは、D3D11の
+        // native rendererを初期化せず、clear / capture / present / resize
+        // と空のscene facadeだけを安全に提供します。D3D12を初期化できない
+        // 環境では同じprofileでもD3D11へ一度だけフォールバックします。
+        {
+            constexpr std::uint32_t BootstrapWidth = 53u;
+            constexpr std::uint32_t BootstrapHeight = 31u;
+            constexpr std::uint32_t ResizedBootstrapWidth = 29u;
+            constexpr std::uint32_t ResizedBootstrapHeight = 47u;
+            HiddenWindow window{ BootstrapWidth, BootstrapHeight };
+            ScopedWarpAdapterPreference warpAdapterPreference;
+            LamaPon::GraphicsDevice bootstrapGraphics;
+            bootstrapGraphics.Initialize(
+                window.Get(),
+                BootstrapWidth,
+                BootstrapHeight,
+                LamaPon::RenderingApi::DirectX12Experimental,
+                LamaPon::GraphicsStartupProfile::
+                    AllowD3D12ExperimentalBootstrap);
+
+            Require(bootstrapGraphics.IsInitialized(),
+                "The profiled graphics device did not initialize");
+            Require(
+                bootstrapGraphics.StartupRenderingApi()
+                    == LamaPon::RenderingApi::DirectX12Experimental,
+                "The profiled graphics device did not retain the requested "
+                "DirectX 12 API");
+
+            if (bootstrapGraphics.ActiveRenderingApi()
+                == LamaPon::RenderingApi::DirectX12Experimental)
+            {
+                Require(bootstrapGraphics.IsD3D12ExperimentalBootstrap(),
+                    "An active DirectX 12 bootstrap was not identified");
+                Require(
+                    bootstrapGraphics.RenderingApiFallback()
+                        == LamaPon::RenderingApiFallbackReason::None,
+                    "An active DirectX 12 bootstrap reported a fallback");
+                Require(
+                    !bootstrapGraphics.WhiteTextureHandle()
+                        && !bootstrapGraphics.WhiteTextureViewHandle(),
+                    "The DirectX 12 bootstrap unexpectedly created D3D11 "
+                    "white texture resources");
+                Require(
+                    !bootstrapGraphics.Shadows().IsValid()
+                        && !bootstrapGraphics.SpotShadows().IsValid()
+                        && !bootstrapGraphics.PointShadows().IsValid(),
+                    "The DirectX 12 bootstrap did not expose safe empty "
+                    "shadow facades");
+
+                const std::array debugPoints{
+                    DirectX::XMFLOAT3{ -1.0f, 0.0f, 0.0f },
+                    DirectX::XMFLOAT3{ 1.0f, 0.0f, 0.0f }
+                };
+                bootstrapGraphics.Debug().DrawLines(
+                    debugPoints,
+                    DirectX::XMVectorSet(1.0f, 1.0f, 1.0f, 1.0f),
+                    DirectX::XMMatrixIdentity(),
+                    DirectX::XMMatrixIdentity());
+
+                constexpr std::array BootstrapColor{
+                    0.15f, 0.35f, 0.55f, 1.0f };
+                bootstrapGraphics.BeginFrame(BootstrapColor.data());
+                std::uint32_t capturedWidth{};
+                std::uint32_t capturedHeight{};
+                const auto pixels = bootstrapGraphics.CaptureBackBuffer(
+                    capturedWidth,
+                    capturedHeight);
+                Require(
+                    capturedWidth == BootstrapWidth
+                        && capturedHeight == BootstrapHeight
+                        && pixels.size()
+                            == static_cast<std::size_t>(BootstrapWidth)
+                                * BootstrapHeight * 4u,
+                    "The DirectX 12 bootstrap frame could not be captured");
+                bootstrapGraphics.EndFrame();
+
+                bootstrapGraphics.Resize(
+                    ResizedBootstrapWidth,
+                    ResizedBootstrapHeight);
+                Require(
+                    bootstrapGraphics.Width() == ResizedBootstrapWidth
+                        && bootstrapGraphics.Height() == ResizedBootstrapHeight,
+                    "The DirectX 12 bootstrap resize did not update the "
+                    "graphics device dimensions");
+                constexpr std::array ResizedBootstrapColor{
+                    0.65f, 0.25f, 0.45f, 1.0f };
+                bootstrapGraphics.BeginFrame(ResizedBootstrapColor.data());
+                const auto resizedPixels = bootstrapGraphics.CaptureBackBuffer(
+                    capturedWidth,
+                    capturedHeight);
+                Require(
+                    capturedWidth == ResizedBootstrapWidth
+                        && capturedHeight == ResizedBootstrapHeight
+                        && resizedPixels.size()
+                            == static_cast<std::size_t>(
+                                ResizedBootstrapWidth)
+                                * ResizedBootstrapHeight * 4u,
+                    "The resized DirectX 12 bootstrap frame could not be "
+                    "captured");
+                bootstrapGraphics.EndFrame();
+            }
+            else
+            {
+                Require(
+                    bootstrapGraphics.ActiveRenderingApi()
+                        == LamaPon::RenderingApi::DirectX11,
+                    "A failed DirectX 12 bootstrap did not fall back to "
+                    "DirectX 11");
+                Require(
+                    !bootstrapGraphics.IsD3D12ExperimentalBootstrap()
+                        && bootstrapGraphics.RenderingApiFallback()
+                            == LamaPon::RenderingApiFallbackReason::
+                                InitializationFailed,
+                    "A failed DirectX 12 bootstrap did not report its "
+                    "DirectX 11 fallback");
+            }
+        }
+
         RequireThrowsExactly<std::invalid_argument>(
             []
             {
@@ -960,7 +1140,12 @@ int main()
     catch (const std::exception& error)
     {
         std::cerr << error.what() << '\n';
-        return 1;
+        result = 1;
     }
-    return 0;
+    // COM objectを借用するDevice / AssetManagerはtry内で破棄済みです。
+    if (uninitialize)
+    {
+        CoUninitialize();
+    }
+    return result;
 }

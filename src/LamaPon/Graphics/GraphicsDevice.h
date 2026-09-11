@@ -214,6 +214,15 @@ namespace LamaPon
             std::uint32_t width,
             std::uint32_t height,
             RenderingApi requestedApi);
+        // GameがD3D12 Experimentalのpresentation bootstrapを明示的に
+        // 許可する入口です。通常のInitializeは完全なrendererを必要とする
+        // ため、D3D12設定でも従来どおりD3D11へフォールバックします。
+        void Initialize(
+            HWND window,
+            std::uint32_t width,
+            std::uint32_t height,
+            RenderingApi requestedApi,
+            GraphicsStartupProfile profile);
         void Resize(std::uint32_t width, std::uint32_t height);
 
         // Initialize前に呼ぶと、GPUの代わりにWARP（CPUラスタライザ）
@@ -344,6 +353,9 @@ namespace LamaPon
         // 起動時の要求と生成されたBackendが異なる理由です。
         [[nodiscard]] RenderingApiFallbackReason
             RenderingApiFallback() const noexcept;
+        // trueはD3D12 Experimentalのclear/present/resizeだけを利用する
+        // Game bootstrapです。Scene/UI/asset GPU uploadはまだ利用できません。
+        [[nodiscard]] bool IsD3D12ExperimentalBootstrap() const noexcept;
         [[nodiscard]] const FrameStatistics&
             FrameStats() const noexcept;
         [[nodiscard]] const GraphicsMemoryStatistics&
@@ -790,7 +802,8 @@ namespace LamaPon
             HWND window,
             std::uint32_t width,
             std::uint32_t height,
-            RenderingApi requestedApi);
+            RenderingApi requestedApi,
+            GraphicsStartupProfile profile);
         void CreateApiResources(RenderingApi activeApi);
         void ResetApiResources() noexcept;
         [[nodiscard]] std::function<void()>

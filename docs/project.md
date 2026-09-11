@@ -164,7 +164,9 @@ GPUが無い・正しく動かない環境（仮想マシン、リモートデ�
 - ビルドプロファイル（Windows／Web）と書き出し先の設定画面への入口
 
 Rendering APIの既定はDirectX 11です。変更は実行中に切り替わらず、エディターまたはゲームの再起動後に反映されます。
-DirectX 12 Experimentalは現在未実装のため、選択してもDirectX 11バックエンドへ安全にフォールバックします。
+DirectX 12 Experimentalは段階実装中です。書き出したゲームで選ぶと、現在はD3D12でウィンドウのクリアと表示（clear／present／resize）だけを行う起動検証モードになり、Scene・UIはまだ描画されません。
+D3D12を初期化できない環境では、DirectX 11へ自動的にフォールバックして通常どおり起動します。
+エディターとCLIは完全なレンダラーが必要なため、DirectX 12 Experimentalを選んでもDirectX 11で起動します。
 
 タグを登録すると、InspectorのTag欄がドロップダウン選択になり、Scene／Prefab読み込み時に未登録タグの使用をConsoleへ警告します。
 一覧が空の間は従来通り検査なしで動作します。
