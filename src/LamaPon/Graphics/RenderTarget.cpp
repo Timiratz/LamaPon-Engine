@@ -1,26 +1,32 @@
 #include "LamaPon/Graphics/RenderTarget.h"
-#include "LamaPon/Graphics/EnvironmentRenderer.h"
+
+#include "LamaPon/Graphics/D3D11RenderTargetState.h"
 #include "LamaPon/Graphics/RenderTargetBackendState.h"
 #include "LamaPon/Graphics/ScreenEffect.h"
+
+#include <algorithm>
+#include <array>
+#include <optional>
+#include <utility>
 
 namespace
 {
     [[nodiscard]] LamaPon::Detail::D3D11RenderTargetState*
-        AsD3D11State(
-            LamaPon::Detail::RenderTargetBackendState* const state)
-        noexcept
+        AsD3D11State(LamaPon::RenderTarget* const target) noexcept
     {
-        return dynamic_cast<
-            LamaPon::Detail::D3D11RenderTargetState*>(state);
+        return target != nullptr
+            ? dynamic_cast<LamaPon::Detail::D3D11RenderTargetState*>(
+                LamaPon::Detail::RenderTargetBackendAccess::Get(*target))
+            : nullptr;
     }
 
     [[nodiscard]] const LamaPon::Detail::D3D11RenderTargetState*
-        AsD3D11State(
-            const LamaPon::Detail::RenderTargetBackendState* const state)
-        noexcept
+        AsD3D11State(const LamaPon::RenderTarget* const target) noexcept
     {
-        return dynamic_cast<
-            const LamaPon::Detail::D3D11RenderTargetState*>(state);
+        return target != nullptr
+            ? dynamic_cast<const LamaPon::Detail::D3D11RenderTargetState*>(
+                LamaPon::Detail::RenderTargetBackendAccess::Get(*target))
+            : nullptr;
     }
 }
 
@@ -84,15 +90,6 @@ namespace LamaPon
         return m_publicHistoryViewProjection;
     }
 
-    ID3D11ShaderResourceView*
-        RenderTarget::DepthCopyShaderResourceView() const noexcept
-    {
-        const auto* const state = AsD3D11State(m_backendState.get());
-        return state != nullptr
-            ? state->m_depthCopyShaderResourceView.Get()
-            : nullptr;
-    }
-
     GraphicsViewHandle RenderTarget::DepthViewHandle() const noexcept
     {
         return m_backendState != nullptr
@@ -116,48 +113,9 @@ namespace LamaPon
             : 0u;
     }
 
-    ID3D11RenderTargetView*
-        RenderTarget::ReflectionDepthPyramidMipTarget(
-            const std::uint32_t mip) const noexcept
-    {
-        const auto* const state = AsD3D11State(m_backendState.get());
-        return state != nullptr
-                && mip < state->m_reflectionDepthPyramidTargets.size()
-            ? state->m_reflectionDepthPyramidTargets[mip].Get()
-            : nullptr;
-    }
-
-    ID3D11ShaderResourceView*
-        RenderTarget::ReflectionDepthPyramidMipView(
-            const std::uint32_t mip) const noexcept
-    {
-        const auto* const state = AsD3D11State(m_backendState.get());
-        return state != nullptr
-                && mip < state->m_reflectionDepthPyramidMipViews.size()
-            ? state->m_reflectionDepthPyramidMipViews[mip].Get()
-            : nullptr;
-    }
-
     void RenderTarget::SetComputeWritable(const bool value) noexcept
     {
         m_computeWritable = value;
-    }
-
-    ID3D11UnorderedAccessView*
-        RenderTarget::DisplayUnorderedAccessView() const noexcept
-    {
-        const auto* const state = AsD3D11State(m_backendState.get());
-        return state != nullptr
-            ? state->m_displayUnorderedAccessView.Get()
-            : nullptr;
-    }
-
-    ID3D11Texture2D* RenderTarget::DisplayTexture() const noexcept
-    {
-        const auto* const state = AsD3D11State(m_backendState.get());
-        return state != nullptr
-            ? state->m_displayColorTexture.Get()
-            : nullptr;
     }
 
     GraphicsViewHandle RenderTarget::DisplayViewHandle() const noexcept
@@ -192,308 +150,314 @@ namespace LamaPon
         return m_backendState != nullptr
             && m_backendState->m_initialized;
     }
+}
 
-    ID3D11ShaderResourceView*
-        RenderTarget::ShaderResourceView() const noexcept
+namespace LamaPon::Detail
+{
+    RenderTargetBackendState*
+        RenderTargetBackendAccess::Get(RenderTarget& target) noexcept
     {
-        const auto* const state = AsD3D11State(m_backendState.get());
-        return state != nullptr
-            ? state->ShaderResourceView()
-            : nullptr;
+        return target.m_backendState.get();
     }
 
-    ID3D11ShaderResourceView*
-        RenderTarget::DisplayShaderResourceView() const noexcept
+    const RenderTargetBackendState*
+        RenderTargetBackendAccess::Get(
+            const RenderTarget& target) noexcept
     {
-        const auto* const state = AsD3D11State(m_backendState.get());
-        return state != nullptr
-            ? state->DisplayShaderResourceView()
-            : nullptr;
+        return target.m_backendState.get();
     }
 
-    ID3D11ShaderResourceView*
-        RenderTarget::AmbientOcclusionShaderResourceView()
-        const noexcept
+    bool RenderTargetBackendAccess::ComputeWritable(
+        const RenderTarget& target) noexcept
     {
-        const auto* const state = AsD3D11State(m_backendState.get());
-        return state != nullptr
-            ? state->AmbientOcclusionShaderResourceView()
-            : nullptr;
+        return target.m_computeWritable;
     }
 
-    ID3D11ShaderResourceView*
-        RenderTarget::ColorHistoryShaderResourceView() const noexcept
+    void RenderTargetBackendAccess::SetPublicHistoryViewProjection(
+        RenderTarget& target,
+        const DirectX::XMFLOAT4X4& viewProjection) noexcept
     {
-        const auto* const state = AsD3D11State(m_backendState.get());
-        return state != nullptr
-            ? state->ColorHistoryShaderResourceView()
-            : nullptr;
+        target.m_publicHistoryViewProjection = viewProjection;
     }
 
-    ID3D11ShaderResourceView*
-        RenderTarget::ReflectionDepthPyramidShaderResourceView()
-        const noexcept
+    void RenderTargetBackendAccess::Publish(
+        RenderTarget& target,
+        std::unique_ptr<RenderTargetBackendState> state) noexcept
     {
-        const auto* const state = AsD3D11State(m_backendState.get());
-        return state != nullptr
-            ? state->ReflectionDepthPyramidShaderResourceView()
-            : nullptr;
+        target.m_backendState = std::move(state);
     }
+}
 
-    ID3D11ShaderResourceView*
-        RenderTarget::DepthShaderResourceView() const noexcept
+// API 67以前のGame ModuleはAPI version検査より先に旧member importを
+// 解決します。x64ではmemberのthisと参照引数はいずれもpointerとして
+// 渡されるため、API-neutralな公開ヘッダーへD3D11型を戻さずにこの
+// loader互換thunkへaliasできます。実際の旧module利用はversion不一致で
+// 拒否されますが、getterと処理の従来動作も可能な範囲で維持します。
+extern "C" void* LamaPonLegacyRenderTargetShaderResourceView(
+    const LamaPon::RenderTarget* const target) noexcept
+{
+    const auto* const state = AsD3D11State(target);
+    return state != nullptr ? state->ShaderResourceView() : nullptr;
+}
+
+extern "C" void* LamaPonLegacyRenderTargetDisplayShaderResourceView(
+    const LamaPon::RenderTarget* const target) noexcept
+{
+    const auto* const state = AsD3D11State(target);
+    return state != nullptr
+        ? state->DisplayShaderResourceView()
+        : nullptr;
+}
+
+extern "C" void* LamaPonLegacyRenderTargetAmbientOcclusionView(
+    const LamaPon::RenderTarget* const target) noexcept
+{
+    const auto* const state = AsD3D11State(target);
+    return state != nullptr
+        ? state->AmbientOcclusionShaderResourceView()
+        : nullptr;
+}
+
+extern "C" void* LamaPonLegacyRenderTargetColorHistoryView(
+    const LamaPon::RenderTarget* const target) noexcept
+{
+    const auto* const state = AsD3D11State(target);
+    return state != nullptr
+        ? state->ColorHistoryShaderResourceView()
+        : nullptr;
+}
+
+extern "C" void* LamaPonLegacyRenderTargetReflectionDepthPyramidView(
+    const LamaPon::RenderTarget* const target) noexcept
+{
+    const auto* const state = AsD3D11State(target);
+    return state != nullptr
+        ? state->ReflectionDepthPyramidShaderResourceView()
+        : nullptr;
+}
+
+extern "C" void* LamaPonLegacyRenderTargetDepthView(
+    const LamaPon::RenderTarget* const target) noexcept
+{
+    const auto* const state = AsD3D11State(target);
+    return state != nullptr
+        ? state->DepthShaderResourceView()
+        : nullptr;
+}
+
+extern "C" void* LamaPonLegacyRenderTargetDepthCopyView(
+    const LamaPon::RenderTarget* const target) noexcept
+{
+    const auto* const state = AsD3D11State(target);
+    return state != nullptr
+        ? state->m_depthCopyShaderResourceView.Get()
+        : nullptr;
+}
+
+extern "C" void* LamaPonLegacyRenderTargetReflectionMipTarget(
+    const LamaPon::RenderTarget* const target,
+    const std::uint32_t mip) noexcept
+{
+    const auto* const state = AsD3D11State(target);
+    return state != nullptr
+            && mip < state->m_reflectionDepthPyramidTargets.size()
+        ? state->m_reflectionDepthPyramidTargets[mip].Get()
+        : nullptr;
+}
+
+extern "C" void* LamaPonLegacyRenderTargetReflectionMipView(
+    const LamaPon::RenderTarget* const target,
+    const std::uint32_t mip) noexcept
+{
+    const auto* const state = AsD3D11State(target);
+    return state != nullptr
+            && mip < state->m_reflectionDepthPyramidMipViews.size()
+        ? state->m_reflectionDepthPyramidMipViews[mip].Get()
+        : nullptr;
+}
+
+extern "C" void* LamaPonLegacyRenderTargetDisplayUnorderedAccessView(
+    const LamaPon::RenderTarget* const target) noexcept
+{
+    const auto* const state = AsD3D11State(target);
+    return state != nullptr
+        ? state->m_displayUnorderedAccessView.Get()
+        : nullptr;
+}
+
+extern "C" void* LamaPonLegacyRenderTargetDisplayTexture(
+    const LamaPon::RenderTarget* const target) noexcept
+{
+    const auto* const state = AsD3D11State(target);
+    return state != nullptr
+        ? state->m_displayColorTexture.Get()
+        : nullptr;
+}
+
+extern "C" void LamaPonLegacyRenderTargetApplyBloom(
+    LamaPon::RenderTarget* const target,
+    LamaPon::EnvironmentRenderer* const renderer,
+    const LamaPon::BloomSettings* const settings)
+{
+    if (auto* const state = AsD3D11State(target);
+        state != nullptr && renderer != nullptr && settings != nullptr)
     {
-        const auto* const state = AsD3D11State(m_backendState.get());
-        return state != nullptr
-            ? state->DepthShaderResourceView()
-            : nullptr;
+        state->ApplyBloom(*renderer, *settings);
     }
+}
 
-    void RenderTarget::Bind(ID3D11DeviceContext* const context) const
+extern "C" void LamaPonLegacyRenderTargetApplyScreenOutline(
+    LamaPon::RenderTarget* const target,
+    LamaPon::EnvironmentRenderer* const renderer,
+    const LamaPon::ScreenOutlineSettings* const settings,
+    const DirectX::XMFLOAT4X4* const projection)
+{
+    if (auto* const state = AsD3D11State(target);
+        state != nullptr && renderer != nullptr && settings != nullptr
+        && projection != nullptr)
     {
-        if (const auto* const state = AsD3D11State(m_backendState.get()))
-        {
-            state->Bind(context);
-        }
+        state->ApplyScreenOutline(*renderer, *settings, *projection);
     }
+}
 
-    void RenderTarget::Clear(
-        ID3D11DeviceContext* const context,
-        const float color[4]) const
+extern "C" void LamaPonLegacyRenderTargetApplyScreenSpaceLensFlare(
+    LamaPon::RenderTarget* const target,
+    LamaPon::EnvironmentRenderer* const renderer,
+    const LamaPon::ScreenSpaceLensFlareSettings* const settings)
+{
+    if (auto* const state = AsD3D11State(target);
+        state != nullptr && renderer != nullptr && settings != nullptr)
     {
-        if (const auto* const state = AsD3D11State(m_backendState.get()))
-        {
-            state->Clear(context, color);
-        }
+        state->ApplyScreenSpaceLensFlare(*renderer, *settings);
     }
+}
 
-    void RenderTarget::CopyToDisplay(
-        ID3D11DeviceContext* const context) const
+extern "C" void LamaPonLegacyRenderTargetApplyTemporalAntiAliasing(
+    LamaPon::RenderTarget* const target,
+    LamaPon::EnvironmentRenderer* const renderer,
+    const LamaPon::TemporalAntiAliasingSettings* const settings,
+    const LamaPon::EnvironmentRenderer::TemporalInputs* const inputs)
+{
+    if (auto* const state = AsD3D11State(target);
+        state != nullptr && renderer != nullptr && settings != nullptr
+        && inputs != nullptr)
     {
-        if (const auto* const state = AsD3D11State(m_backendState.get()))
-        {
-            state->CopyToDisplay(context);
-        }
+        state->ApplyTemporalAntiAliasing(
+            *renderer, *settings, *inputs);
     }
+}
 
-    void RenderTarget::BindDepthOnly(
-        ID3D11DeviceContext* const context) const
+extern "C" void LamaPonLegacyRenderTargetApplyVolumetricLight(
+    LamaPon::RenderTarget* const target,
+    LamaPon::EnvironmentRenderer* const renderer,
+    const LamaPon::VolumetricLightSettings* const settings,
+    const LamaPon::EnvironmentRenderer::VolumetricInputs* const inputs)
+{
+    if (auto* const state = AsD3D11State(target);
+        state != nullptr && renderer != nullptr && settings != nullptr
+        && inputs != nullptr)
     {
-        if (const auto* const state = AsD3D11State(m_backendState.get()))
-        {
-            state->BindDepthOnly(context);
-        }
+        state->ApplyVolumetricLight(*renderer, *settings, *inputs);
     }
+}
 
-    void RenderTarget::CaptureDepthForReflections(
-        ID3D11DeviceContext* const context) const
+extern "C" void LamaPonLegacyRenderTargetApplyDepthOfField(
+    LamaPon::RenderTarget* const target,
+    LamaPon::EnvironmentRenderer* const renderer,
+    const LamaPon::DepthOfFieldSettings* const settings,
+    const DirectX::XMFLOAT4X4* const projection,
+    const std::uint32_t sampleCount)
+{
+    if (auto* const state = AsD3D11State(target);
+        state != nullptr && renderer != nullptr && settings != nullptr
+        && projection != nullptr)
     {
-        if (const auto* const state = AsD3D11State(m_backendState.get()))
-        {
-            state->CaptureDepthForReflections(context);
-        }
+        state->ApplyDepthOfField(
+            *renderer, *settings, *projection, sampleCount);
     }
+}
 
-    void RenderTarget::CaptureColorHistory(
-        ID3D11DeviceContext* const context,
-        const DirectX::XMFLOAT4X4& viewProjection)
+extern "C" void LamaPonLegacyRenderTargetApplyMotionBlur(
+    LamaPon::RenderTarget* const target,
+    LamaPon::EnvironmentRenderer* const renderer,
+    const LamaPon::MotionBlurSettings* const settings,
+    const DirectX::XMFLOAT4X4* const inverseViewProjection,
+    const DirectX::XMFLOAT4X4* const viewProjection,
+    const std::uint32_t sampleCount)
+{
+    if (auto* const state = AsD3D11State(target);
+        state != nullptr && renderer != nullptr && settings != nullptr
+        && inverseViewProjection != nullptr && viewProjection != nullptr)
     {
-        if (auto* const state = AsD3D11State(m_backendState.get()))
-        {
-            state->CaptureColorHistory(context, viewProjection);
-            if (state->m_historyValid)
-            {
-                m_publicHistoryViewProjection =
-                    state->m_historyViewProjection;
-            }
-        }
+        state->ApplyMotionBlur(
+            *renderer,
+            *settings,
+            *inverseViewProjection,
+            *viewProjection,
+            sampleCount);
     }
+}
 
-    void RenderTarget::CaptureTemporalHistory(
-        ID3D11DeviceContext* const context,
-        const DirectX::XMFLOAT4X4& viewProjection)
+extern "C" void LamaPonLegacyRenderTargetApplyToneMapping(
+    LamaPon::RenderTarget* const target,
+    LamaPon::EnvironmentRenderer* const renderer,
+    const LamaPon::ColorGradingSettings* const settings)
+{
+    if (auto* const state = AsD3D11State(target);
+        state != nullptr && renderer != nullptr && settings != nullptr)
     {
-        if (auto* const state = AsD3D11State(m_backendState.get()))
-        {
-            state->CaptureTemporalHistory(context, viewProjection);
-        }
+        state->ApplyToneMapping(*renderer, *settings);
     }
+}
 
-    float RenderTarget::UpdateAutoExposure(
-        EnvironmentRenderer& renderer,
-        const std::optional<float> measuredLuminance,
-        const AutoExposureSettings& settings,
-        const float deltaSeconds)
+extern "C" void LamaPonLegacyRenderTargetApplyFXAA(
+    LamaPon::RenderTarget* const target,
+    LamaPon::EnvironmentRenderer* const renderer)
+{
+    if (auto* const state = AsD3D11State(target);
+        state != nullptr && renderer != nullptr)
     {
-        if (auto* const state = AsD3D11State(m_backendState.get()))
-        {
-            return state->UpdateAutoExposure(
-                renderer,
-                measuredLuminance,
-                settings,
-                deltaSeconds);
-        }
-        return 0.0f;
+        state->ApplyFXAA(*renderer);
     }
+}
 
-    std::optional<float>
-        RenderTarget::TryReadAutoExposureLuminance(
-            ID3D11DeviceContext* const context)
+extern "C" bool LamaPonLegacyRenderTargetResolveAmbientOcclusion(
+    LamaPon::RenderTarget* const target,
+    LamaPon::EnvironmentRenderer* const renderer,
+    const LamaPon::AmbientOcclusionSettings* const settings,
+    const DirectX::XMFLOAT4X4* const projection,
+    const std::uint32_t sampleCount)
+{
+    if (auto* const state = AsD3D11State(target);
+        state != nullptr && renderer != nullptr && settings != nullptr
+        && projection != nullptr)
     {
-        if (auto* const state = AsD3D11State(m_backendState.get()))
-        {
-            return state->TryReadAutoExposureLuminance(context);
-        }
-        return std::nullopt;
+        return state->ResolveAmbientOcclusion(
+            *renderer, *settings, *projection, sampleCount);
     }
+    return false;
+}
 
-    void RenderTarget::CaptureAutoExposureLuminance(
-        ID3D11DeviceContext* const context)
+extern "C" void LamaPonLegacyRenderTargetApplyScreenEffect(
+    LamaPon::RenderTarget* const target,
+    LamaPon::ScreenEffect* const effect,
+    const void* const auxiliaryTextures,
+    const DirectX::XMFLOAT4* const depthParameters,
+    const DirectX::XMFLOAT4* const depthUnprojection,
+    const std::array<DirectX::XMFLOAT4, 8>* const parameters)
+{
+    if (auto* const state = AsD3D11State(target);
+        state != nullptr && effect != nullptr
+        && auxiliaryTextures != nullptr && depthParameters != nullptr
+        && depthUnprojection != nullptr && parameters != nullptr)
     {
-        if (auto* const state = AsD3D11State(m_backendState.get()))
-        {
-            state->CaptureAutoExposureLuminance(context);
-        }
-    }
-
-    void RenderTarget::ApplyBloom(
-        EnvironmentRenderer& renderer,
-        const BloomSettings& settings)
-    {
-        if (auto* const state = AsD3D11State(m_backendState.get()))
-        {
-            state->ApplyBloom(renderer, settings);
-        }
-    }
-
-    void RenderTarget::ApplyScreenOutline(
-        EnvironmentRenderer& renderer,
-        const ScreenOutlineSettings& settings,
-        const DirectX::XMFLOAT4X4& projection)
-    {
-        if (auto* const state = AsD3D11State(m_backendState.get()))
-        {
-            state->ApplyScreenOutline(renderer, settings, projection);
-        }
-    }
-
-    void RenderTarget::ApplyScreenSpaceLensFlare(
-        EnvironmentRenderer& renderer,
-        const ScreenSpaceLensFlareSettings& settings)
-    {
-        if (auto* const state = AsD3D11State(m_backendState.get()))
-        {
-            state->ApplyScreenSpaceLensFlare(renderer, settings);
-        }
-    }
-
-    void RenderTarget::ApplyTemporalAntiAliasing(
-        EnvironmentRenderer& renderer,
-        const TemporalAntiAliasingSettings& settings,
-        const EnvironmentRenderer::TemporalInputs& inputs)
-    {
-        if (auto* const state = AsD3D11State(m_backendState.get()))
-        {
-            state->ApplyTemporalAntiAliasing(renderer, settings, inputs);
-        }
-    }
-
-    void RenderTarget::ApplyVolumetricLight(
-        EnvironmentRenderer& renderer,
-        const VolumetricLightSettings& settings,
-        const EnvironmentRenderer::VolumetricInputs& inputs)
-    {
-        if (auto* const state = AsD3D11State(m_backendState.get()))
-        {
-            state->ApplyVolumetricLight(renderer, settings, inputs);
-        }
-    }
-
-    void RenderTarget::ApplyDepthOfField(
-        EnvironmentRenderer& renderer,
-        const DepthOfFieldSettings& settings,
-        const DirectX::XMFLOAT4X4& projection,
-        const std::uint32_t sampleCount)
-    {
-        if (auto* const state = AsD3D11State(m_backendState.get()))
-        {
-            state->ApplyDepthOfField(
-                renderer,
-                settings,
-                projection,
-                sampleCount);
-        }
-    }
-
-    void RenderTarget::ApplyMotionBlur(
-        EnvironmentRenderer& renderer,
-        const MotionBlurSettings& settings,
-        const DirectX::XMFLOAT4X4& inverseViewProjection,
-        const DirectX::XMFLOAT4X4& viewProjection,
-        const std::uint32_t sampleCount)
-    {
-        if (auto* const state = AsD3D11State(m_backendState.get()))
-        {
-            state->ApplyMotionBlur(
-                renderer,
-                settings,
-                inverseViewProjection,
-                viewProjection,
-                sampleCount);
-        }
-    }
-
-    void RenderTarget::ApplyToneMapping(
-        EnvironmentRenderer& renderer,
-        const ColorGradingSettings& settings)
-    {
-        if (auto* const state = AsD3D11State(m_backendState.get()))
-        {
-            state->ApplyToneMapping(renderer, settings);
-        }
-    }
-
-    void RenderTarget::ApplyFXAA(EnvironmentRenderer& renderer)
-    {
-        if (auto* const state = AsD3D11State(m_backendState.get()))
-        {
-            state->ApplyFXAA(renderer);
-        }
-    }
-
-    bool RenderTarget::ResolveAmbientOcclusion(
-        EnvironmentRenderer& renderer,
-        const AmbientOcclusionSettings& settings,
-        const DirectX::XMFLOAT4X4& projection,
-        const std::uint32_t sampleCount)
-    {
-        if (auto* const state = AsD3D11State(m_backendState.get()))
-        {
-            return state->ResolveAmbientOcclusion(
-                renderer,
-                settings,
-                projection,
-                sampleCount);
-        }
-        return false;
-    }
-
-    void RenderTarget::ApplyScreenEffect(
-        ScreenEffect& effect,
-        const std::array<ID3D11ShaderResourceView*, 2>&
-            auxiliaryTextures,
-        const DirectX::XMFLOAT4& depthParameters,
-        const DirectX::XMFLOAT4& depthUnprojection,
-        const std::array<DirectX::XMFLOAT4, 8>& parameters)
-    {
-        if (auto* const state = AsD3D11State(m_backendState.get()))
-        {
-            state->ApplyScreenEffect(
-                effect,
-                auxiliaryTextures,
-                depthParameters,
-                depthUnprojection,
-                parameters);
-        }
+        const auto& views = *static_cast<const std::array<
+            ID3D11ShaderResourceView*, 2>*>(auxiliaryTextures);
+        state->ApplyScreenEffect(
+            *effect,
+            views,
+            *depthParameters,
+            *depthUnprojection,
+            *parameters);
     }
 }

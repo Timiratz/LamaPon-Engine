@@ -51,6 +51,42 @@ namespace
     using D3D11Access =
         LamaPon::Detail::GraphicsDeviceD3D11Access;
 
+    template <typename T>
+    concept HasPublicDepthCopyShaderResourceView = requires(
+        const T& target)
+    {
+        target.DepthCopyShaderResourceView();
+    };
+
+    template <typename T>
+    concept HasPublicReflectionDepthPyramidMipTarget = requires(
+        const T& target,
+        const std::uint32_t mip)
+    {
+        target.ReflectionDepthPyramidMipTarget(mip);
+    };
+
+    template <typename T>
+    concept HasPublicReflectionDepthPyramidMipView = requires(
+        const T& target,
+        const std::uint32_t mip)
+    {
+        target.ReflectionDepthPyramidMipView(mip);
+    };
+
+    template <typename T>
+    concept HasPublicDisplayUnorderedAccessView = requires(
+        const T& target)
+    {
+        target.DisplayUnorderedAccessView();
+    };
+
+    template <typename T>
+    concept HasPublicDisplayTexture = requires(const T& target)
+    {
+        target.DisplayTexture();
+    };
+
     constexpr std::uint32_t Width = 320;
     constexpr std::uint32_t Height = 180;
 
@@ -739,6 +775,21 @@ int main(const int argumentCount, char** arguments)
         constexpr char LegacyDisplayViewSymbol[] =
             "?DisplayShaderResourceView@RenderTarget@LamaPon@@"
             "QEBAPEAUID3D11ShaderResourceView@@XZ";
+        static constexpr char LegacyRenderTargetDepthCopyViewSymbol[] =
+            "?DepthCopyShaderResourceView@RenderTarget@LamaPon@@"
+            "QEBAPEAUID3D11ShaderResourceView@@XZ";
+        static constexpr char LegacyRenderTargetReflectionMipTargetSymbol[] =
+            "?ReflectionDepthPyramidMipTarget@RenderTarget@LamaPon@@"
+            "QEBAPEAUID3D11RenderTargetView@@I@Z";
+        static constexpr char LegacyRenderTargetReflectionMipViewSymbol[] =
+            "?ReflectionDepthPyramidMipView@RenderTarget@LamaPon@@"
+            "QEBAPEAUID3D11ShaderResourceView@@I@Z";
+        static constexpr char LegacyRenderTargetDisplayUavSymbol[] =
+            "?DisplayUnorderedAccessView@RenderTarget@LamaPon@@"
+            "QEBAPEAUID3D11UnorderedAccessView@@XZ";
+        static constexpr char LegacyRenderTargetDisplayTextureSymbol[] =
+            "?DisplayTexture@RenderTarget@LamaPon@@"
+            "QEBAPEAUID3D11Texture2D@@XZ";
         constexpr std::array LegacyRenderTargetPostProcessSymbols{
             "?ApplyBloom@RenderTarget@LamaPon@@"
             "QEAAXAEAVEnvironmentRenderer@2@AEBUBloomSettings@2@@Z",
@@ -798,19 +849,14 @@ int main(const int argumentCount, char** arguments)
                 "QEBA?AVGraphicsViewHandle@2@XZ",
             "?ColorHistoryViewProjection@RenderTarget@LamaPon@@"
                 "QEBAAEBUXMFLOAT4X4@DirectX@@XZ",
-            "?DepthCopyShaderResourceView@RenderTarget@LamaPon@@"
-                "QEBAPEAUID3D11ShaderResourceView@@XZ",
+            LegacyRenderTargetDepthCopyViewSymbol,
             "?ReflectionDepthPyramidMipCount@RenderTarget@LamaPon@@"
                 "QEBAIXZ",
-            "?ReflectionDepthPyramidMipTarget@RenderTarget@LamaPon@@"
-                "QEBAPEAUID3D11RenderTargetView@@I@Z",
-            "?ReflectionDepthPyramidMipView@RenderTarget@LamaPon@@"
-                "QEBAPEAUID3D11ShaderResourceView@@I@Z",
+            LegacyRenderTargetReflectionMipTargetSymbol,
+            LegacyRenderTargetReflectionMipViewSymbol,
             "?SetComputeWritable@RenderTarget@LamaPon@@QEAAX_N@Z",
-            "?DisplayUnorderedAccessView@RenderTarget@LamaPon@@"
-                "QEBAPEAUID3D11UnorderedAccessView@@XZ",
-            "?DisplayTexture@RenderTarget@LamaPon@@"
-                "QEBAPEAUID3D11Texture2D@@XZ",
+            LegacyRenderTargetDisplayUavSymbol,
+            LegacyRenderTargetDisplayTextureSymbol,
             "?Width@RenderTarget@LamaPon@@QEBAIXZ",
             "?Height@RenderTarget@LamaPon@@QEBAIXZ",
             "?AspectRatio@RenderTarget@LamaPon@@QEBAMXZ",
@@ -899,6 +945,23 @@ int main(const int argumentCount, char** arguments)
         const auto legacyClusteredLightsConstructorAddress = GetProcAddress(
             runtimeModule,
             LegacyClusteredLightsConstructorSymbol);
+        const auto legacyRenderTargetDepthCopyViewAddress = GetProcAddress(
+            runtimeModule,
+            LegacyRenderTargetDepthCopyViewSymbol);
+        const auto legacyRenderTargetReflectionMipTargetAddress =
+            GetProcAddress(
+                runtimeModule,
+                LegacyRenderTargetReflectionMipTargetSymbol);
+        const auto legacyRenderTargetReflectionMipViewAddress =
+            GetProcAddress(
+                runtimeModule,
+                LegacyRenderTargetReflectionMipViewSymbol);
+        const auto legacyRenderTargetDisplayUavAddress = GetProcAddress(
+            runtimeModule,
+            LegacyRenderTargetDisplayUavSymbol);
+        const auto legacyRenderTargetDisplayTextureAddress = GetProcAddress(
+            runtimeModule,
+            LegacyRenderTargetDisplayTextureSymbol);
         Require(
             runtimeModule != nullptr
                 && GetProcAddress(
@@ -1018,6 +1081,13 @@ int main(const int argumentCount, char** arguments)
                 GetProcAddress(runtimeModule, symbol) != nullptr,
                 "An API 67 opaque ClusteredLights export is missing");
         }
+        Require(
+            legacyRenderTargetDepthCopyViewAddress != nullptr
+                && legacyRenderTargetReflectionMipTargetAddress != nullptr
+                && legacyRenderTargetReflectionMipViewAddress != nullptr
+                && legacyRenderTargetDisplayUavAddress != nullptr
+                && legacyRenderTargetDisplayTextureAddress != nullptr,
+            "An API 68 RenderTarget compatibility export is missing");
         using LegacyEnvironmentAccessor =
             LamaPon::EnvironmentRenderer* (__fastcall*)(
                 const LamaPon::GraphicsDevice*);
@@ -1041,6 +1111,39 @@ int main(const int argumentCount, char** arguments)
         const auto legacyClusteredLightsConstructor =
             reinterpret_cast<LegacyClusteredLightsConstructor>(
                 legacyClusteredLightsConstructorAddress);
+        using LegacyRenderTargetDepthCopyViewAccessor =
+            ID3D11ShaderResourceView* (__fastcall*)(
+                const LamaPon::RenderTarget*);
+        const auto legacyRenderTargetDepthCopyView =
+            reinterpret_cast<LegacyRenderTargetDepthCopyViewAccessor>(
+                legacyRenderTargetDepthCopyViewAddress);
+        using LegacyRenderTargetReflectionMipTargetAccessor =
+            ID3D11RenderTargetView* (__fastcall*)(
+                const LamaPon::RenderTarget*,
+                std::uint32_t);
+        const auto legacyRenderTargetReflectionMipTarget =
+            reinterpret_cast<
+                LegacyRenderTargetReflectionMipTargetAccessor>(
+                    legacyRenderTargetReflectionMipTargetAddress);
+        using LegacyRenderTargetReflectionMipViewAccessor =
+            ID3D11ShaderResourceView* (__fastcall*)(
+                const LamaPon::RenderTarget*,
+                std::uint32_t);
+        const auto legacyRenderTargetReflectionMipView =
+            reinterpret_cast<LegacyRenderTargetReflectionMipViewAccessor>(
+                legacyRenderTargetReflectionMipViewAddress);
+        using LegacyRenderTargetDisplayUavAccessor =
+            ID3D11UnorderedAccessView* (__fastcall*)(
+                const LamaPon::RenderTarget*);
+        const auto legacyRenderTargetDisplayUav =
+            reinterpret_cast<LegacyRenderTargetDisplayUavAccessor>(
+                legacyRenderTargetDisplayUavAddress);
+        using LegacyRenderTargetDisplayTextureAccessor =
+            ID3D11Texture2D* (__fastcall*)(
+                const LamaPon::RenderTarget*);
+        const auto legacyRenderTargetDisplayTexture =
+            reinterpret_cast<LegacyRenderTargetDisplayTextureAccessor>(
+                legacyRenderTargetDisplayTextureAddress);
 
         // API 66のinline destructorが安全に空の旧layoutを破棄できるよう、
         // loader互換constructorは旧storage全体を初期化します。
@@ -1111,11 +1214,27 @@ int main(const int argumentCount, char** arguments)
         static_assert(
             std::is_nothrow_destructible_v<LamaPon::RenderTarget>);
         static_assert(!std::is_copy_constructible_v<LamaPon::RenderTarget>);
+        static_assert(!std::is_copy_assignable_v<LamaPon::RenderTarget>);
         static_assert(!std::is_move_constructible_v<LamaPon::RenderTarget>);
+        static_assert(!std::is_move_assignable_v<LamaPon::RenderTarget>);
+        static_assert(
+            !HasPublicDepthCopyShaderResourceView<LamaPon::RenderTarget>);
+        static_assert(
+            !HasPublicReflectionDepthPyramidMipTarget<
+                LamaPon::RenderTarget>);
+        static_assert(
+            !HasPublicReflectionDepthPyramidMipView<
+                LamaPon::RenderTarget>);
+        static_assert(
+            !HasPublicDisplayUnorderedAccessView<LamaPon::RenderTarget>);
+        static_assert(!HasPublicDisplayTexture<LamaPon::RenderTarget>);
+        static_assert(
+            LamaPon::GameModuleApiVersion == 68,
+            "The API-neutral RenderTarget facade requires Game Module API 68");
         static_assert(
             sizeof(LamaPon::RenderTarget) <= 128,
             "RenderTarget leaked native backend state into its public layout");
-        Stage("render-target-opaque-state");
+        Stage("render-target-api68-facade");
         {
             LamaPon::RenderTarget opaqueTarget;
             const auto* const historyProjectionAddress =
@@ -1138,15 +1257,20 @@ int main(const int argumentCount, char** arguments)
                         == 0u
                     && opaqueTarget.AdaptedLuminance() == 0.0f
                     && opaqueTarget.AutoExposureStops() == 0.0f
-                    && opaqueTarget.DepthCopyShaderResourceView()
+                    && legacyRenderTargetDepthCopyView(&opaqueTarget)
                         == nullptr
-                    && opaqueTarget.ReflectionDepthPyramidMipTarget(0)
+                    && legacyRenderTargetReflectionMipTarget(
+                        &opaqueTarget,
+                        0u)
                         == nullptr
-                    && opaqueTarget.ReflectionDepthPyramidMipView(0)
+                    && legacyRenderTargetReflectionMipView(
+                        &opaqueTarget,
+                        0u)
                         == nullptr
-                    && opaqueTarget.DisplayUnorderedAccessView()
+                    && legacyRenderTargetDisplayUav(&opaqueTarget)
                         == nullptr
-                    && opaqueTarget.DisplayTexture() == nullptr
+                    && legacyRenderTargetDisplayTexture(&opaqueTarget)
+                        == nullptr
                     && historyProjectionAddress
                         == &opaqueTarget.ColorHistoryViewProjection(),
                 "A default opaque RenderTarget changed its empty semantics");
@@ -1170,6 +1294,18 @@ int main(const int argumentCount, char** arguments)
                     && opaqueTarget.Height() == 0u
                     && !opaqueTarget.CurrentColorViewHandle()
                     && !opaqueTarget.DisplayViewHandle()
+                    && legacyRenderTargetDepthCopyView(&opaqueTarget)
+                        == nullptr
+                    && legacyRenderTargetReflectionMipTarget(
+                        &opaqueTarget,
+                        0u) == nullptr
+                    && legacyRenderTargetReflectionMipView(
+                        &opaqueTarget,
+                        0u) == nullptr
+                    && legacyRenderTargetDisplayUav(&opaqueTarget)
+                        == nullptr
+                    && legacyRenderTargetDisplayTexture(&opaqueTarget)
+                        == nullptr
                     && historyProjectionAddress
                         == &opaqueTarget.ColorHistoryViewProjection(),
                 "A failed first resize published a partial backend state");
@@ -1183,15 +1319,40 @@ int main(const int argumentCount, char** arguments)
             graphics.CaptureOffscreenTargetColorHistory(
                 opaqueTarget,
                 opaqueHistory);
+            const auto opaqueMipCount =
+                opaqueTarget.ReflectionDepthPyramidMipCount();
+            auto* const opaqueDepthCopyView =
+                legacyRenderTargetDepthCopyView(&opaqueTarget);
+            auto* const opaqueReflectionMipTarget =
+                legacyRenderTargetReflectionMipTarget(
+                    &opaqueTarget,
+                    0u);
+            auto* const opaqueReflectionMipView =
+                legacyRenderTargetReflectionMipView(
+                    &opaqueTarget,
+                    0u);
+            auto* const opaqueDisplayUav =
+                legacyRenderTargetDisplayUav(&opaqueTarget);
+            auto* const opaqueDisplayTexture =
+                legacyRenderTargetDisplayTexture(&opaqueTarget);
             Require(
                 opaqueTarget.IsValid()
                     && opaqueTarget.Width() == 4u
                     && opaqueTarget.Height() == 4u
                     && opaqueTarget.CurrentColorViewHandle()
                     && opaqueTarget.DisplayViewHandle()
-                    && opaqueTarget.DisplayUnorderedAccessView()
-                        != nullptr
-                    && opaqueTarget.DisplayTexture() != nullptr
+                    && opaqueMipCount > 0u
+                    && opaqueDepthCopyView != nullptr
+                    && opaqueReflectionMipTarget != nullptr
+                    && opaqueReflectionMipView != nullptr
+                    && legacyRenderTargetReflectionMipTarget(
+                        &opaqueTarget,
+                        opaqueMipCount) == nullptr
+                    && legacyRenderTargetReflectionMipView(
+                        &opaqueTarget,
+                        opaqueMipCount) == nullptr
+                    && opaqueDisplayUav != nullptr
+                    && opaqueDisplayTexture != nullptr
                     && opaqueTarget.ColorHistoryViewHandle()
                     && historyProjectionAddress
                         == &opaqueTarget.ColorHistoryViewProjection()
@@ -1207,8 +1368,6 @@ int main(const int argumentCount, char** arguments)
                 opaqueTarget.DisplayViewHandle();
             const auto opaqueHistoryView =
                 opaqueTarget.ColorHistoryViewHandle();
-            auto* const opaqueDisplayUav =
-                opaqueTarget.DisplayUnorderedAccessView();
             bool replacementResizeRejected{};
             try
             {
@@ -1232,8 +1391,20 @@ int main(const int argumentCount, char** arguments)
                         == opaqueDisplayView
                     && opaqueTarget.ColorHistoryViewHandle()
                         == opaqueHistoryView
-                    && opaqueTarget.DisplayUnorderedAccessView()
+                    && opaqueTarget.ReflectionDepthPyramidMipCount()
+                        == opaqueMipCount
+                    && legacyRenderTargetDepthCopyView(&opaqueTarget)
+                        == opaqueDepthCopyView
+                    && legacyRenderTargetReflectionMipTarget(
+                        &opaqueTarget,
+                        0u) == opaqueReflectionMipTarget
+                    && legacyRenderTargetReflectionMipView(
+                        &opaqueTarget,
+                        0u) == opaqueReflectionMipView
+                    && legacyRenderTargetDisplayUav(&opaqueTarget)
                         == opaqueDisplayUav
+                    && legacyRenderTargetDisplayTexture(&opaqueTarget)
+                        == opaqueDisplayTexture
                     && historyProjectionAddress->_11 == 2.0f
                     && historyProjectionAddress->_22 == 3.0f
                     && historyProjectionAddress->_33 == 4.0f
@@ -1246,7 +1417,17 @@ int main(const int argumentCount, char** arguments)
                     && opaqueTarget.Width() == 8u
                     && opaqueTarget.Height() == 8u
                     && !opaqueTarget.ColorHistoryViewHandle()
-                    && opaqueTarget.DisplayUnorderedAccessView()
+                    && legacyRenderTargetDepthCopyView(&opaqueTarget)
+                        != nullptr
+                    && legacyRenderTargetReflectionMipTarget(
+                        &opaqueTarget,
+                        0u) != nullptr
+                    && legacyRenderTargetReflectionMipView(
+                        &opaqueTarget,
+                        0u) != nullptr
+                    && legacyRenderTargetDisplayUav(&opaqueTarget)
+                        != nullptr
+                    && legacyRenderTargetDisplayTexture(&opaqueTarget)
                         != nullptr
                     && historyProjectionAddress
                         == &opaqueTarget.ColorHistoryViewProjection()
@@ -3985,7 +4166,8 @@ int main(const int argumentCount, char** arguments)
             retainedBackendLifetimeView =
                 retainedBackendLifetimeTarget->DisplayViewHandle();
             retainedBackendLifetimeTexture =
-                retainedBackendLifetimeTarget->DisplayTexture();
+                legacyRenderTargetDisplayTexture(
+                    retainedBackendLifetimeTarget.get());
             Require(
                 retainedBackendLifetimeTarget->IsValid()
                     && retainedBackendLifetimeView
@@ -3997,7 +4179,8 @@ int main(const int argumentCount, char** arguments)
                 && retainedBackendLifetimeTarget->IsValid()
                 && retainedBackendLifetimeTarget->DisplayViewHandle()
                     == retainedBackendLifetimeView
-                && retainedBackendLifetimeTarget->DisplayTexture()
+                && legacyRenderTargetDisplayTexture(
+                    retainedBackendLifetimeTarget.get())
                     == retainedBackendLifetimeTexture,
             "Destroying a backend invalidated an independently owned "
             "RenderTarget state");
@@ -5194,7 +5377,7 @@ int main(const int argumentCount, char** arguments)
                 "neutral-compute-display");
         Require(
             computeDisplayTarget.IsValid()
-                && computeDisplayTarget.DisplayUnorderedAccessView()
+                && legacyRenderTargetDisplayUav(&computeDisplayTarget)
                     != nullptr
                 && computeDisplayHandle.Kind()
                     == LamaPon::GraphicsViewKind::ShaderResource
@@ -5207,7 +5390,7 @@ int main(const int argumentCount, char** arguments)
         const auto computeCurrentHandle =
             computeDisplayTarget.CurrentColorViewHandle();
         auto* const computeDisplayUav =
-            computeDisplayTarget.DisplayUnorderedAccessView();
+            legacyRenderTargetDisplayUav(&computeDisplayTarget);
         bool oversizedComputeResizeRejected{};
         try
         {
@@ -5229,7 +5412,7 @@ int main(const int argumentCount, char** arguments)
                     == computeCurrentHandle
                 && computeDisplayTarget.DisplayViewHandle()
                     == computeDisplayHandle
-                && computeDisplayTarget.DisplayUnorderedAccessView()
+                && legacyRenderTargetDisplayUav(&computeDisplayTarget)
                     == computeDisplayUav,
             "A failed compute-target resize must preserve the last complete "
             "output state and unordered-access view.");
@@ -7952,10 +8135,13 @@ int main(const int argumentCount, char** arguments)
                 const auto* computeTarget =
                     graphics.FindRenderTexture(
                         "computeProbe");
+                auto* const computeOutputTexture =
+                    computeTarget != nullptr
+                    ? legacyRenderTargetDisplayTexture(computeTarget)
+                    : nullptr;
                 Require(
                     computeTarget != nullptr
-                        && computeTarget->DisplayTexture()
-                            != nullptr,
+                        && computeOutputTexture != nullptr,
                     "The compute output texture must exist.");
                 std::cout
                     << "compute effect: output "
@@ -7964,8 +8150,7 @@ int main(const int argumentCount, char** arguments)
                     << std::endl;
 
                 D3D11_TEXTURE2D_DESC outputDescription{};
-                computeTarget->DisplayTexture()->GetDesc(
-                    &outputDescription);
+                computeOutputTexture->GetDesc(&outputDescription);
                 outputDescription.Usage =
                     D3D11_USAGE_STAGING;
                 outputDescription.BindFlags = 0;
@@ -7984,7 +8169,7 @@ int main(const int argumentCount, char** arguments)
                     " must be created.");
                 D3D11Access::Context(graphics)->CopyResource(
                     staging.Get(),
-                    computeTarget->DisplayTexture());
+                    computeOutputTexture);
                 D3D11_MAPPED_SUBRESOURCE mapped{};
                 Require(
                     SUCCEEDED(D3D11Access::Context(graphics)->Map(

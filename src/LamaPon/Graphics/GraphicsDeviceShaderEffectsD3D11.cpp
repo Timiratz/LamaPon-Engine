@@ -5,6 +5,7 @@
 #include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Graphics/ComputeEffect.h"
 #include "LamaPon/Graphics/ClusteredLights.h"
+#include "LamaPon/Graphics/D3D11RenderTargetState.h"
 #include "LamaPon/Graphics/GraphicsDeviceD3D11Resources.h"
 #include "LamaPon/Graphics/GraphicsDeviceD3D11Access.h"
 #include "LamaPon/Graphics/GraphicsDeviceShaderState.h"
@@ -117,6 +118,14 @@ namespace
                 & D3D11_BIND_SHADER_RESOURCE) != 0
             && (description.MiscFlags
                 & D3D11_RESOURCE_MISC_TEXTURECUBE) != 0;
+    }
+
+    [[nodiscard]] LamaPon::Detail::D3D11RenderTargetState*
+        TryD3D11RenderTargetState(
+            LamaPon::RenderTarget& target) noexcept
+    {
+        return dynamic_cast<LamaPon::Detail::D3D11RenderTargetState*>(
+            LamaPon::Detail::RenderTargetBackendAccess::Get(target));
     }
 
 }
@@ -418,6 +427,11 @@ namespace LamaPon
         {
             return;
         }
+        auto* const targetState = TryD3D11RenderTargetState(target);
+        const bool targetStateIsCurrent = targetState != nullptr
+            && targetState->IsValid()
+            && IsGraphicsViewCurrent(targetState->m_currentColorView)
+            && IsGraphicsViewCurrent(targetState->m_depthView);
         // 深度を距離へ直す係数。式は距離＝y/(深度+x)で、SSRの
         // Hi-Z作成（PSReflectionDepthLinearize）と同じものです。
         // SSRの深度変換と同じ式を使い、変換規則を一致させます。
@@ -453,6 +467,10 @@ namespace LamaPon
             {
                 continue;
             }
+            if (!targetStateIsCurrent)
+            {
+                continue;
+            }
             std::array<std::shared_ptr<
                 const TextureResourceSnapshot>, 2>
                 auxiliaryResources{};
@@ -476,7 +494,7 @@ namespace LamaPon
                     ? resolved
                     : whiteTexture;
             }
-            target.ApplyScreenEffect(
+            targetState->ApplyScreenEffect(
                 *queued.effect,
                 auxiliaryViews,
                 depthParameters,
@@ -725,7 +743,13 @@ namespace LamaPon
             request.outputTexture,
             request.outputWidth,
             request.outputHeight);
-        if (target.DisplayUnorderedAccessView() == nullptr)
+        auto* const targetState = TryD3D11RenderTargetState(target);
+        auto* const outputView = targetState != nullptr
+                && targetState->IsValid()
+                && IsGraphicsViewCurrent(targetState->m_displayView)
+            ? targetState->m_displayUnorderedAccessView.Get()
+            : nullptr;
+        if (outputView == nullptr)
         {
             if (error != nullptr)
             {
@@ -772,9 +796,9 @@ namespace LamaPon
         };
         entry->effect->Dispatch(
             inputs,
-            target.DisplayUnorderedAccessView(),
-            target.Width(),
-            target.Height(),
+            outputView,
+            targetState->m_width,
+            targetState->m_height,
             request.customParameters);
         computeSection.End();
         return true;

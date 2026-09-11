@@ -1,5 +1,6 @@
 #include "LamaPon/Graphics/EnvironmentRenderer.h"
 #include "LamaPon/Graphics/D3D11Backend.h"
+#include "LamaPon/Graphics/D3D11RenderTargetState.h"
 #include "LamaPon/Graphics/EnvironmentCache.h"
 #include "LamaPon/Graphics/RenderTarget.h"
 #include "LamaPon/Graphics/ShaderCompiler.h"
@@ -2753,11 +2754,25 @@ namespace LamaPon
         // ミップ0で生の深度を距離へ直し、以降は2x2の最小値で
         // 縮めていきます。呼ばれるのはフレームの途中（ライティングの
         // 準備中）なので、描画先とビューポートは退避して戻します。
+        const auto* const targetState = dynamic_cast<const
+            Detail::D3D11RenderTargetState*>(
+                Detail::RenderTargetBackendAccess::Get(target));
+        if (targetState == nullptr
+            || !targetState->IsValid()
+            || targetState->m_ownerDevice.Get() != m_device)
+        {
+            return;
+        }
         const auto mipCount =
-            target.ReflectionDepthPyramidMipCount();
+            targetState->m_reflectionDepthPyramidMipCount;
         auto* const rawDepth =
-            target.DepthCopyShaderResourceView();
-        if (mipCount == 0 || rawDepth == nullptr)
+            targetState->m_depthCopyShaderResourceView.Get();
+        if (mipCount == 0
+            || rawDepth == nullptr
+            || targetState->m_reflectionDepthPyramidTargets.size()
+                < mipCount
+            || targetState->m_reflectionDepthPyramidMipViews.size()
+                < mipCount)
         {
             return;
         }
@@ -2860,12 +2875,12 @@ namespace LamaPon
                 0, 1, nullResource);
         };
 
-        const std::uint32_t width = target.Width();
-        const std::uint32_t height = target.Height();
+        const std::uint32_t width = targetState->m_width;
+        const std::uint32_t height = targetState->m_height;
         runPass(
             m_reflectionLinearizePixelShader.Get(),
             rawDepth,
-            target.ReflectionDepthPyramidMipTarget(0),
+            targetState->m_reflectionDepthPyramidTargets[0].Get(),
             width,
             height,
             projectionZ,
@@ -2878,8 +2893,9 @@ namespace LamaPon
                 std::max(height >> (mip - 1), 1u);
             runPass(
                 m_reflectionDownsamplePixelShader.Get(),
-                target.ReflectionDepthPyramidMipView(mip - 1),
-                target.ReflectionDepthPyramidMipTarget(mip),
+                targetState->m_reflectionDepthPyramidMipViews[
+                    mip - 1].Get(),
+                targetState->m_reflectionDepthPyramidTargets[mip].Get(),
                 std::max(width >> mip, 1u),
                 std::max(height >> mip, 1u),
                 static_cast<float>(parentWidth),

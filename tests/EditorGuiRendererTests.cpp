@@ -276,12 +276,24 @@ namespace
     [[nodiscard]] std::array<float, 4>
         CaptureTexturePixel(
             LamaPon::GraphicsDevice& graphics,
-            ID3D11Texture2D* const texture,
+            const LamaPon::GraphicsViewHandle& view,
             const std::uint32_t x,
             const std::uint32_t y)
     {
-        Require(texture != nullptr,
-            "A texture readback was requested without a texture");
+        auto* const shaderResourceView =
+            D3D11Access::TryResolveD3D11ShaderResourceView(
+                graphics,
+                view);
+        Require(shaderResourceView != nullptr,
+            "A texture readback was requested without a current view");
+        Microsoft::WRL::ComPtr<ID3D11Resource> resource;
+        shaderResourceView->GetResource(
+            resource.ReleaseAndGetAddressOf());
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+        Require(
+            resource != nullptr
+                && SUCCEEDED(resource.As(&texture)),
+            "A texture readback view did not reference a 2D texture");
         D3D11_TEXTURE2D_DESC description{};
         texture->GetDesc(&description);
         Require(
@@ -303,7 +315,7 @@ namespace
             "A texture staging resource could not be created");
         D3D11Access::Context(graphics)->CopyResource(
             staging.Get(),
-            texture);
+            texture.Get());
 
         D3D11_MAPPED_SUBRESOURCE mapped{};
         Require(
@@ -1219,7 +1231,7 @@ namespace
             "The compute output was not created on the old device");
         const auto previousComputePixel = CaptureTexturePixel(
             graphics,
-            previousComputeTarget->DisplayTexture(),
+            previousComputeView,
             2,
             8);
         Require(
@@ -1662,7 +1674,7 @@ namespace
             "The compute shader cache did not rebuild on the current device");
         const auto rebuiltComputePixel = CaptureTexturePixel(
             graphics,
-            rebuiltComputeTarget->DisplayTexture(),
+            rebuiltComputeView,
             2,
             8);
         Require(

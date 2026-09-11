@@ -3,11 +3,11 @@
 #include "LamaPon/Core/Log.h"
 #include "LamaPon/Graphics/ClusteredLights.h"
 #include "LamaPon/Graphics/D3D11ClusteredLightsState.h"
+#include "LamaPon/Graphics/D3D11RenderTargetState.h"
 #include "LamaPon/Graphics/D3D11ShadowMapState.h"
 #include "LamaPon/Graphics/DebugRenderer.h"
 #include "LamaPon/Graphics/GpuProfiler.h"
 #include "LamaPon/Graphics/RenderTarget.h"
-#include "LamaPon/Graphics/RenderTargetBackendState.h"
 #include "LamaPon/Graphics/ShadowMap.h"
 
 #include <CommonStates.h>
@@ -424,12 +424,18 @@ namespace
         }
     }
 
-    void RequireCurrentOffscreenTarget(
-        const LamaPon::D3D11Backend& backend,
-        const LamaPon::RenderTarget& target,
-        const char* const operation)
+    [[nodiscard]] LamaPon::Detail::D3D11RenderTargetState&
+        RequireCurrentOffscreenTarget(
+            const LamaPon::D3D11Backend& backend,
+            LamaPon::RenderTarget& target,
+            const char* const operation)
     {
-        if (!target.IsValid()
+        auto* const state = dynamic_cast<
+            LamaPon::Detail::D3D11RenderTargetState*>(
+                LamaPon::Detail::RenderTargetBackendAccess::Get(target));
+        if (state == nullptr
+            || !state->IsValid()
+            || !target.IsValid()
             || !backend.IsViewCurrent(
                 target.CurrentColorViewHandle()))
         {
@@ -437,6 +443,7 @@ namespace
                 std::string(operation)
                 + " requires a target owned by this backend.");
         }
+        return *state;
     }
 
     // この環境でティアリング許可を利用できるか。対応が無い
@@ -728,13 +735,15 @@ namespace LamaPon
         const std::uint32_t requestedHeight = std::max(height, 1u);
         const auto* const existing = dynamic_cast<
             const Detail::D3D11RenderTargetState*>(
-                target.m_backendState.get());
+                Detail::RenderTargetBackendAccess::Get(target));
+        const bool computeWritable =
+            Detail::RenderTargetBackendAccess::ComputeWritable(target);
         if (existing != nullptr
             && existing->IsValid()
             && existing->m_ownerDevice.Get() == m_device.Get()
             && existing->m_width == requestedWidth
             && existing->m_height == requestedHeight
-            && existing->m_computeWritable == target.m_computeWritable
+            && existing->m_computeWritable == computeWritable
             && IsViewCurrent(existing->m_currentColorView)
             && IsViewCurrent(existing->m_postColorView)
             && IsViewCurrent(existing->m_displayView)
@@ -752,7 +761,7 @@ namespace LamaPon
         // 世代だけを公開します。途中失敗時は既存stateをそのまま保ちます。
         auto pending =
             std::make_unique<Detail::D3D11RenderTargetState>();
-        pending->m_computeWritable = target.m_computeWritable;
+        pending->m_computeWritable = computeWritable;
         pending->Resize(m_device.Get(), width, height);
         if (!pending->IsValid())
         {
@@ -780,7 +789,9 @@ namespace LamaPon
             ImportShaderResourceViewHandle(
                 pending->m_temporalHistoryShaderResourceView.Get());
 
-        target.m_backendState = std::move(pending);
+        Detail::RenderTargetBackendAccess::Publish(
+            target,
+            std::move(pending));
     }
 
     void D3D11Backend::BeginOffscreenTarget(
@@ -797,7 +808,7 @@ namespace LamaPon
             throw std::invalid_argument(
                 "BeginOffscreenTarget requires a clear color.");
         }
-        RequireCurrentOffscreenTarget(
+        auto& state = RequireCurrentOffscreenTarget(
             *this,
             target,
             "BeginOffscreenTarget");
@@ -808,8 +819,8 @@ namespace LamaPon
                 "context.");
         }
 
-        target.Bind(m_context.Get());
-        target.Clear(m_context.Get(), clearColor);
+        state.Bind(m_context.Get());
+        state.Clear(m_context.Get(), clearColor);
     }
 
     void D3D11Backend::BindOffscreenTarget(
@@ -820,7 +831,7 @@ namespace LamaPon
             throw std::logic_error(
                 "BindOffscreenTarget requires an initialized backend.");
         }
-        RequireCurrentOffscreenTarget(
+        auto& state = RequireCurrentOffscreenTarget(
             *this,
             target,
             "BindOffscreenTarget");
@@ -831,7 +842,7 @@ namespace LamaPon
                 "context.");
         }
 
-        target.Bind(m_context.Get());
+        state.Bind(m_context.Get());
     }
 
     void D3D11Backend::PublishOffscreenTarget(
@@ -842,7 +853,7 @@ namespace LamaPon
             throw std::logic_error(
                 "PublishOffscreenTarget requires an initialized backend.");
         }
-        RequireCurrentOffscreenTarget(
+        auto& state = RequireCurrentOffscreenTarget(
             *this,
             target,
             "PublishOffscreenTarget");
@@ -861,7 +872,7 @@ namespace LamaPon
 
         // CopyToDisplayは描画先を変更しません。バックバッファへの復帰は
         // BeginFrameなど、既存のフレーム制御側に任せます。
-        target.CopyToDisplay(m_context.Get());
+        state.CopyToDisplay(m_context.Get());
     }
 
     void D3D11Backend::BindOffscreenTargetDepthOnly(
@@ -873,7 +884,7 @@ namespace LamaPon
                 "BindOffscreenTargetDepthOnly requires an initialized "
                 "backend.");
         }
-        RequireCurrentOffscreenTarget(
+        auto& state = RequireCurrentOffscreenTarget(
             *this,
             target,
             "BindOffscreenTargetDepthOnly");
@@ -884,7 +895,7 @@ namespace LamaPon
                 "DirectX 11 context.");
         }
 
-        target.BindDepthOnly(m_context.Get());
+        state.BindDepthOnly(m_context.Get());
     }
 
     void D3D11Backend::CaptureOffscreenTargetDepth(
@@ -896,7 +907,7 @@ namespace LamaPon
                 "CaptureOffscreenTargetDepth requires an initialized "
                 "backend.");
         }
-        RequireCurrentOffscreenTarget(
+        auto& state = RequireCurrentOffscreenTarget(
             *this,
             target,
             "CaptureOffscreenTargetDepth");
@@ -907,7 +918,7 @@ namespace LamaPon
                 "DirectX 11 context.");
         }
 
-        target.CaptureDepthForReflections(m_context.Get());
+        state.CaptureDepthForReflections(m_context.Get());
     }
 
     void D3D11Backend::CaptureOffscreenTargetColorHistory(
@@ -920,7 +931,7 @@ namespace LamaPon
                 "CaptureOffscreenTargetColorHistory requires an "
                 "initialized backend.");
         }
-        RequireCurrentOffscreenTarget(
+        auto& state = RequireCurrentOffscreenTarget(
             *this,
             target,
             "CaptureOffscreenTargetColorHistory");
@@ -931,9 +942,16 @@ namespace LamaPon
                 "available DirectX 11 context.");
         }
 
-        target.CaptureColorHistory(
+        state.CaptureColorHistory(
             m_context.Get(),
             viewProjection);
+        if (state.m_historyValid)
+        {
+            Detail::RenderTargetBackendAccess::
+                SetPublicHistoryViewProjection(
+                    target,
+                    state.m_historyViewProjection);
+        }
     }
 
     void D3D11Backend::CaptureOffscreenTargetTemporalHistory(
@@ -946,7 +964,7 @@ namespace LamaPon
                 "CaptureOffscreenTargetTemporalHistory requires an "
                 "initialized backend.");
         }
-        RequireCurrentOffscreenTarget(
+        auto& state = RequireCurrentOffscreenTarget(
             *this,
             target,
             "CaptureOffscreenTargetTemporalHistory");
@@ -957,7 +975,7 @@ namespace LamaPon
                 "available DirectX 11 context.");
         }
 
-        target.CaptureTemporalHistory(
+        state.CaptureTemporalHistory(
             m_context.Get(),
             viewProjection);
     }
@@ -972,7 +990,7 @@ namespace LamaPon
                 "TryReadOffscreenTargetLuminance requires an "
                 "initialized backend.");
         }
-        RequireCurrentOffscreenTarget(
+        auto& state = RequireCurrentOffscreenTarget(
             *this,
             target,
             "TryReadOffscreenTargetLuminance");
@@ -983,7 +1001,7 @@ namespace LamaPon
                 "available DirectX 11 context.");
         }
 
-        return target.TryReadAutoExposureLuminance(
+        return state.TryReadAutoExposureLuminance(
             m_context.Get());
     }
 
@@ -996,7 +1014,7 @@ namespace LamaPon
                 "CaptureOffscreenTargetLuminance requires an "
                 "initialized backend.");
         }
-        RequireCurrentOffscreenTarget(
+        auto& state = RequireCurrentOffscreenTarget(
             *this,
             target,
             "CaptureOffscreenTargetLuminance");
@@ -1007,7 +1025,7 @@ namespace LamaPon
                 "available DirectX 11 context.");
         }
 
-        target.CaptureAutoExposureLuminance(m_context.Get());
+        state.CaptureAutoExposureLuminance(m_context.Get());
     }
 
     void D3D11Backend::InitializeShadowMap(

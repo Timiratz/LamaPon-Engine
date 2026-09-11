@@ -1,17 +1,20 @@
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Graphics/GraphicsDeviceState.h"
 
+#include "LamaPon/Graphics/D3D11RenderTargetState.h"
 #include "LamaPon/Graphics/EnvironmentRenderer.h"
 #include "LamaPon/Graphics/EnvironmentSettings.h"
 #include "LamaPon/Graphics/GraphicsBackend.h"
 #include "LamaPon/Graphics/RenderTarget.h"
 
+#include <optional>
 #include <stdexcept>
 #include <string>
 
 namespace
 {
-    void RequireCurrentOffscreenTarget(
+    [[nodiscard]] const LamaPon::Detail::D3D11RenderTargetState&
+        RequireCurrentOffscreenTarget(
         const LamaPon::GraphicsDevice& graphics,
         const LamaPon::RenderTarget& target,
         const char* const operation)
@@ -32,6 +35,39 @@ namespace
                 std::string(operation)
                 + " requires a target owned by the active backend.");
         }
+
+        const auto* const state = dynamic_cast<const
+            LamaPon::Detail::D3D11RenderTargetState*>(
+                LamaPon::Detail::RenderTargetBackendAccess::Get(target));
+        if (state == nullptr || !state->IsValid())
+        {
+            throw std::invalid_argument(
+                std::string(operation)
+                + " requires a target owned by the active backend.");
+        }
+        return *state;
+    }
+
+    [[nodiscard]] LamaPon::Detail::D3D11RenderTargetState&
+        RequireCurrentOffscreenTarget(
+            const LamaPon::GraphicsDevice& graphics,
+            LamaPon::RenderTarget& target,
+            const char* const operation)
+    {
+        static_cast<void>(RequireCurrentOffscreenTarget(
+            graphics,
+            static_cast<const LamaPon::RenderTarget&>(target),
+            operation));
+        auto* const state = dynamic_cast<
+            LamaPon::Detail::D3D11RenderTargetState*>(
+                LamaPon::Detail::RenderTargetBackendAccess::Get(target));
+        if (state == nullptr || !state->IsValid())
+        {
+            throw std::invalid_argument(
+                std::string(operation)
+                + " requires a target owned by the active backend.");
+        }
+        return *state;
     }
 
     [[nodiscard]] LamaPon::EnvironmentRenderer::TemporalInputs
@@ -67,10 +103,10 @@ namespace LamaPon
     void GraphicsDevice::CopyOffscreenTargetToBackBuffer(
         const RenderTarget& target)
     {
-        RequireCurrentOffscreenTarget(
+        static_cast<void>(RequireCurrentOffscreenTarget(
             *this,
             target,
-            "CopyOffscreenTargetToBackBuffer");
+            "CopyOffscreenTargetToBackBuffer"));
         auto& environment = Environment();
         auto* const source = TryResolveD3D11ShaderResourceView(
             target.CurrentColorViewHandle());
@@ -91,7 +127,7 @@ namespace LamaPon
         const DirectX::XMFLOAT4X4& projection,
         const std::uint32_t sampleCount)
     {
-        RequireCurrentOffscreenTarget(
+        auto& targetState = RequireCurrentOffscreenTarget(
             *this,
             target,
             "ResolveOffscreenTargetAmbientOcclusion");
@@ -99,7 +135,7 @@ namespace LamaPon
         {
             return false;
         }
-        return target.ResolveAmbientOcclusion(
+        return targetState.ResolveAmbientOcclusion(
             Environment(),
             settings,
             projection,
@@ -111,7 +147,7 @@ namespace LamaPon
         const TemporalAntiAliasingSettings& settings,
         const TemporalAntiAliasingInputs& inputs)
     {
-        RequireCurrentOffscreenTarget(
+        auto& targetState = RequireCurrentOffscreenTarget(
             *this,
             target,
             "ApplyOffscreenTargetTemporalAntiAliasing");
@@ -119,7 +155,7 @@ namespace LamaPon
         {
             return;
         }
-        target.ApplyTemporalAntiAliasing(
+        targetState.ApplyTemporalAntiAliasing(
             Environment(),
             settings,
             ToD3D11TemporalInputs(inputs));
@@ -130,7 +166,7 @@ namespace LamaPon
         const VolumetricLightSettings& settings,
         const VolumetricLightInputs& inputs)
     {
-        RequireCurrentOffscreenTarget(
+        auto& targetState = RequireCurrentOffscreenTarget(
             *this,
             target,
             "ApplyOffscreenTargetVolumetricLight");
@@ -138,7 +174,7 @@ namespace LamaPon
         {
             return;
         }
-        target.ApplyVolumetricLight(
+        targetState.ApplyVolumetricLight(
             Environment(),
             settings,
             ToD3D11VolumetricInputs(inputs));
@@ -150,7 +186,7 @@ namespace LamaPon
         const DirectX::XMFLOAT4X4& projection,
         const std::uint32_t sampleCount)
     {
-        RequireCurrentOffscreenTarget(
+        auto& targetState = RequireCurrentOffscreenTarget(
             *this,
             target,
             "ApplyOffscreenTargetDepthOfField");
@@ -158,7 +194,7 @@ namespace LamaPon
         {
             return;
         }
-        target.ApplyDepthOfField(
+        targetState.ApplyDepthOfField(
             Environment(),
             settings,
             projection,
@@ -172,13 +208,13 @@ namespace LamaPon
         const DirectX::XMFLOAT4X4& viewProjection,
         const std::uint32_t sampleCount)
     {
-        RequireCurrentOffscreenTarget(
+        auto& targetState = RequireCurrentOffscreenTarget(
             *this,
             target,
             "ApplyOffscreenTargetMotionBlur");
         // disabledでもRenderTargetへ渡し、保持している前フレーム行列を
         // 無効化します。再度有効にした瞬間の大きなブレを防ぐためです。
-        target.ApplyMotionBlur(
+        targetState.ApplyMotionBlur(
             Environment(),
             settings,
             inverseViewProjection,
@@ -190,7 +226,7 @@ namespace LamaPon
         RenderTarget& target,
         const BloomSettings& settings)
     {
-        RequireCurrentOffscreenTarget(
+        auto& targetState = RequireCurrentOffscreenTarget(
             *this,
             target,
             "ApplyOffscreenTargetBloom");
@@ -198,14 +234,14 @@ namespace LamaPon
         {
             return;
         }
-        target.ApplyBloom(Environment(), settings);
+        targetState.ApplyBloom(Environment(), settings);
     }
 
     void GraphicsDevice::ApplyOffscreenTargetScreenSpaceLensFlare(
         RenderTarget& target,
         const ScreenSpaceLensFlareSettings& settings)
     {
-        RequireCurrentOffscreenTarget(
+        auto& targetState = RequireCurrentOffscreenTarget(
             *this,
             target,
             "ApplyOffscreenTargetScreenSpaceLensFlare");
@@ -213,7 +249,7 @@ namespace LamaPon
         {
             return;
         }
-        target.ApplyScreenSpaceLensFlare(
+        targetState.ApplyScreenSpaceLensFlare(
             Environment(),
             settings);
     }
@@ -222,11 +258,11 @@ namespace LamaPon
         RenderTarget& target,
         const ColorGradingSettings& settings)
     {
-        RequireCurrentOffscreenTarget(
+        auto& targetState = RequireCurrentOffscreenTarget(
             *this,
             target,
             "ApplyOffscreenTargetToneMapping");
-        target.ApplyToneMapping(Environment(), settings);
+        targetState.ApplyToneMapping(Environment(), settings);
     }
 
     void GraphicsDevice::ApplyOffscreenTargetScreenOutline(
@@ -234,7 +270,7 @@ namespace LamaPon
         const ScreenOutlineSettings& settings,
         const DirectX::XMFLOAT4X4& projection)
     {
-        RequireCurrentOffscreenTarget(
+        auto& targetState = RequireCurrentOffscreenTarget(
             *this,
             target,
             "ApplyOffscreenTargetScreenOutline");
@@ -242,7 +278,7 @@ namespace LamaPon
         {
             return;
         }
-        target.ApplyScreenOutline(
+        targetState.ApplyScreenOutline(
             Environment(),
             settings,
             projection);
@@ -251,10 +287,40 @@ namespace LamaPon
     void GraphicsDevice::ApplyOffscreenTargetFXAA(
         RenderTarget& target)
     {
-        RequireCurrentOffscreenTarget(
+        auto& targetState = RequireCurrentOffscreenTarget(
             *this,
             target,
             "ApplyOffscreenTargetFXAA");
-        target.ApplyFXAA(Environment());
+        targetState.ApplyFXAA(Environment());
+    }
+
+    float GraphicsDevice::UpdateOffscreenTargetAutoExposure(
+        RenderTarget& target,
+        const AutoExposureSettings& settings,
+        const float deltaSeconds)
+    {
+        auto& targetState = RequireCurrentOffscreenTarget(
+            *this,
+            target,
+            "UpdateOffscreenTargetAutoExposure");
+
+        std::optional<float> measuredLuminance;
+        if (settings.enabled)
+        {
+            measuredLuminance =
+                m_state->m_backend->TryReadOffscreenTargetLuminance(target);
+        }
+
+        const float exposureStops = targetState.UpdateAutoExposure(
+            Environment(),
+            measuredLuminance,
+            settings,
+            deltaSeconds);
+
+        if (settings.enabled)
+        {
+            m_state->m_backend->CaptureOffscreenTargetLuminance(target);
+        }
+        return exposureStops;
     }
 }
