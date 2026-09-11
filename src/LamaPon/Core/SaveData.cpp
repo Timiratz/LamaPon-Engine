@@ -143,7 +143,9 @@ namespace LamaPon
         }
         if (!document.contains("slot")
             || !document["slot"].is_string()
-            || document["slot"].get<std::string>() != slot)
+            || !Detail::EquivalentSaveSlotNames(
+                document["slot"].get<std::string>(),
+                slot))
         {
             throw std::runtime_error(
                 "Save slot identity does not match its filename: "
@@ -170,6 +172,10 @@ namespace LamaPon
             slot,
             true
         };
+        if (!Detail::PrepareLocalPersistenceDelete(event))
+        {
+            return false;
+        }
         const bool removed = Detail::DurableDeleteLocalDocument(path);
         if (removed)
         {

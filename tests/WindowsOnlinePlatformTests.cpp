@@ -436,6 +436,119 @@ int main()
         auto lockPath = credentialPath;
         lockPath += L".lock";
         std::error_code fixtureError;
+        constexpr DWORD AllowUnprivilegedCreate = 0x2u;
+
+        auto usageLeasePath = credentialPath;
+        usageLeasePath += L".session.lock";
+        Require(
+            store.AcquireUsageLease().succeeded
+                && store.AcquireUsageLease().succeeded,
+            "A credential usage lease was not idempotent.");
+        LamaPon::Detail::WindowsRefreshTokenStore competingUsageStore(
+            credentialPath,
+            "game-41c81960",
+            "production");
+        Require(
+            !competingUsageStore.AcquireUsageLease().succeeded
+                && competingUsageStore.Load().refreshToken
+                    == refreshToken,
+            "Two stores acquired one usage lease or raw Load was changed.");
+        store.ReleaseUsageLease();
+        Require(
+            competingUsageStore.AcquireUsageLease().succeeded,
+            "A usage lease remained busy after explicit release.");
+        competingUsageStore.ReleaseUsageLease();
+        RequireRestrictedAcl(usageLeasePath);
+
+        LamaPon::Detail::WindowsRefreshTokenStore destructorWaiter(
+            credentialPath,
+            "game-41c81960",
+            "production");
+        {
+            LamaPon::Detail::WindowsRefreshTokenStore scopedUsageStore(
+                credentialPath,
+                "game-41c81960",
+                "production");
+            Require(
+                scopedUsageStore.AcquireUsageLease().succeeded
+                    && !destructorWaiter.AcquireUsageLease().succeeded,
+                "A scoped usage lease did not exclude another store.");
+        }
+        Require(
+            destructorWaiter.AcquireUsageLease().succeeded,
+            "A store destructor did not release its usage lease.");
+        destructorWaiter.ReleaseUsageLease();
+
+        std::filesystem::remove(usageLeasePath, fixtureError);
+        Require(
+            !fixtureError,
+            "Could not replace the credential usage-lock fixture.");
+        const auto usageLockVictim =
+            directory / L"usage-lock-hardlink-victim.bin";
+        {
+            std::ofstream output(
+                usageLockVictim,
+                std::ios::binary | std::ios::trunc);
+            output << "usage-lock-victim-must-not-change";
+            Require(
+                static_cast<bool>(output),
+                "Could not create the usage-lock victim.");
+        }
+        const auto usageLockVictimBytes = ReadBytes(usageLockVictim);
+        Require(
+            CreateHardLinkW(
+                usageLeasePath.c_str(),
+                usageLockVictim.c_str(),
+                nullptr) != FALSE,
+            "Could not create the usage-lock hard-link fixture.");
+        Require(
+            !store.AcquireUsageLease().succeeded
+                && ReadBytes(usageLockVictim) == usageLockVictimBytes,
+            "A hard-linked credential usage lock was accepted or modified.");
+        std::filesystem::remove(usageLeasePath, fixtureError);
+        Require(
+            !fixtureError,
+            "Could not remove the unsafe usage-lock fixture.");
+        std::filesystem::remove(usageLockVictim, fixtureError);
+        Require(
+            !fixtureError,
+            "Could not remove the usage-lock victim fixture.");
+
+        const auto usageReparseVictim =
+            directory / L"usage-lock-reparse-victim.bin";
+        {
+            std::ofstream output(
+                usageReparseVictim,
+                std::ios::binary | std::ios::trunc);
+            output << "usage-reparse-victim-must-not-change";
+            Require(
+                static_cast<bool>(output),
+                "Could not create the usage-lock reparse victim.");
+        }
+        const auto usageReparseVictimBytes =
+            ReadBytes(usageReparseVictim);
+        if (CreateSymbolicLinkW(
+                usageLeasePath.c_str(),
+                usageReparseVictim.c_str(),
+                AllowUnprivilegedCreate) != FALSE)
+        {
+            Require(
+                !store.AcquireUsageLease().succeeded
+                    && ReadBytes(usageReparseVictim)
+                        == usageReparseVictimBytes,
+                "A reparse-point credential usage lock was accepted or modified.");
+            std::filesystem::remove(usageLeasePath, fixtureError);
+            Require(
+                !fixtureError,
+                "Could not remove the usage-lock reparse fixture.");
+        }
+        std::filesystem::remove(usageReparseVictim, fixtureError);
+        Require(
+            !fixtureError
+                && store.AcquireUsageLease().succeeded,
+            "A usage lease did not recover after an unsafe lock was removed.");
+        store.ReleaseUsageLease();
+
         std::filesystem::remove(lockPath, fixtureError);
         Require(
             !fixtureError,
@@ -618,13 +731,12 @@ int main()
             !fixtureError,
             "Could not create the credential reparse target.");
         LamaPon::Detail::WindowsRefreshTokenStore realParentStore(
-            reparseTarget / L"session.bin",
+            reparseTarget / L"nested" / L"session.bin",
             "game-41c81960",
             "production");
         Require(
             realParentStore.Save(refreshToken).succeeded,
             "Could not prepare the credential reparse target.");
-        constexpr DWORD AllowUnprivilegedCreate = 0x2u;
         if (CreateSymbolicLinkW(
                 reparseParent.c_str(),
                 reparseTarget.c_str(),
@@ -632,7 +744,7 @@ int main()
                     | AllowUnprivilegedCreate) != FALSE)
         {
             LamaPon::Detail::WindowsRefreshTokenStore reparseStore(
-                reparseParent / L"session.bin",
+                reparseParent / L"nested" / L"session.bin",
                 "game-41c81960",
                 "production");
             Require(
@@ -640,6 +752,7 @@ int main()
                         == LamaPon::Detail::RefreshTokenLoadStatus::Unavailable
                     && !reparseStore.Save(candidateToken).succeeded
                     && !reparseStore.Delete().succeeded
+                    && !reparseStore.AcquireUsageLease().succeeded
                     && realParentStore.Load().refreshToken == refreshToken,
                 "A reparse-point credential parent escaped path isolation.");
             std::filesystem::remove(reparseParent, fixtureError);

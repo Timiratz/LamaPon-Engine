@@ -3,8 +3,10 @@
 #include "LamaPon/Core/PlayerPrefs.h"
 #include "LamaPon/Core/SaveData.h"
 #include "LamaPon/Editor/PersistencePanelState.h"
+#include "LamaPon/Online/CloudSaveClient.h"
 #include "LamaPon/Online/OnlinePersistenceCoordinator.h"
 #include "LamaPon/Online/OnlineServicesTesting.h"
+#include "LamaPon/Online/CloudSaveSynchronizer.h"
 
 #include <Windows.h>
 #include <nlohmann/json.hpp>
@@ -92,6 +94,23 @@ namespace
             const auto text = document.dump();
             response.body.assign(text.begin(), text.end());
         }
+        return response;
+    }
+
+    LamaPon::HttpResponse EmptyCloudManifestResponse()
+    {
+        auto response = JsonResponse(
+            200u,
+            {
+                { "protocolVersion", 1u },
+                { "items", nlohmann::json::array() }
+            });
+        response.headers.emplace_back(
+            L"Content-Type",
+            L"application/json; charset=utf-8");
+        response.headers.emplace_back(
+            L"Content-Length",
+            std::to_wstring(response.body.size()));
         return response;
     }
 
@@ -414,6 +433,29 @@ namespace
             false);
     }
 
+    void ConfigureCloudCoordinator(Coordinator& coordinator)
+    {
+        auto client = std::make_shared<
+            LamaPon::Detail::CloudSaveClient>(
+                "https://online.example.test/tenant/",
+                "coordinator-game",
+                "test",
+                false,
+                [](const LamaPon::HttpRequest&)
+                {
+                    LamaPon::HttpResponse response;
+                    response.transportError =
+                        "Unexpected checkpoint fixture request.";
+                    return response;
+                });
+        coordinator.ConfigureNamespace(
+            "coordinator-game",
+            "test",
+            "https://online.example.test/tenant/",
+            false,
+            std::move(client));
+    }
+
     void TestEditorDraftsAreInvalidatedAcrossProfileBindings()
     {
         LamaPon::Detail::PersistencePanelState state(
@@ -650,6 +692,43 @@ namespace
             "Guest detach did not release both persistence leases.");
     }
 
+    void TestAccountProfileSessionLeaseRejectsSecondActivation()
+    {
+        const auto root = CaseRoot("profile-session-lease");
+        LamaPon::PlayerPrefs firstPreferences(root / L"PlayerPrefs.json");
+        firstPreferences.Load();
+        LamaPon::SaveDataStore firstSaves(root / L"Saves");
+        Coordinator first(firstPreferences, firstSaves, root);
+        ConfigureCoordinator(first);
+        auto firstPrepared = first.PrepareAccount("shared-account");
+        Require(
+            first.CommitPrepared(std::move(firstPrepared)),
+            "First account activation did not acquire its session lease.");
+
+        LamaPon::PlayerPrefs secondPreferences(root / L"PlayerPrefs.json");
+        secondPreferences.Load();
+        LamaPon::SaveDataStore secondSaves(root / L"Saves");
+        Coordinator second(secondPreferences, secondSaves, root);
+        ConfigureCoordinator(second);
+        Require(
+            Throws([&]
+            {
+                (void)second.PrepareAccount("shared-account");
+            })
+                && !second.IsAccountActive(),
+            "A second coordinator activated an account with an active lease.");
+
+        Require(
+            first.DetachToGuest() == DetachResult::SavedAccount,
+            "First account did not release its session lease on detach.");
+        auto secondPrepared = second.PrepareAccount("shared-account");
+        Require(
+            second.CommitPrepared(std::move(secondPrepared))
+                && second.IsAccountActive(),
+            "Account activation did not recover after the first lease released.");
+        static_cast<void>(second.DetachToGuest());
+    }
+
     void TestPreparedCommitRejectsChangedGuestBinding()
     {
         const auto root = CaseRoot("prepared-binding-change");
@@ -802,6 +881,22 @@ namespace
             }),
             "A second account replaced quarantined unsaved memory.");
 
+        LamaPon::PlayerPrefs peerPreferences(root / L"PlayerPrefs.json");
+        peerPreferences.Load();
+        LamaPon::SaveDataStore peerSaves(root / L"Saves");
+        Coordinator peer(
+            peerPreferences,
+            peerSaves,
+            root);
+        ConfigureCoordinator(peer);
+        Require(
+            Throws([&]
+            {
+                static_cast<void>(
+                    peer.PrepareAccount("player-quarantine"));
+            }),
+            "A quarantined account released its process lifetime lease early.");
+
         lock.Close();
         coordinator.EndFrame();
         Require(
@@ -813,6 +908,193 @@ namespace
         Require(
             verification.GetString("unsaved") == "memory-value",
             "Quarantined memory was not durably recovered.");
+        auto peerPrepared = peer.PrepareAccount("player-quarantine");
+        Require(
+            peerPrepared.IsValid(),
+            "Recovered quarantine did not release the account lease.");
+    }
+
+    void TestImmediateDetachCheckpointsBaselineLessDelete()
+    {
+        const auto root = CaseRoot("detach-delete-checkpoint");
+        const LamaPon::PersistenceProfiles profiles(
+            root,
+            "coordinator-game",
+            "test");
+        const auto account = profiles.Account("checkpoint-player");
+        {
+            LamaPon::SaveDataStore seed(account.saveDataDirectory);
+            seed.SaveJson("checkpoint-slot", R"({"delete":true})");
+        }
+
+        LamaPon::PlayerPrefs preferences(root / L"PlayerPrefs.json");
+        preferences.Load();
+        LamaPon::SaveDataStore saves(root / L"Saves");
+        Coordinator coordinator(preferences, saves, root);
+        ConfigureCloudCoordinator(coordinator);
+
+        auto prepared = coordinator.PrepareAccount(
+            "checkpoint-player",
+            "checkpoint-access-token");
+        Require(
+            coordinator.CommitPrepared(std::move(prepared)),
+            "Could not activate the detach checkpoint fixture.");
+        FileHandle journalLock;
+        const auto journalLockPath = coordinator.Journal()->FilePath()
+            .parent_path() / L"CloudSaveJournal.lock";
+        journalLock.value = CreateFileW(
+            journalLockPath.c_str(),
+            GENERIC_READ | GENERIC_WRITE | FILE_READ_ATTRIBUTES,
+            0u,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr);
+        Require(
+            journalLock.value != INVALID_HANDLE_VALUE
+                && !saves.DeleteSlot("checkpoint-slot")
+                && LamaPon::Detail::LocalPersistenceDocuments::ReadSaveData(
+                    saves,
+                    "checkpoint-slot").state
+                    == LamaPon::Detail::LocalPersistenceDocumentState::Loaded,
+            "Local delete advanced before its intent WAL was durable.");
+        journalLock.Close();
+
+        FileHandle targetLock;
+        const auto targetPath = saves.SlotPath("checkpoint-slot");
+        targetLock.value = CreateFileW(
+            targetPath.c_str(),
+            GENERIC_READ,
+            FILE_SHARE_READ,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr);
+        Require(
+            targetLock.value != INVALID_HANDLE_VALUE
+                && Throws([&]
+                {
+                    static_cast<void>(saves.DeleteSlot("checkpoint-slot"));
+                })
+                && coordinator.Journal()->HasLocalDeleteIntent(
+                    LamaPon::CloudSaveResource::SaveSlot(
+                        "checkpoint-slot")),
+            "A failed local delete did not leave a recoverable WAL intent.");
+        targetLock.Close();
+        coordinator.Synchronizer()->RequestReconcile();
+        Require(
+            !coordinator.Journal()->HasLocalDeleteIntent(
+                LamaPon::CloudSaveResource::SaveSlot("checkpoint-slot"))
+                && LamaPon::Detail::LocalPersistenceDocuments::ReadSaveData(
+                    saves,
+                    "checkpoint-slot").state
+                    == LamaPon::Detail::LocalPersistenceDocumentState::Loaded,
+            "A loaded local document did not clear an aborted delete intent.");
+        Require(
+            saves.DeleteSlot("checkpoint-slot"),
+            "Could not commit the pre-WAL local delete.");
+
+        Require(
+            coordinator.DetachToGuest() == DetachResult::SavedAccount,
+            "A durable detach checkpoint unexpectedly quarantined the account.");
+        auto reopened = coordinator.PrepareAccount(
+            "checkpoint-player",
+            "checkpoint-access-token-2");
+        Require(
+            coordinator.CommitPrepared(std::move(reopened))
+                && coordinator.Journal()
+                && coordinator.Journal()->HasLocalDeleteIntent(
+                    LamaPon::CloudSaveResource::SaveSlot(
+                        "checkpoint-slot")),
+            "Immediate sign-out lost a baseline-less local delete intent.");
+        static_cast<void>(coordinator.DetachToGuest());
+    }
+
+    void TestFailedDetachCheckpointKeepsAccountLeaseUntilDiscard()
+    {
+        // CTestの深いbuild-directoryからでもatomic publish用suffixを含めて
+        // legacy MAX_PATH内に収まる短いfixture名を使います。
+        const auto root = CaseRoot("checkpoint-q");
+        const LamaPon::PersistenceProfiles profiles(
+            root,
+            "coordinator-game",
+            "test");
+        const auto account = profiles.Account("checkpoint-player");
+        {
+            LamaPon::SaveDataStore seed(account.saveDataDirectory);
+            seed.SaveJson("checkpoint-slot", R"({"delete":true})");
+        }
+
+        LamaPon::PlayerPrefs preferences(root / L"PlayerPrefs.json");
+        preferences.Load();
+        LamaPon::SaveDataStore saves(root / L"Saves");
+        Coordinator coordinator(preferences, saves, root);
+        ConfigureCloudCoordinator(coordinator);
+        auto prepared = coordinator.PrepareAccount(
+            "checkpoint-player",
+            "checkpoint-access");
+        Require(
+            coordinator.CommitPrepared(std::move(prepared)),
+            "Could not activate the failed checkpoint fixture.");
+        {
+            // pre-delete hookを通らない旧経路相当を作り、detach checkpoint
+            // 自体のI/O失敗がquarantineされることを固定します。
+            LamaPon::Detail::ScopedLocalPersistenceObserverSuppression suppress;
+            Require(
+                saves.DeleteSlot("checkpoint-slot"),
+                "Could not prepare the failed checkpoint deletion edge.");
+        }
+
+        const auto lockPath = coordinator.Journal()->FilePath()
+            .parent_path() / L"CloudSaveJournal.lock";
+        FileHandle lock;
+        lock.value = CreateFileW(
+            lockPath.c_str(),
+            GENERIC_READ | GENERIC_WRITE | FILE_READ_ATTRIBUTES,
+            0u,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr);
+        Require(
+            lock.value != INVALID_HANDLE_VALUE,
+            "Could not hold the detach checkpoint journal lock.");
+        Require(
+            coordinator.DetachToGuest()
+                    == DetachResult::QuarantinedAccount
+                && coordinator.HasPendingRecovery(),
+            "A failed detach checkpoint was not quarantined.");
+
+        LamaPon::PlayerPrefs peerPreferences(root / L"PlayerPrefs.json");
+        peerPreferences.Load();
+        LamaPon::SaveDataStore peerSaves(root / L"Saves");
+        Coordinator peer(peerPreferences, peerSaves, root);
+        ConfigureCoordinator(peer);
+        Require(
+            Throws([&]
+            {
+                static_cast<void>(peer.PrepareAccount(
+                    "checkpoint-player"));
+            }),
+            "A checkpoint-failed quarantine released its account lease.");
+
+        lock.Close();
+        coordinator.EndFrame();
+        Require(
+            coordinator.HasPendingRecovery()
+                && Throws([&]
+                {
+                    static_cast<void>(peer.PrepareAccount(
+                        "checkpoint-player"));
+                }),
+            "A checkpoint failure was silently cleared without resolution.");
+        Require(
+            coordinator.DiscardPendingRecovery(),
+            "Could not explicitly discard a failed checkpoint quarantine.");
+        auto peerPrepared = peer.PrepareAccount("checkpoint-player");
+        Require(
+            peerPrepared.IsValid(),
+            "Explicit discard did not release the quarantined account lease.");
     }
 
     void TestCleanLoadFailureDoesNotPermanentlyBlockProfiles()
@@ -1065,6 +1347,83 @@ namespace
         Require(
             verification.GetString("owner") == "original-disk",
             "Recovery discard overwrote the original account document.");
+
+        WriteText(sidecarPath, "{not-json");
+        Require(
+            Throws([&]
+            {
+                (void)coordinator.PrepareAccount("discard-player");
+            })
+                && coordinator.RecoveryState()
+                    == LamaPon::Detail::
+                        OnlinePersistenceRecoveryState::UnavailableSidecar
+                && coordinator.DiscardPendingRecovery()
+                && !std::filesystem::exists(sidecarPath),
+            "Explicit discard could not remove a corrupt sidecar under its profile lease.");
+    }
+
+    void TestRecoverySidecarResolutionReacquiresProfileLease()
+    {
+        const auto root = CaseRoot("recovery-sidecar-lease");
+        const LamaPon::PersistenceProfiles profiles(
+            root,
+            "coordinator-game",
+            "test");
+        const auto account = profiles.Account("recovery-race-player");
+        const auto sidecarPath = account.rootDirectory / L"Recovery.prefs";
+        LamaPon::PlayerPrefs sidecar(sidecarPath);
+        sidecar.Load();
+        sidecar.SetString("owner", "recovered-by-peer");
+        sidecar.Save();
+
+        LamaPon::PlayerPrefs firstPreferences(root / L"PlayerPrefs.json");
+        firstPreferences.Load();
+        LamaPon::SaveDataStore firstSaves(root / L"Saves");
+        Coordinator first(firstPreferences, firstSaves, root);
+        ConfigureCoordinator(first);
+        Require(
+            Throws([&]
+            {
+                (void)first.PrepareAccount("recovery-race-player");
+            })
+                && first.HasPendingRecovery(),
+            "First coordinator did not cache the detected sidecar.");
+
+        LamaPon::PlayerPrefs secondPreferences(root / L"PlayerPrefs.json");
+        secondPreferences.Load();
+        LamaPon::SaveDataStore secondSaves(root / L"Saves");
+        Coordinator second(secondPreferences, secondSaves, root);
+        ConfigureCoordinator(second);
+        Require(
+            Throws([&]
+            {
+                (void)second.PrepareAccount("recovery-race-player");
+            })
+                && !second.HasPendingRecovery(),
+            "A peer inspected recovery state while the detecting owner held its lease.");
+        Require(
+            first.RestorePendingRecovery(),
+            "Detecting coordinator could not resolve the sidecar under its lease.");
+        auto prepared = first.PrepareAccount("recovery-race-player");
+        Require(
+            first.CommitPrepared(std::move(prepared))
+                && firstPreferences.GetString("owner")
+                    == "recovered-by-peer",
+            "Detecting coordinator did not activate the recovered profile.");
+
+        Require(
+            Throws([&]
+            {
+                (void)second.PrepareAccount("recovery-race-player");
+            })
+                && !second.IsAccountActive(),
+            "A peer activated the recovered account before its owner detached.");
+        static_cast<void>(first.DetachToGuest());
+        auto secondPrepared = second.PrepareAccount("recovery-race-player");
+        Require(
+            second.CommitPrepared(std::move(secondPrepared)),
+            "Peer could not activate after recovery owner released its lease.");
+        static_cast<void>(second.DetachToGuest());
     }
 
     void TestCredentialSaveFailureRollsBackAndRevokesSession()
@@ -1365,7 +1724,6 @@ namespace
                     == LamaPon::OnlineAccountState::SignedOut;
             },
             "Account A logout did not finish.");
-
         CompleteDiscordLogin(*services);
         UpdateUntil(
             *services,
@@ -2923,7 +3281,9 @@ namespace
         const auto expectedOld = oldProfiles.Account("namespace-probe");
         const auto unexpectedReplacement =
             replacementProfiles.Account("namespace-probe");
-        auto prepared = coordinator->PrepareAccount("namespace-probe");
+        auto prepared = coordinator->PrepareAccount(
+            "namespace-probe",
+            "namespace-probe-access-token");
         Require(
             coordinator->CommitPrepared(std::move(prepared))
                 && preferences.FilePath() == expectedOld.playerPrefsFile
@@ -3041,6 +3401,186 @@ namespace
                 && HasBearer(requests.back(), L"account-b-access"),
             "Cross-account refresh changed the active account profile.");
     }
+
+    void TestCloudUnauthorizedRefreshUsesCooldownUntilWireSuccess()
+    {
+        const auto root = CaseRoot("cloud-401-cooldown");
+        LamaPon::PlayerPrefs preferences(root / L"PlayerPrefs.json");
+        preferences.Load();
+        LamaPon::SaveDataStore saves(root / L"Saves");
+
+        auto authorized = SessionJson(
+            "cloud-access-1",
+            "cloud-refresh-1",
+            "cloud-player",
+            900u);
+        authorized["status"] = "authorized";
+        auto backend = std::make_shared<ScriptedBackend>(
+            std::deque<LamaPon::HttpResponse>{
+                JsonResponse(
+                    201u,
+                    {
+                        { "transactionId", "cloud-transaction" },
+                        { "pollToken", "cloud-poll" },
+                        { "authorizationUrl", "https://login.example.test/cloud" },
+                        { "expiresIn", 300u },
+                        { "pollInterval", 1u }
+                    }),
+                JsonResponse(200u, authorized),
+                JsonResponse(401u),
+                JsonResponse(
+                    200u,
+                    SessionJson(
+                        "cloud-access-2",
+                        "cloud-refresh-2",
+                        "cloud-player",
+                        900u)),
+                JsonResponse(401u),
+                JsonResponse(
+                    200u,
+                    SessionJson(
+                        "cloud-access-3",
+                        "cloud-refresh-3",
+                        "cloud-player",
+                        900u)),
+                EmptyCloudManifestResponse(),
+                JsonResponse(401u),
+                JsonResponse(
+                    200u,
+                    SessionJson(
+                        "cloud-access-4",
+                        "cloud-refresh-4",
+                        "cloud-player",
+                        900u))
+            });
+        auto storeState = std::make_shared<TokenStoreState>();
+        auto services =
+            LamaPon::Detail::OnlineServicesTestAccess::Create(
+                OnlineConfiguration(),
+                [backend](const LamaPon::HttpRequest& request)
+                {
+                    return backend->Send(request);
+                },
+                std::make_unique<MemoryTokenStore>(storeState));
+        LamaPon::Detail::OnlinePersistenceAccess::Attach(
+            *services,
+            preferences,
+            saves,
+            root);
+        CompleteDiscordLogin(*services);
+        UpdateUntil(
+            *services,
+            [&]
+            {
+                return services->State()
+                    == LamaPon::OnlineAccountState::SignedIn;
+            },
+            "Cloud cooldown login did not complete.");
+        auto* const coordinator =
+            LamaPon::Detail::OnlinePersistenceAccess::Coordinator(*services);
+        Require(
+            coordinator && coordinator->Synchronizer(),
+            "Cloud synchronizer was not activated with the account.");
+
+        const auto pumpUntilRequestCount = [&](const std::size_t count)
+        {
+            const auto deadline = std::chrono::steady_clock::now()
+                + std::chrono::seconds(10);
+            while (backend->Requests().size() < count)
+            {
+                LamaPon::Detail::OnlinePersistenceAccess::EndFrame(*services);
+                services->Update(0.0f);
+                if (std::chrono::steady_clock::now() >= deadline)
+                {
+                    throw std::runtime_error(
+                        "Cloud cooldown request sequence timed out.");
+                }
+                std::this_thread::yield();
+            }
+        };
+        const auto pumpUntilCloudState = [&](const auto expected)
+        {
+            const auto deadline = std::chrono::steady_clock::now()
+                + std::chrono::seconds(10);
+            while (coordinator->Synchronizer()->Status().state != expected)
+            {
+                LamaPon::Detail::OnlinePersistenceAccess::EndFrame(*services);
+                services->Update(0.0f);
+                if (std::chrono::steady_clock::now() >= deadline)
+                {
+                    throw std::runtime_error(
+                        "Cloud cooldown state transition timed out.");
+                }
+                std::this_thread::yield();
+            }
+        };
+
+        pumpUntilRequestCount(4u);
+        UpdateUntil(
+            *services,
+            [&]
+            {
+                return services->State()
+                    == LamaPon::OnlineAccountState::SignedIn
+                    && backend->Requests().size() >= 4u;
+            },
+            "First cloud-triggered refresh did not complete.");
+        pumpUntilRequestCount(5u);
+        pumpUntilCloudState(
+            LamaPon::Detail::CloudSaveSynchronizerState::Unauthorized);
+        services->Update(0.0f);
+
+        services->Update(4.9f);
+        Require(
+            backend->Requests().size() == 5u,
+            "A repeated cloud 401 bypassed the minimum cooldown.");
+        services->Update(0.2f);
+        pumpUntilRequestCount(6u);
+        UpdateUntil(
+            *services,
+            [&]
+            {
+                return services->State()
+                    == LamaPon::OnlineAccountState::SignedIn;
+            },
+            "Cooled-down cloud refresh did not complete.");
+        pumpUntilRequestCount(7u);
+        pumpUntilCloudState(
+            LamaPon::Detail::CloudSaveSynchronizerState::Idle);
+        services->Update(0.0f);
+
+        preferences.SetInteger("after-healthy-wire", 1);
+        preferences.Save();
+        pumpUntilRequestCount(8u);
+        pumpUntilCloudState(
+            LamaPon::Detail::CloudSaveSynchronizerState::Unauthorized);
+        services->Update(0.0f);
+        pumpUntilRequestCount(9u);
+        const auto requests = backend->Requests();
+        const auto refreshToken = [&requests](const std::size_t index)
+        {
+            return nlohmann::json::parse(std::string{
+                requests[index].body.begin(),
+                requests[index].body.end()
+            }).value("refreshToken", std::string{});
+        };
+        Require(
+            requests.size() == 9u
+                && HasBearer(requests[2], L"cloud-access-1")
+                && HasBearer(requests[4], L"cloud-access-2")
+                && HasBearer(requests[6], L"cloud-access-3")
+                && HasBearer(requests[7], L"cloud-access-3")
+                && requests[3].url.ends_with(
+                    L"/v1/auth/session/refresh")
+                && requests[5].url.ends_with(
+                    L"/v1/auth/session/refresh")
+                && requests[8].url.ends_with(
+                    L"/v1/auth/session/refresh")
+                && refreshToken(3u) == "cloud-refresh-1"
+                && refreshToken(5u) == "cloud-refresh-2"
+                && refreshToken(8u) == "cloud-refresh-3",
+            "Cloud 401 refresh fencing/cooldown did not follow token generations.");
+    }
 }
 
 int main()
@@ -3064,13 +3604,17 @@ int main()
         run("snapshot race", TestValidatedPlayerPrefsSnapshotClosesReopenRace);
         run("transactional switch", TestTransactionalProfileSwitchAndStableObjects);
         run("binding lease", TestActiveAccountOwnsBothPersistenceBindings);
+        run("profile session lease", TestAccountProfileSessionLeaseRejectsSecondActivation);
         run("prepared binding", TestPreparedCommitRejectsChangedGuestBinding);
         run("stale transaction", TestStalePreparedTransactionCannotCommit);
         run("corrupt documents", TestCorruptAccountDocumentsFailClosed);
         run("save quarantine", TestFailedAccountSaveIsQuarantinedAndRetried);
+        run("detach delete checkpoint", TestImmediateDetachCheckpointsBaselineLessDelete);
+        run("checkpoint quarantine", TestFailedDetachCheckpointKeepsAccountLeaseUntilDiscard);
         run("clean load failure", TestCleanLoadFailureDoesNotPermanentlyBlockProfiles);
         run("dirty recovery", TestDirtyLoadFailureUsesRecoverableStrictSidecar);
         run("recovery discard", TestExplicitRecoveryDiscardPreservesOriginal);
+        run("recovery sidecar lease", TestRecoverySidecarResolutionReacquiresProfileLease);
         run("credential rollback", TestCredentialSaveFailureRollsBackAndRevokesSession);
         run("failed credential pending", TestFailedCredentialSaveKeepsPriorCommitPendingUntilDeleted);
         run("immediate signout", TestSignOutImmediatelyRestoresGuestAndReloginRestoresAccount);
@@ -3091,6 +3635,7 @@ int main()
         run("completed delete retry", TestCompletedSignOutKeepsFailedCredentialDeletePending);
         run("configure guarantee", TestConfigureFailurePreservesClientNamespaceAndBinding);
         run("refresh identity", TestRefreshIdentityChangeFailsClosed);
+        run("cloud 401 cooldown", TestCloudUnauthorizedRefreshUsesCooldownUntilWireSuccess);
         std::cout << "Online persistence coordinator tests passed.\n";
         return 0;
     }

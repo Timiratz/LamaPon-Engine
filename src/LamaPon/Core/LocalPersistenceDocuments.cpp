@@ -40,6 +40,7 @@ namespace
     struct ObserverRegistration final
     {
         LamaPon::Detail::LocalPersistenceCommitCallback callback{};
+        LamaPon::Detail::LocalPersistencePreDeleteCallback preDeleteCallback{};
         void* context{};
         std::uint64_t profileEpoch{};
         LamaPon::Detail::LocalPersistenceObserverToken token{};
@@ -982,6 +983,71 @@ namespace
             static_cast<int>(suffix.size()),
             TRUE) == CSTR_EQUAL;
     }
+
+    bool MatchesObservedDocument(
+        const LamaPon::Detail::LocalPersistenceDocument& current,
+        const LamaPon::Detail::LocalPersistenceDocument& observed)
+    {
+        using LamaPon::Detail::LocalPersistenceDocumentState;
+        if (observed.state == LocalPersistenceDocumentState::Loaded)
+        {
+            return current.state == LocalPersistenceDocumentState::Loaded
+                && current.bytes == observed.bytes;
+        }
+        if (observed.state == LocalPersistenceDocumentState::Missing)
+        {
+            return current.state == LocalPersistenceDocumentState::Missing;
+        }
+        throw std::invalid_argument(
+            "Conditional persistence requires a readable observation.");
+    }
+
+    void PublishDocumentWithHeldLock(
+        const std::filesystem::path& targetPath,
+        const std::string_view bytes)
+    {
+        (void)ValidateExistingTarget(targetPath);
+        const auto stagePath = WithSuffix(targetPath, L".writing");
+        WriteAndFlushStage(stagePath, bytes);
+        if (ConsumeFailPoint(
+                LamaPon::Detail::LocalPersistenceTestFailPoint::
+                    AfterFlushBeforePublish))
+        {
+            ThrowPersistenceFailure();
+        }
+        if (MoveFileExW(
+                stagePath.c_str(),
+                targetPath.c_str(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE)
+        {
+            ThrowPersistenceFailure();
+        }
+    }
+
+    bool DeleteDocumentWithHeldLock(
+        const std::filesystem::path& targetPath)
+    {
+        if (!ValidateExistingTarget(targetPath))
+        {
+            return false;
+        }
+        const auto deletingPath = WithSuffix(targetPath, L".deleting");
+        if (ValidateExistingTarget(deletingPath)
+            && DeleteFileW(deletingPath.c_str()) == FALSE)
+        {
+            ThrowPersistenceFailure();
+        }
+        if (MoveFileExW(
+                targetPath.c_str(),
+                deletingPath.c_str(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE)
+        {
+            ThrowPersistenceFailure();
+        }
+        // renameがcommit pointです。stale `.deleting`はreaderが無視します。
+        (void)DeleteFileW(deletingPath.c_str());
+        return true;
+    }
 }
 
 namespace LamaPon::Detail
@@ -1001,7 +1067,8 @@ namespace LamaPon::Detail
     LocalPersistenceObserverToken AttachLocalPersistenceCommitObserver(
         const LocalPersistenceCommitCallback callback,
         void* const context,
-        const std::uint64_t profileEpoch) noexcept
+        const std::uint64_t profileEpoch,
+        const LocalPersistencePreDeleteCallback preDeleteCallback) noexcept
     {
         if (callback == nullptr)
         {
@@ -1012,7 +1079,13 @@ namespace LamaPon::Detail
         {
             ++NextObserverToken;
         }
-        Observer = { callback, context, profileEpoch, NextObserverToken };
+        Observer = {
+            callback,
+            preDeleteCallback,
+            context,
+            profileEpoch,
+            NextObserverToken
+        };
         ObserverFailure.store(false, std::memory_order_release);
         return NextObserverToken;
     }
@@ -1049,6 +1122,20 @@ namespace LamaPon::Detail
         }
     }
 
+    bool PrepareLocalPersistenceDelete(
+        const LocalPersistenceCommitEvent& event) noexcept
+    {
+        if (ObserverSuppressionDepth != 0u
+            || Observer.preDeleteCallback == nullptr)
+        {
+            return true;
+        }
+        return Observer.preDeleteCallback(
+            Observer.context,
+            Observer.profileEpoch,
+            event);
+    }
+
     void SetLocalPersistenceTestFailPoint(
         const LocalPersistenceTestFailPoint failPoint) noexcept
     {
@@ -1077,21 +1164,7 @@ namespace LamaPon::Detail
     {
         EnsureParentDirectory(targetPath);
         auto lock = AcquireTargetLock(targetPath);
-        (void)ValidateExistingTarget(targetPath);
-        const auto stagePath = WithSuffix(targetPath, L".writing");
-        WriteAndFlushStage(stagePath, bytes);
-        if (ConsumeFailPoint(
-                LocalPersistenceTestFailPoint::AfterFlushBeforePublish))
-        {
-            ThrowPersistenceFailure();
-        }
-        if (MoveFileExW(
-                stagePath.c_str(),
-                targetPath.c_str(),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE)
-        {
-            ThrowPersistenceFailure();
-        }
+        PublishDocumentWithHeldLock(targetPath, bytes);
     }
 
     bool DurableDeleteLocalDocument(
@@ -1111,27 +1184,80 @@ namespace LamaPon::Detail
         }
         ValidateParentDirectory(parent);
         auto lock = AcquireTargetLock(targetPath);
-        if (!ValidateExistingTarget(targetPath))
-        {
-            return false;
-        }
-        const auto deletingPath = WithSuffix(targetPath, L".deleting");
-        if (ValidateExistingTarget(deletingPath)
-            && DeleteFileW(deletingPath.c_str()) == FALSE)
+        return DeleteDocumentWithHeldLock(targetPath);
+    }
+
+    LocalPersistenceConditionalApplyResult
+        DurablePublishLocalDocumentIfUnchanged(
+        const std::filesystem::path& targetPath,
+        const LocalPersistenceDocument& observed,
+        const std::string_view bytes,
+        const std::size_t maximumBytes,
+        const std::string_view saveSlot)
+    {
+        EnsureParentDirectory(targetPath);
+        auto lock = AcquireTargetLock(targetPath);
+        const auto current = ReadDocument(
+            targetPath,
+            maximumBytes,
+            saveSlot.empty()
+                ? std::nullopt
+                : std::optional<std::string_view>{ saveSlot });
+        if (current.state == LocalPersistenceDocumentState::Unavailable
+            || current.state == LocalPersistenceDocumentState::Corrupt)
         {
             ThrowPersistenceFailure();
         }
-        if (MoveFileExW(
-                targetPath.c_str(),
-                deletingPath.c_str(),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE)
+        if (!MatchesObservedDocument(current, observed))
+        {
+            return LocalPersistenceConditionalApplyResult::LocalChanged;
+        }
+        PublishDocumentWithHeldLock(targetPath, bytes);
+        return LocalPersistenceConditionalApplyResult::Applied;
+    }
+
+    LocalPersistenceConditionalApplyResult
+        DurableDeleteLocalDocumentIfUnchanged(
+        const std::filesystem::path& targetPath,
+        const LocalPersistenceDocument& observed,
+        const std::size_t maximumBytes,
+        const std::string_view saveSlot)
+    {
+        const auto parent = targetPath.parent_path().empty()
+            ? std::filesystem::current_path()
+            : targetPath.parent_path();
+        const auto chain = InspectExistingDirectoryChain(parent);
+        if (chain == DirectoryChainState::Missing)
+        {
+            if (observed.state == LocalPersistenceDocumentState::Missing)
+            {
+                return LocalPersistenceConditionalApplyResult::Applied;
+            }
+            return LocalPersistenceConditionalApplyResult::LocalChanged;
+        }
+        if (chain != DirectoryChainState::Exists)
         {
             ThrowPersistenceFailure();
         }
-        // renameがcommit pointです。以後のcleanup失敗を呼出し側へ返すと、
-        // diskはmissingなのにin-memoryだけ旧状態になるためbest effortです。
-        (void)DeleteFileW(deletingPath.c_str());
-        return true;
+        ValidateParentDirectory(parent);
+        auto lock = AcquireTargetLock(targetPath);
+        const auto current = ReadDocument(
+            targetPath,
+            maximumBytes,
+            saveSlot.empty()
+                ? std::nullopt
+                : std::optional<std::string_view>{ saveSlot });
+        if (current.state == LocalPersistenceDocumentState::Unavailable
+            || current.state == LocalPersistenceDocumentState::Corrupt)
+        {
+            ThrowPersistenceFailure();
+        }
+        if (!MatchesObservedDocument(current, observed))
+        {
+            return LocalPersistenceConditionalApplyResult::LocalChanged;
+        }
+        (void)DeleteDocumentWithHeldLock(targetPath);
+        return LocalPersistenceConditionalApplyResult::Applied;
     }
 
     void ValidatePlayerPrefsFullDocument(const std::string_view bytes)
@@ -1192,7 +1318,9 @@ namespace LamaPon::Detail
             || !document.at("version").is_number_unsigned()
             || document.at("version").get<std::uint64_t>() != 1u
             || !document.at("slot").is_string()
-            || document.at("slot").get<std::string>() != slot)
+            || !EquivalentSaveSlotNames(
+                document.at("slot").get<std::string>(),
+                slot))
         {
             throw std::runtime_error("SaveData document is invalid.");
         }
@@ -1322,6 +1450,34 @@ namespace LamaPon::Detail
         playerPrefs.DeleteRemoteDocumentAtomically();
     }
 
+    LocalPersistenceConditionalApplyResult
+        LocalPersistenceDocuments::ApplyPlayerPrefsIfUnchanged(
+        PlayerPrefs& playerPrefs,
+        const LocalPersistenceDocument& observed,
+        const std::span<const std::uint8_t> fullDocument)
+    {
+        const std::string_view bytes(
+            fullDocument.empty()
+                ? ""
+                : reinterpret_cast<const char*>(fullDocument.data()),
+            fullDocument.size());
+        return playerPrefs.ApplyRemoteDocumentAtomicallyIfUnchanged(
+                bytes,
+                observed)
+            ? LocalPersistenceConditionalApplyResult::Applied
+            : LocalPersistenceConditionalApplyResult::LocalChanged;
+    }
+
+    LocalPersistenceConditionalApplyResult
+        LocalPersistenceDocuments::DeletePlayerPrefsIfUnchanged(
+        PlayerPrefs& playerPrefs,
+        const LocalPersistenceDocument& observed)
+    {
+        return playerPrefs.DeleteRemoteDocumentAtomicallyIfUnchanged(observed)
+            ? LocalPersistenceConditionalApplyResult::Applied
+            : LocalPersistenceConditionalApplyResult::LocalChanged;
+    }
+
     void LocalPersistenceDocuments::SwapPlayerPrefsLoadedState(
         PlayerPrefs& target,
         PlayerPrefs& prepared) noexcept
@@ -1382,5 +1538,40 @@ namespace LamaPon::Detail
     {
         ValidateSaveSlotName(slot);
         (void)DurableDeleteLocalDocument(saveData.SlotPath(slot));
+    }
+
+    LocalPersistenceConditionalApplyResult
+        LocalPersistenceDocuments::ApplySaveDataIfUnchanged(
+        SaveDataStore& saveData,
+        const std::string_view slot,
+        const LocalPersistenceDocument& observed,
+        const std::span<const std::uint8_t> fullDocument)
+    {
+        const std::string_view bytes(
+            fullDocument.empty()
+                ? ""
+                : reinterpret_cast<const char*>(fullDocument.data()),
+            fullDocument.size());
+        ValidateSaveDataFullDocument(slot, bytes);
+        return DurablePublishLocalDocumentIfUnchanged(
+            saveData.SlotPath(slot),
+            observed,
+            bytes,
+            CloudSaveSlotMaxBytes,
+            slot);
+    }
+
+    LocalPersistenceConditionalApplyResult
+        LocalPersistenceDocuments::DeleteSaveDataIfUnchanged(
+        SaveDataStore& saveData,
+        const std::string_view slot,
+        const LocalPersistenceDocument& observed)
+    {
+        ValidateSaveSlotName(slot);
+        return DurableDeleteLocalDocumentIfUnchanged(
+            saveData.SlotPath(slot),
+            observed,
+            CloudSaveSlotMaxBytes,
+            slot);
     }
 }

@@ -16,6 +16,8 @@ namespace LamaPon
 namespace LamaPon::Detail
 {
     class CloudSaveJournal;
+    class CloudSaveClient;
+    class CloudSaveSynchronizer;
 
     enum class OnlinePersistenceDetachResult : std::uint8_t
     {
@@ -84,7 +86,8 @@ namespace LamaPon::Detail
             std::string gameId,
             std::string environmentId,
             std::string normalizedBackendBaseUrl,
-            bool allowInsecureLoopback);
+            bool allowInsecureLoopback,
+            std::shared_ptr<const CloudSaveClient> cloudSaveClient = {});
         void DisableNamespace() noexcept;
 
         [[nodiscard]] bool IsNamespaceEnabled() const noexcept;
@@ -94,7 +97,8 @@ namespace LamaPon::Detail
         // strict検証、journal回復を完了します。どこかがUnavailable/
         // Corruptならthrowし、active guestと公開sessionは変更しません。
         [[nodiscard]] PreparedOnlineAccount PrepareAccount(
-            std::string_view playerId);
+            std::string_view playerId,
+            std::string accessToken = {});
 
         // preparedのepoch/ownerが現在値と一致するときだけ切り替えます。
         // 成功後もPlayerPrefs/SaveDataStore自体のaddressは変わりません。
@@ -124,6 +128,12 @@ namespace LamaPon::Detail
         [[nodiscard]] std::string_view
             ActiveAccountStorageKey() const noexcept;
         [[nodiscard]] CloudSaveJournal* Journal() noexcept;
+
+        // OnlineServicesだけがtoken rotation/401 edgeを接続します。
+        void UpdateCloudSaveAccessToken(std::string accessToken);
+        [[nodiscard]] bool ConsumeCloudSaveUnauthorizedSignal() noexcept;
+        [[nodiscard]] bool ConsumeCloudSaveHealthySignal() noexcept;
+        [[nodiscard]] CloudSaveSynchronizer* Synchronizer() noexcept;
 
         // Stage 7Cがlocal reconcileを起動するためのedge signalです。
         // observer callback失敗もtrueとして返し、disk再走査を促します。

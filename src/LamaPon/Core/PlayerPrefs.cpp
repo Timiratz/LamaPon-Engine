@@ -3,6 +3,7 @@
 #include "LamaPon/Core/DocumentMigration.h"
 #include "LamaPon/Core/LocalPersistenceDocuments.h"
 #include "LamaPon/Core/PathUtils.h"
+#include "LamaPon/Online/CloudSave.h"
 
 #include <Windows.h>
 #include <nlohmann/json.hpp>
@@ -486,6 +487,51 @@ namespace LamaPon
             m_implementation->bindingLeaseOwner;
         (void)Detail::DurableDeleteLocalDocument(replacement->filePath);
         m_implementation.swap(replacement);
+    }
+
+    bool PlayerPrefs::ApplyRemoteDocumentAtomicallyIfUnchanged(
+        const std::string_view fullDocument,
+        const Detail::LocalPersistenceDocument& observed)
+    {
+        auto replacement = std::make_unique<Implementation>();
+        replacement->filePath = m_implementation->filePath;
+        replacement->bindingLeaseOwner =
+            m_implementation->bindingLeaseOwner;
+        replacement->values = ReadStrictValues(fullDocument);
+        const auto result =
+            Detail::DurablePublishLocalDocumentIfUnchanged(
+                replacement->filePath,
+                observed,
+                fullDocument,
+                CloudPreferencesMaxBytes);
+        if (result
+            == Detail::LocalPersistenceConditionalApplyResult::LocalChanged)
+        {
+            return false;
+        }
+        m_implementation.swap(replacement);
+        return true;
+    }
+
+    bool PlayerPrefs::DeleteRemoteDocumentAtomicallyIfUnchanged(
+        const Detail::LocalPersistenceDocument& observed)
+    {
+        auto replacement = std::make_unique<Implementation>();
+        replacement->filePath = m_implementation->filePath;
+        replacement->bindingLeaseOwner =
+            m_implementation->bindingLeaseOwner;
+        const auto result =
+            Detail::DurableDeleteLocalDocumentIfUnchanged(
+                replacement->filePath,
+                observed,
+                CloudPreferencesMaxBytes);
+        if (result
+            == Detail::LocalPersistenceConditionalApplyResult::LocalChanged)
+        {
+            return false;
+        }
+        m_implementation.swap(replacement);
+        return true;
     }
 
     bool PlayerPrefs::IsDirty() const noexcept

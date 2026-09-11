@@ -70,6 +70,11 @@ namespace
             }
             value = INVALID_HANDLE_VALUE;
         }
+
+        [[nodiscard]] HANDLE Release() noexcept
+        {
+            return std::exchange(value, INVALID_HANDLE_VALUE);
+        }
     };
 
     [[nodiscard]] bool ConsumeCredentialSaveFailPoint(
@@ -362,8 +367,9 @@ namespace
             sizeof(disposition)) != FALSE;
     }
 
-    [[nodiscard]] bool AcquireCredentialOperationLock(
+    [[nodiscard]] bool AcquireCredentialExclusiveLock(
         const std::filesystem::path& filePath,
+        const wchar_t* const suffix,
         HandleGuard& lock) noexcept
     {
         try
@@ -374,7 +380,7 @@ namespace
                 return false;
             }
             auto lockPath = filePath;
-            lockPath += L".lock";
+            lockPath += suffix;
             lock.value = CreateFileW(
                 lockPath.c_str(),
                 GENERIC_READ | GENERIC_WRITE | FILE_READ_ATTRIBUTES
@@ -403,6 +409,26 @@ namespace
             lock.Reset();
             return false;
         }
+    }
+
+    [[nodiscard]] bool AcquireCredentialOperationLock(
+        const std::filesystem::path& filePath,
+        HandleGuard& lock) noexcept
+    {
+        return AcquireCredentialExclusiveLock(
+            filePath,
+            L".lock",
+            lock);
+    }
+
+    [[nodiscard]] bool AcquireCredentialUsageLock(
+        const std::filesystem::path& filePath,
+        HandleGuard& lock) noexcept
+    {
+        return AcquireCredentialExclusiveLock(
+            filePath,
+            L".session.lock",
+            lock);
     }
 
     [[nodiscard]] LamaPon::Detail::OnlinePlatformResult Success()
@@ -788,6 +814,70 @@ namespace LamaPon::Detail
         , m_entropy(BuildEntropy(gameId, environmentId))
         , m_storageAvailable(!m_filePath.empty())
     {
+    }
+
+    WindowsRefreshTokenStore::~WindowsRefreshTokenStore()
+    {
+        ReleaseUsageLease();
+    }
+
+    OnlinePlatformResult WindowsRefreshTokenStore::AcquireUsageLease()
+    {
+        if (m_usageLeaseHandle != nullptr)
+        {
+            return Success();
+        }
+        if (!m_storageAvailable)
+        {
+            return Failure(
+                "credential_storage_unavailable",
+                "Secure credential storage is unavailable.");
+        }
+
+        const auto initialParentState =
+            InspectCredentialParent(m_filePath);
+        if (initialParentState == ParentDirectoryState::Unavailable)
+        {
+            return Failure(
+                "credential_storage_unavailable",
+                "Secure credential storage is unavailable.");
+        }
+        std::error_code directoryError;
+        if (!EnsureDirectoryExists(
+                m_filePath.parent_path(),
+                directoryError)
+            || InspectCredentialParent(m_filePath)
+                != ParentDirectoryState::Exists
+            || !ApplyRestrictedAcl(
+                m_filePath.parent_path(),
+                true))
+        {
+            return Failure(
+                "credential_storage_unavailable",
+                "Secure credential storage is unavailable.");
+        }
+
+        HandleGuard usageLease;
+        if (!AcquireCredentialUsageLock(m_filePath, usageLease))
+        {
+            return Failure(
+                "credential_usage_unavailable",
+                "The saved online session is already in use or unavailable.");
+        }
+        m_usageLeaseHandle = usageLease.Release();
+        return Success();
+    }
+
+    void WindowsRefreshTokenStore::ReleaseUsageLease() noexcept
+    {
+        const auto lease = std::exchange(
+            m_usageLeaseHandle,
+            nullptr);
+        if (lease != nullptr
+            && lease != static_cast<void*>(INVALID_HANDLE_VALUE))
+        {
+            CloseHandle(static_cast<HANDLE>(lease));
+        }
     }
 
     RefreshTokenLoadResult WindowsRefreshTokenStore::Load()

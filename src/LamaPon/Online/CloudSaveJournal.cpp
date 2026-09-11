@@ -33,6 +33,7 @@ namespace
     using LamaPon::CloudSaveSnapshot;
     using LamaPon::Detail::CloudSavePendingKind;
     using LamaPon::Detail::CloudSavePendingMutation;
+    using LamaPon::Detail::CloudSaveJournalBusyError;
 
     constexpr std::size_t MaximumJournalPayloadBytes =
         LamaPon::CloudSaveAccountMaxBytes * 3u;
@@ -246,10 +247,12 @@ namespace
         std::optional<CloudSaveSnapshot> baseline;
         std::optional<CloudSavePendingMutation> pending;
         std::optional<CloudSaveSnapshot> conflict;
+        bool localDeleteIntent{};
     };
 
     struct JournalState final
     {
+        std::uint64_t schemaVersion{ 2u };
         std::uint64_t generation{};
         std::uint64_t parentGeneration{};
         std::string parentChecksum;
@@ -312,15 +315,6 @@ namespace
     public:
         RecoverableJournalCorruption()
             : std::runtime_error("Cloud save journal write is incomplete.")
-        {
-        }
-    };
-
-    class JournalLockBusy final : public std::runtime_error
-    {
-    public:
-        JournalLockBusy()
-            : std::runtime_error("Cloud save journal is busy.")
         {
         }
     };
@@ -1085,17 +1079,23 @@ namespace
         return pending;
     }
 
-    Json EntryJson(const Entry& entry)
+    Json EntryJson(const Entry& entry, const std::uint64_t version)
     {
-        return Json{
+        Json result{
             { "resource", ResourceJson(entry.resource) },
             { "baseline", entry.baseline
                 ? SnapshotJson(*entry.baseline) : Json(nullptr) },
             { "pending", entry.pending
                 ? PendingJson(*entry.pending) : Json(nullptr) },
             { "conflict", entry.conflict
-                ? SnapshotJson(*entry.conflict) : Json(nullptr) }
+                ? SnapshotJson(*entry.conflict) : Json(nullptr) },
+            { "localDeleteIntent", entry.localDeleteIntent }
         };
+        if (version == 1u)
+        {
+            result.erase("localDeleteIntent");
+        }
+        return result;
     }
 
     std::size_t FindEntry(
@@ -1137,7 +1137,8 @@ namespace
         {
             const auto& entry = entries[index];
             (void)ResourceJson(entry.resource);
-            if (!entry.baseline && !entry.pending && !entry.conflict)
+            if (!entry.baseline && !entry.pending && !entry.conflict
+                && !entry.localDeleteIntent)
             {
                 throw std::runtime_error("Cloud save journal contains an empty entry.");
             }
@@ -1218,11 +1219,11 @@ namespace
         Json entries = Json::array();
         for (const auto& entry : state.entries)
         {
-            entries.push_back(EntryJson(entry));
+            entries.push_back(EntryJson(entry, state.schemaVersion));
         }
         return Json{
             { "format", JournalFormat },
-            { "version", 1 },
+            { "version", state.schemaVersion },
             { "generation", state.generation },
             { "parentGeneration", state.parentGeneration },
             { "parentChecksum", state.parentChecksum },
@@ -1266,7 +1267,8 @@ namespace
             && document.at("format").get<std::string>() == JournalFormat
             && document.contains("version")
             && document.at("version").is_number_unsigned()
-            && document.at("version").get<std::uint64_t>() != 1u)
+            && document.at("version").get<std::uint64_t>() != 1u
+            && document.at("version").get<std::uint64_t>() != 2u)
         {
             throw UnsupportedJournalVersion();
         }
@@ -1277,7 +1279,8 @@ namespace
             || !document.at("format").is_string()
             || document.at("format").get<std::string>() != JournalFormat
             || !document.at("version").is_number_unsigned()
-            || document.at("version").get<std::uint64_t>() != 1u
+            || (document.at("version").get<std::uint64_t>() != 1u
+                && document.at("version").get<std::uint64_t>() != 2u)
             || !document.at("generation").is_number_unsigned()
             || !document.at("parentGeneration").is_number_unsigned()
             || !document.at("parentChecksum").is_string()
@@ -1292,7 +1295,9 @@ namespace
         {
             throw std::domain_error("Cloud save journal binding does not match.");
         }
+        const auto version = document.at("version").get<std::uint64_t>();
         JournalState state;
+        state.schemaVersion = version;
         state.generation = document.at("generation").get<std::uint64_t>();
         state.parentGeneration =
             document.at("parentGeneration").get<std::uint64_t>();
@@ -1316,9 +1321,17 @@ namespace
         }
         for (const auto& item : document.at("entries"))
         {
-            if (!HasExactKeys(
+            const bool exactEntry = version == 1u
+                ? HasExactKeys(
                     item,
-                    { "resource", "baseline", "pending", "conflict" }))
+                    { "resource", "baseline", "pending", "conflict" })
+                : HasExactKeys(
+                    item,
+                    { "resource", "baseline", "pending", "conflict",
+                      "localDeleteIntent" });
+            if (!exactEntry
+                || (version == 2u
+                    && !item.at("localDeleteIntent").is_boolean()))
             {
                 throw std::runtime_error("Cloud save journal entry is invalid.");
             }
@@ -1341,6 +1354,11 @@ namespace
                 entry.conflict = ParseSnapshot(
                     item.at("conflict"),
                     entry.resource);
+            }
+            if (version == 2u)
+            {
+                entry.localDeleteIntent =
+                    item.at("localDeleteIntent").get<bool>();
             }
             state.entries.push_back(std::move(entry));
         }
@@ -1776,7 +1794,7 @@ namespace
             if (error == ERROR_SHARING_VIOLATION
                 || error == ERROR_LOCK_VIOLATION)
             {
-                throw JournalLockBusy();
+                throw CloudSaveJournalBusyError();
             }
             ThrowJournalFailure();
         }
@@ -2325,11 +2343,38 @@ namespace LamaPon::Detail
             auto peer = AcquireLock(lockPath);
             return false;
         }
-        catch (const JournalLockBusy&)
+        catch (const CloudSaveJournalBusyError&)
         {
             return true;
         }
     }
+
+    struct CloudSaveProfileSessionLease::Implementation final
+    {
+        ~Implementation()
+        {
+            if (handle != INVALID_HANDLE_VALUE)
+            {
+                CloseHandle(handle);
+            }
+        }
+
+        HANDLE handle{ INVALID_HANDLE_VALUE };
+    };
+
+    CloudSaveProfileSessionLease::CloudSaveProfileSessionLease(
+        CloudSaveJournal& journal)
+    {
+        const auto stateDirectory = journal.FilePath().parent_path();
+        ValidateExistingPathComponents(stateDirectory);
+        auto held = AcquireLock(stateDirectory / L"profile.session.lock");
+        auto implementation = std::make_unique<Implementation>();
+        implementation->handle =
+            std::exchange(held.value, INVALID_HANDLE_VALUE);
+        m_implementation = std::move(implementation);
+    }
+
+    CloudSaveProfileSessionLease::~CloudSaveProfileSessionLease() = default;
 
     struct CloudSaveJournal::Implementation final
     {
@@ -2357,7 +2402,7 @@ namespace LamaPon::Detail
             {
                 lock = AcquireLock(lockPath);
             }
-            catch (const JournalLockBusy&)
+            catch (const CloudSaveJournalBusyError&)
             {
                 // diskへ触れる前の通常競合なので同instanceから再試行できます。
                 throw;
@@ -2397,6 +2442,7 @@ namespace LamaPon::Detail
                 nextState.parentGeneration = state.generation;
                 nextState.parentChecksum = state.checksum;
                 nextState.generation = state.generation + 1u;
+                nextState.schemaVersion = 2u;
                 auto document = SerializeState(nextState, binding);
                 newStatePrepared = true;
                 Publish(filePath, document, newStatePublished);
@@ -2570,6 +2616,7 @@ namespace LamaPon::Detail
                     "Cloud save resource has a pending mutation.");
             }
             entry.baseline = snapshot;
+            entry.localDeleteIntent = false;
         }
         m_implementation->Persist(std::move(next));
     }
@@ -2605,6 +2652,7 @@ namespace LamaPon::Detail
             throw std::logic_error(
                 "Cloud save resource already has a pending mutation.");
         }
+        entry.localDeleteIntent = false;
         entry.pending = CloudSavePendingMutation{
             resource,
             CloudSavePendingKind::Put,
@@ -2646,6 +2694,7 @@ namespace LamaPon::Detail
             throw std::logic_error(
                 "Cloud save resource already has a pending mutation.");
         }
+        entry.localDeleteIntent = false;
         entry.pending = CloudSavePendingMutation{
             resource,
             CloudSavePendingKind::Delete,
@@ -2655,6 +2704,62 @@ namespace LamaPon::Detail
             {}
         };
         m_implementation->Persist(std::move(next));
+    }
+
+    void CloudSaveJournal::RecordLocalDeleteIntent(
+        const CloudSaveResource& resource)
+    {
+        m_implementation->EnsureAvailable();
+        (void)MaximumContentBytes(resource);
+        auto next = m_implementation->state;
+        auto index = FindEntry(next.entries, resource);
+        if (index == next.entries.size())
+        {
+            Entry entry;
+            entry.resource = resource;
+            next.entries.push_back(std::move(entry));
+            index = next.entries.size() - 1u;
+        }
+        if (next.entries[index].localDeleteIntent)
+        {
+            return;
+        }
+        next.entries[index].localDeleteIntent = true;
+        m_implementation->Persist(std::move(next));
+    }
+
+    void CloudSaveJournal::ClearLocalDeleteIntent(
+        const CloudSaveResource& resource)
+    {
+        m_implementation->EnsureAvailable();
+        (void)MaximumContentBytes(resource);
+        auto next = m_implementation->state;
+        const auto index = FindEntry(next.entries, resource);
+        if (index == next.entries.size()
+            || !next.entries[index].localDeleteIntent)
+        {
+            return;
+        }
+        auto& entry = next.entries[index];
+        entry.localDeleteIntent = false;
+        if (!entry.baseline && !entry.pending && !entry.conflict)
+        {
+            next.entries.erase(next.entries.begin()
+                + static_cast<std::ptrdiff_t>(index));
+        }
+        m_implementation->Persist(std::move(next));
+    }
+
+    bool CloudSaveJournal::HasLocalDeleteIntent(
+        const CloudSaveResource& resource) const
+    {
+        m_implementation->EnsureAvailable();
+        (void)MaximumContentBytes(resource);
+        const auto index = FindEntry(
+            m_implementation->state.entries,
+            resource);
+        return index != m_implementation->state.entries.size()
+            && m_implementation->state.entries[index].localDeleteIntent;
     }
 
     std::vector<CloudSavePendingMutation>

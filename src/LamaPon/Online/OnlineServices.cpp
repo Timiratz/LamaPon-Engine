@@ -1,6 +1,7 @@
 #include "LamaPon/Online/OnlineServices.h"
 
 #include "LamaPon/Online/DiscordAuth.h"
+#include "LamaPon/Online/CloudSaveClient.h"
 #include "LamaPon/Online/OnlinePersistenceCoordinator.h"
 #include "LamaPon/Online/OnlineServicesTesting.h"
 #include "LamaPon/Online/WindowsOnlinePlatform.h"
@@ -8,6 +9,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <mutex>
 #include <stdexcept>
 #include <string_view>
@@ -200,6 +202,7 @@ namespace LamaPon
             std::mutex mutex;
             AsyncResult result;
             std::shared_ptr<Detail::DiscordAuthClient> cleanupClient;
+            std::shared_ptr<Detail::IRefreshTokenStore> usageLeaseStore;
             std::chrono::steady_clock::time_point completedAt{};
             bool completed{};
             bool failed{};
@@ -263,6 +266,7 @@ namespace LamaPon
                 const TaskKind taskKind,
                 const bool taskFailed,
                 std::shared_ptr<Detail::DiscordAuthClient> authClient,
+                std::shared_ptr<Detail::IRefreshTokenStore> usageLeaseStore,
                 AsyncResult taskResult) noexcept
             {
                 if (!RevocableSession(
@@ -287,9 +291,11 @@ namespace LamaPon
                         [taskKind,
                             taskFailed,
                             authClient = std::move(authClient),
+                            usageLeaseStore = std::move(usageLeaseStore),
                             cleanupResult]() mutable
                             noexcept
                         {
+                            (void)usageLeaseStore;
                             CleanupAbandonedResult(
                                 taskKind,
                                 taskFailed,
@@ -324,6 +330,8 @@ namespace LamaPon
                 AsyncResult completedResult;
                 std::shared_ptr<Detail::DiscordAuthClient>
                     completedClient;
+                std::shared_ptr<Detail::IRefreshTokenStore>
+                    completedUsageLeaseStore;
                 bool dispatchCleanup{};
                 bool taskFailed{};
                 try
@@ -334,6 +342,7 @@ namespace LamaPon
                     {
                         completedResult = std::move(result);
                         completedClient = cleanupClient;
+                        completedUsageLeaseStore = usageLeaseStore;
                         taskFailed = failed;
                         dispatchCleanup = true;
                     }
@@ -349,6 +358,7 @@ namespace LamaPon
                         kind,
                         taskFailed,
                         std::move(completedClient),
+                        std::move(completedUsageLeaseStore),
                         std::move(completedResult));
                 }
             }
@@ -493,6 +503,10 @@ namespace LamaPon
             {
                 return true;
             }
+            if (!EnsureCredentialUsageLease())
+            {
+                return false;
+            }
             try
             {
                 return static_cast<bool>(
@@ -509,6 +523,10 @@ namespace LamaPon
             if (!refreshTokenStore)
             {
                 return true;
+            }
+            if (!EnsureCredentialUsageLease())
+            {
+                return false;
             }
             try
             {
@@ -531,6 +549,48 @@ namespace LamaPon
         {
             return !localRefreshTokenDeleteFailed
                 || DeleteRefreshTokenTracked();
+        }
+
+        [[nodiscard]] bool EnsureCredentialUsageLease() noexcept
+        {
+            if (!refreshTokenStore || credentialUsageLeaseHeld)
+            {
+                return true;
+            }
+            try
+            {
+                const auto result = refreshTokenStore->AcquireUsageLease();
+                if (!result.succeeded)
+                {
+                    return false;
+                }
+                credentialUsageLeaseHeld = true;
+                return true;
+            }
+            catch (...)
+            {
+                return false;
+            }
+        }
+
+        void ReleaseCredentialUsageLeaseIfSafe() noexcept
+        {
+            if (!credentialUsageLeaseHeld || !refreshTokenStore
+                || inFlight || awaitingCancelledTask
+                || !pendingLogoutAccessToken.empty()
+                || localRefreshTokenDeleteFailed
+                || state == OnlineAccountState::SignedIn
+                || state == OnlineAccountState::RefreshingSession
+                || state == OnlineAccountState::RestoringSession
+                || state == OnlineAccountState::StartingSignIn
+                || state == OnlineAccountState::WaitingForAuthorization
+                || state == OnlineAccountState::PollingAuthorization
+                || state == OnlineAccountState::SigningOut)
+            {
+                return;
+            }
+            refreshTokenStore->ReleaseUsageLease();
+            credentialUsageLeaseHeld = false;
         }
 
         [[nodiscard]] bool ReplacePendingLogoutAccessToken(
@@ -564,6 +624,12 @@ namespace LamaPon
             mailbox->kind = kind;
             mailbox->generation = generation;
             mailbox->cleanupClient = client;
+            if (credentialUsageLeaseHeld)
+            {
+                // ownerが先に破棄されてもrestore/refresh/logoutと遅延cleanupが
+                // 終わるまでstore dtor（lease解放）を遅らせます。
+                mailbox->usageLeaseStore = refreshTokenStore;
+            }
             inFlight = mailbox;
             try
             {
@@ -809,6 +875,70 @@ namespace LamaPon
                 || accountPersistenceSaveFailed;
         }
 
+        void ConsumeCloudSaveSignals(const float elapsedSeconds) noexcept
+        {
+            if (!persistenceCoordinator)
+            {
+                return;
+            }
+            if (persistenceCoordinator->ConsumeCloudSaveHealthySignal())
+            {
+                cloudUnauthorizedRefreshAttempts = 0u;
+                cloudUnauthorizedRefreshCooldownSeconds = 0.0f;
+                cloudUnauthorizedRefreshQueued = false;
+            }
+            const bool unauthorized = persistenceCoordinator
+                ->ConsumeCloudSaveUnauthorizedSignal();
+            if (unauthorized
+                && (state == OnlineAccountState::SignedIn
+                    || state == OnlineAccountState::RefreshingSession))
+            {
+                if (cloudUnauthorizedRefreshAttempts == 0u)
+                {
+                    // 系列の最初だけ即時refreshします。既にproactive refresh中
+                    // なら、その要求を系列の1回目として数えます。
+                    cloudUnauthorizedRefreshAttempts = 1u;
+                    if (state == OnlineAccountState::SignedIn)
+                    {
+                        cloudRefreshRequested = true;
+                        sessionRefreshRetrySeconds = 0.0f;
+                    }
+                }
+                else if (!cloudUnauthorizedRefreshQueued)
+                {
+                    constexpr float MaximumCooldownSeconds = 300.0f;
+                    const auto shift = (std::min)(
+                        cloudUnauthorizedRefreshAttempts - 1u,
+                        6u);
+                    cloudUnauthorizedRefreshCooldownSeconds =
+                        (std::min)(
+                            MaximumCooldownSeconds,
+                            5.0f * static_cast<float>(1u << shift));
+                    cloudUnauthorizedRefreshQueued = true;
+                }
+            }
+
+            if (!cloudUnauthorizedRefreshQueued)
+            {
+                return;
+            }
+            cloudUnauthorizedRefreshCooldownSeconds = (std::max)(
+                0.0f,
+                cloudUnauthorizedRefreshCooldownSeconds - elapsedSeconds);
+            if (cloudUnauthorizedRefreshCooldownSeconds <= 0.0f
+                && state == OnlineAccountState::SignedIn)
+            {
+                cloudUnauthorizedRefreshQueued = false;
+                cloudRefreshRequested = true;
+                sessionRefreshRetrySeconds = 0.0f;
+                if (cloudUnauthorizedRefreshAttempts
+                    < (std::numeric_limits<std::uint32_t>::max)())
+                {
+                    ++cloudUnauthorizedRefreshAttempts;
+                }
+            }
+        }
+
         [[nodiscard]] static float RemainingReceivedSessionSeconds(
             const Detail::OnlineSession& receivedSession,
             const std::chrono::steady_clock::time_point
@@ -887,6 +1017,7 @@ namespace LamaPon
             cancelledPollExpired = false;
             preserveErrorAfterLogout = true;
             accountPersistenceSaveFailed = false;
+            cloudRefreshRequested = false;
             SetFixedError(code);
             state = OnlineAccountState::SigningOut;
             if (pendingLogoutAccessToken.empty())
@@ -922,7 +1053,8 @@ namespace LamaPon
                 {
                     auto prepared =
                         persistenceCoordinator->PrepareAccount(
-                            nextSession.player.playerId);
+                            nextSession.player.playerId,
+                            nextSession.accessToken);
                     if (!persistenceCoordinator->CommitPrepared(
                             std::move(prepared)))
                     {
@@ -973,6 +1105,7 @@ namespace LamaPon
                     nextSession,
                     "request_failed",
                     true);
+                return;
             }
         }
 
@@ -1021,6 +1154,26 @@ namespace LamaPon
                     true);
                 return;
             }
+            try
+            {
+                if (persistenceCoordinator
+                    && persistenceCoordinator->Synchronizer()
+                    && persistenceCoordinator->IsAccountActive())
+                {
+                    // 新access tokenをcloud fenceへ先に適用します。ここで
+                    // allocation/validationが失敗したsessionは公開しません。
+                    persistenceCoordinator->UpdateCloudSaveAccessToken(
+                        nextSession.accessToken);
+                }
+            }
+            catch (...)
+            {
+                RejectReceivedSession(
+                    nextSession,
+                    "persistence_activation_failed",
+                    true);
+                return;
+            }
             if (!PublishSession(
                     nextSession,
                     std::move(nextPlayer),
@@ -1030,13 +1183,20 @@ namespace LamaPon
                     nextSession,
                     "request_failed",
                     true);
+                return;
             }
+            cloudRefreshRequested = false;
         }
 
         void RestoreStoredSession()
         {
             if (!client || !refreshTokenStore)
             {
+                return;
+            }
+            if (!EnsureCredentialUsageLease())
+            {
+                SetFixedError("credential_store_unavailable");
                 return;
             }
 
@@ -1617,8 +1777,9 @@ namespace LamaPon
                 0.0f,
                 sessionRefreshRetrySeconds - elapsedSeconds);
             if (sessionRefreshRetrySeconds > 0.0f
-                || sessionRemainingSeconds
-                    > sessionRefreshLeadSeconds)
+                || (!cloudRefreshRequested
+                    && sessionRemainingSeconds
+                        > sessionRefreshLeadSeconds))
             {
                 return;
             }
@@ -1636,6 +1797,12 @@ namespace LamaPon
                     ClearSession();
                     player = {};
                     state = OnlineAccountState::Error;
+                }
+                else if (cloudRefreshRequested)
+                {
+                    sessionRefreshRetrySeconds = (std::min)(
+                        5.0f,
+                        sessionRemainingSeconds);
                 }
                 SetFixedError("request_failed");
                 return;
@@ -1664,10 +1831,11 @@ namespace LamaPon
 
         Detail::OnlineServicesTestAccess::HttpSender senderOverride;
         std::shared_ptr<Detail::DiscordAuthClient> client;
+        std::shared_ptr<const Detail::CloudSaveClient> cloudSaveClient;
         std::shared_ptr<AsyncMailbox> inFlight;
         std::unique_ptr<Detail::OnlinePersistenceCoordinator>
             persistenceCoordinator;
-        std::unique_ptr<Detail::IRefreshTokenStore> refreshTokenStore;
+        std::shared_ptr<Detail::IRefreshTokenStore> refreshTokenStore;
         std::unique_ptr<Detail::IAuthorizationLauncher>
             authorizationLauncher;
         Detail::DiscordLoginTransaction loginTransaction;
@@ -1696,6 +1864,11 @@ namespace LamaPon
         bool preserveErrorAfterLogout{};
         bool awaitingCancelledTask{};
         bool cancelledPollExpired{};
+        bool cloudRefreshRequested{};
+        std::uint32_t cloudUnauthorizedRefreshAttempts{};
+        float cloudUnauthorizedRefreshCooldownSeconds{};
+        bool cloudUnauthorizedRefreshQueued{};
+        bool credentialUsageLeaseHeld{};
         TaskKind cancelledTaskKind{ TaskKind::StartLogin };
     };
 
@@ -1750,11 +1923,20 @@ namespace LamaPon
             throw std::runtime_error(
                 "Pending refresh credential could not be deleted.");
         }
+        implementation.ReleaseCredentialUsageLeaseIfSafe();
+        if (implementation.credentialUsageLeaseHeld)
+        {
+            throw std::runtime_error(
+                "Credential usage lease could not be released.");
+        }
 
         auto nextGameId = configuration.gameId;
         auto nextEnvironmentId = configuration.environmentId;
         std::shared_ptr<Detail::DiscordAuthClient> nextClient;
-        std::unique_ptr<Detail::IRefreshTokenStore> nextStore;
+        std::shared_ptr<const Detail::CloudSaveClient> nextCloudSaveClient;
+        // unique_ptr -> shared_ptr のcontrol block割当までnamespace commit前に
+        // 完了し、commit後をnoexcept moveだけにします。
+        std::shared_ptr<Detail::IRefreshTokenStore> nextStore;
         std::unique_ptr<Detail::IAuthorizationLauncher> nextLauncher;
         if (!configuration.serviceBaseUrl.empty())
         {
@@ -1764,6 +1946,18 @@ namespace LamaPon
                 implementation.senderOverride,
                 nextGameId,
                 nextEnvironmentId);
+            if (!nextGameId.empty())
+            {
+                // auth/cloud両clientを完全に構築してからCoordinatorと公開
+                // configurationを切り替え、片方だけ更新される状態を作りません。
+                nextCloudSaveClient =
+                    std::make_shared<Detail::CloudSaveClient>(
+                        nextClient->ServiceBaseUrl(),
+                        nextGameId,
+                        nextEnvironmentId,
+                        configuration.allowInsecureLoopback,
+                        implementation.senderOverride);
+            }
             if (implementation.useWindowsPlatformDefaults)
             {
                 if (!nextGameId.empty())
@@ -1790,7 +1984,8 @@ namespace LamaPon
                     nextGameId,
                     nextEnvironmentId,
                     nextClient->ServiceBaseUrl(),
-                    configuration.allowInsecureLoopback);
+                    configuration.allowInsecureLoopback,
+                    nextCloudSaveClient);
             }
             else
             {
@@ -1809,6 +2004,10 @@ namespace LamaPon
         implementation.preserveErrorAfterLogout = false;
         implementation.awaitingCancelledTask = false;
         implementation.cancelledPollExpired = false;
+        implementation.cloudRefreshRequested = false;
+        implementation.cloudUnauthorizedRefreshAttempts = 0u;
+        implementation.cloudUnauthorizedRefreshCooldownSeconds = 0.0f;
+        implementation.cloudUnauthorizedRefreshQueued = false;
         implementation.allowInsecureLoopback =
             configuration.allowInsecureLoopback;
         implementation.openAuthorizationBrowser =
@@ -1816,16 +2015,23 @@ namespace LamaPon
         if (implementation.useWindowsPlatformDefaults)
         {
             implementation.refreshTokenStore = std::move(nextStore);
+            implementation.credentialUsageLeaseHeld = false;
             implementation.authorizationLauncher =
                 std::move(nextLauncher);
         }
         implementation.client = std::move(nextClient);
+        implementation.cloudSaveClient = std::move(nextCloudSaveClient);
         implementation.configuredGameId.swap(nextGameId);
         implementation.configuredEnvironmentId.swap(nextEnvironmentId);
+        implementation.cloudRefreshRequested = false;
+        implementation.cloudUnauthorizedRefreshAttempts = 0u;
+        implementation.cloudUnauthorizedRefreshCooldownSeconds = 0.0f;
+        implementation.cloudUnauthorizedRefreshQueued = false;
         implementation.state = implementation.client
             ? OnlineAccountState::SignedOut
             : OnlineAccountState::Unconfigured;
         implementation.RestoreStoredSession();
+        implementation.ReleaseCredentialUsageLeaseIfSafe();
     }
 
     void OnlineServices::Update(float elapsedSeconds)
@@ -1836,6 +2042,7 @@ namespace LamaPon
         {
             elapsedSeconds = 0.0f;
         }
+        implementation.ConsumeCloudSaveSignals(elapsedSeconds);
         const bool refreshElapsedApplied =
             implementation.state
                 == OnlineAccountState::RefreshingSession;
@@ -1852,6 +2059,7 @@ namespace LamaPon
         }
         if (implementation.ReapCompletedTask())
         {
+            implementation.ReleaseCredentialUsageLeaseIfSafe();
             // 完了によって遷移したばかりの状態へ、前状態で経過した
             // elapsedSecondsを同じフレーム中に適用しません。
             return;
@@ -1860,6 +2068,7 @@ namespace LamaPon
         implementation.TickSession(
             refreshElapsedApplied ? 0.0f : elapsedSeconds);
         implementation.TickPendingLogout();
+        implementation.ReleaseCredentialUsageLeaseIfSafe();
     }
 
     bool OnlineServices::BeginDiscordSignIn()
@@ -1887,6 +2096,12 @@ namespace LamaPon
                 "すでにサインインしています。";
             return false;
         }
+        if (!implementation.EnsureCredentialUsageLease())
+        {
+            implementation.SetFixedError(
+                "credential_store_unavailable");
+            return false;
+        }
         if (!implementation.ResolvePendingRefreshTokenDelete())
         {
             implementation.SetFixedError(
@@ -1904,10 +2119,15 @@ namespace LamaPon
         implementation.preserveErrorAfterLogout = false;
         implementation.awaitingCancelledTask = false;
         implementation.cancelledPollExpired = false;
+        implementation.cloudRefreshRequested = false;
+        implementation.cloudUnauthorizedRefreshAttempts = 0u;
+        implementation.cloudUnauthorizedRefreshCooldownSeconds = 0.0f;
+        implementation.cloudUnauthorizedRefreshQueued = false;
         implementation.state = OnlineAccountState::StartingSignIn;
         if (!implementation.LaunchLoginStart())
         {
             implementation.SetError("request_failed", true);
+            implementation.ReleaseCredentialUsageLeaseIfSafe();
             return false;
         }
         return true;
@@ -1947,11 +2167,16 @@ namespace LamaPon
         implementation.state = implementation.client
             ? OnlineAccountState::SignedOut
             : OnlineAccountState::Unconfigured;
+        implementation.ReleaseCredentialUsageLeaseIfSafe();
     }
 
     void OnlineServices::SignOut()
     {
         auto& implementation = *m_implementation;
+        implementation.cloudRefreshRequested = false;
+        implementation.cloudUnauthorizedRefreshAttempts = 0u;
+        implementation.cloudUnauthorizedRefreshCooldownSeconds = 0.0f;
+        implementation.cloudUnauthorizedRefreshQueued = false;
         if (implementation.state != OnlineAccountState::SigningOut)
         {
             implementation.AdvanceGeneration();
@@ -1972,6 +2197,7 @@ namespace LamaPon
                 implementation.SetFixedError(
                     "credential_delete_failed");
             }
+            implementation.ReleaseCredentialUsageLeaseIfSafe();
             return;
         }
 
@@ -1999,6 +2225,7 @@ namespace LamaPon
                 implementation.SetFixedError(
                     "credential_delete_failed");
             }
+            implementation.ReleaseCredentialUsageLeaseIfSafe();
             return;
         }
         if (implementation.state == OnlineAccountState::RestoringSession)
@@ -2013,6 +2240,7 @@ namespace LamaPon
             implementation.player = {};
             implementation.state = OnlineAccountState::SigningOut;
             implementation.ClearError();
+            implementation.ReleaseCredentialUsageLeaseIfSafe();
             return;
         }
         if (implementation.state != OnlineAccountState::SignedIn
@@ -2033,6 +2261,7 @@ namespace LamaPon
                 implementation.SetFixedError(
                     "credential_delete_failed");
             }
+            implementation.ReleaseCredentialUsageLeaseIfSafe();
             return;
         }
 
@@ -2057,9 +2286,11 @@ namespace LamaPon
             && !implementation.awaitingCancelledTask)
         {
             implementation.CompleteLogout(false);
+            implementation.ReleaseCredentialUsageLeaseIfSafe();
             return;
         }
         implementation.TickPendingLogout();
+        implementation.ReleaseCredentialUsageLeaseIfSafe();
     }
 
     OnlineAccountState OnlineServices::State() const noexcept
@@ -2210,7 +2441,8 @@ namespace LamaPon
                     implementation.configuredGameId,
                     implementation.configuredEnvironmentId,
                     implementation.client->ServiceBaseUrl(),
-                    implementation.allowInsecureLoopback);
+                    implementation.allowInsecureLoopback,
+                    implementation.cloudSaveClient);
             }
             implementation.persistenceCoordinator =
                 std::move(coordinator);

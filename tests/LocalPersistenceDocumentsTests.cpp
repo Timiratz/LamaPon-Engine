@@ -477,6 +477,48 @@ namespace
             "SaveData delete observer did not see committed missing state.");
     }
 
+    void TestConditionalRemoteApplyRejectsNewerLocalCommit()
+    {
+        const auto directory = TestRoot() / L"conditional-apply";
+        const auto path = directory / L"PlayerPrefs.json";
+        LamaPon::PlayerPrefs active(path);
+        active.SetString("writer", "P1");
+        active.Save();
+        const auto observed = Documents::ReadPlayerPrefs(active);
+
+        // 別process相当のwriterが、remote Read完了前にP2をcommitします。
+        LamaPon::PlayerPrefs peer(path);
+        peer.Load();
+        peer.SetString("writer", "P2");
+        peer.Save();
+        const auto p2Bytes = ReadText(path);
+
+        const auto result = Documents::ApplyPlayerPrefsIfUnchanged(
+            active,
+            observed,
+            Bytes(RemotePreferences));
+        Require(
+            result
+                    == LamaPon::Detail::
+                        LocalPersistenceConditionalApplyResult::LocalChanged
+                && ReadText(path) == p2Bytes
+                && peer.GetString("writer") == "P2"
+                && active.GetString("writer") == "P1",
+            "Conditional remote apply overwrote a newer local commit.");
+
+        const auto current = Documents::ReadPlayerPrefs(peer);
+        const auto deleteResult = Documents::DeletePlayerPrefsIfUnchanged(
+            peer,
+            current);
+        Require(
+            deleteResult
+                    == LamaPon::Detail::
+                        LocalPersistenceConditionalApplyResult::Applied
+                && Documents::ReadPlayerPrefs(peer).state == State::Missing
+                && peer.Keys().empty(),
+            "Conditional PlayerPrefs delete did not atomically update memory.");
+    }
+
     void TestHardLinksFailBeforeMutation()
     {
         const auto directory = TestRoot() / L"hard-links";
@@ -612,6 +654,7 @@ int main()
         TestReadStatesAndStrictSchema();
         TestDurableBarriersAndConcurrentWriterContract();
         TestRemoteApplyStrongGuaranteeAndIdentity();
+        TestConditionalRemoteApplyRejectsNewerLocalCommit();
         TestObserverOrderingAndOwnership();
         TestHardLinksFailBeforeMutation();
         TestAncestorReparseIsRejectedWhenSupported();

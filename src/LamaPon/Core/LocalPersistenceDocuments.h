@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <span>
@@ -43,6 +44,12 @@ namespace LamaPon::Detail
         std::vector<std::string> slots;
     };
 
+    enum class LocalPersistenceConditionalApplyResult : std::uint8_t
+    {
+        Applied,
+        LocalChanged
+    };
+
     enum class LocalPersistenceResourceKind : std::uint8_t
     {
         PlayerPrefs,
@@ -68,6 +75,12 @@ namespace LamaPon::Detail
         void* context,
         std::uint64_t profileEpoch,
         const LocalPersistenceCommitEvent& event) noexcept;
+    // trueを返した後だけlocal deleteのcommit pointへ進みます。cloud WALを
+    // durable化できない場合はfalseで削除を中止し、既存fileを維持します。
+    using LocalPersistencePreDeleteCallback = bool(*)(
+        void* context,
+        std::uint64_t profileEpoch,
+        const LocalPersistenceCommitEvent& event) noexcept;
 
     using LocalPersistenceObserverToken = std::uint64_t;
 
@@ -75,7 +88,8 @@ namespace LamaPon::Detail
         AttachLocalPersistenceCommitObserver(
         LocalPersistenceCommitCallback callback,
         void* context,
-        std::uint64_t profileEpoch) noexcept;
+        std::uint64_t profileEpoch,
+        LocalPersistencePreDeleteCallback preDeleteCallback = nullptr) noexcept;
     [[nodiscard]] bool DetachLocalPersistenceCommitObserver(
         LocalPersistenceObserverToken token) noexcept;
     [[nodiscard]] bool ConsumeLocalPersistenceObserverFailure() noexcept;
@@ -123,6 +137,18 @@ namespace LamaPon::Detail
             PlayerPrefs& playerPrefs,
             std::span<const std::uint8_t> fullDocument);
         static void DeletePlayerPrefs(PlayerPrefs& playerPrefs);
+        // observedは直前のstrict read結果です。同じper-target lock内で
+        // diskを再照合し、一致時だけremoteをpublishします。別processの
+        // local commitが先行した場合は何も変更せずLocalChangedです。
+        [[nodiscard]] static LocalPersistenceConditionalApplyResult
+            ApplyPlayerPrefsIfUnchanged(
+            PlayerPrefs& playerPrefs,
+            const LocalPersistenceDocument& observed,
+            std::span<const std::uint8_t> fullDocument);
+        [[nodiscard]] static LocalPersistenceConditionalApplyResult
+            DeletePlayerPrefsIfUnchanged(
+            PlayerPrefs& playerPrefs,
+            const LocalPersistenceDocument& observed);
         // profile activation用。observerはPlayerPrefs pimpl外なので移動しません。
         static void SwapPlayerPrefsLoadedState(
             PlayerPrefs& target,
@@ -139,6 +165,17 @@ namespace LamaPon::Detail
         static void DeleteSaveData(
             SaveDataStore& saveData,
             std::string_view slot);
+        [[nodiscard]] static LocalPersistenceConditionalApplyResult
+            ApplySaveDataIfUnchanged(
+            SaveDataStore& saveData,
+            std::string_view slot,
+            const LocalPersistenceDocument& observed,
+            std::span<const std::uint8_t> fullDocument);
+        [[nodiscard]] static LocalPersistenceConditionalApplyResult
+            DeleteSaveDataIfUnchanged(
+            SaveDataStore& saveData,
+            std::string_view slot,
+            const LocalPersistenceDocument& observed);
     };
 
     // PlayerPrefs/SaveData writerとremote applyが共有する内部primitiveです。
@@ -148,7 +185,22 @@ namespace LamaPon::Detail
         std::string_view bytes);
     [[nodiscard]] bool DurableDeleteLocalDocument(
         const std::filesystem::path& targetPath);
+    [[nodiscard]] LocalPersistenceConditionalApplyResult
+        DurablePublishLocalDocumentIfUnchanged(
+        const std::filesystem::path& targetPath,
+        const LocalPersistenceDocument& observed,
+        std::string_view bytes,
+        std::size_t maximumBytes,
+        std::string_view saveSlot = {});
+    [[nodiscard]] LocalPersistenceConditionalApplyResult
+        DurableDeleteLocalDocumentIfUnchanged(
+        const std::filesystem::path& targetPath,
+        const LocalPersistenceDocument& observed,
+        std::size_t maximumBytes,
+        std::string_view saveSlot = {});
     void NotifyLocalPersistenceCommit(
+        const LocalPersistenceCommitEvent& event) noexcept;
+    [[nodiscard]] bool PrepareLocalPersistenceDelete(
         const LocalPersistenceCommitEvent& event) noexcept;
 
     // PlayerPrefs内部のreplacement準備とread seamが同一strict contractを

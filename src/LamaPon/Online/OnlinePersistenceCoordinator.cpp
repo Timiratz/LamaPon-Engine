@@ -5,11 +5,19 @@
 #include "LamaPon/Core/PlayerPrefs.h"
 #include "LamaPon/Core/SaveData.h"
 #include "LamaPon/Online/CloudSaveJournal.h"
+#include "LamaPon/Online/CloudSaveSynchronizer.h"
+
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
 
 #include <algorithm>
+#include <chrono>
 #include <stdexcept>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace
 {
@@ -36,6 +44,32 @@ namespace
         // 不必要に圧迫しない、account hash root直下の短い固定名です。
         return profile.rootDirectory / L"Recovery.prefs";
     }
+
+    void EraseSecret(std::string& secret) noexcept
+    {
+        if (!secret.empty())
+        {
+            SecureZeroMemory(secret.data(), secret.size());
+            secret.clear();
+        }
+    }
+
+    struct ScopedSecretErase final
+    {
+        ~ScopedSecretErase()
+        {
+            EraseSecret(value);
+        }
+        std::string& value;
+    };
+
+    [[nodiscard]] std::uint64_t MonotonicMilliseconds() noexcept
+    {
+        const auto count = std::chrono::duration_cast<
+            std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        return count > 0 ? static_cast<std::uint64_t>(count) : 0u;
+    }
 }
 
 namespace LamaPon::Detail
@@ -47,6 +81,8 @@ namespace LamaPon::Detail
         std::unique_ptr<PersistenceProfilePaths> profile;
         std::unique_ptr<PlayerPrefs> preferences;
         std::unique_ptr<CloudSaveJournal> journal;
+        std::unique_ptr<CloudSaveProfileSessionLease> profileSessionLease;
+        std::unique_ptr<PreparedCloudSaveAttachment> cloudAttachment;
         std::filesystem::path accountSaveDirectory;
         std::filesystem::path guestSaveDirectory;
         std::filesystem::path recoverySidecarPath;
@@ -104,6 +140,9 @@ namespace LamaPon::Detail
         ~Implementation()
         {
             static_cast<void>(DetachToGuest());
+            // detached workerはshared client/mailboxだけを保持します。journal
+            // fieldより先にsynchronizer本体を破棄してraw bindingを残しません。
+            synchronizer.reset();
             // Application終了時にもquarantineを一度だけ再試行します。
             // 失敗が続く場合はmemory snapshotを破棄するほかありませんが、
             // Application側が破棄前に残留を検知して明示ログします。
@@ -173,7 +212,8 @@ namespace LamaPon::Detail
             std::string gameId,
             std::string environmentId,
             std::string normalizedBackendBaseUrl,
-            const bool insecureLoopback)
+            const bool insecureLoopback,
+            std::shared_ptr<const CloudSaveClient> cloudSaveClient)
         {
             RequireOwnerThread();
             if (AccountActive())
@@ -207,12 +247,22 @@ namespace LamaPon::Detail
                     trustedUserDataDirectory,
                     gameId,
                     environmentId);
+            std::unique_ptr<CloudSaveSynchronizer> replacementSynchronizer;
+            if (cloudSaveClient)
+            {
+                replacementSynchronizer =
+                    std::make_unique<CloudSaveSynchronizer>(
+                        *preferences,
+                        *saves,
+                        std::move(cloudSaveClient));
+            }
             auto replacementGameId = std::move(gameId);
             auto replacementEnvironmentId = std::move(environmentId);
             auto replacementBackendBaseUrl =
                 std::move(normalizedBackendBaseUrl);
 
             profiles = std::move(replacementProfiles);
+            synchronizer = std::move(replacementSynchronizer);
             configuredGameId = std::move(replacementGameId);
             configuredEnvironmentId =
                 std::move(replacementEnvironmentId);
@@ -220,6 +270,10 @@ namespace LamaPon::Detail
             allowInsecureLoopback = insecureLoopback;
             localCommitObserved = false;
             observerFailed = false;
+            cloudUnauthorizedPending = false;
+            cloudUnauthorizedLatched = false;
+            cloudHealthyPending = false;
+            cloudAwaitingHealthyAfterTokenUpdate = false;
             AdvanceEpoch();
         }
 
@@ -230,6 +284,11 @@ namespace LamaPon::Detail
                 return;
             }
             static_cast<void>(DetachToGuest());
+            if (synchronizer)
+            {
+                synchronizer->Detach();
+            }
+            synchronizer.reset();
             profiles.reset();
             configuredGameId.clear();
             configuredEnvironmentId.clear();
@@ -237,13 +296,19 @@ namespace LamaPon::Detail
             allowInsecureLoopback = false;
             localCommitObserved = false;
             observerFailed = false;
+            cloudUnauthorizedPending = false;
+            cloudUnauthorizedLatched = false;
+            cloudHealthyPending = false;
+            cloudAwaitingHealthyAfterTokenUpdate = false;
             AdvanceEpoch();
         }
 
         [[nodiscard]] std::unique_ptr<PreparedOnlineAccount::State>
             PrepareAccount(
-            const std::string_view playerId)
+            const std::string_view playerId,
+            std::string accessToken)
         {
+            const ScopedSecretErase eraseAccessToken{ accessToken };
             RequireOwnerThread();
             if (!profiles)
             {
@@ -289,6 +354,16 @@ namespace LamaPon::Detail
 
             auto profile = std::make_unique<PersistenceProfilePaths>(
                 profiles->Account(playerId));
+            auto preparedJournal = std::make_unique<CloudSaveJournal>(
+                trustedUserDataDirectory,
+                *profile,
+                configuredGameId,
+                configuredEnvironmentId,
+                backendBaseUrl,
+                allowInsecureLoopback);
+            auto profileSessionLease =
+                std::make_unique<CloudSaveProfileSessionLease>(
+                    *preparedJournal);
             auto recoveryPath = MakeRecoverySidecarPath(*profile);
             PlayerPrefs recoveryDocument(recoveryPath);
             const auto recovered =
@@ -300,10 +375,16 @@ namespace LamaPon::Detail
                 // process再起動後もsidecarを無視してaccountを公開しません。
                 // strict read結果を状態へ載せ、明示restore/discardだけを
                 // 許可します。
-                quarantinedProfile =
+                auto pendingProfile =
                     std::make_unique<PersistenceProfilePaths>(*profile);
+                auto observedBytes = recovered.bytes;
+                quarantinedProfile = std::move(pendingProfile);
+                quarantinedJournal = std::move(preparedJournal);
+                quarantinedProfileSessionLease =
+                    std::move(profileSessionLease);
                 recoverySidecarPath = std::move(recoveryPath);
                 recoverySidecarState = recovered.state;
+                recoverySidecarObservedBytes = std::move(observedBytes);
                 ThrowUnavailableAccountDocument();
             }
             auto accountPreferences =
@@ -344,13 +425,18 @@ namespace LamaPon::Detail
                 }
             }
 
-            auto preparedJournal = std::make_unique<CloudSaveJournal>(
-                trustedUserDataDirectory,
-                *profile,
-                configuredGameId,
-                configuredEnvironmentId,
-                backendBaseUrl,
-                allowInsecureLoopback);
+            std::unique_ptr<PreparedCloudSaveAttachment> cloudAttachment;
+            if (synchronizer)
+            {
+                cloudAttachment =
+                    std::make_unique<PreparedCloudSaveAttachment>(
+                        synchronizer->PrepareAttachment(
+                            *preparedJournal,
+                            profile->playerPrefsFile,
+                            profile->saveDataDirectory,
+                            profile->accountStorageKey,
+                            std::move(accessToken)));
+            }
 
             auto state = std::make_unique<PreparedOnlineAccount::State>();
             state->owner = owner;
@@ -363,6 +449,9 @@ namespace LamaPon::Detail
             state->profile = std::move(profile);
             state->preferences = std::move(accountPreferences);
             state->journal = std::move(preparedJournal);
+            state->profileSessionLease =
+                std::move(profileSessionLease);
+            state->cloudAttachment = std::move(cloudAttachment);
             return state;
         }
 
@@ -383,6 +472,12 @@ namespace LamaPon::Detail
             if (!state->profile
                 || !state->preferences
                 || !state->journal
+                || !state->profileSessionLease
+                || (synchronizer
+                    && (!state->cloudAttachment
+                        || !synchronizer->CanCommitPreparedAttachment(
+                            *state->cloudAttachment)))
+                || (!synchronizer && state->cloudAttachment)
                 || preferences->IsBindingLeased()
                 || state->preferences->IsBindingLeased()
                 || saves->IsBindingLeased()
@@ -416,6 +511,8 @@ namespace LamaPon::Detail
             DetachObserver();
             activeProfile = std::move(state->profile);
             journal = std::move(state->journal);
+            activeProfileSessionLease =
+                std::move(state->profileSessionLease);
             guestSaveDirectory = std::move(state->guestSaveDirectory);
             activeRecoverySidecarPath =
                 std::move(state->recoverySidecarPath);
@@ -431,10 +528,22 @@ namespace LamaPon::Detail
             localCommitObserved = false;
             observerFailed = false;
             AdvanceEpoch();
+            if (synchronizer)
+            {
+                synchronizer->CommitPreparedAttachment(
+                    std::move(*state->cloudAttachment),
+                    profileEpoch);
+            }
+            cloudUnauthorizedPending = false;
+            cloudUnauthorizedLatched = false;
+            cloudHealthyPending = false;
+            cloudAwaitingHealthyAfterTokenUpdate = false;
+            nextPeriodicReconcileMilliseconds = 0u;
             observerToken = AttachLocalPersistenceCommitObserver(
                 &Implementation::ObserveLocalCommit,
                 this,
-                profileEpoch);
+                profileEpoch,
+                &Implementation::PrepareLocalDelete);
             return true;
         }
 
@@ -446,6 +555,9 @@ namespace LamaPon::Detail
                 return OnlinePersistenceDetachResult::AlreadyGuest;
             }
 
+            // 全操作は同じmain thread上なのでmailbox結果はTickまでlocalへ
+            // 適用されません。dirty prefsを先にdurable化し、その直後にworker
+            // fenceとdelete-intent checkpointを確定します。
             bool saveFailed{};
             try
             {
@@ -458,6 +570,32 @@ namespace LamaPon::Detail
             {
                 saveFailed = true;
             }
+
+            bool cloudCheckpointFailed{};
+            if (synchronizer)
+            {
+                try
+                {
+                    // networkを開始せず、baseline確立前を含むlocal deleteを
+                    // journalへwrite-aheadしてからbindingをguestへ戻します。
+                    synchronizer->CheckpointLocalStateForDetach();
+                }
+                catch (...)
+                {
+                    // dirty PlayerPrefsのpublish自体が失敗した場合はmemory
+                    // quarantineがaccount leaseを保持し、EndFrame Save成功後に
+                    // 解決できます。deleteはcommit前WAL済みなので、同じdirty
+                    // 状態をstrict scanできないことを別の永久checkpoint失敗へ
+                    // 二重化しません。
+                    cloudCheckpointFailed = !saveFailed;
+                }
+                synchronizer->Detach();
+            }
+            cloudUnauthorizedPending = false;
+            cloudUnauthorizedLatched = false;
+            cloudHealthyPending = false;
+            cloudAwaitingHealthyAfterTokenUpdate = false;
+            nextPeriodicReconcileMilliseconds = 0u;
 
             if (observerToken != 0)
             {
@@ -483,7 +621,9 @@ namespace LamaPon::Detail
                 saves->ReleaseBindingLease(owner));
 
             auto detachedProfile = std::move(activeProfile);
-            journal.reset();
+            auto detachedJournal = std::move(journal);
+            auto detachedProfileSessionLease =
+                std::move(activeProfileSessionLease);
             auto detachedRecoveryPath =
                 std::move(activeRecoverySidecarPath);
             localCommitObserved = false;
@@ -492,13 +632,15 @@ namespace LamaPon::Detail
             // clean load failureには失われる未保存差分がありません。
             // diskは一切変更せずpimplを解放し、次回activationのstrict
             // readで修復済みかを改めて判定します。
-            if (accountPreferences->HasLoadFailure()
+            if (!cloudCheckpointFailed
+                && accountPreferences->HasLoadFailure()
                 && !accountPreferences->IsDirty())
             {
                 return OnlinePersistenceDetachResult::SavedAccount;
             }
 
-            const bool needsQuarantine = saveFailed
+            const bool needsQuarantine = cloudCheckpointFailed
+                || saveFailed
                 || accountPreferences->IsDirty();
             if (needsQuarantine)
             {
@@ -506,6 +648,15 @@ namespace LamaPon::Detail
                 // ここで未保存accountを上書きすることはありません。
                 quarantinedPreferences = std::move(accountPreferences);
                 quarantinedProfile = std::move(detachedProfile);
+                quarantinedProfileSessionLease =
+                    std::move(detachedProfileSessionLease);
+                if (cloudCheckpointFailed)
+                {
+                    // checkpoint不能を「初期Missing」として再ログインさせず、
+                    // 明示discardまでjournalとaccount leaseを保持します。
+                    quarantinedJournal = std::move(detachedJournal);
+                    quarantinedCloudCheckpointFailure = true;
+                }
                 quarantinedLoadFailure =
                     quarantinedPreferences->HasLoadFailure();
                 if (quarantinedLoadFailure)
@@ -526,10 +677,49 @@ namespace LamaPon::Detail
             {
                 return;
             }
+            bool localCommitSignalled{};
             if (observerToken != 0)
             {
                 observerFailed = observerFailed
                     || ConsumeLocalPersistenceObserverFailure();
+                localCommitSignalled = localCommitObserved || observerFailed;
+                localCommitObserved = false;
+                observerFailed = false;
+            }
+            if (synchronizer && synchronizer->IsAttached())
+            {
+                const auto now = MonotonicMilliseconds();
+                const bool periodic = now >= nextPeriodicReconcileMilliseconds;
+                try
+                {
+                    if (localCommitSignalled || periodic)
+                    {
+                        synchronizer->RequestReconcile();
+                        nextPeriodicReconcileMilliseconds =
+                            now + 30'000u;
+                    }
+                    synchronizer->Tick(now);
+                    if (synchronizer->Status().state
+                            == CloudSaveSynchronizerState::Unauthorized
+                        && !cloudUnauthorizedLatched)
+                    {
+                        cloudUnauthorizedLatched = true;
+                        cloudUnauthorizedPending = true;
+                    }
+                    if (cloudAwaitingHealthyAfterTokenUpdate
+                        && synchronizer
+                            ->ConsumeAuthorizedWireSuccessSignal())
+                    {
+                        cloudAwaitingHealthyAfterTokenUpdate = false;
+                        cloudHealthyPending = true;
+                    }
+                }
+                catch (...)
+                {
+                    // local commit自体は既にdurableです。次frameのperiodic
+                    // reconcileへ残し、例外本文やpathを公開しません。
+                    nextPeriodicReconcileMilliseconds = now;
+                }
             }
             if (!quarantinedPreferences)
             {
@@ -539,7 +729,10 @@ namespace LamaPon::Detail
             {
                 if (!quarantinedPreferences->IsDirty())
                 {
-                    ClearPendingRecovery();
+                    if (!quarantinedCloudCheckpointFailure)
+                    {
+                        ClearPendingRecovery();
+                    }
                     return;
                 }
                 static_cast<void>(PersistRecoverySidecar());
@@ -553,13 +746,52 @@ namespace LamaPon::Detail
                 }
                 if (!quarantinedPreferences->IsDirty())
                 {
-                    ClearPendingRecovery();
+                    if (!quarantinedCloudCheckpointFailure)
+                    {
+                        ClearPendingRecovery();
+                    }
                 }
             }
             catch (...)
             {
                 // memory snapshotを維持し、次のframeで再試行します。
             }
+        }
+
+        void UpdateCloudSaveAccessToken(std::string accessToken)
+        {
+            const ScopedSecretErase eraseAccessToken{ accessToken };
+            RequireOwnerThread();
+            if (!synchronizer || !AccountActive()
+                || !synchronizer->IsAttached())
+            {
+                throw std::logic_error(
+                    "Cloud save synchronization is not active.");
+            }
+            synchronizer->UpdateAccessToken(std::move(accessToken));
+            cloudUnauthorizedPending = false;
+            cloudUnauthorizedLatched = false;
+            cloudHealthyPending = false;
+            cloudAwaitingHealthyAfterTokenUpdate = true;
+            nextPeriodicReconcileMilliseconds = 0u;
+        }
+
+        [[nodiscard]] bool ConsumeCloudSaveUnauthorizedSignal() noexcept
+        {
+            if (!IsOwnerThread())
+            {
+                return false;
+            }
+            return std::exchange(cloudUnauthorizedPending, false);
+        }
+
+        [[nodiscard]] bool ConsumeCloudSaveHealthySignal() noexcept
+        {
+            if (!IsOwnerThread())
+            {
+                return false;
+            }
+            return std::exchange(cloudHealthyPending, false);
         }
 
         [[nodiscard]] bool PersistRecoverySidecar() noexcept
@@ -598,9 +830,18 @@ namespace LamaPon::Detail
                 {
                     return false;
                 }
+                auto observedBytes = document.bytes;
                 recoverySidecarState =
                     LocalPersistenceDocumentState::Loaded;
+                recoverySidecarObservedBytes =
+                    std::move(observedBytes);
                 quarantinedPreferences.reset();
+                // strictに再読できるdurable sidecarへsnapshotを退避した時点で、
+                // 元account fileを旧memoryから自動更新する経路はなくなります。
+                if (!quarantinedCloudCheckpointFailure)
+                {
+                    quarantinedProfileSessionLease.reset();
+                }
                 quarantinedLoadFailure = false;
                 return true;
             }
@@ -637,11 +878,15 @@ namespace LamaPon::Detail
         void ClearPendingRecovery() noexcept
         {
             quarantinedPreferences.reset();
+            quarantinedJournal.reset();
+            quarantinedProfileSessionLease.reset();
             quarantinedProfile.reset();
             recoverySidecarPath.clear();
+            recoverySidecarObservedBytes.clear();
             recoverySidecarState =
                 LocalPersistenceDocumentState::Missing;
             quarantinedLoadFailure = false;
+            quarantinedCloudCheckpointFailure = false;
         }
 
         [[nodiscard]] bool RestorePendingRecovery() noexcept
@@ -662,11 +907,32 @@ namespace LamaPon::Detail
             }
             try
             {
+                // Prepareでsidecarを検出したleaseはthrowと共に解放されます。
+                // 明示解決時に同じaccount leaseを再取得し、別Coordinatorが
+                // accountを公開中ならcached pathから書換えません。
+                std::unique_ptr<CloudSaveJournal> recoveryJournal;
+                std::unique_ptr<CloudSaveProfileSessionLease> recoveryLease;
+                if (!quarantinedProfileSessionLease)
+                {
+                    recoveryJournal = std::make_unique<CloudSaveJournal>(
+                        trustedUserDataDirectory,
+                        *quarantinedProfile,
+                        configuredGameId,
+                        configuredEnvironmentId,
+                        backendBaseUrl,
+                        allowInsecureLoopback);
+                    recoveryLease =
+                        std::make_unique<CloudSaveProfileSessionLease>(
+                            *recoveryJournal);
+                }
                 PlayerPrefs sidecar(recoverySidecarPath);
                 const auto document =
                     LocalPersistenceDocuments::ReadPlayerPrefs(sidecar);
                 if (document.state
-                    != LocalPersistenceDocumentState::Loaded)
+                        != LocalPersistenceDocumentState::Loaded
+                    || recoverySidecarState
+                        != LocalPersistenceDocumentState::Loaded
+                    || document.bytes != recoverySidecarObservedBytes)
                 {
                     recoverySidecarState = document.state;
                     return false;
@@ -679,8 +945,14 @@ namespace LamaPon::Detail
                 LocalPersistenceDocuments::ApplyPlayerPrefs(
                     target,
                     document.bytes);
-                static_cast<void>(
-                    DurableDeleteLocalDocument(recoverySidecarPath));
+                if (DurableDeleteLocalDocumentIfUnchanged(
+                        recoverySidecarPath,
+                        document,
+                        CloudPreferencesMaxBytes)
+                    != LocalPersistenceConditionalApplyResult::Applied)
+                {
+                    return false;
+                }
                 ClearPendingRecovery();
                 AdvanceEpoch();
                 return true;
@@ -699,11 +971,60 @@ namespace LamaPon::Detail
             }
             try
             {
+                std::unique_ptr<CloudSaveJournal> recoveryJournal;
+                std::unique_ptr<CloudSaveProfileSessionLease> recoveryLease;
+                if (!quarantinedProfileSessionLease)
+                {
+                    recoveryJournal = std::make_unique<CloudSaveJournal>(
+                        trustedUserDataDirectory,
+                        *quarantinedProfile,
+                        configuredGameId,
+                        configuredEnvironmentId,
+                        backendBaseUrl,
+                        allowInsecureLoopback);
+                    recoveryLease =
+                        std::make_unique<CloudSaveProfileSessionLease>(
+                            *recoveryJournal);
+                }
                 if (!recoverySidecarPath.empty())
                 {
-                    static_cast<void>(
-                        DurableDeleteLocalDocument(
-                            recoverySidecarPath));
+                    PlayerPrefs sidecar(recoverySidecarPath);
+                    const auto document =
+                        LocalPersistenceDocuments::ReadPlayerPrefs(sidecar);
+                    if (recoverySidecarState
+                            == LocalPersistenceDocumentState::Loaded)
+                    {
+                        if (document.state
+                                != LocalPersistenceDocumentState::Loaded
+                            || document.bytes
+                                != recoverySidecarObservedBytes
+                            || DurableDeleteLocalDocumentIfUnchanged(
+                                recoverySidecarPath,
+                                document,
+                                CloudPreferencesMaxBytes)
+                                != LocalPersistenceConditionalApplyResult::Applied)
+                        {
+                            return false;
+                        }
+                    }
+                    else if (recoverySidecarState
+                        == LocalPersistenceDocumentState::Corrupt)
+                    {
+                        // profile lease保持中に同じstrict分類であることを再確認し、
+                        // 内容を解釈せず明示discardだけを許可します。
+                        if (document.state
+                                != LocalPersistenceDocumentState::Corrupt
+                            || !DurableDeleteLocalDocument(
+                                recoverySidecarPath))
+                        {
+                            return false;
+                        }
+                    }
+                    else
+                    {
+                        // ACL/reparse/share errorは修復されるまで触りません。
+                        return false;
+                    }
                 }
                 ClearPendingRecovery();
                 AdvanceEpoch();
@@ -727,6 +1048,73 @@ namespace LamaPon::Detail
                 return false;
             }
             return implementation->OnLocalCommit(eventEpoch, event);
+        }
+
+        [[nodiscard]] static bool PrepareLocalDelete(
+            void* context,
+            const std::uint64_t eventEpoch,
+            const LocalPersistenceCommitEvent& event) noexcept
+        {
+            auto* implementation =
+                static_cast<Implementation*>(context);
+            if (!implementation)
+            {
+                return false;
+            }
+            return implementation->OnLocalPreDelete(eventEpoch, event);
+        }
+
+        [[nodiscard]] bool OnLocalPreDelete(
+            const std::uint64_t eventEpoch,
+            const LocalPersistenceCommitEvent& event) noexcept
+        {
+            if (!IsOwnerThread()
+                || eventEpoch != profileEpoch
+                || !AccountActive()
+                || !activeProfile
+                || !event.deleted)
+            {
+                return false;
+            }
+            try
+            {
+                CloudSaveResource resource;
+                if (event.kind
+                    == LocalPersistenceResourceKind::PlayerPrefs)
+                {
+                    if (event.source != preferences
+                        || event.filePath == nullptr
+                        || !event.slot.empty()
+                        || *event.filePath
+                            != activeProfile->playerPrefsFile)
+                    {
+                        return false;
+                    }
+                    resource = CloudSaveResource::Preferences();
+                }
+                else
+                {
+                    if (event.source != saves
+                        || event.filePath == nullptr
+                        || event.slot.empty()
+                        || *event.filePath != saves->SlotPath(event.slot))
+                    {
+                        return false;
+                    }
+                    resource = CloudSaveResource::SaveSlot(
+                        std::string(event.slot));
+                }
+                if (synchronizer && synchronizer->IsAttached())
+                {
+                    synchronizer->PrepareLocalDelete(resource);
+                }
+                return true;
+            }
+            catch (...)
+            {
+                // WALを先に確定できないdeleteはdisk commitへ進めません。
+                return false;
+            }
         }
 
         [[nodiscard]] bool OnLocalCommit(
@@ -778,6 +1166,7 @@ namespace LamaPon::Detail
         std::filesystem::path trustedUserDataDirectory;
         std::thread::id ownerThread;
         std::unique_ptr<PersistenceProfiles> profiles;
+        std::unique_ptr<CloudSaveSynchronizer> synchronizer;
         std::string configuredGameId;
         std::string configuredEnvironmentId;
         std::string backendBaseUrl;
@@ -788,16 +1177,28 @@ namespace LamaPon::Detail
         std::filesystem::path guestSaveDirectory;
         std::filesystem::path activeRecoverySidecarPath;
         std::unique_ptr<CloudSaveJournal> journal;
+        std::unique_ptr<CloudSaveProfileSessionLease>
+            activeProfileSessionLease;
         std::unique_ptr<PersistenceProfilePaths> quarantinedProfile;
         std::unique_ptr<PlayerPrefs> quarantinedPreferences;
+        std::unique_ptr<CloudSaveJournal> quarantinedJournal;
+        std::unique_ptr<CloudSaveProfileSessionLease>
+            quarantinedProfileSessionLease;
         std::filesystem::path recoverySidecarPath;
+        std::vector<std::uint8_t> recoverySidecarObservedBytes;
         LocalPersistenceDocumentState recoverySidecarState{
             LocalPersistenceDocumentState::Missing
         };
         bool allowInsecureLoopback{};
         bool localCommitObserved{};
         bool observerFailed{};
+        bool cloudUnauthorizedPending{};
+        bool cloudUnauthorizedLatched{};
+        bool cloudHealthyPending{};
+        bool cloudAwaitingHealthyAfterTokenUpdate{};
+        std::uint64_t nextPeriodicReconcileMilliseconds{};
         bool quarantinedLoadFailure{};
+        bool quarantinedCloudCheckpointFailure{};
     };
 
     OnlinePersistenceCoordinator::OnlinePersistenceCoordinator(
@@ -818,13 +1219,15 @@ namespace LamaPon::Detail
         std::string gameId,
         std::string environmentId,
         std::string normalizedBackendBaseUrl,
-        const bool allowInsecureLoopback)
+        const bool allowInsecureLoopback,
+        std::shared_ptr<const CloudSaveClient> cloudSaveClient)
     {
         m_implementation->ConfigureNamespace(
             std::move(gameId),
             std::move(environmentId),
             std::move(normalizedBackendBaseUrl),
-            allowInsecureLoopback);
+            allowInsecureLoopback,
+            std::move(cloudSaveClient));
     }
 
     void OnlinePersistenceCoordinator::DisableNamespace() noexcept
@@ -843,10 +1246,13 @@ namespace LamaPon::Detail
     }
 
     PreparedOnlineAccount OnlinePersistenceCoordinator::PrepareAccount(
-        const std::string_view playerId)
+        const std::string_view playerId,
+        std::string accessToken)
     {
         return PreparedOnlineAccount(
-            m_implementation->PrepareAccount(playerId));
+            m_implementation->PrepareAccount(
+                playerId,
+                std::move(accessToken)));
     }
 
     bool OnlinePersistenceCoordinator::CommitPrepared(
@@ -917,6 +1323,31 @@ namespace LamaPon::Detail
     CloudSaveJournal* OnlinePersistenceCoordinator::Journal() noexcept
     {
         return m_implementation->journal.get();
+    }
+
+    void OnlinePersistenceCoordinator::UpdateCloudSaveAccessToken(
+        std::string accessToken)
+    {
+        m_implementation->UpdateCloudSaveAccessToken(
+            std::move(accessToken));
+    }
+
+    bool OnlinePersistenceCoordinator::
+        ConsumeCloudSaveUnauthorizedSignal() noexcept
+    {
+        return m_implementation->ConsumeCloudSaveUnauthorizedSignal();
+    }
+
+    bool OnlinePersistenceCoordinator::
+        ConsumeCloudSaveHealthySignal() noexcept
+    {
+        return m_implementation->ConsumeCloudSaveHealthySignal();
+    }
+
+    CloudSaveSynchronizer*
+        OnlinePersistenceCoordinator::Synchronizer() noexcept
+    {
+        return m_implementation->synchronizer.get();
     }
 
     bool OnlinePersistenceCoordinator::ConsumeLocalCommitSignal() noexcept

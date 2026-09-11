@@ -173,6 +173,10 @@ namespace
         std::size_t deleteCount{};
         bool failSave{};
         bool failDelete{};
+        std::atomic<const void*> usageLeaseOwner{};
+        std::atomic_size_t usageLeaseAcquireCount{};
+        std::atomic_size_t usageLeaseRejectCount{};
+        std::atomic_size_t usageLeaseReleaseCount{};
         std::string privateError{
             "platform-secret-must-not-be-public"
         };
@@ -186,6 +190,60 @@ namespace
             std::shared_ptr<MemoryTokenStoreState> state)
             : m_state(std::move(state))
         {
+        }
+
+        ~MemoryTokenStore() override
+        {
+            ReleaseUsageLease();
+        }
+
+        MemoryTokenStore(const MemoryTokenStore&) = delete;
+        MemoryTokenStore& operator=(const MemoryTokenStore&) = delete;
+        MemoryTokenStore(MemoryTokenStore&&) = delete;
+        MemoryTokenStore& operator=(MemoryTokenStore&&) = delete;
+
+        LamaPon::Detail::OnlinePlatformResult
+            AcquireUsageLease() override
+        {
+            if (m_usageLeaseHeld)
+            {
+                return { true, {}, {} };
+            }
+            const void* expected{};
+            if (!m_state->usageLeaseOwner.compare_exchange_strong(
+                    expected,
+                    this,
+                    std::memory_order_acq_rel,
+                    std::memory_order_acquire))
+            {
+                ++m_state->usageLeaseRejectCount;
+                return {
+                    false,
+                    "credential_usage_unavailable",
+                    "Credential usage is unavailable."
+                };
+            }
+            m_usageLeaseHeld = true;
+            ++m_state->usageLeaseAcquireCount;
+            return { true, {}, {} };
+        }
+
+        void ReleaseUsageLease() noexcept override
+        {
+            if (!m_usageLeaseHeld)
+            {
+                return;
+            }
+            const void* expected = this;
+            if (m_state->usageLeaseOwner.compare_exchange_strong(
+                    expected,
+                    nullptr,
+                    std::memory_order_acq_rel,
+                    std::memory_order_acquire))
+            {
+                ++m_state->usageLeaseReleaseCount;
+            }
+            m_usageLeaseHeld = false;
         }
 
         LamaPon::Detail::RefreshTokenLoadResult Load() override
@@ -243,6 +301,7 @@ namespace
 
     private:
         std::shared_ptr<MemoryTokenStoreState> m_state;
+        bool m_usageLeaseHeld{};
     };
 
     struct MemoryLauncherState final
@@ -1732,6 +1791,222 @@ namespace
             "OnlineServices destruction waited for a blocked request.");
     }
 
+    void TestDestroyedRefreshRetainsUsageLeaseThroughLateLogout()
+    {
+        struct CleanupGate final
+        {
+            CleanupGate()
+                : refreshReleaseFuture(
+                    refreshRelease.get_future().share())
+                , logoutReleaseFuture(
+                    logoutRelease.get_future().share())
+            {
+            }
+
+            std::promise<void> refreshEntered;
+            std::promise<void> refreshRelease;
+            std::shared_future<void> refreshReleaseFuture;
+            std::promise<void> logoutEntered;
+            std::promise<void> logoutRelease;
+            std::shared_future<void> logoutReleaseFuture;
+            std::atomic_uint requestCount{};
+            std::atomic_bool logoutUsedLateAccessToken{};
+        };
+
+        const auto gate = std::make_shared<CleanupGate>();
+        auto refreshEntered = gate->refreshEntered.get_future();
+        auto logoutEntered = gate->logoutEntered.get_future();
+        const auto storeState =
+            std::make_shared<MemoryTokenStoreState>();
+        storeState->loadStatus =
+            LamaPon::Detail::RefreshTokenLoadStatus::Loaded;
+        storeState->token = "usage-lease-initial-refresh";
+
+        auto services =
+            LamaPon::Detail::OnlineServicesTestAccess::Create(
+                TestConfiguration(false),
+                [gate](const LamaPon::HttpRequest& request)
+                {
+                    const auto requestNumber =
+                        ++gate->requestCount;
+                    if (requestNumber == 1u)
+                    {
+                        return JsonResponse(
+                            200,
+                            SessionJson(
+                                "usage-lease-old-access",
+                                "usage-lease-active-refresh",
+                                "usage-lease-player",
+                                30));
+                    }
+                    if (requestNumber == 2u)
+                    {
+                        gate->refreshEntered.set_value();
+                        gate->refreshReleaseFuture.wait();
+                        return JsonResponse(
+                            200,
+                            SessionJson(
+                                "usage-lease-late-access",
+                                "usage-lease-late-refresh",
+                                "usage-lease-player",
+                                900));
+                    }
+                    if (requestNumber == 3u)
+                    {
+                        gate->logoutUsedLateAccessToken.store(
+                            HasHeader(
+                                request,
+                                L"Authorization",
+                                L"Bearer usage-lease-late-access"),
+                            std::memory_order_release);
+                        gate->logoutEntered.set_value();
+                        gate->logoutReleaseFuture.wait();
+                        LamaPon::HttpResponse response;
+                        response.statusCode = 204;
+                        return response;
+                    }
+                    LamaPon::HttpResponse response;
+                    response.transportError = "Unexpected request.";
+                    return response;
+                },
+                std::make_unique<MemoryTokenStore>(storeState));
+        UpdateUntilState(
+            *services,
+            LamaPon::OnlineAccountState::SignedIn,
+            "Timed out preparing the usage-lease destruction test.");
+
+        services->Update(25.0f);
+        Require(
+            services->State()
+                    == LamaPon::OnlineAccountState::RefreshingSession
+                && refreshEntered.wait_for(3s)
+                    == std::future_status::ready,
+            "Timed out blocking the usage-lease refresh worker.");
+
+        std::promise<void> destroyedPromise;
+        auto destroyed = destroyedPromise.get_future();
+        std::thread destroyer(
+            [owned = std::move(services),
+                &destroyedPromise]() mutable
+            {
+                owned.reset();
+                destroyedPromise.set_value();
+            });
+        const bool returnedPromptly =
+            destroyed.wait_for(500ms) == std::future_status::ready;
+        if (!returnedPromptly)
+        {
+            gate->refreshRelease.set_value();
+            gate->logoutRelease.set_value();
+            destroyer.join();
+            throw std::runtime_error(
+                "OnlineServices destruction waited for a refresh worker.");
+        }
+        destroyer.join();
+
+        MemoryTokenStore competingStore(storeState);
+        Require(
+            !competingStore.AcquireUsageLease().succeeded,
+            "Destruction released the lease while refresh was blocked.");
+        gate->refreshRelease.set_value();
+        const bool logoutStarted =
+            logoutEntered.wait_for(3s) == std::future_status::ready;
+        if (!logoutStarted)
+        {
+            gate->logoutRelease.set_value();
+            throw std::runtime_error(
+                "Late refresh completion did not start logout.");
+        }
+        Require(
+            !competingStore.AcquireUsageLease().succeeded,
+            "Late-session logout did not retain the usage lease.");
+        gate->logoutRelease.set_value();
+
+        bool acquiredAfterCleanup{};
+        const auto acquireDeadline =
+            std::chrono::steady_clock::now() + 3s;
+        while (!acquiredAfterCleanup
+            && std::chrono::steady_clock::now() < acquireDeadline)
+        {
+            acquiredAfterCleanup =
+                competingStore.AcquireUsageLease().succeeded;
+            std::this_thread::yield();
+        }
+        Require(
+            acquiredAfterCleanup
+                && gate->requestCount.load(
+                    std::memory_order_acquire) == 3u
+                && gate->logoutUsedLateAccessToken.load(
+                    std::memory_order_acquire)
+                && storeState->deleteCount == 1,
+            "The usage lease or late rotated session was not cleaned up.");
+        competingStore.ReleaseUsageLease();
+        Require(
+            storeState->usageLeaseAcquireCount.load(
+                    std::memory_order_acquire) == 2u
+                && storeState->usageLeaseRejectCount.load(
+                    std::memory_order_acquire) >= 2u
+                && storeState->usageLeaseReleaseCount.load(
+                    std::memory_order_acquire) == 2u
+                && storeState->usageLeaseOwner.load(
+                    std::memory_order_acquire) == nullptr,
+            "Usage-lease ownership did not finish exactly once per owner.");
+    }
+
+    void TestFailedCredentialDeleteRetainsUsageLease()
+    {
+        const auto storeState =
+            std::make_shared<MemoryTokenStoreState>();
+        storeState->loadStatus =
+            LamaPon::Detail::RefreshTokenLoadStatus::Corrupt;
+        storeState->token = "usage-lease-stale-refresh";
+        storeState->failDelete = true;
+        auto services =
+            LamaPon::Detail::OnlineServicesTestAccess::Create(
+                TestConfiguration(false),
+                [](const LamaPon::HttpRequest&)
+                {
+                    LamaPon::HttpResponse response;
+                    response.transportError = "Unexpected request.";
+                    return response;
+                },
+                std::make_unique<MemoryTokenStore>(storeState));
+        Require(
+            services->State()
+                    == LamaPon::OnlineAccountState::SignedOut
+                && services->LastErrorCode()
+                    == "credential_delete_failed"
+                && storeState->deleteCount == 1,
+            "The failed credential deletion did not remain terminal.");
+
+        MemoryTokenStore competingStore(storeState);
+        Require(
+            !competingStore.AcquireUsageLease().succeeded,
+            "A terminal delete failure released the usage lease.");
+
+        storeState->failDelete = false;
+        services->SignOut();
+        Require(
+            services->State()
+                    == LamaPon::OnlineAccountState::SignedOut
+                && services->LastError().empty()
+                && storeState->deleteCount == 2
+                && storeState->token.empty()
+                && competingStore.AcquireUsageLease().succeeded,
+            "The usage lease was not released after deletion recovered.");
+        competingStore.ReleaseUsageLease();
+        Require(
+            storeState->usageLeaseAcquireCount.load(
+                    std::memory_order_acquire) == 2u
+                && storeState->usageLeaseRejectCount.load(
+                    std::memory_order_acquire) == 1u
+                && storeState->usageLeaseReleaseCount.load(
+                    std::memory_order_acquire) == 2u
+                && storeState->usageLeaseOwner.load(
+                    std::memory_order_acquire) == nullptr,
+            "Recovered credential deletion left stale lease ownership.");
+    }
+
     void TestTransportSecretsAreRedacted()
     {
         constexpr std::string_view transportSecret =
@@ -1779,6 +2054,8 @@ int main()
         TestExplicitSignOutOverridesExpiredPollCleanup();
         TestCancellationIgnoresOldCompletion();
         TestDestructionDoesNotWaitForBlockedRequest();
+        TestDestroyedRefreshRetainsUsageLeaseThroughLateLogout();
+        TestFailedCredentialDeleteRetainsUsageLease();
         TestTransportSecretsAreRedacted();
         LamaPon::SetActiveOnlineServices(nullptr);
     }

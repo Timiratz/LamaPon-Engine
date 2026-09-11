@@ -12,6 +12,7 @@ namespace LamaPon
     class PersistenceProfiles;
     namespace Detail
     {
+        struct LocalPersistenceDocument;
         class LocalPersistenceDocuments;
         class OnlinePersistenceCoordinator;
     }
@@ -107,6 +108,11 @@ namespace LamaPon
             bool missing);
         void ApplyRemoteDocumentAtomically(std::string_view fullDocument);
         void DeleteRemoteDocumentAtomically();
+        [[nodiscard]] bool ApplyRemoteDocumentAtomicallyIfUnchanged(
+            std::string_view fullDocument,
+            const Detail::LocalPersistenceDocument& observed);
+        [[nodiscard]] bool DeleteRemoteDocumentAtomicallyIfUnchanged(
+            const Detail::LocalPersistenceDocument& observed);
 
         struct Implementation;
         std::unique_ptr<Implementation> m_implementation;

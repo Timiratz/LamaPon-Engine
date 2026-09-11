@@ -278,6 +278,8 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Online/CloudSave.h
     src/LamaPon/Online/CloudSaveJournal.cpp
     src/LamaPon/Online/CloudSaveJournal.h
+    src/LamaPon/Online/CloudSaveSynchronizer.cpp
+    src/LamaPon/Online/CloudSaveSynchronizer.h
     src/LamaPon/Online/OnlineHttpValidation.cpp
     src/LamaPon/Online/OnlineHttpValidation.h
     src/LamaPon/Online/OnlinePersistenceCoordinator.cpp
@@ -1322,6 +1324,7 @@ if(BUILD_TESTING)
         PRIVATE
             LamaPonRuntime
             advapi32
+            bcrypt
     )
     target_compile_options(LamaPonCloudSaveJournalTests PRIVATE
         $<$<CXX_COMPILER_ID:MSVC>:/W4>
@@ -1335,6 +1338,29 @@ if(BUILD_TESTING)
     set_tests_properties(
         CloudSaveJournalDurability
         PROPERTIES LABELS "online;cloud-save;journal;durability"
+    )
+
+    add_executable(LamaPonCloudSaveSynchronizerTests
+        tests/CloudSaveSynchronizerTests.cpp
+    )
+    target_link_libraries(
+        LamaPonCloudSaveSynchronizerTests
+        PRIVATE
+            LamaPonRuntime
+            bcrypt
+    )
+    target_compile_options(LamaPonCloudSaveSynchronizerTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_test(
+        NAME CloudSaveSynchronization
+        COMMAND LamaPonCloudSaveSynchronizerTests
+    )
+    set_tests_properties(
+        CloudSaveSynchronization
+        PROPERTIES LABELS "online;cloud-save;synchronization"
     )
 
     add_executable(LamaPonOnlineServicesTests
@@ -1954,6 +1980,7 @@ install(
         PATTERN "CloudSave.h" EXCLUDE
         PATTERN "CloudSaveClient.h" EXCLUDE
         PATTERN "CloudSaveJournal.h" EXCLUDE
+        PATTERN "CloudSaveSynchronizer.h" EXCLUDE
         PATTERN "LocalPersistenceDocuments.h" EXCLUDE
         PATTERN "OnlineHttpValidation.h" EXCLUDE
         PATTERN "OnlinePersistenceCoordinator.h" EXCLUDE

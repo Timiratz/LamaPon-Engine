@@ -2,9 +2,11 @@
 
 #include <Windows.h>
 #include <aclapi.h>
+#include <bcrypt.h>
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -40,6 +42,41 @@ namespace
         {
             throw std::runtime_error(message);
         }
+    }
+
+    std::string Sha256LowerHex(const std::string_view value)
+    {
+        BCRYPT_ALG_HANDLE algorithm{};
+        Require(
+            BCryptOpenAlgorithmProvider(
+                &algorithm,
+                BCRYPT_SHA256_ALGORITHM,
+                nullptr,
+                0u) >= 0,
+            "Journal test SHA-256 provider failed.");
+        std::array<std::uint8_t, 32u> digest{};
+        const auto status = BCryptHash(
+            algorithm,
+            nullptr,
+            0u,
+            value.empty()
+                ? nullptr
+                : reinterpret_cast<PUCHAR>(
+                    const_cast<char*>(value.data())),
+            static_cast<ULONG>(value.size()),
+            digest.data(),
+            static_cast<ULONG>(digest.size()));
+        BCryptCloseAlgorithmProvider(algorithm, 0u);
+        Require(status >= 0, "Journal test SHA-256 failed.");
+        constexpr char Digits[] = "0123456789abcdef";
+        std::string result;
+        result.reserve(digest.size() * 2u);
+        for (const auto byte : digest)
+        {
+            result.push_back(Digits[(byte >> 4u) & 0x0fu]);
+            result.push_back(Digits[byte & 0x0fu]);
+        }
+        return result;
     }
 
     template<class Function>
@@ -805,7 +842,7 @@ namespace
             "A different backend base path reused a bound journal.");
 
         auto future = Json::parse(ReadText(filePath));
-        future["version"] = 2;
+        future["version"] = 3;
         WriteText(Suffix(filePath, L".next"), future.dump());
         Require(
             Throws([&] { (void)MakeJournal(trusted); }),
@@ -934,6 +971,65 @@ namespace
                     trusted.parent_path() / L"OnlineProfiles"),
             "Journal activity changed guest-import account existence.");
     }
+
+    void TestLocalDeleteIntentAndVersionOneMigration()
+    {
+        const auto trusted = TrustedPath("version-migration");
+        std::filesystem::path filePath;
+        {
+            auto journal = MakeJournal(trusted);
+            filePath = journal->FilePath();
+            journal->RecordBaseline(Tombstone(
+                LamaPon::CloudSaveResource::Preferences(),
+                "\"v1-baseline\""));
+        }
+
+        auto versionOne = Json::parse(ReadText(filePath));
+        versionOne["version"] = 1u;
+        for (auto& entry : versionOne.at("entries"))
+        {
+            entry.erase("localDeleteIntent");
+        }
+        versionOne.erase("checksum");
+        versionOne["checksum"] = Sha256LowerHex(versionOne.dump());
+        WriteText(filePath, versionOne.dump());
+        RemoveExact(Suffix(filePath, L".next"));
+        RemoveExact(Suffix(filePath, L".bak"));
+
+        {
+            auto migrated = MakeJournal(trusted);
+            Require(
+                migrated->Generation() == 1u
+                    && migrated->Baseline(
+                        LamaPon::CloudSaveResource::Preferences())
+                        ->etag == "\"v1-baseline\"",
+                "A valid version-1 journal could not be loaded.");
+            migrated->RecordLocalDeleteIntent(
+                LamaPon::CloudSaveResource::Preferences());
+            Require(
+                migrated->HasLocalDeleteIntent(
+                    LamaPon::CloudSaveResource::Preferences()),
+                "A local delete intent was not durable in memory.");
+        }
+        Require(
+            Json::parse(ReadText(filePath)).at("version") == 2u,
+            "A version-1 journal was not durably migrated on mutation.");
+        {
+            auto reopened = MakeJournal(trusted);
+            Require(
+                reopened->HasLocalDeleteIntent(
+                    LamaPon::CloudSaveResource::Preferences()),
+                "A local delete intent did not survive restart.");
+            reopened->ClearLocalDeleteIntent(
+                LamaPon::CloudSaveResource::Preferences());
+            Require(
+                !reopened->HasLocalDeleteIntent(
+                    LamaPon::CloudSaveResource::Preferences())
+                    && reopened->Baseline(
+                        LamaPon::CloudSaveResource::Preferences()),
+                "Clearing a local delete intent discarded its baseline.");
+        }
+    }
 }
 
 int main()
@@ -951,6 +1047,7 @@ int main()
         TestRecoveryTopologyAndSplitBrain();
         TestBindingSchemaAndContentFailClosed();
         TestTrustedPathAndAccountNonCreation();
+        TestLocalDeleteIntentAndVersionOneMigration();
         std::error_code cleanupError;
         std::filesystem::remove_all(TestRoot(), cleanupError);
         Require(!cleanupError, "Journal test final cleanup failed.");

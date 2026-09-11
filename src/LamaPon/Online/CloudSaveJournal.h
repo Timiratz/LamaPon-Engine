@@ -7,12 +7,49 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace LamaPon::Detail
 {
+    class CloudSaveJournal;
+
+    // journalのprocess間lockが一時的に使用中で、disk mutation前に
+    // 安全に再試行できる場合だけ投げるtyped内部例外です。
+    class CloudSaveJournalBusyError final : public std::runtime_error
+    {
+    public:
+        CloudSaveJournalBusyError()
+            : std::runtime_error("Cloud save journal is busy.")
+        {
+        }
+    };
+
+    // 同じaccount profileを複数processが同時公開し、古いin-memory prefsで
+    // 新しいdisk commitを上書きしないためのprocess lifetime leaseです。
+    // lockはOnlineState/<key>/profile.session.lockに置きます。
+    class CloudSaveProfileSessionLease final
+    {
+    public:
+        explicit CloudSaveProfileSessionLease(CloudSaveJournal& journal);
+        ~CloudSaveProfileSessionLease();
+
+        CloudSaveProfileSessionLease(
+            const CloudSaveProfileSessionLease&) = delete;
+        CloudSaveProfileSessionLease& operator=(
+            const CloudSaveProfileSessionLease&) = delete;
+        CloudSaveProfileSessionLease(
+            CloudSaveProfileSessionLease&&) = delete;
+        CloudSaveProfileSessionLease& operator=(
+            CloudSaveProfileSessionLease&&) = delete;
+
+    private:
+        struct Implementation;
+        std::unique_ptr<Implementation> m_implementation;
+    };
+
     enum class CloudSaveJournalTestFailPoint : std::uint8_t
     {
         None,
@@ -99,6 +136,14 @@ namespace LamaPon::Detail
             const CloudSaveResource& resource,
             std::string_view mutationId,
             std::string_view baseEtag);
+
+        // baseline/remote ETagをまだ取得していない期間のlocal deleteを、
+        // 再起動後の初期Missingと区別するdurable overlayです。remote ETagを
+        // 得た後はQueueDeleteが同じgeneration更新でintentをpendingへ昇格します。
+        void RecordLocalDeleteIntent(const CloudSaveResource& resource);
+        void ClearLocalDeleteIntent(const CloudSaveResource& resource);
+        [[nodiscard]] bool HasLocalDeleteIntent(
+            const CloudSaveResource& resource) const;
 
         // conflict待ちを除くpendingだけを返します。自動retry時もこの値を
         // 変更せずCloudSaveClientへ渡します。

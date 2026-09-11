@@ -50,6 +50,20 @@ namespace LamaPon::Detail
     public:
         virtual ~IRefreshTokenStore() = default;
 
+        // 同一credential namespaceを複数processが同時利用してrefresh
+        // rotationを競合させないためのsession-lifetime leaseです。
+        // test doubleやplatform実装が排他を必要としない場合は、この
+        // 既定実装がidempotentな成功/no-opとして振る舞います。
+        // 成功したcallerはrestoreのLoadより前からterminal cleanup完了
+        // までleaseを保持し、同じstoreでの再取得は成功扱いにします。
+        [[nodiscard]] virtual OnlinePlatformResult AcquireUsageLease()
+        {
+            return { true, {}, {} };
+        }
+        virtual void ReleaseUsageLease() noexcept
+        {
+        }
+
         [[nodiscard]] virtual RefreshTokenLoadResult Load() = 0;
         // 強いcommit契約: succeeded==trueのときだけcandidateがLoad可能な
         // final値になります。falseを返す、または例外を投げる場合は、
@@ -79,7 +93,17 @@ namespace LamaPon::Detail
             std::filesystem::path filePath,
             std::string gameId,
             std::string environmentId);
+        ~WindowsRefreshTokenStore() override;
 
+        WindowsRefreshTokenStore(const WindowsRefreshTokenStore&) = delete;
+        WindowsRefreshTokenStore& operator=(
+            const WindowsRefreshTokenStore&) = delete;
+        WindowsRefreshTokenStore(WindowsRefreshTokenStore&&) = delete;
+        WindowsRefreshTokenStore& operator=(
+            WindowsRefreshTokenStore&&) = delete;
+
+        [[nodiscard]] OnlinePlatformResult AcquireUsageLease() override;
+        void ReleaseUsageLease() noexcept override;
         [[nodiscard]] RefreshTokenLoadResult Load() override;
         [[nodiscard]] OnlinePlatformResult Save(
             std::string_view refreshToken) override;
@@ -93,6 +117,7 @@ namespace LamaPon::Detail
     private:
         std::filesystem::path m_filePath;
         std::vector<std::uint8_t> m_entropy;
+        void* m_usageLeaseHandle{};
         bool m_storageAvailable{};
     };
 
