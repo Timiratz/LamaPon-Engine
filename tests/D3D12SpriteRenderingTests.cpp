@@ -8,6 +8,7 @@
 #include "LamaPon/Components/SpotLightComponent.h"
 #include "LamaPon/Core/Log.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
+#include "LamaPon/Graphics/SkeletalModel.h"
 #include "LamaPon/Graphics/SpriteRendering.h"
 #include "LamaPon/Scene/Scene.h"
 #include "LamaPon/Scene/SceneManager.h"
@@ -642,7 +643,19 @@ namespace
         const auto modelPath = std::filesystem::path(
             LAMAPON_TEST_ASSET_DIR)
             / "models"
-            / "RiggedSimple.glb";
+            / "TexturedRiggedSimple.gltf";
+        // This fixture references an existing JPEG outside the model file.
+        // D3D12 must retain it as a backend handle without creating a D3D11 SRV.
+        const auto texturedAsset = graphics.Assets().LoadModel(modelPath);
+        Require(
+            texturedAsset != nullptr
+                && texturedAsset->skeletalModel != nullptr
+                && !texturedAsset->skeletalModel->primitives.empty()
+                && texturedAsset->skeletalModel->primitives.front()
+                    .embeddedTextures.albedo
+                && texturedAsset->skeletalModel->primitives.front().texture
+                    == nullptr,
+            "The DirectX 12 glTF texture was not retained as a backend handle");
         auto& object = scene.CreateGameObject("AnimatedModel");
         auto& model = object.AddComponent<
             LamaPon::ModelRendererComponent>(modelPath);

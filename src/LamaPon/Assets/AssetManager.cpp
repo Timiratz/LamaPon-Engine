@@ -1289,6 +1289,34 @@ namespace LamaPon
         return TextureLoader::CreateTexture(m_device, prepared);
     }
 
+    GraphicsViewHandle
+        AssetManager::CreateTextureViewHandleFromMemory(
+            const std::span<const std::uint8_t> bytes,
+            const bool isDds,
+            const TextureLoader::TextureUsage usage)
+    {
+        if (bytes.empty() || m_backend == nullptr || isDds)
+        {
+            return {};
+        }
+        auto mips = TextureLoader::GenerateMipChain(
+            TextureLoader::DecodeImageBytes(bytes));
+        const auto prepared = TextureLoader::PrepareTextureData(
+            std::move(mips),
+            RuntimeTextureCompressionEnabled(),
+            usage);
+        const auto description = MakeTextureDescription(prepared);
+        const auto subresources = MakeTextureSubresources(prepared);
+        auto texture = m_backend->CreateTexture2D(
+            description,
+            subresources);
+        return m_backend->CreateShaderResourceView(
+            texture,
+            GraphicsTextureViewDescription{
+                0,
+                description.mipLevels });
+    }
+
     std::shared_ptr<TextureAsset>
         AssetManager::LoadTextureUncached(
             const std::filesystem::path& resolvedPath,

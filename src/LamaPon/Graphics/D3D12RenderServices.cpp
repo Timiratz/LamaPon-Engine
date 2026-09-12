@@ -81,9 +81,15 @@ float4 PrimitivePixelShader(PixelInput input) : SV_Target
     float3 normal = normalize(input.normal);
     if (MaterialProperties.w > 0.5f)
     {
-        const float3 sampledNormal = NormalTexture.Sample(
+        // BC5 stores only XY. Reconstructing Z also keeps ordinary RGB
+        // normal maps equivalent after their XY channels are sampled.
+        const float2 sampledNormalXY = NormalTexture.Sample(
             AlbedoSampler,
-            input.textureCoordinate).xyz * 2.0f - 1.0f;
+            input.textureCoordinate).xy * 2.0f - 1.0f;
+        const float3 sampledNormal = float3(
+            sampledNormalXY,
+            sqrt(saturate(
+                1.0f - dot(sampledNormalXY, sampledNormalXY))));
         const float3 positionDx = ddx(input.worldPosition);
         const float3 positionDy = ddy(input.worldPosition);
         const float2 uvDx = ddx(input.textureCoordinate);

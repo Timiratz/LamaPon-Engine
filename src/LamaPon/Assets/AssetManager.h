@@ -48,6 +48,7 @@ namespace LamaPon
     class AssetArchive;
     class DataAsset;
     class GraphicsBackend;
+    class GltfImporter;
     class SkeletalModel;
 
     namespace Detail
@@ -402,10 +403,20 @@ namespace LamaPon
         }
 
     private:
+        friend class GltfImporter;
+
         AssetManager(
             ID3D11Device* device,
             ID3D11DeviceContext* context,
             GraphicsBackend* backend);
+        // glTFの内蔵・外部画像をdisk cacheやD3D11互換viewを介さず、現在の
+        // Backend世代へ直接取り込む内部入口です。DDSの共通decodeは
+        // 未分離のため、現段階ではWIC画像だけを扱います。
+        [[nodiscard]] GraphicsViewHandle
+            CreateTextureViewHandleFromMemory(
+                std::span<const std::uint8_t> bytes,
+                bool isDds,
+                TextureLoader::TextureUsage usage);
 
         // 文字テクスチャ1枚ぶんのキャッシュ項目。lastUsedはLRUの
         // 判定用、bytesは予算計算用（幅×高さ×4）です。

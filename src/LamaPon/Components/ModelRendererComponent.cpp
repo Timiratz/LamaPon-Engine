@@ -1928,15 +1928,25 @@ namespace LamaPon
                 request.emissiveFactor = m_materialOverrideEnabled
                     ? m_material.EmissiveColor()
                     : primitive.emissiveFactor;
-                const auto& textures = m_materialOverrideEnabled
+                // D3D11のSkeletalModel::Drawと同じmerge規則です。上書き中も
+                // albedo/normalの未指定はモデル内蔵を継承し、PBR mapは
+                // emptyも含めて外部materialを正とします。
+                const auto& embeddedTextures = primitive.embeddedTextures;
+                const auto& pbrTextures = m_materialOverrideEnabled
                     ? overrideTextures
-                    : primitive.embeddedTextures;
-                request.albedo = textures.albedo;
-                request.normalTexture = textures.normal;
-                request.roughnessTexture = textures.roughness;
-                request.metallicTexture = textures.metallic;
-                request.occlusionTexture = textures.occlusion;
-                request.emissiveTexture = textures.emissive;
+                    : embeddedTextures;
+                request.albedo = m_materialOverrideEnabled
+                        && overrideTextures.albedo
+                    ? overrideTextures.albedo
+                    : embeddedTextures.albedo;
+                request.normalTexture = m_materialOverrideEnabled
+                        && overrideTextures.normal
+                    ? overrideTextures.normal
+                    : embeddedTextures.normal;
+                request.roughnessTexture = pbrTextures.roughness;
+                request.metallicTexture = pbrTextures.metallic;
+                request.occlusionTexture = pbrTextures.occlusion;
+                request.emissiveTexture = pbrTextures.emissive;
                 request.fallbackTexture =
                     m_graphics->WhiteTextureViewHandle();
                 request.alphaBlend = alpha;
