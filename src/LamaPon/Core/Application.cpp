@@ -406,29 +406,17 @@ namespace LamaPon
                     // 継続します。
                     try
                     {
-                        if (!d3d12ExperimentalBootstrap)
-                        {
-                            m_graphics.BeginSceneComposition(
-                                m_clearColor);
-                            // 3DだけをHDRターゲットへ描き、UIは色変換後に
-                            // 重ねる。ターゲットを渡すのは、深度プリパスと
-                            // SSAOをライティングより前に走らせるためです。
-                            m_scene->RenderMainCamera(
-                                m_graphics.AspectRatio(),
-                                false,
-                                m_graphics.SceneCompositionTarget());
-                            m_graphics.EndSceneComposition(
-                                m_scene->PostProcessFrameData());
-                        }
-                        else
-                        {
-                            // D3D12 Experimentalは最小3D pipelineをprimary
-                            // outputへ直接描きます。HDR/post-processは未実装です。
-                            m_scene->RenderMainCamera(
-                                m_graphics.AspectRatio(),
-                                false,
-                                nullptr);
-                        }
+                        m_graphics.BeginSceneComposition(
+                            m_clearColor);
+                        // 3DだけをScene用ターゲットへ描き、UIは
+                        // 合成後に重ねます。D3D11はHDR/post-process、
+                        // D3D12 Experimentalは現時点のLDR合成経路です。
+                        m_scene->RenderMainCamera(
+                            m_graphics.AspectRatio(),
+                            false,
+                            m_graphics.SceneCompositionTarget());
+                        m_graphics.EndSceneComposition(
+                            m_scene->PostProcessFrameData());
                         // UIは両APIとも3Dの後へ重ねます。
                         m_scene->Render2D();
                         const auto& scenes =

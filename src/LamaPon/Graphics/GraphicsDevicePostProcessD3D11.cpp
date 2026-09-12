@@ -7,6 +7,7 @@
 #include "LamaPon/Graphics/GraphicsBackend.h"
 #include "LamaPon/Graphics/RenderTarget.h"
 
+#include <algorithm>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -103,6 +104,50 @@ namespace LamaPon
     void GraphicsDevice::CopyOffscreenTargetToBackBuffer(
         const RenderTarget& target)
     {
+        if (ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            if (!target.IsValid()
+                || !IsGraphicsViewCurrent(
+                    target.CurrentColorViewHandle())
+                || !IsGraphicsViewCurrent(
+                    target.DisplayViewHandle()))
+            {
+                throw std::invalid_argument(
+                    "CopyOffscreenTargetToBackBuffer requires a current "
+                    "DirectX 12 target.");
+            }
+
+            // 基本D3D12 RenderTargetはLDRなので、表示用資源へ
+            // 確定した画像を既存Sprite pipelineで画面全体へ
+            // 転写します。HDRトーンマップは後続段階で
+            // 専用fullscreen pipelineへ置き換えます。
+            auto& mutableTarget = const_cast<RenderTarget&>(target);
+            m_state->m_backend->PublishOffscreenTarget(mutableTarget);
+            m_state->m_backend->BindBackBuffer();
+
+            SpritePassDescription description;
+            description.blend = SpriteBlendMode::Opaque;
+            auto pass = BeginSpritePass(description);
+            SpriteDrawRequest request;
+            request.texture = target.DisplayViewHandle();
+            request.scale = {
+                static_cast<float>(Width())
+                    / static_cast<float>(
+                        std::max(target.Width(), 1u)),
+                static_cast<float>(Height())
+                    / static_cast<float>(
+                        std::max(target.Height(), 1u)) };
+            if (!pass.Draw(request))
+            {
+                throw std::runtime_error(
+                    "The DirectX 12 scene composition texture was "
+                    "rejected.");
+            }
+            pass.End();
+            return;
+        }
+
         static_cast<void>(RequireCurrentOffscreenTarget(
             *this,
             target,

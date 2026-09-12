@@ -531,6 +531,33 @@ namespace
                 && cameraPixels[cameraOffset + 2u] < 60u,
             "The DirectX 12 camera render texture was not restored and "
             "sampled");
+
+        constexpr float compositionClear[4]{
+            0.7f, 0.15f, 0.05f, 1.0f };
+        graphics.BeginFrame(backBufferClear);
+        graphics.BeginSceneComposition(compositionClear);
+        scene.RenderMainCamera(
+            graphics.AspectRatio(),
+            false,
+            graphics.SceneCompositionTarget());
+        graphics.EndSceneComposition(scene.PostProcessFrameData());
+        std::uint32_t compositionWidth{};
+        std::uint32_t compositionHeight{};
+        const auto compositionPixels = graphics.CaptureBackBuffer(
+            compositionWidth,
+            compositionHeight);
+        graphics.EndFrame();
+        const auto compositionOffset = (
+            static_cast<std::size_t>(64u) * compositionWidth + 128u)
+            * 4u;
+        Require(
+            compositionWidth == CanvasWidth
+                && compositionHeight == CanvasHeight
+                && compositionPixels[compositionOffset] > 150u
+                && compositionPixels[compositionOffset + 1u] < 70u
+                && compositionPixels[compositionOffset + 2u] < 40u,
+            "The DirectX 12 main scene composition was not copied to the "
+            "back buffer");
     }
 
     void RequireD3D12PrimitiveScene()
