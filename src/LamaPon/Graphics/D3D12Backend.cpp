@@ -526,6 +526,8 @@ namespace
                 && color != nullptr
                 && postColor != nullptr
                 && displayColor != nullptr
+                && colorHistory != nullptr
+                && temporalHistory != nullptr
                 && depth != nullptr
                 && depthCopy != nullptr
                 && renderTargetHeap != nullptr
@@ -538,6 +540,8 @@ namespace
         Microsoft::WRL::ComPtr<ID3D12Resource> color;
         Microsoft::WRL::ComPtr<ID3D12Resource> postColor;
         Microsoft::WRL::ComPtr<ID3D12Resource> displayColor;
+        Microsoft::WRL::ComPtr<ID3D12Resource> colorHistory;
+        Microsoft::WRL::ComPtr<ID3D12Resource> temporalHistory;
         Microsoft::WRL::ComPtr<ID3D12Resource> depth;
         Microsoft::WRL::ComPtr<ID3D12Resource> depthCopy;
         Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> renderTargetHeap;
@@ -547,6 +551,10 @@ namespace
         D3D12_RESOURCE_STATES postColorState{
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE };
         D3D12_RESOURCE_STATES displayColorState{
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE };
+        D3D12_RESOURCE_STATES colorHistoryState{
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE };
+        D3D12_RESOURCE_STATES temporalHistoryState{
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE };
         D3D12_RESOURCE_STATES depthState{
             D3D12_RESOURCE_STATE_DEPTH_WRITE };
@@ -2322,6 +2330,8 @@ namespace LamaPon
             && IsViewCurrent(existing->m_currentColorView)
             && IsViewCurrent(existing->m_postColorView)
             && IsViewCurrent(existing->m_displayView)
+            && IsViewCurrent(existing->m_colorHistoryView)
+            && IsViewCurrent(existing->m_temporalHistoryView)
             && IsViewCurrent(existing->m_depthView))
         {
             return;
@@ -2414,6 +2424,14 @@ namespace LamaPon
             computeWritable
                 ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS
                 : D3D12_RESOURCE_FLAG_NONE);
+        createColor(
+            pending->colorHistory,
+            "ID3D12Device::CreateCommittedResource(offscreen color history)",
+            D3D12_RESOURCE_FLAG_NONE);
+        createColor(
+            pending->temporalHistory,
+            "ID3D12Device::CreateCommittedResource(temporal history)",
+            D3D12_RESOURCE_FLAG_NONE);
 
         const auto renderTargetStart = pending->renderTargetHeap
             ->GetCPUDescriptorHandleForHeapStart();
@@ -2502,6 +2520,22 @@ namespace LamaPon
             m_device.Get(),
             m_resourceDomain,
             pending->displayColor,
+            colorViewDescription,
+            requestedWidth,
+            requestedHeight,
+            GraphicsTextureFormat::Rgba8Unorm);
+        pending->m_colorHistoryView = CreateTextureView(
+            m_device.Get(),
+            m_resourceDomain,
+            pending->colorHistory,
+            colorViewDescription,
+            requestedWidth,
+            requestedHeight,
+            GraphicsTextureFormat::Rgba8Unorm);
+        pending->m_temporalHistoryView = CreateTextureView(
+            m_device.Get(),
+            m_resourceDomain,
+            pending->temporalHistory,
             colorViewDescription,
             requestedWidth,
             requestedHeight,
@@ -2771,17 +2805,148 @@ namespace LamaPon
     }
 
     void D3D12Backend::CaptureOffscreenTargetColorHistory(
-        RenderTarget&,
-        const DirectX::XMFLOAT4X4&)
+        RenderTarget& target,
+        const DirectX::XMFLOAT4X4& viewProjection)
     {
-        ThrowUnsupported("CaptureOffscreenTargetColorHistory");
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "CaptureOffscreenTargetColorHistory requires an "
+                "initialized D3D12 backend.");
+        }
+        auto* const state = dynamic_cast<D3D12RenderTargetState*>(
+            Detail::RenderTargetBackendAccess::Get(target));
+        if (state == nullptr
+            || !state->HasNativeResources()
+            || state->resourceDomain.get() != m_resourceDomain.get()
+            || !IsViewCurrent(state->m_colorHistoryView))
+        {
+            throw std::invalid_argument(
+                "CaptureOffscreenTargetColorHistory requires a target "
+                "owned by this D3D12 backend generation.");
+        }
+        OpenCommandList();
+        const bool restoreTarget = m_activeOffscreenTarget == &target;
+        if (restoreTarget && !m_activeOffscreenDepthOnly)
+        {
+            m_commandList->OMSetRenderTargets(
+                0,
+                nullptr,
+                FALSE,
+                nullptr);
+        }
+        TransitionResource(
+            m_commandList.Get(),
+            state->color.Get(),
+            state->colorState,
+            D3D12_RESOURCE_STATE_COPY_SOURCE);
+        TransitionResource(
+            m_commandList.Get(),
+            state->colorHistory.Get(),
+            state->colorHistoryState,
+            D3D12_RESOURCE_STATE_COPY_DEST);
+        m_commandList->CopyResource(
+            state->colorHistory.Get(),
+            state->color.Get());
+        TransitionResource(
+            m_commandList.Get(),
+            state->colorHistory.Get(),
+            state->colorHistoryState,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        TransitionResource(
+            m_commandList.Get(),
+            state->color.Get(),
+            state->colorState,
+            restoreTarget && !m_activeOffscreenDepthOnly
+                ? D3D12_RESOURCE_STATE_RENDER_TARGET
+                : D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        state->m_historyViewProjection = viewProjection;
+        state->m_historyValid = true;
+        Detail::RenderTargetBackendAccess::SetPublicHistoryViewProjection(
+            target,
+            viewProjection);
+        if (restoreTarget)
+        {
+            if (m_activeOffscreenDepthOnly)
+            {
+                BindOffscreenTargetDepthOnly(target);
+            }
+            else
+            {
+                BindOffscreenTarget(target);
+            }
+        }
     }
 
     void D3D12Backend::CaptureOffscreenTargetTemporalHistory(
-        RenderTarget&,
-        const DirectX::XMFLOAT4X4&)
+        RenderTarget& target,
+        const DirectX::XMFLOAT4X4& viewProjection)
     {
-        ThrowUnsupported("CaptureOffscreenTargetTemporalHistory");
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "CaptureOffscreenTargetTemporalHistory requires an "
+                "initialized D3D12 backend.");
+        }
+        auto* const state = dynamic_cast<D3D12RenderTargetState*>(
+            Detail::RenderTargetBackendAccess::Get(target));
+        if (state == nullptr
+            || !state->HasNativeResources()
+            || state->resourceDomain.get() != m_resourceDomain.get()
+            || !IsViewCurrent(state->m_temporalHistoryView))
+        {
+            throw std::invalid_argument(
+                "CaptureOffscreenTargetTemporalHistory requires a target "
+                "owned by this D3D12 backend generation.");
+        }
+        OpenCommandList();
+        const bool restoreTarget = m_activeOffscreenTarget == &target;
+        if (restoreTarget && !m_activeOffscreenDepthOnly)
+        {
+            m_commandList->OMSetRenderTargets(
+                0,
+                nullptr,
+                FALSE,
+                nullptr);
+        }
+        TransitionResource(
+            m_commandList.Get(),
+            state->color.Get(),
+            state->colorState,
+            D3D12_RESOURCE_STATE_COPY_SOURCE);
+        TransitionResource(
+            m_commandList.Get(),
+            state->temporalHistory.Get(),
+            state->temporalHistoryState,
+            D3D12_RESOURCE_STATE_COPY_DEST);
+        m_commandList->CopyResource(
+            state->temporalHistory.Get(),
+            state->color.Get());
+        TransitionResource(
+            m_commandList.Get(),
+            state->temporalHistory.Get(),
+            state->temporalHistoryState,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        TransitionResource(
+            m_commandList.Get(),
+            state->color.Get(),
+            state->colorState,
+            restoreTarget && !m_activeOffscreenDepthOnly
+                ? D3D12_RESOURCE_STATE_RENDER_TARGET
+                : D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        state->m_temporalHistoryViewProjection = viewProjection;
+        state->m_temporalHistoryValid = true;
+        if (restoreTarget)
+        {
+            if (m_activeOffscreenDepthOnly)
+            {
+                BindOffscreenTargetDepthOnly(target);
+            }
+            else
+            {
+                BindOffscreenTarget(target);
+            }
+        }
     }
 
     std::optional<float>

@@ -444,6 +444,25 @@ namespace
                 12.0f,
                 { 0.9f, 0.05f, 0.02f, 1.0f });
         }
+        DirectX::XMFLOAT4X4 historyViewProjection{};
+        DirectX::XMStoreFloat4x4(
+            &historyViewProjection,
+            DirectX::XMMatrixIdentity());
+        graphics.CaptureOffscreenTargetColorHistory(
+            target,
+            historyViewProjection);
+        graphics.CaptureOffscreenTargetTemporalHistory(
+            target,
+            historyViewProjection);
+        Require(
+            target.ColorHistoryViewHandle()
+                && target.TemporalHistoryViewHandle()
+                && graphics.IsGraphicsViewCurrent(
+                    target.ColorHistoryViewHandle())
+                && graphics.IsGraphicsViewCurrent(
+                    target.TemporalHistoryViewHandle())
+                && target.ColorHistoryViewProjection()._11 == 1.0f,
+            "The DirectX 12 offscreen color histories were not published");
         graphics.RestoreOutputState(*primaryOutput);
         graphics.RestoreOutputState(*offscreenOutput);
         graphics.PublishOffscreenTarget(target);
@@ -465,6 +484,23 @@ namespace
             Require(
                 pass.Draw(depthRequest),
                 "The DirectX 12 offscreen depth view was rejected");
+
+            LamaPon::SpriteDrawRequest colorHistoryRequest;
+            colorHistoryRequest.texture = target.ColorHistoryViewHandle();
+            colorHistoryRequest.position = { 170.0f, 15.0f };
+            colorHistoryRequest.tint = { 1.0f, 1.0f, 1.0f, 1.0f };
+            Require(
+                pass.Draw(colorHistoryRequest),
+                "The DirectX 12 color history view was rejected");
+
+            LamaPon::SpriteDrawRequest temporalHistoryRequest;
+            temporalHistoryRequest.texture =
+                target.TemporalHistoryViewHandle();
+            temporalHistoryRequest.position = { 100.0f, 55.0f };
+            temporalHistoryRequest.tint = { 1.0f, 1.0f, 1.0f, 1.0f };
+            Require(
+                pass.Draw(temporalHistoryRequest),
+                "The DirectX 12 temporal history view was rejected");
         }
         std::uint32_t width{};
         std::uint32_t height{};
@@ -491,6 +527,8 @@ namespace
         const auto red = pixel(35u, 28u);
         const auto outside = pixel(90u, 70u);
         const auto depth = pixel(105u, 20u);
+        const auto colorHistory = pixel(174u, 18u);
+        const auto temporalHistory = pixel(115u, 68u);
         Require(
             blue[2] > 150u && blue[0] < 50u,
             "The DirectX 12 offscreen clear color was not sampled");
@@ -503,6 +541,12 @@ namespace
         Require(
             depth[0] > 230u && depth[1] < 12u && depth[2] < 12u,
             "The DirectX 12 offscreen depth copy was not sampled");
+        Require(
+            colorHistory[2] > 150u && colorHistory[0] < 50u,
+            "The DirectX 12 color history copy was not sampled");
+        Require(
+            temporalHistory[0] > 170u && temporalHistory[2] < 80u,
+            "The DirectX 12 temporal history copy was not sampled");
 
         LamaPon::Scene scene(graphics);
         auto& cameraObject = scene.CreateGameObject("RenderTextureCamera");
