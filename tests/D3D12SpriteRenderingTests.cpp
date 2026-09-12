@@ -723,6 +723,106 @@ namespace
             "The DirectX 12 ModelRenderer did not apply its animated pose");
     }
 
+    void RequireD3D12AnimatedFbxModel()
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap);
+        const auto modelPath = std::filesystem::path(
+            LAMAPON_TEST_ASSET_DIR)
+            / "models"
+            / "AnimatedSausage.fbx";
+        const auto asset = graphics.Assets().LoadModel(modelPath);
+        Require(
+            asset != nullptr
+                && asset->skeletalModel != nullptr
+                && asset->skeletalModel->hasLocalBounds
+                && !asset->skeletalModel->animations.empty()
+                && !asset->skeletalModel->primitives.empty(),
+            "The DirectX 12 FBX import did not retain its CPU model");
+        for (const auto& primitive : asset->skeletalModel->primitives)
+        {
+            Require(
+                !primitive.cpuVertexData.empty()
+                    && !primitive.cpuIndices.empty()
+                    && !primitive.vertexBuffer
+                    && !primitive.indexBuffer
+                    && !primitive.effect,
+                "The DirectX 12 FBX import created D3D11 resources");
+        }
+
+        LamaPon::Scene scene(graphics);
+        auto& cameraObject = scene.CreateGameObject("MainCamera");
+        cameraObject.GetTransform().position = { 0.0f, 0.0f, 6.0f };
+        auto& camera = cameraObject.AddComponent<LamaPon::CameraComponent>();
+        scene.SetMainCamera(camera);
+        scene.SetAmbientLightColor({ 1.0f, 1.0f, 1.0f });
+        scene.SetAmbientLightIntensity(0.9f);
+
+        const auto& bounds = asset->skeletalModel->localBounds;
+        const DirectX::XMFLOAT3 center{
+            (bounds.minimum.x + bounds.maximum.x) * 0.5f,
+            (bounds.minimum.y + bounds.maximum.y) * 0.5f,
+            (bounds.minimum.z + bounds.maximum.z) * 0.5f };
+        const float maximumExtent = std::max({
+            bounds.maximum.x - bounds.minimum.x,
+            bounds.maximum.y - bounds.minimum.y,
+            bounds.maximum.z - bounds.minimum.z,
+            0.001f });
+        const float scale = 3.0f / maximumExtent;
+        auto& object = scene.CreateGameObject("AnimatedFbxModel");
+        object.GetTransform().scale = { scale, scale, scale };
+        object.GetTransform().position = {
+            -center.x * scale,
+            -center.y * scale,
+            -center.z * scale };
+        auto& model = object.AddComponent<
+            LamaPon::ModelRendererComponent>(modelPath);
+        model.SetAnimationPlayOnStart(false);
+
+        constexpr float clearColor[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+        const auto capture = [&]()
+        {
+            graphics.BeginFrame(clearColor);
+            scene.RenderMainCamera(
+                static_cast<float>(CanvasWidth) / CanvasHeight,
+                false,
+                nullptr);
+            std::uint32_t width{};
+            std::uint32_t height{};
+            auto pixels = graphics.CaptureBackBuffer(width, height);
+            graphics.EndFrame();
+            Require(
+                width == CanvasWidth && height == CanvasHeight,
+                "The DirectX 12 FBX capture has unexpected dimensions");
+            return pixels;
+        };
+        const auto pixels = capture();
+        Require(
+            model.AnimationCount() > 0,
+            "The DirectX 12 ModelRenderer did not load the FBX animation");
+        std::size_t modelPixels{};
+        for (std::size_t offset{};
+            offset + 3u < pixels.size();
+            offset += 4u)
+        {
+            if (pixels[offset] > 20u
+                || pixels[offset + 1u] > 20u
+                || pixels[offset + 2u] > 20u)
+            {
+                ++modelPixels;
+            }
+        }
+        Require(
+            modelPixels > 100,
+            "The DirectX 12 ModelRenderer did not draw the FBX mesh");
+    }
+
     void RequireD3D12Particles()
     {
         HiddenWindow window{ CanvasWidth, CanvasHeight };
@@ -880,6 +980,7 @@ int main()
         RequireD3D12PointAndSpotLights();
         RequireD3D12MaterialFactors();
         RequireD3D12AnimatedGltfModel();
+        RequireD3D12AnimatedFbxModel();
         RequireD3D12Particles();
         LamaPon::GraphicsDevice::SetEnableDebugLayer(false);
         RequireNoD3D12DebugErrors();

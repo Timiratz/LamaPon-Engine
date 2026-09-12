@@ -1572,12 +1572,13 @@ namespace LamaPon
                 extension,
                 extension.begin(),
                 std::towlower);
-            // CMO/SDKMESH/FBXのImporterはまだD3D11 Deviceを必要とする
-            // ため、D3D12では安全に保持・スキップします。glTF/GLBは
-            // CPU幾何を共通経路で読み込みます。
+            // CMO/SDKMESHはまだD3D11 Deviceを必要とするため、D3D12では
+            // 安全に保持・スキップします。glTF/GLB/FBXはCPU幾何を
+            // 共通経路で読み込みます。
             if (usesD3D11
                 || extension == L".gltf"
-                || extension == L".glb")
+                || extension == L".glb"
+                || extension == L".fbx")
             {
                 m_model = m_assets->CreateModelInstance(m_modelPath);
             }

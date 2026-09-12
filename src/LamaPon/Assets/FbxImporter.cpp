@@ -152,6 +152,7 @@ namespace
     struct LoadedTexture final
     {
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view;
+        LamaPon::GraphicsViewHandle graphicsView;
         bool hasTransparency{};
     };
 
@@ -328,6 +329,10 @@ namespace
         const UINT bindFlags,
         ID3D11Buffer** output)
     {
+        if (device == nullptr)
+        {
+            return;
+        }
         if (byteCount == 0
             || byteCount > std::numeric_limits<UINT>::max())
         {
@@ -395,6 +400,7 @@ namespace
 
     LoadedTexture
         LoadTexture(
+            ID3D11Device* const device,
             LamaPon::AssetManager& assets,
             const std::filesystem::path& modelPath,
             const ufbx_texture& source,
@@ -413,12 +419,24 @@ namespace
                     !ToString(source.relative_filename).empty()
                         ? ToString(source.relative_filename)
                         : ToString(source.filename));
-            texture.view = assets.CreateTextureViewFromMemory(
-                std::span<const std::uint8_t>(
-                    bytes,
-                    source.content.size),
-                IsDdsPath(hint),
-                usage);
+            const std::span<const std::uint8_t> imageBytes(
+                bytes,
+                source.content.size);
+            if (device != nullptr)
+            {
+                texture.view = assets.CreateTextureViewFromMemory(
+                    imageBytes,
+                    IsDdsPath(hint),
+                    usage);
+            }
+            else
+            {
+                texture.graphicsView =
+                    assets.CreateTextureViewHandleFromMemory(
+                        imageBytes,
+                        IsDdsPath(hint),
+                        usage);
+            }
             if (!IsDdsPath(hint))
             {
                 texture.hasTransparency =
@@ -428,14 +446,15 @@ namespace
             }
             // モデルキャッシュ用に画像そのものを控えます（埋め込みは
             // 元ファイルからしか取り出せないため）。
-            recorder.RegisterEmbeddedImage(
-                texture.view.Get(),
-                std::span<const std::uint8_t>(
-                    bytes,
-                    source.content.size),
-                IsDdsPath(hint),
-                texture.hasTransparency,
-                usage);
+            if (device != nullptr)
+            {
+                recorder.RegisterEmbeddedImage(
+                    texture.view.Get(),
+                    imageBytes,
+                    IsDdsPath(hint),
+                    texture.hasTransparency,
+                    usage);
+            }
             return texture;
         }
 
@@ -475,10 +494,21 @@ namespace
         }
 
         const auto fileBytes = assets.ReadFileBytes(texturePath);
-        texture.view = assets.CreateTextureViewFromMemory(
-            fileBytes,
-            IsDdsPath(texturePath),
-            usage);
+        if (device != nullptr)
+        {
+            texture.view = assets.CreateTextureViewFromMemory(
+                fileBytes,
+                IsDdsPath(texturePath),
+                usage);
+        }
+        else
+        {
+            texture.graphicsView =
+                assets.CreateTextureViewHandleFromMemory(
+                    fileBytes,
+                    IsDdsPath(texturePath),
+                    usage);
+        }
         if (!IsDdsPath(texturePath))
         {
             texture.hasTransparency =
@@ -488,13 +518,16 @@ namespace
         }
         // 外部ファイルはパス＋内容ハッシュだけ控えます（読み込み時に
         // 検証を兼ねて読み直すため、バイト列の複製は要りません）。
-        recorder.RegisterExternalImage(
-            texture.view.Get(),
-            texturePath,
-            fileBytes,
-            IsDdsPath(texturePath),
-            texture.hasTransparency,
-            usage);
+        if (device != nullptr)
+        {
+            recorder.RegisterExternalImage(
+                texture.view.Get(),
+                texturePath,
+                fileBytes,
+                IsDdsPath(texturePath),
+                texture.hasTransparency,
+                usage);
+        }
         return texture;
     }
 
@@ -580,7 +613,7 @@ namespace
             material->features.double_sided.enabled;
 
         // 同じテクスチャを二重に読まないよう、キャッシュ経由で
-        // 取り出します（未接続はnullptrのまま返ります）。
+        // 取り出します（未接続は空のLoadedTextureを返します）。
         const auto resolveTexture =
             [&](const ufbx_texture* source,
                 const LamaPon::TextureLoader::TextureUsage usage)
@@ -598,6 +631,7 @@ namespace
                     return existing->second;
                 }
                 auto loaded = LoadTexture(
+                    device,
                     assets,
                     modelPath,
                     *source,
@@ -615,29 +649,46 @@ namespace
         const auto resolveMap =
             [&](const ufbx_material_map& map,
                 const LamaPon::TextureLoader::TextureUsage usage)
-            -> Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
+            -> LoadedTexture
             {
                 if (!map.texture_enabled
                     || map.texture == nullptr)
                 {
                     return {};
                 }
-                return resolveTexture(map.texture, usage).view;
+                return resolveTexture(map.texture, usage);
             };
 
         using Usage = LamaPon::TextureLoader::TextureUsage;
-        primitive.normalTexture =
-            resolveMap(material->pbr.normal_map, Usage::NormalMap);
-        primitive.roughnessTexture =
-            resolveMap(material->pbr.roughness, Usage::DataMap);
-        primitive.metallicTexture =
-            resolveMap(material->pbr.metalness, Usage::DataMap);
-        primitive.occlusionTexture =
-            resolveMap(
-                material->pbr.ambient_occlusion,
-                Usage::DataMap);
-        primitive.emissiveTexture =
-            resolveMap(material->pbr.emission_color, Usage::Color);
+        const auto normalMap = resolveMap(
+            material->pbr.normal_map,
+            Usage::NormalMap);
+        primitive.normalTexture = normalMap.view;
+        primitive.embeddedTextures.normal = normalMap.graphicsView;
+        const auto roughnessMap = resolveMap(
+            material->pbr.roughness,
+            Usage::DataMap);
+        primitive.roughnessTexture = roughnessMap.view;
+        primitive.embeddedTextures.roughness =
+            roughnessMap.graphicsView;
+        const auto metallicMap = resolveMap(
+            material->pbr.metalness,
+            Usage::DataMap);
+        primitive.metallicTexture = metallicMap.view;
+        primitive.embeddedTextures.metallic =
+            metallicMap.graphicsView;
+        const auto occlusionMap = resolveMap(
+            material->pbr.ambient_occlusion,
+            Usage::DataMap);
+        primitive.occlusionTexture = occlusionMap.view;
+        primitive.embeddedTextures.occlusion =
+            occlusionMap.graphicsView;
+        const auto emissiveMap = resolveMap(
+            material->pbr.emission_color,
+            Usage::Color);
+        primitive.emissiveTexture = emissiveMap.view;
+        primitive.embeddedTextures.emissive =
+            emissiveMap.graphicsView;
 
         // 発光色は emission_color × emission_factor です。
         // 色が書かれていないマテリアルは発光なし（黒）にします。
@@ -669,6 +720,10 @@ namespace
                     0.0f) * strength
             };
         }
+        primitive.embeddedTextures.occlusionStrength =
+            primitive.occlusionStrength;
+        primitive.embeddedTextures.emissiveFactor =
+            primitive.emissiveFactor;
 
         const auto* sourceTexture =
             baseColor.texture_enabled
@@ -690,9 +745,12 @@ namespace
         const auto loadedTexture =
             resolveTexture(sourceTexture, Usage::Color);
         primitive.texture = loadedTexture.view;
+        primitive.embeddedTextures.albedo =
+            loadedTexture.graphicsView;
         primitive.textureHasTransparency =
             loadedTexture.hasTransparency;
-        if (primitive.textureHasTransparency)
+        if (primitive.textureHasTransparency
+            && device != nullptr)
         {
             EnableAlphaCutout(primitive, device);
         }
@@ -992,7 +1050,7 @@ namespace
         return result;
     }
 
-    LamaPon::SkeletalPrimitive FinalizeGpuPrimitive(
+    LamaPon::SkeletalPrimitive FinalizePrimitive(
         ID3D11Device* device,
         LamaPon::AssetManager& assets,
         const std::vector<Vertex>& vertices,
@@ -1076,22 +1134,25 @@ namespace
             }
         }
 
-        primitive.effect =
-            std::make_shared<DirectX::SkinnedEffect>(device);
-        primitive.effect->SetWeightsPerVertex(4);
-        const void* shaderBytecode{};
-        std::size_t shaderBytecodeSize{};
-        primitive.effect->GetVertexShaderBytecode(
-            &shaderBytecode,
-            &shaderBytecodeSize);
-        ThrowIfFailed(
-            device->CreateInputLayout(
-                Vertex::InputElements,
-                Vertex::InputElementCount,
-                shaderBytecode,
-                shaderBytecodeSize,
-                primitive.inputLayout.ReleaseAndGetAddressOf()),
-            "Creating FBX input layout");
+        if (device != nullptr)
+        {
+            primitive.effect =
+                std::make_shared<DirectX::SkinnedEffect>(device);
+            primitive.effect->SetWeightsPerVertex(4);
+            const void* shaderBytecode{};
+            std::size_t shaderBytecodeSize{};
+            primitive.effect->GetVertexShaderBytecode(
+                &shaderBytecode,
+                &shaderBytecodeSize);
+            ThrowIfFailed(
+                device->CreateInputLayout(
+                    Vertex::InputElements,
+                    Vertex::InputElementCount,
+                    shaderBytecode,
+                    shaderBytecodeSize,
+                    primitive.inputLayout.ReleaseAndGetAddressOf()),
+                "Creating FBX input layout");
+        }
         return primitive;
     }
 
@@ -1304,12 +1365,6 @@ namespace LamaPon
         AssetManager& assets,
         const std::filesystem::path& path)
     {
-        if (device == nullptr)
-        {
-            throw std::invalid_argument(
-                "FbxImporter requires a Direct3D 11 device.");
-        }
-
         if (!assets.FileExists(path))
         {
             throw std::runtime_error(
@@ -1327,19 +1382,22 @@ namespace LamaPon
         // 材料から復元します。
         const std::uint64_t cacheKey =
             ModelCache::ComputeKey(bytes, 1);
-        if (auto cached = ModelCache::TryLoad(
-                device,
-                context,
-                assets,
-                cacheKey))
+        if (device != nullptr)
         {
-            Logger::Instance().Info(
-                "FBX cache: " + PathToUtf8(path)
-                + " nodes="
-                + std::to_string(cached->nodes.size())
-                + " primitives="
-                + std::to_string(cached->primitives.size()));
-            return cached;
+            if (auto cached = ModelCache::TryLoad(
+                    device,
+                    context,
+                    assets,
+                    cacheKey))
+            {
+                Logger::Instance().Info(
+                    "FBX cache: " + PathToUtf8(path)
+                    + " nodes="
+                    + std::to_string(cached->nodes.size())
+                    + " primitives="
+                    + std::to_string(cached->primitives.size()));
+                return cached;
+            }
         }
         ModelCache::Recorder recorder;
 
@@ -1610,7 +1668,7 @@ namespace LamaPon
                         textureCache,
                         recorder);
                     model->primitives.emplace_back(
-                        FinalizeGpuPrimitive(
+                        FinalizePrimitive(
                             device,
                             assets,
                             groupVertices[index],
@@ -1640,7 +1698,7 @@ namespace LamaPon
                 textureCache,
                 recorder);
             model->primitives.emplace_back(
-                FinalizeGpuPrimitive(
+                FinalizePrimitive(
                     device,
                     assets,
                     staging.vertices,
@@ -1696,7 +1754,10 @@ namespace LamaPon
         }
 
         // 次回のためにインポート結果を保存します（失敗しても無害）。
-        ModelCache::Store(cacheKey, *model, recorder);
+        if (device != nullptr)
+        {
+            ModelCache::Store(cacheKey, *model, recorder);
+        }
         return model;
     }
 }
