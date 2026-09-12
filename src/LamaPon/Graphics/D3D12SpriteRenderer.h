@@ -2,7 +2,8 @@
 
 // DirectX 12 ExperimentalでSpriteRenderPassを描く既定pipelineです。D3D11の
 // DirectXTK SpriteBatchと同じ座標・UV・blend規則で、Deferred順のquadを
-// primary outputへ送ります。Runtime内部headerで、SDKにはinstallしません。
+// 現在のprimary / offscreen outputへ送ります。Runtime内部headerで、
+// SDKにはinstallしません。
 #include "LamaPon/Graphics/GraphicsResource.h"
 #include "LamaPon/Graphics/SpriteRendering.h"
 
@@ -49,6 +50,11 @@ namespace LamaPon::Detail
         // DirectXTKのSpriteBatchと同じく、積んだSpriteを可能な範囲で描いて
         // passを閉じます。例外は外へ出しません。
         void Abort(std::uint64_t token) noexcept;
+        // HDR Scene textureを現在の出力全体へACES近似で
+        // トーンマップする。GraphicsDeviceの最終合成専用です。
+        void CompositeToneMapped(
+            const GraphicsViewHandle& texture,
+            const GraphicsViewHandle& fallbackTexture);
 
     private:
         struct Vertex final
@@ -75,20 +81,23 @@ namespace LamaPon::Detail
         [[nodiscard]] ID3D12PipelineState* PipelineState(
             SpriteBlendMode blend,
             bool scissored,
-            DXGI_FORMAT colorFormat);
+            DXGI_FORMAT colorFormat,
+            bool toneMapped);
 
         D3D12Backend* m_backend{};
         Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSignature;
         Microsoft::WRL::ComPtr<ID3DBlob> m_vertexShader;
         Microsoft::WRL::ComPtr<ID3DBlob> m_pixelShader;
+        Microsoft::WRL::ComPtr<ID3DBlob> m_toneMapPixelShader;
         // blend modeごとに、通常passとscissor passのcull違いを持ちます。
-        std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 16>
+        std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 32>
             m_pipelineStates;
         Microsoft::WRL::ComPtr<ID3D12Resource> m_indexBuffer;
         GraphicsViewHandle m_fallbackTexture;
         std::vector<QueuedSprite> m_sprites;
         std::vector<D3D12_RECT> m_scissorStack;
         SpriteBlendMode m_blend{ SpriteBlendMode::NonPremultiplied };
+        bool m_toneMapped{};
         std::uint64_t m_activeToken{};
         std::uint64_t m_nextToken{ 1 };
         bool m_failed{};

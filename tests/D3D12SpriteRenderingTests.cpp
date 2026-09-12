@@ -592,7 +592,7 @@ namespace
             "sampled");
 
         constexpr float compositionClear[4]{
-            0.7f, 0.15f, 0.05f, 1.0f };
+            2.0f, 0.25f, 0.0f, 1.0f };
         graphics.BeginFrame(backBufferClear);
         graphics.BeginSceneComposition(compositionClear);
         scene.RenderMainCamera(
@@ -612,11 +612,12 @@ namespace
         Require(
             compositionWidth == CanvasWidth
                 && compositionHeight == CanvasHeight
-                && compositionPixels[compositionOffset] > 150u
-                && compositionPixels[compositionOffset + 1u] < 70u
-                && compositionPixels[compositionOffset + 2u] < 40u,
-            "The DirectX 12 main scene composition was not copied to the "
-            "back buffer");
+                && compositionPixels[compositionOffset] > 220u
+                && compositionPixels[compositionOffset + 1u] > 120u
+                && compositionPixels[compositionOffset + 1u] < 210u
+                && compositionPixels[compositionOffset + 2u] < 8u,
+            "The DirectX 12 HDR scene was not tone-mapped to the back "
+            "buffer");
     }
 
     void RequireD3D12PrimitiveScene()

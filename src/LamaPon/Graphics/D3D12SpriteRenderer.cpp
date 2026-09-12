@@ -63,6 +63,17 @@ float4 SpritePixelShader(PixelInput input) : SV_Target
     return SpriteTexture.Sample(SpriteSampler, input.textureCoordinate)
         * input.color;
 }
+
+float4 ToneMappedPixelShader(PixelInput input) : SV_Target
+{
+    const float4 sampled = SpriteTexture.Sample(
+        SpriteSampler,
+        input.textureCoordinate) * input.color;
+    const float3 mapped = saturate(
+        sampled.rgb * (2.51f * sampled.rgb + 0.03f)
+        / (sampled.rgb * (2.43f * sampled.rgb + 0.59f) + 0.14f));
+    return float4(pow(mapped, 1.0f / 2.2f), sampled.a);
+}
 )";
 
     void ThrowIfFailed(
@@ -284,6 +295,9 @@ namespace LamaPon::Detail
         m_pixelShader = CompileSpriteShader(
             "SpritePixelShader",
             "ps_5_0");
+        m_toneMapPixelShader = CompileSpriteShader(
+            "ToneMappedPixelShader",
+            "ps_5_0");
 
         D3D12_DESCRIPTOR_RANGE textureRange{};
         textureRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
@@ -450,6 +464,7 @@ namespace LamaPon::Detail
 
         status = std::move(preparedStatus);
         m_blend = description.blend;
+        m_toneMapped = false;
         m_fallbackTexture = fallbackTexture;
         m_sprites.clear();
         m_scissorStack.clear();
@@ -648,6 +663,52 @@ namespace LamaPon::Detail
         ClearPass();
     }
 
+    void D3D12SpriteRenderer::CompositeToneMapped(
+        const GraphicsViewHandle& texture,
+        const GraphicsViewHandle& fallbackTexture)
+    {
+        const auto binding = m_backend->TryResolveShaderResource(texture);
+        const auto& viewport = m_backend->ActiveViewport();
+        if (!binding
+            || binding->width == 0u
+            || binding->height == 0u
+            || viewport.Width <= 0.0f
+            || viewport.Height <= 0.0f)
+        {
+            throw std::invalid_argument(
+                "Tone-mapped composition requires a current texture and "
+                "output viewport.");
+        }
+        SpritePassDescription description;
+        description.blend = SpriteBlendMode::Opaque;
+        SpriteShaderStatus status;
+        const auto token = Begin(
+            description,
+            fallbackTexture,
+            status);
+        m_toneMapped = true;
+        try
+        {
+            SpriteDrawRequest request;
+            request.texture = texture;
+            request.scale = {
+                viewport.Width / static_cast<float>(binding->width),
+                viewport.Height / static_cast<float>(binding->height) };
+            if (!Draw(token, request))
+            {
+                throw std::runtime_error(
+                    "The HDR scene texture was rejected by the DirectX "
+                    "12 compositor.");
+            }
+            End(token);
+        }
+        catch (...)
+        {
+            Abort(token);
+            throw;
+        }
+    }
+
     void D3D12SpriteRenderer::RequireOwner(
         const std::uint64_t token) const
     {
@@ -678,6 +739,7 @@ namespace LamaPon::Detail
         m_sprites.clear();
         m_scissorStack.clear();
         m_fallbackTexture.Reset();
+        m_toneMapped = false;
         m_activeToken = 0;
     }
 
@@ -708,7 +770,8 @@ namespace LamaPon::Detail
         auto* const pipelineState = PipelineState(
             m_blend,
             !m_scissorStack.empty(),
-            m_backend->ActiveColorFormat());
+            m_backend->ActiveColorFormat(),
+            m_toneMapped);
 
         const auto upload = m_backend->AllocateFrameUpload(
             vertexBytes,
@@ -793,7 +856,8 @@ namespace LamaPon::Detail
     ID3D12PipelineState* D3D12SpriteRenderer::PipelineState(
         const SpriteBlendMode blend,
         const bool scissored,
-        const DXGI_FORMAT colorFormat)
+        const DXGI_FORMAT colorFormat,
+        const bool toneMapped)
     {
         const auto blendIndex = static_cast<std::size_t>(blend);
         if (blend > SpriteBlendMode::Opaque)
@@ -810,7 +874,8 @@ namespace LamaPon::Detail
                     "The active DirectX 12 sprite target format is "
                     "unsupported.");
         auto& pipeline = m_pipelineStates[
-            formatIndex * 8u
+            (toneMapped ? 16u : 0u)
+            + formatIndex * 8u
             + blendIndex * 2u
             + (scissored ? 1u : 0u)];
         if (pipeline != nullptr)
@@ -856,8 +921,12 @@ namespace LamaPon::Detail
             m_vertexShader->GetBufferSize()
         };
         description.PS = {
-            m_pixelShader->GetBufferPointer(),
-            m_pixelShader->GetBufferSize()
+            toneMapped
+                ? m_toneMapPixelShader->GetBufferPointer()
+                : m_pixelShader->GetBufferPointer(),
+            toneMapped
+                ? m_toneMapPixelShader->GetBufferSize()
+                : m_pixelShader->GetBufferSize()
         };
         description.BlendState = MakeBlendDescription(blend);
         description.SampleMask = std::numeric_limits<UINT>::max();

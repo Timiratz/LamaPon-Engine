@@ -2,12 +2,13 @@
 #include "LamaPon/Graphics/GraphicsDeviceState.h"
 
 #include "LamaPon/Graphics/D3D11RenderTargetState.h"
+#include "LamaPon/Graphics/D3D12SpriteRenderer.h"
 #include "LamaPon/Graphics/EnvironmentRenderer.h"
 #include "LamaPon/Graphics/EnvironmentSettings.h"
 #include "LamaPon/Graphics/GraphicsBackend.h"
+#include "LamaPon/Graphics/GraphicsDeviceD3D12Resources.h"
 #include "LamaPon/Graphics/RenderTarget.h"
 
-#include <algorithm>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -118,33 +119,25 @@ namespace LamaPon
                     "DirectX 12 target.");
             }
 
-            // 基本D3D12 RenderTargetはLDRなので、表示用資源へ
-            // 確定した画像を既存Sprite pipelineで画面全体へ
-            // 転写します。HDRトーンマップは後続段階で
-            // 専用fullscreen pipelineへ置き換えます。
+            // HDR表示用資源へ確定し、D3D12 Sprite rendererの
+            // 最終合成専用ACES近似pipelineで画面全体へ転写します。
             auto& mutableTarget = const_cast<RenderTarget&>(target);
             m_state->m_backend->PublishOffscreenTarget(mutableTarget);
             m_state->m_backend->BindBackBuffer();
-
-            SpritePassDescription description;
-            description.blend = SpriteBlendMode::Opaque;
-            auto pass = BeginSpritePass(description);
-            SpriteDrawRequest request;
-            request.texture = target.DisplayViewHandle();
-            request.scale = {
-                static_cast<float>(Width())
-                    / static_cast<float>(
-                        std::max(target.Width(), 1u)),
-                static_cast<float>(Height())
-                    / static_cast<float>(
-                        std::max(target.Height(), 1u)) };
-            if (!pass.Draw(request))
+            auto* const resources = dynamic_cast<
+                Detail::GraphicsDeviceD3D12Resources*>(
+                    m_state->m_apiResources.get());
+            auto* const renderer = resources != nullptr
+                ? resources->TrySpriteRenderer()
+                : nullptr;
+            if (renderer == nullptr)
             {
-                throw std::runtime_error(
-                    "The DirectX 12 scene composition texture was "
-                    "rejected.");
+                throw std::logic_error(
+                    "The DirectX 12 scene compositor is not initialized.");
             }
-            pass.End();
+            renderer->CompositeToneMapped(
+                target.DisplayViewHandle(),
+                m_state->m_whiteTextureView);
             return;
         }
 
