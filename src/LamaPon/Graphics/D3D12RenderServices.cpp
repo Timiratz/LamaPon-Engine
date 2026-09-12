@@ -125,6 +125,45 @@ float4 PrimitivePixelShader(PixelInput input) : SV_Target
 }
 )";
 
+    constexpr char ParticleShaderSource[] = R"(
+cbuffer ParticleConstants : register(b0)
+{
+    row_major float4x4 ViewProjection;
+};
+
+Texture2D ParticleTexture : register(t0);
+SamplerState ParticleSampler : register(s0);
+
+struct VertexInput
+{
+    float3 position : POSITION;
+    float4 color : COLOR;
+    float2 textureCoordinate : TEXCOORD;
+};
+
+struct PixelInput
+{
+    float4 position : SV_Position;
+    float4 color : COLOR;
+    float2 textureCoordinate : TEXCOORD;
+};
+
+PixelInput ParticleVertexShader(VertexInput input)
+{
+    PixelInput output;
+    output.position = mul(float4(input.position, 1.0f), ViewProjection);
+    output.color = input.color;
+    output.textureCoordinate = input.textureCoordinate;
+    return output;
+}
+
+float4 ParticlePixelShader(PixelInput input) : SV_Target
+{
+    return ParticleTexture.Sample(ParticleSampler, input.textureCoordinate)
+        * input.color;
+}
+)";
+
     void ThrowIfFailed(const HRESULT result, const char* operation)
     {
         if (FAILED(result))
@@ -136,15 +175,18 @@ float4 PrimitivePixelShader(PixelInput input) : SV_Target
     }
 
     [[nodiscard]] Microsoft::WRL::ComPtr<ID3DBlob> CompileShader(
+        const char* source,
+        std::size_t sourceSize,
+        const char* sourceName,
         const char* entryPoint,
         const char* target)
     {
         Microsoft::WRL::ComPtr<ID3DBlob> bytecode;
         Microsoft::WRL::ComPtr<ID3DBlob> errors;
         const HRESULT result = D3DCompile(
-            PrimitiveShaderSource,
-            sizeof(PrimitiveShaderSource) - 1u,
-            "LamaPonD3D12Primitive",
+            source,
+            sourceSize,
+            sourceName,
             nullptr,
             nullptr,
             entryPoint,
@@ -319,6 +361,31 @@ float4 PrimitivePixelShader(PixelInput input) : SV_Target
         return result;
     }
 
+    [[nodiscard]] D3D12_BLEND_DESC MakeParticleBlendDescription(
+        bool additive) noexcept
+    {
+        D3D12_RENDER_TARGET_BLEND_DESC target{};
+        target.BlendEnable = TRUE;
+        target.SrcBlend = D3D12_BLEND_SRC_ALPHA;
+        target.DestBlend = additive
+            ? D3D12_BLEND_ONE
+            : D3D12_BLEND_INV_SRC_ALPHA;
+        target.BlendOp = D3D12_BLEND_OP_ADD;
+        target.SrcBlendAlpha = D3D12_BLEND_ONE;
+        target.DestBlendAlpha = additive
+            ? D3D12_BLEND_ONE
+            : D3D12_BLEND_INV_SRC_ALPHA;
+        target.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+        target.LogicOp = D3D12_LOGIC_OP_NOOP;
+        target.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        D3D12_BLEND_DESC result{};
+        for (auto& renderTarget : result.RenderTarget)
+        {
+            renderTarget = target;
+        }
+        return result;
+    }
+
     [[nodiscard]] D3D12_RASTERIZER_DESC MakeRasterizerDescription() noexcept
     {
         D3D12_RASTERIZER_DESC result{};
@@ -363,8 +430,30 @@ float4 PrimitivePixelShader(PixelInput input) : SV_Target
                 throw std::invalid_argument(
                     "The DirectX 12 render service requires an initialized backend.");
             }
-            m_vertexShader = CompileShader("PrimitiveVertexShader", "vs_5_0");
-            m_pixelShader = CompileShader("PrimitivePixelShader", "ps_5_0");
+            m_vertexShader = CompileShader(
+                PrimitiveShaderSource,
+                sizeof(PrimitiveShaderSource) - 1u,
+                "LamaPonD3D12Primitive",
+                "PrimitiveVertexShader",
+                "vs_5_0");
+            m_pixelShader = CompileShader(
+                PrimitiveShaderSource,
+                sizeof(PrimitiveShaderSource) - 1u,
+                "LamaPonD3D12Primitive",
+                "PrimitivePixelShader",
+                "ps_5_0");
+            m_particleVertexShader = CompileShader(
+                ParticleShaderSource,
+                sizeof(ParticleShaderSource) - 1u,
+                "LamaPonD3D12Particle",
+                "ParticleVertexShader",
+                "vs_5_0");
+            m_particlePixelShader = CompileShader(
+                ParticleShaderSource,
+                sizeof(ParticleShaderSource) - 1u,
+                "LamaPonD3D12Particle",
+                "ParticlePixelShader",
+                "ps_5_0");
 
             D3D12_DESCRIPTOR_RANGE textureRange{};
             textureRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
@@ -407,9 +496,104 @@ float4 PrimitivePixelShader(PixelInput input) : SV_Target
         }
 
         [[nodiscard]] bool DrawParticles(
-            const LamaPon::ParticleDrawRequest&) override
+            const LamaPon::ParticleDrawRequest& request) override
         {
-            return false;
+            constexpr std::size_t maximumParticleCount = 4096u;
+            if (request.vertices.empty())
+            {
+                return true;
+            }
+            if (request.vertices.size() % 4u != 0u
+                || request.vertices.size() > maximumParticleCount * 4u)
+            {
+                throw std::invalid_argument(
+                    "Particle draw requests require complete quads within "
+                    "the service capacity.");
+            }
+            const auto& texture = request.texture
+                ? request.texture
+                : request.fallbackTexture;
+            const auto binding = m_backend->TryResolveShaderResource(texture);
+            auto* descriptorHeap = m_backend->ShaderResourceDescriptorHeap();
+            if (!binding || descriptorHeap == nullptr)
+            {
+                return false;
+            }
+
+            auto* commandList = m_backend->BeginFrameCommands();
+            const auto quadCount = request.vertices.size() / 4u;
+            const auto indexCount = quadCount * 6u;
+            const auto vertexBytes = static_cast<std::uint64_t>(
+                request.vertices.size_bytes());
+            const auto indexBytes = static_cast<std::uint64_t>(
+                indexCount * sizeof(std::uint32_t));
+            const auto vertexUpload = m_backend->AllocateFrameUpload(
+                vertexBytes,
+                alignof(LamaPon::ParticleRenderVertex));
+            const auto indexUpload = m_backend->AllocateFrameUpload(
+                indexBytes,
+                alignof(std::uint32_t));
+            std::memcpy(
+                vertexUpload.data,
+                request.vertices.data(),
+                request.vertices.size_bytes());
+            auto* indices = reinterpret_cast<std::uint32_t*>(indexUpload.data);
+            for (std::size_t quad{}; quad < quadCount; ++quad)
+            {
+                const auto first = static_cast<std::uint32_t>(quad * 4u);
+                const auto offset = quad * 6u;
+                indices[offset] = first;
+                indices[offset + 1u] = first + 1u;
+                indices[offset + 2u] = first + 2u;
+                indices[offset + 3u] = first;
+                indices[offset + 4u] = first + 2u;
+                indices[offset + 5u] = first + 3u;
+            }
+
+            DirectX::XMFLOAT4X4 viewProjection{};
+            DirectX::XMStoreFloat4x4(
+                &viewProjection,
+                DirectX::XMMatrixMultiply(
+                    DirectX::XMLoadFloat4x4(&request.view),
+                    DirectX::XMLoadFloat4x4(&request.projection)));
+            const auto constantUpload = m_backend->AllocateFrameUpload(
+                sizeof(viewProjection),
+                D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+            std::memcpy(
+                constantUpload.data,
+                &viewProjection,
+                sizeof(viewProjection));
+
+            const D3D12_VERTEX_BUFFER_VIEW vertexView{
+                vertexUpload.gpuAddress,
+                static_cast<UINT>(vertexBytes),
+                static_cast<UINT>(sizeof(LamaPon::ParticleRenderVertex)) };
+            const D3D12_INDEX_BUFFER_VIEW indexView{
+                indexUpload.gpuAddress,
+                static_cast<UINT>(indexBytes),
+                DXGI_FORMAT_R32_UINT };
+            ID3D12DescriptorHeap* heaps[]{ descriptorHeap };
+            commandList->SetGraphicsRootSignature(m_rootSignature.Get());
+            commandList->SetPipelineState(ParticlePipelineState(request.additive));
+            commandList->SetDescriptorHeaps(1, heaps);
+            commandList->SetGraphicsRootConstantBufferView(
+                0,
+                constantUpload.gpuAddress);
+            commandList->SetGraphicsRootDescriptorTable(1, binding->descriptor);
+            commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            commandList->IASetVertexBuffers(0, 1, &vertexView);
+            commandList->IASetIndexBuffer(&indexView);
+            const auto& viewport = m_backend->PrimaryViewport();
+            const auto& scissor = m_backend->PrimaryScissorRectangle();
+            commandList->RSSetViewports(1, &viewport);
+            commandList->RSSetScissorRects(1, &scissor);
+            commandList->DrawIndexedInstanced(
+                static_cast<UINT>(indexCount),
+                1,
+                0,
+                0,
+                0);
+            return true;
         }
 
         [[nodiscard]] bool DrawPrimitive(
@@ -608,6 +792,55 @@ float4 PrimitivePixelShader(PixelInput input) : SV_Target
         }
 
     private:
+        [[nodiscard]] ID3D12PipelineState* ParticlePipelineState(
+            bool additive)
+        {
+            auto& pipeline = m_particlePipelineStates[additive ? 1u : 0u];
+            if (pipeline != nullptr)
+            {
+                return pipeline.Get();
+            }
+            static const std::array<D3D12_INPUT_ELEMENT_DESC, 3> inputs{ {
+                { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,
+                    offsetof(LamaPon::ParticleRenderVertex, position),
+                    D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+                { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0,
+                    offsetof(LamaPon::ParticleRenderVertex, color),
+                    D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+                { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0,
+                    offsetof(LamaPon::ParticleRenderVertex, textureCoordinate),
+                    D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+            } };
+            D3D12_GRAPHICS_PIPELINE_STATE_DESC description{};
+            description.pRootSignature = m_rootSignature.Get();
+            description.VS = {
+                m_particleVertexShader->GetBufferPointer(),
+                m_particleVertexShader->GetBufferSize() };
+            description.PS = {
+                m_particlePixelShader->GetBufferPointer(),
+                m_particlePixelShader->GetBufferSize() };
+            description.BlendState = MakeParticleBlendDescription(additive);
+            description.SampleMask = std::numeric_limits<UINT>::max();
+            description.RasterizerState = MakeRasterizerDescription();
+            description.DepthStencilState = MakeDepthDescription(true, false);
+            description.InputLayout = {
+                inputs.data(),
+                static_cast<UINT>(inputs.size()) };
+            description.PrimitiveTopologyType =
+                D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+            description.NumRenderTargets = 1;
+            description.RTVFormats[0] =
+                LamaPon::D3D12Backend::PrimaryColorFormat;
+            description.DSVFormat = LamaPon::D3D12Backend::PrimaryDepthFormat;
+            description.SampleDesc.Count = 1;
+            ThrowIfFailed(
+                m_backend->Device()->CreateGraphicsPipelineState(
+                    &description,
+                    IID_PPV_ARGS(pipeline.ReleaseAndGetAddressOf())),
+                "ID3D12Device::CreateGraphicsPipelineState(particle)");
+            return pipeline.Get();
+        }
+
         [[nodiscard]] ID3D12PipelineState* PipelineState(
             bool alphaBlend,
             bool depthTest,
@@ -655,6 +888,10 @@ float4 PrimitivePixelShader(PixelInput input) : SV_Target
         Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSignature;
         Microsoft::WRL::ComPtr<ID3DBlob> m_vertexShader;
         Microsoft::WRL::ComPtr<ID3DBlob> m_pixelShader;
+        Microsoft::WRL::ComPtr<ID3DBlob> m_particleVertexShader;
+        Microsoft::WRL::ComPtr<ID3DBlob> m_particlePixelShader;
+        std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2>
+            m_particlePipelineStates;
         std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 3> m_pipelineStates;
         Geometry m_cube;
         Geometry m_sphere;

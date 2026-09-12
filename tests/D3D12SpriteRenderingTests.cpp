@@ -2,6 +2,7 @@
 #include "LamaPon/Components/CameraComponent.h"
 #include "LamaPon/Components/DirectionalLightComponent.h"
 #include "LamaPon/Components/MeshRendererComponent.h"
+#include "LamaPon/Components/ParticleSystemComponent.h"
 #include "LamaPon/Components/PointLightComponent.h"
 #include "LamaPon/Components/SpotLightComponent.h"
 #include "LamaPon/Core/Log.h"
@@ -570,6 +571,57 @@ namespace
             "The DirectX 12 local lights leaked beyond their range");
     }
 
+    void RequireD3D12Particles()
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap);
+        LamaPon::Scene scene(graphics);
+        auto& cameraObject = scene.CreateGameObject("MainCamera");
+        cameraObject.GetTransform().position = { 0.0f, 0.0f, 4.0f };
+        auto& camera = cameraObject.AddComponent<LamaPon::CameraComponent>();
+        scene.SetMainCamera(camera);
+
+        auto& particleObject = scene.CreateGameObject("Particles");
+        auto& particles = particleObject.AddComponent<
+            LamaPon::ParticleSystemComponent>();
+        particles.SetPlayOnStart(false);
+        particles.SetAdditive(false);
+        particles.SetStartColor({ 0.1f, 0.8f, 0.25f, 1.0f });
+        particles.SetEndColor({ 0.1f, 0.8f, 0.25f, 1.0f });
+        particles.EmitParticle(
+            { 0.0f, 0.0f, 0.0f },
+            { 0.0f, 0.0f, 0.0f },
+            1.0f,
+            1.2f);
+
+        constexpr float clearColor[4]{ 0.01f, 0.02f, 0.03f, 1.0f };
+        graphics.BeginFrame(clearColor);
+        scene.RenderMainCamera(
+            static_cast<float>(CanvasWidth) / CanvasHeight,
+            false,
+            nullptr);
+        std::uint32_t width{};
+        std::uint32_t height{};
+        const auto pixels = graphics.CaptureBackBuffer(width, height);
+        graphics.EndFrame();
+        Require(
+            width == CanvasWidth && height == CanvasHeight,
+            "The DirectX 12 particle capture has unexpected dimensions");
+        const auto center =
+            (static_cast<std::size_t>(CanvasHeight / 2u) * CanvasWidth
+                + CanvasWidth / 2u) * 4u;
+        Require(
+            pixels[center + 1u] > 150u
+                && pixels[center] < 80u,
+            "The DirectX 12 particle service did not draw its billboard");
+    }
+
     void RequireMatchingCaptures(
         const Capture& d3d11,
         const Capture& d3d12)
@@ -674,6 +726,7 @@ int main()
                 AllowD3D12ExperimentalBootstrap);
         RequireD3D12PrimitiveScene();
         RequireD3D12PointAndSpotLights();
+        RequireD3D12Particles();
         LamaPon::GraphicsDevice::SetEnableDebugLayer(false);
         RequireNoD3D12DebugErrors();
         RequireMatchingCaptures(d3d11, d3d12);
