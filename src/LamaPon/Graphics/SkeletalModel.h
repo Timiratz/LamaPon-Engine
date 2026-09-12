@@ -117,6 +117,15 @@ namespace LamaPon
 
     struct SkeletalPrimitive final
     {
+        // Importerが生成したAPI非依存の幾何です。現行レイアウトは
+        // position/normal/tangent/color/uv/blend indices/blend weightsの
+        // 順で、vertexStrideにより将来の形式追加も識別できます。
+        // D3D11は下のimmutable bufferを引き続き使用し、他Backendは
+        // このCPU mirrorから自身のGPU資源を作ります。
+        std::vector<std::uint8_t> cpuVertexData;
+        std::uint32_t cpuVertexStride{};
+        std::vector<std::uint32_t> cpuIndices;
+        std::array<std::vector<std::uint32_t>, 2> cpuLodIndices;
         Microsoft::WRL::ComPtr<ID3D11Buffer> vertexBuffer;
         Microsoft::WRL::ComPtr<ID3D11Buffer> indexBuffer;
         // 自動LODは元の頂点バッファを共有し、軽いインデックスだけを

@@ -1017,6 +1017,15 @@ namespace
         primitive.skin = skin;
         primitive.indexCount =
             static_cast<std::uint32_t>(geometry.indices.size());
+        const auto* vertexBytes =
+            reinterpret_cast<const std::uint8_t*>(
+                geometry.vertices.data());
+        primitive.cpuVertexData.assign(
+            vertexBytes,
+            vertexBytes
+                + geometry.vertices.size() * sizeof(Vertex));
+        primitive.cpuVertexStride = sizeof(Vertex);
+        primitive.cpuIndices = geometry.indices;
         primitive.hasLocalBounds =
             CalculateLocalBounds(
                 geometry.vertices,
@@ -1050,6 +1059,8 @@ namespace
                 {
                     continue;
                 }
+                primitive.cpuLodIndices[level] =
+                    lodLevels[level];
                 CreateBuffer(
                     device,
                     assets,

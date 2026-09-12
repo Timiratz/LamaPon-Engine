@@ -14,6 +14,7 @@
 - DirectX 12の最小3D pipelineへSceneのPoint Light（最大16灯）とSpot Light（最大8灯）を接続。D3D11の従来経路と同じ距離減衰とコーン減衰を、Lambert拡散へ掛けて描画する。
 - DirectX 12で3D ParticleSystemのBillboard／Horizontal quadを描画。既定particle texture、深度読み取り、通常アルファ／加算ブレンドに対応し、custom particle shaderは既定pipelineへ安全にフォールバックする。
 - DirectX 12の基本3D pipelineへroughness／metallic／normal／occlusion／emissiveのMaterial係数とtextureを接続。未指定mapは中立値へフォールバックし、既存Sceneの表示を維持する。
+- glTF／FBXのモデルprimitiveへAPI非依存なCPU頂点・index・LOD mirrorを保持。D3D11のimmutable bufferを維持したまま、D3D12など別Backendが同じインポート結果からGPU資源を構築できる境界を追加した。
 - `GraphicsDevice`のAPI固有資源所有を抽象interface化し、D3D11のEffect・Shader・Sprite・Shadow・render serviceを単一の具象世代へ集約。停止・再生成・破棄を共通境界から呼ぶ構造へ移行。
 - Effect・Shader cache・Shadow・Environment・Clustered LightsなどDevice世代に属する高水準資源をD3D11内部所有へ分離。非同期Shader workerをAssetManagerより先に停止し、再初期化時に旧Device資源と未消費Screen Effect queueを安全に破棄する。
 - `GraphicsDevice`のnative D3D11 Device / Context / CommonStates / view resolverを非公開化し、D3D11描画島とテストだけがSDK非公開bridgeから利用する境界へ移行。API 64 Game Module向けの旧public binary symbolを維持し、Game Module APIを65へ更新。

@@ -284,6 +284,17 @@ namespace
                     && right.inputLayout && right.effect,
                 "cached primitive GPU resources must exist");
             Require(
+                !left.cpuVertexData.empty()
+                    && left.cpuVertexStride > 0
+                    && left.cpuVertexData
+                        == right.cpuVertexData
+                    && left.cpuVertexStride
+                        == right.cpuVertexStride
+                    && left.cpuIndices == right.cpuIndices
+                    && left.cpuLodIndices
+                        == right.cpuLodIndices,
+                "cached CPU geometry must match exactly");
+            Require(
                 ReadBuffer(
                     device,
                     context,
@@ -380,6 +391,11 @@ namespace
                     && primitive.inputLayout
                     && primitive.effect,
                 "glTF GPU resources were not created.");
+            Require(
+                !primitive.cpuVertexData.empty()
+                    && primitive.cpuVertexStride > 0
+                    && !primitive.cpuIndices.empty(),
+                "glTF CPU geometry was not retained.");
         }
 
         std::vector<LamaPon::SkeletalPoseTransform> localA;

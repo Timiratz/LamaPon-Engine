@@ -1131,6 +1131,14 @@ namespace LamaPon
                     sizeof(Vertex),
                     indices.data(),
                     indices.size());
+                const auto* vertexBytes =
+                    reinterpret_cast<const std::uint8_t*>(
+                        vertices.data());
+                primitive.cpuVertexData.assign(
+                    vertexBytes,
+                    vertexBytes + vertices.size() * sizeof(Vertex));
+                primitive.cpuVertexStride = sizeof(Vertex);
+                primitive.cpuIndices = indices;
                 CreateBuffer(
                     device,
                     assets,
@@ -1162,6 +1170,8 @@ namespace LamaPon
                         {
                             continue;
                         }
+                        primitive.cpuLodIndices[level] =
+                            lodLevels[level];
                         CreateBuffer(
                             device,
                             assets,
