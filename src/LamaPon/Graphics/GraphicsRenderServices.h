@@ -104,6 +104,15 @@ namespace LamaPon
         bool enabled{};
     };
 
+    struct PrimitivePointShadow final
+    {
+        GraphicsViewHandle texture;
+        std::ptrdiff_t lightIndex{ -1 };
+        float bias{ 0.002f };
+        float strength{ 0.9f };
+        bool enabled{};
+    };
+
     // MeshRendererがAPI固有objectを持たずに送る最小3D描画要求です。
     // spanはDrawPrimitiveの同期呼び出し中だけ有効です。
     struct PrimitiveDrawRequest final
@@ -132,6 +141,7 @@ namespace LamaPon
         PrimitiveDirectionalShadow directionalShadow;
         std::array<PrimitiveSpotShadow, 4> spotShadows{};
         GraphicsViewHandle spotShadowTexture;
+        PrimitivePointShadow pointShadow;
         float localShadowInverseResolution{};
         GraphicsViewHandle albedo;
         GraphicsViewHandle normalTexture;

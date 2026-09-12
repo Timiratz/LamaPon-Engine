@@ -717,6 +717,108 @@ namespace
             "The DirectX 12 spot shadow was not visible on the receiver");
     }
 
+    void RequireD3D12PointShadows()
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::
+                AllowD3D12ExperimentalBootstrap);
+        auto settings = graphics.Settings();
+        settings.shadowResolution = 256u;
+        graphics.SetGraphicsSettings(settings);
+
+        LamaPon::Scene scene(graphics);
+        auto& cameraObject = scene.CreateGameObject("MainCamera");
+        cameraObject.GetTransform().position = { 0.0f, 0.0f, 6.0f };
+        auto& camera = cameraObject.AddComponent<
+            LamaPon::CameraComponent>();
+        scene.SetMainCamera(camera);
+        scene.SetAmbientLightColor({ 1.0f, 1.0f, 1.0f });
+        scene.SetAmbientLightIntensity(0.03f);
+
+        auto& wall = scene.CreateGameObject("PointShadowReceiver");
+        wall.GetTransform().scale = { 4.0f, 2.2f, 0.1f };
+        wall.AddComponent<LamaPon::MeshRendererComponent>(
+            LamaPon::PrimitiveShape::Cube,
+            DirectX::XMFLOAT4{ 0.85f, 0.85f, 0.85f, 1.0f });
+
+        auto& blocker = scene.CreateGameObject("PointShadowCaster");
+        blocker.GetTransform().position = { 0.7f, 0.0f, 1.5f };
+        blocker.GetTransform().scale = { 0.65f, 0.65f, 0.65f };
+        blocker.AddComponent<LamaPon::MeshRendererComponent>(
+            LamaPon::PrimitiveShape::Cube,
+            DirectX::XMFLOAT4{ 0.5f, 0.5f, 0.5f, 1.0f });
+
+        auto& lightObject = scene.CreateGameObject("ShadowPoint");
+        lightObject.GetTransform().position = { 1.4f, 0.0f, 3.0f };
+        auto& light = lightObject.AddComponent<
+            LamaPon::PointLightComponent>(
+                DirectX::XMFLOAT3{ 1.0f, 1.0f, 1.0f },
+                15.0f,
+                8.0f);
+        light.SetCastsShadows(true);
+        light.SetShadowBias(0.0005f);
+        light.SetShadowStrength(1.0f);
+
+        constexpr float clearColor[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+        const auto capture = [&]()
+        {
+            graphics.BeginFrame(clearColor);
+            scene.RenderMainCamera(
+                static_cast<float>(CanvasWidth) / CanvasHeight,
+                false,
+                nullptr);
+            std::uint32_t width{};
+            std::uint32_t height{};
+            auto pixels = graphics.CaptureBackBuffer(width, height);
+            graphics.EndFrame();
+            Require(
+                width == CanvasWidth && height == CanvasHeight,
+                "The DirectX 12 point shadow capture has unexpected "
+                "dimensions");
+            return pixels;
+        };
+
+        const auto shadowed = capture();
+        Require(
+            graphics.Lighting().pointShadow.enabled
+                && graphics.IsGraphicsViewCurrent(
+                    graphics.Lighting().pointShadow.texture),
+            "The DirectX 12 scene did not publish its point shadow");
+        light.SetCastsShadows(false);
+        const auto unshadowed = capture();
+        std::size_t darkerPixels{};
+        std::uint64_t totalDarkening{};
+        for (std::size_t offset{};
+            offset + 3u < shadowed.size();
+            offset += 4u)
+        {
+            const auto shadowedBrightness = std::max({
+                shadowed[offset],
+                shadowed[offset + 1u],
+                shadowed[offset + 2u] });
+            const auto unshadowedBrightness = std::max({
+                unshadowed[offset],
+                unshadowed[offset + 1u],
+                unshadowed[offset + 2u] });
+            if (unshadowedBrightness
+                > static_cast<unsigned int>(shadowedBrightness) + 12u)
+            {
+                ++darkerPixels;
+                totalDarkening += static_cast<std::uint64_t>(
+                    unshadowedBrightness - shadowedBrightness);
+            }
+        }
+        Require(
+            darkerPixels > 60u && totalDarkening > 3000u,
+            "The DirectX 12 point shadow was not visible on the receiver");
+    }
+
     // Point LightとSpot Lightが、D3D11の従来経路と同じ距離・コーン減衰で
     // 壁を照らすことを、各光源の当たる点と届かない点の画素で確かめます。
     void RequireD3D12PointAndSpotLights()
@@ -1222,6 +1324,7 @@ int main()
         RequireD3D12PrimitiveScene();
         RequireD3D12DirectionalShadows();
         RequireD3D12SpotShadows();
+        RequireD3D12PointShadows();
         RequireD3D12PointAndSpotLights();
         RequireD3D12MaterialFactors();
         RequireD3D12AnimatedGltfModel();

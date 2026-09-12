@@ -192,6 +192,12 @@ namespace
                 source.enabled };
         }
         request.spotShadowTexture = lighting.spotShadowTexture;
+        request.pointShadow = {
+            lighting.pointShadow.texture,
+            lighting.pointShadow.lightIndex,
+            lighting.pointShadow.bias,
+            lighting.pointShadow.strength,
+            lighting.pointShadow.enabled };
         request.localShadowInverseResolution =
             1.0f / std::max(
                 lighting.localShadowResolution,
@@ -1199,6 +1205,12 @@ namespace LamaPon
             {
                 request.spotShadowTexture =
                     m_graphics->SpotShadows().ViewHandle();
+            }
+            if (!request.pointShadow.texture
+                && m_graphics->PointShadows().IsValid())
+            {
+                request.pointShadow.texture =
+                    m_graphics->PointShadows().ViewHandle();
             }
             const auto textures = BuildLitTextureRequest();
             request.albedo = textures.albedo;
