@@ -1,7 +1,7 @@
 #pragma once
 
-// DirectX 12の起動・swap chain lifecycleと、Sprite／最小3D Mesh描画に
-// 必要なtexture資源を扱うRuntime内部Backendです。
+// DirectX 12の起動・swap chain lifecycleと、Sprite／最小3D Mesh／
+// 基本offscreen描画に必要なtexture資源を扱うRuntime内部Backendです。
 #include "LamaPon/Graphics/GraphicsBackend.h"
 
 #include <d3d12.h>
@@ -204,14 +204,14 @@ namespace LamaPon
             std::uint64_t bytes,
             std::uint64_t alignment);
         [[nodiscard]] const D3D12_VIEWPORT&
-            PrimaryViewport() const noexcept
+            ActiveViewport() const noexcept
         {
-            return m_viewport;
+            return m_activeViewport;
         }
         [[nodiscard]] const D3D12_RECT&
-            PrimaryScissorRectangle() const noexcept
+            ActiveScissorRectangle() const noexcept
         {
-            return m_scissorRect;
+            return m_activeScissorRect;
         }
 
     private:
@@ -288,8 +288,11 @@ namespace LamaPon
         std::uint32_t m_height{};
         D3D12_VIEWPORT m_viewport{};
         D3D12_RECT m_scissorRect{};
+        D3D12_VIEWPORT m_activeViewport{};
+        D3D12_RECT m_activeScissorRect{};
         bool m_tearingAllowed{};
         bool m_commandListOpen{};
+        RenderTarget* m_activeOffscreenTarget{};
         Detail::ShadowMapBackendState* m_activeShadowMap{};
         // texture uploadはworker threadからも終端状態へ遷移させます。
         std::atomic_bool m_terminalFailure{ false };

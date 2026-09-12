@@ -8,6 +8,7 @@
 #include "LamaPon/Components/SpotLightComponent.h"
 #include "LamaPon/Core/Log.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
+#include "LamaPon/Graphics/RenderTarget.h"
 #include "LamaPon/Graphics/ShadowMap.h"
 #include "LamaPon/Graphics/SkeletalModel.h"
 #include "LamaPon/Graphics/SpriteRendering.h"
@@ -390,6 +391,98 @@ namespace
                     + entry.message);
             }
         }
+    }
+
+    void RequireD3D12OffscreenTarget()
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::
+                AllowD3D12ExperimentalBootstrap);
+
+        constexpr std::uint32_t targetWidth = 64u;
+        constexpr std::uint32_t targetHeight = 32u;
+        LamaPon::RenderTarget target;
+        graphics.ResizeOffscreenTarget(
+            target,
+            targetWidth,
+            targetHeight);
+        Require(
+            target.IsValid()
+                && target.Width() == targetWidth
+                && target.Height() == targetHeight
+                && graphics.IsGraphicsViewCurrent(
+                    target.CurrentColorViewHandle())
+                && graphics.IsGraphicsViewCurrent(
+                    target.DisplayViewHandle())
+                && graphics.IsGraphicsViewCurrent(
+                    target.DepthViewHandle()),
+            "The DirectX 12 offscreen target did not publish its views");
+
+        constexpr float offscreenClear[4]{ 0.05f, 0.1f, 0.8f, 1.0f };
+        graphics.BeginOffscreenTarget(target, offscreenClear);
+        {
+            auto pass = graphics.BeginSpritePass();
+            DrawRectangle(
+                pass,
+                10.0f,
+                8.0f,
+                20.0f,
+                12.0f,
+                { 0.9f, 0.05f, 0.02f, 1.0f });
+        }
+        graphics.PublishOffscreenTarget(target);
+
+        constexpr float backBufferClear[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+        graphics.BeginFrame(backBufferClear);
+        {
+            auto pass = graphics.BeginSpritePass();
+            LamaPon::SpriteDrawRequest request;
+            request.texture = target.DisplayViewHandle();
+            request.position = { 20.0f, 15.0f };
+            request.tint = { 1.0f, 1.0f, 1.0f, 1.0f };
+            Require(
+                pass.Draw(request),
+                "The DirectX 12 offscreen display view was rejected");
+        }
+        std::uint32_t width{};
+        std::uint32_t height{};
+        const auto pixels = graphics.CaptureBackBuffer(width, height);
+        graphics.EndFrame();
+        Require(
+            width == CanvasWidth && height == CanvasHeight,
+            "The DirectX 12 offscreen composition capture has unexpected "
+            "dimensions");
+
+        const auto pixel = [&pixels, width](
+            const std::uint32_t x,
+            const std::uint32_t y)
+        {
+            const auto offset = (
+                static_cast<std::size_t>(y) * width + x) * 4u;
+            return std::array<std::uint8_t, 4>{
+                pixels[offset],
+                pixels[offset + 1u],
+                pixels[offset + 2u],
+                pixels[offset + 3u] };
+        };
+        const auto blue = pixel(24u, 18u);
+        const auto red = pixel(35u, 28u);
+        const auto outside = pixel(90u, 70u);
+        Require(
+            blue[2] > 150u && blue[0] < 50u,
+            "The DirectX 12 offscreen clear color was not sampled");
+        Require(
+            red[0] > 170u && red[2] < 80u,
+            "The DirectX 12 offscreen sprite was not sampled");
+        Require(
+            outside[0] < 8u && outside[1] < 8u && outside[2] < 8u,
+            "The DirectX 12 offscreen image escaped its destination bounds");
     }
 
     void RequireD3D12PrimitiveScene()
@@ -1322,6 +1415,7 @@ int main()
             LamaPon::GraphicsStartupProfile::
                 AllowD3D12ExperimentalBootstrap);
         RequireD3D12PrimitiveScene();
+        RequireD3D12OffscreenTarget();
         RequireD3D12DirectionalShadows();
         RequireD3D12SpotShadows();
         RequireD3D12PointShadows();

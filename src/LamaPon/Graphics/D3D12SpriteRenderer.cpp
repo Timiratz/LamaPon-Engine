@@ -722,13 +722,13 @@ namespace LamaPon::Detail
             vertexData += sizeof(sprite.vertices);
         }
 
-        const auto& viewport = m_backend->PrimaryViewport();
+        const auto& viewport = m_backend->ActiveViewport();
         const std::array<float, 2> viewportScale{
             viewport.Width > 0.0f ? 2.0f / viewport.Width : 0.0f,
             viewport.Height > 0.0f ? 2.0f / viewport.Height : 0.0f
         };
         const D3D12_RECT scissor = m_scissorStack.empty()
-            ? m_backend->PrimaryScissorRectangle()
+            ? m_backend->ActiveScissorRectangle()
             : m_scissorStack.back();
         const D3D12_VERTEX_BUFFER_VIEW vertexBufferView{
             upload.gpuAddress,
@@ -784,7 +784,7 @@ namespace LamaPon::Detail
             first = end;
         }
         // 後続の描画へSprite用のclipを残しません。
-        const auto& fullScissor = m_backend->PrimaryScissorRectangle();
+        const auto& fullScissor = m_backend->ActiveScissorRectangle();
         commandList->RSSetScissorRects(1, &fullScissor);
         m_sprites.clear();
     }

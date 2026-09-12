@@ -966,8 +966,8 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
             commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             commandList->IASetVertexBuffers(0, 1, &vertexView);
             commandList->IASetIndexBuffer(&indexView);
-            const auto& viewport = m_backend->PrimaryViewport();
-            const auto& scissor = m_backend->PrimaryScissorRectangle();
+            const auto& viewport = m_backend->ActiveViewport();
+            const auto& scissor = m_backend->ActiveScissorRectangle();
             commandList->RSSetViewports(1, &viewport);
             commandList->RSSetScissorRects(1, &scissor);
             commandList->DrawIndexedInstanced(
@@ -1384,9 +1384,9 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
             commandList->IASetIndexBuffer(&indexView);
             if (!request.depthOnly)
             {
-                const auto& viewport = m_backend->PrimaryViewport();
+                const auto& viewport = m_backend->ActiveViewport();
                 const auto& scissor =
-                    m_backend->PrimaryScissorRectangle();
+                    m_backend->ActiveScissorRectangle();
                 commandList->RSSetViewports(1, &viewport);
                 commandList->RSSetScissorRects(1, &scissor);
             }

@@ -3,6 +3,8 @@
 #include "LamaPon/Core/Log.h"
 #include "LamaPon/Graphics/DebugRenderer.h"
 #include "LamaPon/Graphics/DxgiTextureLayout.h"
+#include "LamaPon/Graphics/RenderTarget.h"
+#include "LamaPon/Graphics/RenderTargetBackendState.h"
 #include "LamaPon/Graphics/ShadowMap.h"
 #include "LamaPon/Graphics/ShadowMapBackendState.h"
 
@@ -273,6 +275,40 @@ namespace LamaPon::Detail
             }
         }
 
+        void RetireDescriptorHeap(
+            Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap) noexcept
+        {
+            if (heap == nullptr)
+            {
+                return;
+            }
+            RetiredResource retired{
+                m_nextFrameFenceValue.load(),
+                nullptr,
+                0u,
+                false,
+                std::move(heap)
+            };
+            try
+            {
+                std::scoped_lock lock(m_mutex);
+                if (!m_closed)
+                {
+                    m_retired.push_back(std::move(retired));
+                    return;
+                }
+            }
+            catch (...)
+            {
+                // GPUがdescriptorを参照中かもしれないため、
+                // 退避できない場合は意図的に解放しません。
+                if (retired.descriptorHeap != nullptr)
+                {
+                    retired.descriptorHeap->AddRef();
+                }
+            }
+        }
+
         void CollectCompleted(
             const std::uint64_t completedValue) noexcept
         {
@@ -342,6 +378,8 @@ namespace LamaPon::Detail
             Microsoft::WRL::ComPtr<ID3D12Resource> resource;
             std::uint32_t slot{};
             bool hasSlot{};
+            Microsoft::WRL::ComPtr<ID3D12DescriptorHeap>
+                descriptorHeap;
         };
 
         Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_shaderResourceHeap;
@@ -468,6 +506,54 @@ namespace
         bool cube{};
     };
 
+    struct D3D12RenderTargetState final
+        : LamaPon::Detail::RenderTargetBackendState
+    {
+        ~D3D12RenderTargetState() noexcept override
+        {
+            if (resourceDomain != nullptr)
+            {
+                resourceDomain->RetireDescriptorHeap(
+                    std::move(renderTargetHeap));
+                resourceDomain->RetireDescriptorHeap(
+                    std::move(depthStencilHeap));
+            }
+        }
+
+        [[nodiscard]] bool HasNativeResources() const noexcept
+        {
+            return m_initialized
+                && color != nullptr
+                && postColor != nullptr
+                && displayColor != nullptr
+                && depth != nullptr
+                && renderTargetHeap != nullptr
+                && depthStencilHeap != nullptr
+                && renderTargetDescriptorSize != 0u;
+        }
+
+        std::shared_ptr<LamaPon::Detail::D3D12ResourceDomain>
+            resourceDomain;
+        Microsoft::WRL::ComPtr<ID3D12Resource> color;
+        Microsoft::WRL::ComPtr<ID3D12Resource> postColor;
+        Microsoft::WRL::ComPtr<ID3D12Resource> displayColor;
+        Microsoft::WRL::ComPtr<ID3D12Resource> depth;
+        Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> renderTargetHeap;
+        Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> depthStencilHeap;
+        D3D12_RESOURCE_STATES colorState{
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE };
+        D3D12_RESOURCE_STATES postColorState{
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE };
+        D3D12_RESOURCE_STATES displayColorState{
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE };
+        D3D12_RESOURCE_STATES depthState{
+            D3D12_RESOURCE_STATE_DEPTH_WRITE };
+        std::uint32_t renderTargetDescriptorSize{};
+        D3D12_VIEWPORT viewport{};
+        D3D12_RECT scissor{};
+        bool computeWritable{};
+    };
+
     [[nodiscard]] const D3D12TexturePayload* TryTexturePayload(
         const LamaPon::GraphicsTextureHandle& texture,
         const LamaPon::Detail::GraphicsResourceDomain* const domain) noexcept
@@ -495,6 +581,68 @@ namespace
         }
         return dynamic_cast<const D3D12ShaderResourceViewPayload*>(
             GraphicsResourceHandleAccess::Payload(view));
+    }
+
+    [[nodiscard]] LamaPon::GraphicsViewHandle CreateTextureView(
+        ID3D12Device* const device,
+        const std::shared_ptr<LamaPon::Detail::D3D12ResourceDomain>& domain,
+        const Microsoft::WRL::ComPtr<ID3D12Resource>& resource,
+        const D3D12_SHADER_RESOURCE_VIEW_DESC& nativeDescription,
+        const std::uint32_t width,
+        const std::uint32_t height,
+        const LamaPon::GraphicsTextureFormat publicFormat)
+    {
+        const auto slot = domain->AllocateShaderResourceSlot();
+        try
+        {
+            device->CreateShaderResourceView(
+                resource.Get(),
+                &nativeDescription,
+                domain->ShaderResourceCpuHandle(slot));
+            LamaPon::GraphicsTexture2DDescription description;
+            description.width = width;
+            description.height = height;
+            description.format = publicFormat;
+            auto texture = LamaPon::Detail::GraphicsResourceHandleAccess::
+                MakeTexture(std::make_shared<D3D12TexturePayload>(
+                    domain,
+                    resource,
+                    description,
+                    nativeDescription.Format));
+            return LamaPon::Detail::GraphicsResourceHandleAccess::MakeView(
+                std::make_shared<D3D12ShaderResourceViewPayload>(
+                    domain,
+                    std::move(texture),
+                    slot,
+                    width,
+                    height));
+        }
+        catch (...)
+        {
+            domain->ReleaseUnpublishedShaderResourceSlot(slot);
+            throw;
+        }
+    }
+
+    void TransitionResource(
+        ID3D12GraphicsCommandList* const commandList,
+        ID3D12Resource* const resource,
+        D3D12_RESOURCE_STATES& currentState,
+        const D3D12_RESOURCE_STATES requiredState)
+    {
+        if (currentState == requiredState)
+        {
+            return;
+        }
+        D3D12_RESOURCE_BARRIER barrier{};
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Transition.pResource = resource;
+        barrier.Transition.Subresource =
+            D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        barrier.Transition.StateBefore = currentState;
+        barrier.Transition.StateAfter = requiredState;
+        commandList->ResourceBarrier(1, &barrier);
+        currentState = requiredState;
     }
 
     [[nodiscard]] std::uint64_t AlignUp(
@@ -1231,6 +1379,7 @@ namespace LamaPon
             TransitionCurrentBackBuffer(
                 D3D12_RESOURCE_STATE_RENDER_TARGET);
             BindPrimaryOutput();
+            m_activeOffscreenTarget = nullptr;
         }
         catch (...)
         {
@@ -1375,6 +1524,9 @@ namespace LamaPon
             static_cast<LONG>(width),
             static_cast<LONG>(height)
         };
+        m_activeViewport = m_viewport;
+        m_activeScissorRect = m_scissorRect;
+        m_activeOffscreenTarget = nullptr;
         m_frameFenceValues = {};
         m_commandListOpen = false;
     }
@@ -1388,6 +1540,9 @@ namespace LamaPon
         }
         m_width = 0;
         m_height = 0;
+        m_activeViewport = {};
+        m_activeScissorRect = {};
+        m_activeOffscreenTarget = nullptr;
         m_commandListOpen = false;
     }
 
@@ -1454,6 +1609,8 @@ namespace LamaPon
             &dsv);
         m_commandList->RSSetViewports(1, &m_viewport);
         m_commandList->RSSetScissorRects(1, &m_scissorRect);
+        m_activeViewport = m_viewport;
+        m_activeScissorRect = m_scissorRect;
     }
 
     void D3D12Backend::CloseAndExecuteOpenCommands()
@@ -1823,7 +1980,17 @@ namespace LamaPon
 
     ID3D12GraphicsCommandList* D3D12Backend::BeginFrameCommands()
     {
-        BindBackBuffer();
+        if (!m_commandListOpen)
+        {
+            if (m_activeOffscreenTarget != nullptr)
+            {
+                BindOffscreenTarget(*m_activeOffscreenTarget);
+            }
+            else
+            {
+                BindBackBuffer();
+            }
+        }
         return m_commandList.Get();
     }
 
@@ -2095,33 +2262,404 @@ namespace LamaPon
     }
 
     void D3D12Backend::ResizeOffscreenTarget(
-        RenderTarget&,
-        std::uint32_t,
-        std::uint32_t)
+        RenderTarget& target,
+        const std::uint32_t width,
+        const std::uint32_t height)
     {
-        ThrowUnsupported("ResizeOffscreenTarget");
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "ResizeOffscreenTarget requires an initialized D3D12 "
+                "backend.");
+        }
+        const auto requestedWidth = std::max(width, 1u);
+        const auto requestedHeight = std::max(height, 1u);
+        if (requestedWidth > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION
+            || requestedHeight > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION)
+        {
+            throw std::invalid_argument(
+                "The offscreen target dimensions exceed the DirectX 12 "
+                "limit.");
+        }
+        const bool computeWritable =
+            Detail::RenderTargetBackendAccess::ComputeWritable(target);
+        const auto* const existing = dynamic_cast<
+            const D3D12RenderTargetState*>(
+                Detail::RenderTargetBackendAccess::Get(target));
+        if (existing != nullptr
+            && existing->HasNativeResources()
+            && existing->resourceDomain.get() == m_resourceDomain.get()
+            && existing->m_width == requestedWidth
+            && existing->m_height == requestedHeight
+            && existing->computeWritable == computeWritable
+            && IsViewCurrent(existing->m_currentColorView)
+            && IsViewCurrent(existing->m_postColorView)
+            && IsViewCurrent(existing->m_displayView)
+            && IsViewCurrent(existing->m_depthView))
+        {
+            return;
+        }
+        if (m_activeOffscreenTarget == &target)
+        {
+            BindBackBuffer();
+        }
+
+        auto pending = std::make_unique<D3D12RenderTargetState>();
+        pending->resourceDomain = m_resourceDomain;
+        pending->m_width = requestedWidth;
+        pending->m_height = requestedHeight;
+        pending->computeWritable = computeWritable;
+
+        D3D12_DESCRIPTOR_HEAP_DESC renderTargetHeapDescription{};
+        renderTargetHeapDescription.Type =
+            D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+        renderTargetHeapDescription.NumDescriptors = 2u;
+        ThrowIfFailed(
+            m_device->CreateDescriptorHeap(
+                &renderTargetHeapDescription,
+                IID_PPV_ARGS(
+                    pending->renderTargetHeap.ReleaseAndGetAddressOf())),
+            "ID3D12Device::CreateDescriptorHeap(offscreen RTV)",
+            m_device.Get());
+        pending->renderTargetDescriptorSize =
+            m_device->GetDescriptorHandleIncrementSize(
+                D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+
+        D3D12_DESCRIPTOR_HEAP_DESC depthHeapDescription{};
+        depthHeapDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+        depthHeapDescription.NumDescriptors = 1u;
+        ThrowIfFailed(
+            m_device->CreateDescriptorHeap(
+                &depthHeapDescription,
+                IID_PPV_ARGS(
+                    pending->depthStencilHeap.ReleaseAndGetAddressOf())),
+            "ID3D12Device::CreateDescriptorHeap(offscreen DSV)",
+            m_device.Get());
+
+        const auto defaultHeap = HeapProperties(D3D12_HEAP_TYPE_DEFAULT);
+        D3D12_RESOURCE_DESC colorDescription{};
+        colorDescription.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        colorDescription.Width = requestedWidth;
+        colorDescription.Height = requestedHeight;
+        colorDescription.DepthOrArraySize = 1u;
+        colorDescription.MipLevels = 1u;
+        // 現在のD3D12 Sprite / Primitive PSOと同じ形式にし、
+        // まずLDRのoffscreen描画を有効にします。HDR化は
+        // PSOのRTV format切り替えとトーンマップ移植と一緒に行います。
+        colorDescription.Format = PrimaryColorFormat;
+        colorDescription.SampleDesc.Count = 1u;
+        colorDescription.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        colorDescription.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        D3D12_CLEAR_VALUE colorClear{};
+        colorClear.Format = colorDescription.Format;
+
+        const auto createColor =
+            [&](Microsoft::WRL::ComPtr<ID3D12Resource>& destination,
+                const char* const operation,
+                const D3D12_RESOURCE_FLAGS flags)
+        {
+            auto description = colorDescription;
+            description.Flags = flags;
+            ThrowIfFailed(
+                m_device->CreateCommittedResource(
+                    &defaultHeap,
+                    D3D12_HEAP_FLAG_NONE,
+                    &description,
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                    (flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) != 0
+                        ? &colorClear
+                        : nullptr,
+                    IID_PPV_ARGS(destination.ReleaseAndGetAddressOf())),
+                operation,
+                m_device.Get());
+        };
+        createColor(
+            pending->color,
+            "ID3D12Device::CreateCommittedResource(offscreen color)",
+            D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+        createColor(
+            pending->postColor,
+            "ID3D12Device::CreateCommittedResource(offscreen post color)",
+            D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+        createColor(
+            pending->displayColor,
+            "ID3D12Device::CreateCommittedResource(offscreen display)",
+            computeWritable
+                ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS
+                : D3D12_RESOURCE_FLAG_NONE);
+
+        const auto renderTargetStart = pending->renderTargetHeap
+            ->GetCPUDescriptorHandleForHeapStart();
+        m_device->CreateRenderTargetView(
+            pending->color.Get(),
+            nullptr,
+            renderTargetStart);
+        m_device->CreateRenderTargetView(
+            pending->postColor.Get(),
+            nullptr,
+            OffsetDescriptor(
+                renderTargetStart,
+                1u,
+                pending->renderTargetDescriptorSize));
+
+        D3D12_RESOURCE_DESC depthDescription{};
+        depthDescription.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        depthDescription.Width = requestedWidth;
+        depthDescription.Height = requestedHeight;
+        depthDescription.DepthOrArraySize = 1u;
+        depthDescription.MipLevels = 1u;
+        depthDescription.Format = DXGI_FORMAT_R24G8_TYPELESS;
+        depthDescription.SampleDesc.Count = 1u;
+        depthDescription.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        depthDescription.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+        D3D12_CLEAR_VALUE depthClear{};
+        depthClear.Format = PrimaryDepthFormat;
+        depthClear.DepthStencil.Depth = 1.0f;
+        ThrowIfFailed(
+            m_device->CreateCommittedResource(
+                &defaultHeap,
+                D3D12_HEAP_FLAG_NONE,
+                &depthDescription,
+                pending->depthState,
+                &depthClear,
+                IID_PPV_ARGS(pending->depth.ReleaseAndGetAddressOf())),
+            "ID3D12Device::CreateCommittedResource(offscreen depth)",
+            m_device.Get());
+        D3D12_DEPTH_STENCIL_VIEW_DESC depthViewDescription{};
+        depthViewDescription.Format = PrimaryDepthFormat;
+        depthViewDescription.ViewDimension =
+            D3D12_DSV_DIMENSION_TEXTURE2D;
+        m_device->CreateDepthStencilView(
+            pending->depth.Get(),
+            &depthViewDescription,
+            pending->depthStencilHeap
+                ->GetCPUDescriptorHandleForHeapStart());
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC colorViewDescription{};
+        colorViewDescription.Format = colorDescription.Format;
+        colorViewDescription.ViewDimension =
+            D3D12_SRV_DIMENSION_TEXTURE2D;
+        colorViewDescription.Shader4ComponentMapping =
+            D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        colorViewDescription.Texture2D.MipLevels = 1u;
+        pending->m_currentColorView = CreateTextureView(
+            m_device.Get(),
+            m_resourceDomain,
+            pending->color,
+            colorViewDescription,
+            requestedWidth,
+            requestedHeight,
+            GraphicsTextureFormat::Rgba8Unorm);
+        pending->m_postColorView = CreateTextureView(
+            m_device.Get(),
+            m_resourceDomain,
+            pending->postColor,
+            colorViewDescription,
+            requestedWidth,
+            requestedHeight,
+            GraphicsTextureFormat::Rgba8Unorm);
+        pending->m_displayView = CreateTextureView(
+            m_device.Get(),
+            m_resourceDomain,
+            pending->displayColor,
+            colorViewDescription,
+            requestedWidth,
+            requestedHeight,
+            GraphicsTextureFormat::Rgba8Unorm);
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC depthResourceDescription{};
+        depthResourceDescription.Format =
+            DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+        depthResourceDescription.ViewDimension =
+            D3D12_SRV_DIMENSION_TEXTURE2D;
+        depthResourceDescription.Shader4ComponentMapping =
+            D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        depthResourceDescription.Texture2D.MipLevels = 1u;
+        pending->m_depthView = CreateTextureView(
+            m_device.Get(),
+            m_resourceDomain,
+            pending->depth,
+            depthResourceDescription,
+            requestedWidth,
+            requestedHeight,
+            GraphicsTextureFormat::Rgba8Unorm);
+        pending->viewport = {
+            0.0f,
+            0.0f,
+            static_cast<float>(requestedWidth),
+            static_cast<float>(requestedHeight),
+            0.0f,
+            1.0f };
+        pending->scissor = {
+            0,
+            0,
+            static_cast<LONG>(requestedWidth),
+            static_cast<LONG>(requestedHeight) };
+        pending->m_initialized = true;
+        Detail::RenderTargetBackendAccess::Publish(
+            target,
+            std::move(pending));
     }
 
     void D3D12Backend::BeginOffscreenTarget(
-        RenderTarget&,
-        const float[4])
+        RenderTarget& target,
+        const float clearColor[4])
     {
-        ThrowUnsupported("BeginOffscreenTarget");
+        if (clearColor == nullptr)
+        {
+            throw std::invalid_argument(
+                "BeginOffscreenTarget requires a clear color.");
+        }
+        BindOffscreenTarget(target);
+        auto* const state = dynamic_cast<D3D12RenderTargetState*>(
+            Detail::RenderTargetBackendAccess::Get(target));
+        const auto renderTarget = state->renderTargetHeap
+            ->GetCPUDescriptorHandleForHeapStart();
+        m_commandList->ClearRenderTargetView(
+            renderTarget,
+            clearColor,
+            0,
+            nullptr);
+        m_commandList->ClearDepthStencilView(
+            state->depthStencilHeap
+                ->GetCPUDescriptorHandleForHeapStart(),
+            D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL,
+            1.0f,
+            0u,
+            0u,
+            nullptr);
     }
 
-    void D3D12Backend::BindOffscreenTarget(RenderTarget&)
+    void D3D12Backend::BindOffscreenTarget(RenderTarget& target)
     {
-        ThrowUnsupported("BindOffscreenTarget");
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "BindOffscreenTarget requires an initialized D3D12 "
+                "backend.");
+        }
+        auto* const state = dynamic_cast<D3D12RenderTargetState*>(
+            Detail::RenderTargetBackendAccess::Get(target));
+        if (state == nullptr
+            || !state->HasNativeResources()
+            || state->resourceDomain.get() != m_resourceDomain.get()
+            || !IsViewCurrent(state->m_currentColorView)
+            || !IsViewCurrent(state->m_depthView))
+        {
+            throw std::invalid_argument(
+                "BindOffscreenTarget requires a target owned by this "
+                "D3D12 backend generation.");
+        }
+        OpenCommandList();
+        TransitionResource(
+            m_commandList.Get(),
+            state->color.Get(),
+            state->colorState,
+            D3D12_RESOURCE_STATE_RENDER_TARGET);
+        TransitionResource(
+            m_commandList.Get(),
+            state->depth.Get(),
+            state->depthState,
+            D3D12_RESOURCE_STATE_DEPTH_WRITE);
+        const auto renderTarget = state->renderTargetHeap
+            ->GetCPUDescriptorHandleForHeapStart();
+        const auto depthTarget = state->depthStencilHeap
+            ->GetCPUDescriptorHandleForHeapStart();
+        m_commandList->OMSetRenderTargets(
+            1,
+            &renderTarget,
+            FALSE,
+            &depthTarget);
+        m_commandList->RSSetViewports(1, &state->viewport);
+        m_commandList->RSSetScissorRects(1, &state->scissor);
+        m_activeViewport = state->viewport;
+        m_activeScissorRect = state->scissor;
+        m_activeOffscreenTarget = &target;
     }
 
-    void D3D12Backend::PublishOffscreenTarget(RenderTarget&)
+    void D3D12Backend::PublishOffscreenTarget(RenderTarget& target)
     {
-        ThrowUnsupported("PublishOffscreenTarget");
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "PublishOffscreenTarget requires an initialized D3D12 "
+                "backend.");
+        }
+        auto* const state = dynamic_cast<D3D12RenderTargetState*>(
+            Detail::RenderTargetBackendAccess::Get(target));
+        if (state == nullptr
+            || !state->HasNativeResources()
+            || state->resourceDomain.get() != m_resourceDomain.get()
+            || !IsViewCurrent(state->m_displayView))
+        {
+            throw std::invalid_argument(
+                "PublishOffscreenTarget requires a target owned by this "
+                "D3D12 backend generation.");
+        }
+        OpenCommandList();
+        TransitionResource(
+            m_commandList.Get(),
+            state->color.Get(),
+            state->colorState,
+            D3D12_RESOURCE_STATE_COPY_SOURCE);
+        TransitionResource(
+            m_commandList.Get(),
+            state->displayColor.Get(),
+            state->displayColorState,
+            D3D12_RESOURCE_STATE_COPY_DEST);
+        m_commandList->CopyResource(
+            state->displayColor.Get(),
+            state->color.Get());
+        TransitionResource(
+            m_commandList.Get(),
+            state->displayColor.Get(),
+            state->displayColorState,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        TransitionResource(
+            m_commandList.Get(),
+            state->color.Get(),
+            state->colorState,
+            m_activeOffscreenTarget == &target
+                ? D3D12_RESOURCE_STATE_RENDER_TARGET
+                : D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     }
 
-    void D3D12Backend::BindOffscreenTargetDepthOnly(RenderTarget&)
+    void D3D12Backend::BindOffscreenTargetDepthOnly(RenderTarget& target)
     {
-        ThrowUnsupported("BindOffscreenTargetDepthOnly");
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "BindOffscreenTargetDepthOnly requires an initialized "
+                "D3D12 backend.");
+        }
+        auto* const state = dynamic_cast<D3D12RenderTargetState*>(
+            Detail::RenderTargetBackendAccess::Get(target));
+        if (state == nullptr
+            || !state->HasNativeResources()
+            || state->resourceDomain.get() != m_resourceDomain.get())
+        {
+            throw std::invalid_argument(
+                "BindOffscreenTargetDepthOnly requires a target owned by "
+                "this D3D12 backend generation.");
+        }
+        OpenCommandList();
+        TransitionResource(
+            m_commandList.Get(),
+            state->depth.Get(),
+            state->depthState,
+            D3D12_RESOURCE_STATE_DEPTH_WRITE);
+        const auto depthTarget = state->depthStencilHeap
+            ->GetCPUDescriptorHandleForHeapStart();
+        m_commandList->OMSetRenderTargets(
+            0,
+            nullptr,
+            FALSE,
+            &depthTarget);
+        m_commandList->RSSetViewports(1, &state->viewport);
+        m_commandList->RSSetScissorRects(1, &state->scissor);
+        m_activeViewport = state->viewport;
+        m_activeScissorRect = state->scissor;
+        m_activeOffscreenTarget = &target;
     }
 
     void D3D12Backend::CaptureOffscreenTargetDepth(RenderTarget&)
@@ -2433,9 +2971,16 @@ namespace LamaPon
         }
         state->m_rendering = false;
         m_activeShadowMap = nullptr;
-        TransitionCurrentBackBuffer(
-            D3D12_RESOURCE_STATE_RENDER_TARGET);
-        BindPrimaryOutput();
+        if (m_activeOffscreenTarget != nullptr)
+        {
+            BindOffscreenTarget(*m_activeOffscreenTarget);
+        }
+        else
+        {
+            TransitionCurrentBackBuffer(
+                D3D12_RESOURCE_STATE_RENDER_TARGET);
+            BindPrimaryOutput();
+        }
     }
 
     void D3D12Backend::UpdateClusteredLights(
@@ -2713,9 +3258,29 @@ namespace LamaPon
     }
 
     GraphicsViewHandle D3D12Backend::CreateOffscreenDisplayView(
-        const RenderTarget&)
+        const RenderTarget& target)
     {
-        ThrowUnsupported("CreateOffscreenDisplayView");
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "CreateOffscreenDisplayView requires an initialized "
+                "D3D12 backend.");
+        }
+        const auto* const state = dynamic_cast<
+            const D3D12RenderTargetState*>(
+                Detail::RenderTargetBackendAccess::Get(target));
+        const auto displayView = target.DisplayViewHandle();
+        if (state == nullptr
+            || !state->HasNativeResources()
+            || state->resourceDomain.get() != m_resourceDomain.get()
+            || !displayView
+            || !IsViewCurrent(displayView))
+        {
+            throw std::invalid_argument(
+                "CreateOffscreenDisplayView requires a valid offscreen "
+                "target display view.");
+        }
+        return displayView;
     }
 
     void D3D12Backend::BindVertexBuffer(

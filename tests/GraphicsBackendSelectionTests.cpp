@@ -691,17 +691,33 @@ int main()
                 { 0.20f, 0.70f, 0.35f, 1.0f },
                 true);
 
-            LamaPon::RenderTarget unsupportedTarget;
-            RequireThrowsExactly<std::logic_error>(
-                [&]
-                {
-                    d3d12Backend->ResizeOffscreenTarget(
-                        unsupportedTarget,
-                        4u,
-                        4u);
-                },
-                "The DirectX 12 bootstrap silently accepted an unsupported "
-                "offscreen operation");
+            LamaPon::RenderTarget offscreenTarget;
+            d3d12Backend->ResizeOffscreenTarget(
+                offscreenTarget,
+                4u,
+                4u);
+            Require(
+                offscreenTarget.IsValid()
+                    && offscreenTarget.Width() == 4u
+                    && offscreenTarget.Height() == 4u
+                    && d3d12Backend->IsViewCurrent(
+                        offscreenTarget.CurrentColorViewHandle())
+                    && d3d12Backend->IsViewCurrent(
+                        offscreenTarget.DisplayViewHandle())
+                    && d3d12Backend->IsViewCurrent(
+                        offscreenTarget.DepthViewHandle())
+                    && d3d12Backend->CreateOffscreenDisplayView(
+                        offscreenTarget)
+                        == offscreenTarget.DisplayViewHandle(),
+                "The DirectX 12 backend did not publish its offscreen "
+                "target views");
+            constexpr float offscreenClear[4]{
+                0.2f, 0.4f, 0.6f, 1.0f };
+            d3d12Backend->BeginOffscreenTarget(
+                offscreenTarget,
+                offscreenClear);
+            d3d12Backend->PublishOffscreenTarget(offscreenTarget);
+            d3d12Backend->BindBackBuffer();
 
             d3d12Backend->PrepareForResourceRelease();
             d3d12Backend->PrepareForResourceRelease();
