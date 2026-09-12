@@ -178,6 +178,24 @@ namespace
                 lighting.directionalShadowResolution,
                 1.0f);
         request.directionalShadow.enabled = shadow.enabled;
+        for (std::size_t index{};
+            index < request.spotShadows.size();
+            ++index)
+        {
+            const auto& source = lighting.spotShadows[index];
+            request.spotShadows[index] = {
+                source.lightViewProjection,
+                source.lightIndex,
+                source.bias,
+                source.normalBias,
+                source.strength,
+                source.enabled };
+        }
+        request.spotShadowTexture = lighting.spotShadowTexture;
+        request.localShadowInverseResolution =
+            1.0f / std::max(
+                lighting.localShadowResolution,
+                1.0f);
     }
 }
 
@@ -1175,6 +1193,12 @@ namespace LamaPon
             {
                 request.directionalShadow.texture =
                     m_graphics->Shadows().ViewHandle();
+            }
+            if (!request.spotShadowTexture
+                && m_graphics->SpotShadows().IsValid())
+            {
+                request.spotShadowTexture =
+                    m_graphics->SpotShadows().ViewHandle();
             }
             const auto textures = BuildLitTextureRequest();
             request.albedo = textures.albedo;

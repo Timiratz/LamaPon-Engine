@@ -48,6 +48,11 @@ cbuffer PrimitiveConstants : register(b0)
     float4 ShadowParameters;
     // xyz=camera forward, w=1 / shadow resolution.
     float4 CameraForwardShadowTexel;
+    row_major float4x4 SpotShadowViewProjections[4];
+    // x=depth bias, y=normal bias, z=strength, w=enabled.
+    float4 SpotShadowParameters[4];
+    // x=1 / spot shadow resolution; yzw are reserved for later local shadows.
+    float4 LocalShadowTexelSizes;
 };
 
 Texture2D AlbedoTexture : register(t0);
@@ -57,6 +62,7 @@ Texture2D MetallicTexture : register(t3);
 Texture2D OcclusionTexture : register(t4);
 Texture2D EmissiveTexture : register(t5);
 Texture2DArray<float> DirectionalShadowTexture : register(t6);
+Texture2DArray<float> SpotShadowTexture : register(t7);
 SamplerState AlbedoSampler : register(s0);
 SamplerComparisonState ShadowSampler : register(s1);
 
@@ -194,6 +200,61 @@ float EvaluateDirectionalShadow(
         saturate(ShadowParameters.w));
 }
 
+float EvaluateSpotShadow(
+    float3 worldPosition,
+    float3 normal,
+    uint slot)
+{
+    const float4 parameters = SpotShadowParameters[slot];
+    if (parameters.w < 0.5f)
+    {
+        return 1.0f;
+    }
+    const float3 biasedPosition =
+        worldPosition + normal * parameters.y;
+    const float4 lightPosition = mul(
+        float4(biasedPosition, 1.0f),
+        SpotShadowViewProjections[slot]);
+    if (lightPosition.w <= 0.0001f)
+    {
+        return 1.0f;
+    }
+    const float3 projected = lightPosition.xyz / lightPosition.w;
+    const float2 shadowUv =
+        projected.xy * float2(0.5f, -0.5f) + 0.5f;
+    if (shadowUv.x < 0.0f
+        || shadowUv.x > 1.0f
+        || shadowUv.y < 0.0f
+        || shadowUv.y > 1.0f
+        || projected.z <= 0.0f
+        || projected.z >= 1.0f)
+    {
+        return 1.0f;
+    }
+
+    float visibility = 0.0f;
+    [unroll]
+    for (int tapY = -1; tapY <= 1; ++tapY)
+    {
+        [unroll]
+        for (int tapX = -1; tapX <= 1; ++tapX)
+        {
+            visibility += SpotShadowTexture.SampleCmpLevelZero(
+                ShadowSampler,
+                float3(
+                    shadowUv
+                        + float2(tapX, tapY)
+                            * LocalShadowTexelSizes.x,
+                    slot),
+                projected.z - parameters.x);
+        }
+    }
+    return lerp(
+        1.0f,
+        visibility / 9.0f,
+        saturate(parameters.z));
+}
+
 float4 PrimitivePixelShader(PixelInput input) : SV_Target
 {
     float3 normal = normalize(input.normal);
@@ -326,11 +387,20 @@ float4 PrimitivePixelShader(PixelInput input) : SV_Target
         const float specular = pow(
             saturate(dot(normal, halfVector)),
             specularPower) * specularScale;
+        const uint shadowSlot =
+            (uint)SpotOuterCosine[spotIndex].y;
+        const float shadow = shadowSlot > 0u
+            ? EvaluateSpotShadow(
+                input.worldPosition,
+                normal,
+                shadowSlot - 1u)
+            : 1.0f;
         result += SpotColorIntensity[spotIndex].rgb
             * SpotColorIntensity[spotIndex].w
             * distanceAttenuation
             * coneAttenuation
             * coneAttenuation
+            * shadow
             * (diffuseColor * diffuse + specularColor * specular);
     }
     result += emissiveSample * EmissiveFactor.rgb;
@@ -668,7 +738,7 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 "ParticlePixelShader",
                 "ps_5_0");
 
-            std::array<D3D12_DESCRIPTOR_RANGE, 7> textureRanges{};
+            std::array<D3D12_DESCRIPTOR_RANGE, 8> textureRanges{};
             for (UINT index{}; index < textureRanges.size(); ++index)
             {
                 textureRanges[index].RangeType =
@@ -676,7 +746,7 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 textureRanges[index].NumDescriptors = 1;
                 textureRanges[index].BaseShaderRegister = index;
             }
-            std::array<D3D12_ROOT_PARAMETER, 8> parameters{};
+            std::array<D3D12_ROOT_PARAMETER, 9> parameters{};
             parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
             parameters[0].Descriptor.ShaderRegister = 0;
             parameters[0].Descriptor.RegisterSpace = 0;
@@ -886,7 +956,10 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
             std::array<LamaPon::D3D12Backend::ShaderResourceBinding, 6>
                 bindings{};
             LamaPon::D3D12Backend::ShaderResourceBinding shadowBinding{};
+            LamaPon::D3D12Backend::ShaderResourceBinding
+                spotShadowBinding{};
             bool directionalShadowActive{};
+            bool spotShadowTextureCurrent{};
             ID3D12DescriptorHeap* descriptorHeap{};
             if (!request.depthOnly)
             {
@@ -931,6 +1004,25 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                         return false;
                     }
                     shadowBinding = *fallbackShadow;
+                }
+                const auto resolvedSpotShadow =
+                    m_backend->TryResolveShaderResource(
+                        request.spotShadowTexture);
+                if (resolvedSpotShadow)
+                {
+                    spotShadowBinding = *resolvedSpotShadow;
+                    spotShadowTextureCurrent = true;
+                }
+                else
+                {
+                    const auto fallbackSpotShadow =
+                        m_backend->TryResolveShaderResource(
+                            request.fallbackTexture);
+                    if (!fallbackSpotShadow)
+                    {
+                        return false;
+                    }
+                    spotShadowBinding = *fallbackSpotShadow;
                 }
             }
             else if (!m_backend->IsShadowPassActive())
@@ -979,9 +1071,14 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 DirectX::XMFLOAT4 shadowCascadeSplits{};
                 DirectX::XMFLOAT4 shadowParameters{};
                 DirectX::XMFLOAT4 cameraForwardShadowTexel{};
+                std::array<DirectX::XMFLOAT4X4, 4>
+                    spotShadowViewProjections{};
+                std::array<DirectX::XMFLOAT4, 4>
+                    spotShadowParameters{};
+                DirectX::XMFLOAT4 localShadowTexelSizes{};
             } constants{};
             // HLSLのPrimitiveConstantsと同じ並び・大きさであることを保証します。
-            static_assert(sizeof(constants) == 1680u);
+            static_assert(sizeof(constants) == 2016u);
             const auto world = DirectX::XMLoadFloat4x4(&request.world);
             const auto view = DirectX::XMLoadFloat4x4(&request.view);
             const auto projection = DirectX::XMLoadFloat4x4(&request.projection);
@@ -1107,6 +1204,32 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 shadow.strength };
             constants.cameraForwardShadowTexel.w =
                 std::max(shadow.inverseResolution, 0.0f);
+            for (std::size_t slot{};
+                slot < request.spotShadows.size();
+                ++slot)
+            {
+                const auto& spotShadow = request.spotShadows[slot];
+                if (!spotShadowTextureCurrent
+                    || !spotShadow.enabled
+                    || spotShadow.lightIndex < 0
+                    || static_cast<std::size_t>(spotShadow.lightIndex)
+                        >= constants.lightCounts[2])
+                {
+                    continue;
+                }
+                constants.spotShadowViewProjections[slot] =
+                    spotShadow.lightViewProjection;
+                constants.spotShadowParameters[slot] = {
+                    spotShadow.bias,
+                    spotShadow.normalBias,
+                    spotShadow.strength,
+                    1.0f };
+                constants.spotOuterCosine[
+                    static_cast<std::size_t>(spotShadow.lightIndex)].y =
+                    static_cast<float>(slot + 1u);
+            }
+            constants.localShadowTexelSizes.x =
+                std::max(request.localShadowInverseResolution, 0.0f);
             const auto constantUpload = m_backend->AllocateFrameUpload(
                 sizeof(constants),
                 D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
@@ -1147,6 +1270,9 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 commandList->SetGraphicsRootDescriptorTable(
                     7,
                     shadowBinding.descriptor);
+                commandList->SetGraphicsRootDescriptorTable(
+                    8,
+                    spotShadowBinding.descriptor);
             }
             commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             commandList->IASetVertexBuffers(0, 1, &vertexView);

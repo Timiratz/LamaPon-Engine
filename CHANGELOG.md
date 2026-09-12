@@ -20,6 +20,7 @@
 - FBX ImporterをD3D11 DeviceなしでもCPU幾何・LOD・skin・animationとBackend-neutralなPNG／JPEG textureを生成できる構造へ分離し、DirectX 12のModelRendererでFBXを実描画する。D3D11では従来どおりGPU資源とmodel cacheを生成する。
 - DirectX 12で方向光カスケード・スポット配列・ポイントキューブ用のShadowMap資源を生成し、共通Scene traversalからMesh／Modelを深度専用pipelineへ描画する。通常描画先は各shadow pass後に復元し、半透明Particleはcasterから除外する。
 - DirectX 12の基本3D pipelineで方向光カスケードShadowMapを3x3 PCFサンプリングし、カスケード境界のブレンド、深度／法線bias、shadow strengthを反映する。影を無効にしたSceneとの画素比較をWARP回帰テストへ追加した。
+- DirectX 12のSpot Lightへ最大4灯の配列ShadowMapを接続し、ライトごとの射影、3x3 PCF、深度／法線bias、shadow strengthを直接光へ反映する。casterを無効にした画像との画素比較で遮蔽を検証する。
 - `GraphicsDevice`のAPI固有資源所有を抽象interface化し、D3D11のEffect・Shader・Sprite・Shadow・render serviceを単一の具象世代へ集約。停止・再生成・破棄を共通境界から呼ぶ構造へ移行。
 - Effect・Shader cache・Shadow・Environment・Clustered LightsなどDevice世代に属する高水準資源をD3D11内部所有へ分離。非同期Shader workerをAssetManagerより先に停止し、再初期化時に旧Device資源と未消費Screen Effect queueを安全に破棄する。
 - `GraphicsDevice`のnative D3D11 Device / Context / CommonStates / view resolverを非公開化し、D3D11描画島とテストだけがSDK非公開bridgeから利用する境界へ移行。API 64 Game Module向けの旧public binary symbolを維持し、Game Module APIを65へ更新。
