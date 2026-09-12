@@ -4,9 +4,10 @@
 
 #include <DirectXMath.h>
 
+#include <array>
+#include <cstdint>
 #include <functional>
 #include <span>
-#include <cstdint>
 
 namespace LamaPon
 {
@@ -51,6 +52,33 @@ namespace LamaPon
         DirectX::XMFLOAT2 textureCoordinate{};
     };
 
+    struct PrimitiveDirectionalLight final
+    {
+        DirectX::XMFLOAT3 direction{ 0.0f, -1.0f, 0.0f };
+        DirectX::XMFLOAT3 color{ 1.0f, 1.0f, 1.0f };
+        float intensity{ 1.0f };
+    };
+
+    struct PrimitivePointLight final
+    {
+        DirectX::XMFLOAT3 position{};
+        float range{ 10.0f };
+        DirectX::XMFLOAT3 color{ 1.0f, 1.0f, 1.0f };
+        float intensity{ 1.0f };
+    };
+
+    // directionは光の進む向き、cone cosineはSpotLightDataと同じ値です。
+    struct PrimitiveSpotLight final
+    {
+        DirectX::XMFLOAT3 position{};
+        float range{ 10.0f };
+        DirectX::XMFLOAT3 direction{ 0.0f, -1.0f, 0.0f };
+        float innerConeCosine{ 0.9238795f };
+        DirectX::XMFLOAT3 color{ 1.0f, 1.0f, 1.0f };
+        float intensity{ 1.0f };
+        float outerConeCosine{ 0.8191520f };
+    };
+
     // MeshRendererがAPI固有objectを持たずに送る最小3D描画要求です。
     // spanはDrawPrimitiveの同期呼び出し中だけ有効です。
     struct PrimitiveDrawRequest final
@@ -62,6 +90,15 @@ namespace LamaPon
         DirectX::XMFLOAT4X4 view{};
         DirectX::XMFLOAT4X4 projection{};
         DirectX::XMFLOAT4 baseColor{ 1.0f, 1.0f, 1.0f, 1.0f };
+        DirectX::XMFLOAT3 ambientColor{ 0.65f, 0.72f, 0.85f };
+        float ambientIntensity{ 0.35f };
+        std::array<PrimitiveDirectionalLight, 4> directionalLights{};
+        std::size_t directionalLightCount{};
+        // D3D11の定数buffer経路と同じ上限です（Point 16灯、Spot 8灯）。
+        std::array<PrimitivePointLight, 16> pointLights{};
+        std::size_t pointLightCount{};
+        std::array<PrimitiveSpotLight, 8> spotLights{};
+        std::size_t spotLightCount{};
         GraphicsViewHandle albedo;
         GraphicsViewHandle fallbackTexture;
         bool alphaBlend{};

@@ -10,6 +10,8 @@
 - DirectX 12 Backendへtexture資源（2D texture生成・mip単位更新・Shader Resource View）と、GPUの完了までresourceとdescriptorを保持する遅延解放を追加。`BeginSpritePass`は実効APIがDirectX 12の場合にD3D12の既定Sprite pipelineへ送り、DirectXTK SpriteBatchと同じ座標・UV・blend・scissor規則で描画する。D3D12 bootstrapのゲームは起動ロゴを表示でき、custom sprite shaderは既定pipelineへフォールバックする。
 - DirectX 12 Experimentalのゲームでも起動Sceneを読み込み、Game Module・入力・音声・Simulationを通常どおり更新して、Sprite／Text／Imageなどの2D/UI Componentを実画面へ描画する。D3D11固有GPU資源しか持たないModel Componentは初期化時に安全に保留し、対応pipeline完成まで描画をスキップする。
 - DirectX 12 ExperimentalへAPI-neutralな最小3D描画要求と専用pipelineを追加。起動SceneのCube／Sphere／Cylinder／Plane／Procedural Meshを、Transform・ベースカラー・albedo texture・深度・半透明を反映して2D/UIの背後へ描画する。Model、影、HDR/post-process、custom shaderは引き続き安全にスキップする。
+- DirectX 12の最小3D pipelineへSceneのAmbient Lightと最大4灯のDirectional Lightを接続。描画定数は今後Point／Spot LightやMaterial情報を追加できるconstant buffer経路へ移行した。
+- DirectX 12の最小3D pipelineへSceneのPoint Light（最大16灯）とSpot Light（最大8灯）を接続。D3D11の従来経路と同じ距離減衰とコーン減衰を、Lambert拡散へ掛けて描画する。
 - `GraphicsDevice`のAPI固有資源所有を抽象interface化し、D3D11のEffect・Shader・Sprite・Shadow・render serviceを単一の具象世代へ集約。停止・再生成・破棄を共通境界から呼ぶ構造へ移行。
 - Effect・Shader cache・Shadow・Environment・Clustered LightsなどDevice世代に属する高水準資源をD3D11内部所有へ分離。非同期Shader workerをAssetManagerより先に停止し、再初期化時に旧Device資源と未消費Screen Effect queueを安全に破棄する。
 - `GraphicsDevice`のnative D3D11 Device / Context / CommonStates / view resolverを非公開化し、D3D11描画島とテストだけがSDK非公開bridgeから利用する境界へ移行。API 64 Game Module向けの旧public binary symbolを維持し、Game Module APIを65へ更新。

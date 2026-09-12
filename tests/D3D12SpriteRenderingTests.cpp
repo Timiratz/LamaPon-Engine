@@ -1,6 +1,9 @@
 #include "LamaPon/Assets/AssetManager.h"
 #include "LamaPon/Components/CameraComponent.h"
+#include "LamaPon/Components/DirectionalLightComponent.h"
 #include "LamaPon/Components/MeshRendererComponent.h"
+#include "LamaPon/Components/PointLightComponent.h"
+#include "LamaPon/Components/SpotLightComponent.h"
 #include "LamaPon/Core/Log.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Graphics/SpriteRendering.h"
@@ -399,6 +402,10 @@ namespace
         cameraObject.GetTransform().position = { 0.0f, 0.0f, 4.0f };
         auto& camera = cameraObject.AddComponent<LamaPon::CameraComponent>();
         scene.SetMainCamera(camera);
+        scene.SetAmbientLightColor({ 0.2f, 0.25f, 0.35f });
+        scene.SetAmbientLightIntensity(0.2f);
+        auto& lightObject = scene.CreateGameObject("Sun");
+        lightObject.AddComponent<LamaPon::DirectionalLightComponent>();
 
         const std::array shapes{
             LamaPon::PrimitiveShape::Cube,
@@ -461,6 +468,106 @@ namespace
         Require(
             coloredPixels > 300u,
             "The DirectX 12 scene did not render its primitive meshes");
+    }
+
+    // Point LightとSpot Lightが、D3D11の従来経路と同じ距離・コーン減衰で
+    // 壁を照らすことを、各光源の当たる点と届かない点の画素で確かめます。
+    void RequireD3D12PointAndSpotLights()
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap);
+        LamaPon::Scene scene(graphics);
+        auto& cameraObject = scene.CreateGameObject("MainCamera");
+        cameraObject.GetTransform().position = { 0.0f, 0.0f, 4.0f };
+        auto& camera = cameraObject.AddComponent<LamaPon::CameraComponent>();
+        scene.SetMainCamera(camera);
+        // 環境光もDirectional Lightも置かず、局所光源だけの明るさを見ます。
+        scene.SetAmbientLightIntensity(0.0f);
+
+        // 正面（+Z面）がz=0.05にある薄い灰色の壁です。
+        auto& wall = scene.CreateGameObject("Wall");
+        wall.GetTransform().scale = { 3.0f, 1.6f, 0.1f };
+        wall.AddComponent<LamaPon::MeshRendererComponent>(
+            LamaPon::PrimitiveShape::Cube,
+            DirectX::XMFLOAT4{ 0.8f, 0.8f, 0.8f, 1.0f });
+
+        auto& pointObject = scene.CreateGameObject("PointLight");
+        pointObject.GetTransform().position = { -0.8f, 0.0f, 0.6f };
+        pointObject.AddComponent<LamaPon::PointLightComponent>(
+            DirectX::XMFLOAT3{ 1.0f, 1.0f, 1.0f },
+            3.0f,
+            2.0f);
+
+        // 回転の無いSpot Lightは-Zを向くため、壁の正面へ当たります。
+        auto& spotObject = scene.CreateGameObject("SpotLight");
+        spotObject.GetTransform().position = { 0.9f, 0.0f, 1.2f };
+        spotObject.AddComponent<LamaPon::SpotLightComponent>(
+            DirectX::XMFLOAT3{ 1.0f, 1.0f, 1.0f },
+            3.0f,
+            3.0f,
+            DirectX::XMConvertToRadians(8.0f),
+            DirectX::XMConvertToRadians(12.0f));
+
+        constexpr float clearColor[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+        const float aspectRatio =
+            static_cast<float>(CanvasWidth) / CanvasHeight;
+        graphics.BeginFrame(clearColor);
+        scene.RenderMainCamera(aspectRatio, false, nullptr);
+        std::uint32_t width{};
+        std::uint32_t height{};
+        const auto pixels = graphics.CaptureBackBuffer(width, height);
+        graphics.EndFrame();
+        Require(
+            width == CanvasWidth && height == CanvasHeight,
+            "The DirectX 12 local light capture has unexpected dimensions");
+
+        const auto viewProjection = DirectX::XMMatrixMultiply(
+            camera.ViewMatrix(),
+            camera.ProjectionMatrix(aspectRatio));
+        const auto brightnessAt = [&](const DirectX::XMFLOAT3& world)
+        {
+            const auto clip = DirectX::XMVector3TransformCoord(
+                DirectX::XMLoadFloat3(&world),
+                viewProjection);
+            const int x = std::clamp(
+                static_cast<int>(
+                    (DirectX::XMVectorGetX(clip) * 0.5f + 0.5f)
+                    * static_cast<float>(CanvasWidth)),
+                0,
+                static_cast<int>(CanvasWidth) - 1);
+            const int y = std::clamp(
+                static_cast<int>(
+                    (0.5f - DirectX::XMVectorGetY(clip) * 0.5f)
+                    * static_cast<float>(CanvasHeight)),
+                0,
+                static_cast<int>(CanvasHeight) - 1);
+            const auto offset =
+                (static_cast<std::size_t>(y) * CanvasWidth
+                    + static_cast<std::size_t>(x)) * 4u;
+            return std::max({
+                pixels[offset],
+                pixels[offset + 1u],
+                pixels[offset + 2u] });
+        };
+
+        Require(
+            brightnessAt({ -0.8f, 0.0f, 0.05f }) > 200u,
+            "The DirectX 12 point light did not light the wall");
+        Require(
+            brightnessAt({ 0.9f, 0.0f, 0.05f }) > 180u,
+            "The DirectX 12 spot light did not light the wall");
+        Require(
+            brightnessAt({ 0.9f, 0.6f, 0.05f }) < 20u,
+            "The DirectX 12 spot light leaked outside its cone");
+        Require(
+            brightnessAt({ 1.4f, -0.7f, 0.05f }) < 20u,
+            "The DirectX 12 local lights leaked beyond their range");
     }
 
     void RequireMatchingCaptures(
@@ -566,6 +673,7 @@ int main()
             LamaPon::GraphicsStartupProfile::
                 AllowD3D12ExperimentalBootstrap);
         RequireD3D12PrimitiveScene();
+        RequireD3D12PointAndSpotLights();
         LamaPon::GraphicsDevice::SetEnableDebugLayer(false);
         RequireNoD3D12DebugErrors();
         RequireMatchingCaptures(d3d11, d3d12);

@@ -28,6 +28,16 @@ cbuffer PrimitiveConstants : register(b0)
     row_major float4x4 WorldViewProjection;
     row_major float4x4 World;
     float4 BaseColor;
+    float4 AmbientColorIntensity;
+    float4 DirectionalDirectionIntensity[4];
+    float4 DirectionalColors[4];
+    uint4 LightCounts;
+    float4 PointPositionRange[16];
+    float4 PointColorIntensity[16];
+    float4 SpotPositionRange[8];
+    float4 SpotDirectionInnerCosine[8];
+    float4 SpotColorIntensity[8];
+    float4 SpotOuterCosine[8];
 };
 
 Texture2D AlbedoTexture : register(t0);
@@ -43,6 +53,7 @@ struct VertexInput
 struct PixelInput
 {
     float4 position : SV_Position;
+    float3 worldPosition : TEXCOORD1;
     float3 normal : NORMAL;
     float2 textureCoordinate : TEXCOORD;
 };
@@ -51,6 +62,7 @@ PixelInput PrimitiveVertexShader(VertexInput input)
 {
     PixelInput output;
     output.position = mul(float4(input.position, 1.0f), WorldViewProjection);
+    output.worldPosition = mul(float4(input.position, 1.0f), World).xyz;
     output.normal = normalize(mul(float4(input.normal, 0.0f), World).xyz);
     output.textureCoordinate = input.textureCoordinate;
     return output;
@@ -58,9 +70,56 @@ PixelInput PrimitiveVertexShader(VertexInput input)
 
 float4 PrimitivePixelShader(PixelInput input) : SV_Target
 {
-    const float3 lightDirection = normalize(float3(-0.45f, 0.8f, -0.3f));
-    const float diffuse = saturate(dot(normalize(input.normal), lightDirection));
-    const float lighting = 0.28f + diffuse * 0.72f;
+    const float3 normal = normalize(input.normal);
+    float3 lighting = AmbientColorIntensity.rgb * AmbientColorIntensity.w;
+    [loop]
+    for (uint index = 0; index < min(LightCounts.x, 4u); ++index)
+    {
+        const float diffuse = saturate(dot(
+            normal,
+            normalize(-DirectionalDirectionIntensity[index].xyz)));
+        lighting += DirectionalColors[index].rgb
+            * DirectionalDirectionIntensity[index].w
+            * diffuse;
+    }
+
+    // Point / SpotはD3D11の従来経路（LamaPonLit.hlsl）と同じ距離減衰と
+    // コーン減衰を、この最小pipelineのLambert拡散へ掛けます。
+    [loop]
+    for (uint pointIndex = 0; pointIndex < min(LightCounts.y, 16u); ++pointIndex)
+    {
+        const float3 delta = PointPositionRange[pointIndex].xyz - input.worldPosition;
+        const float lightDistance = length(delta);
+        const float range = max(PointPositionRange[pointIndex].w, 0.001f);
+        const float attenuation = pow(saturate(1.0f - lightDistance / range), 2.0f);
+        const float diffuse = saturate(dot(normal, delta / max(lightDistance, 0.0001f)));
+        lighting += PointColorIntensity[pointIndex].rgb
+            * PointColorIntensity[pointIndex].w
+            * attenuation
+            * diffuse;
+    }
+
+    [loop]
+    for (uint spotIndex = 0; spotIndex < min(LightCounts.z, 8u); ++spotIndex)
+    {
+        const float3 lightToPixel = input.worldPosition - SpotPositionRange[spotIndex].xyz;
+        const float lightDistance = length(lightToPixel);
+        const float range = max(SpotPositionRange[spotIndex].w, 0.001f);
+        const float3 rayDirection = lightToPixel / max(lightDistance, 0.0001f);
+        const float cone = dot(normalize(SpotDirectionInnerCosine[spotIndex].xyz), rayDirection);
+        const float coneAttenuation = smoothstep(
+            SpotOuterCosine[spotIndex].x,
+            SpotDirectionInnerCosine[spotIndex].w,
+            cone);
+        const float distanceAttenuation = pow(saturate(1.0f - lightDistance / range), 2.0f);
+        const float diffuse = saturate(dot(normal, -rayDirection));
+        lighting += SpotColorIntensity[spotIndex].rgb
+            * SpotColorIntensity[spotIndex].w
+            * distanceAttenuation
+            * coneAttenuation
+            * coneAttenuation
+            * diffuse;
+    }
     const float4 albedo = AlbedoTexture.Sample(AlbedoSampler, input.textureCoordinate);
     return float4(albedo.rgb * BaseColor.rgb * lighting, albedo.a * BaseColor.a);
 }
@@ -311,8 +370,9 @@ float4 PrimitivePixelShader(PixelInput input) : SV_Target
             textureRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
             textureRange.NumDescriptors = 1;
             D3D12_ROOT_PARAMETER parameters[2]{};
-            parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-            parameters[0].Constants.Num32BitValues = 36;
+            parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+            parameters[0].Descriptor.ShaderRegister = 0;
+            parameters[0].Descriptor.RegisterSpace = 0;
             parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
             parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
             parameters[1].DescriptorTable.NumDescriptorRanges = 1;
@@ -410,7 +470,20 @@ float4 PrimitivePixelShader(PixelInput input) : SV_Target
                 DirectX::XMFLOAT4X4 worldViewProjection;
                 DirectX::XMFLOAT4X4 world;
                 DirectX::XMFLOAT4 baseColor;
+                DirectX::XMFLOAT4 ambientColorIntensity;
+                std::array<DirectX::XMFLOAT4, 4>
+                    directionalDirectionIntensity{};
+                std::array<DirectX::XMFLOAT4, 4> directionalColors{};
+                std::array<std::uint32_t, 4> lightCounts{};
+                std::array<DirectX::XMFLOAT4, 16> pointPositionRange{};
+                std::array<DirectX::XMFLOAT4, 16> pointColorIntensity{};
+                std::array<DirectX::XMFLOAT4, 8> spotPositionRange{};
+                std::array<DirectX::XMFLOAT4, 8> spotDirectionInnerCosine{};
+                std::array<DirectX::XMFLOAT4, 8> spotColorIntensity{};
+                std::array<DirectX::XMFLOAT4, 8> spotOuterCosine{};
             } constants{};
+            // HLSLのPrimitiveConstantsと同じ並び・大きさであることを保証します。
+            static_assert(sizeof(constants) == 1328u);
             const auto world = DirectX::XMLoadFloat4x4(&request.world);
             const auto view = DirectX::XMLoadFloat4x4(&request.view);
             const auto projection = DirectX::XMLoadFloat4x4(&request.projection);
@@ -420,6 +493,89 @@ float4 PrimitivePixelShader(PixelInput input) : SV_Target
                     DirectX::XMMatrixMultiply(world, view), projection));
             constants.world = request.world;
             constants.baseColor = request.baseColor;
+            // D3D11のLitEffectと同じく、負の環境光強度は0へ丸めます。
+            constants.ambientColorIntensity = {
+                request.ambientColor.x,
+                request.ambientColor.y,
+                request.ambientColor.z,
+                std::max(request.ambientIntensity, 0.0f) };
+            constants.lightCounts[0] = static_cast<std::uint32_t>(
+                std::min(
+                    request.directionalLightCount,
+                    request.directionalLights.size()));
+            for (std::size_t index{};
+                index < constants.lightCounts[0];
+                ++index)
+            {
+                const auto& light = request.directionalLights[index];
+                constants.directionalDirectionIntensity[index] = {
+                    light.direction.x,
+                    light.direction.y,
+                    light.direction.z,
+                    light.intensity };
+                constants.directionalColors[index] = {
+                    light.color.x,
+                    light.color.y,
+                    light.color.z,
+                    1.0f };
+            }
+            constants.lightCounts[1] = static_cast<std::uint32_t>(
+                std::min(
+                    request.pointLightCount,
+                    request.pointLights.size()));
+            for (std::size_t index{};
+                index < constants.lightCounts[1];
+                ++index)
+            {
+                const auto& light = request.pointLights[index];
+                constants.pointPositionRange[index] = {
+                    light.position.x,
+                    light.position.y,
+                    light.position.z,
+                    light.range };
+                constants.pointColorIntensity[index] = {
+                    light.color.x,
+                    light.color.y,
+                    light.color.z,
+                    light.intensity };
+            }
+            constants.lightCounts[2] = static_cast<std::uint32_t>(
+                std::min(
+                    request.spotLightCount,
+                    request.spotLights.size()));
+            for (std::size_t index{};
+                index < constants.lightCounts[2];
+                ++index)
+            {
+                const auto& light = request.spotLights[index];
+                constants.spotPositionRange[index] = {
+                    light.position.x,
+                    light.position.y,
+                    light.position.z,
+                    light.range };
+                constants.spotDirectionInnerCosine[index] = {
+                    light.direction.x,
+                    light.direction.y,
+                    light.direction.z,
+                    light.innerConeCosine };
+                constants.spotColorIntensity[index] = {
+                    light.color.x,
+                    light.color.y,
+                    light.color.z,
+                    light.intensity };
+                constants.spotOuterCosine[index] = {
+                    light.outerConeCosine,
+                    0.0f,
+                    0.0f,
+                    0.0f };
+            }
+            const auto constantUpload = m_backend->AllocateFrameUpload(
+                sizeof(constants),
+                D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+            std::memcpy(
+                constantUpload.data,
+                &constants,
+                sizeof(constants));
 
             const D3D12_VERTEX_BUFFER_VIEW vertexView{
                 vertexUpload.gpuAddress,
@@ -435,8 +591,9 @@ float4 PrimitivePixelShader(PixelInput input) : SV_Target
             commandList->SetGraphicsRootSignature(m_rootSignature.Get());
             commandList->SetPipelineState(pipeline);
             commandList->SetDescriptorHeaps(1, heaps);
-            commandList->SetGraphicsRoot32BitConstants(
-                0, 36, &constants, 0);
+            commandList->SetGraphicsRootConstantBufferView(
+                0,
+                constantUpload.gpuAddress);
             commandList->SetGraphicsRootDescriptorTable(1, binding->descriptor);
             commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             commandList->IASetVertexBuffers(0, 1, &vertexView);

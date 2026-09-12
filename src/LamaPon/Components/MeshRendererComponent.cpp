@@ -108,6 +108,60 @@ namespace
             ? resources->shaderResourceView
             : LamaPon::GraphicsViewHandle{};
     }
+
+    // Sceneが集めたライトを、API固有の定数bufferを知らない最小3D描画要求へ
+    // 写します。灯数の上限は描画要求の配列（D3D11の従来経路と同じ）です。
+    void CopyPrimitiveLighting(
+        const LamaPon::LightingState& lighting,
+        LamaPon::PrimitiveDrawRequest& request) noexcept
+    {
+        request.ambientColor = lighting.ambientColor;
+        request.ambientIntensity = lighting.ambientIntensity;
+        request.directionalLightCount = std::min(
+            request.directionalLights.size(),
+            lighting.directionalLightCount);
+        for (std::size_t index{};
+            index < request.directionalLightCount;
+            ++index)
+        {
+            const auto& source = lighting.directionalLights[index];
+            request.directionalLights[index] = {
+                source.direction,
+                source.color,
+                source.intensity };
+        }
+        request.pointLightCount = std::min(
+            request.pointLights.size(),
+            lighting.pointLightCount);
+        for (std::size_t index{};
+            index < request.pointLightCount;
+            ++index)
+        {
+            const auto& source = lighting.pointLights[index];
+            request.pointLights[index] = {
+                source.position,
+                source.range,
+                source.color,
+                source.intensity };
+        }
+        request.spotLightCount = std::min(
+            request.spotLights.size(),
+            lighting.spotLightCount);
+        for (std::size_t index{};
+            index < request.spotLightCount;
+            ++index)
+        {
+            const auto& source = lighting.spotLights[index];
+            request.spotLights[index] = {
+                source.position,
+                source.range,
+                source.direction,
+                source.innerConeCosine,
+                source.color,
+                source.intensity,
+                source.outerConeCosine };
+        }
+    }
 }
 
 namespace LamaPon
@@ -1083,6 +1137,7 @@ namespace LamaPon
             DirectX::XMStoreFloat4x4(&request.view, view);
             DirectX::XMStoreFloat4x4(&request.projection, projection);
             request.baseColor = m_material.BaseColor();
+            CopyPrimitiveLighting(m_graphics->Lighting(), request);
             const auto textures = BuildLitTextureRequest();
             request.albedo = textures.albedo;
             request.fallbackTexture =

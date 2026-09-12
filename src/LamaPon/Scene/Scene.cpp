@@ -6124,6 +6124,7 @@ namespace LamaPon
             };
             if (m_mainCamera != nullptr && m_mainCamera->IsEnabled())
             {
+                m_graphics.SetLightingState(BuildLightingState());
                 const auto view = m_mainCamera->ViewMatrix();
                 const auto projection =
                     m_mainCamera->ProjectionMatrix(aspectRatio);
