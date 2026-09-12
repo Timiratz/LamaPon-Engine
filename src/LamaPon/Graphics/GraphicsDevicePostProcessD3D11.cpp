@@ -105,6 +105,15 @@ namespace LamaPon
     void GraphicsDevice::CopyOffscreenTargetToBackBuffer(
         const RenderTarget& target)
     {
+        CopyOffscreenTargetToBackBuffer(
+            target,
+            ColorGradingSettings{});
+    }
+
+    void GraphicsDevice::CopyOffscreenTargetToBackBuffer(
+        const RenderTarget& target,
+        const ColorGradingSettings& colorGrading)
+    {
         if (ActiveRenderingApi()
             == RenderingApi::DirectX12Experimental)
         {
@@ -119,8 +128,9 @@ namespace LamaPon
                     "DirectX 12 target.");
             }
 
-            // HDR表示用資源へ確定し、D3D12 Sprite rendererの
-            // 最終合成専用ACES近似pipelineで画面全体へ転写します。
+            // HDR表示用資源へ確定し、D3D12 Sprite rendererの最終合成
+            // 専用pipelineでカラーグレーディングとACES近似を掛けて
+            // 画面全体へ転写します。
             auto& mutableTarget = const_cast<RenderTarget&>(target);
             m_state->m_backend->PublishOffscreenTarget(mutableTarget);
             m_state->m_backend->BindBackBuffer();
@@ -135,9 +145,10 @@ namespace LamaPon
                 throw std::logic_error(
                     "The DirectX 12 scene compositor is not initialized.");
             }
-            renderer->CompositeToneMapped(
+            renderer->CompositeScene(
                 target.DisplayViewHandle(),
-                m_state->m_whiteTextureView);
+                m_state->m_whiteTextureView,
+                colorGrading);
             return;
         }
 
@@ -272,6 +283,43 @@ namespace LamaPon
         RenderTarget& target,
         const BloomSettings& settings)
     {
+        if (ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            if (!IsInitialized()
+                || !target.IsValid()
+                || !IsGraphicsViewCurrent(
+                    target.CurrentColorViewHandle())
+                || !IsGraphicsViewCurrent(
+                    target.DepthViewHandle()))
+            {
+                throw std::invalid_argument(
+                    "ApplyOffscreenTargetBloom requires a target owned by "
+                    "the active backend.");
+            }
+            if (!settings.enabled)
+            {
+                return;
+            }
+            auto* const resources = dynamic_cast<
+                Detail::GraphicsDeviceD3D12Resources*>(
+                    m_state->m_apiResources.get());
+            auto* const renderer = resources != nullptr
+                ? resources->TrySpriteRenderer()
+                : nullptr;
+            if (renderer == nullptr)
+            {
+                throw std::logic_error(
+                    "The DirectX 12 post-process renderer is not "
+                    "initialized.");
+            }
+            renderer->ApplyBloom(
+                target,
+                m_state->m_whiteTextureView,
+                settings);
+            return;
+        }
+
         auto& targetState = RequireCurrentOffscreenTarget(
             *this,
             target,

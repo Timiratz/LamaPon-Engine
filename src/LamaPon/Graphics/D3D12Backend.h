@@ -227,6 +227,14 @@ namespace LamaPon
         {
             return m_activeDepthFormat;
         }
+        // Post-process passの入口です。current colorをSRVとして読める状態で
+        // post colorを描画先へbindし、読み取り用のviewを返します。Endは
+        // current / postを交換してtargetを再bindし、Abortは交換せずに
+        // 元のcurrent colorへ戻します。
+        [[nodiscard]] GraphicsViewHandle BeginOffscreenPostProcess(
+            RenderTarget& target);
+        void EndOffscreenPostProcess(RenderTarget& target);
+        void AbortOffscreenPostProcess(RenderTarget& target) noexcept;
 
     private:
         static constexpr std::size_t BackBufferCount = 2;

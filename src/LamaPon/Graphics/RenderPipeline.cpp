@@ -154,10 +154,16 @@ namespace LamaPon
         if (graphics.ActiveRenderingApi()
             == RenderingApi::DirectX12Experimental)
         {
-            // D3D12の基本RenderTargetはまだLDRで、この関数が
-            // 呼ぶ各post-processはD3D11専用です。名前付き
-            // Camera targetの素の描画結果は呼び出し側が
-            // Publishするため、HDR pipeline移植までは安全に無処理とします。
+            // D3D12は移植済みのBloomだけをHDRのうちに適用します。
+            // トーンマップとカラーグレーディングは最終合成で行い、
+            // TAA・SSAO・FXAAなど未移植のpassは安全に無処理とします。
+            auto effectiveBloom = frame.bloom;
+            effectiveBloom.enabled =
+                effectiveBloom.enabled
+                && graphics.Settings().bloomEnabled;
+            graphics.ApplyOffscreenTargetBloom(
+                target,
+                effectiveBloom);
             return;
         }
 

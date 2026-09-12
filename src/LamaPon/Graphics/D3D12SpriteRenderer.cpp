@@ -1,6 +1,7 @@
 #include "LamaPon/Graphics/D3D12SpriteRenderer.h"
 
 #include "LamaPon/Graphics/D3D12Backend.h"
+#include "LamaPon/Graphics/EnvironmentSettings.h"
 
 #include <d3dcompiler.h>
 
@@ -26,6 +27,14 @@ namespace
 cbuffer SpriteViewport : register(b0)
 {
     float2 ViewportScale;
+};
+
+// 最終合成とpost-processのfullscreen passが共用するroot constantsです。
+// 意味はpixel shaderごとに異なります。
+cbuffer FullscreenPass : register(b1)
+{
+    float4 PassPrimary;
+    float4 PassSecondary;
 };
 
 Texture2D SpriteTexture : register(t0);
@@ -64,15 +73,102 @@ float4 SpritePixelShader(PixelInput input) : SV_Target
         * input.color;
 }
 
+float Luminance(float3 color)
+{
+    return dot(color, float3(0.2126f, 0.7152f, 0.0722f));
+}
+
+float3 ACESFilm(float3 color)
+{
+    return saturate(
+        color * (2.51f * color + 0.03f)
+        / (color * (2.43f * color + 0.59f) + 0.14f));
+}
+
 float4 ToneMappedPixelShader(PixelInput input) : SV_Target
 {
-    const float4 sampled = SpriteTexture.Sample(
-        SpriteSampler,
-        input.textureCoordinate) * input.color;
-    const float3 mapped = saturate(
-        sampled.rgb * (2.51f * sampled.rgb + 0.03f)
-        / (sampled.rgb * (2.43f * sampled.rgb + 0.59f) + 0.14f));
-    return float4(pow(mapped, 1.0f / 2.2f), sampled.a);
+    // 露出、コントラスト、彩度、色温度と、色合い、周辺減光、有効状態、
+    // 自動露出の補正（段数）です。
+    const float4 ColorGradePrimary = PassPrimary;
+    const float4 ColorGradeSecondary = PassSecondary;
+    float3 color = max(
+        SpriteTexture.Sample(
+            SpriteSampler,
+            input.textureCoordinate).rgb * input.color.rgb,
+        0.0f);
+    const float gradingEnabled = saturate(ColorGradeSecondary.z);
+    const float exposure = lerp(
+        0.0f,
+        ColorGradePrimary.x,
+        gradingEnabled);
+    const float temperature = lerp(
+        0.0f,
+        ColorGradePrimary.w,
+        gradingEnabled);
+    const float tint = lerp(
+        0.0f,
+        ColorGradeSecondary.x,
+        gradingEnabled);
+    const float3 whiteBalance = max(float3(
+        1.0f + temperature * 0.16f - tint * 0.05f,
+        1.0f + tint * 0.10f,
+        1.0f - temperature * 0.16f - tint * 0.05f),
+        0.05f);
+    color *= exp2(exposure + ColorGradeSecondary.w) * whiteBalance;
+    color = ACESFilm(color);
+
+    const float luminance = Luminance(color);
+    color = lerp(
+        luminance.xxx,
+        color,
+        lerp(1.0f, max(ColorGradePrimary.z, 0.0f), gradingEnabled));
+    color = (color - 0.5f)
+        * lerp(1.0f, max(ColorGradePrimary.y, 0.0f), gradingEnabled)
+        + 0.5f;
+
+    const float2 centered = input.textureCoordinate * 2.0f - 1.0f;
+    const float vignetteShape = saturate(
+        1.0f - dot(centered, centered) * 0.42f);
+    color *= lerp(
+        1.0f,
+        vignetteShape,
+        lerp(
+            0.0f,
+            saturate(ColorGradeSecondary.y),
+            gradingEnabled));
+    // D3D11のPSToneMapと同じく、UNORMのバックバッファへgamma変換なしで
+    // 書きます。Tone Mapping無効時の単純copyとも明るさの基準が揃います。
+    return float4(saturate(color), 1.0f);
+}
+
+// LamaPonEnvironment.hlslのBrightColor / PSBloomと同じ9tapです。
+// PassPrimary.xy=1/出力サイズ, z=しきい値, w=強さ, PassSecondary.x=半径。
+float3 BrightColor(float2 uv)
+{
+    const float3 color = SpriteTexture.Sample(SpriteSampler, uv).rgb;
+    const float brightness = max(
+        color.r,
+        max(color.g, color.b));
+    return color * saturate(
+        (brightness - PassPrimary.z)
+        / max(brightness, 0.0001f));
+}
+
+float4 BloomPixelShader(PixelInput input) : SV_Target
+{
+    const float2 uv = input.textureCoordinate;
+    const float4 source = SpriteTexture.Sample(SpriteSampler, uv);
+    const float2 offset = PassPrimary.xy * PassSecondary.x;
+    float3 bloom = BrightColor(uv) * 0.2f;
+    bloom += BrightColor(uv + float2(offset.x, 0.0f)) * 0.12f;
+    bloom += BrightColor(uv - float2(offset.x, 0.0f)) * 0.12f;
+    bloom += BrightColor(uv + float2(0.0f, offset.y)) * 0.12f;
+    bloom += BrightColor(uv - float2(0.0f, offset.y)) * 0.12f;
+    bloom += BrightColor(uv + offset) * 0.08f;
+    bloom += BrightColor(uv - offset) * 0.08f;
+    bloom += BrightColor(uv + float2(offset.x, -offset.y)) * 0.08f;
+    bloom += BrightColor(uv + float2(-offset.x, offset.y)) * 0.08f;
+    return float4(source.rgb + bloom * PassPrimary.w, source.a);
 }
 )";
 
@@ -298,6 +394,9 @@ namespace LamaPon::Detail
         m_toneMapPixelShader = CompileSpriteShader(
             "ToneMappedPixelShader",
             "ps_5_0");
+        m_bloomPixelShader = CompileSpriteShader(
+            "BloomPixelShader",
+            "ps_5_0");
 
         D3D12_DESCRIPTOR_RANGE textureRange{};
         textureRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
@@ -306,7 +405,7 @@ namespace LamaPon::Detail
         textureRange.RegisterSpace = 0;
         textureRange.OffsetInDescriptorsFromTableStart = 0;
 
-        std::array<D3D12_ROOT_PARAMETER, 2> parameters{};
+        std::array<D3D12_ROOT_PARAMETER, 3> parameters{};
         parameters[0].ParameterType =
             D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
         parameters[0].Constants.ShaderRegister = 0;
@@ -318,6 +417,12 @@ namespace LamaPon::Detail
         parameters[1].DescriptorTable.NumDescriptorRanges = 1;
         parameters[1].DescriptorTable.pDescriptorRanges = &textureRange;
         parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        parameters[2].ParameterType =
+            D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        parameters[2].Constants.ShaderRegister = 1;
+        parameters[2].Constants.RegisterSpace = 0;
+        parameters[2].Constants.Num32BitValues = 8;
+        parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
         // SpriteBatch既定のLinearClampと同じsamplerです。
         D3D12_STATIC_SAMPLER_DESC sampler{};
@@ -464,7 +569,7 @@ namespace LamaPon::Detail
 
         status = std::move(preparedStatus);
         m_blend = description.blend;
-        m_toneMapped = false;
+        m_program = FullscreenProgram::None;
         m_fallbackTexture = fallbackTexture;
         m_sprites.clear();
         m_scissorStack.clear();
@@ -663,9 +768,71 @@ namespace LamaPon::Detail
         ClearPass();
     }
 
-    void D3D12SpriteRenderer::CompositeToneMapped(
+    void D3D12SpriteRenderer::CompositeScene(
         const GraphicsViewHandle& texture,
-        const GraphicsViewHandle& fallbackTexture)
+        const GraphicsViewHandle& fallbackTexture,
+        const ColorGradingSettings& colorGrading)
+    {
+        DrawFullscreen(
+            texture,
+            fallbackTexture,
+            colorGrading.toneMappingEnabled
+                ? FullscreenProgram::ToneMap
+                : FullscreenProgram::None,
+            {
+                std::clamp(colorGrading.exposure, -8.0f, 8.0f),
+                std::clamp(colorGrading.contrast, 0.0f, 4.0f),
+                std::clamp(colorGrading.saturation, 0.0f, 4.0f),
+                std::clamp(colorGrading.temperature, -2.0f, 2.0f),
+                std::clamp(colorGrading.tint, -2.0f, 2.0f),
+                std::clamp(colorGrading.vignette, 0.0f, 1.0f),
+                colorGrading.enabled ? 1.0f : 0.0f,
+                std::clamp(colorGrading.autoExposureStops, -16.0f, 16.0f)
+            });
+    }
+
+    void D3D12SpriteRenderer::ApplyBloom(
+        RenderTarget& target,
+        const GraphicsViewHandle& fallbackTexture,
+        const BloomSettings& settings)
+    {
+        if (!settings.enabled)
+        {
+            return;
+        }
+        const auto source = m_backend->BeginOffscreenPostProcess(target);
+        try
+        {
+            // EnvironmentRenderer::ApplyBloomと同じ範囲へ丸めます。
+            const auto& viewport = m_backend->ActiveViewport();
+            DrawFullscreen(
+                source,
+                fallbackTexture,
+                FullscreenProgram::Bloom,
+                {
+                    1.0f / std::max(viewport.Width, 1.0f),
+                    1.0f / std::max(viewport.Height, 1.0f),
+                    std::clamp(settings.threshold, 0.0f, 4.0f),
+                    std::clamp(settings.intensity, 0.0f, 8.0f),
+                    std::clamp(settings.radius, 0.25f, 12.0f),
+                    0.0f,
+                    0.0f,
+                    0.0f
+                });
+        }
+        catch (...)
+        {
+            m_backend->AbortOffscreenPostProcess(target);
+            throw;
+        }
+        m_backend->EndOffscreenPostProcess(target);
+    }
+
+    void D3D12SpriteRenderer::DrawFullscreen(
+        const GraphicsViewHandle& texture,
+        const GraphicsViewHandle& fallbackTexture,
+        const FullscreenProgram program,
+        const std::array<float, 8>& constants)
     {
         const auto binding = m_backend->TryResolveShaderResource(texture);
         const auto& viewport = m_backend->ActiveViewport();
@@ -676,8 +843,8 @@ namespace LamaPon::Detail
             || viewport.Height <= 0.0f)
         {
             throw std::invalid_argument(
-                "Tone-mapped composition requires a current texture and "
-                "output viewport.");
+                "A DirectX 12 fullscreen pass requires a current texture "
+                "and output viewport.");
         }
         SpritePassDescription description;
         description.blend = SpriteBlendMode::Opaque;
@@ -686,7 +853,8 @@ namespace LamaPon::Detail
             description,
             fallbackTexture,
             status);
-        m_toneMapped = true;
+        m_program = program;
+        m_passConstants = constants;
         try
         {
             SpriteDrawRequest request;
@@ -697,8 +865,8 @@ namespace LamaPon::Detail
             if (!Draw(token, request))
             {
                 throw std::runtime_error(
-                    "The HDR scene texture was rejected by the DirectX "
-                    "12 compositor.");
+                    "The texture was rejected by the DirectX 12 "
+                    "fullscreen pass.");
             }
             End(token);
         }
@@ -739,7 +907,7 @@ namespace LamaPon::Detail
         m_sprites.clear();
         m_scissorStack.clear();
         m_fallbackTexture.Reset();
-        m_toneMapped = false;
+        m_program = FullscreenProgram::None;
         m_activeToken = 0;
     }
 
@@ -771,7 +939,7 @@ namespace LamaPon::Detail
             m_blend,
             !m_scissorStack.empty(),
             m_backend->ActiveColorFormat(),
-            m_toneMapped);
+            m_program);
 
         const auto upload = m_backend->AllocateFrameUpload(
             vertexBytes,
@@ -818,6 +986,14 @@ namespace LamaPon::Detail
             static_cast<UINT>(viewportScale.size()),
             viewportScale.data(),
             0);
+        if (m_program != FullscreenProgram::None)
+        {
+            commandList->SetGraphicsRoot32BitConstants(
+                2,
+                static_cast<UINT>(m_passConstants.size()),
+                m_passConstants.data(),
+                0);
+        }
         commandList->IASetPrimitiveTopology(
             D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         commandList->IASetVertexBuffers(0, 1, &vertexBufferView);
@@ -857,13 +1033,18 @@ namespace LamaPon::Detail
         const SpriteBlendMode blend,
         const bool scissored,
         const DXGI_FORMAT colorFormat,
-        const bool toneMapped)
+        const FullscreenProgram program)
     {
         const auto blendIndex = static_cast<std::size_t>(blend);
         if (blend > SpriteBlendMode::Opaque)
         {
             throw std::invalid_argument(
                 "The sprite blend mode is invalid.");
+        }
+        if (program > FullscreenProgram::Bloom)
+        {
+            throw std::invalid_argument(
+                "The sprite pixel program is invalid.");
         }
         const std::size_t formatIndex = colorFormat
                 == D3D12Backend::PrimaryColorFormat
@@ -874,7 +1055,7 @@ namespace LamaPon::Detail
                     "The active DirectX 12 sprite target format is "
                     "unsupported.");
         auto& pipeline = m_pipelineStates[
-            (toneMapped ? 16u : 0u)
+            static_cast<std::size_t>(program) * 16u
             + formatIndex * 8u
             + blendIndex * 2u
             + (scissored ? 1u : 0u)];
@@ -914,6 +1095,11 @@ namespace LamaPon::Detail
                 }
             } };
 
+        auto* const pixelShader = program == FullscreenProgram::ToneMap
+            ? m_toneMapPixelShader.Get()
+            : program == FullscreenProgram::Bloom
+                ? m_bloomPixelShader.Get()
+                : m_pixelShader.Get();
         D3D12_GRAPHICS_PIPELINE_STATE_DESC description{};
         description.pRootSignature = m_rootSignature.Get();
         description.VS = {
@@ -921,12 +1107,8 @@ namespace LamaPon::Detail
             m_vertexShader->GetBufferSize()
         };
         description.PS = {
-            toneMapped
-                ? m_toneMapPixelShader->GetBufferPointer()
-                : m_pixelShader->GetBufferPointer(),
-            toneMapped
-                ? m_toneMapPixelShader->GetBufferSize()
-                : m_pixelShader->GetBufferSize()
+            pixelShader->GetBufferPointer(),
+            pixelShader->GetBufferSize()
         };
         description.BlendState = MakeBlendDescription(blend);
         description.SampleMask = std::numeric_limits<UINT>::max();

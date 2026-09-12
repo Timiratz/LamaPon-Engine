@@ -609,15 +609,84 @@ namespace
         const auto compositionOffset = (
             static_cast<std::size_t>(64u) * compositionWidth + 128u)
             * 4u;
+        // 既定のカラーグレーディング（露出0.15、コントラスト1.05、彩度1.08、
+        // 色温度0.02）とACESをD3D11のPSToneMapと同じ式で掛けると、
+        // (2.0, 0.25, 0.0)はgamma変換なしで約(251, 102, 0)になります。
         Require(
             compositionWidth == CanvasWidth
                 && compositionHeight == CanvasHeight
-                && compositionPixels[compositionOffset] > 220u
-                && compositionPixels[compositionOffset + 1u] > 120u
-                && compositionPixels[compositionOffset + 1u] < 210u
+                && compositionPixels[compositionOffset] > 240u
+                && compositionPixels[compositionOffset + 1u] > 90u
+                && compositionPixels[compositionOffset + 1u] < 115u
                 && compositionPixels[compositionOffset + 2u] < 8u,
             "The DirectX 12 HDR scene was not tone-mapped to the back "
             "buffer");
+
+        auto lowExposureFrame = scene.PostProcessFrameData();
+        lowExposureFrame.colorGrading.exposure = -2.0f;
+        lowExposureFrame.colorGrading.contrast = 1.0f;
+        lowExposureFrame.colorGrading.saturation = 1.0f;
+        lowExposureFrame.colorGrading.temperature = 0.0f;
+        lowExposureFrame.colorGrading.tint = 0.0f;
+        lowExposureFrame.colorGrading.vignette = 0.0f;
+        graphics.BeginFrame(backBufferClear);
+        graphics.BeginSceneComposition(compositionClear);
+        scene.RenderMainCamera(
+            graphics.AspectRatio(),
+            false,
+            graphics.SceneCompositionTarget());
+        graphics.EndSceneComposition(lowExposureFrame);
+        const auto lowExposurePixels = graphics.CaptureBackBuffer(
+            compositionWidth,
+            compositionHeight);
+        graphics.EndFrame();
+        Require(
+            lowExposurePixels[compositionOffset] + 35u
+                    < compositionPixels[compositionOffset]
+                && lowExposurePixels[compositionOffset + 1u] + 35u
+                    < compositionPixels[compositionOffset + 1u],
+            "The DirectX 12 compositor ignored the color grading "
+            "exposure");
+
+        auto untonemappedFrame = lowExposureFrame;
+        untonemappedFrame.colorGrading.toneMappingEnabled = false;
+        graphics.BeginFrame(backBufferClear);
+        graphics.BeginSceneComposition(compositionClear);
+        scene.RenderMainCamera(
+            graphics.AspectRatio(),
+            false,
+            graphics.SceneCompositionTarget());
+        graphics.EndSceneComposition(untonemappedFrame);
+        const auto untonemappedPixels = graphics.CaptureBackBuffer(
+            compositionWidth,
+            compositionHeight);
+        graphics.EndFrame();
+        Require(
+            untonemappedPixels[compositionOffset] > 250u
+                && untonemappedPixels[compositionOffset + 1u] > 55u
+                && untonemappedPixels[compositionOffset + 1u] < 75u,
+            "The DirectX 12 compositor ignored the disabled tone "
+            "mapping setting");
+
+        // Bloomは最終合成の前にHDRのまま掛かります。均一な(2.0, 0.25, 0.0)
+        // でも高輝度分が足され、トーンマップ後の緑が約102から約126へ上がります。
+        auto bloomFrame = scene.PostProcessFrameData();
+        bloomFrame.bloom.enabled = true;
+        graphics.BeginFrame(backBufferClear);
+        graphics.BeginSceneComposition(compositionClear);
+        scene.RenderMainCamera(
+            graphics.AspectRatio(),
+            false,
+            graphics.SceneCompositionTarget());
+        graphics.EndSceneComposition(bloomFrame);
+        const auto bloomPixels = graphics.CaptureBackBuffer(
+            compositionWidth,
+            compositionHeight);
+        graphics.EndFrame();
+        Require(
+            bloomPixels[compositionOffset + 1u]
+                > compositionPixels[compositionOffset + 1u] + 15u,
+            "The DirectX 12 scene composition did not apply bloom");
     }
 
     void RequireD3D12PrimitiveScene()
@@ -1525,6 +1594,118 @@ namespace
             + describe(d3d12)
             + ")");
     }
+
+    // 黒のHDR offscreenへ1.0を超える小さな矩形を描き、Bloomを通した結果を
+    // Spriteで画面へ写します。D3D11とD3D12で同じ滲みになるかを比べます。
+    [[nodiscard]] Capture RenderBloomCapture(
+        const LamaPon::RenderingApi api,
+        const LamaPon::GraphicsStartupProfile profile)
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            api,
+            profile);
+        Require(
+            graphics.ActiveRenderingApi() == api,
+            "The bloom capture did not start the requested rendering API");
+        // D3D11のBloomはEnvironment shaderをasset rootから読み込みます。
+        graphics.Assets().SetAssetRoot(LAMAPON_TEST_ASSET_DIR);
+
+        LamaPon::RenderTarget target;
+        graphics.ResizeOffscreenTarget(target, 64u, 32u);
+
+        constexpr float clearColor[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+        graphics.BeginFrame(clearColor);
+        const auto primaryOutput = graphics.CaptureOutputState();
+        graphics.BeginOffscreenTarget(target, clearColor);
+        {
+            auto pass = graphics.BeginSpritePass();
+            DrawRectangle(
+                pass,
+                28.0f,
+                12.0f,
+                8.0f,
+                8.0f,
+                { 4.0f, 2.0f, 0.5f, 1.0f });
+        }
+        LamaPon::BloomSettings bloom;
+        bloom.enabled = true;
+        graphics.ApplyOffscreenTargetBloom(target, bloom);
+        graphics.PublishOffscreenTarget(target);
+        graphics.RestoreOutputState(*primaryOutput);
+        {
+            auto pass = graphics.BeginSpritePass();
+            LamaPon::SpriteDrawRequest request;
+            request.texture = target.DisplayViewHandle();
+            request.tint = { 1.0f, 1.0f, 1.0f, 1.0f };
+            Require(
+                pass.Draw(request),
+                "The bloomed offscreen display view was rejected");
+        }
+        Capture capture;
+        capture.pixels = graphics.CaptureBackBuffer(
+            capture.width,
+            capture.height);
+        graphics.EndFrame();
+        return capture;
+    }
+
+    void RequireMatchingBloomCaptures(
+        const Capture& d3d11,
+        const Capture& d3d12)
+    {
+        const std::size_t expectedBytes =
+            static_cast<std::size_t>(CanvasWidth) * CanvasHeight * 4u;
+        Require(
+            d3d11.width == CanvasWidth
+                && d3d11.height == CanvasHeight
+                && d3d12.width == CanvasWidth
+                && d3d12.height == CanvasHeight
+                && d3d11.pixels.size() == expectedBytes
+                && d3d12.pixels.size() == expectedBytes,
+            "The bloom captures have unexpected dimensions");
+        const auto offset = [](const std::uint32_t x, const std::uint32_t y)
+        {
+            return (static_cast<std::size_t>(y) * CanvasWidth + x) * 4u;
+        };
+        // 矩形はx=28..35、y=12..19です。半径2の9tapは縁から2画素先まで
+        // 届くため、すぐ右の画素は明るくなり、5画素離れると黒のままです。
+        for (const auto* const capture : { &d3d11, &d3d12 })
+        {
+            Require(
+                capture->pixels[offset(36u, 16u)] > 60u
+                    && capture->pixels[offset(36u, 16u) + 1u] > 20u,
+                "The bloom did not spread beyond the bright rectangle");
+            Require(
+                capture->pixels[offset(40u, 16u)] < 4u
+                    && capture->pixels[offset(5u, 5u)] < 4u,
+                "The bloom spread beyond its radius");
+        }
+
+        // WARP上の同じ演算でも、最終丸めの1段差だけは許容します。
+        constexpr int ChannelTolerance = 2;
+        for (std::size_t index{}; index < expectedBytes; ++index)
+        {
+            const int difference = std::abs(
+                static_cast<int>(d3d11.pixels[index])
+                - static_cast<int>(d3d12.pixels[index]));
+            if (difference > ChannelTolerance)
+            {
+                const auto pixel = index / 4u;
+                throw std::runtime_error(
+                    "DirectX 12 bloom differed from DirectX 11 at "
+                    + std::to_string(pixel % CanvasWidth)
+                    + ","
+                    + std::to_string(pixel / CanvasWidth)
+                    + " by "
+                    + std::to_string(difference));
+            }
+        }
+    }
 }
 
 int main()
@@ -1540,12 +1721,19 @@ int main()
         const auto d3d11 = RenderCapture(
             LamaPon::RenderingApi::DirectX11,
             LamaPon::GraphicsStartupProfile::FullRenderer);
+        const auto d3d11Bloom = RenderBloomCapture(
+            LamaPon::RenderingApi::DirectX11,
+            LamaPon::GraphicsStartupProfile::FullRenderer);
 
         // D3D12側だけdebug layerを有効にし、描画中のvalidation errorを
         // 描画結果の一致とは別に検出します。
         LamaPon::Logger::Instance().Clear();
         LamaPon::GraphicsDevice::SetEnableDebugLayer(true);
         const auto d3d12 = RenderCapture(
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::
+                AllowD3D12ExperimentalBootstrap);
+        const auto d3d12Bloom = RenderBloomCapture(
             LamaPon::RenderingApi::DirectX12Experimental,
             LamaPon::GraphicsStartupProfile::
                 AllowD3D12ExperimentalBootstrap);

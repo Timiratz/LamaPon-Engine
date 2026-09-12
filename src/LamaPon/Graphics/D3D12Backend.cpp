@@ -2705,6 +2705,122 @@ namespace LamaPon
                 : D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     }
 
+    GraphicsViewHandle D3D12Backend::BeginOffscreenPostProcess(
+        RenderTarget& target)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "BeginOffscreenPostProcess requires an initialized D3D12 "
+                "backend.");
+        }
+        auto* const state = dynamic_cast<D3D12RenderTargetState*>(
+            Detail::RenderTargetBackendAccess::Get(target));
+        if (state == nullptr
+            || !state->HasNativeResources()
+            || state->resourceDomain.get() != m_resourceDomain.get()
+            || !IsViewCurrent(state->m_currentColorView)
+            || !IsViewCurrent(state->m_postColorView))
+        {
+            throw std::invalid_argument(
+                "BeginOffscreenPostProcess requires a target owned by this "
+                "D3D12 backend generation.");
+        }
+        OpenCommandList();
+        // D3D11のpost-processと同じく、current colorを読んでpost colorへ
+        // 書きます。深度はtestしませんが、PSOのDSV formatと揃えるため
+        // targetの深度もbindします。
+        m_commandList->OMSetRenderTargets(
+            0,
+            nullptr,
+            FALSE,
+            nullptr);
+        TransitionResource(
+            m_commandList.Get(),
+            state->color.Get(),
+            state->colorState,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        TransitionResource(
+            m_commandList.Get(),
+            state->postColor.Get(),
+            state->postColorState,
+            D3D12_RESOURCE_STATE_RENDER_TARGET);
+        TransitionResource(
+            m_commandList.Get(),
+            state->depth.Get(),
+            state->depthState,
+            D3D12_RESOURCE_STATE_DEPTH_WRITE);
+        const auto postTarget = OffsetDescriptor(
+            state->renderTargetHeap->GetCPUDescriptorHandleForHeapStart(),
+            1u,
+            state->renderTargetDescriptorSize);
+        const auto depthTarget = state->depthStencilHeap
+            ->GetCPUDescriptorHandleForHeapStart();
+        m_commandList->OMSetRenderTargets(
+            1,
+            &postTarget,
+            FALSE,
+            &depthTarget);
+        m_commandList->RSSetViewports(1, &state->viewport);
+        m_commandList->RSSetScissorRects(1, &state->scissor);
+        m_activeViewport = state->viewport;
+        m_activeScissorRect = state->scissor;
+        m_activeColorFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        m_activeDepthFormat = PrimaryDepthFormat;
+        m_activeOffscreenTarget = &target;
+        m_activeOffscreenDepthOnly = false;
+        return state->m_currentColorView;
+    }
+
+    void D3D12Backend::EndOffscreenPostProcess(RenderTarget& target)
+    {
+        auto* const state = dynamic_cast<D3D12RenderTargetState*>(
+            Detail::RenderTargetBackendAccess::Get(target));
+        if (state == nullptr
+            || !state->HasNativeResources()
+            || state->resourceDomain.get() != m_resourceDomain.get()
+            || m_activeOffscreenTarget != &target)
+        {
+            throw std::logic_error(
+                "EndOffscreenPostProcess requires the active post-process "
+                "target.");
+        }
+        // D3D11RenderTargetState::SwapPostProcessBuffersと同じく、書き終えた
+        // post colorを次のcurrent colorにします。RTV heapの先頭をcurrent
+        // として使うため、交換後の資源でRTVを作り直します。記録済みの
+        // OMSetRenderTargetsはdescriptorを呼び出し時に読み終えています。
+        std::swap(state->color, state->postColor);
+        std::swap(state->colorState, state->postColorState);
+        std::swap(state->m_currentColorView, state->m_postColorView);
+        const auto renderTargetStart = state->renderTargetHeap
+            ->GetCPUDescriptorHandleForHeapStart();
+        m_device->CreateRenderTargetView(
+            state->color.Get(),
+            nullptr,
+            renderTargetStart);
+        m_device->CreateRenderTargetView(
+            state->postColor.Get(),
+            nullptr,
+            OffsetDescriptor(
+                renderTargetStart,
+                1u,
+                state->renderTargetDescriptorSize));
+        BindOffscreenTarget(target);
+    }
+
+    void D3D12Backend::AbortOffscreenPostProcess(
+        RenderTarget& target) noexcept
+    {
+        try
+        {
+            BindOffscreenTarget(target);
+        }
+        catch (...)
+        {
+            // 元の例外を呼び出し側へ返すため、復元の失敗はここで止めます。
+        }
+    }
+
     void D3D12Backend::BindOffscreenTargetDepthOnly(RenderTarget& target)
     {
         if (!IsInitialized())
