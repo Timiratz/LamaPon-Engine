@@ -79,6 +79,21 @@ namespace LamaPon
         float outerConeCosine{ 0.8191520f };
     };
 
+    struct PrimitiveDirectionalShadow final
+    {
+        std::array<DirectX::XMFLOAT4X4, 4>
+            lightViewProjections{};
+        std::array<float, 4> cascadeSplits{};
+        GraphicsViewHandle texture;
+        std::size_t lightIndex{};
+        std::size_t cascadeCount{};
+        float bias{ 0.0015f };
+        float normalBias{ 0.0025f };
+        float strength{ 0.85f };
+        float inverseResolution{};
+        bool enabled{};
+    };
+
     // MeshRendererがAPI固有objectを持たずに送る最小3D描画要求です。
     // spanはDrawPrimitiveの同期呼び出し中だけ有効です。
     struct PrimitiveDrawRequest final
@@ -104,6 +119,7 @@ namespace LamaPon
         std::size_t pointLightCount{};
         std::array<PrimitiveSpotLight, 8> spotLights{};
         std::size_t spotLightCount{};
+        PrimitiveDirectionalShadow directionalShadow;
         GraphicsViewHandle albedo;
         GraphicsViewHandle normalTexture;
         GraphicsViewHandle roughnessTexture;

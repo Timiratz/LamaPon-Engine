@@ -6,6 +6,7 @@
 #include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Core/Profiler.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
+#include "LamaPon/Graphics/ShadowMap.h"
 #include "LamaPon/Graphics/GraphicsDeviceD3D11Access.h"
 #include "LamaPon/Graphics/GraphicsRenderServices.h"
 #include "LamaPon/Graphics/Lighting.h"
@@ -117,6 +118,22 @@ namespace
                 source.intensity,
                 source.outerConeCosine };
         }
+        const auto& shadow = lighting.directionalShadow;
+        request.directionalShadow.lightViewProjections =
+            shadow.lightViewProjections;
+        request.directionalShadow.cascadeSplits =
+            shadow.cascadeSplits;
+        request.directionalShadow.texture = shadow.texture;
+        request.directionalShadow.lightIndex = shadow.lightIndex;
+        request.directionalShadow.cascadeCount = shadow.cascadeCount;
+        request.directionalShadow.bias = shadow.bias;
+        request.directionalShadow.normalBias = shadow.normalBias;
+        request.directionalShadow.strength = shadow.strength;
+        request.directionalShadow.inverseResolution =
+            1.0f / std::max(
+                lighting.directionalShadowResolution,
+                1.0f);
+        request.directionalShadow.enabled = shadow.enabled;
     }
 
     // テセレーションが使えるのは、四角パッチに割れる形状（Plane・
@@ -1961,6 +1978,12 @@ namespace LamaPon
                 CopyPrimitiveLighting(
                     m_graphics->Lighting(),
                     request);
+                if (!request.directionalShadow.texture
+                    && m_graphics->Shadows().IsValid())
+                {
+                    request.directionalShadow.texture =
+                        m_graphics->Shadows().ViewHandle();
+                }
                 static_cast<void>(m_graphics->DrawPrimitive(request));
             }
         }

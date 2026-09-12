@@ -18,7 +18,8 @@
 - DirectX 12のModelRendererでglTF／GLBを読み込み、ノード姿勢・アニメーション・スキニング・LOD・primitive別Material係数を反映して実描画する。CPU skinningによる移行実装で、D3D11の既存GPU skinningは変更しない。
 - DirectX 12のglTF／GLB Modelで、モデル内蔵（GLB bufferView・base64 data URI）と外部ファイルのPNG／JPEG textureを読み込み、albedo／normal／metallicRoughness／occlusion／emissiveを描画へ接続。D3D11 SRVとmodel cacheを介さずBackend-neutralなhandleとして取り込み、Material上書き時のalbedo／normal継承もD3D11と同じ規則に揃えた。DDS textureは引き続き未対応。
 - FBX ImporterをD3D11 DeviceなしでもCPU幾何・LOD・skin・animationとBackend-neutralなPNG／JPEG textureを生成できる構造へ分離し、DirectX 12のModelRendererでFBXを実描画する。D3D11では従来どおりGPU資源とmodel cacheを生成する。
-- DirectX 12で方向光カスケード・スポット配列・ポイントキューブ用のShadowMap資源を生成し、共通Scene traversalからMesh／Modelを深度専用pipelineへ描画する。通常描画先は各shadow pass後に復元し、半透明Particleはcasterから除外する。影を最終ライティングへ適用するsamplingは次段階で接続する。
+- DirectX 12で方向光カスケード・スポット配列・ポイントキューブ用のShadowMap資源を生成し、共通Scene traversalからMesh／Modelを深度専用pipelineへ描画する。通常描画先は各shadow pass後に復元し、半透明Particleはcasterから除外する。
+- DirectX 12の基本3D pipelineで方向光カスケードShadowMapを3x3 PCFサンプリングし、カスケード境界のブレンド、深度／法線bias、shadow strengthを反映する。影を無効にしたSceneとの画素比較をWARP回帰テストへ追加した。
 - `GraphicsDevice`のAPI固有資源所有を抽象interface化し、D3D11のEffect・Shader・Sprite・Shadow・render serviceを単一の具象世代へ集約。停止・再生成・破棄を共通境界から呼ぶ構造へ移行。
 - Effect・Shader cache・Shadow・Environment・Clustered LightsなどDevice世代に属する高水準資源をD3D11内部所有へ分離。非同期Shader workerをAssetManagerより先に停止し、再初期化時に旧Device資源と未消費Screen Effect queueを安全に破棄する。
 - `GraphicsDevice`のnative D3D11 Device / Context / CommonStates / view resolverを非公開化し、D3D11描画島とテストだけがSDK非公開bridgeから利用する境界へ移行。API 64 Game Module向けの旧public binary symbolを維持し、Game Module APIを65へ更新。

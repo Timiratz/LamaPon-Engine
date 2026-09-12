@@ -494,8 +494,9 @@ namespace LamaPon
                     "DirectX 12 Experimental bootstrapで起動しています。"
                     "現在はclear / present / resize / capture、texture、"
                     "Sceneの2D/UI、基本3D Mesh/Model、shadow map生成に"
-                    "対応しています。custom shader、shadow sampling、"
-                    "offscreen描画は未対応です。");
+                    "対応しています。方向光のshadow samplingにも対応し、"
+                    "custom shader、local light shadow、offscreen描画は"
+                    "未対応です。");
             }
         };
 

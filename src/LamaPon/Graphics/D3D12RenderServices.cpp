@@ -41,6 +41,13 @@ cbuffer PrimitiveConstants : register(b0)
     float4 SpotDirectionInnerCosine[8];
     float4 SpotColorIntensity[8];
     float4 SpotOuterCosine[8];
+    row_major float4x4 ShadowViewProjections[4];
+    float4 ShadowCascadeSplits;
+    // x=shadow light index + 1, y=depth bias,
+    // z=normal bias, w=strength.
+    float4 ShadowParameters;
+    // xyz=camera forward, w=1 / shadow resolution.
+    float4 CameraForwardShadowTexel;
 };
 
 Texture2D AlbedoTexture : register(t0);
@@ -49,7 +56,9 @@ Texture2D RoughnessTexture : register(t2);
 Texture2D MetallicTexture : register(t3);
 Texture2D OcclusionTexture : register(t4);
 Texture2D EmissiveTexture : register(t5);
+Texture2DArray<float> DirectionalShadowTexture : register(t6);
 SamplerState AlbedoSampler : register(s0);
+SamplerComparisonState ShadowSampler : register(s1);
 
 struct VertexInput
 {
@@ -74,6 +83,115 @@ PixelInput PrimitiveVertexShader(VertexInput input)
     output.normal = normalize(mul(float4(input.normal, 0.0f), World).xyz);
     output.textureCoordinate = input.textureCoordinate;
     return output;
+}
+
+float SampleDirectionalShadowCascade(
+    float3 worldPosition,
+    float3 normal,
+    uint cascadeIndex)
+{
+    const float3 biasedPosition =
+        worldPosition + normal * ShadowParameters.z;
+    const float4 lightPosition = mul(
+        float4(biasedPosition, 1.0f),
+        ShadowViewProjections[cascadeIndex]);
+    const float3 projected = lightPosition.xyz
+        / max(abs(lightPosition.w), 0.00001f);
+    const float2 shadowUv =
+        projected.xy * float2(0.5f, -0.5f) + 0.5f;
+    if (shadowUv.x < 0.0f
+        || shadowUv.x > 1.0f
+        || shadowUv.y < 0.0f
+        || shadowUv.y > 1.0f
+        || projected.z <= 0.0f
+        || projected.z >= 1.0f)
+    {
+        return 1.0f;
+    }
+
+    float visibility = 0.0f;
+    [unroll]
+    for (int tapY = -1; tapY <= 1; ++tapY)
+    {
+        [unroll]
+        for (int tapX = -1; tapX <= 1; ++tapX)
+        {
+            visibility += DirectionalShadowTexture.SampleCmpLevelZero(
+                ShadowSampler,
+                float3(
+                    shadowUv
+                        + float2(tapX, tapY)
+                            * CameraForwardShadowTexel.w,
+                    cascadeIndex),
+                projected.z - ShadowParameters.y);
+        }
+    }
+    return visibility / 9.0f;
+}
+
+float EvaluateDirectionalShadow(
+    float3 worldPosition,
+    float3 normal,
+    uint lightIndex)
+{
+    if (ShadowParameters.x < 0.5f
+        || lightIndex + 1u != (uint)ShadowParameters.x)
+    {
+        return 1.0f;
+    }
+    const float cameraDistance = dot(
+        worldPosition - CameraPosition.xyz,
+        CameraForwardShadowTexel.xyz);
+    uint cascadeIndex = 0u;
+    [unroll]
+    for (uint index = 0u; index < 4u; ++index)
+    {
+        if (index >= LightCounts.w)
+        {
+            return 1.0f;
+        }
+        cascadeIndex = index;
+        if (cameraDistance <= ShadowCascadeSplits[index])
+        {
+            break;
+        }
+    }
+    if (cameraDistance > ShadowCascadeSplits[cascadeIndex])
+    {
+        return 1.0f;
+    }
+
+    float visibility = SampleDirectionalShadowCascade(
+        worldPosition,
+        normal,
+        cascadeIndex);
+    if (cascadeIndex + 1u < LightCounts.w)
+    {
+        const float previousSplit = cascadeIndex == 0u
+            ? 0.0f
+            : ShadowCascadeSplits[cascadeIndex - 1u];
+        const float cascadeRange =
+            ShadowCascadeSplits[cascadeIndex] - previousSplit;
+        const float blendStart = ShadowCascadeSplits[cascadeIndex]
+            - cascadeRange * 0.1f;
+        const float blend = saturate(
+            (cameraDistance - blendStart)
+            / max(cascadeRange * 0.1f, 0.0001f));
+        if (blend > 0.0f)
+        {
+            visibility = lerp(
+                visibility,
+                SampleDirectionalShadowCascade(
+                    worldPosition,
+                    normal,
+                    cascadeIndex + 1u),
+                blend);
+        }
+    }
+    return lerp(
+        1.0f,
+        visibility,
+        saturate(ShadowParameters.w));
 }
 
 float4 PrimitivePixelShader(PixelInput input) : SV_Target
@@ -151,6 +269,10 @@ float4 PrimitivePixelShader(PixelInput input) : SV_Target
     [loop]
     for (uint index = 0; index < min(LightCounts.x, 4u); ++index)
     {
+        const float shadow = EvaluateDirectionalShadow(
+            input.worldPosition,
+            normal,
+            index);
         const float3 lightDirection = normalize(
             -DirectionalDirectionIntensity[index].xyz);
         const float diffuse = saturate(dot(normal, lightDirection));
@@ -161,6 +283,7 @@ float4 PrimitivePixelShader(PixelInput input) : SV_Target
             specularPower) * specularScale;
         result += DirectionalColors[index].rgb
             * DirectionalDirectionIntensity[index].w
+            * shadow
             * (diffuseColor * diffuse + specularColor * specular);
     }
 
@@ -545,7 +668,7 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 "ParticlePixelShader",
                 "ps_5_0");
 
-            std::array<D3D12_DESCRIPTOR_RANGE, 6> textureRanges{};
+            std::array<D3D12_DESCRIPTOR_RANGE, 7> textureRanges{};
             for (UINT index{}; index < textureRanges.size(); ++index)
             {
                 textureRanges[index].RangeType =
@@ -553,7 +676,7 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 textureRanges[index].NumDescriptors = 1;
                 textureRanges[index].BaseShaderRegister = index;
             }
-            std::array<D3D12_ROOT_PARAMETER, 7> parameters{};
+            std::array<D3D12_ROOT_PARAMETER, 8> parameters{};
             parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
             parameters[0].Descriptor.ShaderRegister = 0;
             parameters[0].Descriptor.RegisterSpace = 0;
@@ -569,19 +692,36 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 parameter.ShaderVisibility =
                     D3D12_SHADER_VISIBILITY_PIXEL;
             }
-            D3D12_STATIC_SAMPLER_DESC sampler{};
-            sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-            sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-            sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-            sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-            sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
-            sampler.MaxLOD = D3D12_FLOAT32_MAX;
-            sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+            std::array<D3D12_STATIC_SAMPLER_DESC, 2> samplers{};
+            auto& materialSampler = samplers[0];
+            materialSampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+            materialSampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+            materialSampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+            materialSampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+            materialSampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+            materialSampler.MaxLOD = D3D12_FLOAT32_MAX;
+            materialSampler.ShaderRegister = 0;
+            materialSampler.ShaderVisibility =
+                D3D12_SHADER_VISIBILITY_PIXEL;
+            auto& shadowSampler = samplers[1];
+            shadowSampler.Filter =
+                D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
+            shadowSampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+            shadowSampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+            shadowSampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+            shadowSampler.ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+            shadowSampler.BorderColor =
+                D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
+            shadowSampler.MaxLOD = 0.0f;
+            shadowSampler.ShaderRegister = 1;
+            shadowSampler.ShaderVisibility =
+                D3D12_SHADER_VISIBILITY_PIXEL;
             D3D12_ROOT_SIGNATURE_DESC description{};
             description.NumParameters = static_cast<UINT>(parameters.size());
             description.pParameters = parameters.data();
-            description.NumStaticSamplers = 1;
-            description.pStaticSamplers = &sampler;
+            description.NumStaticSamplers =
+                static_cast<UINT>(samplers.size());
+            description.pStaticSamplers = samplers.data();
             description.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
             Microsoft::WRL::ComPtr<ID3DBlob> serialized;
             Microsoft::WRL::ComPtr<ID3DBlob> errors;
@@ -745,6 +885,8 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
             };
             std::array<LamaPon::D3D12Backend::ShaderResourceBinding, 6>
                 bindings{};
+            LamaPon::D3D12Backend::ShaderResourceBinding shadowBinding{};
+            bool directionalShadowActive{};
             ID3D12DescriptorHeap* descriptorHeap{};
             if (!request.depthOnly)
             {
@@ -766,6 +908,29 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 if (descriptorHeap == nullptr)
                 {
                     return false;
+                }
+                const auto resolvedShadow =
+                    m_backend->TryResolveShaderResource(
+                        request.directionalShadow.texture);
+                if (resolvedShadow)
+                {
+                    shadowBinding = *resolvedShadow;
+                    directionalShadowActive =
+                        request.directionalShadow.enabled
+                        && request.directionalShadow.lightIndex
+                            < request.directionalLightCount
+                        && request.directionalShadow.cascadeCount != 0u;
+                }
+                else
+                {
+                    const auto fallbackShadow =
+                        m_backend->TryResolveShaderResource(
+                            request.fallbackTexture);
+                    if (!fallbackShadow)
+                    {
+                        return false;
+                    }
+                    shadowBinding = *fallbackShadow;
                 }
             }
             else if (!m_backend->IsShadowPassActive())
@@ -809,9 +974,14 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 std::array<DirectX::XMFLOAT4, 8> spotDirectionInnerCosine{};
                 std::array<DirectX::XMFLOAT4, 8> spotColorIntensity{};
                 std::array<DirectX::XMFLOAT4, 8> spotOuterCosine{};
+                std::array<DirectX::XMFLOAT4X4, 4>
+                    shadowViewProjections{};
+                DirectX::XMFLOAT4 shadowCascadeSplits{};
+                DirectX::XMFLOAT4 shadowParameters{};
+                DirectX::XMFLOAT4 cameraForwardShadowTexel{};
             } constants{};
             // HLSLのPrimitiveConstantsと同じ並び・大きさであることを保証します。
-            static_assert(sizeof(constants) == 1376u);
+            static_assert(sizeof(constants) == 1680u);
             const auto world = DirectX::XMLoadFloat4x4(&request.world);
             const auto view = DirectX::XMLoadFloat4x4(&request.view);
             const auto projection = DirectX::XMLoadFloat4x4(&request.projection);
@@ -825,6 +995,10 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
             DirectX::XMStoreFloat4(
                 &constants.cameraPosition,
                 inverseView.r[3]);
+            DirectX::XMStoreFloat4(
+                &constants.cameraForwardShadowTexel,
+                DirectX::XMVector3Normalize(
+                    DirectX::XMVectorNegate(inverseView.r[2])));
             constants.materialProperties = {
                 std::clamp(request.roughness, 0.02f, 1.0f),
                 std::clamp(request.metallic, 0.0f, 1.0f),
@@ -911,6 +1085,28 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                     0.0f,
                     0.0f };
             }
+            const auto& shadow = request.directionalShadow;
+            constants.lightCounts[3] = directionalShadowActive
+                ? static_cast<std::uint32_t>(std::min<std::size_t>(
+                    shadow.cascadeCount,
+                    constants.shadowViewProjections.size()))
+                : 0u;
+            constants.shadowViewProjections =
+                shadow.lightViewProjections;
+            constants.shadowCascadeSplits = {
+                shadow.cascadeSplits[0],
+                shadow.cascadeSplits[1],
+                shadow.cascadeSplits[2],
+                shadow.cascadeSplits[3] };
+            constants.shadowParameters = {
+                directionalShadowActive
+                    ? static_cast<float>(shadow.lightIndex + 1u)
+                    : 0.0f,
+                shadow.bias,
+                shadow.normalBias,
+                shadow.strength };
+            constants.cameraForwardShadowTexel.w =
+                std::max(shadow.inverseResolution, 0.0f);
             const auto constantUpload = m_backend->AllocateFrameUpload(
                 sizeof(constants),
                 D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
@@ -948,6 +1144,9 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                         static_cast<UINT>(index + 1u),
                         bindings[index].descriptor);
                 }
+                commandList->SetGraphicsRootDescriptorTable(
+                    7,
+                    shadowBinding.descriptor);
             }
             commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             commandList->IASetVertexBuffers(0, 1, &vertexView);

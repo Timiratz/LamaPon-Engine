@@ -506,6 +506,111 @@ namespace
             "The DirectX 12 scene did not render its primitive meshes");
     }
 
+    void RequireD3D12DirectionalShadows()
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::
+                AllowD3D12ExperimentalBootstrap);
+        auto settings = graphics.Settings();
+        settings.shadowResolution = 256u;
+        settings.shadowCascadeLimit = 1u;
+        graphics.SetGraphicsSettings(settings);
+
+        LamaPon::Scene scene(graphics);
+        auto& cameraObject = scene.CreateGameObject("MainCamera");
+        cameraObject.GetTransform().position = { 0.0f, 0.0f, 6.0f };
+        auto& camera = cameraObject.AddComponent<
+            LamaPon::CameraComponent>();
+        scene.SetMainCamera(camera);
+        scene.SetAmbientLightColor({ 1.0f, 1.0f, 1.0f });
+        scene.SetAmbientLightIntensity(0.08f);
+
+        auto& wall = scene.CreateGameObject("ShadowReceiver");
+        wall.GetTransform().scale = { 4.0f, 2.2f, 0.1f };
+        wall.AddComponent<LamaPon::MeshRendererComponent>(
+            LamaPon::PrimitiveShape::Cube,
+            DirectX::XMFLOAT4{ 0.8f, 0.8f, 0.8f, 1.0f });
+
+        auto& blocker = scene.CreateGameObject("ShadowCaster");
+        blocker.GetTransform().position = { 0.2f, 0.0f, 1.15f };
+        blocker.GetTransform().scale = { 0.7f, 0.7f, 0.7f };
+        blocker.AddComponent<LamaPon::MeshRendererComponent>(
+            LamaPon::PrimitiveShape::Cube,
+            DirectX::XMFLOAT4{ 0.55f, 0.55f, 0.55f, 1.0f });
+
+        auto& lightObject = scene.CreateGameObject("ShadowSun");
+        lightObject.GetTransform().SetEulerAngles(0.0f, 0.65f, 0.0f);
+        auto& light = lightObject.AddComponent<
+            LamaPon::DirectionalLightComponent>();
+        light.SetShadowCascadeCount(1u);
+        light.SetShadowBias(0.0005f);
+        light.SetShadowNormalBias(0.001f);
+        light.SetShadowStrength(1.0f);
+
+        constexpr float clearColor[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+        const auto capture = [&]()
+        {
+            graphics.BeginFrame(clearColor);
+            scene.RenderMainCamera(
+                static_cast<float>(CanvasWidth) / CanvasHeight,
+                false,
+                nullptr);
+            std::uint32_t width{};
+            std::uint32_t height{};
+            auto pixels = graphics.CaptureBackBuffer(width, height);
+            graphics.EndFrame();
+            Require(
+                width == CanvasWidth && height == CanvasHeight,
+                "The DirectX 12 shadow capture has unexpected dimensions");
+            return pixels;
+        };
+
+        const auto shadowed = capture();
+        light.SetCastsShadows(false);
+        const auto unshadowed = capture();
+        std::size_t darkerPixels{};
+        std::uint64_t totalDarkening{};
+        for (std::size_t offset{};
+            offset + 3u < shadowed.size();
+            offset += 4u)
+        {
+            const auto shadowedBrightness = std::max({
+                shadowed[offset],
+                shadowed[offset + 1u],
+                shadowed[offset + 2u] });
+            const auto unshadowedBrightness = std::max({
+                unshadowed[offset],
+                unshadowed[offset + 1u],
+                unshadowed[offset + 2u] });
+            if (unshadowedBrightness
+                > static_cast<unsigned int>(shadowedBrightness) + 12u)
+            {
+                ++darkerPixels;
+                totalDarkening += static_cast<std::uint64_t>(
+                    unshadowedBrightness - shadowedBrightness);
+            }
+        }
+        Require(
+            darkerPixels > 80u && totalDarkening > 4000u,
+            "The DirectX 12 directional shadow was not visible on the "
+            "receiver");
+
+        settings.shadowsEnabled = false;
+        graphics.SetGraphicsSettings(settings);
+        const auto globallyDisabled = capture();
+        Require(
+            globallyDisabled == unshadowed
+                && !graphics.Shadows().IsValid(),
+            "Disabling DirectX 12 shadows did not preserve the unshadowed "
+            "rendering path");
+    }
+
     // Point LightとSpot Lightが、D3D11の従来経路と同じ距離・コーン減衰で
     // 壁を照らすことを、各光源の当たる点と届かない点の画素で確かめます。
     void RequireD3D12PointAndSpotLights()
@@ -1009,6 +1114,7 @@ int main()
             LamaPon::GraphicsStartupProfile::
                 AllowD3D12ExperimentalBootstrap);
         RequireD3D12PrimitiveScene();
+        RequireD3D12DirectionalShadows();
         RequireD3D12PointAndSpotLights();
         RequireD3D12MaterialFactors();
         RequireD3D12AnimatedGltfModel();
