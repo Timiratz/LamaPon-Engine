@@ -90,6 +90,11 @@ namespace LamaPon
         DirectX::XMFLOAT4X4 view{};
         DirectX::XMFLOAT4X4 projection{};
         DirectX::XMFLOAT4 baseColor{ 1.0f, 1.0f, 1.0f, 1.0f };
+        float roughness{ 0.5f };
+        float metallic{};
+        float normalStrength{ 1.0f };
+        float occlusionStrength{ 1.0f };
+        DirectX::XMFLOAT3 emissiveFactor{};
         DirectX::XMFLOAT3 ambientColor{ 0.65f, 0.72f, 0.85f };
         float ambientIntensity{ 0.35f };
         std::array<PrimitiveDirectionalLight, 4> directionalLights{};
@@ -100,6 +105,11 @@ namespace LamaPon
         std::array<PrimitiveSpotLight, 8> spotLights{};
         std::size_t spotLightCount{};
         GraphicsViewHandle albedo;
+        GraphicsViewHandle normalTexture;
+        GraphicsViewHandle roughnessTexture;
+        GraphicsViewHandle metallicTexture;
+        GraphicsViewHandle occlusionTexture;
+        GraphicsViewHandle emissiveTexture;
         GraphicsViewHandle fallbackTexture;
         bool alphaBlend{};
         bool depthTest{ true };

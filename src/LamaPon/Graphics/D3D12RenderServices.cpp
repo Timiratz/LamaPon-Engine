@@ -28,6 +28,9 @@ cbuffer PrimitiveConstants : register(b0)
     row_major float4x4 WorldViewProjection;
     row_major float4x4 World;
     float4 BaseColor;
+    float4 CameraPosition;
+    float4 MaterialProperties;
+    float4 EmissiveFactor;
     float4 AmbientColorIntensity;
     float4 DirectionalDirectionIntensity[4];
     float4 DirectionalColors[4];
@@ -41,6 +44,11 @@ cbuffer PrimitiveConstants : register(b0)
 };
 
 Texture2D AlbedoTexture : register(t0);
+Texture2D NormalTexture : register(t1);
+Texture2D RoughnessTexture : register(t2);
+Texture2D MetallicTexture : register(t3);
+Texture2D OcclusionTexture : register(t4);
+Texture2D EmissiveTexture : register(t5);
 SamplerState AlbedoSampler : register(s0);
 
 struct VertexInput
@@ -70,17 +78,84 @@ PixelInput PrimitiveVertexShader(VertexInput input)
 
 float4 PrimitivePixelShader(PixelInput input) : SV_Target
 {
-    const float3 normal = normalize(input.normal);
-    float3 lighting = AmbientColorIntensity.rgb * AmbientColorIntensity.w;
+    float3 normal = normalize(input.normal);
+    if (MaterialProperties.w > 0.5f)
+    {
+        const float3 sampledNormal = NormalTexture.Sample(
+            AlbedoSampler,
+            input.textureCoordinate).xyz * 2.0f - 1.0f;
+        const float3 positionDx = ddx(input.worldPosition);
+        const float3 positionDy = ddy(input.worldPosition);
+        const float2 uvDx = ddx(input.textureCoordinate);
+        const float2 uvDy = ddy(input.textureCoordinate);
+        const float3 tangentUnscaled =
+            cross(positionDy, normal) * uvDx.x
+            + cross(normal, positionDx) * uvDy.x;
+        const float3 bitangentUnscaled =
+            cross(positionDy, normal) * uvDx.y
+            + cross(normal, positionDx) * uvDy.y;
+        const float inverseScale = rsqrt(max(
+            max(dot(tangentUnscaled, tangentUnscaled),
+                dot(bitangentUnscaled, bitangentUnscaled)),
+            0.000001f));
+        const float3 tangent = tangentUnscaled * inverseScale;
+        const float3 bitangent = bitangentUnscaled * inverseScale;
+        const float strength = max(EmissiveFactor.w, 0.0f);
+        normal = normalize(
+            tangent * sampledNormal.x * strength
+            + bitangent * sampledNormal.y * strength
+            + normal * sampledNormal.z);
+    }
+    const float4 albedo = AlbedoTexture.Sample(
+        AlbedoSampler,
+        input.textureCoordinate);
+    const float3 surfaceColor = albedo.rgb * BaseColor.rgb;
+    const float roughnessSample = RoughnessTexture.Sample(
+        AlbedoSampler,
+        input.textureCoordinate).g;
+    const float metallicSample = MetallicTexture.Sample(
+        AlbedoSampler,
+        input.textureCoordinate).b;
+    const float occlusionSample = OcclusionTexture.Sample(
+        AlbedoSampler,
+        input.textureCoordinate).r;
+    const float3 emissiveSample = EmissiveTexture.Sample(
+        AlbedoSampler,
+        input.textureCoordinate).rgb;
+    const float roughness = clamp(
+        MaterialProperties.x * roughnessSample,
+        0.02f,
+        1.0f);
+    const float metallic = saturate(
+        MaterialProperties.y * metallicSample);
+    const float occlusion = lerp(
+        1.0f,
+        occlusionSample,
+        saturate(MaterialProperties.z));
+    const float3 diffuseColor = surfaceColor * (1.0f - metallic);
+    const float3 specularColor = lerp(0.04f.xxx, surfaceColor, metallic);
+    const float3 viewDirection = normalize(
+        CameraPosition.xyz - input.worldPosition);
+    const float specularPower = lerp(128.0f, 4.0f, roughness);
+    const float specularScale = lerp(1.0f, 0.08f, roughness);
+    float3 result = surfaceColor
+        * AmbientColorIntensity.rgb
+        * AmbientColorIntensity.w
+        * occlusion;
     [loop]
     for (uint index = 0; index < min(LightCounts.x, 4u); ++index)
     {
-        const float diffuse = saturate(dot(
-            normal,
-            normalize(-DirectionalDirectionIntensity[index].xyz)));
-        lighting += DirectionalColors[index].rgb
+        const float3 lightDirection = normalize(
+            -DirectionalDirectionIntensity[index].xyz);
+        const float diffuse = saturate(dot(normal, lightDirection));
+        const float3 halfVector = normalize(
+            lightDirection + viewDirection);
+        const float specular = pow(
+            saturate(dot(normal, halfVector)),
+            specularPower) * specularScale;
+        result += DirectionalColors[index].rgb
             * DirectionalDirectionIntensity[index].w
-            * diffuse;
+            * (diffuseColor * diffuse + specularColor * specular);
     }
 
     // Point / SpotはD3D11の従来経路（LamaPonLit.hlsl）と同じ距離減衰と
@@ -92,11 +167,16 @@ float4 PrimitivePixelShader(PixelInput input) : SV_Target
         const float lightDistance = length(delta);
         const float range = max(PointPositionRange[pointIndex].w, 0.001f);
         const float attenuation = pow(saturate(1.0f - lightDistance / range), 2.0f);
-        const float diffuse = saturate(dot(normal, delta / max(lightDistance, 0.0001f)));
-        lighting += PointColorIntensity[pointIndex].rgb
+        const float3 lightDirection = delta / max(lightDistance, 0.0001f);
+        const float diffuse = saturate(dot(normal, lightDirection));
+        const float3 halfVector = normalize(lightDirection + viewDirection);
+        const float specular = pow(
+            saturate(dot(normal, halfVector)),
+            specularPower) * specularScale;
+        result += PointColorIntensity[pointIndex].rgb
             * PointColorIntensity[pointIndex].w
             * attenuation
-            * diffuse;
+            * (diffuseColor * diffuse + specularColor * specular);
     }
 
     [loop]
@@ -113,15 +193,19 @@ float4 PrimitivePixelShader(PixelInput input) : SV_Target
             cone);
         const float distanceAttenuation = pow(saturate(1.0f - lightDistance / range), 2.0f);
         const float diffuse = saturate(dot(normal, -rayDirection));
-        lighting += SpotColorIntensity[spotIndex].rgb
+        const float3 halfVector = normalize(-rayDirection + viewDirection);
+        const float specular = pow(
+            saturate(dot(normal, halfVector)),
+            specularPower) * specularScale;
+        result += SpotColorIntensity[spotIndex].rgb
             * SpotColorIntensity[spotIndex].w
             * distanceAttenuation
             * coneAttenuation
             * coneAttenuation
-            * diffuse;
+            * (diffuseColor * diffuse + specularColor * specular);
     }
-    const float4 albedo = AlbedoTexture.Sample(AlbedoSampler, input.textureCoordinate);
-    return float4(albedo.rgb * BaseColor.rgb * lighting, albedo.a * BaseColor.a);
+    result += emissiveSample * EmissiveFactor.rgb;
+    return float4(result, albedo.a * BaseColor.a);
 }
 )";
 
@@ -455,18 +539,30 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 "ParticlePixelShader",
                 "ps_5_0");
 
-            D3D12_DESCRIPTOR_RANGE textureRange{};
-            textureRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-            textureRange.NumDescriptors = 1;
-            D3D12_ROOT_PARAMETER parameters[2]{};
+            std::array<D3D12_DESCRIPTOR_RANGE, 6> textureRanges{};
+            for (UINT index{}; index < textureRanges.size(); ++index)
+            {
+                textureRanges[index].RangeType =
+                    D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+                textureRanges[index].NumDescriptors = 1;
+                textureRanges[index].BaseShaderRegister = index;
+            }
+            std::array<D3D12_ROOT_PARAMETER, 7> parameters{};
             parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
             parameters[0].Descriptor.ShaderRegister = 0;
             parameters[0].Descriptor.RegisterSpace = 0;
             parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-            parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-            parameters[1].DescriptorTable.NumDescriptorRanges = 1;
-            parameters[1].DescriptorTable.pDescriptorRanges = &textureRange;
-            parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+            for (std::size_t index{}; index < textureRanges.size(); ++index)
+            {
+                auto& parameter = parameters[index + 1u];
+                parameter.ParameterType =
+                    D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+                parameter.DescriptorTable.NumDescriptorRanges = 1;
+                parameter.DescriptorTable.pDescriptorRanges =
+                    &textureRanges[index];
+                parameter.ShaderVisibility =
+                    D3D12_SHADER_VISIBILITY_PIXEL;
+            }
             D3D12_STATIC_SAMPLER_DESC sampler{};
             sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
             sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
@@ -476,8 +572,8 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
             sampler.MaxLOD = D3D12_FLOAT32_MAX;
             sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
             D3D12_ROOT_SIGNATURE_DESC description{};
-            description.NumParameters = 2;
-            description.pParameters = parameters;
+            description.NumParameters = static_cast<UINT>(parameters.size());
+            description.pParameters = parameters.data();
             description.NumStaticSamplers = 1;
             description.pStaticSamplers = &sampler;
             description.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
@@ -626,10 +722,31 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
             {
                 return false;
             }
-            const auto& texture = request.albedo ? request.albedo : request.fallbackTexture;
-            const auto binding = m_backend->TryResolveShaderResource(texture);
+            const std::array textures{
+                request.albedo,
+                request.normalTexture,
+                request.roughnessTexture,
+                request.metallicTexture,
+                request.occlusionTexture,
+                request.emissiveTexture
+            };
+            std::array<LamaPon::D3D12Backend::ShaderResourceBinding, 6>
+                bindings{};
+            for (std::size_t index{}; index < textures.size(); ++index)
+            {
+                const auto& texture = textures[index]
+                    ? textures[index]
+                    : request.fallbackTexture;
+                const auto binding =
+                    m_backend->TryResolveShaderResource(texture);
+                if (!binding)
+                {
+                    return false;
+                }
+                bindings[index] = *binding;
+            }
             auto* descriptorHeap = m_backend->ShaderResourceDescriptorHeap();
-            if (!binding || descriptorHeap == nullptr)
+            if (descriptorHeap == nullptr)
             {
                 return false;
             }
@@ -654,6 +771,9 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 DirectX::XMFLOAT4X4 worldViewProjection;
                 DirectX::XMFLOAT4X4 world;
                 DirectX::XMFLOAT4 baseColor;
+                DirectX::XMFLOAT4 cameraPosition;
+                DirectX::XMFLOAT4 materialProperties;
+                DirectX::XMFLOAT4 emissiveFactor;
                 DirectX::XMFLOAT4 ambientColorIntensity;
                 std::array<DirectX::XMFLOAT4, 4>
                     directionalDirectionIntensity{};
@@ -667,7 +787,7 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 std::array<DirectX::XMFLOAT4, 8> spotOuterCosine{};
             } constants{};
             // HLSLのPrimitiveConstantsと同じ並び・大きさであることを保証します。
-            static_assert(sizeof(constants) == 1328u);
+            static_assert(sizeof(constants) == 1376u);
             const auto world = DirectX::XMLoadFloat4x4(&request.world);
             const auto view = DirectX::XMLoadFloat4x4(&request.view);
             const auto projection = DirectX::XMLoadFloat4x4(&request.projection);
@@ -677,6 +797,20 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                     DirectX::XMMatrixMultiply(world, view), projection));
             constants.world = request.world;
             constants.baseColor = request.baseColor;
+            const auto inverseView = DirectX::XMMatrixInverse(nullptr, view);
+            DirectX::XMStoreFloat4(
+                &constants.cameraPosition,
+                inverseView.r[3]);
+            constants.materialProperties = {
+                std::clamp(request.roughness, 0.02f, 1.0f),
+                std::clamp(request.metallic, 0.0f, 1.0f),
+                std::clamp(request.occlusionStrength, 0.0f, 1.0f),
+                request.normalTexture ? 1.0f : 0.0f };
+            constants.emissiveFactor = {
+                std::max(request.emissiveFactor.x, 0.0f),
+                std::max(request.emissiveFactor.y, 0.0f),
+                std::max(request.emissiveFactor.z, 0.0f),
+                std::clamp(request.normalStrength, 0.0f, 2.0f) };
             // D3D11のLitEffectと同じく、負の環境光強度は0へ丸めます。
             constants.ambientColorIntensity = {
                 request.ambientColor.x,
@@ -778,7 +912,12 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
             commandList->SetGraphicsRootConstantBufferView(
                 0,
                 constantUpload.gpuAddress);
-            commandList->SetGraphicsRootDescriptorTable(1, binding->descriptor);
+            for (std::size_t index{}; index < bindings.size(); ++index)
+            {
+                commandList->SetGraphicsRootDescriptorTable(
+                    static_cast<UINT>(index + 1u),
+                    bindings[index].descriptor);
+            }
             commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             commandList->IASetVertexBuffers(0, 1, &vertexView);
             commandList->IASetIndexBuffer(&indexView);

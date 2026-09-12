@@ -571,6 +571,54 @@ namespace
             "The DirectX 12 local lights leaked beyond their range");
     }
 
+    void RequireD3D12MaterialFactors()
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap);
+        LamaPon::Scene scene(graphics);
+        auto& cameraObject = scene.CreateGameObject("MainCamera");
+        cameraObject.GetTransform().position = { 0.0f, 0.0f, 4.0f };
+        auto& camera = cameraObject.AddComponent<LamaPon::CameraComponent>();
+        scene.SetMainCamera(camera);
+        scene.SetAmbientLightIntensity(0.0f);
+
+        auto& object = scene.CreateGameObject("EmissiveMesh");
+        auto& mesh = object.AddComponent<LamaPon::MeshRendererComponent>(
+            LamaPon::PrimitiveShape::Cube,
+            DirectX::XMFLOAT4{ 0.0f, 0.0f, 0.0f, 1.0f });
+        mesh.SetRoughness(0.2f);
+        mesh.SetMetallic(0.8f);
+        mesh.SetEmissiveColor({ 0.05f, 0.8f, 0.15f });
+
+        constexpr float clearColor[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+        graphics.BeginFrame(clearColor);
+        scene.RenderMainCamera(
+            static_cast<float>(CanvasWidth) / CanvasHeight,
+            false,
+            nullptr);
+        std::uint32_t width{};
+        std::uint32_t height{};
+        const auto pixels = graphics.CaptureBackBuffer(width, height);
+        graphics.EndFrame();
+        Require(
+            width == CanvasWidth && height == CanvasHeight,
+            "The DirectX 12 material capture has unexpected dimensions");
+        const auto center =
+            (static_cast<std::size_t>(CanvasHeight / 2u) * CanvasWidth
+                + CanvasWidth / 2u) * 4u;
+        Require(
+            pixels[center + 1u] > 170u
+                && pixels[center] < 40u
+                && pixels[center + 2u] < 70u,
+            "The DirectX 12 pipeline did not apply the material emissive factor");
+    }
+
     void RequireD3D12Particles()
     {
         HiddenWindow window{ CanvasWidth, CanvasHeight };
@@ -726,6 +774,7 @@ int main()
                 AllowD3D12ExperimentalBootstrap);
         RequireD3D12PrimitiveScene();
         RequireD3D12PointAndSpotLights();
+        RequireD3D12MaterialFactors();
         RequireD3D12Particles();
         LamaPon::GraphicsDevice::SetEnableDebugLayer(false);
         RequireNoD3D12DebugErrors();

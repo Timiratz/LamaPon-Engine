@@ -1137,9 +1137,22 @@ namespace LamaPon
             DirectX::XMStoreFloat4x4(&request.view, view);
             DirectX::XMStoreFloat4x4(&request.projection, projection);
             request.baseColor = m_material.BaseColor();
+            request.roughness = m_material.Roughness();
+            request.metallic = m_material.Metallic();
+            request.normalStrength =
+                m_material.NormalStrength();
+            request.occlusionStrength =
+                m_material.OcclusionStrength();
+            request.emissiveFactor =
+                m_material.EmissiveColor();
             CopyPrimitiveLighting(m_graphics->Lighting(), request);
             const auto textures = BuildLitTextureRequest();
             request.albedo = textures.albedo;
+            request.normalTexture = textures.normal;
+            request.roughnessTexture = textures.roughness;
+            request.metallicTexture = textures.metallic;
+            request.occlusionTexture = textures.occlusion;
+            request.emissiveTexture = textures.emissive;
             request.fallbackTexture =
                 m_graphics->WhiteTextureViewHandle();
             request.alphaBlend =
