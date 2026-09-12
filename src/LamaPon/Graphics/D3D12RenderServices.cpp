@@ -600,6 +600,13 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
         [[nodiscard]] bool DrawParticles(
             const LamaPon::ParticleDrawRequest& request) override
         {
+            // 半透明particleはshadow casterにしません。通常描画入口を
+            // 呼ぶとShadowMapのDSVからprimary outputへ戻るため、ここで
+            // 成功扱いにしてshadow passを維持します。
+            if (m_backend->IsShadowPassActive())
+            {
+                return true;
+            }
             constexpr std::size_t maximumParticleCount = 4096u;
             if (request.vertices.empty())
             {
@@ -738,26 +745,37 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
             };
             std::array<LamaPon::D3D12Backend::ShaderResourceBinding, 6>
                 bindings{};
-            for (std::size_t index{}; index < textures.size(); ++index)
+            ID3D12DescriptorHeap* descriptorHeap{};
+            if (!request.depthOnly)
             {
-                const auto& texture = textures[index]
-                    ? textures[index]
-                    : request.fallbackTexture;
-                const auto binding =
-                    m_backend->TryResolveShaderResource(texture);
-                if (!binding)
+                for (std::size_t index{}; index < textures.size(); ++index)
+                {
+                    const auto& texture = textures[index]
+                        ? textures[index]
+                        : request.fallbackTexture;
+                    const auto binding =
+                        m_backend->TryResolveShaderResource(texture);
+                    if (!binding)
+                    {
+                        return false;
+                    }
+                    bindings[index] = *binding;
+                }
+                descriptorHeap =
+                    m_backend->ShaderResourceDescriptorHeap();
+                if (descriptorHeap == nullptr)
                 {
                     return false;
                 }
-                bindings[index] = *binding;
             }
-            auto* descriptorHeap = m_backend->ShaderResourceDescriptorHeap();
-            if (descriptorHeap == nullptr)
+            else if (!m_backend->IsShadowPassActive())
             {
                 return false;
             }
 
-            auto* commandList = m_backend->BeginFrameCommands();
+            auto* commandList = request.depthOnly
+                ? m_backend->CurrentFrameCommands()
+                : m_backend->BeginFrameCommands();
             const auto vertexBytes = static_cast<std::uint64_t>(vertices.size_bytes());
             const auto indexBytes = static_cast<std::uint64_t>(indices.size_bytes());
             if (vertexBytes > std::numeric_limits<UINT>::max()
@@ -909,28 +927,39 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 indexUpload.gpuAddress,
                 static_cast<UINT>(indexBytes),
                 DXGI_FORMAT_R32_UINT };
-            ID3D12DescriptorHeap* heaps[]{ descriptorHeap };
-            auto* pipeline = PipelineState(
-                request.alphaBlend, request.depthTest, request.depthWrite);
+            auto* pipeline = request.depthOnly
+                ? DepthOnlyPipelineState()
+                : PipelineState(
+                    request.alphaBlend,
+                    request.depthTest,
+                    request.depthWrite);
             commandList->SetGraphicsRootSignature(m_rootSignature.Get());
             commandList->SetPipelineState(pipeline);
-            commandList->SetDescriptorHeaps(1, heaps);
             commandList->SetGraphicsRootConstantBufferView(
                 0,
                 constantUpload.gpuAddress);
-            for (std::size_t index{}; index < bindings.size(); ++index)
+            if (!request.depthOnly)
             {
-                commandList->SetGraphicsRootDescriptorTable(
-                    static_cast<UINT>(index + 1u),
-                    bindings[index].descriptor);
+                ID3D12DescriptorHeap* heaps[]{ descriptorHeap };
+                commandList->SetDescriptorHeaps(1, heaps);
+                for (std::size_t index{}; index < bindings.size(); ++index)
+                {
+                    commandList->SetGraphicsRootDescriptorTable(
+                        static_cast<UINT>(index + 1u),
+                        bindings[index].descriptor);
+                }
             }
             commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             commandList->IASetVertexBuffers(0, 1, &vertexView);
             commandList->IASetIndexBuffer(&indexView);
-            const auto& viewport = m_backend->PrimaryViewport();
-            const auto& scissor = m_backend->PrimaryScissorRectangle();
-            commandList->RSSetViewports(1, &viewport);
-            commandList->RSSetScissorRects(1, &scissor);
+            if (!request.depthOnly)
+            {
+                const auto& viewport = m_backend->PrimaryViewport();
+                const auto& scissor =
+                    m_backend->PrimaryScissorRectangle();
+                commandList->RSSetViewports(1, &viewport);
+                commandList->RSSetScissorRects(1, &scissor);
+            }
             commandList->DrawIndexedInstanced(
                 static_cast<UINT>(indices.size()), 1, 0, 0, 0);
             return true;
@@ -1029,6 +1058,55 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
             return pipeline.Get();
         }
 
+        [[nodiscard]] ID3D12PipelineState* DepthOnlyPipelineState()
+        {
+            if (m_depthOnlyPipelineState != nullptr)
+            {
+                return m_depthOnlyPipelineState.Get();
+            }
+            static const std::array<D3D12_INPUT_ELEMENT_DESC, 3> inputs{ {
+                { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,
+                    offsetof(PrimitiveRenderVertex, position),
+                    D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+                { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,
+                    offsetof(PrimitiveRenderVertex, normal),
+                    D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+                { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0,
+                    offsetof(PrimitiveRenderVertex, textureCoordinate),
+                    D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+            } };
+            D3D12_GRAPHICS_PIPELINE_STATE_DESC description{};
+            description.pRootSignature = m_rootSignature.Get();
+            description.VS = {
+                m_vertexShader->GetBufferPointer(),
+                m_vertexShader->GetBufferSize() };
+            description.BlendState = MakeBlendDescription(false);
+            description.SampleMask = std::numeric_limits<UINT>::max();
+            description.RasterizerState = MakeRasterizerDescription();
+            // Shadow mapの自己遮蔽を抑えるため、深度専用PSOにだけ
+            // rasterizer biasを持たせます。
+            description.RasterizerState.DepthBias = 1000;
+            description.RasterizerState.SlopeScaledDepthBias = 1.0f;
+            description.DepthStencilState =
+                MakeDepthDescription(true, true);
+            description.InputLayout = {
+                inputs.data(),
+                static_cast<UINT>(inputs.size()) };
+            description.PrimitiveTopologyType =
+                D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+            description.NumRenderTargets = 0;
+            description.DSVFormat =
+                LamaPon::D3D12Backend::ShadowDepthFormat;
+            description.SampleDesc.Count = 1;
+            ThrowIfFailed(
+                m_backend->Device()->CreateGraphicsPipelineState(
+                    &description,
+                    IID_PPV_ARGS(
+                        m_depthOnlyPipelineState.ReleaseAndGetAddressOf())),
+                "ID3D12Device::CreateGraphicsPipelineState(shadow depth)");
+            return m_depthOnlyPipelineState.Get();
+        }
+
         LamaPon::D3D12Backend* m_backend{};
         Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSignature;
         Microsoft::WRL::ComPtr<ID3DBlob> m_vertexShader;
@@ -1038,6 +1116,8 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
         std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2>
             m_particlePipelineStates;
         std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 3> m_pipelineStates;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState>
+            m_depthOnlyPipelineState;
         Geometry m_cube;
         Geometry m_sphere;
         Geometry m_cylinder;

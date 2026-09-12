@@ -1747,6 +1747,7 @@ namespace LamaPon
 
         const auto overrideTextures = BuildLitTextureRequest();
         const auto ownerWorld = Owner().WorldMatrix();
+        const bool depthOnly = m_graphics->IsDepthOnlyPass();
         const auto lodLevel = model.SelectAutomaticLod(
             ownerWorld,
             view,
@@ -1754,6 +1755,10 @@ namespace LamaPon
             m_graphics->Settings().automaticLodQuality);
         for (const bool alphaPass : { false, true })
         {
+            if (depthOnly && alphaPass)
+            {
+                continue;
+            }
             for (const auto& primitive : model.primitives)
             {
                 if (primitive.cpuVertexStride
@@ -1952,6 +1957,7 @@ namespace LamaPon
                     m_graphics->WhiteTextureViewHandle();
                 request.alphaBlend = alpha;
                 request.depthWrite = !alpha;
+                request.depthOnly = depthOnly;
                 CopyPrimitiveLighting(
                     m_graphics->Lighting(),
                     request);
@@ -2733,6 +2739,8 @@ namespace LamaPon
             || m_useLegacyShading
             || !m_material.Shader().empty()
             || m_graphics == nullptr
+            || m_graphics->ActiveRenderingApi()
+                != RenderingApi::DirectX11
             || m_graphics->IsDepthOnlyPass()
             || !m_model
             || !m_model->skeletalModel)

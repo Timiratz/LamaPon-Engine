@@ -5,8 +5,10 @@
 #include "LamaPon/Graphics/D3D12SpriteRenderer.h"
 #include "LamaPon/Graphics/GraphicsBackend.h"
 #include "LamaPon/Graphics/GraphicsRenderServices.h"
+#include "LamaPon/Graphics/Lighting.h"
 #include "LamaPon/Graphics/ShadowMap.h"
 
+#include <algorithm>
 #include <memory>
 #include <stdexcept>
 #include <utility>
@@ -55,7 +57,7 @@ namespace LamaPon::Detail
 
     void GraphicsDeviceD3D12Resources::RecreateShadowMaps(
         GraphicsBackend& backend,
-        const GraphicsSettings&)
+        const GraphicsSettings& settings)
     {
         if (backend.Api() != RenderingApi::DirectX12Experimental
             || !backend.IsInitialized())
@@ -65,12 +67,30 @@ namespace LamaPon::Detail
                 "12 backend.");
         }
 
-        // ShadowMapを空のまま公開します。D3D12 shadow resourcesと
-        // shadow passが完成するまで、SceneはIsValid()==falseとして
-        // 影描画を安全にスキップします。
         auto directionalShadowMap = std::make_unique<ShadowMap>();
         auto spotShadowMap = std::make_unique<ShadowMap>();
         auto pointShadowMap = std::make_unique<ShadowMap>();
+        if (settings.shadowsEnabled)
+        {
+            backend.InitializeShadowMap(
+                *directionalShadowMap,
+                settings.shadowResolution,
+                settings.shadowCascadeLimit,
+                false);
+            const std::uint32_t localShadowResolution = std::max(
+                settings.shadowResolution / 2u,
+                256u);
+            backend.InitializeShadowMap(
+                *spotShadowMap,
+                localShadowResolution,
+                static_cast<std::uint32_t>(MaximumSpotShadows),
+                false);
+            backend.InitializeShadowMap(
+                *pointShadowMap,
+                localShadowResolution,
+                6u,
+                true);
+        }
 
         // allocationがすべて成功するまで現在のfacadeを変更しません。
         m_directionalShadowMap = std::move(directionalShadowMap);

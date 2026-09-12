@@ -24,6 +24,7 @@ namespace LamaPon
     namespace Detail
     {
         class D3D12ResourceDomain;
+        struct ShadowMapBackendState;
     }
 
     class D3D12Backend final : public GraphicsBackend
@@ -175,6 +176,8 @@ namespace LamaPon
             DXGI_FORMAT_R8G8B8A8_UNORM;
         static constexpr DXGI_FORMAT PrimaryDepthFormat =
             DXGI_FORMAT_D24_UNORM_S8_UINT;
+        static constexpr DXGI_FORMAT ShadowDepthFormat =
+            DXGI_FORMAT_D32_FLOAT;
 
         [[nodiscard]] ID3D12Device* Device() const noexcept
         {
@@ -182,6 +185,14 @@ namespace LamaPon
         }
         // frame command listを開いてprimary outputをbindし、記録先を返します。
         [[nodiscard]] ID3D12GraphicsCommandList* BeginFrameCommands();
+        // ShadowMap等が設定した現在のoutputを変えず、記録中のcommand
+        // listを返します。深度専用描画中だけrender serviceが使います。
+        [[nodiscard]] ID3D12GraphicsCommandList*
+            CurrentFrameCommands();
+        [[nodiscard]] bool IsShadowPassActive() const noexcept
+        {
+            return m_activeShadowMap != nullptr;
+        }
         [[nodiscard]] ID3D12DescriptorHeap*
             ShaderResourceDescriptorHeap() const noexcept;
         // 別Backend世代やShaderResource以外のviewはnulloptです。
@@ -279,6 +290,7 @@ namespace LamaPon
         D3D12_RECT m_scissorRect{};
         bool m_tearingAllowed{};
         bool m_commandListOpen{};
+        Detail::ShadowMapBackendState* m_activeShadowMap{};
         // texture uploadはworker threadからも終端状態へ遷移させます。
         std::atomic_bool m_terminalFailure{ false };
         // Execute後にfence signal/waitが失敗しても、GPUが参照し得る

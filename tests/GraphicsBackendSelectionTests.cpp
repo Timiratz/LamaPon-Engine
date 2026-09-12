@@ -898,11 +898,17 @@ int main()
                     "The DirectX 12 bootstrap did not create its sprite "
                     "fallback white texture");
                 Require(
-                    !bootstrapGraphics.Shadows().IsValid()
-                        && !bootstrapGraphics.SpotShadows().IsValid()
-                        && !bootstrapGraphics.PointShadows().IsValid(),
-                    "The DirectX 12 bootstrap did not expose safe empty "
-                    "shadow facades");
+                    bootstrapGraphics.Shadows().IsValid()
+                        && bootstrapGraphics.SpotShadows().IsValid()
+                        && bootstrapGraphics.PointShadows().IsValid()
+                        && bootstrapGraphics.IsGraphicsViewCurrent(
+                            bootstrapGraphics.Shadows().ViewHandle())
+                        && bootstrapGraphics.IsGraphicsViewCurrent(
+                            bootstrapGraphics.SpotShadows().ViewHandle())
+                        && bootstrapGraphics.IsGraphicsViewCurrent(
+                            bootstrapGraphics.PointShadows().ViewHandle()),
+                    "The DirectX 12 bootstrap did not expose current shadow "
+                    "map resources");
 
                 const std::array debugPoints{
                     DirectX::XMFLOAT3{ -1.0f, 0.0f, 0.0f },

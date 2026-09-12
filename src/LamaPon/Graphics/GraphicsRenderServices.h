@@ -114,6 +114,10 @@ namespace LamaPon
         bool alphaBlend{};
         bool depthTest{ true };
         bool depthWrite{ true };
+        // ShadowMapなど、色を書かず深度だけを生成する描画要求です。
+        // Backendは現在bind済みの深度描画先を維持し、pixel shaderや
+        // material textureを使わずに描画します。
+        bool depthOnly{};
     };
 
     // 高レベルrendererが生成済みの描画要求を実効APIへ送る同期serviceです。

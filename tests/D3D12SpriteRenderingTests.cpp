@@ -8,6 +8,7 @@
 #include "LamaPon/Components/SpotLightComponent.h"
 #include "LamaPon/Core/Log.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
+#include "LamaPon/Graphics/ShadowMap.h"
 #include "LamaPon/Graphics/SkeletalModel.h"
 #include "LamaPon/Graphics/SpriteRendering.h"
 #include "LamaPon/Scene/Scene.h"
@@ -401,6 +402,31 @@ namespace
             CanvasHeight,
             LamaPon::RenderingApi::DirectX12Experimental,
             LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap);
+        auto shadowSettings = graphics.Settings();
+        shadowSettings.shadowResolution = 256u;
+        shadowSettings.shadowCascadeLimit = 2u;
+        graphics.SetGraphicsSettings(shadowSettings);
+        Require(
+            graphics.Shadows().IsValid()
+                && graphics.Shadows().Resolution() == 256u
+                && graphics.Shadows().CascadeCount() == 2u
+                && graphics.IsGraphicsViewCurrent(
+                    graphics.Shadows().ViewHandle()),
+            "The DirectX 12 directional shadow map was not initialized");
+        Require(
+            graphics.SpotShadows().IsValid()
+                && graphics.SpotShadows().Resolution() == 256u
+                && graphics.SpotShadows().CascadeCount() == 4u
+                && graphics.IsGraphicsViewCurrent(
+                    graphics.SpotShadows().ViewHandle()),
+            "The DirectX 12 spot shadow map was not initialized");
+        Require(
+            graphics.PointShadows().IsValid()
+                && graphics.PointShadows().Resolution() == 256u
+                && graphics.PointShadows().CascadeCount() == 6u
+                && graphics.IsGraphicsViewCurrent(
+                    graphics.PointShadows().ViewHandle()),
+            "The DirectX 12 point shadow cube was not initialized");
         LamaPon::Scene scene(graphics);
         auto& cameraObject = scene.CreateGameObject("MainCamera");
         cameraObject.GetTransform().position = { 0.0f, 0.0f, 4.0f };
@@ -458,6 +484,12 @@ namespace
         std::uint32_t height{};
         const auto pixels = graphics.CaptureBackBuffer(width, height);
         graphics.EndFrame();
+        Require(
+            graphics.DepthPass() == LamaPon::DepthPassKind::None
+                && graphics.Lighting().directionalShadow.enabled
+                && graphics.IsGraphicsViewCurrent(
+                    graphics.Lighting().directionalShadow.texture),
+            "The DirectX 12 scene did not complete its shadow depth pass");
         Require(
             width == CanvasWidth && height == CanvasHeight,
             "The DirectX 12 primitive capture has unexpected dimensions");

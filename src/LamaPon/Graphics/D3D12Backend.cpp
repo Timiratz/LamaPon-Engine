@@ -3,6 +3,8 @@
 #include "LamaPon/Core/Log.h"
 #include "LamaPon/Graphics/DebugRenderer.h"
 #include "LamaPon/Graphics/DxgiTextureLayout.h"
+#include "LamaPon/Graphics/ShadowMap.h"
+#include "LamaPon/Graphics/ShadowMapBackendState.h"
 
 #include <Windows.h>
 
@@ -387,6 +389,30 @@ namespace
         DXGI_FORMAT format{};
     };
 
+    // Shadow textureは通常の2D texture契約では表せないarray/cubeです。
+    // 専用payloadに閉じ込め、公開側にはShaderResource viewだけを渡します。
+    class D3D12ShadowTexturePayload final
+        : public LamaPon::Detail::GraphicsTexturePayload
+    {
+    public:
+        D3D12ShadowTexturePayload(
+            const std::shared_ptr<LamaPon::Detail::D3D12ResourceDomain>&
+                resourceDomain,
+            Microsoft::WRL::ComPtr<ID3D12Resource> texture)
+            : GraphicsTexturePayload(resourceDomain)
+            , native(std::move(texture))
+        {
+        }
+
+        ~D3D12ShadowTexturePayload() noexcept override
+        {
+            static_cast<LamaPon::Detail::D3D12ResourceDomain&>(
+                *Domain()).Retire(std::move(native), std::nullopt);
+        }
+
+        Microsoft::WRL::ComPtr<ID3D12Resource> native;
+    };
+
     // shader-visible heap内のSRV descriptorです。参照先textureは基底の
     // GraphicsViewPayloadが強所有します。
     class D3D12ShaderResourceViewPayload final
@@ -419,6 +445,27 @@ namespace
         std::uint32_t slot{};
         std::uint32_t width{};
         std::uint32_t height{};
+    };
+
+    struct D3D12ShadowMapState final
+        : LamaPon::Detail::ShadowMapBackendState
+    {
+        [[nodiscard]] bool HasNativeResources() const noexcept
+        {
+            return m_initialized
+                && texture != nullptr
+                && depthStencilHeap != nullptr
+                && descriptorSize != 0u
+                && m_cascadeCount != 0u;
+        }
+
+        Microsoft::WRL::ComPtr<ID3D12Resource> texture;
+        Microsoft::WRL::ComPtr<ID3D12DescriptorHeap>
+            depthStencilHeap;
+        D3D12_RESOURCE_STATES resourceState{
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE };
+        std::uint32_t descriptorSize{};
+        bool cube{};
     };
 
     [[nodiscard]] const D3D12TexturePayload* TryTexturePayload(
@@ -919,6 +966,7 @@ namespace LamaPon
     void D3D12Backend::Shutdown() noexcept
     {
         PrepareForResourceRelease();
+        m_activeShadowMap = nullptr;
         // GPUの完了を待った後で、handleが退避したresource / descriptorを
         // 解放します。以後に破棄されるhandleは即時解放されます。
         if (m_resourceDomain != nullptr)
@@ -1779,6 +1827,17 @@ namespace LamaPon
         return m_commandList.Get();
     }
 
+    ID3D12GraphicsCommandList* D3D12Backend::CurrentFrameCommands()
+    {
+        if (!IsInitialized() || !m_commandListOpen)
+        {
+            throw std::logic_error(
+                "CurrentFrameCommands requires an open D3D12 frame "
+                "command list.");
+        }
+        return m_commandList.Get();
+    }
+
     ID3D12DescriptorHeap*
         D3D12Backend::ShaderResourceDescriptorHeap() const noexcept
     {
@@ -2096,22 +2155,287 @@ namespace LamaPon
     }
 
     void D3D12Backend::InitializeShadowMap(
-        ShadowMap&,
-        std::uint32_t,
-        std::uint32_t,
-        bool)
+        ShadowMap& shadowMap,
+        const std::uint32_t resolution,
+        const std::uint32_t cascadeCount,
+        const bool cube)
     {
-        ThrowUnsupported("InitializeShadowMap");
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "InitializeShadowMap requires an initialized backend.");
+        }
+        if (resolution > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION)
+        {
+            throw std::invalid_argument(
+                "ShadowMap resolution exceeds the DirectX 12 limit.");
+        }
+
+        auto* const previousState =
+            Detail::ShadowMapBackendAccess::Get(shadowMap);
+        auto* const previous = dynamic_cast<D3D12ShadowMapState*>(
+            previousState);
+        const bool restorePrevious = previousState != nullptr
+            && previousState->m_rendering;
+        if (restorePrevious
+            && (previous == nullptr
+                || m_activeShadowMap != previous
+                || Detail::GraphicsResourceHandleAccess::Domain(
+                    previous->m_view) != m_resourceDomain.get()))
+        {
+            throw std::logic_error(
+                "Cannot replace a shadow map while another graphics API "
+                "is rendering it.");
+        }
+
+        auto state = std::make_unique<D3D12ShadowMapState>();
+        state->m_resolution = std::max(resolution, 1u);
+        state->m_cascadeCount = cube
+            ? 6u
+            : std::clamp(cascadeCount, 1u, 4u);
+        state->cube = cube;
+
+        D3D12_RESOURCE_DESC textureDescription{};
+        textureDescription.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        textureDescription.Width = state->m_resolution;
+        textureDescription.Height = state->m_resolution;
+        textureDescription.DepthOrArraySize = static_cast<UINT16>(
+            state->m_cascadeCount);
+        textureDescription.MipLevels = 1;
+        textureDescription.Format = DXGI_FORMAT_R32_TYPELESS;
+        textureDescription.SampleDesc.Count = 1;
+        textureDescription.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        textureDescription.Flags =
+            D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+        D3D12_CLEAR_VALUE clearValue{};
+        clearValue.Format = ShadowDepthFormat;
+        clearValue.DepthStencil.Depth = 1.0f;
+        const auto heapProperties =
+            HeapProperties(D3D12_HEAP_TYPE_DEFAULT);
+        ThrowIfFailed(
+            m_device->CreateCommittedResource(
+                &heapProperties,
+                D3D12_HEAP_FLAG_NONE,
+                &textureDescription,
+                state->resourceState,
+                &clearValue,
+                IID_PPV_ARGS(state->texture.ReleaseAndGetAddressOf())),
+            "ID3D12Device::CreateCommittedResource(shadow map)",
+            m_device.Get());
+
+        D3D12_DESCRIPTOR_HEAP_DESC depthHeapDescription{};
+        depthHeapDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+        depthHeapDescription.NumDescriptors = state->m_cascadeCount;
+        ThrowIfFailed(
+            m_device->CreateDescriptorHeap(
+                &depthHeapDescription,
+                IID_PPV_ARGS(
+                    state->depthStencilHeap.ReleaseAndGetAddressOf())),
+            "ID3D12Device::CreateDescriptorHeap(shadow DSV)",
+            m_device.Get());
+        state->descriptorSize =
+            m_device->GetDescriptorHandleIncrementSize(
+                D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+        D3D12_DEPTH_STENCIL_VIEW_DESC depthViewDescription{};
+        depthViewDescription.Format = ShadowDepthFormat;
+        depthViewDescription.ViewDimension =
+            D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
+        depthViewDescription.Texture2DArray.ArraySize = 1;
+        auto depthHandle = state->depthStencilHeap
+            ->GetCPUDescriptorHandleForHeapStart();
+        for (std::uint32_t index{};
+            index < state->m_cascadeCount;
+            ++index)
+        {
+            depthViewDescription.Texture2DArray.FirstArraySlice = index;
+            m_device->CreateDepthStencilView(
+                state->texture.Get(),
+                &depthViewDescription,
+                depthHandle);
+            depthHandle = OffsetDescriptor(
+                depthHandle,
+                1u,
+                state->descriptorSize);
+        }
+
+        const auto descriptorSlot =
+            m_resourceDomain->AllocateShaderResourceSlot();
+        try
+        {
+            D3D12_SHADER_RESOURCE_VIEW_DESC resourceViewDescription{};
+            resourceViewDescription.Format = DXGI_FORMAT_R32_FLOAT;
+            resourceViewDescription.Shader4ComponentMapping =
+                D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            if (cube)
+            {
+                resourceViewDescription.ViewDimension =
+                    D3D12_SRV_DIMENSION_TEXTURECUBE;
+                resourceViewDescription.TextureCube.MipLevels = 1;
+            }
+            else
+            {
+                resourceViewDescription.ViewDimension =
+                    D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+                resourceViewDescription.Texture2DArray.MipLevels = 1;
+                resourceViewDescription.Texture2DArray.ArraySize =
+                    state->m_cascadeCount;
+            }
+            m_device->CreateShaderResourceView(
+                state->texture.Get(),
+                &resourceViewDescription,
+                m_resourceDomain->ShaderResourceCpuHandle(
+                    descriptorSlot));
+            auto texture =
+                Detail::GraphicsResourceHandleAccess::MakeTexture(
+                    std::make_shared<D3D12ShadowTexturePayload>(
+                        m_resourceDomain,
+                        state->texture));
+            state->m_view =
+                Detail::GraphicsResourceHandleAccess::MakeView(
+                    std::make_shared<
+                        D3D12ShaderResourceViewPayload>(
+                            m_resourceDomain,
+                            std::move(texture),
+                            descriptorSlot,
+                            state->m_resolution,
+                            state->m_resolution));
+        }
+        catch (...)
+        {
+            m_resourceDomain->ReleaseUnpublishedShaderResourceSlot(
+                descriptorSlot);
+            throw;
+        }
+        state->m_initialized = true;
+
+        if (restorePrevious)
+        {
+            EndShadowMap(shadowMap);
+        }
+        Detail::ShadowMapBackendAccess::Publish(
+            shadowMap,
+            std::move(state));
     }
 
-    void D3D12Backend::BeginShadowMap(ShadowMap&, std::uint32_t)
+    void D3D12Backend::BeginShadowMap(
+        ShadowMap& shadowMap,
+        const std::uint32_t cascadeIndex)
     {
-        ThrowUnsupported("BeginShadowMap");
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "BeginShadowMap requires an initialized backend.");
+        }
+        auto* const state = dynamic_cast<D3D12ShadowMapState*>(
+            Detail::ShadowMapBackendAccess::Get(shadowMap));
+        if (state == nullptr
+            || !state->HasNativeResources()
+            || state->m_rendering
+            || m_activeShadowMap != nullptr
+            || cascadeIndex >= state->m_cascadeCount
+            || Detail::GraphicsResourceHandleAccess::Domain(
+                state->m_view) != m_resourceDomain.get())
+        {
+            return;
+        }
+
+        try
+        {
+            OpenCommandList();
+            if (state->resourceState != D3D12_RESOURCE_STATE_DEPTH_WRITE)
+            {
+                D3D12_RESOURCE_BARRIER barrier{};
+                barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                barrier.Transition.pResource = state->texture.Get();
+                barrier.Transition.Subresource =
+                    D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                barrier.Transition.StateBefore = state->resourceState;
+                barrier.Transition.StateAfter =
+                    D3D12_RESOURCE_STATE_DEPTH_WRITE;
+                m_commandList->ResourceBarrier(1, &barrier);
+                state->resourceState =
+                    D3D12_RESOURCE_STATE_DEPTH_WRITE;
+            }
+            const auto depthView = OffsetDescriptor(
+                state->depthStencilHeap
+                    ->GetCPUDescriptorHandleForHeapStart(),
+                cascadeIndex,
+                state->descriptorSize);
+            m_commandList->OMSetRenderTargets(
+                0,
+                nullptr,
+                FALSE,
+                &depthView);
+            const D3D12_VIEWPORT viewport{
+                0.0f,
+                0.0f,
+                static_cast<float>(state->m_resolution),
+                static_cast<float>(state->m_resolution),
+                0.0f,
+                1.0f };
+            const D3D12_RECT scissor{
+                0,
+                0,
+                static_cast<LONG>(state->m_resolution),
+                static_cast<LONG>(state->m_resolution) };
+            m_commandList->RSSetViewports(1, &viewport);
+            m_commandList->RSSetScissorRects(1, &scissor);
+            m_commandList->ClearDepthStencilView(
+                depthView,
+                D3D12_CLEAR_FLAG_DEPTH,
+                1.0f,
+                0,
+                0,
+                nullptr);
+            state->m_rendering = true;
+            m_activeShadowMap = state;
+        }
+        catch (...)
+        {
+            m_terminalFailure = true;
+            throw;
+        }
     }
 
-    void D3D12Backend::EndShadowMap(ShadowMap&)
+    void D3D12Backend::EndShadowMap(ShadowMap& shadowMap)
     {
-        ThrowUnsupported("EndShadowMap");
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "EndShadowMap requires an initialized backend.");
+        }
+        auto* const state = dynamic_cast<D3D12ShadowMapState*>(
+            Detail::ShadowMapBackendAccess::Get(shadowMap));
+        if (state == nullptr
+            || !state->HasNativeResources()
+            || !state->m_rendering
+            || m_activeShadowMap != state
+            || Detail::GraphicsResourceHandleAccess::Domain(
+                state->m_view) != m_resourceDomain.get())
+        {
+            return;
+        }
+
+        if (state->resourceState
+            != D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)
+        {
+            D3D12_RESOURCE_BARRIER barrier{};
+            barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            barrier.Transition.pResource = state->texture.Get();
+            barrier.Transition.Subresource =
+                D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            barrier.Transition.StateBefore = state->resourceState;
+            barrier.Transition.StateAfter =
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+            m_commandList->ResourceBarrier(1, &barrier);
+            state->resourceState =
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        }
+        state->m_rendering = false;
+        m_activeShadowMap = nullptr;
+        TransitionCurrentBackBuffer(
+            D3D12_RESOURCE_STATE_RENDER_TARGET);
+        BindPrimaryOutput();
     }
 
     void D3D12Backend::UpdateClusteredLights(

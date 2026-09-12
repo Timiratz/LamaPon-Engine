@@ -1097,6 +1097,13 @@ namespace LamaPon
             && m_graphics->ActiveRenderingApi()
                 == RenderingApi::DirectX12Experimental)
         {
+            const bool depthOnly = m_graphics->IsDepthOnlyPass();
+            if (depthOnly
+                && (m_worldOverlay
+                    || m_material.BaseColor().w < 1.0f))
+            {
+                return;
+            }
             PrimitiveDrawRequest request;
             switch (m_shape)
             {
@@ -1160,6 +1167,13 @@ namespace LamaPon
             request.depthTest = !m_worldOverlay;
             request.depthWrite =
                 request.depthTest && !request.alphaBlend;
+            request.depthOnly = depthOnly;
+            if (depthOnly)
+            {
+                request.alphaBlend = false;
+                request.depthTest = true;
+                request.depthWrite = true;
+            }
             static_cast<void>(m_graphics->DrawPrimitive(request));
             return;
         }
@@ -1424,7 +1438,9 @@ namespace LamaPon
             && m_effect != nullptr
             && m_effect->SupportsInstancing()
             && m_instancedInputLayout != nullptr
-            && m_graphics != nullptr;
+            && m_graphics != nullptr
+            && m_graphics->ActiveRenderingApi()
+                == RenderingApi::DirectX11;
     }
 
     std::uint64_t

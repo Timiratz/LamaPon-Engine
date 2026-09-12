@@ -6114,29 +6114,20 @@ namespace LamaPon
         if (m_graphics.ActiveRenderingApi()
             == RenderingApi::DirectX12Experimental)
         {
-            // Experimentalの最小3D経路はprimary outputへ直接描きます。
-            // D3D11専用の影・深度プリパス・HDR/post-processは通さず、
-            // Componentが送るAPI-neutral draw requestだけを処理します。
+            // primary outputへの最小経路は維持しつつ、共通のカリング・
+            // shadow pass・描画順序を通します。targetを使うpost-processと
+            // probe bakeはD3D12側のoffscreen実装後に段階的に有効化します。
             static_cast<void>(target);
-            const BooleanStateScope interpolationScope{
-                m_renderingInterpolatedTransforms,
-                true
-            };
             if (m_mainCamera != nullptr && m_mainCamera->IsEnabled())
             {
-                m_graphics.SetLightingState(BuildLightingState());
-                const auto view = m_mainCamera->ViewMatrix();
-                const auto projection =
-                    m_mainCamera->ProjectionMatrix(aspectRatio);
-                for (const auto& gameObject : m_gameObjects)
-                {
-                    gameObject->Render3D(
-                        m_graphics,
-                        view,
-                        projection);
-                }
+                RenderWithMatrices(
+                    m_mainCamera->ViewMatrix(),
+                    m_mainCamera->ProjectionMatrix(aspectRatio),
+                    include2D,
+                    false,
+                    nullptr);
             }
-            if (include2D)
+            else if (include2D)
             {
                 Render2D();
             }
@@ -7053,8 +7044,9 @@ namespace LamaPon
         // 従来の16灯経路（品質設定のポイント／スポット上限が効く方）
         // へ落ちます。Compute Shaderのディスパッチごと省けます。
         const bool clusteredRequested =
-            m_graphics.Settings().renderingPath
-            == RenderingPath::ForwardPlus;
+            m_graphics.ActiveRenderingApi() == RenderingApi::DirectX11
+            && m_graphics.Settings().renderingPath
+                == RenderingPath::ForwardPlus;
         if (clusteredRequested
             && !lighting.clusteredLights.empty()
             && !m_clusteredLightingUnavailable)
@@ -7121,6 +7113,7 @@ namespace LamaPon
         }
 
         m_graphics.SetLightingState(lighting);
+        if (m_graphics.ActiveRenderingApi() == RenderingApi::DirectX11)
         {
             GpuProfiler::SectionScope gpuSectionScope{
                 m_graphics.Gpu(),
