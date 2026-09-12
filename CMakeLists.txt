@@ -977,6 +977,8 @@ if(BUILD_TESTING)
     add_executable(LamaPonD3D12SpriteRenderingTests
         tests/D3D12SpriteRenderingTests.cpp)
     target_link_libraries(LamaPonD3D12SpriteRenderingTests PRIVATE LamaPonRuntime)
+    target_compile_definitions(LamaPonD3D12SpriteRenderingTests PRIVATE
+        LAMAPON_TEST_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets")
     target_compile_options(LamaPonD3D12SpriteRenderingTests PRIVATE
         $<$<CXX_COMPILER_ID:MSVC>:/W4>
         $<$<CXX_COMPILER_ID:MSVC>:/permissive->

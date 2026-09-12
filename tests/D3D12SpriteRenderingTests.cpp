@@ -2,6 +2,7 @@
 #include "LamaPon/Components/CameraComponent.h"
 #include "LamaPon/Components/DirectionalLightComponent.h"
 #include "LamaPon/Components/MeshRendererComponent.h"
+#include "LamaPon/Components/ModelRendererComponent.h"
 #include "LamaPon/Components/ParticleSystemComponent.h"
 #include "LamaPon/Components/PointLightComponent.h"
 #include "LamaPon/Components/SpotLightComponent.h"
@@ -20,6 +21,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -619,6 +621,95 @@ namespace
             "The DirectX 12 pipeline did not apply the material emissive factor");
     }
 
+    void RequireD3D12AnimatedGltfModel()
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap);
+        LamaPon::Scene scene(graphics);
+        auto& cameraObject = scene.CreateGameObject("MainCamera");
+        cameraObject.GetTransform().position = { 0.0f, 0.0f, 10.0f };
+        auto& camera = cameraObject.AddComponent<LamaPon::CameraComponent>();
+        scene.SetMainCamera(camera);
+        scene.SetAmbientLightColor({ 1.0f, 1.0f, 1.0f });
+        scene.SetAmbientLightIntensity(0.9f);
+
+        const auto modelPath = std::filesystem::path(
+            LAMAPON_TEST_ASSET_DIR)
+            / "models"
+            / "RiggedSimple.glb";
+        auto& object = scene.CreateGameObject("AnimatedModel");
+        auto& model = object.AddComponent<
+            LamaPon::ModelRendererComponent>(modelPath);
+        model.SetAnimationPlayOnStart(false);
+
+        constexpr float clearColor[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+        graphics.BeginFrame(clearColor);
+        scene.RenderMainCamera(
+            static_cast<float>(CanvasWidth) / CanvasHeight,
+            false,
+            nullptr);
+        std::uint32_t width{};
+        std::uint32_t height{};
+        const auto pixels = graphics.CaptureBackBuffer(width, height);
+        graphics.EndFrame();
+        Require(
+            model.AnimationCount() > 0,
+            "The DirectX 12 ModelRenderer did not load the glTF animation");
+        Require(
+            width == CanvasWidth && height == CanvasHeight,
+            "The DirectX 12 model capture has unexpected dimensions");
+        std::size_t modelPixels{};
+        for (std::size_t offset{}; offset + 3u < pixels.size(); offset += 4u)
+        {
+            if (pixels[offset] > 20u
+                || pixels[offset + 1u] > 20u
+                || pixels[offset + 2u] > 20u)
+            {
+                ++modelPixels;
+            }
+        }
+        Require(
+            modelPixels > 100u,
+            "The DirectX 12 ModelRenderer did not draw the glTF mesh");
+
+        model.SetAnimationTime(model.AnimationDuration() * 0.5f);
+        graphics.BeginFrame(clearColor);
+        scene.RenderMainCamera(
+            static_cast<float>(CanvasWidth) / CanvasHeight,
+            false,
+            nullptr);
+        std::uint32_t animatedWidth{};
+        std::uint32_t animatedHeight{};
+        const auto animatedPixels = graphics.CaptureBackBuffer(
+            animatedWidth,
+            animatedHeight);
+        graphics.EndFrame();
+        Require(
+            animatedWidth == width && animatedHeight == height,
+            "The animated DirectX 12 model capture changed dimensions");
+        std::size_t changedPixels{};
+        for (std::size_t offset{};
+            offset + 3u < pixels.size();
+            offset += 4u)
+        {
+            if (pixels[offset] != animatedPixels[offset]
+                || pixels[offset + 1u] != animatedPixels[offset + 1u]
+                || pixels[offset + 2u] != animatedPixels[offset + 2u])
+            {
+                ++changedPixels;
+            }
+        }
+        Require(
+            changedPixels > 10u,
+            "The DirectX 12 ModelRenderer did not apply its animated pose");
+    }
+
     void RequireD3D12Particles()
     {
         HiddenWindow window{ CanvasWidth, CanvasHeight };
@@ -775,6 +866,7 @@ int main()
         RequireD3D12PrimitiveScene();
         RequireD3D12PointAndSpotLights();
         RequireD3D12MaterialFactors();
+        RequireD3D12AnimatedGltfModel();
         RequireD3D12Particles();
         LamaPon::GraphicsDevice::SetEnableDebugLayer(false);
         RequireNoD3D12DebugErrors();

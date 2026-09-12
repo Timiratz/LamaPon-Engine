@@ -423,6 +423,9 @@ namespace LamaPon
         // 外部マテリアルの全textureをBackend-neutralな1要求へまとめます。
         [[nodiscard]] LitTextureRequest
             BuildLitTextureRequest() const noexcept;
+        void DrawD3D12Model(
+            DirectX::FXMMATRIX view,
+            DirectX::CXMMATRIX projection);
         struct CommonLitResources;
 
         void ReloadModel();

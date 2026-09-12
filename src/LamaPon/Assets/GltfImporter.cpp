@@ -461,6 +461,10 @@ namespace
         const UINT bindFlags,
         ID3D11Buffer** output)
     {
+        if (device == nullptr)
+        {
+            return;
+        }
         if (byteCount > std::numeric_limits<UINT>::max())
         {
             throw std::runtime_error(
@@ -709,24 +713,21 @@ namespace LamaPon
         AssetManager& assets,
         const std::filesystem::path& path)
     {
-        if (device == nullptr)
-        {
-            throw std::invalid_argument(
-                "GltfImporter requires a Direct3D 11 device.");
-        }
-
         // インポートキャッシュ。本体・外部の.bin・外部テクスチャが
         // 前回と同じなら、パースと組み立てを全部飛ばします。
         const auto sourceBytes = assets.ReadFileBytes(path);
         const std::uint64_t cacheKey =
             ModelCache::ComputeKey(sourceBytes, 2);
-        if (auto cached = ModelCache::TryLoad(
-                device,
-                context,
-                assets,
-                cacheKey))
+        if (device != nullptr)
         {
-            return cached;
+            if (auto cached = ModelCache::TryLoad(
+                    device,
+                    context,
+                    assets,
+                    cacheKey))
+            {
+                return cached;
+            }
         }
         ModelCache::Recorder recorder;
 
@@ -902,6 +903,13 @@ namespace LamaPon
             {
                 if (view.texture == nullptr
                     || view.texture->image == nullptr)
+                {
+                    return {};
+                }
+                // D3D12では幾何・アニメーションを先に共通化します。
+                // 埋め込みtextureは次段階でGraphicsViewHandleとして
+                // importerから返すため、D3D11 SRVを作らず空にします。
+                if (device == nullptr)
                 {
                     return {};
                 }
@@ -1187,24 +1195,27 @@ namespace LamaPon
                     }
                 }
 
-                primitive.effect =
-                    std::make_shared<DirectX::SkinnedEffect>(
-                        device);
-                primitive.effect->SetWeightsPerVertex(4);
-                const void* shaderBytecode{};
-                std::size_t shaderBytecodeSize{};
-                primitive.effect->GetVertexShaderBytecode(
-                    &shaderBytecode,
-                    &shaderBytecodeSize);
-                ThrowIfFailed(
-                    device->CreateInputLayout(
-                        Vertex::InputElements,
-                        Vertex::InputElementCount,
-                        shaderBytecode,
-                        shaderBytecodeSize,
-                        primitive.inputLayout.
-                            ReleaseAndGetAddressOf()),
-                    "Creating glTF input layout");
+                if (device != nullptr)
+                {
+                    primitive.effect =
+                        std::make_shared<DirectX::SkinnedEffect>(
+                            device);
+                    primitive.effect->SetWeightsPerVertex(4);
+                    const void* shaderBytecode{};
+                    std::size_t shaderBytecodeSize{};
+                    primitive.effect->GetVertexShaderBytecode(
+                        &shaderBytecode,
+                        &shaderBytecodeSize);
+                    ThrowIfFailed(
+                        device->CreateInputLayout(
+                            Vertex::InputElements,
+                            Vertex::InputElementCount,
+                            shaderBytecode,
+                            shaderBytecodeSize,
+                            primitive.inputLayout.
+                                ReleaseAndGetAddressOf()),
+                        "Creating glTF input layout");
+                }
 
                 if (source.material != nullptr)
                 {
@@ -1374,7 +1385,10 @@ namespace LamaPon
         }
 
         // 次回のためにインポート結果を保存します（失敗しても無害）。
-        ModelCache::Store(cacheKey, *model, recorder);
+        if (device != nullptr)
+        {
+            ModelCache::Store(cacheKey, *model, recorder);
+        }
         return model;
     }
 }

@@ -7,6 +7,7 @@
 #include "LamaPon/Core/Profiler.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Graphics/GraphicsDeviceD3D11Access.h"
+#include "LamaPon/Graphics/GraphicsRenderServices.h"
 #include "LamaPon/Graphics/Lighting.h"
 #include "LamaPon/Graphics/LitEffect.h"
 #include "LamaPon/Graphics/LitMaterialAsset.h"
@@ -23,6 +24,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cwctype>
 #include <cstring>
 #include <functional>
 #include <limits>
@@ -34,6 +37,22 @@
 
 namespace
 {
+    struct ImportedModelVertex final
+    {
+        DirectX::XMFLOAT3 position{};
+        DirectX::XMFLOAT3 normal{};
+        DirectX::XMFLOAT4 tangent{};
+        std::uint32_t color{};
+        DirectX::XMFLOAT2 textureCoordinate{};
+        std::uint32_t blendIndices{};
+        std::uint32_t blendWeights{};
+    };
+
+    static_assert(
+        sizeof(ImportedModelVertex)
+            == sizeof(DirectX::
+                VertexPositionNormalTangentColorTextureSkinning));
+
     [[nodiscard]] LamaPon::GraphicsViewHandle AcquireTextureView(
         const std::shared_ptr<
             const LamaPon::TextureAsset>& asset) noexcept
@@ -46,6 +65,58 @@ namespace
         return resources != nullptr
             ? resources->shaderResourceView
             : LamaPon::GraphicsViewHandle{};
+    }
+
+    void CopyPrimitiveLighting(
+        const LamaPon::LightingState& lighting,
+        LamaPon::PrimitiveDrawRequest& request) noexcept
+    {
+        request.ambientColor = lighting.ambientColor;
+        request.ambientIntensity = lighting.ambientIntensity;
+        request.directionalLightCount = std::min(
+            request.directionalLights.size(),
+            lighting.directionalLightCount);
+        for (std::size_t index{};
+            index < request.directionalLightCount;
+            ++index)
+        {
+            const auto& source = lighting.directionalLights[index];
+            request.directionalLights[index] = {
+                source.direction,
+                source.color,
+                source.intensity };
+        }
+        request.pointLightCount = std::min(
+            request.pointLights.size(),
+            lighting.pointLightCount);
+        for (std::size_t index{};
+            index < request.pointLightCount;
+            ++index)
+        {
+            const auto& source = lighting.pointLights[index];
+            request.pointLights[index] = {
+                source.position,
+                source.range,
+                source.color,
+                source.intensity };
+        }
+        request.spotLightCount = std::min(
+            request.spotLights.size(),
+            lighting.spotLightCount);
+        for (std::size_t index{};
+            index < request.spotLightCount;
+            ++index)
+        {
+            const auto& source = lighting.spotLights[index];
+            request.spotLights[index] = {
+                source.position,
+                source.range,
+                source.direction,
+                source.innerConeCosine,
+                source.color,
+                source.intensity,
+                source.outerConeCosine };
+        }
     }
 
     // テセレーションが使えるのは、四角パッチに割れる形状（Plane・
@@ -409,6 +480,7 @@ namespace LamaPon
             ? std::min(index, AnimationCount() - 1)
             : 0;
         m_animationTime = 0.0f;
+        m_cachedPoseFrame = ~std::uint64_t{};
     }
 
     std::size_t
@@ -1043,6 +1115,7 @@ namespace LamaPon
             std::isfinite(time) ? time : 0.0f,
             0.0f,
             AnimationDuration());
+        m_cachedPoseFrame = ~std::uint64_t{};
     }
 
     void ModelRendererComponent::AdvanceAnimation(
@@ -1475,16 +1548,13 @@ namespace LamaPon
     {
         m_assets = &graphics.Assets();
         m_graphics = &graphics;
-        if (graphics.ActiveRenderingApi()
-            != RenderingApi::DirectX11)
+        const bool usesD3D11 = graphics.ActiveRenderingApi()
+            == RenderingApi::DirectX11;
+        if (usesD3D11)
         {
-            // Model / skeletal GPU資源はまだD3D11実装です。D3D12の
-            // Scene/UI段階ではComponent自体を保持し、D3D11 objectへ
-            // 触れずに安全にスキップします。
-            return;
+            m_context = Detail::GraphicsDeviceD3D11Access::Context(graphics);
+            m_states = &Detail::GraphicsDeviceD3D11Access::States(graphics);
         }
-        m_context = Detail::GraphicsDeviceD3D11Access::Context(graphics);
-        m_states = &Detail::GraphicsDeviceD3D11Access::States(graphics);
 
         if (!m_materialAssetPath.empty())
         {
@@ -1497,7 +1567,20 @@ namespace LamaPon
 
         if (!m_modelPath.empty())
         {
-            m_model = m_assets->CreateModelInstance(m_modelPath);
+            auto extension = m_modelPath.extension().wstring();
+            std::ranges::transform(
+                extension,
+                extension.begin(),
+                std::towlower);
+            // CMO/SDKMESH/FBXのImporterはまだD3D11 Deviceを必要とする
+            // ため、D3D12では安全に保持・スキップします。glTF/GLBは
+            // CPU幾何を共通経路で読み込みます。
+            if (usesD3D11
+                || extension == L".gltf"
+                || extension == L".glb")
+            {
+                m_model = m_assets->CreateModelInstance(m_modelPath);
+            }
         }
         SetAnimationIndex(m_animationIndex);
         LoadAnimationController();
@@ -1583,6 +1666,289 @@ namespace LamaPon
         }
     }
 
+    void ModelRendererComponent::DrawD3D12Model(
+        DirectX::FXMMATRIX view,
+        DirectX::CXMMATRIX projection)
+    {
+        if (m_graphics == nullptr
+            || !m_model
+            || !m_model->skeletalModel)
+        {
+            return;
+        }
+        auto& model = *m_model->skeletalModel;
+        const auto* clip = m_animationIndex < model.animations.size()
+            ? &model.animations[m_animationIndex]
+            : nullptr;
+        const auto* blendClip = !m_nextAnimationState.empty()
+                && m_nextAnimationIndex < model.animations.size()
+            ? &model.animations[m_nextAnimationIndex]
+            : nullptr;
+        const float blendAmount = blendClip != nullptr
+                && m_animationTransitionDuration > 0.0f
+            ? std::clamp(
+                m_animationTransitionTime
+                    / m_animationTransitionDuration,
+                0.0f,
+                1.0f)
+            : 0.0f;
+        const auto poseFrame = m_graphics->FrameStats().totalFrames;
+        if (m_cachedPoseFrame != poseFrame
+            || m_cachedPoseModel != &model)
+        {
+            std::vector<SkeletalPoseTransform> localPose;
+            std::vector<SkeletalPoseSample> weightedSamples;
+            CollectAnimationPoseSamples(weightedSamples);
+            if (m_applyRootMotion
+                && weightedSamples.empty()
+                && clip != nullptr)
+            {
+                weightedSamples.push_back({
+                    clip,
+                    m_animationTime,
+                    1.0f });
+            }
+            if (!weightedSamples.empty())
+            {
+                SkeletalModel::SampleWeightedPose(
+                    model.nodes,
+                    weightedSamples,
+                    localPose,
+                    m_cachedGlobalPose,
+                    m_applyRootMotion
+                        ? ResolveRootMotionNode()
+                        : std::numeric_limits<std::size_t>::max());
+            }
+            else if (blendClip != nullptr && blendAmount > 0.0f)
+            {
+                SkeletalModel::SampleBlendedPose(
+                    model.nodes,
+                    clip,
+                    m_animationTime,
+                    blendClip,
+                    m_nextAnimationTime,
+                    blendAmount,
+                    localPose,
+                    m_cachedGlobalPose);
+            }
+            else
+            {
+                SkeletalModel::SamplePose(
+                    model.nodes,
+                    clip,
+                    m_animationTime,
+                    localPose,
+                    m_cachedGlobalPose);
+            }
+            m_cachedPoseFrame = poseFrame;
+            m_cachedPoseModel = &model;
+        }
+
+        const auto overrideTextures = BuildLitTextureRequest();
+        const auto ownerWorld = Owner().WorldMatrix();
+        const auto lodLevel = model.SelectAutomaticLod(
+            ownerWorld,
+            view,
+            projection,
+            m_graphics->Settings().automaticLodQuality);
+        for (const bool alphaPass : { false, true })
+        {
+            for (const auto& primitive : model.primitives)
+            {
+                if (primitive.cpuVertexStride
+                        < sizeof(ImportedModelVertex)
+                    || primitive.cpuVertexData.empty()
+                    || primitive.cpuVertexData.size()
+                        % primitive.cpuVertexStride != 0
+                    || primitive.cpuIndices.empty()
+                    || primitive.meshNode
+                        >= m_cachedGlobalPose.size())
+                {
+                    continue;
+                }
+                const auto baseColor = m_materialOverrideEnabled
+                    ? m_material.BaseColor()
+                    : primitive.baseColor;
+                const bool alpha = primitive.alpha
+                    || primitive.textureHasTransparency
+                    || baseColor.w < 0.999f;
+                if (alpha != alphaPass)
+                {
+                    continue;
+                }
+
+                const auto meshGlobal = DirectX::XMLoadFloat4x4(
+                    &m_cachedGlobalPose[primitive.meshNode]);
+                std::vector<DirectX::XMMATRIX> palette;
+                if (primitive.skin >= 0)
+                {
+                    const auto skinIndex =
+                        static_cast<std::size_t>(primitive.skin);
+                    if (skinIndex >= model.skins.size())
+                    {
+                        continue;
+                    }
+                    const auto& skin = model.skins[skinIndex];
+                    const auto inverseMesh =
+                        DirectX::XMMatrixInverse(nullptr, meshGlobal);
+                    palette.reserve(skin.joints.size());
+                    for (std::size_t jointIndex{};
+                        jointIndex < skin.joints.size();
+                        ++jointIndex)
+                    {
+                        const auto nodeIndex = skin.joints[jointIndex];
+                        if (nodeIndex >= m_cachedGlobalPose.size())
+                        {
+                            palette.push_back(
+                                DirectX::XMMatrixIdentity());
+                            continue;
+                        }
+                        const auto inverseBind =
+                            jointIndex < skin.inverseBindMatrices.size()
+                            ? DirectX::XMLoadFloat4x4(
+                                &skin.inverseBindMatrices[jointIndex])
+                            : DirectX::XMMatrixIdentity();
+                        palette.push_back(
+                            inverseBind
+                            * DirectX::XMLoadFloat4x4(
+                                &m_cachedGlobalPose[nodeIndex])
+                            * inverseMesh);
+                    }
+                }
+
+                const auto vertexCount = primitive.cpuVertexData.size()
+                    / primitive.cpuVertexStride;
+                std::vector<PrimitiveRenderVertex> vertices;
+                vertices.reserve(vertexCount);
+                for (std::size_t index{}; index < vertexCount; ++index)
+                {
+                    ImportedModelVertex source{};
+                    std::memcpy(
+                        &source,
+                        primitive.cpuVertexData.data()
+                            + index * primitive.cpuVertexStride,
+                        sizeof(source));
+                    auto position = DirectX::XMLoadFloat3(&source.position);
+                    auto normal = DirectX::XMLoadFloat3(&source.normal);
+                    if (!palette.empty())
+                    {
+                        DirectX::XMVECTOR skinnedPosition =
+                            DirectX::XMVectorZero();
+                        DirectX::XMVECTOR skinnedNormal =
+                            DirectX::XMVectorZero();
+                        float totalWeight{};
+                        for (std::size_t influence{};
+                            influence < 4u;
+                            ++influence)
+                        {
+                            const auto bone = static_cast<std::uint8_t>(
+                                source.blendIndices
+                                    >> (influence * 8u));
+                            const float weight = static_cast<float>(
+                                static_cast<std::uint8_t>(
+                                    source.blendWeights
+                                        >> (influence * 8u)))
+                                / 255.0f;
+                            if (bone >= palette.size() || weight <= 0.0f)
+                            {
+                                continue;
+                            }
+                            skinnedPosition = DirectX::XMVectorAdd(
+                                skinnedPosition,
+                                DirectX::XMVectorScale(
+                                    DirectX::XMVector3TransformCoord(
+                                        position,
+                                        palette[bone]),
+                                    weight));
+                            skinnedNormal = DirectX::XMVectorAdd(
+                                skinnedNormal,
+                                DirectX::XMVectorScale(
+                                    DirectX::XMVector3TransformNormal(
+                                        normal,
+                                        palette[bone]),
+                                    weight));
+                            totalWeight += weight;
+                        }
+                        if (totalWeight > 0.0001f)
+                        {
+                            position = DirectX::XMVectorScale(
+                                skinnedPosition,
+                                1.0f / totalWeight);
+                            normal = DirectX::XMVector3Normalize(
+                                skinnedNormal);
+                        }
+                    }
+                    PrimitiveRenderVertex converted;
+                    DirectX::XMStoreFloat3(&converted.position, position);
+                    DirectX::XMStoreFloat3(&converted.normal, normal);
+                    converted.textureCoordinate =
+                        source.textureCoordinate;
+                    vertices.push_back(converted);
+                }
+
+                std::span<const std::uint32_t> indices =
+                    primitive.cpuIndices;
+                for (std::size_t level = std::min<std::size_t>(
+                        lodLevel,
+                        primitive.cpuLodIndices.size());
+                    level > 0;
+                    --level)
+                {
+                    if (!primitive.cpuLodIndices[level - 1u].empty())
+                    {
+                        indices = primitive.cpuLodIndices[level - 1u];
+                        break;
+                    }
+                }
+
+                PrimitiveDrawRequest request;
+                request.shape = PrimitiveRenderShape::Procedural;
+                request.vertices = vertices;
+                request.indices = indices;
+                DirectX::XMStoreFloat4x4(
+                    &request.world,
+                    meshGlobal * ownerWorld);
+                DirectX::XMStoreFloat4x4(&request.view, view);
+                DirectX::XMStoreFloat4x4(
+                    &request.projection,
+                    projection);
+                request.baseColor = baseColor;
+                request.roughness = m_materialOverrideEnabled
+                    ? m_material.Roughness()
+                    : primitive.roughness;
+                request.metallic = m_materialOverrideEnabled
+                    ? m_material.Metallic()
+                    : primitive.metallic;
+                request.normalStrength = m_materialOverrideEnabled
+                    ? m_material.NormalStrength()
+                    : 1.0f;
+                request.occlusionStrength = m_materialOverrideEnabled
+                    ? m_material.OcclusionStrength()
+                    : primitive.occlusionStrength;
+                request.emissiveFactor = m_materialOverrideEnabled
+                    ? m_material.EmissiveColor()
+                    : primitive.emissiveFactor;
+                const auto& textures = m_materialOverrideEnabled
+                    ? overrideTextures
+                    : primitive.embeddedTextures;
+                request.albedo = textures.albedo;
+                request.normalTexture = textures.normal;
+                request.roughnessTexture = textures.roughness;
+                request.metallicTexture = textures.metallic;
+                request.occlusionTexture = textures.occlusion;
+                request.emissiveTexture = textures.emissive;
+                request.fallbackTexture =
+                    m_graphics->WhiteTextureViewHandle();
+                request.alphaBlend = alpha;
+                request.depthWrite = !alpha;
+                CopyPrimitiveLighting(
+                    m_graphics->Lighting(),
+                    request);
+                static_cast<void>(m_graphics->DrawPrimitive(request));
+            }
+        }
+    }
+
     void ModelRendererComponent::OnRender3D(
         DirectX::FXMMATRIX view,
         DirectX::CXMMATRIX projection)
@@ -1590,6 +1956,13 @@ namespace LamaPon
         if (m_instancedThisPass)
         {
             m_instancedThisPass = false;
+            return;
+        }
+        if (m_graphics != nullptr
+            && m_graphics->ActiveRenderingApi()
+                == RenderingApi::DirectX12Experimental)
+        {
+            DrawD3D12Model(view, projection);
             return;
         }
         if (m_graphics != nullptr
