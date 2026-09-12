@@ -154,16 +154,24 @@ namespace LamaPon
         if (graphics.ActiveRenderingApi()
             == RenderingApi::DirectX12Experimental)
         {
-            // D3D12は移植済みのBloomだけをHDRのうちに適用します。
-            // トーンマップとカラーグレーディングは最終合成で行い、
-            // TAA・SSAO・FXAAなど未移植のpassは安全に無処理とします。
+            // D3D12は移植済みのBloom、トーンマップ、FXAAをD3D11と
+            // 同じ順で適用します。TAA・SSAO・自動露出など未移植の
+            // passは安全に無処理とします。
+            const auto& settings = graphics.Settings();
             auto effectiveBloom = frame.bloom;
             effectiveBloom.enabled =
                 effectiveBloom.enabled
-                && graphics.Settings().bloomEnabled;
+                && settings.bloomEnabled;
             graphics.ApplyOffscreenTargetBloom(
                 target,
                 effectiveBloom);
+            graphics.ApplyOffscreenTargetToneMapping(
+                target,
+                frame.colorGrading);
+            if (settings.antiAliasingEnabled)
+            {
+                graphics.ApplyOffscreenTargetFXAA(target);
+            }
             return;
         }
 

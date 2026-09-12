@@ -31,6 +31,7 @@
 - DirectX 12のHDR Scene合成へACES近似の最終fullscreen passを追加。1.0を超えるRGBA16Fの色をRGBA8バックバッファへトーンマップし、単純クリップではない出力をWARP画素テストで検証する。
 - DirectX 12の最終合成へ既存のカラーグレーディング設定を接続。露出、コントラスト、彩度、色温度、Tint、VignetteとTone Mapping無効化をD3D11のPSToneMapと同じ式でroot constantsから適用し、D3D11に無いgamma変換を外して両APIの出力を揃えた。自動露出の測光はD3D12では未対応のため、補正0段で合成する。
 - DirectX 12のpost-processへBloomを移植。D3D11の`PSBloom`と同じしきい値・9tap・強さ・半径で、offscreenのcurrent colorを読んでpost colorへ書き、両者を交換する。Scene合成とCameraのRenderTextureで品質設定のBloom有効／無効も反映し、D3D11とD3D12の画素比較をWARPで検証する。
+- DirectX 12のpost-processへFXAAを移植し、トーンマップも最終合成からD3D11と同じpost-process列（Bloom → トーンマップ → FXAA）へ移した。最終合成はD3D11と同じ単純な転写になり、CameraのRenderTextureにもトーンマップが掛かる。トーンマップの彩度とFXAAの縁検出はD3D11の`LamaPonEnvironment.hlsl`と同じRec.601の輝度係数を使い、Bloom・トーンマップ・FXAAのD3D11／D3D12画素比較をWARPで検証する。
 - `GraphicsDevice`のAPI固有資源所有を抽象interface化し、D3D11のEffect・Shader・Sprite・Shadow・render serviceを単一の具象世代へ集約。停止・再生成・破棄を共通境界から呼ぶ構造へ移行。
 - Effect・Shader cache・Shadow・Environment・Clustered LightsなどDevice世代に属する高水準資源をD3D11内部所有へ分離。非同期Shader workerをAssetManagerより先に停止し、再初期化時に旧Device資源と未消費Screen Effect queueを安全に破棄する。
 - `GraphicsDevice`のnative D3D11 Device / Context / CommonStates / view resolverを非公開化し、D3D11描画島とテストだけがSDK非公開bridgeから利用する境界へ移行。API 64 Game Module向けの旧public binary symbolを維持し、Game Module APIを65へ更新。

@@ -2,6 +2,7 @@
 
 #include "LamaPon/Graphics/D3D12Backend.h"
 #include "LamaPon/Graphics/EnvironmentSettings.h"
+#include "LamaPon/Graphics/RenderTarget.h"
 
 #include <d3dcompiler.h>
 
@@ -73,9 +74,11 @@ float4 SpritePixelShader(PixelInput input) : SV_Target
         * input.color;
 }
 
+// LamaPonEnvironment.hlslと同じRec.601の係数です。トーンマップの彩度と
+// FXAAの縁検出が共用するため、D3D11と同じ値を保ちます。
 float Luminance(float3 color)
 {
-    return dot(color, float3(0.2126f, 0.7152f, 0.0722f));
+    return dot(color, float3(0.299f, 0.587f, 0.114f));
 }
 
 float3 ACESFilm(float3 color)
@@ -169,6 +172,79 @@ float4 BloomPixelShader(PixelInput input) : SV_Target
     bloom += BrightColor(uv + float2(offset.x, -offset.y)) * 0.08f;
     bloom += BrightColor(uv + float2(-offset.x, offset.y)) * 0.08f;
     return float4(source.rgb + bloom * PassPrimary.w, source.a);
+}
+
+// LamaPonEnvironment.hlslのPSFXAAと同じ式です。PassPrimary.xy=1/出力サイズ。
+float4 FxaaPixelShader(PixelInput input) : SV_Target
+{
+    const float2 uv = input.textureCoordinate;
+    const float2 texel = PassPrimary.xy;
+    const float3 center = SpriteTexture.Sample(SpriteSampler, uv).rgb;
+    const float lumaCenter = Luminance(center);
+    const float lumaNorth = Luminance(
+        SpriteTexture.Sample(
+            SpriteSampler,
+            uv + float2(0.0f, -texel.y)).rgb);
+    const float lumaSouth = Luminance(
+        SpriteTexture.Sample(
+            SpriteSampler,
+            uv + float2(0.0f, texel.y)).rgb);
+    const float lumaWest = Luminance(
+        SpriteTexture.Sample(
+            SpriteSampler,
+            uv + float2(-texel.x, 0.0f)).rgb);
+    const float lumaEast = Luminance(
+        SpriteTexture.Sample(
+            SpriteSampler,
+            uv + float2(texel.x, 0.0f)).rgb);
+    const float lumaMinimum = min(
+        lumaCenter,
+        min(min(lumaNorth, lumaSouth), min(lumaWest, lumaEast)));
+    const float lumaMaximum = max(
+        lumaCenter,
+        max(max(lumaNorth, lumaSouth), max(lumaWest, lumaEast)));
+    if (lumaMaximum - lumaMinimum < 0.0312f)
+    {
+        return float4(center, 1.0f);
+    }
+
+    float2 direction = float2(
+        -(lumaNorth - lumaSouth),
+        lumaWest - lumaEast);
+    const float reduction = max(
+        (lumaNorth + lumaSouth + lumaWest + lumaEast)
+            * 0.03125f,
+        0.0078125f);
+    const float inverseMinimum =
+        1.0f / (min(abs(direction.x), abs(direction.y)) + reduction);
+    direction = clamp(
+        direction * inverseMinimum,
+        -8.0f,
+        8.0f) * texel;
+
+    const float3 first =
+        0.5f * (
+            SpriteTexture.Sample(
+                SpriteSampler,
+                uv + direction * (1.0f / 3.0f - 0.5f)).rgb
+            + SpriteTexture.Sample(
+                SpriteSampler,
+                uv + direction * (2.0f / 3.0f - 0.5f)).rgb);
+    const float3 second =
+        first * 0.5f
+        + 0.25f * (
+            SpriteTexture.Sample(
+                SpriteSampler,
+                uv + direction * -0.5f).rgb
+            + SpriteTexture.Sample(
+                SpriteSampler,
+                uv + direction * 0.5f).rgb);
+    const float secondLuma = Luminance(second);
+    return float4(
+        secondLuma < lumaMinimum || secondLuma > lumaMaximum
+            ? first
+            : second,
+        1.0f);
 }
 )";
 
@@ -370,6 +446,17 @@ float4 BloomPixelShader(PixelInput input) : SV_Target
         result.bottom = std::max(result.bottom, result.top);
         return result;
     }
+
+    // EnvironmentRenderer::ApplyBloom / ApplyFXAAと同じく、target全体の
+    // 1 texel寸法をUV単位で求めます。
+    [[nodiscard]] std::array<float, 2> TexelSize(
+        const LamaPon::RenderTarget& target) noexcept
+    {
+        return {
+            1.0f / static_cast<float>(std::max(target.Width(), 1u)),
+            1.0f / static_cast<float>(std::max(target.Height(), 1u))
+        };
+    }
 }
 
 namespace LamaPon::Detail
@@ -396,6 +483,9 @@ namespace LamaPon::Detail
             "ps_5_0");
         m_bloomPixelShader = CompileSpriteShader(
             "BloomPixelShader",
+            "ps_5_0");
+        m_fxaaPixelShader = CompileSpriteShader(
+            "FxaaPixelShader",
             "ps_5_0");
 
         D3D12_DESCRIPTOR_RANGE textureRange{};
@@ -770,15 +860,29 @@ namespace LamaPon::Detail
 
     void D3D12SpriteRenderer::CompositeScene(
         const GraphicsViewHandle& texture,
-        const GraphicsViewHandle& fallbackTexture,
-        const ColorGradingSettings& colorGrading)
+        const GraphicsViewHandle& fallbackTexture)
     {
         DrawFullscreen(
             texture,
             fallbackTexture,
-            colorGrading.toneMappingEnabled
-                ? FullscreenProgram::ToneMap
-                : FullscreenProgram::None,
+            FullscreenProgram::None,
+            {});
+    }
+
+    void D3D12SpriteRenderer::ApplyToneMapping(
+        RenderTarget& target,
+        const GraphicsViewHandle& fallbackTexture,
+        const ColorGradingSettings& colorGrading)
+    {
+        // D3D11は無効時に単純copyして交換するだけで、内容は変わりません。
+        if (!colorGrading.toneMappingEnabled)
+        {
+            return;
+        }
+        ApplyPostProcessPass(
+            target,
+            fallbackTexture,
+            FullscreenProgram::ToneMap,
             {
                 std::clamp(colorGrading.exposure, -8.0f, 8.0f),
                 std::clamp(colorGrading.contrast, 0.0f, 4.0f),
@@ -800,25 +904,50 @@ namespace LamaPon::Detail
         {
             return;
         }
+        // EnvironmentRenderer::ApplyBloomと同じ範囲へ丸めます。
+        const auto texel = TexelSize(target);
+        ApplyPostProcessPass(
+            target,
+            fallbackTexture,
+            FullscreenProgram::Bloom,
+            {
+                texel[0],
+                texel[1],
+                std::clamp(settings.threshold, 0.0f, 4.0f),
+                std::clamp(settings.intensity, 0.0f, 8.0f),
+                std::clamp(settings.radius, 0.25f, 12.0f),
+                0.0f,
+                0.0f,
+                0.0f
+            });
+    }
+
+    void D3D12SpriteRenderer::ApplyFXAA(
+        RenderTarget& target,
+        const GraphicsViewHandle& fallbackTexture)
+    {
+        const auto texel = TexelSize(target);
+        ApplyPostProcessPass(
+            target,
+            fallbackTexture,
+            FullscreenProgram::Fxaa,
+            { texel[0], texel[1], 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f });
+    }
+
+    void D3D12SpriteRenderer::ApplyPostProcessPass(
+        RenderTarget& target,
+        const GraphicsViewHandle& fallbackTexture,
+        const FullscreenProgram program,
+        const std::array<float, 8>& constants)
+    {
         const auto source = m_backend->BeginOffscreenPostProcess(target);
         try
         {
-            // EnvironmentRenderer::ApplyBloomと同じ範囲へ丸めます。
-            const auto& viewport = m_backend->ActiveViewport();
             DrawFullscreen(
                 source,
                 fallbackTexture,
-                FullscreenProgram::Bloom,
-                {
-                    1.0f / std::max(viewport.Width, 1.0f),
-                    1.0f / std::max(viewport.Height, 1.0f),
-                    std::clamp(settings.threshold, 0.0f, 4.0f),
-                    std::clamp(settings.intensity, 0.0f, 8.0f),
-                    std::clamp(settings.radius, 0.25f, 12.0f),
-                    0.0f,
-                    0.0f,
-                    0.0f
-                });
+                program,
+                constants);
         }
         catch (...)
         {
@@ -1041,7 +1170,7 @@ namespace LamaPon::Detail
             throw std::invalid_argument(
                 "The sprite blend mode is invalid.");
         }
-        if (program > FullscreenProgram::Bloom)
+        if (program > FullscreenProgram::Fxaa)
         {
             throw std::invalid_argument(
                 "The sprite pixel program is invalid.");
@@ -1095,11 +1224,21 @@ namespace LamaPon::Detail
                 }
             } };
 
-        auto* const pixelShader = program == FullscreenProgram::ToneMap
-            ? m_toneMapPixelShader.Get()
-            : program == FullscreenProgram::Bloom
-                ? m_bloomPixelShader.Get()
-                : m_pixelShader.Get();
+        ID3DBlob* pixelShader = m_pixelShader.Get();
+        switch (program)
+        {
+        case FullscreenProgram::ToneMap:
+            pixelShader = m_toneMapPixelShader.Get();
+            break;
+        case FullscreenProgram::Bloom:
+            pixelShader = m_bloomPixelShader.Get();
+            break;
+        case FullscreenProgram::Fxaa:
+            pixelShader = m_fxaaPixelShader.Get();
+            break;
+        case FullscreenProgram::None:
+            break;
+        }
         D3D12_GRAPHICS_PIPELINE_STATE_DESC description{};
         description.pRootSignature = m_rootSignature.Get();
         description.VS = {

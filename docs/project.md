@@ -164,7 +164,7 @@ GPUが無い・正しく動かない環境（仮想マシン、リモートデ�
 - ビルドプロファイル（Windows／Web）と書き出し先の設定画面への入口
 
 Rendering APIの既定はDirectX 11です。変更は実行中に切り替わらず、エディターまたはゲームの再起動後に反映されます。
-DirectX 12 Experimentalは段階実装中です。書き出したゲームで選ぶと、D3D12で起動Scene、Game Module、Simulationを動かし、Cube／Sphere／Cylinder／Plane／Procedural Meshの基本3D描画（PBR Material、Ambient／Directional／Point／Spot Light対応）、アニメーション／スキニングと内蔵・外部のPNG／JPEG textureを含むglTF／GLB／FBX Model、Directional／Spot／Point Lightの影、3D ParticleSystem、HDR描画とBloom、トーンマッピング／カラーグレーディング、Sprite／Text／Imageなどの2D／UI描画を行います。CMO／SDKMESH Model、モデルのDDS texture、自動露出、FXAA／SSAO／SSRなどのポストエフェクト、custom shaderはまだ描画されません。
+DirectX 12 Experimentalは段階実装中です。書き出したゲームで選ぶと、D3D12で起動Scene、Game Module、Simulationを動かし、Cube／Sphere／Cylinder／Plane／Procedural Meshの基本3D描画（PBR Material、Ambient／Directional／Point／Spot Light対応）、アニメーション／スキニングと内蔵・外部のPNG／JPEG textureを含むglTF／GLB／FBX Model、Directional／Spot／Point Lightの影、3D ParticleSystem、HDR描画とBloom、トーンマッピング／カラーグレーディング、FXAA、Sprite／Text／Imageなどの2D／UI描画を行います。CMO／SDKMESH Model、モデルのDDS texture、自動露出、SSAO／SSR／TAAなどのポストエフェクト、custom shaderはまだ描画されません。
 D3D12を初期化できない環境では、DirectX 11へ自動的にフォールバックして通常どおり起動します。
 エディターとCLIは完全なレンダラーが必要なため、DirectX 12 Experimentalを選んでもDirectX 11で起動します。
 

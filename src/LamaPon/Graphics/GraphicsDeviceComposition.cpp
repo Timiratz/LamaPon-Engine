@@ -403,7 +403,6 @@ namespace LamaPon
         // current colorのnative view解決はD3D11 bridge内へ閉じ込め、
         // 共通compositionはRenderTargetだけを渡します。
         CopyOffscreenTargetToBackBuffer(
-            *m_state->m_sceneCompositionTarget,
-            frame.colorGrading);
+            *m_state->m_sceneCompositionTarget);
     }
 }

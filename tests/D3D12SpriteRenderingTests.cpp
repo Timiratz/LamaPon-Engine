@@ -611,7 +611,7 @@ namespace
             * 4u;
         // 既定のカラーグレーディング（露出0.15、コントラスト1.05、彩度1.08、
         // 色温度0.02）とACESをD3D11のPSToneMapと同じ式で掛けると、
-        // (2.0, 0.25, 0.0)はgamma変換なしで約(251, 102, 0)になります。
+        // (2.0, 0.25, 0.0)はgamma変換なしで約(250, 101, 0)になります。
         Require(
             compositionWidth == CanvasWidth
                 && compositionHeight == CanvasHeight
@@ -668,8 +668,8 @@ namespace
             "The DirectX 12 compositor ignored the disabled tone "
             "mapping setting");
 
-        // Bloomは最終合成の前にHDRのまま掛かります。均一な(2.0, 0.25, 0.0)
-        // でも高輝度分が足され、トーンマップ後の緑が約102から約126へ上がります。
+        // Bloomはトーンマップの前にHDRのまま掛かります。均一な(2.0, 0.25, 0.0)
+        // でも高輝度分が足され、トーンマップ後の緑が約101から約126へ上がります。
         auto bloomFrame = scene.PostProcessFrameData();
         bloomFrame.bloom.enabled = true;
         graphics.BeginFrame(backBufferClear);
@@ -1595,11 +1595,41 @@ namespace
             + ")");
     }
 
-    // 黒のHDR offscreenへ1.0を超える小さな矩形を描き、Bloomを通した結果を
-    // Spriteで画面へ写します。D3D11とD3D12で同じ滲みになるかを比べます。
-    [[nodiscard]] Capture RenderBloomCapture(
-        const LamaPon::RenderingApi api,
-        const LamaPon::GraphicsStartupProfile profile)
+    enum class PostProcessCase : std::uint8_t
+    {
+        Bloom,
+        ToneMapping,
+        Fxaa
+    };
+
+    constexpr std::array<PostProcessCase, 3> PostProcessCases{
+        PostProcessCase::Bloom,
+        PostProcessCase::ToneMapping,
+        PostProcessCase::Fxaa
+    };
+
+    [[nodiscard]] std::string PostProcessCaseName(
+        const PostProcessCase postProcess)
+    {
+        switch (postProcess)
+        {
+        case PostProcessCase::Bloom:
+            return "bloom";
+        case PostProcessCase::ToneMapping:
+            return "tone mapping";
+        case PostProcessCase::Fxaa:
+            return "FXAA";
+        }
+        return "post-process";
+    }
+
+    // 64x32のHDR offscreenへ同じ絵を描いてpost-processを1つだけ掛け、
+    // Spriteで画面へ写します。D3D11とD3D12の結果を画素で比べるための
+    // captureです。
+    [[nodiscard]] std::array<Capture, PostProcessCases.size()>
+        RenderPostProcessCaptures(
+            const LamaPon::RenderingApi api,
+            const LamaPon::GraphicsStartupProfile profile)
     {
         HiddenWindow window{ CanvasWidth, CanvasHeight };
         LamaPon::GraphicsDevice graphics;
@@ -1611,98 +1641,178 @@ namespace
             profile);
         Require(
             graphics.ActiveRenderingApi() == api,
-            "The bloom capture did not start the requested rendering API");
-        // D3D11のBloomはEnvironment shaderをasset rootから読み込みます。
+            "The post-process capture did not start the requested "
+            "rendering API");
+        // D3D11のpost-processはEnvironment shaderをasset rootから読み込みます。
         graphics.Assets().SetAssetRoot(LAMAPON_TEST_ASSET_DIR);
 
         LamaPon::RenderTarget target;
         graphics.ResizeOffscreenTarget(target, 64u, 32u);
 
-        constexpr float clearColor[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
-        graphics.BeginFrame(clearColor);
-        const auto primaryOutput = graphics.CaptureOutputState();
-        graphics.BeginOffscreenTarget(target, clearColor);
+        std::array<Capture, PostProcessCases.size()> captures;
+        for (std::size_t index{}; index < PostProcessCases.size(); ++index)
         {
-            auto pass = graphics.BeginSpritePass();
-            DrawRectangle(
-                pass,
-                28.0f,
-                12.0f,
-                8.0f,
-                8.0f,
-                { 4.0f, 2.0f, 0.5f, 1.0f });
+            const auto postProcess = PostProcessCases[index];
+            constexpr float clearColor[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+            graphics.BeginFrame(clearColor);
+            const auto primaryOutput = graphics.CaptureOutputState();
+            graphics.BeginOffscreenTarget(target, clearColor);
+            {
+                auto pass = graphics.BeginSpritePass();
+                if (postProcess == PostProcessCase::Fxaa)
+                {
+                    // 回転した矩形の縁は階段状になり、FXAAが中間色で平します。
+                    LamaPon::SpriteDrawRequest edge;
+                    edge.position = { 32.0f, 16.0f };
+                    edge.origin = { 0.5f, 0.5f };
+                    edge.scale = { 30.0f, 12.0f };
+                    edge.rotation = 0.5f;
+                    edge.tint = { 0.9f, 0.9f, 0.9f, 1.0f };
+                    Require(
+                        pass.Draw(edge),
+                        "The FXAA edge sprite was rejected");
+                }
+                else
+                {
+                    DrawRectangle(
+                        pass,
+                        28.0f,
+                        12.0f,
+                        8.0f,
+                        8.0f,
+                        { 4.0f, 2.0f, 0.5f, 1.0f });
+                }
+            }
+            switch (postProcess)
+            {
+            case PostProcessCase::Bloom:
+            {
+                LamaPon::BloomSettings bloom;
+                bloom.enabled = true;
+                graphics.ApplyOffscreenTargetBloom(target, bloom);
+                break;
+            }
+            case PostProcessCase::ToneMapping:
+                graphics.ApplyOffscreenTargetToneMapping(
+                    target,
+                    LamaPon::ColorGradingSettings{});
+                break;
+            case PostProcessCase::Fxaa:
+                graphics.ApplyOffscreenTargetFXAA(target);
+                break;
+            }
+            graphics.PublishOffscreenTarget(target);
+            graphics.RestoreOutputState(*primaryOutput);
+            {
+                auto pass = graphics.BeginSpritePass();
+                LamaPon::SpriteDrawRequest request;
+                request.texture = target.DisplayViewHandle();
+                request.tint = { 1.0f, 1.0f, 1.0f, 1.0f };
+                Require(
+                    pass.Draw(request),
+                    "The post-processed offscreen display view was "
+                    "rejected");
+            }
+            auto& capture = captures[index];
+            capture.pixels = graphics.CaptureBackBuffer(
+                capture.width,
+                capture.height);
+            graphics.EndFrame();
         }
-        LamaPon::BloomSettings bloom;
-        bloom.enabled = true;
-        graphics.ApplyOffscreenTargetBloom(target, bloom);
-        graphics.PublishOffscreenTarget(target);
-        graphics.RestoreOutputState(*primaryOutput);
-        {
-            auto pass = graphics.BeginSpritePass();
-            LamaPon::SpriteDrawRequest request;
-            request.texture = target.DisplayViewHandle();
-            request.tint = { 1.0f, 1.0f, 1.0f, 1.0f };
-            Require(
-                pass.Draw(request),
-                "The bloomed offscreen display view was rejected");
-        }
-        Capture capture;
-        capture.pixels = graphics.CaptureBackBuffer(
-            capture.width,
-            capture.height);
-        graphics.EndFrame();
-        return capture;
+        return captures;
     }
 
-    void RequireMatchingBloomCaptures(
-        const Capture& d3d11,
-        const Capture& d3d12)
+    void RequireMatchingPostProcessCaptures(
+        const std::array<Capture, PostProcessCases.size()>& d3d11,
+        const std::array<Capture, PostProcessCases.size()>& d3d12)
     {
         const std::size_t expectedBytes =
             static_cast<std::size_t>(CanvasWidth) * CanvasHeight * 4u;
-        Require(
-            d3d11.width == CanvasWidth
-                && d3d11.height == CanvasHeight
-                && d3d12.width == CanvasWidth
-                && d3d12.height == CanvasHeight
-                && d3d11.pixels.size() == expectedBytes
-                && d3d12.pixels.size() == expectedBytes,
-            "The bloom captures have unexpected dimensions");
         const auto offset = [](const std::uint32_t x, const std::uint32_t y)
         {
             return (static_cast<std::size_t>(y) * CanvasWidth + x) * 4u;
         };
-        // 矩形はx=28..35、y=12..19です。半径2の9tapは縁から2画素先まで
-        // 届くため、すぐ右の画素は明るくなり、5画素離れると黒のままです。
-        for (const auto* const capture : { &d3d11, &d3d12 })
+        for (std::size_t index{}; index < PostProcessCases.size(); ++index)
         {
-            Require(
-                capture->pixels[offset(36u, 16u)] > 60u
-                    && capture->pixels[offset(36u, 16u) + 1u] > 20u,
-                "The bloom did not spread beyond the bright rectangle");
-            Require(
-                capture->pixels[offset(40u, 16u)] < 4u
-                    && capture->pixels[offset(5u, 5u)] < 4u,
-                "The bloom spread beyond its radius");
-        }
-
-        // WARP上の同じ演算でも、最終丸めの1段差だけは許容します。
-        constexpr int ChannelTolerance = 2;
-        for (std::size_t index{}; index < expectedBytes; ++index)
-        {
-            const int difference = std::abs(
-                static_cast<int>(d3d11.pixels[index])
-                - static_cast<int>(d3d12.pixels[index]));
-            if (difference > ChannelTolerance)
+            const auto postProcess = PostProcessCases[index];
+            const auto name = PostProcessCaseName(postProcess);
+            for (const auto* const capture : { &d3d11[index], &d3d12[index] })
             {
-                const auto pixel = index / 4u;
-                throw std::runtime_error(
-                    "DirectX 12 bloom differed from DirectX 11 at "
-                    + std::to_string(pixel % CanvasWidth)
-                    + ","
-                    + std::to_string(pixel / CanvasWidth)
-                    + " by "
-                    + std::to_string(difference));
+                Require(
+                    capture->width == CanvasWidth
+                        && capture->height == CanvasHeight
+                        && capture->pixels.size() == expectedBytes,
+                    "The " + name + " captures have unexpected dimensions");
+                const auto& pixels = capture->pixels;
+                switch (postProcess)
+                {
+                case PostProcessCase::Bloom:
+                    // 矩形はx=28..35、y=12..19です。半径2の9tapは縁から
+                    // 2画素先まで届き、5画素離れると黒のままです。
+                    Require(
+                        pixels[offset(36u, 16u)] > 60u
+                            && pixels[offset(36u, 16u) + 1u] > 20u,
+                        "The bloom did not spread beyond the bright "
+                        "rectangle");
+                    Require(
+                        pixels[offset(40u, 16u)] < 4u
+                            && pixels[offset(5u, 5u)] < 4u,
+                        "The bloom spread beyond its radius");
+                    break;
+                case PostProcessCase::ToneMapping:
+                    // 既定のカラーグレーディングとACESで(4, 2, 0.5)は約
+                    // (255, 242, 162)になり、単純clipの(255, 255, 128)とは
+                    // 異なります。
+                    Require(
+                        pixels[offset(32u, 16u) + 1u] > 225u
+                            && pixels[offset(32u, 16u) + 1u] < 252u
+                            && pixels[offset(32u, 16u) + 2u] > 140u
+                            && pixels[offset(32u, 16u) + 2u] < 180u,
+                        "The tone mapping did not apply ACES and color "
+                        "grading");
+                    break;
+                case PostProcessCase::Fxaa:
+                {
+                    // 回転した矩形の縁にだけ、FXAAが中間の明るさを作ります。
+                    std::size_t blendedPixels{};
+                    for (std::uint32_t y{}; y < 32u; ++y)
+                    {
+                        for (std::uint32_t x{}; x < 64u; ++x)
+                        {
+                            const auto value = pixels[offset(x, y)];
+                            if (value > 16u && value < 200u)
+                            {
+                                ++blendedPixels;
+                            }
+                        }
+                    }
+                    Require(
+                        blendedPixels > 8u,
+                        "FXAA did not smooth the rotated edge");
+                    break;
+                }
+                }
+            }
+
+            // WARP上の同じ演算でも、最終丸めの1段差だけは許容します。
+            constexpr int ChannelTolerance = 2;
+            for (std::size_t byte{}; byte < expectedBytes; ++byte)
+            {
+                const int difference = std::abs(
+                    static_cast<int>(d3d11[index].pixels[byte])
+                    - static_cast<int>(d3d12[index].pixels[byte]));
+                if (difference > ChannelTolerance)
+                {
+                    const auto pixel = byte / 4u;
+                    throw std::runtime_error(
+                        "DirectX 12 " + name
+                        + " differed from DirectX 11 at "
+                        + std::to_string(pixel % CanvasWidth)
+                        + ","
+                        + std::to_string(pixel / CanvasWidth)
+                        + " by "
+                        + std::to_string(difference));
+                }
             }
         }
     }
@@ -1721,7 +1831,7 @@ int main()
         const auto d3d11 = RenderCapture(
             LamaPon::RenderingApi::DirectX11,
             LamaPon::GraphicsStartupProfile::FullRenderer);
-        const auto d3d11Bloom = RenderBloomCapture(
+        const auto d3d11PostProcess = RenderPostProcessCaptures(
             LamaPon::RenderingApi::DirectX11,
             LamaPon::GraphicsStartupProfile::FullRenderer);
 
@@ -1733,7 +1843,7 @@ int main()
             LamaPon::RenderingApi::DirectX12Experimental,
             LamaPon::GraphicsStartupProfile::
                 AllowD3D12ExperimentalBootstrap);
-        const auto d3d12Bloom = RenderBloomCapture(
+        const auto d3d12PostProcess = RenderPostProcessCaptures(
             LamaPon::RenderingApi::DirectX12Experimental,
             LamaPon::GraphicsStartupProfile::
                 AllowD3D12ExperimentalBootstrap);
@@ -1750,6 +1860,9 @@ int main()
         LamaPon::GraphicsDevice::SetEnableDebugLayer(false);
         RequireNoD3D12DebugErrors();
         RequireMatchingCaptures(d3d11, d3d12);
+        RequireMatchingPostProcessCaptures(
+            d3d11PostProcess,
+            d3d12PostProcess);
         std::cout << "D3D12 sprite rendering tests passed.\n";
     }
     catch (const std::exception& error)

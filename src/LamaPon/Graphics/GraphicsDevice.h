@@ -775,9 +775,6 @@ namespace LamaPon
         // view解決とD3D11 copy shaderは実装側の描画島に閉じ込めます。
         void CopyOffscreenTargetToBackBuffer(
             const RenderTarget& target);
-        void CopyOffscreenTargetToBackBuffer(
-            const RenderTarget& target,
-            const ColorGradingSettings& colorGrading);
 
         // 組み込みシェーダーの組み立てに失敗した時刻とエラーを保持します。
         struct BuiltInFailure final

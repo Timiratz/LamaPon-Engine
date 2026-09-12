@@ -53,20 +53,28 @@ namespace LamaPon::Detail
         // DirectXTKのSpriteBatchと同じく、積んだSpriteを可能な範囲で描いて
         // passを閉じます。例外は外へ出しません。
         void Abort(std::uint64_t token) noexcept;
-        // HDR Scene textureを現在の出力全体へ転送し、指定されていれば
-        // カラーグレーディングとACES近似を適用します。
+        // post-process済みのScene textureを現在の出力全体へ転写します。
         // GraphicsDeviceの最終合成専用です。
         void CompositeScene(
             const GraphicsViewHandle& texture,
+            const GraphicsViewHandle& fallbackTexture);
+
+        // 以下はGraphicsDeviceのpost-process専用です。offscreen targetの
+        // current colorを読んでpost colorへ書き、両者を交換します。
+        // D3D11のPSToneMapと同じカラーグレーディングとACES近似です。
+        void ApplyToneMapping(
+            RenderTarget& target,
             const GraphicsViewHandle& fallbackTexture,
             const ColorGradingSettings& colorGrading);
-        // offscreen targetのcurrent colorから、D3D11のPSBloomと同じ9tapで
-        // 高輝度部を滲ませてpost colorへ書き、両者を交換します。
-        // GraphicsDeviceのpost-process専用です。
+        // D3D11のPSBloomと同じ9tapで高輝度部を滲ませます。
         void ApplyBloom(
             RenderTarget& target,
             const GraphicsViewHandle& fallbackTexture,
             const BloomSettings& settings);
+        // D3D11のPSFXAAと同じ輝度の縁検出で輪郭を平滑化します。
+        void ApplyFXAA(
+            RenderTarget& target,
+            const GraphicsViewHandle& fallbackTexture);
 
     private:
         // quadを塗るpixel shaderです。None以外は出力全体へ1枚を描く
@@ -76,7 +84,8 @@ namespace LamaPon::Detail
         {
             None,
             ToneMap,
-            Bloom
+            Bloom,
+            Fxaa
         };
 
         struct Vertex final
@@ -106,6 +115,13 @@ namespace LamaPon::Detail
             const GraphicsViewHandle& fallbackTexture,
             FullscreenProgram program,
             const std::array<float, 8>& constants);
+        // targetのcurrent colorを入力にしたfullscreen passをpost colorへ
+        // 書いて交換します。失敗時は交換せず元の出力へ戻します。
+        void ApplyPostProcessPass(
+            RenderTarget& target,
+            const GraphicsViewHandle& fallbackTexture,
+            FullscreenProgram program,
+            const std::array<float, 8>& constants);
         [[nodiscard]] ID3D12PipelineState* PipelineState(
             SpriteBlendMode blend,
             bool scissored,
@@ -118,9 +134,10 @@ namespace LamaPon::Detail
         Microsoft::WRL::ComPtr<ID3DBlob> m_pixelShader;
         Microsoft::WRL::ComPtr<ID3DBlob> m_toneMapPixelShader;
         Microsoft::WRL::ComPtr<ID3DBlob> m_bloomPixelShader;
+        Microsoft::WRL::ComPtr<ID3DBlob> m_fxaaPixelShader;
         // pixel shader、出力format、blend modeごとに、通常passとscissor
         // passのcull違いを持ちます。
-        std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 48>
+        std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 64>
             m_pipelineStates;
         Microsoft::WRL::ComPtr<ID3D12Resource> m_indexBuffer;
         GraphicsViewHandle m_fallbackTexture;

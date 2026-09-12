@@ -98,21 +98,51 @@ namespace
         result.shadowResolution = source.shadowResolution;
         return result;
     }
+
+    // D3D12のpost-processもD3D11と同じ条件でtargetを検証し、Sprite
+    // rendererのfullscreen passへ送ります。
+    [[nodiscard]] LamaPon::Detail::D3D12SpriteRenderer&
+        RequireD3D12PostProcessRenderer(
+            const LamaPon::GraphicsDevice& graphics,
+            LamaPon::Detail::GraphicsDeviceApiResources* const resources,
+            const LamaPon::RenderTarget& target,
+            const char* const operation)
+    {
+        if (!graphics.IsInitialized())
+        {
+            throw std::logic_error(
+                std::string(operation)
+                + " requires an initialized device.");
+        }
+        if (!target.IsValid()
+            || !graphics.IsGraphicsViewCurrent(
+                target.CurrentColorViewHandle())
+            || !graphics.IsGraphicsViewCurrent(
+                target.DepthViewHandle()))
+        {
+            throw std::invalid_argument(
+                std::string(operation)
+                + " requires a target owned by the active backend.");
+        }
+        auto* const d3d12 = dynamic_cast<
+            LamaPon::Detail::GraphicsDeviceD3D12Resources*>(resources);
+        auto* const renderer = d3d12 != nullptr
+            ? d3d12->TrySpriteRenderer()
+            : nullptr;
+        if (renderer == nullptr)
+        {
+            throw std::logic_error(
+                "The DirectX 12 post-process renderer is not "
+                "initialized.");
+        }
+        return *renderer;
+    }
 }
 
 namespace LamaPon
 {
     void GraphicsDevice::CopyOffscreenTargetToBackBuffer(
         const RenderTarget& target)
-    {
-        CopyOffscreenTargetToBackBuffer(
-            target,
-            ColorGradingSettings{});
-    }
-
-    void GraphicsDevice::CopyOffscreenTargetToBackBuffer(
-        const RenderTarget& target,
-        const ColorGradingSettings& colorGrading)
     {
         if (ActiveRenderingApi()
             == RenderingApi::DirectX12Experimental)
@@ -128,9 +158,8 @@ namespace LamaPon
                     "DirectX 12 target.");
             }
 
-            // HDR表示用資源へ確定し、D3D12 Sprite rendererの最終合成
-            // 専用pipelineでカラーグレーディングとACES近似を掛けて
-            // 画面全体へ転写します。
+            // HDR表示用資源へ確定し、D3D11のCopyToBoundRenderTargetと
+            // 同じく、post-process済みの色をそのまま画面全体へ転写します。
             auto& mutableTarget = const_cast<RenderTarget&>(target);
             m_state->m_backend->PublishOffscreenTarget(mutableTarget);
             m_state->m_backend->BindBackBuffer();
@@ -147,8 +176,7 @@ namespace LamaPon
             }
             renderer->CompositeScene(
                 target.DisplayViewHandle(),
-                m_state->m_whiteTextureView,
-                colorGrading);
+                m_state->m_whiteTextureView);
             return;
         }
 
@@ -286,37 +314,14 @@ namespace LamaPon
         if (ActiveRenderingApi()
             == RenderingApi::DirectX12Experimental)
         {
-            if (!IsInitialized()
-                || !target.IsValid()
-                || !IsGraphicsViewCurrent(
-                    target.CurrentColorViewHandle())
-                || !IsGraphicsViewCurrent(
-                    target.DepthViewHandle()))
-            {
-                throw std::invalid_argument(
-                    "ApplyOffscreenTargetBloom requires a target owned by "
-                    "the active backend.");
-            }
-            if (!settings.enabled)
-            {
-                return;
-            }
-            auto* const resources = dynamic_cast<
-                Detail::GraphicsDeviceD3D12Resources*>(
-                    m_state->m_apiResources.get());
-            auto* const renderer = resources != nullptr
-                ? resources->TrySpriteRenderer()
-                : nullptr;
-            if (renderer == nullptr)
-            {
-                throw std::logic_error(
-                    "The DirectX 12 post-process renderer is not "
-                    "initialized.");
-            }
-            renderer->ApplyBloom(
+            RequireD3D12PostProcessRenderer(
+                *this,
+                m_state->m_apiResources.get(),
                 target,
-                m_state->m_whiteTextureView,
-                settings);
+                "ApplyOffscreenTargetBloom").ApplyBloom(
+                    target,
+                    m_state->m_whiteTextureView,
+                    settings);
             return;
         }
 
@@ -352,6 +357,20 @@ namespace LamaPon
         RenderTarget& target,
         const ColorGradingSettings& settings)
     {
+        if (ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            RequireD3D12PostProcessRenderer(
+                *this,
+                m_state->m_apiResources.get(),
+                target,
+                "ApplyOffscreenTargetToneMapping").ApplyToneMapping(
+                    target,
+                    m_state->m_whiteTextureView,
+                    settings);
+            return;
+        }
+
         auto& targetState = RequireCurrentOffscreenTarget(
             *this,
             target,
@@ -381,6 +400,19 @@ namespace LamaPon
     void GraphicsDevice::ApplyOffscreenTargetFXAA(
         RenderTarget& target)
     {
+        if (ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            RequireD3D12PostProcessRenderer(
+                *this,
+                m_state->m_apiResources.get(),
+                target,
+                "ApplyOffscreenTargetFXAA").ApplyFXAA(
+                    target,
+                    m_state->m_whiteTextureView);
+            return;
+        }
+
         auto& targetState = RequireCurrentOffscreenTarget(
             *this,
             target,
