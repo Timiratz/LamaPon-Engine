@@ -1551,6 +1551,8 @@ namespace LamaPon
         };
         m_activeViewport = m_viewport;
         m_activeScissorRect = m_scissorRect;
+        m_activeColorFormat = PrimaryColorFormat;
+        m_activeDepthFormat = PrimaryDepthFormat;
         m_activeOffscreenTarget = nullptr;
         m_activeOffscreenDepthOnly = false;
         m_frameFenceValues = {};
@@ -1568,6 +1570,8 @@ namespace LamaPon
         m_height = 0;
         m_activeViewport = {};
         m_activeScissorRect = {};
+        m_activeColorFormat = PrimaryColorFormat;
+        m_activeDepthFormat = PrimaryDepthFormat;
         m_activeOffscreenTarget = nullptr;
         m_activeOffscreenDepthOnly = false;
         m_commandListOpen = false;
@@ -1638,6 +1642,8 @@ namespace LamaPon
         m_commandList->RSSetScissorRects(1, &m_scissorRect);
         m_activeViewport = m_viewport;
         m_activeScissorRect = m_scissorRect;
+        m_activeColorFormat = PrimaryColorFormat;
+        m_activeDepthFormat = PrimaryDepthFormat;
     }
 
     void D3D12Backend::CloseAndExecuteOpenCommands()
@@ -2380,10 +2386,8 @@ namespace LamaPon
         colorDescription.Height = requestedHeight;
         colorDescription.DepthOrArraySize = 1u;
         colorDescription.MipLevels = 1u;
-        // 現在のD3D12 Sprite / Primitive PSOと同じ形式にし、
-        // まずLDRのoffscreen描画を有効にします。HDR化は
-        // PSOのRTV format切り替えとトーンマップ移植と一緒に行います。
-        colorDescription.Format = PrimaryColorFormat;
+        // Bloomやトーンマップ前の1.0を超える色を保持します。
+        colorDescription.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
         colorDescription.SampleDesc.Count = 1u;
         colorDescription.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
         colorDescription.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
@@ -2507,7 +2511,7 @@ namespace LamaPon
             colorViewDescription,
             requestedWidth,
             requestedHeight,
-            GraphicsTextureFormat::Rgba8Unorm);
+            GraphicsTextureFormat::Rgba16Float);
         pending->m_postColorView = CreateTextureView(
             m_device.Get(),
             m_resourceDomain,
@@ -2515,7 +2519,7 @@ namespace LamaPon
             colorViewDescription,
             requestedWidth,
             requestedHeight,
-            GraphicsTextureFormat::Rgba8Unorm);
+            GraphicsTextureFormat::Rgba16Float);
         pending->m_displayView = CreateTextureView(
             m_device.Get(),
             m_resourceDomain,
@@ -2523,7 +2527,7 @@ namespace LamaPon
             colorViewDescription,
             requestedWidth,
             requestedHeight,
-            GraphicsTextureFormat::Rgba8Unorm);
+            GraphicsTextureFormat::Rgba16Float);
         pending->m_colorHistoryView = CreateTextureView(
             m_device.Get(),
             m_resourceDomain,
@@ -2531,7 +2535,7 @@ namespace LamaPon
             colorViewDescription,
             requestedWidth,
             requestedHeight,
-            GraphicsTextureFormat::Rgba8Unorm);
+            GraphicsTextureFormat::Rgba16Float);
         pending->m_temporalHistoryView = CreateTextureView(
             m_device.Get(),
             m_resourceDomain,
@@ -2539,7 +2543,7 @@ namespace LamaPon
             colorViewDescription,
             requestedWidth,
             requestedHeight,
-            GraphicsTextureFormat::Rgba8Unorm);
+            GraphicsTextureFormat::Rgba16Float);
 
         D3D12_SHADER_RESOURCE_VIEW_DESC depthResourceDescription{};
         depthResourceDescription.Format =
@@ -2648,6 +2652,8 @@ namespace LamaPon
         m_commandList->RSSetScissorRects(1, &state->scissor);
         m_activeViewport = state->viewport;
         m_activeScissorRect = state->scissor;
+        m_activeColorFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        m_activeDepthFormat = PrimaryDepthFormat;
         m_activeOffscreenTarget = &target;
         m_activeOffscreenDepthOnly = false;
     }
@@ -2734,6 +2740,8 @@ namespace LamaPon
         m_commandList->RSSetScissorRects(1, &state->scissor);
         m_activeViewport = state->viewport;
         m_activeScissorRect = state->scissor;
+        m_activeColorFormat = DXGI_FORMAT_UNKNOWN;
+        m_activeDepthFormat = PrimaryDepthFormat;
         m_activeOffscreenTarget = &target;
         m_activeOffscreenDepthOnly = true;
     }
@@ -3186,6 +3194,8 @@ namespace LamaPon
                 static_cast<LONG>(state->m_resolution) };
             m_commandList->RSSetViewports(1, &viewport);
             m_commandList->RSSetScissorRects(1, &scissor);
+            m_activeColorFormat = DXGI_FORMAT_UNKNOWN;
+            m_activeDepthFormat = ShadowDepthFormat;
             m_commandList->ClearDepthStencilView(
                 depthView,
                 D3D12_CLEAR_FLAG_DEPTH,

@@ -1399,7 +1399,17 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
         [[nodiscard]] ID3D12PipelineState* ParticlePipelineState(
             bool additive)
         {
-            auto& pipeline = m_particlePipelineStates[additive ? 1u : 0u];
+            const auto colorFormat = m_backend->ActiveColorFormat();
+            const std::size_t formatIndex = colorFormat
+                    == LamaPon::D3D12Backend::PrimaryColorFormat
+                ? 0u
+                : colorFormat == DXGI_FORMAT_R16G16B16A16_FLOAT
+                    ? 1u
+                    : throw std::invalid_argument(
+                        "The active DirectX 12 particle target format is "
+                        "unsupported.");
+            auto& pipeline = m_particlePipelineStates[
+                formatIndex * 2u + (additive ? 1u : 0u)];
             if (pipeline != nullptr)
             {
                 return pipeline.Get();
@@ -1433,9 +1443,8 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
             description.PrimitiveTopologyType =
                 D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
             description.NumRenderTargets = 1;
-            description.RTVFormats[0] =
-                LamaPon::D3D12Backend::PrimaryColorFormat;
-            description.DSVFormat = LamaPon::D3D12Backend::PrimaryDepthFormat;
+            description.RTVFormats[0] = colorFormat;
+            description.DSVFormat = m_backend->ActiveDepthFormat();
             description.SampleDesc.Count = 1;
             ThrowIfFailed(
                 m_backend->Device()->CreateGraphicsPipelineState(
@@ -1450,7 +1459,17 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
             bool depthTest,
             bool depthWrite)
         {
-            const std::size_t index = !depthTest ? 2u : (alphaBlend ? 1u : 0u);
+            const auto colorFormat = m_backend->ActiveColorFormat();
+            const std::size_t formatIndex = colorFormat
+                    == LamaPon::D3D12Backend::PrimaryColorFormat
+                ? 0u
+                : colorFormat == DXGI_FORMAT_R16G16B16A16_FLOAT
+                    ? 1u
+                    : throw std::invalid_argument(
+                        "The active DirectX 12 primitive target format is "
+                        "unsupported.");
+            const std::size_t index = formatIndex * 3u
+                + (!depthTest ? 2u : (alphaBlend ? 1u : 0u));
             auto& pipeline = m_pipelineStates[index];
             if (pipeline != nullptr)
             {
@@ -1478,8 +1497,8 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
             description.InputLayout = { inputs.data(), static_cast<UINT>(inputs.size()) };
             description.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
             description.NumRenderTargets = 1;
-            description.RTVFormats[0] = LamaPon::D3D12Backend::PrimaryColorFormat;
-            description.DSVFormat = LamaPon::D3D12Backend::PrimaryDepthFormat;
+            description.RTVFormats[0] = colorFormat;
+            description.DSVFormat = m_backend->ActiveDepthFormat();
             description.SampleDesc.Count = 1;
             ThrowIfFailed(
                 m_backend->Device()->CreateGraphicsPipelineState(
@@ -1490,9 +1509,19 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
 
         [[nodiscard]] ID3D12PipelineState* DepthOnlyPipelineState()
         {
-            if (m_depthOnlyPipelineState != nullptr)
+            const auto depthFormat = m_backend->ActiveDepthFormat();
+            const std::size_t formatIndex = depthFormat
+                    == LamaPon::D3D12Backend::PrimaryDepthFormat
+                ? 0u
+                : depthFormat == LamaPon::D3D12Backend::ShadowDepthFormat
+                    ? 1u
+                    : throw std::invalid_argument(
+                        "The active DirectX 12 depth target format is "
+                        "unsupported.");
+            auto& pipeline = m_depthOnlyPipelineStates[formatIndex];
+            if (pipeline != nullptr)
             {
-                return m_depthOnlyPipelineState.Get();
+                return pipeline.Get();
             }
             static const std::array<D3D12_INPUT_ELEMENT_DESC, 3> inputs{ {
                 { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,
@@ -1513,10 +1542,13 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
             description.BlendState = MakeBlendDescription(false);
             description.SampleMask = std::numeric_limits<UINT>::max();
             description.RasterizerState = MakeRasterizerDescription();
-            // Shadow mapの自己遮蔽を抑えるため、深度専用PSOにだけ
-            // rasterizer biasを持たせます。
-            description.RasterizerState.DepthBias = 1000;
-            description.RasterizerState.SlopeScaledDepthBias = 1.0f;
+            if (depthFormat == LamaPon::D3D12Backend::ShadowDepthFormat)
+            {
+                // Shadow mapの自己遮蔽を抑えるbiasは、通常の
+                // offscreen深度プリパスには適用しません。
+                description.RasterizerState.DepthBias = 1000;
+                description.RasterizerState.SlopeScaledDepthBias = 1.0f;
+            }
             description.DepthStencilState =
                 MakeDepthDescription(true, true);
             description.InputLayout = {
@@ -1525,16 +1557,15 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
             description.PrimitiveTopologyType =
                 D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
             description.NumRenderTargets = 0;
-            description.DSVFormat =
-                LamaPon::D3D12Backend::ShadowDepthFormat;
+            description.DSVFormat = depthFormat;
             description.SampleDesc.Count = 1;
             ThrowIfFailed(
                 m_backend->Device()->CreateGraphicsPipelineState(
                     &description,
                     IID_PPV_ARGS(
-                        m_depthOnlyPipelineState.ReleaseAndGetAddressOf())),
-                "ID3D12Device::CreateGraphicsPipelineState(shadow depth)");
-            return m_depthOnlyPipelineState.Get();
+                        pipeline.ReleaseAndGetAddressOf())),
+                "ID3D12Device::CreateGraphicsPipelineState(depth only)");
+            return pipeline.Get();
         }
 
         LamaPon::D3D12Backend* m_backend{};
@@ -1543,11 +1574,12 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
         Microsoft::WRL::ComPtr<ID3DBlob> m_pixelShader;
         Microsoft::WRL::ComPtr<ID3DBlob> m_particleVertexShader;
         Microsoft::WRL::ComPtr<ID3DBlob> m_particlePixelShader;
-        std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2>
+        std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4>
             m_particlePipelineStates;
-        std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 3> m_pipelineStates;
-        Microsoft::WRL::ComPtr<ID3D12PipelineState>
-            m_depthOnlyPipelineState;
+        std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 6>
+            m_pipelineStates;
+        std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2>
+            m_depthOnlyPipelineStates;
         Geometry m_cube;
         Geometry m_sphere;
         Geometry m_cylinder;

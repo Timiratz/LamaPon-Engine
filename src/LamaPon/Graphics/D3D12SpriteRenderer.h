@@ -74,14 +74,15 @@ namespace LamaPon::Detail
         void ClearPass() noexcept;
         [[nodiscard]] ID3D12PipelineState* PipelineState(
             SpriteBlendMode blend,
-            bool scissored);
+            bool scissored,
+            DXGI_FORMAT colorFormat);
 
         D3D12Backend* m_backend{};
         Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSignature;
         Microsoft::WRL::ComPtr<ID3DBlob> m_vertexShader;
         Microsoft::WRL::ComPtr<ID3DBlob> m_pixelShader;
         // blend modeごとに、通常passとscissor passのcull違いを持ちます。
-        std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 8>
+        std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 16>
             m_pipelineStates;
         Microsoft::WRL::ComPtr<ID3D12Resource> m_indexBuffer;
         GraphicsViewHandle m_fallbackTexture;

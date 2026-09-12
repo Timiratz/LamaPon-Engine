@@ -495,8 +495,8 @@ namespace LamaPon
                     "現在はclear / present / resize / capture、texture、"
                     "Sceneの2D/UI、基本3D Mesh/Model、shadow map生成に"
                     "対応しています。方向光、Spot Light、Point Light"
-                    "のshadow sampling、基本LDR offscreen描画にも"
-                    "対応し、custom shader、HDR/post-processは未対応です。");
+                    "のshadow sampling、基本HDR offscreen合成にも"
+                    "対応し、custom shaderとpost-processは未対応です。");
             }
         };
 

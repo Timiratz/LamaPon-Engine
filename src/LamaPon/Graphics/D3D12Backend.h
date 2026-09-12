@@ -219,6 +219,14 @@ namespace LamaPon
         {
             return m_activeScissorRect;
         }
+        [[nodiscard]] DXGI_FORMAT ActiveColorFormat() const noexcept
+        {
+            return m_activeColorFormat;
+        }
+        [[nodiscard]] DXGI_FORMAT ActiveDepthFormat() const noexcept
+        {
+            return m_activeDepthFormat;
+        }
 
     private:
         static constexpr std::size_t BackBufferCount = 2;
@@ -296,6 +304,8 @@ namespace LamaPon
         D3D12_RECT m_scissorRect{};
         D3D12_VIEWPORT m_activeViewport{};
         D3D12_RECT m_activeScissorRect{};
+        DXGI_FORMAT m_activeColorFormat{ PrimaryColorFormat };
+        DXGI_FORMAT m_activeDepthFormat{ PrimaryDepthFormat };
         bool m_tearingAllowed{};
         bool m_commandListOpen{};
         RenderTarget* m_activeOffscreenTarget{};

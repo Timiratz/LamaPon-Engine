@@ -707,7 +707,8 @@ namespace LamaPon::Detail
         }
         auto* const pipelineState = PipelineState(
             m_blend,
-            !m_scissorStack.empty());
+            !m_scissorStack.empty(),
+            m_backend->ActiveColorFormat());
 
         const auto upload = m_backend->AllocateFrameUpload(
             vertexBytes,
@@ -791,7 +792,8 @@ namespace LamaPon::Detail
 
     ID3D12PipelineState* D3D12SpriteRenderer::PipelineState(
         const SpriteBlendMode blend,
-        const bool scissored)
+        const bool scissored,
+        const DXGI_FORMAT colorFormat)
     {
         const auto blendIndex = static_cast<std::size_t>(blend);
         if (blend > SpriteBlendMode::Opaque)
@@ -799,8 +801,18 @@ namespace LamaPon::Detail
             throw std::invalid_argument(
                 "The sprite blend mode is invalid.");
         }
-        auto& pipeline =
-            m_pipelineStates[blendIndex * 2u + (scissored ? 1u : 0u)];
+        const std::size_t formatIndex = colorFormat
+                == D3D12Backend::PrimaryColorFormat
+            ? 0u
+            : colorFormat == DXGI_FORMAT_R16G16B16A16_FLOAT
+                ? 1u
+                : throw std::invalid_argument(
+                    "The active DirectX 12 sprite target format is "
+                    "unsupported.");
+        auto& pipeline = m_pipelineStates[
+            formatIndex * 8u
+            + blendIndex * 2u
+            + (scissored ? 1u : 0u)];
         if (pipeline != nullptr)
         {
             return pipeline.Get();
@@ -860,7 +872,7 @@ namespace LamaPon::Detail
         description.NumRenderTargets = 1;
         // Primary outputには深度bufferもbindされるため、深度testを使わない
         // Spriteでもformatだけは一致させます。
-        description.RTVFormats[0] = D3D12Backend::PrimaryColorFormat;
+        description.RTVFormats[0] = colorFormat;
         description.DSVFormat = D3D12Backend::PrimaryDepthFormat;
         description.SampleDesc.Count = 1;
         ThrowIfFailed(
