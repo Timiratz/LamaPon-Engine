@@ -527,6 +527,7 @@ namespace
                 && postColor != nullptr
                 && displayColor != nullptr
                 && depth != nullptr
+                && depthCopy != nullptr
                 && renderTargetHeap != nullptr
                 && depthStencilHeap != nullptr
                 && renderTargetDescriptorSize != 0u;
@@ -538,6 +539,7 @@ namespace
         Microsoft::WRL::ComPtr<ID3D12Resource> postColor;
         Microsoft::WRL::ComPtr<ID3D12Resource> displayColor;
         Microsoft::WRL::ComPtr<ID3D12Resource> depth;
+        Microsoft::WRL::ComPtr<ID3D12Resource> depthCopy;
         Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> renderTargetHeap;
         Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> depthStencilHeap;
         D3D12_RESOURCE_STATES colorState{
@@ -548,6 +550,8 @@ namespace
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE };
         D3D12_RESOURCE_STATES depthState{
             D3D12_RESOURCE_STATE_DEPTH_WRITE };
+        D3D12_RESOURCE_STATES depthCopyState{
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE };
         std::uint32_t renderTargetDescriptorSize{};
         D3D12_VIEWPORT viewport{};
         D3D12_RECT scissor{};
@@ -2448,6 +2452,19 @@ namespace LamaPon
                 IID_PPV_ARGS(pending->depth.ReleaseAndGetAddressOf())),
             "ID3D12Device::CreateCommittedResource(offscreen depth)",
             m_device.Get());
+        auto depthCopyDescription = depthDescription;
+        depthCopyDescription.Flags = D3D12_RESOURCE_FLAG_NONE;
+        ThrowIfFailed(
+            m_device->CreateCommittedResource(
+                &defaultHeap,
+                D3D12_HEAP_FLAG_NONE,
+                &depthCopyDescription,
+                pending->depthCopyState,
+                nullptr,
+                IID_PPV_ARGS(
+                    pending->depthCopy.ReleaseAndGetAddressOf())),
+            "ID3D12Device::CreateCommittedResource(offscreen depth copy)",
+            m_device.Get());
         D3D12_DEPTH_STENCIL_VIEW_DESC depthViewDescription{};
         depthViewDescription.Format = PrimaryDepthFormat;
         depthViewDescription.ViewDimension =
@@ -2501,7 +2518,7 @@ namespace LamaPon
         pending->m_depthView = CreateTextureView(
             m_device.Get(),
             m_resourceDomain,
-            pending->depth,
+            pending->depthCopy,
             depthResourceDescription,
             requestedWidth,
             requestedHeight,
@@ -2687,9 +2704,70 @@ namespace LamaPon
         m_activeOffscreenDepthOnly = true;
     }
 
-    void D3D12Backend::CaptureOffscreenTargetDepth(RenderTarget&)
+    void D3D12Backend::CaptureOffscreenTargetDepth(
+        RenderTarget& target)
     {
-        ThrowUnsupported("CaptureOffscreenTargetDepth");
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "CaptureOffscreenTargetDepth requires an initialized "
+                "D3D12 backend.");
+        }
+        auto* const state = dynamic_cast<D3D12RenderTargetState*>(
+            Detail::RenderTargetBackendAccess::Get(target));
+        if (state == nullptr
+            || !state->HasNativeResources()
+            || state->resourceDomain.get() != m_resourceDomain.get()
+            || !IsViewCurrent(state->m_depthView))
+        {
+            throw std::invalid_argument(
+                "CaptureOffscreenTargetDepth requires a target owned by "
+                "this D3D12 backend generation.");
+        }
+        OpenCommandList();
+        const bool restoreTarget = m_activeOffscreenTarget == &target;
+        if (restoreTarget)
+        {
+            m_commandList->OMSetRenderTargets(
+                0,
+                nullptr,
+                FALSE,
+                nullptr);
+        }
+        TransitionResource(
+            m_commandList.Get(),
+            state->depth.Get(),
+            state->depthState,
+            D3D12_RESOURCE_STATE_COPY_SOURCE);
+        TransitionResource(
+            m_commandList.Get(),
+            state->depthCopy.Get(),
+            state->depthCopyState,
+            D3D12_RESOURCE_STATE_COPY_DEST);
+        m_commandList->CopyResource(
+            state->depthCopy.Get(),
+            state->depth.Get());
+        TransitionResource(
+            m_commandList.Get(),
+            state->depthCopy.Get(),
+            state->depthCopyState,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        TransitionResource(
+            m_commandList.Get(),
+            state->depth.Get(),
+            state->depthState,
+            D3D12_RESOURCE_STATE_DEPTH_WRITE);
+        if (restoreTarget)
+        {
+            if (m_activeOffscreenDepthOnly)
+            {
+                BindOffscreenTargetDepthOnly(target);
+            }
+            else
+            {
+                BindOffscreenTarget(target);
+            }
+        }
     }
 
     void D3D12Backend::CaptureOffscreenTargetColorHistory(

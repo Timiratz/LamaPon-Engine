@@ -7411,6 +7411,8 @@ namespace LamaPon
         // まだ読んでいない履歴を潰してしまいます。
         if (target != nullptr
             && m_screenSpaceReflection.enabled
+            && m_graphics.ActiveRenderingApi()
+                == RenderingApi::DirectX11
             && !m_bakingReflectionProbes)
         {
             DirectX::XMFLOAT4X4 storedViewProjection{};

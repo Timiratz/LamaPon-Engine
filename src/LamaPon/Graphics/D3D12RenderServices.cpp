@@ -1111,7 +1111,7 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                     pointShadowBinding = *fallbackPointShadow;
                 }
             }
-            else if (!m_backend->IsShadowPassActive())
+            else if (!m_backend->IsDepthOnlyPassActive())
             {
                 return false;
             }

@@ -193,6 +193,12 @@ namespace LamaPon
         {
             return m_activeShadowMap != nullptr;
         }
+        [[nodiscard]] bool IsDepthOnlyPassActive() const noexcept
+        {
+            return m_activeShadowMap != nullptr
+                || (m_activeOffscreenTarget != nullptr
+                    && m_activeOffscreenDepthOnly);
+        }
         [[nodiscard]] ID3D12DescriptorHeap*
             ShaderResourceDescriptorHeap() const noexcept;
         // 別Backend世代やShaderResource以外のviewはnulloptです。

@@ -431,6 +431,9 @@ namespace
         constexpr float offscreenClear[4]{ 0.05f, 0.1f, 0.8f, 1.0f };
         graphics.BeginOffscreenTarget(target, offscreenClear);
         auto offscreenOutput = graphics.CaptureOutputState();
+        graphics.BindOffscreenTargetDepthOnly(target);
+        graphics.CaptureOffscreenTargetDepth(target);
+        graphics.RestoreOutputState(*offscreenOutput);
         {
             auto pass = graphics.BeginSpritePass();
             DrawRectangle(
@@ -454,6 +457,14 @@ namespace
             Require(
                 pass.Draw(request),
                 "The DirectX 12 offscreen display view was rejected");
+
+            LamaPon::SpriteDrawRequest depthRequest;
+            depthRequest.texture = target.DepthViewHandle();
+            depthRequest.position = { 100.0f, 15.0f };
+            depthRequest.tint = { 1.0f, 1.0f, 1.0f, 1.0f };
+            Require(
+                pass.Draw(depthRequest),
+                "The DirectX 12 offscreen depth view was rejected");
         }
         std::uint32_t width{};
         std::uint32_t height{};
@@ -479,6 +490,7 @@ namespace
         const auto blue = pixel(24u, 18u);
         const auto red = pixel(35u, 28u);
         const auto outside = pixel(90u, 70u);
+        const auto depth = pixel(105u, 20u);
         Require(
             blue[2] > 150u && blue[0] < 50u,
             "The DirectX 12 offscreen clear color was not sampled");
@@ -488,6 +500,9 @@ namespace
         Require(
             outside[0] < 8u && outside[1] < 8u && outside[2] < 8u,
             "The DirectX 12 offscreen image escaped its destination bounds");
+        Require(
+            depth[0] > 230u && depth[1] < 12u && depth[2] < 12u,
+            "The DirectX 12 offscreen depth copy was not sampled");
 
         LamaPon::Scene scene(graphics);
         auto& cameraObject = scene.CreateGameObject("RenderTextureCamera");

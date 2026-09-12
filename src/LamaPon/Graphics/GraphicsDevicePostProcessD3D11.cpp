@@ -172,6 +172,14 @@ namespace LamaPon
         const DirectX::XMFLOAT4X4& projection,
         const std::uint32_t sampleCount)
     {
+        if (ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            // SSAO shaderはまだD3D11専用ですが、後続パスが
+            // 同じ公開DepthViewを読めるようコピーは確定します。
+            m_state->m_backend->CaptureOffscreenTargetDepth(target);
+            return false;
+        }
         auto& targetState = RequireCurrentOffscreenTarget(
             *this,
             target,
