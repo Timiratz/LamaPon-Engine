@@ -554,6 +554,18 @@ namespace
         bool computeWritable{};
     };
 
+    class D3D12OutputState final : public LamaPon::GraphicsOutputState
+    {
+    public:
+        // RenderTargetの指す先はSceneの短命なRAII scope内だけで
+        // 復元します。domainを強所有し、別Backend世代の
+        // tokenを誤って適用しないためのidentityにも使います。
+        std::shared_ptr<LamaPon::Detail::D3D12ResourceDomain>
+            resourceDomain;
+        LamaPon::RenderTarget* offscreenTarget{};
+        bool depthOnly{};
+    };
+
     [[nodiscard]] const D3D12TexturePayload* TryTexturePayload(
         const LamaPon::GraphicsTextureHandle& texture,
         const LamaPon::Detail::GraphicsResourceDomain* const domain) noexcept
@@ -1380,6 +1392,7 @@ namespace LamaPon
                 D3D12_RESOURCE_STATE_RENDER_TARGET);
             BindPrimaryOutput();
             m_activeOffscreenTarget = nullptr;
+            m_activeOffscreenDepthOnly = false;
         }
         catch (...)
         {
@@ -1527,6 +1540,7 @@ namespace LamaPon
         m_activeViewport = m_viewport;
         m_activeScissorRect = m_scissorRect;
         m_activeOffscreenTarget = nullptr;
+        m_activeOffscreenDepthOnly = false;
         m_frameFenceValues = {};
         m_commandListOpen = false;
     }
@@ -1543,6 +1557,7 @@ namespace LamaPon
         m_activeViewport = {};
         m_activeScissorRect = {};
         m_activeOffscreenTarget = nullptr;
+        m_activeOffscreenDepthOnly = false;
         m_commandListOpen = false;
     }
 
@@ -1984,7 +1999,15 @@ namespace LamaPon
         {
             if (m_activeOffscreenTarget != nullptr)
             {
-                BindOffscreenTarget(*m_activeOffscreenTarget);
+                if (m_activeOffscreenDepthOnly)
+                {
+                    BindOffscreenTargetDepthOnly(
+                        *m_activeOffscreenTarget);
+                }
+                else
+                {
+                    BindOffscreenTarget(*m_activeOffscreenTarget);
+                }
             }
             else
             {
@@ -2575,6 +2598,7 @@ namespace LamaPon
         m_activeViewport = state->viewport;
         m_activeScissorRect = state->scissor;
         m_activeOffscreenTarget = &target;
+        m_activeOffscreenDepthOnly = false;
     }
 
     void D3D12Backend::PublishOffscreenTarget(RenderTarget& target)
@@ -2660,6 +2684,7 @@ namespace LamaPon
         m_activeViewport = state->viewport;
         m_activeScissorRect = state->scissor;
         m_activeOffscreenTarget = &target;
+        m_activeOffscreenDepthOnly = true;
     }
 
     void D3D12Backend::CaptureOffscreenTargetDepth(RenderTarget&)
@@ -2973,7 +2998,15 @@ namespace LamaPon
         m_activeShadowMap = nullptr;
         if (m_activeOffscreenTarget != nullptr)
         {
-            BindOffscreenTarget(*m_activeOffscreenTarget);
+            if (m_activeOffscreenDepthOnly)
+            {
+                BindOffscreenTargetDepthOnly(
+                    *m_activeOffscreenTarget);
+            }
+            else
+            {
+                BindOffscreenTarget(*m_activeOffscreenTarget);
+            }
         }
         else
         {
@@ -2997,12 +3030,62 @@ namespace LamaPon
     std::unique_ptr<GraphicsOutputState>
         D3D12Backend::CaptureOutputState()
     {
-        ThrowUnsupported("CaptureOutputState");
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "CaptureOutputState requires an initialized D3D12 "
+                "backend.");
+        }
+        if (m_activeShadowMap != nullptr)
+        {
+            throw std::logic_error(
+                "CaptureOutputState cannot capture an active shadow "
+                "pass.");
+        }
+        auto state = std::make_unique<D3D12OutputState>();
+        state->resourceDomain = m_resourceDomain;
+        state->offscreenTarget = m_activeOffscreenTarget;
+        state->depthOnly = m_activeOffscreenDepthOnly;
+        return state;
     }
 
-    void D3D12Backend::RestoreOutputState(const GraphicsOutputState&)
+    void D3D12Backend::RestoreOutputState(
+        const GraphicsOutputState& state)
     {
-        ThrowUnsupported("RestoreOutputState");
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "RestoreOutputState requires an initialized D3D12 "
+                "backend.");
+        }
+        if (m_activeShadowMap != nullptr)
+        {
+            throw std::logic_error(
+                "RestoreOutputState cannot interrupt an active shadow "
+                "pass.");
+        }
+        const auto* const captured = dynamic_cast<
+            const D3D12OutputState*>(&state);
+        if (captured == nullptr
+            || captured->resourceDomain.get() != m_resourceDomain.get())
+        {
+            throw std::invalid_argument(
+                "RestoreOutputState requires a state captured by this "
+                "D3D12 backend generation.");
+        }
+        if (captured->offscreenTarget == nullptr)
+        {
+            BindBackBuffer();
+        }
+        else if (captured->depthOnly)
+        {
+            BindOffscreenTargetDepthOnly(
+                *captured->offscreenTarget);
+        }
+        else
+        {
+            BindOffscreenTarget(*captured->offscreenTarget);
+        }
     }
 
     std::unique_ptr<DebugDrawingBackend>

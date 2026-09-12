@@ -718,6 +718,20 @@ int main()
                 offscreenClear);
             d3d12Backend->PublishOffscreenTarget(offscreenTarget);
             d3d12Backend->BindBackBuffer();
+            auto d3d12OutputState =
+                d3d12Backend->CaptureOutputState();
+            Require(
+                d3d12OutputState != nullptr,
+                "The DirectX 12 backend did not capture its output state");
+            TestGraphicsOutputState foreignOutputState;
+            RequireThrowsExactly<std::invalid_argument>(
+                [&]
+                {
+                    d3d12Backend->RestoreOutputState(foreignOutputState);
+                },
+                "The DirectX 12 backend accepted an output state from a "
+                "different backend");
+            d3d12Backend->RestoreOutputState(*d3d12OutputState);
 
             d3d12Backend->PrepareForResourceRelease();
             d3d12Backend->PrepareForResourceRelease();

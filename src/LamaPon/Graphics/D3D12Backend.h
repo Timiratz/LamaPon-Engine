@@ -293,6 +293,7 @@ namespace LamaPon
         bool m_tearingAllowed{};
         bool m_commandListOpen{};
         RenderTarget* m_activeOffscreenTarget{};
+        bool m_activeOffscreenDepthOnly{};
         Detail::ShadowMapBackendState* m_activeShadowMap{};
         // texture uploadはworker threadからも終端状態へ遷移させます。
         std::atomic_bool m_terminalFailure{ false };

@@ -151,6 +151,15 @@ namespace LamaPon
         {
             return;
         }
+        if (graphics.ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            // D3D12の基本RenderTargetはまだLDRで、この関数が
+            // 呼ぶ各post-processはD3D11専用です。名前付き
+            // Camera targetの素の描画結果は呼び出し側が
+            // Publishするため、HDR pipeline移植までは安全に無処理とします。
+            return;
+        }
 
         // 5つの描画経路が通る位置で計測し、エディタービューポートの
         // Bloom、トーンマップ、FXAAもGPU時間の内訳へ含めます。

@@ -23,6 +23,7 @@
 - DirectX 12のSpot Lightへ最大4灯の配列ShadowMapを接続し、ライトごとの射影、3x3 PCF、深度／法線bias、shadow strengthを直接光へ反映する。casterを無効にした画像との画素比較で遮蔽を検証する。
 - DirectX 12のPoint LightへキューブShadowMapを接続し、6面の深度から復元した比較値と5タップPCF、深度bias、shadow strengthを直接光へ反映する。影の有無による画素差をWARP回帰テストで検証する。
 - DirectX 12でAPI-neutralな`RenderTarget`のLDRカラー、ping-pongカラー、表示用カラー、深度資源とSRVを生成。offscreenへのclear／Sprite／3D描画、表示用資源への確定、再サンプリングの経路をWARPとdebug layerで検証する。HDRとpost-processは後続段階で対応する。
+- DirectX 12の現在の描画先（バックバッファ／offscreenカラー／深度のみ）を`GraphicsOutputState`で退避・復元する。Cameraの名前付きRenderTextureをLDRで描画・公開し、元の出力へ戻ってSpriteから参照できる経路をWARPで検証する。D3D11専用post-processはD3D12で安全にスキップする。
 - `GraphicsDevice`のAPI固有資源所有を抽象interface化し、D3D11のEffect・Shader・Sprite・Shadow・render serviceを単一の具象世代へ集約。停止・再生成・破棄を共通境界から呼ぶ構造へ移行。
 - Effect・Shader cache・Shadow・Environment・Clustered LightsなどDevice世代に属する高水準資源をD3D11内部所有へ分離。非同期Shader workerをAssetManagerより先に停止し、再初期化時に旧Device資源と未消費Screen Effect queueを安全に破棄する。
 - `GraphicsDevice`のnative D3D11 Device / Context / CommonStates / view resolverを非公開化し、D3D11描画島とテストだけがSDK非公開bridgeから利用する境界へ移行。API 64 Game Module向けの旧public binary symbolを維持し、Game Module APIを65へ更新。

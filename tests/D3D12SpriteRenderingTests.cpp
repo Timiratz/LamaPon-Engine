@@ -424,8 +424,13 @@ namespace
                     target.DepthViewHandle()),
             "The DirectX 12 offscreen target did not publish its views");
 
+        constexpr float backBufferClear[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+        graphics.BeginFrame(backBufferClear);
+        auto primaryOutput = graphics.CaptureOutputState();
+
         constexpr float offscreenClear[4]{ 0.05f, 0.1f, 0.8f, 1.0f };
         graphics.BeginOffscreenTarget(target, offscreenClear);
+        auto offscreenOutput = graphics.CaptureOutputState();
         {
             auto pass = graphics.BeginSpritePass();
             DrawRectangle(
@@ -436,10 +441,10 @@ namespace
                 12.0f,
                 { 0.9f, 0.05f, 0.02f, 1.0f });
         }
+        graphics.RestoreOutputState(*primaryOutput);
+        graphics.RestoreOutputState(*offscreenOutput);
         graphics.PublishOffscreenTarget(target);
-
-        constexpr float backBufferClear[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
-        graphics.BeginFrame(backBufferClear);
+        graphics.RestoreOutputState(*primaryOutput);
         {
             auto pass = graphics.BeginSpritePass();
             LamaPon::SpriteDrawRequest request;
@@ -483,6 +488,49 @@ namespace
         Require(
             outside[0] < 8u && outside[1] < 8u && outside[2] < 8u,
             "The DirectX 12 offscreen image escaped its destination bounds");
+
+        LamaPon::Scene scene(graphics);
+        auto& cameraObject = scene.CreateGameObject("RenderTextureCamera");
+        auto& camera = cameraObject.AddComponent<
+            LamaPon::CameraComponent>();
+        camera.SetTargetTexture("d3d12-camera-target");
+        camera.SetTargetTextureSize(40u, 20u);
+        camera.SetTargetClearColor({ 0.05f, 0.8f, 0.1f, 1.0f });
+
+        graphics.BeginFrame(backBufferClear);
+        scene.RenderTargetTextures();
+        const auto cameraView = graphics.RenderTextureViewHandle(
+            "d3d12-camera-target");
+        Require(
+            cameraView
+                && graphics.IsGraphicsViewCurrent(cameraView),
+            "The DirectX 12 camera did not publish its render texture");
+        {
+            auto pass = graphics.BeginSpritePass();
+            LamaPon::SpriteDrawRequest request;
+            request.texture = cameraView;
+            request.position = { 5.0f, 5.0f };
+            request.tint = { 1.0f, 1.0f, 1.0f, 1.0f };
+            Require(
+                pass.Draw(request),
+                "The DirectX 12 camera render texture was rejected");
+        }
+        std::uint32_t cameraWidth{};
+        std::uint32_t cameraHeight{};
+        const auto cameraPixels = graphics.CaptureBackBuffer(
+            cameraWidth,
+            cameraHeight);
+        graphics.EndFrame();
+        const auto cameraOffset = (
+            static_cast<std::size_t>(10u) * cameraWidth + 10u) * 4u;
+        Require(
+            cameraWidth == CanvasWidth
+                && cameraHeight == CanvasHeight
+                && cameraPixels[cameraOffset + 1u] > 150u
+                && cameraPixels[cameraOffset] < 50u
+                && cameraPixels[cameraOffset + 2u] < 60u,
+            "The DirectX 12 camera render texture was not restored and "
+            "sampled");
     }
 
     void RequireD3D12PrimitiveScene()
