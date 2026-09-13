@@ -37,6 +37,8 @@ cbuffer FullscreenPass : register(b1)
 {
     float4 PassPrimary;
     float4 PassSecondary;
+    float4 PassTertiary;
+    float4 PassQuaternary;
 };
 
 cbuffer TemporalPass : register(b2)
@@ -356,6 +358,128 @@ float4 TemporalPixelShader(PixelInput input) : SV_Target
             saturate(PassPrimary.x)),
         1.0f);
 }
+
+float OutlineSceneDistance(float deviceDepth)
+{
+    const float denominator = deviceDepth + PassTertiary.x;
+    return denominator > -1e-6f
+        ? 1e6f
+        : PassTertiary.y / denominator;
+}
+
+int2 OutlineClampPixel(int2 pixel)
+{
+    const int2 size = max(int2(PassQuaternary.zw), int2(1, 1));
+    return clamp(pixel, int2(0, 0), size - 1);
+}
+
+float3 OutlineViewPosition(int2 pixel)
+{
+    const int2 safePixel = OutlineClampPixel(pixel);
+    const float depth = DepthTexture.Load(int3(safePixel, 0)).r;
+    const float distance = OutlineSceneDistance(depth);
+    const float2 uv = (float2(safePixel) + 0.5f) * PassQuaternary.xy;
+    const float2 ndc = float2(
+        uv.x * 2.0f - 1.0f,
+        1.0f - uv.y * 2.0f);
+    return float3(
+        ndc.x * PassTertiary.z * distance,
+        ndc.y * PassTertiary.w * distance,
+        distance);
+}
+
+float3 OutlineNormal(int2 pixel)
+{
+    const int2 size = max(int2(PassQuaternary.zw), int2(3, 3));
+    const int2 safePixel = clamp(
+        pixel,
+        int2(1, 1),
+        max(size - 2, int2(1, 1)));
+    const float3 origin = OutlineViewPosition(safePixel);
+    const float3 left = OutlineViewPosition(safePixel + int2(-1, 0));
+    const float3 right = OutlineViewPosition(safePixel + int2(1, 0));
+    const float3 up = OutlineViewPosition(safePixel + int2(0, -1));
+    const float3 down = OutlineViewPosition(safePixel + int2(0, 1));
+    const float3 horizontal = abs(left.z - origin.z)
+            < abs(right.z - origin.z)
+        ? origin - left
+        : right - origin;
+    const float3 vertical = abs(up.z - origin.z)
+            < abs(down.z - origin.z)
+        ? up - origin
+        : origin - down;
+    const float3 normal = cross(vertical, horizontal);
+    const float lengthSquared = dot(normal, normal);
+    return lengthSquared < 1e-12f
+        ? float3(0.0f, 0.0f, -1.0f)
+        : normal * rsqrt(lengthSquared);
+}
+
+static const int2 OutlineDirections[8] = {
+    int2(-1, -1), int2(0, -1), int2(1, -1), int2(-1, 0),
+    int2(1, 0), int2(-1, 1), int2(0, 1), int2(1, 1)
+};
+
+float4 ScreenOutlinePixelShader(PixelInput input) : SV_Target
+{
+    const float4 source = SpriteTexture.Sample(
+        SpriteSampler,
+        input.textureCoordinate);
+    const int2 screenSize = int2(PassQuaternary.zw);
+    if (screenSize.x < 3 || screenSize.y < 3)
+    {
+        return source;
+    }
+    const int2 pixel = int2(input.position.xy);
+    const float centerDistance = OutlineSceneDistance(
+        DepthTexture.Load(int3(OutlineClampPixel(pixel), 0)).r);
+    const float3 centerNormal = OutlineNormal(pixel);
+    const int radius = clamp((int)PassSecondary.x, 1, 4);
+    const float depthThreshold = max(PassSecondary.y, 0.0001f);
+    const float normalThreshold = max(PassSecondary.z, 0.0001f);
+    float depthEdge = 0.0f;
+    float normalEdge = 0.0f;
+    [unroll]
+    for (int index = 0; index < 8; ++index)
+    {
+        const int2 samplePixel = pixel + OutlineDirections[index] * radius;
+        const float sampleDistance = OutlineSceneDistance(
+            DepthTexture.Load(
+                int3(OutlineClampPixel(samplePixel), 0)).r);
+        const bool centerIsSky = centerDistance >= 999999.0f;
+        const bool sampleIsSky = sampleDistance >= 999999.0f;
+        if (centerIsSky != sampleIsSky)
+        {
+            depthEdge = 1.0f;
+        }
+        else if (!centerIsSky)
+        {
+            const float relativeDifference = abs(
+                sampleDistance - centerDistance)
+                / max(centerDistance, 0.001f);
+            depthEdge = max(
+                depthEdge,
+                smoothstep(
+                    0.35f,
+                    1.0f,
+                    relativeDifference / depthThreshold));
+            const float normalDifference = 1.0f - saturate(dot(
+                centerNormal,
+                OutlineNormal(samplePixel)));
+            normalEdge = max(
+                normalEdge,
+                smoothstep(
+                    0.35f,
+                    1.0f,
+                    normalDifference / normalThreshold));
+        }
+    }
+    const float edge = saturate(
+        max(depthEdge, normalEdge) * saturate(PassPrimary.w));
+    return float4(
+        lerp(source.rgb, PassPrimary.rgb, edge),
+        source.a);
+}
 )";
 
     void ThrowIfFailed(
@@ -603,6 +727,9 @@ namespace LamaPon::Detail
         m_temporalPixelShader = CompileSpriteShader(
             "TemporalPixelShader",
             "ps_5_0");
+        m_screenOutlinePixelShader = CompileSpriteShader(
+            "ScreenOutlinePixelShader",
+            "ps_5_0");
 
         D3D12_DESCRIPTOR_RANGE textureRange{};
         textureRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
@@ -632,7 +759,7 @@ namespace LamaPon::Detail
             D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
         parameters[2].Constants.ShaderRegister = 1;
         parameters[2].Constants.RegisterSpace = 0;
-        parameters[2].Constants.Num32BitValues = 8;
+        parameters[2].Constants.Num32BitValues = 16;
         parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
         parameters[3].ParameterType =
             D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
@@ -1136,6 +1263,59 @@ namespace LamaPon::Detail
         m_backend->EndOffscreenPostProcess(target);
     }
 
+    void D3D12SpriteRenderer::ApplyScreenOutline(
+        RenderTarget& target,
+        const GraphicsViewHandle& fallbackTexture,
+        const ScreenOutlineSettings& settings,
+        const DirectX::XMFLOAT4X4& projection)
+    {
+        if (!settings.enabled
+            || std::abs(projection._11) < 1e-6f
+            || std::abs(projection._22) < 1e-6f)
+        {
+            return;
+        }
+        const auto depth = target.DepthViewHandle();
+        if (!m_backend->TryResolveShaderResource(depth))
+        {
+            return;
+        }
+        const auto texel = TexelSize(target);
+        const auto source = m_backend->BeginOffscreenPostProcess(target);
+        try
+        {
+            DrawFullscreen(
+                source,
+                fallbackTexture,
+                FullscreenProgram::ScreenOutline,
+                {
+                    std::clamp(settings.color.x, 0.0f, 1.0f),
+                    std::clamp(settings.color.y, 0.0f, 1.0f),
+                    std::clamp(settings.color.z, 0.0f, 1.0f),
+                    std::clamp(settings.intensity, 0.0f, 1.0f),
+                    std::clamp(settings.thickness, 1.0f, 4.0f),
+                    std::clamp(settings.depthThreshold, 0.0001f, 1.0f),
+                    std::clamp(settings.normalThreshold, 0.0f, 1.0f),
+                    0.0f,
+                    projection._33,
+                    projection._43,
+                    1.0f / projection._11,
+                    1.0f / projection._22,
+                    texel[0],
+                    texel[1],
+                    static_cast<float>(target.Width()),
+                    static_cast<float>(target.Height())
+                },
+                { GraphicsViewHandle{}, depth });
+        }
+        catch (...)
+        {
+            m_backend->AbortOffscreenPostProcess(target);
+            throw;
+        }
+        m_backend->EndOffscreenPostProcess(target);
+    }
+
     void D3D12SpriteRenderer::MeasureLuminance(
         RenderTarget& target,
         const GraphicsViewHandle& fallbackTexture)
@@ -1181,7 +1361,7 @@ namespace LamaPon::Detail
         RenderTarget& target,
         const GraphicsViewHandle& fallbackTexture,
         const FullscreenProgram program,
-        const std::array<float, 8>& constants)
+        const std::array<float, 16>& constants)
     {
         const auto source = m_backend->BeginOffscreenPostProcess(target);
         try
@@ -1204,7 +1384,7 @@ namespace LamaPon::Detail
         const GraphicsViewHandle& texture,
         const GraphicsViewHandle& fallbackTexture,
         const FullscreenProgram program,
-        const std::array<float, 8>& constants,
+        const std::array<float, 16>& constants,
         const std::array<GraphicsViewHandle, 2>& auxiliaryViews,
         const std::array<float, 32>& matrixConstants)
     {
@@ -1248,6 +1428,19 @@ namespace LamaPon::Detail
                 }
                 m_auxiliaryTextures[index] = auxiliary->descriptor;
             }
+        }
+        else if (program == FullscreenProgram::ScreenOutline)
+        {
+            const auto depth = m_backend->TryResolveShaderResource(
+                m_auxiliaryViews[1]);
+            if (!depth)
+            {
+                Abort(token);
+                throw std::invalid_argument(
+                    "The DirectX 12 screen outline pass requires a "
+                    "current depth view.");
+            }
+            m_auxiliaryTextures[1] = depth->descriptor;
         }
         try
         {
@@ -1409,6 +1602,12 @@ namespace LamaPon::Detail
                 m_matrixConstants.data(),
                 0);
         }
+        else if (m_program == FullscreenProgram::ScreenOutline)
+        {
+            commandList->SetGraphicsRootDescriptorTable(
+                4,
+                m_auxiliaryTextures[1]);
+        }
         commandList->IASetPrimitiveTopology(
             D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         commandList->IASetVertexBuffers(0, 1, &vertexBufferView);
@@ -1457,7 +1656,7 @@ namespace LamaPon::Detail
             throw std::invalid_argument(
                 "The sprite blend mode is invalid.");
         }
-        if (program > FullscreenProgram::Temporal)
+        if (program > FullscreenProgram::ScreenOutline)
         {
             throw std::invalid_argument(
                 "The sprite pixel program is invalid.");
@@ -1539,6 +1738,9 @@ namespace LamaPon::Detail
             break;
         case FullscreenProgram::Temporal:
             pixelShader = m_temporalPixelShader.Get();
+            break;
+        case FullscreenProgram::ScreenOutline:
+            pixelShader = m_screenOutlinePixelShader.Get();
             break;
         case FullscreenProgram::None:
             break;

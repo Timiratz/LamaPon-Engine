@@ -408,6 +408,29 @@ namespace LamaPon
         const ScreenOutlineSettings& settings,
         const DirectX::XMFLOAT4X4& projection)
     {
+        if (ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            if (!settings.enabled)
+            {
+                return;
+            }
+            // アウトラインはmain passの最終深度を読むため、TAAが無効でも
+            // shader-readable copyをここで確定します。
+            m_state->m_backend->CaptureOffscreenTargetDepth(target);
+            RequireD3D12PostProcessRenderer(
+                *this,
+                m_state->m_apiResources.get(),
+                target,
+                "ApplyOffscreenTargetScreenOutline")
+                .ApplyScreenOutline(
+                    target,
+                    m_state->m_whiteTextureView,
+                    settings,
+                    projection);
+            return;
+        }
+
         auto& targetState = RequireCurrentOffscreenTarget(
             *this,
             target,

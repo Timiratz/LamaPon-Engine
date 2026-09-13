@@ -6114,10 +6114,9 @@ namespace LamaPon
         if (m_graphics.ActiveRenderingApi()
             == RenderingApi::DirectX12Experimental)
         {
-            // primary outputへの最小経路は維持しつつ、共通のカリング・
-            // shadow pass・描画順序を通します。targetを使うpost-processと
-            // probe bakeはD3D12側のoffscreen実装後に段階的に有効化します。
-            static_cast<void>(target);
+            // probe bakeは未移植のままですが、通常のゲーム描画は渡された
+            // Scene Composition targetへ出力します。targetを捨てると3Dだけ
+            // back bufferへ描かれ、後続のHDR／post-process合成で消えます。
             if (m_mainCamera != nullptr && m_mainCamera->IsEnabled())
             {
                 RenderWithMatrices(
@@ -6125,7 +6124,7 @@ namespace LamaPon
                     m_mainCamera->ProjectionMatrix(aspectRatio),
                     include2D,
                     false,
-                    nullptr);
+                    target);
             }
             else if (include2D)
             {

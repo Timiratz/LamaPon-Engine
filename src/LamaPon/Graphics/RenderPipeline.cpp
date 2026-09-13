@@ -155,8 +155,8 @@ namespace LamaPon
             == RenderingApi::DirectX12Experimental)
         {
             // D3D12は移植済みのTAA、Bloom、自動露出、トーンマップ、
-            // FXAAをD3D11と同じ順で適用します。SSAOなど未移植のpassは
-            // 安全に無処理とします。
+            // Screen Outline、FXAAをD3D11と同じ順で適用します。
+            // SSAOなど未移植のpassは安全に無処理とします。
             const auto& settings = graphics.Settings();
             graphics.ApplyOffscreenTargetTemporalAntiAliasing(
                 target,
@@ -188,6 +188,10 @@ namespace LamaPon
             graphics.ApplyOffscreenTargetToneMapping(
                 target,
                 effectiveColorGrading);
+            graphics.ApplyOffscreenTargetScreenOutline(
+                target,
+                frame.screenOutline.settings,
+                frame.screenOutline.projection);
             if (settings.antiAliasingEnabled)
             {
                 graphics.ApplyOffscreenTargetFXAA(target);

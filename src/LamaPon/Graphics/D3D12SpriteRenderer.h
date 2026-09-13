@@ -22,6 +22,7 @@ namespace LamaPon
     class RenderTarget;
     struct BloomSettings;
     struct ColorGradingSettings;
+    struct ScreenOutlineSettings;
     struct TemporalAntiAliasingInputs;
     struct TemporalAntiAliasingSettings;
 }
@@ -84,6 +85,13 @@ namespace LamaPon::Detail
             const GraphicsViewHandle& fallbackTexture,
             const TemporalAntiAliasingSettings& settings,
             const TemporalAntiAliasingInputs& inputs);
+        // 深度の距離差と再構成法線から輪郭を検出し、current colorへ
+        // 指定色を重ねます。
+        void ApplyScreenOutline(
+            RenderTarget& target,
+            const GraphicsViewHandle& fallbackTexture,
+            const ScreenOutlineSettings& settings,
+            const DirectX::XMFLOAT4X4& projection);
         // 自動露出用に、current colorの対数輝度を1/4解像度で書いてから
         // 2x2平均で1x1まで縮めます。D3D11のPSLuminanceとGenerateMipsに
         // 相当し、終了後はtargetの通常の描画先へ戻します。
@@ -102,7 +110,8 @@ namespace LamaPon::Detail
             Bloom,
             Fxaa,
             Luminance,
-            Temporal
+            Temporal,
+            ScreenOutline
         };
 
         struct Vertex final
@@ -131,7 +140,7 @@ namespace LamaPon::Detail
             const GraphicsViewHandle& texture,
             const GraphicsViewHandle& fallbackTexture,
             FullscreenProgram program,
-            const std::array<float, 8>& constants,
+            const std::array<float, 16>& constants,
             const std::array<GraphicsViewHandle, 2>& auxiliaryViews = {},
             const std::array<float, 32>& matrixConstants = {});
         // targetのcurrent colorを入力にしたfullscreen passをpost colorへ
@@ -140,7 +149,7 @@ namespace LamaPon::Detail
             RenderTarget& target,
             const GraphicsViewHandle& fallbackTexture,
             FullscreenProgram program,
-            const std::array<float, 8>& constants);
+            const std::array<float, 16>& constants);
         [[nodiscard]] ID3D12PipelineState* PipelineState(
             SpriteBlendMode blend,
             bool scissored,
@@ -157,16 +166,17 @@ namespace LamaPon::Detail
         Microsoft::WRL::ComPtr<ID3DBlob> m_fxaaPixelShader;
         Microsoft::WRL::ComPtr<ID3DBlob> m_luminancePixelShader;
         Microsoft::WRL::ComPtr<ID3DBlob> m_temporalPixelShader;
+        Microsoft::WRL::ComPtr<ID3DBlob> m_screenOutlinePixelShader;
         // pixel shader、深度format、出力format、blend modeごとに、通常pass
         // とscissor passのcull違いを持ちます。
-        std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 192>
+        std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 224>
             m_pipelineStates;
         Microsoft::WRL::ComPtr<ID3D12Resource> m_indexBuffer;
         GraphicsViewHandle m_fallbackTexture;
         std::vector<QueuedSprite> m_sprites;
         std::vector<D3D12_RECT> m_scissorStack;
         SpriteBlendMode m_blend{ SpriteBlendMode::NonPremultiplied };
-        std::array<float, 8> m_passConstants{};
+        std::array<float, 16> m_passConstants{};
         std::array<float, 32> m_matrixConstants{};
         std::array<GraphicsViewHandle, 2> m_auxiliaryViews;
         std::array<D3D12_GPU_DESCRIPTOR_HANDLE, 2> m_auxiliaryTextures{};

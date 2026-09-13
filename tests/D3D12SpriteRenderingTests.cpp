@@ -802,6 +802,77 @@ namespace
         Require(
             coloredPixels > 300u,
             "The DirectX 12 scene did not render its primitive meshes");
+
+        // ゲーム実行と同じScene Composition経路でも3Dがtargetへ入り、
+        // その深度を使うScreen Outlineが実際の画素へ反映されることを
+        // 確認します。以前はRenderMainCameraがD3D12時だけtargetを捨て、
+        // 直接描いた3Dが合成時に消えていました。
+        const auto captureComposition = [&]()
+        {
+            graphics.BeginFrame(clearColor);
+            graphics.BeginSceneComposition(clearColor);
+            scene.RenderMainCamera(
+                static_cast<float>(CanvasWidth) / CanvasHeight,
+                false,
+                graphics.SceneCompositionTarget());
+            graphics.EndSceneComposition(scene.PostProcessFrameData());
+            std::uint32_t captureWidth{};
+            std::uint32_t captureHeight{};
+            auto capture = graphics.CaptureBackBuffer(
+                captureWidth,
+                captureHeight);
+            graphics.EndFrame();
+            Require(
+                captureWidth == CanvasWidth
+                    && captureHeight == CanvasHeight,
+                "The DirectX 12 scene composition capture has unexpected "
+                "dimensions");
+            return capture;
+        };
+
+        const auto compositionPixels = captureComposition();
+        std::size_t composedGeometryPixels{};
+        for (std::size_t offset{};
+             offset + 3u < compositionPixels.size();
+             offset += 4u)
+        {
+            if (compositionPixels[offset] > 55u
+                || compositionPixels[offset + 1u] > 55u)
+            {
+                ++composedGeometryPixels;
+            }
+        }
+        Require(
+            composedGeometryPixels > 300u,
+            "The DirectX 12 main camera did not render its primitive "
+            "meshes into the scene composition target");
+
+        auto outline = scene.ScreenOutline();
+        outline.enabled = true;
+        outline.color = { 0.0f, 1.0f, 0.0f };
+        outline.intensity = 1.0f;
+        outline.thickness = 2.0f;
+        outline.depthThreshold = 0.01f;
+        outline.normalThreshold = 0.1f;
+        scene.SetScreenOutlineSettings(outline);
+        const auto outlinedPixels = captureComposition();
+        std::size_t greenOutlinePixels{};
+        for (std::size_t offset{};
+             offset + 3u < outlinedPixels.size();
+             offset += 4u)
+        {
+            const auto green = outlinedPixels[offset + 1u];
+            if (green > compositionPixels[offset + 1u] + 40u
+                && green > outlinedPixels[offset] + 30u
+                && green > outlinedPixels[offset + 2u] + 30u)
+            {
+                ++greenOutlinePixels;
+            }
+        }
+        Require(
+            greenOutlinePixels > 20u,
+            "The DirectX 12 screen outline did not mark scene depth "
+            "edges");
     }
 
     void RequireD3D12DirectionalShadows()
