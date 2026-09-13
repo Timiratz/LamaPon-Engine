@@ -1,7 +1,9 @@
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Graphics/GraphicsDeviceState.h"
 
+#include "LamaPon/Graphics/AutoExposureAdaptation.h"
 #include "LamaPon/Graphics/D3D11RenderTargetState.h"
+#include "LamaPon/Graphics/D3D12Backend.h"
 #include "LamaPon/Graphics/D3D12SpriteRenderer.h"
 #include "LamaPon/Graphics/EnvironmentRenderer.h"
 #include "LamaPon/Graphics/EnvironmentSettings.h"
@@ -425,6 +427,45 @@ namespace LamaPon
         const AutoExposureSettings& settings,
         const float deltaSeconds)
     {
+        if (ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            auto& renderer = RequireD3D12PostProcessRenderer(
+                *this,
+                m_state->m_apiResources.get(),
+                target,
+                "UpdateOffscreenTargetAutoExposure");
+            auto* const backend = dynamic_cast<D3D12Backend*>(
+                m_state->m_backend.get());
+            auto* const state =
+                Detail::RenderTargetBackendAccess::Get(target);
+            if (backend == nullptr || state == nullptr)
+            {
+                throw std::logic_error(
+                    "The DirectX 12 auto exposure backend is not "
+                    "initialized.");
+            }
+            if (!settings.enabled)
+            {
+                // D3D11と同じく、無効にしたら読み残しと順応状態を捨てます。
+                backend->DiscardOffscreenTargetLuminance(target);
+                Detail::ResetAutoExposure(*state);
+                return 0.0f;
+            }
+            // D3D11と同じ順で、前フレームの読み出し、順応、現在の測定と
+            // 次回用の転送を行います。
+            const float exposureStops = Detail::AdvanceAutoExposure(
+                *state,
+                backend->TryReadOffscreenTargetLuminance(target),
+                settings,
+                deltaSeconds);
+            renderer.MeasureLuminance(
+                target,
+                m_state->m_whiteTextureView);
+            backend->CaptureOffscreenTargetLuminance(target);
+            return exposureStops;
+        }
+
         auto& targetState = RequireCurrentOffscreenTarget(
             *this,
             target,

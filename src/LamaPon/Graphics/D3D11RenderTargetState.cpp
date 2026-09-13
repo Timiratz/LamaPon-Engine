@@ -1,4 +1,5 @@
 #include "LamaPon/Graphics/D3D11RenderTargetState.h"
+#include "LamaPon/Graphics/AutoExposureAdaptation.h"
 #include "LamaPon/Graphics/EnvironmentRenderer.h"
 #include "LamaPon/Graphics/ScreenEffect.h"
 
@@ -1076,56 +1077,19 @@ namespace LamaPon
         }
         if (!settings.enabled)
         {
-            // 順応をやめたら状態も捨てます。入れ直したときは、最初に
-            // 測れた明るさへそのまま飛ばしたいためです（何秒も前の
-            // 値から追いつかせると暗転や白飛びから始まります）。
+            // 順応をやめたら読み残しと状態を捨てます
+            // （理由はAutoExposureAdaptation.hを参照）。
             m_luminanceStagingReady = false;
-            m_adaptedLuminance = 0.0f;
-            m_autoExposureStops = 0.0f;
+            ResetAutoExposure(*this);
             return 0.0f;
         }
 
-        const float minimumLuminance = std::max(
-            settings.minimumLuminance,
-            0.0001f);
-        const float maximumLuminance = std::max(
-            settings.maximumLuminance,
-            minimumLuminance);
-
-        // Backendが非同期に読めた前フレームの測定結果を使います。
-        // 未完成ならそのフレームの順応更新だけを見送ります。
-        if (measuredLuminance.has_value())
-        {
-            const float measured = std::clamp(
-                *measuredLuminance,
-                minimumLuminance,
-                maximumLuminance);
-            if (m_adaptedLuminance <= 0.0f)
-            {
-                // 初回は測定値を直接採用し、起動直後の
-                // 不要な露出変化を避けます。
-                m_adaptedLuminance = measured;
-            }
-            else
-            {
-                // 明所と暗所で異なる順応速度を適用します。
-                const float speed = measured > m_adaptedLuminance
-                    ? std::max(settings.speedToBright, 0.0f)
-                    : std::max(settings.speedToDark, 0.0f);
-                // 指数補間により順応時間をフレームレートから分離し、
-                // 大きなdeltaTimeでも行き過ぎを防ぎます。
-                const float blend = speed > 0.0f
-                    ? 1.0f - std::exp(
-                        -std::max(deltaSeconds, 0.0f) * speed)
-                    : 0.0f;
-                m_adaptedLuminance +=
-                    (measured - m_adaptedLuminance) * blend;
-            }
-            // 露出は段数（exp2で効く）なのでlog2で渡します。
-            m_autoExposureStops = std::log2(
-                std::max(settings.keyValue, 0.0001f)
-                / std::max(m_adaptedLuminance, 0.0001f));
-        }
+        // 順応の式はD3D12と共有します。
+        const float exposureStops = AdvanceAutoExposure(
+            *this,
+            measuredLuminance,
+            settings,
+            deltaSeconds);
 
         // 現在のフレームを測定し、結果を次のフレームで読みます。
         renderer.RenderLuminance(
@@ -1134,7 +1098,7 @@ namespace LamaPon
             m_luminanceShaderResourceView.Get(),
             m_luminanceWidth,
             m_luminanceHeight);
-        return m_autoExposureStops;
+        return exposureStops;
     }
 
     std::optional<float>

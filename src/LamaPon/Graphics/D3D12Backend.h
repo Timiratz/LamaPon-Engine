@@ -235,6 +235,18 @@ namespace LamaPon
             RenderTarget& target);
         void EndOffscreenPostProcess(RenderTarget& target);
         void AbortOffscreenPostProcess(RenderTarget& target) noexcept;
+        // 自動露出の輝度測定passです。level 0は1/4解像度の対数輝度、以降は
+        // 前段を2x2平均した縮小段で、最後の段が1x1です。
+        [[nodiscard]] std::uint32_t OffscreenLuminanceLevelCount(
+            const RenderTarget& target) const;
+        // current color（level 0）または前段を読める状態で指定段を深度無しの
+        // 描画先へbindし、読み取り用のviewを返します。測定後は
+        // BindOffscreenTargetで通常の描画先へ戻します。
+        [[nodiscard]] GraphicsViewHandle BeginOffscreenLuminancePass(
+            RenderTarget& target,
+            std::uint32_t level);
+        // 自動露出を無効にしたとき、読み残した測定値を捨てます。
+        void DiscardOffscreenTargetLuminance(RenderTarget& target) noexcept;
 
     private:
         static constexpr std::size_t BackBufferCount = 2;

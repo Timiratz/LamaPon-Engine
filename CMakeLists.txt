@@ -347,6 +347,7 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Graphics/RenderTarget.cpp
     src/LamaPon/Graphics/RenderTarget.h
     src/LamaPon/Graphics/RenderTargetBackendState.h
+    src/LamaPon/Graphics/AutoExposureAdaptation.h
     src/LamaPon/Graphics/ScreenEffect.cpp
     src/LamaPon/Graphics/ScreenEffect.h
     src/LamaPon/Graphics/ShaderRenderState.cpp
@@ -1864,6 +1865,7 @@ install(
         PATTERN "GraphicsDeviceShaderState.h" EXCLUDE
         PATTERN "GraphicsDeviceState.h" EXCLUDE
         PATTERN "RenderTargetBackendState.h" EXCLUDE
+        PATTERN "AutoExposureAdaptation.h" EXCLUDE
         PATTERN "ClusteredLightsBackendState.h" EXCLUDE
         PATTERN "ShadowMapBackendState.h" EXCLUDE
 )

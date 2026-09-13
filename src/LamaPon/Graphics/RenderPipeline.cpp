@@ -154,9 +154,9 @@ namespace LamaPon
         if (graphics.ActiveRenderingApi()
             == RenderingApi::DirectX12Experimental)
         {
-            // D3D12は移植済みのBloom、トーンマップ、FXAAをD3D11と
-            // 同じ順で適用します。TAA・SSAO・自動露出など未移植の
-            // passは安全に無処理とします。
+            // D3D12は移植済みのBloom、自動露出、トーンマップ、FXAAを
+            // D3D11と同じ順で適用します。TAA・SSAOなど未移植のpassは
+            // 安全に無処理とします。
             const auto& settings = graphics.Settings();
             auto effectiveBloom = frame.bloom;
             effectiveBloom.enabled =
@@ -165,9 +165,19 @@ namespace LamaPon
             graphics.ApplyOffscreenTargetBloom(
                 target,
                 effectiveBloom);
+            auto effectiveAutoExposure = frame.autoExposure.settings;
+            effectiveAutoExposure.enabled =
+                effectiveAutoExposure.enabled
+                && settings.autoExposureEnabled;
+            auto effectiveColorGrading = frame.colorGrading;
+            effectiveColorGrading.autoExposureStops =
+                graphics.UpdateOffscreenTargetAutoExposure(
+                    target,
+                    effectiveAutoExposure,
+                    frame.autoExposure.deltaSeconds);
             graphics.ApplyOffscreenTargetToneMapping(
                 target,
-                frame.colorGrading);
+                effectiveColorGrading);
             if (settings.antiAliasingEnabled)
             {
                 graphics.ApplyOffscreenTargetFXAA(target);

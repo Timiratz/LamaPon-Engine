@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -1816,6 +1817,75 @@ namespace
             }
         }
     }
+
+    // 左半分を輝度2.0、右半分を0.125で塗ると、対数平均（幾何平均）は0.5に
+    // なり、keyValue 0.18の露出補正はlog2(0.18 / 0.5)段です。算術平均の
+    // 約1.06とは大きく変わるため、PSLuminanceと同じ対数平均で測れているかを
+    // 確かめられます。
+    void RequireD3D12AutoExposure()
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::
+                AllowD3D12ExperimentalBootstrap);
+
+        LamaPon::RenderTarget target;
+        graphics.ResizeOffscreenTarget(target, 64u, 32u);
+        LamaPon::AutoExposureSettings settings;
+        settings.enabled = true;
+        // 測定値は次フレーム以降に非同期で読むため、数フレーム描きます。
+        for (int frame{}; frame < 4; ++frame)
+        {
+            constexpr float clearColor[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+            graphics.BeginFrame(clearColor);
+            const auto primaryOutput = graphics.CaptureOutputState();
+            graphics.BeginOffscreenTarget(target, clearColor);
+            {
+                auto pass = graphics.BeginSpritePass();
+                DrawRectangle(
+                    pass,
+                    0.0f,
+                    0.0f,
+                    32.0f,
+                    32.0f,
+                    { 2.0f, 2.0f, 2.0f, 1.0f });
+                DrawRectangle(
+                    pass,
+                    32.0f,
+                    0.0f,
+                    32.0f,
+                    32.0f,
+                    { 0.125f, 0.125f, 0.125f, 1.0f });
+            }
+            static_cast<void>(graphics.UpdateOffscreenTargetAutoExposure(
+                target,
+                settings,
+                1.0f / 60.0f));
+            graphics.RestoreOutputState(*primaryOutput);
+            // 画面の読み出しでGPUの完了を待ち、次のフレームで測定値を
+            // 確実に読めるようにします。
+            std::uint32_t width{};
+            std::uint32_t height{};
+            static_cast<void>(graphics.CaptureBackBuffer(width, height));
+            graphics.EndFrame();
+        }
+
+        const float expected = std::log2(0.18f / 0.5f);
+        Require(
+            std::abs(target.AdaptedLuminance() - 0.5f) < 0.01f
+                && std::abs(target.AutoExposureStops() - expected) < 0.02f,
+            "DirectX 12 auto exposure did not follow the geometric mean "
+            "luminance (adapted "
+                + std::to_string(target.AdaptedLuminance())
+                + ", stops "
+                + std::to_string(target.AutoExposureStops())
+                + ")");
+    }
 }
 
 int main()
@@ -1847,6 +1917,7 @@ int main()
             LamaPon::RenderingApi::DirectX12Experimental,
             LamaPon::GraphicsStartupProfile::
                 AllowD3D12ExperimentalBootstrap);
+        RequireD3D12AutoExposure();
         RequireD3D12PrimitiveScene();
         RequireD3D12OffscreenTarget();
         RequireD3D12DirectionalShadows();

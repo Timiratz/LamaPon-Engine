@@ -8,10 +8,12 @@
 #include "LamaPon/Graphics/ShadowMap.h"
 #include "LamaPon/Graphics/ShadowMapBackendState.h"
 
+#include <DirectXPackedVector.h>
 #include <Windows.h>
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <iterator>
 #include <limits>
@@ -506,9 +508,41 @@ namespace
         bool cube{};
     };
 
+    // D3D11RenderTargetStateと同じく、明るさは1/4解像度で測り、以降は
+    // 2x2平均で1x1まで縮めます。最初の段から最後の1x1までの寸法です。
+    [[nodiscard]] std::vector<std::pair<std::uint32_t, std::uint32_t>>
+        LuminanceLevelSizes(
+            const std::uint32_t width,
+            const std::uint32_t height)
+    {
+        std::vector<std::pair<std::uint32_t, std::uint32_t>> sizes;
+        std::pair<std::uint32_t, std::uint32_t> size{
+            std::max(width / 4u, 1u),
+            std::max(height / 4u, 1u) };
+        sizes.push_back(size);
+        while (size.first > 1u || size.second > 1u)
+        {
+            size.first = std::max(size.first / 2u, 1u);
+            size.second = std::max(size.second / 2u, 1u);
+            sizes.push_back(size);
+        }
+        return sizes;
+    }
+
     struct D3D12RenderTargetState final
         : LamaPon::Detail::RenderTargetBackendState
     {
+        // 自動露出の測定段です。最後の段が1x1になります。
+        struct LuminanceLevel final
+        {
+            Microsoft::WRL::ComPtr<ID3D12Resource> texture;
+            LamaPon::GraphicsViewHandle view;
+            D3D12_RESOURCE_STATES state{
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE };
+            D3D12_VIEWPORT viewport{};
+            D3D12_RECT scissor{};
+        };
+
         ~D3D12RenderTargetState() noexcept override
         {
             if (resourceDomain != nullptr)
@@ -517,6 +551,37 @@ namespace
                     std::move(renderTargetHeap));
                 resourceDomain->RetireDescriptorHeap(
                     std::move(depthStencilHeap));
+                // 実行中のframeがまだ参照し得るため、viewを持たない深度や
+                // readback先も含めて、全資源をGPUの完了まで保持します。
+                const std::array<
+                    Microsoft::WRL::ComPtr<ID3D12Resource>*,
+                    8> resources{
+                        &color,
+                        &postColor,
+                        &displayColor,
+                        &colorHistory,
+                        &temporalHistory,
+                        &depth,
+                        &depthCopy,
+                        &luminanceReadback };
+                for (auto* const resource : resources)
+                {
+                    if (*resource != nullptr)
+                    {
+                        resourceDomain->Retire(
+                            std::move(*resource),
+                            std::nullopt);
+                    }
+                }
+                for (auto& level : luminanceLevels)
+                {
+                    if (level.texture != nullptr)
+                    {
+                        resourceDomain->Retire(
+                            std::move(level.texture),
+                            std::nullopt);
+                    }
+                }
             }
         }
 
@@ -530,6 +595,8 @@ namespace
                 && temporalHistory != nullptr
                 && depth != nullptr
                 && depthCopy != nullptr
+                && !luminanceLevels.empty()
+                && luminanceReadback != nullptr
                 && renderTargetHeap != nullptr
                 && depthStencilHeap != nullptr
                 && renderTargetDescriptorSize != 0u;
@@ -560,6 +627,11 @@ namespace
             D3D12_RESOURCE_STATE_DEPTH_WRITE };
         D3D12_RESOURCE_STATES depthCopyState{
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE };
+        std::vector<LuminanceLevel> luminanceLevels;
+        Microsoft::WRL::ComPtr<ID3D12Resource> luminanceReadback;
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT luminanceFootprint{};
+        // 最後の測定copyを含むframeのfence値です。0は読める値がありません。
+        std::uint64_t luminanceFenceValue{};
         std::uint32_t renderTargetDescriptorSize{};
         D3D12_VIEWPORT viewport{};
         D3D12_RECT scissor{};
@@ -2352,11 +2424,16 @@ namespace LamaPon
         pending->m_width = requestedWidth;
         pending->m_height = requestedHeight;
         pending->computeWritable = computeWritable;
+        const auto luminanceSizes = LuminanceLevelSizes(
+            requestedWidth,
+            requestedHeight);
 
         D3D12_DESCRIPTOR_HEAP_DESC renderTargetHeapDescription{};
         renderTargetHeapDescription.Type =
             D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-        renderTargetHeapDescription.NumDescriptors = 2u;
+        // current / post colorの2つと、自動露出の測定段ぶんです。
+        renderTargetHeapDescription.NumDescriptors =
+            2u + static_cast<UINT>(luminanceSizes.size());
         ThrowIfFailed(
             m_device->CreateDescriptorHeap(
                 &renderTargetHeapDescription,
@@ -2367,6 +2444,100 @@ namespace LamaPon
         pending->renderTargetDescriptorSize =
             m_device->GetDescriptorHandleIncrementSize(
                 D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+
+        // D3D11のGENERATE_MIPS付き輝度textureの代わりに、段ごとのRGBA16F
+        // textureを作ります。最後の1x1だけをreadback bufferへ写します。
+        const auto luminanceHeap = HeapProperties(D3D12_HEAP_TYPE_DEFAULT);
+        D3D12_CLEAR_VALUE luminanceClear{};
+        luminanceClear.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        D3D12_SHADER_RESOURCE_VIEW_DESC luminanceViewDescription{};
+        luminanceViewDescription.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        luminanceViewDescription.ViewDimension =
+            D3D12_SRV_DIMENSION_TEXTURE2D;
+        luminanceViewDescription.Shader4ComponentMapping =
+            D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        luminanceViewDescription.Texture2D.MipLevels = 1u;
+        D3D12_RESOURCE_DESC luminanceDescription{};
+        luminanceDescription.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        luminanceDescription.DepthOrArraySize = 1u;
+        luminanceDescription.MipLevels = 1u;
+        luminanceDescription.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        luminanceDescription.SampleDesc.Count = 1u;
+        luminanceDescription.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        luminanceDescription.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        pending->luminanceLevels.reserve(luminanceSizes.size());
+        for (std::size_t index{}; index < luminanceSizes.size(); ++index)
+        {
+            const auto [levelWidth, levelHeight] = luminanceSizes[index];
+            luminanceDescription.Width = levelWidth;
+            luminanceDescription.Height = levelHeight;
+            D3D12RenderTargetState::LuminanceLevel level;
+            ThrowIfFailed(
+                m_device->CreateCommittedResource(
+                    &luminanceHeap,
+                    D3D12_HEAP_FLAG_NONE,
+                    &luminanceDescription,
+                    level.state,
+                    &luminanceClear,
+                    IID_PPV_ARGS(level.texture.ReleaseAndGetAddressOf())),
+                "ID3D12Device::CreateCommittedResource(luminance)",
+                m_device.Get());
+            m_device->CreateRenderTargetView(
+                level.texture.Get(),
+                nullptr,
+                OffsetDescriptor(
+                    pending->renderTargetHeap
+                        ->GetCPUDescriptorHandleForHeapStart(),
+                    2u + static_cast<std::uint32_t>(index),
+                    pending->renderTargetDescriptorSize));
+            level.view = CreateTextureView(
+                m_device.Get(),
+                m_resourceDomain,
+                level.texture,
+                luminanceViewDescription,
+                levelWidth,
+                levelHeight,
+                GraphicsTextureFormat::Rgba16Float);
+            level.viewport = {
+                0.0f,
+                0.0f,
+                static_cast<float>(levelWidth),
+                static_cast<float>(levelHeight),
+                0.0f,
+                1.0f };
+            level.scissor = {
+                0,
+                0,
+                static_cast<LONG>(levelWidth),
+                static_cast<LONG>(levelHeight) };
+            pending->luminanceLevels.push_back(std::move(level));
+        }
+        auto readbackSource = luminanceDescription;
+        readbackSource.Width = 1u;
+        readbackSource.Height = 1u;
+        UINT64 readbackBytes{};
+        m_device->GetCopyableFootprints(
+            &readbackSource,
+            0,
+            1,
+            0,
+            &pending->luminanceFootprint,
+            nullptr,
+            nullptr,
+            &readbackBytes);
+        const auto readbackHeap = HeapProperties(D3D12_HEAP_TYPE_READBACK);
+        const auto readbackDescription = BufferDescription(readbackBytes);
+        ThrowIfFailed(
+            m_device->CreateCommittedResource(
+                &readbackHeap,
+                D3D12_HEAP_FLAG_NONE,
+                &readbackDescription,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                nullptr,
+                IID_PPV_ARGS(
+                    pending->luminanceReadback.ReleaseAndGetAddressOf())),
+            "ID3D12Device::CreateCommittedResource(luminance readback)",
+            m_device.Get());
 
         D3D12_DESCRIPTOR_HEAP_DESC depthHeapDescription{};
         depthHeapDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
@@ -3073,15 +3244,221 @@ namespace LamaPon
         }
     }
 
-    std::optional<float>
-        D3D12Backend::TryReadOffscreenTargetLuminance(RenderTarget&)
+    std::uint32_t D3D12Backend::OffscreenLuminanceLevelCount(
+        const RenderTarget& target) const
     {
-        ThrowUnsupported("TryReadOffscreenTargetLuminance");
+        const auto* const state = dynamic_cast<
+            const D3D12RenderTargetState*>(
+                Detail::RenderTargetBackendAccess::Get(target));
+        if (state == nullptr
+            || !state->HasNativeResources()
+            || state->resourceDomain.get() != m_resourceDomain.get())
+        {
+            throw std::invalid_argument(
+                "OffscreenLuminanceLevelCount requires a target owned by "
+                "this D3D12 backend generation.");
+        }
+        return static_cast<std::uint32_t>(state->luminanceLevels.size());
     }
 
-    void D3D12Backend::CaptureOffscreenTargetLuminance(RenderTarget&)
+    GraphicsViewHandle D3D12Backend::BeginOffscreenLuminancePass(
+        RenderTarget& target,
+        const std::uint32_t level)
     {
-        ThrowUnsupported("CaptureOffscreenTargetLuminance");
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "BeginOffscreenLuminancePass requires an initialized D3D12 "
+                "backend.");
+        }
+        auto* const state = dynamic_cast<D3D12RenderTargetState*>(
+            Detail::RenderTargetBackendAccess::Get(target));
+        if (state == nullptr
+            || !state->HasNativeResources()
+            || state->resourceDomain.get() != m_resourceDomain.get()
+            || level >= state->luminanceLevels.size()
+            || !IsViewCurrent(state->m_currentColorView))
+        {
+            throw std::invalid_argument(
+                "BeginOffscreenLuminancePass requires a target owned by "
+                "this D3D12 backend generation.");
+        }
+        OpenCommandList();
+        m_commandList->OMSetRenderTargets(
+            0,
+            nullptr,
+            FALSE,
+            nullptr);
+        auto& destination = state->luminanceLevels[level];
+        GraphicsViewHandle source;
+        if (level == 0u)
+        {
+            TransitionResource(
+                m_commandList.Get(),
+                state->color.Get(),
+                state->colorState,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            source = state->m_currentColorView;
+        }
+        else
+        {
+            auto& previous = state->luminanceLevels[level - 1u];
+            TransitionResource(
+                m_commandList.Get(),
+                previous.texture.Get(),
+                previous.state,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            source = previous.view;
+        }
+        TransitionResource(
+            m_commandList.Get(),
+            destination.texture.Get(),
+            destination.state,
+            D3D12_RESOURCE_STATE_RENDER_TARGET);
+        const auto renderTarget = OffsetDescriptor(
+            state->renderTargetHeap->GetCPUDescriptorHandleForHeapStart(),
+            2u + level,
+            state->renderTargetDescriptorSize);
+        // 縮小段は深度bufferと寸法が違うため、DSVはbindしません。
+        m_commandList->OMSetRenderTargets(
+            1,
+            &renderTarget,
+            FALSE,
+            nullptr);
+        m_commandList->RSSetViewports(1, &destination.viewport);
+        m_commandList->RSSetScissorRects(1, &destination.scissor);
+        m_activeViewport = destination.viewport;
+        m_activeScissorRect = destination.scissor;
+        m_activeColorFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        m_activeDepthFormat = DXGI_FORMAT_UNKNOWN;
+        m_activeOffscreenTarget = &target;
+        m_activeOffscreenDepthOnly = false;
+        return source;
+    }
+
+    void D3D12Backend::DiscardOffscreenTargetLuminance(
+        RenderTarget& target) noexcept
+    {
+        if (auto* const state = dynamic_cast<D3D12RenderTargetState*>(
+                Detail::RenderTargetBackendAccess::Get(target)))
+        {
+            state->luminanceFenceValue = 0u;
+        }
+    }
+
+    std::optional<float>
+        D3D12Backend::TryReadOffscreenTargetLuminance(RenderTarget& target)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "TryReadOffscreenTargetLuminance requires an initialized "
+                "D3D12 backend.");
+        }
+        auto* const state = dynamic_cast<D3D12RenderTargetState*>(
+            Detail::RenderTargetBackendAccess::Get(target));
+        if (state == nullptr
+            || !state->HasNativeResources()
+            || state->resourceDomain.get() != m_resourceDomain.get())
+        {
+            throw std::invalid_argument(
+                "TryReadOffscreenTargetLuminance requires a target owned "
+                "by this D3D12 backend generation.");
+        }
+        // D3D11のMAP_FLAG_DO_NOT_WAITと同じく、copyを含むframeがGPUで
+        // 終わっていなければ待たずにnulloptを返します。
+        const std::uint64_t completedValue = m_fence->GetCompletedValue();
+        if (state->luminanceFenceValue == 0u
+            || completedValue == std::numeric_limits<std::uint64_t>::max()
+            || completedValue < state->luminanceFenceValue)
+        {
+            return std::nullopt;
+        }
+
+        const auto offset =
+            static_cast<SIZE_T>(state->luminanceFootprint.Offset);
+        void* mapped{};
+        const D3D12_RANGE readRange{
+            offset,
+            offset + sizeof(DirectX::PackedVector::HALF) };
+        ThrowIfFailed(
+            state->luminanceReadback->Map(0, &readRange, &mapped),
+            "ID3D12Resource::Map(luminance readback)",
+            m_device.Get());
+        DirectX::PackedVector::HALF averageLogLuminance{};
+        std::memcpy(
+            &averageLogLuminance,
+            static_cast<const std::uint8_t*>(mapped) + offset,
+            sizeof(averageLogLuminance));
+        const D3D12_RANGE noWrite{};
+        state->luminanceReadback->Unmap(0, &noWrite);
+        // 輝度shaderは対数平均を格納するため、Backendの共通契約へ渡す前に
+        // 線形空間へ戻します。
+        return std::exp(
+            DirectX::PackedVector::XMConvertHalfToFloat(
+                averageLogLuminance));
+    }
+
+    void D3D12Backend::CaptureOffscreenTargetLuminance(RenderTarget& target)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "CaptureOffscreenTargetLuminance requires an initialized "
+                "D3D12 backend.");
+        }
+        auto* const state = dynamic_cast<D3D12RenderTargetState*>(
+            Detail::RenderTargetBackendAccess::Get(target));
+        if (state == nullptr
+            || !state->HasNativeResources()
+            || state->resourceDomain.get() != m_resourceDomain.get())
+        {
+            throw std::invalid_argument(
+                "CaptureOffscreenTargetLuminance requires a target owned "
+                "by this D3D12 backend generation.");
+        }
+        // 前回のcopyがまだGPUで終わっていなければ、同じbufferへ重ねて
+        // 書かずに読み出しを待ちます。GPUが遅れても毎回上書きして
+        // 永遠に読めない状態を避けるためです。
+        const std::uint64_t completedValue = m_fence->GetCompletedValue();
+        if (state->luminanceFenceValue != 0u
+            && (completedValue == std::numeric_limits<std::uint64_t>::max()
+                || completedValue < state->luminanceFenceValue))
+        {
+            return;
+        }
+
+        OpenCommandList();
+        // 最後の1x1だけを、次フレーム以降にCPUから読めるreadback bufferへ
+        // 写します。描画先のbindは変えません。
+        auto& last = state->luminanceLevels.back();
+        TransitionResource(
+            m_commandList.Get(),
+            last.texture.Get(),
+            last.state,
+            D3D12_RESOURCE_STATE_COPY_SOURCE);
+        D3D12_TEXTURE_COPY_LOCATION destination{};
+        destination.pResource = state->luminanceReadback.Get();
+        destination.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        destination.PlacedFootprint = state->luminanceFootprint;
+        D3D12_TEXTURE_COPY_LOCATION source{};
+        source.pResource = last.texture.Get();
+        source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        source.SubresourceIndex = 0;
+        m_commandList->CopyTextureRegion(
+            &destination,
+            0,
+            0,
+            0,
+            &source,
+            nullptr);
+        TransitionResource(
+            m_commandList.Get(),
+            last.texture.Get(),
+            last.state,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        // 記録中のcommandは、次に発行されるfence値より前に実行されます。
+        state->luminanceFenceValue = m_nextFenceValue;
     }
 
     void D3D12Backend::InitializeShadowMap(

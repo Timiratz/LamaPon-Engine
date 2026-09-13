@@ -75,6 +75,12 @@ namespace LamaPon::Detail
         void ApplyFXAA(
             RenderTarget& target,
             const GraphicsViewHandle& fallbackTexture);
+        // 自動露出用に、current colorの対数輝度を1/4解像度で書いてから
+        // 2x2平均で1x1まで縮めます。D3D11のPSLuminanceとGenerateMipsに
+        // 相当し、終了後はtargetの通常の描画先へ戻します。
+        void MeasureLuminance(
+            RenderTarget& target,
+            const GraphicsViewHandle& fallbackTexture);
 
     private:
         // quadを塗るpixel shaderです。None以外は出力全体へ1枚を描く
@@ -85,7 +91,8 @@ namespace LamaPon::Detail
             None,
             ToneMap,
             Bloom,
-            Fxaa
+            Fxaa,
+            Luminance
         };
 
         struct Vertex final
@@ -126,6 +133,7 @@ namespace LamaPon::Detail
             SpriteBlendMode blend,
             bool scissored,
             DXGI_FORMAT colorFormat,
+            DXGI_FORMAT depthFormat,
             FullscreenProgram program);
 
         D3D12Backend* m_backend{};
@@ -135,9 +143,10 @@ namespace LamaPon::Detail
         Microsoft::WRL::ComPtr<ID3DBlob> m_toneMapPixelShader;
         Microsoft::WRL::ComPtr<ID3DBlob> m_bloomPixelShader;
         Microsoft::WRL::ComPtr<ID3DBlob> m_fxaaPixelShader;
-        // pixel shader、出力format、blend modeごとに、通常passとscissor
-        // passのcull違いを持ちます。
-        std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 64>
+        Microsoft::WRL::ComPtr<ID3DBlob> m_luminancePixelShader;
+        // pixel shader、深度format、出力format、blend modeごとに、通常pass
+        // とscissor passのcull違いを持ちます。
+        std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 160>
             m_pipelineStates;
         Microsoft::WRL::ComPtr<ID3D12Resource> m_indexBuffer;
         GraphicsViewHandle m_fallbackTexture;

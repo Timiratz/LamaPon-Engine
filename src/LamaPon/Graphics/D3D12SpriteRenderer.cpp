@@ -246,6 +246,35 @@ float4 FxaaPixelShader(PixelInput input) : SV_Target
             : second,
         1.0f);
 }
+
+// LamaPonEnvironment.hlslのPSLuminanceと同じく、1/4解像度の1画素が覆う
+// 4x4を4回のbilinearで平均し、対数輝度を書きます。以降の段で平均すると
+// 幾何平均輝度になります。PassPrimary.xy=1/出力サイズ。
+float4 LuminancePixelShader(PixelInput input) : SV_Target
+{
+    const float2 uv = input.textureCoordinate;
+    // 1/4解像度の1テクセルの1/4＝フル解像度の1テクセルぶん。
+    const float2 offset = PassPrimary.xy * 0.25f;
+    float3 total = float3(0.0f, 0.0f, 0.0f);
+    total += SpriteTexture.SampleLevel(
+        SpriteSampler,
+        uv + float2(-offset.x, -offset.y),
+        0.0f).rgb;
+    total += SpriteTexture.SampleLevel(
+        SpriteSampler,
+        uv + float2(offset.x, -offset.y),
+        0.0f).rgb;
+    total += SpriteTexture.SampleLevel(
+        SpriteSampler,
+        uv + float2(-offset.x, offset.y),
+        0.0f).rgb;
+    total += SpriteTexture.SampleLevel(
+        SpriteSampler,
+        uv + float2(offset.x, offset.y),
+        0.0f).rgb;
+    const float average = Luminance(max(total * 0.25f, 0.0f));
+    return log(max(average, 1e-4f)).xxxx;
+}
 )";
 
     void ThrowIfFailed(
@@ -486,6 +515,9 @@ namespace LamaPon::Detail
             "ps_5_0");
         m_fxaaPixelShader = CompileSpriteShader(
             "FxaaPixelShader",
+            "ps_5_0");
+        m_luminancePixelShader = CompileSpriteShader(
+            "LuminancePixelShader",
             "ps_5_0");
 
         D3D12_DESCRIPTOR_RANGE textureRange{};
@@ -934,6 +966,47 @@ namespace LamaPon::Detail
             { texel[0], texel[1], 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f });
     }
 
+    void D3D12SpriteRenderer::MeasureLuminance(
+        RenderTarget& target,
+        const GraphicsViewHandle& fallbackTexture)
+    {
+        const auto levelCount =
+            m_backend->OffscreenLuminanceLevelCount(target);
+        try
+        {
+            for (std::uint32_t level{}; level < levelCount; ++level)
+            {
+                const auto source =
+                    m_backend->BeginOffscreenLuminancePass(target, level);
+                const auto& viewport = m_backend->ActiveViewport();
+                // 1段目はPSLuminance、以降はGenerateMipsと同じく前段の
+                // 2x2をbilinear 1回で平均します。
+                DrawFullscreen(
+                    source,
+                    fallbackTexture,
+                    level == 0u
+                        ? FullscreenProgram::Luminance
+                        : FullscreenProgram::None,
+                    {
+                        1.0f / viewport.Width,
+                        1.0f / viewport.Height,
+                        0.0f,
+                        0.0f,
+                        0.0f,
+                        0.0f,
+                        0.0f,
+                        0.0f
+                    });
+            }
+        }
+        catch (...)
+        {
+            m_backend->AbortOffscreenPostProcess(target);
+            throw;
+        }
+        m_backend->BindOffscreenTarget(target);
+    }
+
     void D3D12SpriteRenderer::ApplyPostProcessPass(
         RenderTarget& target,
         const GraphicsViewHandle& fallbackTexture,
@@ -1068,6 +1141,7 @@ namespace LamaPon::Detail
             m_blend,
             !m_scissorStack.empty(),
             m_backend->ActiveColorFormat(),
+            m_backend->ActiveDepthFormat(),
             m_program);
 
         const auto upload = m_backend->AllocateFrameUpload(
@@ -1162,6 +1236,7 @@ namespace LamaPon::Detail
         const SpriteBlendMode blend,
         const bool scissored,
         const DXGI_FORMAT colorFormat,
+        const DXGI_FORMAT depthFormat,
         const FullscreenProgram program)
     {
         const auto blendIndex = static_cast<std::size_t>(blend);
@@ -1170,7 +1245,7 @@ namespace LamaPon::Detail
             throw std::invalid_argument(
                 "The sprite blend mode is invalid.");
         }
-        if (program > FullscreenProgram::Fxaa)
+        if (program > FullscreenProgram::Luminance)
         {
             throw std::invalid_argument(
                 "The sprite pixel program is invalid.");
@@ -1183,8 +1258,19 @@ namespace LamaPon::Detail
                 : throw std::invalid_argument(
                     "The active DirectX 12 sprite target format is "
                     "unsupported.");
+        // 自動露出の縮小段は深度bufferを持たないため、DSV無しのPSOを
+        // 別に作ります。
+        const std::size_t depthIndex = depthFormat
+                == D3D12Backend::PrimaryDepthFormat
+            ? 0u
+            : depthFormat == DXGI_FORMAT_UNKNOWN
+                ? 1u
+                : throw std::invalid_argument(
+                    "The active DirectX 12 sprite depth format is "
+                    "unsupported.");
         auto& pipeline = m_pipelineStates[
-            static_cast<std::size_t>(program) * 16u
+            static_cast<std::size_t>(program) * 32u
+            + depthIndex * 16u
             + formatIndex * 8u
             + blendIndex * 2u
             + (scissored ? 1u : 0u)];
@@ -1236,6 +1322,9 @@ namespace LamaPon::Detail
         case FullscreenProgram::Fxaa:
             pixelShader = m_fxaaPixelShader.Get();
             break;
+        case FullscreenProgram::Luminance:
+            pixelShader = m_luminancePixelShader.Get();
+            break;
         case FullscreenProgram::None:
             break;
         }
@@ -1263,7 +1352,7 @@ namespace LamaPon::Detail
         // Primary outputには深度bufferもbindされるため、深度testを使わない
         // Spriteでもformatだけは一致させます。
         description.RTVFormats[0] = colorFormat;
-        description.DSVFormat = D3D12Backend::PrimaryDepthFormat;
+        description.DSVFormat = depthFormat;
         description.SampleDesc.Count = 1;
         ThrowIfFailed(
             m_backend->Device()->CreateGraphicsPipelineState(
