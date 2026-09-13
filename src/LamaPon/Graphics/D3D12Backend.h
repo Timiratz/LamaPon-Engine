@@ -259,6 +259,24 @@ namespace LamaPon
         // 外へ出しません。
         void EndOffscreenAmbientOcclusion(RenderTarget& target);
         void AbortOffscreenAmbientOcclusion(RenderTarget& target) noexcept;
+        // SSRのHi-Z深度ピラミッドを作るpassです。mip 0は深度コピーを、
+        // 以降は1段細かいミップを読める状態で指定ミップを深度無しの
+        // 描画先にし、t0へ渡す読み取り用viewを返します。
+        [[nodiscard]] GraphicsViewHandle BeginOffscreenReflectionDepthPass(
+            RenderTarget& target,
+            std::uint32_t mip);
+        // 全ミップをshaderから読めるstateへ戻し、depthOnlyに応じて深度専用
+        // またはカラーの描画先を再bindします。Abortは失敗後の復元で、例外を
+        // 外へ出しません。
+        void EndOffscreenReflectionDepthPyramid(
+            RenderTarget& target,
+            bool depthOnly);
+        void AbortOffscreenReflectionDepthPyramid(
+            RenderTarget& target,
+            bool depthOnly) noexcept;
+        // targetが深度プリパスなどの深度専用描画先としてbindされているかです。
+        [[nodiscard]] bool IsOffscreenTargetBoundDepthOnly(
+            const RenderTarget& target) const noexcept;
 
     private:
         static constexpr std::size_t BackBufferCount = 2;

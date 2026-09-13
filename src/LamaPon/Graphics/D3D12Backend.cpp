@@ -561,7 +561,7 @@ namespace
                 // readback先も含めて、全資源をGPUの完了まで保持します。
                 const std::array<
                     Microsoft::WRL::ComPtr<ID3D12Resource>*,
-                    10> resources{
+                    11> resources{
                         &color,
                         &postColor,
                         &displayColor,
@@ -571,6 +571,7 @@ namespace
                         &depthCopy,
                         &occlusion,
                         &occlusionBlur,
+                        &reflectionDepthPyramid,
                         &luminanceReadback };
                 for (auto* const resource : resources)
                 {
@@ -605,6 +606,7 @@ namespace
                 && depthCopy != nullptr
                 && occlusion != nullptr
                 && occlusionBlur != nullptr
+                && reflectionDepthPyramid != nullptr
                 && !luminanceLevels.empty()
                 && luminanceReadback != nullptr
                 && renderTargetHeap != nullptr
@@ -649,6 +651,15 @@ namespace
         LamaPon::GraphicsViewHandle occlusionView;
         D3D12_VIEWPORT occlusionViewport{};
         D3D12_RECT occlusionScissor{};
+        // SSRのHi-Z深度ピラミッド（R32F、全ミップ）です。全ミップのviewは
+        // m_reflectionDepthPyramidViewHandleで公開し、ミップ単位のviewと
+        // stateは縮小passが1段細かいミップを読むために持ちます。
+        Microsoft::WRL::ComPtr<ID3D12Resource> reflectionDepthPyramid;
+        std::vector<D3D12_RESOURCE_STATES> reflectionDepthPyramidStates;
+        std::vector<LamaPon::GraphicsViewHandle>
+            reflectionDepthPyramidMipViews;
+        std::vector<D3D12_VIEWPORT> reflectionDepthPyramidViewports;
+        std::uint32_t reflectionDepthPyramidRenderTargetSlot{};
         std::vector<LuminanceLevel> luminanceLevels;
         Microsoft::WRL::ComPtr<ID3D12Resource> luminanceReadback;
         D3D12_PLACED_SUBRESOURCE_FOOTPRINT luminanceFootprint{};
@@ -757,6 +768,29 @@ namespace
         barrier.Transition.pResource = resource;
         barrier.Transition.Subresource =
             D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        barrier.Transition.StateBefore = currentState;
+        barrier.Transition.StateAfter = requiredState;
+        commandList->ResourceBarrier(1, &barrier);
+        currentState = requiredState;
+    }
+
+    // Hi-Z深度ピラミッドのように、ミップごとに読み書きを切り替える資源の
+    // 1 subresourceだけを遷移させます。
+    void TransitionSubresource(
+        ID3D12GraphicsCommandList* const commandList,
+        ID3D12Resource* const resource,
+        const UINT subresource,
+        D3D12_RESOURCE_STATES& currentState,
+        const D3D12_RESOURCE_STATES requiredState)
+    {
+        if (currentState == requiredState)
+        {
+            return;
+        }
+        D3D12_RESOURCE_BARRIER barrier{};
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Transition.pResource = resource;
+        barrier.Transition.Subresource = subresource;
         barrier.Transition.StateBefore = currentState;
         barrier.Transition.StateAfter = requiredState;
         commandList->ResourceBarrier(1, &barrier);
@@ -2434,7 +2468,9 @@ namespace LamaPon
             && IsViewCurrent(existing->m_temporalHistoryView)
             && IsViewCurrent(existing->m_depthView)
             && IsViewCurrent(existing->occlusionView)
-            && IsViewCurrent(existing->m_ambientOcclusionView))
+            && IsViewCurrent(existing->m_ambientOcclusionView)
+            && IsViewCurrent(
+                existing->m_reflectionDepthPyramidViewHandle))
         {
             return;
         }
@@ -2451,15 +2487,27 @@ namespace LamaPon
         const auto luminanceSizes = LuminanceLevelSizes(
             requestedWidth,
             requestedHeight);
+        // D3D11RenderTargetStateと同じく、SSRのHi-Z深度ピラミッドは
+        // 長辺が1になるまでの全ミップを持ちます。
+        std::uint32_t reflectionMipCount = 1u;
+        for (std::uint32_t size = std::max(requestedWidth, requestedHeight);
+            size > 1u;
+            size >>= 1u)
+        {
+            ++reflectionMipCount;
+        }
+        pending->reflectionDepthPyramidRenderTargetSlot =
+            D3D12RenderTargetState::LuminanceRenderTargetSlot
+            + static_cast<std::uint32_t>(luminanceSizes.size());
 
         D3D12_DESCRIPTOR_HEAP_DESC renderTargetHeapDescription{};
         renderTargetHeapDescription.Type =
             D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-        // current / post color、SSAOの遮蔽とブラー先、自動露出の測定段
-        // ぶんです。
+        // current / post color、SSAOの遮蔽とブラー先、自動露出の測定段、
+        // Hi-Z深度ピラミッドの各ミップぶんです。
         renderTargetHeapDescription.NumDescriptors =
-            D3D12RenderTargetState::LuminanceRenderTargetSlot
-            + static_cast<UINT>(luminanceSizes.size());
+            pending->reflectionDepthPyramidRenderTargetSlot
+            + reflectionMipCount;
         ThrowIfFailed(
             m_device->CreateDescriptorHeap(
                 &renderTargetHeapDescription,
@@ -2833,6 +2881,86 @@ namespace LamaPon
             0,
             static_cast<LONG>(occlusionWidth),
             static_cast<LONG>(occlusionHeight) };
+
+        // SSRのHi-Z深度ピラミッドです。各ミップをRTVとして書き、1段粗い
+        // ミップを作る縮小passが単一ミップのSRVで読みます。
+        auto reflectionDescription = colorDescription;
+        reflectionDescription.MipLevels =
+            static_cast<UINT16>(reflectionMipCount);
+        reflectionDescription.Format = DXGI_FORMAT_R32_FLOAT;
+        D3D12_CLEAR_VALUE reflectionClear{};
+        reflectionClear.Format = reflectionDescription.Format;
+        ThrowIfFailed(
+            m_device->CreateCommittedResource(
+                &defaultHeap,
+                D3D12_HEAP_FLAG_NONE,
+                &reflectionDescription,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                &reflectionClear,
+                IID_PPV_ARGS(
+                    pending->reflectionDepthPyramid
+                        .ReleaseAndGetAddressOf())),
+            "ID3D12Device::CreateCommittedResource(hi-z pyramid)",
+            m_device.Get());
+        D3D12_SHADER_RESOURCE_VIEW_DESC reflectionViewDescription{};
+        reflectionViewDescription.Format = DXGI_FORMAT_R32_FLOAT;
+        reflectionViewDescription.ViewDimension =
+            D3D12_SRV_DIMENSION_TEXTURE2D;
+        reflectionViewDescription.Shader4ComponentMapping =
+            D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        reflectionViewDescription.Texture2D.MipLevels = reflectionMipCount;
+        // 公開formatにR32Fが無いため、浮動小数のRgba16Floatとして
+        // 扱います。shaderはnative formatのRだけを読みます。
+        pending->m_reflectionDepthPyramidViewHandle = CreateTextureView(
+            m_device.Get(),
+            m_resourceDomain,
+            pending->reflectionDepthPyramid,
+            reflectionViewDescription,
+            requestedWidth,
+            requestedHeight,
+            GraphicsTextureFormat::Rgba16Float);
+        pending->reflectionDepthPyramidStates.assign(
+            reflectionMipCount,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        pending->reflectionDepthPyramidMipViews.reserve(reflectionMipCount);
+        pending->reflectionDepthPyramidViewports.reserve(reflectionMipCount);
+        for (std::uint32_t mip{}; mip < reflectionMipCount; ++mip)
+        {
+            const auto mipWidth = std::max(requestedWidth >> mip, 1u);
+            const auto mipHeight = std::max(requestedHeight >> mip, 1u);
+            D3D12_RENDER_TARGET_VIEW_DESC mipTargetDescription{};
+            mipTargetDescription.Format = DXGI_FORMAT_R32_FLOAT;
+            mipTargetDescription.ViewDimension =
+                D3D12_RTV_DIMENSION_TEXTURE2D;
+            mipTargetDescription.Texture2D.MipSlice = mip;
+            m_device->CreateRenderTargetView(
+                pending->reflectionDepthPyramid.Get(),
+                &mipTargetDescription,
+                OffsetDescriptor(
+                    renderTargetStart,
+                    pending->reflectionDepthPyramidRenderTargetSlot + mip,
+                    pending->renderTargetDescriptorSize));
+            auto mipViewDescription = reflectionViewDescription;
+            mipViewDescription.Texture2D.MostDetailedMip = mip;
+            mipViewDescription.Texture2D.MipLevels = 1u;
+            pending->reflectionDepthPyramidMipViews.push_back(
+                CreateTextureView(
+                    m_device.Get(),
+                    m_resourceDomain,
+                    pending->reflectionDepthPyramid,
+                    mipViewDescription,
+                    mipWidth,
+                    mipHeight,
+                    GraphicsTextureFormat::Rgba16Float));
+            pending->reflectionDepthPyramidViewports.push_back({
+                0.0f,
+                0.0f,
+                static_cast<float>(mipWidth),
+                static_cast<float>(mipHeight),
+                0.0f,
+                1.0f });
+        }
+        pending->m_reflectionDepthPyramidMipCount = reflectionMipCount;
         pending->viewport = {
             0.0f,
             0.0f,
@@ -3564,6 +3692,159 @@ namespace LamaPon
         {
             // 元の例外を呼び出し側へ返すため、復元の失敗はここで止めます。
         }
+    }
+
+    GraphicsViewHandle D3D12Backend::BeginOffscreenReflectionDepthPass(
+        RenderTarget& target,
+        const std::uint32_t mip)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "BeginOffscreenReflectionDepthPass requires an initialized "
+                "D3D12 backend.");
+        }
+        auto* const state = dynamic_cast<D3D12RenderTargetState*>(
+            Detail::RenderTargetBackendAccess::Get(target));
+        if (state == nullptr
+            || !state->HasNativeResources()
+            || state->resourceDomain.get() != m_resourceDomain.get()
+            || mip >= state->reflectionDepthPyramidMipViews.size()
+            || !IsViewCurrent(state->m_depthView)
+            || !IsViewCurrent(state->m_reflectionDepthPyramidViewHandle))
+        {
+            throw std::invalid_argument(
+                "BeginOffscreenReflectionDepthPass requires a target owned "
+                "by this D3D12 backend generation.");
+        }
+        OpenCommandList();
+        m_commandList->OMSetRenderTargets(
+            0,
+            nullptr,
+            FALSE,
+            nullptr);
+        GraphicsViewHandle source;
+        if (mip == 0u)
+        {
+            // DSVの本体ではなく、CaptureOffscreenTargetDepthで確定した
+            // 深度コピーを距離へ直します。
+            TransitionResource(
+                m_commandList.Get(),
+                state->depthCopy.Get(),
+                state->depthCopyState,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            source = state->m_depthView;
+        }
+        else
+        {
+            TransitionSubresource(
+                m_commandList.Get(),
+                state->reflectionDepthPyramid.Get(),
+                mip - 1u,
+                state->reflectionDepthPyramidStates[mip - 1u],
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            source = state->reflectionDepthPyramidMipViews[mip - 1u];
+        }
+        TransitionSubresource(
+            m_commandList.Get(),
+            state->reflectionDepthPyramid.Get(),
+            mip,
+            state->reflectionDepthPyramidStates[mip],
+            D3D12_RESOURCE_STATE_RENDER_TARGET);
+        const auto renderTarget = OffsetDescriptor(
+            state->renderTargetHeap->GetCPUDescriptorHandleForHeapStart(),
+            state->reflectionDepthPyramidRenderTargetSlot + mip,
+            state->renderTargetDescriptorSize);
+        // 縮小段は深度bufferと寸法が違うため、DSVはbindしません。
+        m_commandList->OMSetRenderTargets(
+            1,
+            &renderTarget,
+            FALSE,
+            nullptr);
+        const auto& viewport = state->reflectionDepthPyramidViewports[mip];
+        const D3D12_RECT scissor{
+            0,
+            0,
+            static_cast<LONG>(viewport.Width),
+            static_cast<LONG>(viewport.Height) };
+        m_commandList->RSSetViewports(1, &viewport);
+        m_commandList->RSSetScissorRects(1, &scissor);
+        m_activeViewport = viewport;
+        m_activeScissorRect = scissor;
+        m_activeColorFormat = DXGI_FORMAT_R32_FLOAT;
+        m_activeDepthFormat = DXGI_FORMAT_UNKNOWN;
+        m_activeOffscreenTarget = &target;
+        m_activeOffscreenDepthOnly = false;
+        return source;
+    }
+
+    void D3D12Backend::EndOffscreenReflectionDepthPyramid(
+        RenderTarget& target,
+        const bool depthOnly)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "EndOffscreenReflectionDepthPyramid requires an initialized "
+                "D3D12 backend.");
+        }
+        auto* const state = dynamic_cast<D3D12RenderTargetState*>(
+            Detail::RenderTargetBackendAccess::Get(target));
+        if (state == nullptr
+            || !state->HasNativeResources()
+            || state->resourceDomain.get() != m_resourceDomain.get())
+        {
+            throw std::invalid_argument(
+                "EndOffscreenReflectionDepthPyramid requires a target owned "
+                "by this D3D12 backend generation.");
+        }
+        OpenCommandList();
+        m_commandList->OMSetRenderTargets(
+            0,
+            nullptr,
+            FALSE,
+            nullptr);
+        // Lit描画がLoadで全ミップを読むため、全ミップをSRV stateへ戻します。
+        for (std::size_t mip{};
+            mip < state->reflectionDepthPyramidStates.size();
+            ++mip)
+        {
+            TransitionSubresource(
+                m_commandList.Get(),
+                state->reflectionDepthPyramid.Get(),
+                static_cast<UINT>(mip),
+                state->reflectionDepthPyramidStates[mip],
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        }
+        if (depthOnly)
+        {
+            BindOffscreenTargetDepthOnly(target);
+        }
+        else
+        {
+            BindOffscreenTarget(target);
+        }
+    }
+
+    void D3D12Backend::AbortOffscreenReflectionDepthPyramid(
+        RenderTarget& target,
+        const bool depthOnly) noexcept
+    {
+        try
+        {
+            EndOffscreenReflectionDepthPyramid(target, depthOnly);
+        }
+        catch (...)
+        {
+            // 元の例外を呼び出し側へ返すため、復元の失敗はここで止めます。
+        }
+    }
+
+    bool D3D12Backend::IsOffscreenTargetBoundDepthOnly(
+        const RenderTarget& target) const noexcept
+    {
+        return m_activeOffscreenTarget == &target
+            && m_activeOffscreenDepthOnly;
     }
 
     void D3D12Backend::DiscardOffscreenTargetLuminance(

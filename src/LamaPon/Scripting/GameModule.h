@@ -13,10 +13,10 @@ namespace LamaPon
     // Game ModuleとRuntimeのABIを識別します。公開構造体のレイアウトや
     // 公開関数のシグネチャを変更した場合は、この値も更新してください。
     // GameModuleHostは完全一致を要求し、互換性のないDLLを読み込みません。
-    // API 69ではD3D12のSSAOを基本3D描画へ渡すため、公開されている
-    // PrimitiveDrawRequestへ画面遮蔽入力を追加しました。ゲーム用DLLの
-    // 再ビルドが必要です。
-    inline constexpr std::uint32_t GameModuleApiVersion = 69;
+    // API 70ではD3D12のSSRを基本3D描画へ渡すため、公開されている
+    // PrimitiveDrawRequestへ画面空間反射の入力を追加しました。ゲーム用
+    // DLLの再ビルドが必要です。
+    inline constexpr std::uint32_t GameModuleApiVersion = 70;
 
     using NativeScriptCreateFunction = void* (*)(
         GameObject* owner,

@@ -25,7 +25,6 @@ namespace
     constexpr char PrimitiveShaderSource[] = R"(
 cbuffer PrimitiveConstants : register(b0)
 {
-    row_major float4x4 WorldViewProjection;
     row_major float4x4 World;
     float4 BaseColor;
     float4 CameraPosition;
@@ -57,6 +56,15 @@ cbuffer PrimitiveConstants : register(b0)
     float4 LocalShadowTexelSizes;
     // xy=1 / SSAO target size, z=enabled, w=reserved.
     float4 ScreenAmbientOcclusionParameters;
+    // 頂点変換とSSRのレイの投影に使うビュー射影です。
+    row_major float4x4 ViewProjection;
+    // SSR. x=strength, y=enabled, z=maximum distance, w=maximum steps.
+    float4 ScreenReflectionParameters;
+    // xy=1 / target size, zw=reserved.
+    float4 ScreenReflectionScreen;
+    // x=thickness, y=roughness cutoff, z=last Hi-Z mip, w=reserved.
+    float4 ScreenReflectionQuality;
+    row_major float4x4 ScreenReflectionPreviousViewProjection;
 };
 
 Texture2D AlbedoTexture : register(t0);
@@ -69,6 +77,9 @@ Texture2DArray<float> DirectionalShadowTexture : register(t6);
 Texture2DArray<float> SpotShadowTexture : register(t7);
 TextureCube<float> PointShadowTexture : register(t8);
 Texture2D ScreenAmbientOcclusionTexture : register(t9);
+// SSR. t10 is the previous HDR color, t11 the Hi-Z distance pyramid.
+Texture2D ScreenReflectionColorTexture : register(t10);
+Texture2D ScreenReflectionDepthTexture : register(t11);
 SamplerState AlbedoSampler : register(s0);
 SamplerComparisonState ShadowSampler : register(s1);
 
@@ -90,8 +101,12 @@ struct PixelInput
 PixelInput PrimitiveVertexShader(VertexInput input)
 {
     PixelInput output;
-    output.position = mul(float4(input.position, 1.0f), WorldViewProjection);
-    output.worldPosition = mul(float4(input.position, 1.0f), World).xyz;
+    // D3D11のLamaPonLit.hlslと同じく、Worldの後にViewProjectionを掛けます。
+    // 深度の丸めまで揃い、SSRのように自分の面と深度を比べる判定も
+    // D3D11と一致します。
+    const float4 worldPosition = mul(float4(input.position, 1.0f), World);
+    output.position = mul(worldPosition, ViewProjection);
+    output.worldPosition = worldPosition.xyz;
     output.normal = normalize(mul(float4(input.normal, 0.0f), World).xyz);
     output.textureCoordinate = input.textureCoordinate;
     return output;
@@ -316,6 +331,269 @@ float EvaluatePointShadow(
         saturate(PointShadowParameters.z));
 }
 
+// D3D11のLamaPonLit.hlslと同じSSRです。t11のHi-Z深度ピラミッドは
+// カメラからの距離を持ち、ミップNは2x2の最小値（最も手前）です。輪郭を
+// またいだ中間の距離を作らないよう、点で読みます。
+float ScreenReflectionSceneDistance(float2 uv)
+{
+    const float2 screenSize =
+        1.0f / max(ScreenReflectionScreen.xy, 1e-6f);
+    const int2 lastPixel = max(int2(screenSize) - 1, int2(0, 0));
+    const int2 pixel = clamp(
+        int2(saturate(uv) * screenSize),
+        int2(0, 0),
+        lastPixel);
+    return ScreenReflectionDepthTexture.Load(int3(pixel, 0)).r;
+}
+
+// 反射レイを画面空間のHi-Zトラバーサルで進め、当たった点の色を前
+// フレームのカラーから読みます。何も無い区画は出口まで飛んで粗い
+// ミップへ上がり、またぎそうなら細かいミップへ下ります。aは信頼度で、
+// 画面の縁、最大距離、カメラへ戻る反射、粗さの上限に近いほど0へ落とし、
+// 呼び出し側は環境光だけへ戻します。
+float4 EvaluateScreenSpaceReflection(
+    float3 worldPosition,
+    float3 reflection,
+    float3 viewDirection,
+    float roughness)
+{
+    if (ScreenReflectionParameters.y < 0.5f)
+    {
+        return 0.0f.xxxx;
+    }
+    const float roughnessCutoff = max(ScreenReflectionQuality.y, 0.0001f);
+    if (roughness >= roughnessCutoff)
+    {
+        return 0.0f.xxxx;
+    }
+
+    const float maximumDistance = max(ScreenReflectionParameters.z, 0.01f);
+    const float thickness = max(ScreenReflectionQuality.x, 0.001f);
+    // 設定のサンプル数は、Hi-Zの反復上限として働きます。
+    const int maximumSteps = clamp(
+        (int)ScreenReflectionParameters.w,
+        4,
+        128);
+
+    // レイの両端をクリップ空間へ移します。右手系の透視射影ではwが
+    // カメラからの距離です。
+    const float3 rayStart = worldPosition;
+    float3 rayEnd = worldPosition + reflection * maximumDistance;
+    float4 clipStart = mul(float4(rayStart, 1.0f), ViewProjection);
+    float4 clipEnd = mul(float4(rayEnd, 1.0f), ViewProjection);
+
+    // カメラより手前へ回った側は、射影が破綻する前に世界空間で詰めます。
+    const float nearW = 0.05f;
+    if (clipStart.w <= nearW)
+    {
+        return 0.0f.xxxx;
+    }
+    if (clipEnd.w <= nearW)
+    {
+        const float clipRatio =
+            (nearW - clipStart.w) / (clipEnd.w - clipStart.w);
+        rayEnd = lerp(rayStart, rayEnd, saturate(clipRatio));
+        clipEnd = mul(float4(rayEnd, 1.0f), ViewProjection);
+    }
+
+    const float2 startUv = float2(
+        clipStart.x / clipStart.w * 0.5f + 0.5f,
+        0.5f - clipStart.y / clipStart.w * 0.5f);
+    const float2 endUv = float2(
+        clipEnd.x / clipEnd.w * 0.5f + 0.5f,
+        0.5f - clipEnd.y / clipEnd.w * 0.5f);
+    const float2 deltaUv = endUv - startUv;
+
+    // 画面外には情報が無いので、レイを画面端で打ち切ります。
+    float limitAlpha = 1.0f;
+    [unroll]
+    for (int axis = 0; axis < 2; ++axis)
+    {
+        const float direction = axis == 0 ? deltaUv.x : deltaUv.y;
+        const float origin = axis == 0 ? startUv.x : startUv.y;
+        if (abs(direction) > 1e-6f)
+        {
+            const float exitAlpha = max(
+                (0.0f - origin) / direction,
+                (1.0f - origin) / direction);
+            if (exitAlpha > 0.0f)
+            {
+                limitAlpha = min(limitAlpha, exitAlpha);
+            }
+        }
+    }
+    limitAlpha = clamp(limitAlpha, 0.0f, 1.0f);
+
+    const float2 screenSize =
+        1.0f / max(ScreenReflectionScreen.xy, 1e-6f);
+    // 自己ヒットを避けるため、出発点を半画素ずらします。
+    const float2 pixelDelta = deltaUv * limitAlpha * screenSize;
+    const float pixelLength = max(
+        max(abs(pixelDelta.x), abs(pixelDelta.y)),
+        1.0f);
+    // 1/wは画面空間で線形なので、補間だけで距離を求めます。
+    const float inverseStartW = 1.0f / clipStart.w;
+    const float inverseEndW = 1.0f / clipEnd.w;
+    const int maximumLevel = max((int)ScreenReflectionQuality.z, 0);
+
+    float alpha = 0.5f * limitAlpha / pixelLength;
+    // 区画の辺の上で、丸めにより同じ区画を再訪し続けないための最小
+    // 前進量です。
+    const float alphaBias = limitAlpha * 1e-5f;
+    int level = 0;
+
+    [loop]
+    for (int iteration = 0; iteration < maximumSteps; ++iteration)
+    {
+        if (alpha >= limitAlpha)
+        {
+            break;
+        }
+        const float2 uv = startUv + deltaUv * alpha;
+        const float2 levelSize = max(
+            floor(screenSize / exp2((float)level)),
+            1.0f);
+        const float2 cell = floor(clamp(uv, 0.0f, 1.0f) * levelSize);
+        const float2 towardEdge = float2(
+            deltaUv.x >= 0.0f ? 1.0f : 0.0f,
+            deltaUv.y >= 0.0f ? 1.0f : 0.0f);
+        const float2 boundaryUv = (cell + towardEdge) / levelSize;
+        float2 boundaryAlpha = float2(1e9f, 1e9f);
+        if (abs(deltaUv.x) > 1e-8f)
+        {
+            boundaryAlpha.x = (boundaryUv.x - startUv.x) / deltaUv.x;
+        }
+        if (abs(deltaUv.y) > 1e-8f)
+        {
+            boundaryAlpha.y = (boundaryUv.y - startUv.y) / deltaUv.y;
+        }
+        const float exitAlpha = max(
+            min(boundaryAlpha.x, boundaryAlpha.y),
+            alpha + alphaBias);
+        const float clampedExitAlpha = min(exitAlpha, limitAlpha);
+
+        // この区画を通るあいだの、レイの距離の範囲です。
+        const float entryDistance = 1.0f / max(
+            lerp(inverseStartW, inverseEndW, alpha),
+            1e-6f);
+        const float exitDistance = 1.0f / max(
+            lerp(inverseStartW, inverseEndW, clampedExitAlpha),
+            1e-6f);
+        const float rayNear = min(entryDistance, exitDistance);
+        const float rayFar = max(entryDistance, exitDistance);
+        const float sceneDistance = ScreenReflectionDepthTexture.Load(
+            int3(int2(min(cell, levelSize - 1.0f)), level)).r;
+
+        if (rayFar <= sceneDistance)
+        {
+            // 区間全体が区画で最も手前の面より手前なので、出口まで
+            // 飛びます。面から2%以上離れたときだけ粗いミップへ上がります。
+            alpha = exitAlpha;
+            if (rayFar * 1.02f <= sceneDistance)
+            {
+                level = min(level + 1, maximumLevel);
+            }
+            continue;
+        }
+        if (level > 0)
+        {
+            // またぐかもしれないので、進まずに1段細かく見ます。
+            level = level - 1;
+            continue;
+        }
+
+        if (rayFar > sceneDistance
+            && rayNear < sceneDistance + thickness)
+        {
+            // 当たった区間を二分して詰め、反射の縞を防ぎます。
+            float nearAlpha = alpha;
+            float farAlpha = clampedExitAlpha;
+            [unroll]
+            for (int refine = 0; refine < 4; ++refine)
+            {
+                const float middleAlpha = (nearAlpha + farAlpha) * 0.5f;
+                const float middleDistance = 1.0f / max(
+                    lerp(inverseStartW, inverseEndW, middleAlpha),
+                    1e-6f);
+                const float middleScene = ScreenReflectionSceneDistance(
+                    startUv + deltaUv * middleAlpha);
+                if (middleDistance > middleScene)
+                {
+                    farAlpha = middleAlpha;
+                }
+                else
+                {
+                    nearAlpha = middleAlpha;
+                }
+            }
+            const float hitAlpha = (nearAlpha + farAlpha) * 0.5f;
+            const float2 hitUv = startUv + deltaUv * hitAlpha;
+            // 画面空間の比率を、透視補間でワールド空間の比率へ直します。
+            const float worldRatio = hitAlpha * clipStart.w
+                / max(lerp(clipEnd.w, clipStart.w, hitAlpha), 1e-6f);
+            const float3 hitPosition = lerp(
+                rayStart,
+                rayEnd,
+                saturate(worldRatio));
+
+            // 当たった点を前フレームの画面へ戻して色を読みます。
+            const float4 previousClip = mul(
+                float4(hitPosition, 1.0f),
+                ScreenReflectionPreviousViewProjection);
+            if (previousClip.w <= 0.0001f)
+            {
+                return 0.0f.xxxx;
+            }
+            const float2 previousUv = float2(
+                previousClip.x / previousClip.w * 0.5f + 0.5f,
+                0.5f - previousClip.y / previousClip.w * 0.5f);
+            if (previousUv.x < 0.0f || previousUv.x > 1.0f
+                || previousUv.y < 0.0f || previousUv.y > 1.0f)
+            {
+                return 0.0f.xxxx;
+            }
+
+            // 現在と前フレームの両方で、画面の縁に近いほど弱めます。
+            const float2 currentEdge = min(hitUv, 1.0f - hitUv);
+            const float2 previousEdge = min(previousUv, 1.0f - previousUv);
+            const float edgeDistance = min(
+                min(currentEdge.x, currentEdge.y),
+                min(previousEdge.x, previousEdge.y));
+            const float edgeFade = saturate(edgeDistance / 0.08f);
+            // 最大距離の最後の1/4で滑らかに落とします。
+            const float travelled = saturate(worldRatio)
+                * length(rayEnd - rayStart);
+            const float travelledFraction = saturate(
+                travelled / maximumDistance);
+            const float distanceFade = saturate(
+                (1.0f - travelledFraction) / 0.25f);
+            // 画面には物の裏側が無いため、カメラへ戻る反射ほど弱めます。
+            const float towardCamera = saturate(
+                dot(reflection, viewDirection));
+            const float directionFade = saturate(
+                (1.0f - towardCamera) / 0.5f);
+            const float roughnessFade = saturate(
+                1.0f - roughness / roughnessCutoff);
+            const float3 color = ScreenReflectionColorTexture.SampleLevel(
+                AlbedoSampler,
+                previousUv,
+                0.0f).rgb;
+            return float4(
+                color,
+                edgeFade
+                    * distanceFade
+                    * directionFade
+                    * roughnessFade
+                    * saturate(ScreenReflectionParameters.x));
+        }
+
+        // 面の裏を厚みの外で通り過ぎたので、ミップを保って次の区画へ
+        // 進みます。
+        alpha = exitAlpha;
+    }
+    return 0.0f.xxxx;
+}
+
 float4 PrimitivePixelShader(PixelInput input) : SV_Target
 {
     float3 normal = normalize(input.normal);
@@ -394,10 +672,25 @@ float4 PrimitivePixelShader(PixelInput input) : SV_Target
         CameraPosition.xyz - input.worldPosition);
     const float specularPower = lerp(128.0f, 4.0f, roughness);
     const float specularScale = lerp(1.0f, 0.08f, roughness);
-    float3 result = surfaceColor
+    // D3D11のEvaluateEnvironment（キューブマップ無し）と同じく、環境光は
+    // 金属ほど弱め、SSRが当たった分をF0の重みで足してから遮蔽を掛けます。
+    // SSRの粗さはD3D11のLit shaderと同じ下限で求めます。
+    float3 ambient = surfaceColor
         * AmbientColorIntensity.rgb
         * AmbientColorIntensity.w
-        * occlusion;
+        * (1.0f - metallic * 0.5f);
+    const float4 screenReflection = EvaluateScreenSpaceReflection(
+        input.worldPosition,
+        reflect(-viewDirection, normal),
+        viewDirection,
+        clamp(MaterialProperties.x * roughnessSample, 0.04f, 1.0f));
+    if (screenReflection.a > 0.0f)
+    {
+        ambient += screenReflection.rgb
+            * specularColor
+            * screenReflection.a;
+    }
+    float3 result = ambient * occlusion;
     [loop]
     for (uint index = 0; index < min(LightCounts.x, 4u); ++index)
     {
@@ -815,8 +1108,8 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 "ParticlePixelShader",
                 "ps_5_0");
 
-            // t0〜t5はMaterial、t6〜t8は影、t9はSSAOです。
-            std::array<D3D12_DESCRIPTOR_RANGE, 10> textureRanges{};
+            // t0〜t5はMaterial、t6〜t8は影、t9はSSAO、t10とt11はSSRです。
+            std::array<D3D12_DESCRIPTOR_RANGE, 12> textureRanges{};
             for (UINT index{}; index < textureRanges.size(); ++index)
             {
                 textureRanges[index].RangeType =
@@ -824,7 +1117,7 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 textureRanges[index].NumDescriptors = 1;
                 textureRanges[index].BaseShaderRegister = index;
             }
-            std::array<D3D12_ROOT_PARAMETER, 11> parameters{};
+            std::array<D3D12_ROOT_PARAMETER, 13> parameters{};
             parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
             parameters[0].Descriptor.ShaderRegister = 0;
             parameters[0].Descriptor.RegisterSpace = 0;
@@ -1040,8 +1333,13 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 pointShadowBinding{};
             LamaPon::D3D12Backend::ShaderResourceBinding
                 screenAmbientOcclusionBinding{};
+            LamaPon::D3D12Backend::ShaderResourceBinding
+                screenReflectionColorBinding{};
+            LamaPon::D3D12Backend::ShaderResourceBinding
+                screenReflectionDepthBinding{};
             bool directionalShadowActive{};
             bool screenAmbientOcclusionActive{};
+            bool screenReflectionActive{};
             bool spotShadowTextureCurrent{};
             bool pointShadowTextureCurrent{};
             ID3D12DescriptorHeap* descriptorHeap{};
@@ -1151,6 +1449,35 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                     screenAmbientOcclusionBinding =
                         *fallbackScreenAmbientOcclusion;
                 }
+                // SSRは前フレームのカラーとHi-Z深度ピラミッドを両方解決
+                // できたframeだけ有効にし、それ以外は白で埋めます。
+                const auto resolvedReflectionColor =
+                    m_backend->TryResolveShaderResource(
+                        request.screenSpaceReflection.texture);
+                const auto resolvedReflectionDepth =
+                    m_backend->TryResolveShaderResource(
+                        request.screenSpaceReflection.depth);
+                screenReflectionActive =
+                    request.screenSpaceReflection.enabled
+                    && resolvedReflectionColor
+                    && resolvedReflectionDepth;
+                if (screenReflectionActive)
+                {
+                    screenReflectionColorBinding = *resolvedReflectionColor;
+                    screenReflectionDepthBinding = *resolvedReflectionDepth;
+                }
+                else
+                {
+                    const auto fallbackReflection =
+                        m_backend->TryResolveShaderResource(
+                            request.fallbackTexture);
+                    if (!fallbackReflection)
+                    {
+                        return false;
+                    }
+                    screenReflectionColorBinding = *fallbackReflection;
+                    screenReflectionDepthBinding = *fallbackReflection;
+                }
             }
             else if (!m_backend->IsDepthOnlyPassActive())
             {
@@ -1176,7 +1503,6 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
 
             struct Constants final
             {
-                DirectX::XMFLOAT4X4 worldViewProjection;
                 DirectX::XMFLOAT4X4 world;
                 DirectX::XMFLOAT4 baseColor;
                 DirectX::XMFLOAT4 cameraPosition;
@@ -1205,16 +1531,16 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 DirectX::XMFLOAT4 pointShadowParameters{};
                 DirectX::XMFLOAT4 localShadowTexelSizes{};
                 DirectX::XMFLOAT4 screenAmbientOcclusionParameters{};
+                DirectX::XMFLOAT4X4 viewProjection{};
+                DirectX::XMFLOAT4 screenReflectionParameters{};
+                DirectX::XMFLOAT4 screenReflectionScreen{};
+                DirectX::XMFLOAT4 screenReflectionQuality{};
+                DirectX::XMFLOAT4X4 screenReflectionPreviousViewProjection{};
             } constants{};
             // HLSLのPrimitiveConstantsと同じ並び・大きさであることを保証します。
-            static_assert(sizeof(constants) == 2048u);
-            const auto world = DirectX::XMLoadFloat4x4(&request.world);
+            static_assert(sizeof(constants) == 2160u);
             const auto view = DirectX::XMLoadFloat4x4(&request.view);
             const auto projection = DirectX::XMLoadFloat4x4(&request.projection);
-            DirectX::XMStoreFloat4x4(
-                &constants.worldViewProjection,
-                DirectX::XMMatrixMultiply(
-                    DirectX::XMMatrixMultiply(world, view), projection));
             constants.world = request.world;
             constants.baseColor = request.baseColor;
             const auto inverseView = DirectX::XMMatrixInverse(nullptr, view);
@@ -1387,6 +1713,31 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                     : 0.0f,
                 screenAmbientOcclusionActive ? 1.0f : 0.0f,
                 0.0f };
+            DirectX::XMStoreFloat4x4(
+                &constants.viewProjection,
+                DirectX::XMMatrixMultiply(view, projection));
+            // D3D11のLitEffectと同じ範囲へ丸めます。
+            const auto& reflection = request.screenSpaceReflection;
+            constants.screenReflectionParameters = {
+                std::clamp(reflection.intensity, 0.0f, 1.0f),
+                screenReflectionActive ? 1.0f : 0.0f,
+                std::max(reflection.maximumDistance, 0.01f),
+                static_cast<float>(std::clamp<std::uint32_t>(
+                    reflection.stepCount,
+                    1u,
+                    128u)) };
+            constants.screenReflectionScreen = {
+                reflection.inverseWidth,
+                reflection.inverseHeight,
+                0.0f,
+                0.0f };
+            constants.screenReflectionQuality = {
+                std::max(reflection.thickness, 0.001f),
+                std::clamp(reflection.roughnessCutoff, 0.0f, 1.0f),
+                static_cast<float>(reflection.depthPyramidMaximumMip),
+                0.0f };
+            constants.screenReflectionPreviousViewProjection =
+                reflection.previousViewProjection;
             const auto constantUpload = m_backend->AllocateFrameUpload(
                 sizeof(constants),
                 D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
@@ -1436,6 +1787,12 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 commandList->SetGraphicsRootDescriptorTable(
                     10,
                     screenAmbientOcclusionBinding.descriptor);
+                commandList->SetGraphicsRootDescriptorTable(
+                    11,
+                    screenReflectionColorBinding.descriptor);
+                commandList->SetGraphicsRootDescriptorTable(
+                    12,
+                    screenReflectionDepthBinding.descriptor);
             }
             commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             commandList->IASetVertexBuffers(0, 1, &vertexView);

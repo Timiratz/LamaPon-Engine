@@ -163,6 +163,20 @@ namespace
             lighting.screenAmbientOcclusion.inverseWidth,
             lighting.screenAmbientOcclusion.inverseHeight,
             lighting.screenAmbientOcclusion.enabled };
+        const auto& reflection = lighting.screenSpaceReflection;
+        request.screenSpaceReflection = {
+            reflection.texture,
+            reflection.depth,
+            reflection.previousViewProjection,
+            reflection.inverseWidth,
+            reflection.inverseHeight,
+            reflection.intensity,
+            reflection.maximumDistance,
+            reflection.thickness,
+            reflection.roughnessCutoff,
+            reflection.stepCount,
+            reflection.depthPyramidMaximumMip,
+            reflection.enabled };
     }
 
     // テセレーションが使えるのは、四角パッチに割れる形状（Plane・

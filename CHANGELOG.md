@@ -38,6 +38,7 @@
 - DirectX 12へカメラMotion Blurを移植。RenderTargetごとの前フレーム行列とmain passの深度から画面上の移動量を求め、既存の強度・最大半径・品質別サンプル数でHDR Sceneをブラーする。
 - DirectX 12へDepth of Fieldを移植。main passの深度から既存と同じ薄レンズ近似のCoCを求め、焦点帯の外側を深度対応の黄金角サンプリングでぼかしてからBloomへ渡す。
 - DirectX 12へSSAOを移植。深度プリパスのコピーからD3D11の`PSAmbientOcclusion`／`PSAmbientOcclusionBlur`と同じ再構成法線・黄金角サンプリング・深度対応ブラーで半解像度の遮蔽を求め、Mesh／Modelの基本3D pipelineで環境光項だけへ掛ける。同じSceneから求めた遮蔽textureのD3D11／D3D12画素一致と、接地部だけが暗くなり環境光を0にすると画像が変わらないことをWARPで検証する。`PrimitiveDrawRequest`の公開レイアウト変更に伴いGame Module APIを69へ更新する。
+- DirectX 12へSSR（画面空間反射）を移植。深度プリパスのコピーからD3D11の`PSReflectionDepthLinearize`／`PSReflectionDepthDownsample`と同じHi-Z深度ピラミッドを作り、基本3D pipelineでD3D11の`EvaluateScreenSpaceReflection`と同じHi-Zトラバーサル、前フレームカラーへの再投影、縁／距離／向き／粗さのフェードで反射を求め、キューブマップが無いときのD3D11と同じくF0の重みで環境光へ足す。環境光にもD3D11と同じ`1 - metallic * 0.5`を掛け、頂点変換もD3D11と同じくWorldの後にViewProjectionを掛ける順へ揃える。三角形の頂点順を揃えたProcedural MeshのSceneで合成画像のD3D11／D3D12画素一致と、SSRを切ると元の画像へ戻ることをWARPで検証する。`PrimitiveDrawRequest`の公開レイアウト変更に伴いGame Module APIを70へ更新する。
 - `GraphicsDevice`のAPI固有資源所有を抽象interface化し、D3D11のEffect・Shader・Sprite・Shadow・render serviceを単一の具象世代へ集約。停止・再生成・破棄を共通境界から呼ぶ構造へ移行。
 - Effect・Shader cache・Shadow・Environment・Clustered LightsなどDevice世代に属する高水準資源をD3D11内部所有へ分離。非同期Shader workerをAssetManagerより先に停止し、再初期化時に旧Device資源と未消費Screen Effect queueを安全に破棄する。
 - `GraphicsDevice`のnative D3D11 Device / Context / CommonStates / view resolverを非公開化し、D3D11描画島とテストだけがSDK非公開bridgeから利用する境界へ移行。API 64 Game Module向けの旧public binary symbolを維持し、Game Module APIを65へ更新。

@@ -3,6 +3,7 @@
 
 #include "LamaPon/Assets/AssetManager.h"
 #include "LamaPon/Graphics/D3D11Backend.h"
+#include "LamaPon/Graphics/D3D12SpriteRenderer.h"
 #include "LamaPon/Graphics/EnvironmentCache.h"
 #include "LamaPon/Graphics/EnvironmentSettings.h"
 #include "LamaPon/Graphics/GraphicsDeviceD3D12Resources.h"
@@ -551,6 +552,38 @@ namespace LamaPon
         const float projectionZ,
         const float projectionW) const noexcept
     {
+        if (ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            // D3D12はSprite rendererのfullscreen passで同じピラミッドを
+            // 作ります。失敗時もD3D11と同じくSSRを無効にするだけです。
+            auto* const resources = dynamic_cast<
+                Detail::GraphicsDeviceD3D12Resources*>(
+                    m_state->m_apiResources.get());
+            auto* const renderer = resources != nullptr
+                ? resources->TrySpriteRenderer()
+                : nullptr;
+            if (renderer == nullptr
+                || !target.IsValid()
+                || !IsGraphicsViewCurrent(target.DepthViewHandle())
+                || !IsGraphicsViewCurrent(
+                    target.ReflectionDepthPyramidViewHandle()))
+            {
+                return false;
+            }
+            try
+            {
+                return renderer->BuildReflectionDepthPyramid(
+                    target,
+                    m_state->m_whiteTextureView,
+                    projectionZ,
+                    projectionW);
+            }
+            catch (...)
+            {
+                return false;
+            }
+        }
         const auto* const backend =
             AsD3D11Backend(m_state->m_backend.get());
         if (backend == nullptr

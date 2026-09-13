@@ -2411,6 +2411,302 @@ namespace
             litPixels > 300u && directOnlyWithOcclusion == directOnly,
             "DirectX 12 SSAO changed a scene without ambient light");
     }
+
+    // 磨いた金属の床へ赤いCubeを置き、斜め上から見るSceneです。床の
+    // 手前側の反射レイがCubeの前面へ当たります。環境光だけで照らすため、
+    // D3D11とD3D12で同じ合成画像になります。
+    void BuildScreenSpaceReflectionScene(LamaPon::Scene& scene)
+    {
+        auto& cameraObject = scene.CreateGameObject("MainCamera");
+        cameraObject.GetTransform().position = { 0.0f, 2.0f, 5.5f };
+        cameraObject.GetTransform().SetEulerAngles(-0.38f, 0.0f, 0.0f);
+        auto& camera = cameraObject.AddComponent<LamaPon::CameraComponent>();
+        scene.SetMainCamera(camera);
+        scene.SetAmbientLightColor({ 1.0f, 1.0f, 1.0f });
+        scene.SetAmbientLightIntensity(1.0f);
+
+        // 床とCubeは頂点と添字を明示したProcedural Meshで作ります。
+        // D3D11のGeometricPrimitiveとD3D12の基本形状は三角形の頂点順が
+        // 異なり、SSRのように自分の面と深度を比べる判定では補間の丸めの
+        // 差が面ごとの当たり外れになるためです。
+        const auto addFace = [](
+            std::vector<LamaPon::ProceduralMeshVertex>& vertices,
+            std::vector<std::uint32_t>& indices,
+            const DirectX::XMFLOAT3& normal,
+            const std::array<DirectX::XMFLOAT3, 4>& corners)
+        {
+            // cornersは外から見た左下、左上、右上、右下です。D3D11が
+            // 裏面として捨てないよう、画面上で時計回りの三角形にします。
+            const auto first =
+                static_cast<std::uint32_t>(vertices.size());
+            for (const auto& corner : corners)
+            {
+                vertices.push_back({ corner, normal, { 0.0f, 0.0f } });
+            }
+            indices.insert(
+                indices.end(),
+                { first, first + 1u, first + 2u,
+                    first, first + 2u, first + 3u });
+        };
+
+        std::vector<LamaPon::ProceduralMeshVertex> floorVertices;
+        std::vector<std::uint32_t> floorIndices;
+        addFace(floorVertices, floorIndices, { 0.0f, 1.0f, 0.0f }, { {
+            { -4.0f, -1.2f, 4.0f }, { -4.0f, -1.2f, -4.0f },
+            { 4.0f, -1.2f, -4.0f }, { 4.0f, -1.2f, 4.0f } } });
+        auto& floor = scene.CreateGameObject("Floor");
+        auto& floorMesh = floor.AddComponent<LamaPon::MeshRendererComponent>(
+            LamaPon::PrimitiveShape::Cube,
+            DirectX::XMFLOAT4{ 0.7f, 0.7f, 0.7f, 1.0f });
+        floorMesh.SetProceduralMesh(floorVertices, floorIndices);
+        floorMesh.SetMetallic(1.0f);
+        floorMesh.SetRoughness(0.1f);
+
+        constexpr float h = 0.5f;
+        constexpr float y = -0.7f;
+        std::vector<LamaPon::ProceduralMeshVertex> cubeVertices;
+        std::vector<std::uint32_t> cubeIndices;
+        addFace(cubeVertices, cubeIndices, { 0.0f, 0.0f, 1.0f }, { {
+            { -h, y - h, h }, { -h, y + h, h },
+            { h, y + h, h }, { h, y - h, h } } });
+        addFace(cubeVertices, cubeIndices, { 0.0f, 0.0f, -1.0f }, { {
+            { h, y - h, -h }, { h, y + h, -h },
+            { -h, y + h, -h }, { -h, y - h, -h } } });
+        addFace(cubeVertices, cubeIndices, { 1.0f, 0.0f, 0.0f }, { {
+            { h, y - h, h }, { h, y + h, h },
+            { h, y + h, -h }, { h, y - h, -h } } });
+        addFace(cubeVertices, cubeIndices, { -1.0f, 0.0f, 0.0f }, { {
+            { -h, y - h, -h }, { -h, y + h, -h },
+            { -h, y + h, h }, { -h, y - h, h } } });
+        addFace(cubeVertices, cubeIndices, { 0.0f, 1.0f, 0.0f }, { {
+            { -h, y + h, h }, { -h, y + h, -h },
+            { h, y + h, -h }, { h, y + h, h } } });
+        auto& cube = scene.CreateGameObject("Cube");
+        auto& cubeMesh = cube.AddComponent<LamaPon::MeshRendererComponent>(
+            LamaPon::PrimitiveShape::Cube,
+            DirectX::XMFLOAT4{ 0.9f, 0.15f, 0.1f, 1.0f });
+        cubeMesh.SetProceduralMesh(cubeVertices, cubeIndices);
+        cubeMesh.SetMetallic(0.0f);
+        cubeMesh.SetRoughness(0.8f);
+
+        auto reflection = scene.ScreenSpaceReflection();
+        reflection.enabled = true;
+        scene.SetScreenSpaceReflectionSettings(reflection);
+    }
+
+    // 同じSceneをD3D11とD3D12で2フレーム描きます。SSRは前フレームの
+    // HDRカラーを読むため、反射は2フレーム目の合成画像に映ります。
+    [[nodiscard]] Capture RenderScreenSpaceReflectionCapture(
+        const LamaPon::RenderingApi api,
+        const LamaPon::GraphicsStartupProfile profile)
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            api,
+            profile);
+        Require(
+            graphics.ActiveRenderingApi() == api,
+            "The screen-space reflection capture did not start the "
+            "requested rendering API");
+        // D3D11のLit / Environment shaderはasset rootから読み込みます。
+        graphics.Assets().SetAssetRoot(LAMAPON_TEST_ASSET_DIR);
+        LamaPon::Scene scene(graphics);
+        BuildScreenSpaceReflectionScene(scene);
+
+        constexpr float clearColor[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+        Capture capture;
+        for (int frame{}; frame < 2; ++frame)
+        {
+            graphics.BeginFrame(clearColor);
+            graphics.BeginSceneComposition(clearColor);
+            auto* const target = graphics.SceneCompositionTarget();
+            Require(
+                target != nullptr,
+                "The screen-space reflection capture has no scene "
+                "composition target");
+            scene.RenderMainCamera(
+                static_cast<float>(CanvasWidth) / CanvasHeight,
+                false,
+                target);
+            if (frame == 1)
+            {
+                const auto& reflection =
+                    graphics.Lighting().screenSpaceReflection;
+                Require(
+                    reflection.enabled
+                        && reflection.texture
+                            == target->ColorHistoryViewHandle()
+                        && reflection.depth
+                            == target->ReflectionDepthPyramidViewHandle()
+                        && reflection.depthPyramidMaximumMip > 0u
+                        && reflection.depthPyramidMaximumMip + 1u
+                            == target->ReflectionDepthPyramidMipCount(),
+                    "The scene did not resolve SSR from its color history "
+                    "and depth pyramid");
+            }
+            graphics.EndSceneComposition(scene.PostProcessFrameData());
+            capture.pixels = graphics.CaptureBackBuffer(
+                capture.width,
+                capture.height);
+            graphics.EndFrame();
+        }
+        return capture;
+    }
+
+    void RequireMatchingScreenSpaceReflectionCaptures(
+        const Capture& d3d11,
+        const Capture& d3d12)
+    {
+        const std::size_t expectedBytes =
+            static_cast<std::size_t>(CanvasWidth) * CanvasHeight * 4u;
+        for (const auto* const capture : { &d3d11, &d3d12 })
+        {
+            Require(
+                capture->width == CanvasWidth
+                    && capture->height == CanvasHeight
+                    && capture->pixels.size() == expectedBytes,
+                "The screen-space reflection captures have unexpected "
+                "dimensions");
+        }
+
+        // WARP上の同じ演算でも、最終丸めの1段差だけは許容します。
+        constexpr int ChannelTolerance = 2;
+        std::size_t mismatchedPixels{};
+        std::size_t firstMismatch =
+            std::numeric_limits<std::size_t>::max();
+        int largestDifference{};
+        for (std::size_t pixel{}; pixel < expectedBytes / 4u; ++pixel)
+        {
+            int pixelDifference{};
+            for (std::size_t channel{}; channel < 3u; ++channel)
+            {
+                const auto offset = pixel * 4u + channel;
+                pixelDifference = std::max(
+                    pixelDifference,
+                    std::abs(
+                        static_cast<int>(d3d11.pixels[offset])
+                        - static_cast<int>(d3d12.pixels[offset])));
+            }
+            largestDifference = std::max(largestDifference, pixelDifference);
+            if (pixelDifference > ChannelTolerance)
+            {
+                ++mismatchedPixels;
+                firstMismatch = std::min(firstMismatch, pixel);
+            }
+        }
+        if (mismatchedPixels == 0)
+        {
+            return;
+        }
+        const auto describe = [&](const Capture& capture)
+        {
+            const auto offset = firstMismatch * 4u;
+            return std::to_string(capture.pixels[offset]) + ","
+                + std::to_string(capture.pixels[offset + 1u]) + ","
+                + std::to_string(capture.pixels[offset + 2u]);
+        };
+        throw std::runtime_error(
+            "DirectX 12 screen-space reflections differed from DirectX 11 "
+            "in "
+            + std::to_string(mismatchedPixels)
+            + " pixels (largest channel difference "
+            + std::to_string(largestDifference)
+            + "; first at "
+            + std::to_string(firstMismatch % CanvasWidth)
+            + ","
+            + std::to_string(firstMismatch / CanvasWidth)
+            + " D3D11="
+            + describe(d3d11)
+            + " D3D12="
+            + describe(d3d12)
+            + ")");
+    }
+
+    // SSRは前フレームのカラーを読むため、有効にした最初のフレームは
+    // SSR無しと同じ画像です。2フレーム目から床へCubeの赤が映り、SSRを
+    // 切ると元の画像へ戻ります。
+    void RequireD3D12ScreenSpaceReflection()
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap);
+        LamaPon::Scene scene(graphics);
+        BuildScreenSpaceReflectionScene(scene);
+
+        constexpr float clearColor[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+        const auto captureComposition = [&]()
+        {
+            graphics.BeginFrame(clearColor);
+            graphics.BeginSceneComposition(clearColor);
+            scene.RenderMainCamera(
+                static_cast<float>(CanvasWidth) / CanvasHeight,
+                false,
+                graphics.SceneCompositionTarget());
+            graphics.EndSceneComposition(scene.PostProcessFrameData());
+            std::uint32_t width{};
+            std::uint32_t height{};
+            auto capture = graphics.CaptureBackBuffer(width, height);
+            graphics.EndFrame();
+            Require(
+                width == CanvasWidth && height == CanvasHeight,
+                "The DirectX 12 SSR capture has unexpected dimensions");
+            return capture;
+        };
+        const auto setReflectionEnabled = [&](const bool enabled)
+        {
+            auto reflection = scene.ScreenSpaceReflection();
+            reflection.enabled = enabled;
+            scene.SetScreenSpaceReflectionSettings(reflection);
+        };
+
+        setReflectionEnabled(false);
+        const auto withoutReflection = captureComposition();
+        setReflectionEnabled(true);
+        Require(
+            captureComposition() == withoutReflection,
+            "The first DirectX 12 SSR frame read a missing color history");
+        const auto withReflection = captureComposition();
+        const auto& reflection = graphics.Lighting().screenSpaceReflection;
+        Require(
+            reflection.enabled
+                && graphics.IsGraphicsViewCurrent(reflection.texture)
+                && graphics.IsGraphicsViewCurrent(reflection.depth)
+                && reflection.depthPyramidMaximumMip == 8u,
+            "The DirectX 12 scene did not apply SSR with a full Hi-Z "
+            "pyramid");
+
+        std::size_t reflectedPixels{};
+        for (std::size_t offset{};
+             offset + 3u < withReflection.size();
+             offset += 4u)
+        {
+            if (withReflection[offset] > withoutReflection[offset] + 12u
+                && withReflection[offset]
+                    > withReflection[offset + 1u] + 20u)
+            {
+                ++reflectedPixels;
+            }
+        }
+        Require(
+            reflectedPixels > 40u,
+            "DirectX 12 SSR did not reflect the red cube onto the floor ("
+                + std::to_string(reflectedPixels)
+                + " reflected pixels)");
+
+        setReflectionEnabled(false);
+        Require(
+            captureComposition() == withoutReflection,
+            "Disabling DirectX 12 SSR did not restore the original frame");
+    }
 }
 
 int main()
@@ -2432,6 +2728,10 @@ int main()
         const auto d3d11AmbientOcclusion = RenderAmbientOcclusionCapture(
             LamaPon::RenderingApi::DirectX11,
             LamaPon::GraphicsStartupProfile::FullRenderer);
+        const auto d3d11ScreenSpaceReflection =
+            RenderScreenSpaceReflectionCapture(
+                LamaPon::RenderingApi::DirectX11,
+                LamaPon::GraphicsStartupProfile::FullRenderer);
 
         // D3D12側だけdebug layerを有効にし、描画中のvalidation errorを
         // 描画結果の一致とは別に検出します。
@@ -2449,9 +2749,15 @@ int main()
             LamaPon::RenderingApi::DirectX12Experimental,
             LamaPon::GraphicsStartupProfile::
                 AllowD3D12ExperimentalBootstrap);
+        const auto d3d12ScreenSpaceReflection =
+            RenderScreenSpaceReflectionCapture(
+                LamaPon::RenderingApi::DirectX12Experimental,
+                LamaPon::GraphicsStartupProfile::
+                    AllowD3D12ExperimentalBootstrap);
         RequireD3D12AutoExposure();
         RequireD3D12PrimitiveScene();
         RequireD3D12AmbientOcclusion();
+        RequireD3D12ScreenSpaceReflection();
         RequireD3D12OffscreenTarget();
         RequireD3D12DirectionalShadows();
         RequireD3D12SpotShadows();
@@ -2470,6 +2776,9 @@ int main()
         RequireMatchingAmbientOcclusionCaptures(
             d3d11AmbientOcclusion,
             d3d12AmbientOcclusion);
+        RequireMatchingScreenSpaceReflectionCaptures(
+            d3d11ScreenSpaceReflection,
+            d3d12ScreenSpaceReflection);
         std::cout << "D3D12 sprite rendering tests passed.\n";
     }
     catch (const std::exception& error)

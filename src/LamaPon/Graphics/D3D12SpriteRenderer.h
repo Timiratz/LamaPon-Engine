@@ -122,6 +122,15 @@ namespace LamaPon::Detail
             const AmbientOcclusionSettings& settings,
             const DirectX::XMFLOAT4X4& projection,
             std::uint32_t sampleCount);
+        // D3D11のBuildReflectionDepthPyramidと同じく、深度コピーを
+        // カメラからの距離へ直し、2x2の最小値で全ミップを縮めたSSR用の
+        // Hi-Z深度ピラミッドを作ります。終了後は開始前と同じ深度専用
+        // またはカラーの描画先へ戻します。
+        [[nodiscard]] bool BuildReflectionDepthPyramid(
+            RenderTarget& target,
+            const GraphicsViewHandle& fallbackTexture,
+            float projectionZ,
+            float projectionW);
         // 自動露出用に、current colorの対数輝度を1/4解像度で書いてから
         // 2x2平均で1x1まで縮めます。D3D11のPSLuminanceとGenerateMipsに
         // 相当し、終了後はtargetの通常の描画先へ戻します。
@@ -145,14 +154,16 @@ namespace LamaPon::Detail
             MotionBlur,
             DepthOfField,
             AmbientOcclusion,
-            AmbientOcclusionBlur
+            AmbientOcclusionBlur,
+            ReflectionDepthLinearize,
+            ReflectionDepthDownsample
         };
 
         // PSOの組み合わせ数です。深度はprimary / 無し、出力はRGBA8 /
-        // RGBA16F / R8、blendは4種と通常 / scissor passの2通りです。
-        static constexpr std::size_t FullscreenProgramCount = 11u;
+        // RGBA16F / R8 / R32F、blendは4種と通常 / scissor passの2通りです。
+        static constexpr std::size_t FullscreenProgramCount = 13u;
         static constexpr std::size_t DepthFormatVariants = 2u;
-        static constexpr std::size_t ColorFormatVariants = 3u;
+        static constexpr std::size_t ColorFormatVariants = 4u;
         static constexpr std::size_t BlendVariants = 8u;
 
         struct Vertex final
@@ -212,6 +223,10 @@ namespace LamaPon::Detail
         Microsoft::WRL::ComPtr<ID3DBlob> m_depthOfFieldPixelShader;
         Microsoft::WRL::ComPtr<ID3DBlob> m_ambientOcclusionPixelShader;
         Microsoft::WRL::ComPtr<ID3DBlob> m_ambientOcclusionBlurPixelShader;
+        Microsoft::WRL::ComPtr<ID3DBlob>
+            m_reflectionDepthLinearizePixelShader;
+        Microsoft::WRL::ComPtr<ID3DBlob>
+            m_reflectionDepthDownsamplePixelShader;
         // pixel shader、深度format、出力format、blend modeごとに、通常pass
         // とscissor passのcull違いを持ちます。
         std::array<

@@ -833,6 +833,67 @@ float4 AmbientOcclusionBlurPixelShader(PixelInput input) : SV_Target
         : SpriteTexture.SampleLevel(SpriteSampler, uv, 0.0f).r;
     return float4(visibility, visibility, visibility, 1.0f);
 }
+
+// LamaPonEnvironment.hlslのPSReflectionDepthLinearize /
+// PSReflectionDepthDownsampleと同じSSRのHi-Z深度ピラミッドです。
+// mip 0はPassPrimary.xy=射影の_33/_43で深度をカメラからの距離へ直し、
+// 空（遠平面）は十分遠い値にします。
+float4 ReflectionDepthLinearizePixelShader(PixelInput input) : SV_Target
+{
+    const int2 pixel = int2(input.position.xy);
+    const float deviceDepth = SpriteTexture.Load(int3(pixel, 0)).r;
+    const float denominator = deviceDepth + PassPrimary.x;
+    if (denominator > -1e-6f)
+    {
+        return float4(1e6f, 1e6f, 1e6f, 1e6f);
+    }
+    const float sceneDistance = PassPrimary.y / denominator;
+    return float4(
+        sceneDistance,
+        sceneDistance,
+        sceneDistance,
+        sceneDistance);
+}
+
+// mip N+1は親ミップの2x2の最小値です。PassPrimary.xyは親ミップの
+// 大きさで、辺が奇数のときは端の子が余った列（行）も読み、最も手前の
+// 面を取りこぼしません。
+float4 ReflectionDepthDownsamplePixelShader(PixelInput input) : SV_Target
+{
+    const int2 parentSize = int2(PassPrimary.xy);
+    const int2 parent = int2(input.position.xy) * 2;
+    const int2 last = parentSize - 1;
+    const float a = SpriteTexture.Load(int3(min(parent, last), 0)).r;
+    const float b = SpriteTexture.Load(
+        int3(min(parent + int2(1, 0), last), 0)).r;
+    const float c = SpriteTexture.Load(
+        int3(min(parent + int2(0, 1), last), 0)).r;
+    const float d = SpriteTexture.Load(
+        int3(min(parent + int2(1, 1), last), 0)).r;
+    float nearest = min(min(a, b), min(c, d));
+    const bool oddWidth = (parentSize.x & 1) != 0;
+    const bool oddHeight = (parentSize.y & 1) != 0;
+    if (oddWidth)
+    {
+        nearest = min(nearest, SpriteTexture.Load(
+            int3(min(parent + int2(2, 0), last), 0)).r);
+        nearest = min(nearest, SpriteTexture.Load(
+            int3(min(parent + int2(2, 1), last), 0)).r);
+    }
+    if (oddHeight)
+    {
+        nearest = min(nearest, SpriteTexture.Load(
+            int3(min(parent + int2(0, 2), last), 0)).r);
+        nearest = min(nearest, SpriteTexture.Load(
+            int3(min(parent + int2(1, 2), last), 0)).r);
+    }
+    if (oddWidth && oddHeight)
+    {
+        nearest = min(nearest, SpriteTexture.Load(
+            int3(min(parent + int2(2, 2), last), 0)).r);
+    }
+    return float4(nearest, nearest, nearest, nearest);
+}
 )";
 
     void ThrowIfFailed(
@@ -1094,6 +1155,12 @@ namespace LamaPon::Detail
             "ps_5_0");
         m_ambientOcclusionBlurPixelShader = CompileSpriteShader(
             "AmbientOcclusionBlurPixelShader",
+            "ps_5_0");
+        m_reflectionDepthLinearizePixelShader = CompileSpriteShader(
+            "ReflectionDepthLinearizePixelShader",
+            "ps_5_0");
+        m_reflectionDepthDownsamplePixelShader = CompileSpriteShader(
+            "ReflectionDepthDownsamplePixelShader",
             "ps_5_0");
 
         D3D12_DESCRIPTOR_RANGE textureRange{};
@@ -1861,6 +1928,59 @@ namespace LamaPon::Detail
         return true;
     }
 
+    bool D3D12SpriteRenderer::BuildReflectionDepthPyramid(
+        RenderTarget& target,
+        const GraphicsViewHandle& fallbackTexture,
+        const float projectionZ,
+        const float projectionW)
+    {
+        const auto mipCount = target.ReflectionDepthPyramidMipCount();
+        if (mipCount == 0u
+            || !m_backend->TryResolveShaderResource(target.DepthViewHandle())
+            || !m_backend->TryResolveShaderResource(
+                target.ReflectionDepthPyramidViewHandle()))
+        {
+            return false;
+        }
+        const bool depthOnly =
+            m_backend->IsOffscreenTargetBoundDepthOnly(target);
+        const std::uint32_t width = std::max(target.Width(), 1u);
+        const std::uint32_t height = std::max(target.Height(), 1u);
+        try
+        {
+            for (std::uint32_t mip{}; mip < mipCount; ++mip)
+            {
+                const auto source =
+                    m_backend->BeginOffscreenReflectionDepthPass(target, mip);
+                // mip 0は射影の_33/_43、以降は1段細かい親ミップの
+                // 大きさです。
+                const float parameterX = mip == 0u
+                    ? projectionZ
+                    : static_cast<float>(std::max(width >> (mip - 1u), 1u));
+                const float parameterY = mip == 0u
+                    ? projectionW
+                    : static_cast<float>(
+                        std::max(height >> (mip - 1u), 1u));
+                DrawFullscreen(
+                    source,
+                    fallbackTexture,
+                    mip == 0u
+                        ? FullscreenProgram::ReflectionDepthLinearize
+                        : FullscreenProgram::ReflectionDepthDownsample,
+                    { parameterX, parameterY });
+            }
+        }
+        catch (...)
+        {
+            m_backend->AbortOffscreenReflectionDepthPyramid(
+                target,
+                depthOnly);
+            throw;
+        }
+        m_backend->EndOffscreenReflectionDepthPyramid(target, depthOnly);
+        return true;
+    }
+
     void D3D12SpriteRenderer::MeasureLuminance(
         RenderTarget& target,
         const GraphicsViewHandle& fallbackTexture)
@@ -2217,12 +2337,13 @@ namespace LamaPon::Detail
             throw std::invalid_argument(
                 "The sprite blend mode is invalid.");
         }
-        if (program > FullscreenProgram::AmbientOcclusionBlur)
+        if (program > FullscreenProgram::ReflectionDepthDownsample)
         {
             throw std::invalid_argument(
                 "The sprite pixel program is invalid.");
         }
-        // SSAOの遮蔽とブラーは半解像度のR8へ書きます。
+        // SSAOの遮蔽とブラーは半解像度のR8へ、SSRのHi-Z深度ピラミッドは
+        // R32Fへ書きます。
         const std::size_t formatIndex = colorFormat
                 == D3D12Backend::PrimaryColorFormat
             ? 0u
@@ -2230,9 +2351,11 @@ namespace LamaPon::Detail
                 ? 1u
                 : colorFormat == DXGI_FORMAT_R8_UNORM
                     ? 2u
-                    : throw std::invalid_argument(
-                        "The active DirectX 12 sprite target format is "
-                        "unsupported.");
+                    : colorFormat == DXGI_FORMAT_R32_FLOAT
+                        ? 3u
+                        : throw std::invalid_argument(
+                            "The active DirectX 12 sprite target format "
+                            "is unsupported.");
         // 自動露出の縮小段とSSAOは深度bufferを持たないため、DSV無しの
         // PSOを別に作ります。
         const std::size_t depthIndex = depthFormat
@@ -2319,6 +2442,12 @@ namespace LamaPon::Detail
             break;
         case FullscreenProgram::AmbientOcclusionBlur:
             pixelShader = m_ambientOcclusionBlurPixelShader.Get();
+            break;
+        case FullscreenProgram::ReflectionDepthLinearize:
+            pixelShader = m_reflectionDepthLinearizePixelShader.Get();
+            break;
+        case FullscreenProgram::ReflectionDepthDownsample:
+            pixelShader = m_reflectionDepthDownsamplePixelShader.Get();
             break;
         case FullscreenProgram::None:
             break;

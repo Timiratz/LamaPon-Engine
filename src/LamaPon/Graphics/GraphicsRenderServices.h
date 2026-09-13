@@ -123,6 +123,25 @@ namespace LamaPon
         bool enabled{};
     };
 
+    // SSR（画面空間反射）の入力です。textureは前フレームのHDRカラー、
+    // depthはカメラからの距離を持つHi-Z深度ピラミッドで、
+    // previousViewProjectionは当たった点を前フレームの画面へ戻す行列です。
+    struct PrimitiveScreenSpaceReflection final
+    {
+        GraphicsViewHandle texture;
+        GraphicsViewHandle depth;
+        DirectX::XMFLOAT4X4 previousViewProjection{};
+        float inverseWidth{};
+        float inverseHeight{};
+        float intensity{ 1.0f };
+        float maximumDistance{ 12.0f };
+        float thickness{ 1.2f };
+        float roughnessCutoff{ 0.45f };
+        std::uint32_t stepCount{ 48 };
+        std::uint32_t depthPyramidMaximumMip{};
+        bool enabled{};
+    };
+
     // MeshRendererがAPI固有objectを持たずに送る最小3D描画要求です。
     // spanはDrawPrimitiveの同期呼び出し中だけ有効です。
     struct PrimitiveDrawRequest final
@@ -154,6 +173,7 @@ namespace LamaPon
         PrimitivePointShadow pointShadow;
         float localShadowInverseResolution{};
         PrimitiveScreenAmbientOcclusion screenAmbientOcclusion;
+        PrimitiveScreenSpaceReflection screenSpaceReflection;
         GraphicsViewHandle albedo;
         GraphicsViewHandle normalTexture;
         GraphicsViewHandle roughnessTexture;

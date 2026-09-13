@@ -156,8 +156,9 @@ namespace LamaPon
         {
             // D3D12は移植済みのTAA、Depth of Field、Motion Blur、Bloom、
             // 自動露出、トーンマップ、Screen Outline、FXAAをD3D11と
-            // 同じ順で適用します。
-            // SSAOなど未移植のpassは安全に無処理とします。
+            // 同じ順で適用します。SSAOとSSRはLit描画の前に済んでいます。
+            // Volumetric LightやLens Flareなど未移植のpassは安全に
+            // 無処理とします。
             const auto& settings = graphics.Settings();
             graphics.ApplyOffscreenTargetTemporalAntiAliasing(
                 target,
