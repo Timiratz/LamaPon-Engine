@@ -318,6 +318,49 @@ namespace LamaPon
         const DirectX::XMFLOAT4X4& viewProjection,
         const std::uint32_t sampleCount)
     {
+        if (ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            auto& renderer = RequireD3D12PostProcessRenderer(
+                *this,
+                m_state->m_apiResources.get(),
+                target,
+                "ApplyOffscreenTargetMotionBlur");
+            auto* const state =
+                Detail::RenderTargetBackendAccess::Get(target);
+            if (state == nullptr)
+            {
+                throw std::logic_error(
+                    "The DirectX 12 motion blur target is not "
+                    "initialized.");
+            }
+            if (!settings.enabled)
+            {
+                // D3D11と同じく、無効中のカメラ移動を再有効化した最初の
+                // フレームへ持ち越しません。
+                state->m_motionBlurPreviousValid = false;
+                return;
+            }
+            if (state->m_motionBlurPreviousValid
+                && settings.intensity > 0.0f
+                && settings.maximumRadius > 0.0f)
+            {
+                m_state->m_backend->CaptureOffscreenTargetDepth(target);
+                renderer.ApplyMotionBlur(
+                    target,
+                    m_state->m_whiteTextureView,
+                    settings,
+                    inverseViewProjection,
+                    state->m_motionBlurPreviousViewProjection,
+                    sampleCount);
+            }
+            // 最初のフレームは描画せず、次回の比較に使う行列だけを
+            // targetごとに保存します。
+            state->m_motionBlurPreviousViewProjection = viewProjection;
+            state->m_motionBlurPreviousValid = true;
+            return;
+        }
+
         auto& targetState = RequireCurrentOffscreenTarget(
             *this,
             target,

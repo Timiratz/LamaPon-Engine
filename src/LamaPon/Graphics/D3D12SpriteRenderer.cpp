@@ -359,6 +359,73 @@ float4 TemporalPixelShader(PixelInput input) : SV_Target
         1.0f);
 }
 
+float4 MotionBlurPixelShader(PixelInput input) : SV_Target
+{
+    const float4 source = SpriteTexture.Sample(
+        SpriteSampler,
+        input.textureCoordinate);
+    const float depth = DepthTexture.Sample(
+        SpriteSampler,
+        input.textureCoordinate).r;
+    const float2 clip = float2(
+        input.textureCoordinate.x * 2.0f - 1.0f,
+        1.0f - input.textureCoordinate.y * 2.0f);
+    const float4 worldHomogeneous = mul(
+        float4(clip, depth, 1.0f),
+        TemporalInverseViewProjection);
+    if (worldHomogeneous.w <= 0.0001f)
+    {
+        return source;
+    }
+    const float3 worldPosition =
+        worldHomogeneous.xyz / worldHomogeneous.w;
+    const float4 previousClip = mul(
+        float4(worldPosition, 1.0f),
+        TemporalPreviousViewProjection);
+    if (previousClip.w <= 0.0001f)
+    {
+        return source;
+    }
+    const float2 previousUv = float2(
+        previousClip.x / previousClip.w * 0.5f + 0.5f,
+        0.5f - previousClip.y / previousClip.w * 0.5f);
+
+    const float2 texel = float2(PassPrimary.w, PassSecondary.x);
+    float2 velocity = (input.textureCoordinate - previousUv)
+        * max(PassPrimary.x, 0.0f);
+    const float2 velocityPixels = velocity / max(texel, 1e-6f);
+    const float lengthPixels = length(velocityPixels);
+    const float limitPixels = max(PassPrimary.y, 0.0f);
+    if (lengthPixels < 0.5f || limitPixels <= 0.0f)
+    {
+        return source;
+    }
+    if (lengthPixels > limitPixels)
+    {
+        velocity *= limitPixels / lengthPixels;
+    }
+
+    const int sampleCount = clamp((int)PassPrimary.z, 2, 32);
+    float3 total = source.rgb;
+    float totalWeight = 1.0f;
+    [loop]
+    for (int index = 0; index < sampleCount; ++index)
+    {
+        const float offset =
+            ((float)index + 0.5f) / (float)sampleCount - 0.5f;
+        const float2 uv = clamp(
+            input.textureCoordinate + velocity * offset,
+            0.0f,
+            1.0f);
+        total += SpriteTexture.SampleLevel(
+            SpriteSampler,
+            uv,
+            0.0f).rgb;
+        totalWeight += 1.0f;
+    }
+    return float4(total / totalWeight, source.a);
+}
+
 float OutlineSceneDistance(float deviceDepth)
 {
     const float denominator = deviceDepth + PassTertiary.x;
@@ -729,6 +796,9 @@ namespace LamaPon::Detail
             "ps_5_0");
         m_screenOutlinePixelShader = CompileSpriteShader(
             "ScreenOutlinePixelShader",
+            "ps_5_0");
+        m_motionBlurPixelShader = CompileSpriteShader(
+            "MotionBlurPixelShader",
             "ps_5_0");
 
         D3D12_DESCRIPTOR_RANGE textureRange{};
@@ -1316,6 +1386,67 @@ namespace LamaPon::Detail
         m_backend->EndOffscreenPostProcess(target);
     }
 
+    void D3D12SpriteRenderer::ApplyMotionBlur(
+        RenderTarget& target,
+        const GraphicsViewHandle& fallbackTexture,
+        const MotionBlurSettings& settings,
+        const DirectX::XMFLOAT4X4& inverseViewProjection,
+        const DirectX::XMFLOAT4X4& previousViewProjection,
+        const std::uint32_t sampleCount)
+    {
+        if (!settings.enabled
+            || settings.intensity <= 0.0f
+            || settings.maximumRadius <= 0.0f)
+        {
+            return;
+        }
+        const auto depth = target.DepthViewHandle();
+        if (!m_backend->TryResolveShaderResource(depth))
+        {
+            return;
+        }
+        std::array<float, 32> matrices{};
+        static_assert(
+            sizeof(inverseViewProjection) == sizeof(float) * 16u);
+        static_assert(
+            sizeof(previousViewProjection) == sizeof(float) * 16u);
+        std::memcpy(
+            matrices.data(),
+            &inverseViewProjection,
+            sizeof(inverseViewProjection));
+        std::memcpy(
+            matrices.data() + 16u,
+            &previousViewProjection,
+            sizeof(previousViewProjection));
+        const auto texel = TexelSize(target);
+        const auto source = m_backend->BeginOffscreenPostProcess(target);
+        try
+        {
+            DrawFullscreen(
+                source,
+                fallbackTexture,
+                FullscreenProgram::MotionBlur,
+                {
+                    std::clamp(settings.intensity, 0.0f, 4.0f),
+                    std::clamp(settings.maximumRadius, 0.0f, 64.0f),
+                    static_cast<float>(std::clamp(sampleCount, 2u, 32u)),
+                    texel[0],
+                    texel[1],
+                    0.0f,
+                    0.0f,
+                    0.0f
+                },
+                { GraphicsViewHandle{}, depth },
+                matrices);
+        }
+        catch (...)
+        {
+            m_backend->AbortOffscreenPostProcess(target);
+            throw;
+        }
+        m_backend->EndOffscreenPostProcess(target);
+    }
+
     void D3D12SpriteRenderer::MeasureLuminance(
         RenderTarget& target,
         const GraphicsViewHandle& fallbackTexture)
@@ -1429,7 +1560,8 @@ namespace LamaPon::Detail
                 m_auxiliaryTextures[index] = auxiliary->descriptor;
             }
         }
-        else if (program == FullscreenProgram::ScreenOutline)
+        else if (program == FullscreenProgram::ScreenOutline
+            || program == FullscreenProgram::MotionBlur)
         {
             const auto depth = m_backend->TryResolveShaderResource(
                 m_auxiliaryViews[1]);
@@ -1437,8 +1569,8 @@ namespace LamaPon::Detail
             {
                 Abort(token);
                 throw std::invalid_argument(
-                    "The DirectX 12 screen outline pass requires a "
-                    "current depth view.");
+                    "The DirectX 12 depth post-process requires a current "
+                    "depth view.");
             }
             m_auxiliaryTextures[1] = depth->descriptor;
         }
@@ -1602,11 +1734,20 @@ namespace LamaPon::Detail
                 m_matrixConstants.data(),
                 0);
         }
-        else if (m_program == FullscreenProgram::ScreenOutline)
+        else if (m_program == FullscreenProgram::ScreenOutline
+            || m_program == FullscreenProgram::MotionBlur)
         {
             commandList->SetGraphicsRootDescriptorTable(
                 4,
                 m_auxiliaryTextures[1]);
+            if (m_program == FullscreenProgram::MotionBlur)
+            {
+                commandList->SetGraphicsRoot32BitConstants(
+                    5,
+                    static_cast<UINT>(m_matrixConstants.size()),
+                    m_matrixConstants.data(),
+                    0);
+            }
         }
         commandList->IASetPrimitiveTopology(
             D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -1656,7 +1797,7 @@ namespace LamaPon::Detail
             throw std::invalid_argument(
                 "The sprite blend mode is invalid.");
         }
-        if (program > FullscreenProgram::ScreenOutline)
+        if (program > FullscreenProgram::MotionBlur)
         {
             throw std::invalid_argument(
                 "The sprite pixel program is invalid.");
@@ -1741,6 +1882,9 @@ namespace LamaPon::Detail
             break;
         case FullscreenProgram::ScreenOutline:
             pixelShader = m_screenOutlinePixelShader.Get();
+            break;
+        case FullscreenProgram::MotionBlur:
+            pixelShader = m_motionBlurPixelShader.Get();
             break;
         case FullscreenProgram::None:
             break;

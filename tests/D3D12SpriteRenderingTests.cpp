@@ -1672,14 +1672,16 @@ namespace
         Bloom,
         ToneMapping,
         Fxaa,
-        Temporal
+        Temporal,
+        MotionBlur
     };
 
-    constexpr std::array<PostProcessCase, 4> PostProcessCases{
+    constexpr std::array<PostProcessCase, 5> PostProcessCases{
         PostProcessCase::Bloom,
         PostProcessCase::ToneMapping,
         PostProcessCase::Fxaa,
-        PostProcessCase::Temporal
+        PostProcessCase::Temporal,
+        PostProcessCase::MotionBlur
     };
 
     [[nodiscard]] std::string PostProcessCaseName(
@@ -1695,6 +1697,8 @@ namespace
             return "FXAA";
         case PostProcessCase::Temporal:
             return "TAA";
+        case PostProcessCase::MotionBlur:
+            return "motion blur";
         }
         return "post-process";
     }
@@ -1757,6 +1761,31 @@ namespace
                 graphics.RestoreOutputState(*historyOutput);
                 graphics.EndFrame();
             }
+            else if (postProcess == PostProcessCase::MotionBlur)
+            {
+                // 最初のフレームは描画せず、横へずれた前フレームの
+                // ビュー射影だけをtargetへ保存します。次フレームとの
+                // 差が8pxぶんのカメラ移動になります。
+                DirectX::XMFLOAT4X4 previousViewProjection{};
+                DirectX::XMStoreFloat4x4(
+                    &previousViewProjection,
+                    DirectX::XMMatrixTranslation(0.25f, 0.0f, 0.0f));
+                graphics.BeginFrame(clearColor);
+                const auto previousOutput = graphics.CaptureOutputState();
+                graphics.BeginOffscreenTarget(target, clearColor);
+                LamaPon::MotionBlurSettings motionBlur;
+                motionBlur.enabled = true;
+                motionBlur.intensity = 1.0f;
+                motionBlur.maximumRadius = 8.0f;
+                graphics.ApplyOffscreenTargetMotionBlur(
+                    target,
+                    motionBlur,
+                    identity,
+                    previousViewProjection,
+                    8u);
+                graphics.RestoreOutputState(*previousOutput);
+                graphics.EndFrame();
+            }
             graphics.BeginFrame(clearColor);
             const auto primaryOutput = graphics.CaptureOutputState();
             graphics.BeginOffscreenTarget(target, clearColor);
@@ -1782,6 +1811,16 @@ namespace
                         32.0f,
                         0.0f,
                         32.0f,
+                        32.0f,
+                        { 1.0f, 1.0f, 1.0f, 1.0f });
+                }
+                else if (postProcess == PostProcessCase::MotionBlur)
+                {
+                    DrawRectangle(
+                        pass,
+                        28.0f,
+                        0.0f,
+                        8.0f,
                         32.0f,
                         { 1.0f, 1.0f, 1.0f, 1.0f });
                 }
@@ -1826,6 +1865,20 @@ namespace
                     target,
                     temporal,
                     inputs);
+                break;
+            }
+            case PostProcessCase::MotionBlur:
+            {
+                LamaPon::MotionBlurSettings motionBlur;
+                motionBlur.enabled = true;
+                motionBlur.intensity = 1.0f;
+                motionBlur.maximumRadius = 8.0f;
+                graphics.ApplyOffscreenTargetMotionBlur(
+                    target,
+                    motionBlur,
+                    identity,
+                    identity,
+                    8u);
                 break;
             }
             }
@@ -1931,6 +1984,15 @@ namespace
                             && pixels[offset(32u, 16u)] < 155u,
                         "TAA did not reproject and clamp the temporal "
                         "history at the edge");
+                    break;
+                case PostProcessCase::MotionBlur:
+                    // 元の白帯はx=28..35です。前フレームとの8pxの差を
+                    // 中心から両側へ伸ばすため、外側に中間色ができます。
+                    Require(
+                        pixels[offset(26u, 16u)] > 20u
+                            && pixels[offset(31u, 16u)] > 100u
+                            && pixels[offset(31u, 16u)] < 250u,
+                        "Motion blur did not spread the moving edge");
                     break;
                 }
             }

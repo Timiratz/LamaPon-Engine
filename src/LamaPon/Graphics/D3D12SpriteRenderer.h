@@ -22,6 +22,7 @@ namespace LamaPon
     class RenderTarget;
     struct BloomSettings;
     struct ColorGradingSettings;
+    struct MotionBlurSettings;
     struct ScreenOutlineSettings;
     struct TemporalAntiAliasingInputs;
     struct TemporalAntiAliasingSettings;
@@ -92,6 +93,15 @@ namespace LamaPon::Detail
             const GraphicsViewHandle& fallbackTexture,
             const ScreenOutlineSettings& settings,
             const DirectX::XMFLOAT4X4& projection);
+        // 深度から現在のworld位置を戻し、前フレームの射影位置との差に
+        // 沿ってHDR colorを平均します。
+        void ApplyMotionBlur(
+            RenderTarget& target,
+            const GraphicsViewHandle& fallbackTexture,
+            const MotionBlurSettings& settings,
+            const DirectX::XMFLOAT4X4& inverseViewProjection,
+            const DirectX::XMFLOAT4X4& previousViewProjection,
+            std::uint32_t sampleCount);
         // 自動露出用に、current colorの対数輝度を1/4解像度で書いてから
         // 2x2平均で1x1まで縮めます。D3D11のPSLuminanceとGenerateMipsに
         // 相当し、終了後はtargetの通常の描画先へ戻します。
@@ -111,7 +121,8 @@ namespace LamaPon::Detail
             Fxaa,
             Luminance,
             Temporal,
-            ScreenOutline
+            ScreenOutline,
+            MotionBlur
         };
 
         struct Vertex final
@@ -167,9 +178,10 @@ namespace LamaPon::Detail
         Microsoft::WRL::ComPtr<ID3DBlob> m_luminancePixelShader;
         Microsoft::WRL::ComPtr<ID3DBlob> m_temporalPixelShader;
         Microsoft::WRL::ComPtr<ID3DBlob> m_screenOutlinePixelShader;
+        Microsoft::WRL::ComPtr<ID3DBlob> m_motionBlurPixelShader;
         // pixel shader、深度format、出力format、blend modeごとに、通常pass
         // とscissor passのcull違いを持ちます。
-        std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 224>
+        std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 256>
             m_pipelineStates;
         Microsoft::WRL::ComPtr<ID3D12Resource> m_indexBuffer;
         GraphicsViewHandle m_fallbackTexture;
