@@ -234,6 +234,29 @@ namespace LamaPon
         const TemporalAntiAliasingSettings& settings,
         const TemporalAntiAliasingInputs& inputs)
     {
+        if (ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            if (!settings.enabled)
+            {
+                return;
+            }
+            // D3D12の公開DepthViewはshader-readable copyなので、main passを
+            // 描き終えた現在深度をTAAの直前に確定します。
+            m_state->m_backend->CaptureOffscreenTargetDepth(target);
+            RequireD3D12PostProcessRenderer(
+                *this,
+                m_state->m_apiResources.get(),
+                target,
+                "ApplyOffscreenTargetTemporalAntiAliasing")
+                .ApplyTemporalAntiAliasing(
+                    target,
+                    m_state->m_whiteTextureView,
+                    settings,
+                    inputs);
+            return;
+        }
+
         auto& targetState = RequireCurrentOffscreenTarget(
             *this,
             target,

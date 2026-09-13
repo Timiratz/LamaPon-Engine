@@ -3,6 +3,7 @@
 #include "LamaPon/Graphics/D3D12Backend.h"
 #include "LamaPon/Graphics/EnvironmentSettings.h"
 #include "LamaPon/Graphics/RenderTarget.h"
+#include "LamaPon/Graphics/RenderTargetBackendState.h"
 
 #include <d3dcompiler.h>
 
@@ -38,7 +39,15 @@ cbuffer FullscreenPass : register(b1)
     float4 PassSecondary;
 };
 
+cbuffer TemporalPass : register(b2)
+{
+    row_major float4x4 TemporalInverseViewProjection;
+    row_major float4x4 TemporalPreviousViewProjection;
+};
+
 Texture2D SpriteTexture : register(t0);
+Texture2D TemporalHistoryTexture : register(t1);
+Texture2D DepthTexture : register(t2);
 SamplerState SpriteSampler : register(s0);
 
 struct VertexInput
@@ -274,6 +283,78 @@ float4 LuminancePixelShader(PixelInput input) : SV_Target
         0.0f).rgb;
     const float average = Luminance(max(total * 0.25f, 0.0f));
     return log(max(average, 1e-4f)).xxxx;
+}
+
+float4 TemporalPixelShader(PixelInput input) : SV_Target
+{
+    const float3 current = SpriteTexture.Sample(
+        SpriteSampler,
+        input.textureCoordinate).rgb;
+    const float depth = DepthTexture.Sample(
+        SpriteSampler,
+        input.textureCoordinate).r;
+    const float2 clip = float2(
+        input.textureCoordinate.x * 2.0f - 1.0f,
+        1.0f - input.textureCoordinate.y * 2.0f);
+    const float4 worldHomogeneous = mul(
+        float4(clip, depth, 1.0f),
+        TemporalInverseViewProjection);
+    if (worldHomogeneous.w <= 0.0001f)
+    {
+        return float4(current, 1.0f);
+    }
+    const float3 worldPosition =
+        worldHomogeneous.xyz / worldHomogeneous.w;
+    const float4 previousClip = mul(
+        float4(worldPosition, 1.0f),
+        TemporalPreviousViewProjection);
+    if (previousClip.w <= 0.0001f)
+    {
+        return float4(current, 1.0f);
+    }
+    const float3 previousProjected = previousClip.xyz / previousClip.w;
+    const float2 previousUv = float2(
+        previousProjected.x * 0.5f + 0.5f,
+        0.5f - previousProjected.y * 0.5f);
+    if (previousUv.x < 0.0f || previousUv.x > 1.0f
+        || previousUv.y < 0.0f || previousUv.y > 1.0f)
+    {
+        return float4(current, 1.0f);
+    }
+
+    const float2 texel = PassPrimary.zw;
+    float3 minimumColor = current;
+    float3 maximumColor = current;
+    [unroll]
+    for (int offsetY = -1; offsetY <= 1; ++offsetY)
+    {
+        [unroll]
+        for (int offsetX = -1; offsetX <= 1; ++offsetX)
+        {
+            if (offsetX == 0 && offsetY == 0)
+            {
+                continue;
+            }
+            const float3 neighbour = SpriteTexture.Sample(
+                SpriteSampler,
+                input.textureCoordinate
+                    + float2(offsetX, offsetY) * texel).rgb;
+            minimumColor = min(minimumColor, neighbour);
+            maximumColor = max(maximumColor, neighbour);
+        }
+    }
+    const float3 middle = (minimumColor + maximumColor) * 0.5f;
+    const float3 extent = (maximumColor - minimumColor)
+        * 0.5f * max(PassPrimary.y, 0.0f);
+    const float3 history = TemporalHistoryTexture.Sample(
+        SpriteSampler,
+        previousUv).rgb;
+    return float4(
+        lerp(
+            current,
+            clamp(history, middle - extent, middle + extent),
+            saturate(PassPrimary.x)),
+        1.0f);
 }
 )";
 
@@ -519,6 +600,9 @@ namespace LamaPon::Detail
         m_luminancePixelShader = CompileSpriteShader(
             "LuminancePixelShader",
             "ps_5_0");
+        m_temporalPixelShader = CompileSpriteShader(
+            "TemporalPixelShader",
+            "ps_5_0");
 
         D3D12_DESCRIPTOR_RANGE textureRange{};
         textureRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
@@ -527,7 +611,12 @@ namespace LamaPon::Detail
         textureRange.RegisterSpace = 0;
         textureRange.OffsetInDescriptorsFromTableStart = 0;
 
-        std::array<D3D12_ROOT_PARAMETER, 3> parameters{};
+        D3D12_DESCRIPTOR_RANGE historyRange = textureRange;
+        historyRange.BaseShaderRegister = 1;
+        D3D12_DESCRIPTOR_RANGE depthRange = textureRange;
+        depthRange.BaseShaderRegister = 2;
+
+        std::array<D3D12_ROOT_PARAMETER, 6> parameters{};
         parameters[0].ParameterType =
             D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
         parameters[0].Constants.ShaderRegister = 0;
@@ -545,6 +634,22 @@ namespace LamaPon::Detail
         parameters[2].Constants.RegisterSpace = 0;
         parameters[2].Constants.Num32BitValues = 8;
         parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        parameters[3].ParameterType =
+            D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        parameters[3].DescriptorTable.NumDescriptorRanges = 1;
+        parameters[3].DescriptorTable.pDescriptorRanges = &historyRange;
+        parameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        parameters[4].ParameterType =
+            D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        parameters[4].DescriptorTable.NumDescriptorRanges = 1;
+        parameters[4].DescriptorTable.pDescriptorRanges = &depthRange;
+        parameters[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        parameters[5].ParameterType =
+            D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        parameters[5].Constants.ShaderRegister = 2;
+        parameters[5].Constants.RegisterSpace = 0;
+        parameters[5].Constants.Num32BitValues = 32;
+        parameters[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
         // SpriteBatch既定のLinearClampと同じsamplerです。
         D3D12_STATIC_SAMPLER_DESC sampler{};
@@ -966,6 +1071,71 @@ namespace LamaPon::Detail
             { texel[0], texel[1], 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f });
     }
 
+    void D3D12SpriteRenderer::ApplyTemporalAntiAliasing(
+        RenderTarget& target,
+        const GraphicsViewHandle& fallbackTexture,
+        const TemporalAntiAliasingSettings& settings,
+        const TemporalAntiAliasingInputs& inputs)
+    {
+        if (!settings.enabled)
+        {
+            return;
+        }
+        const auto* const state =
+            RenderTargetBackendAccess::Get(target);
+        const auto history = target.TemporalHistoryViewHandle();
+        const auto depth = target.DepthViewHandle();
+        if (state == nullptr
+            || !state->m_temporalHistoryValid
+            || !m_backend->TryResolveShaderResource(history)
+            || !m_backend->TryResolveShaderResource(depth))
+        {
+            return;
+        }
+
+        std::array<float, 32> matrices{};
+        static_assert(
+            sizeof(inputs.inverseViewProjection) == sizeof(float) * 16u);
+        static_assert(
+            sizeof(state->m_temporalHistoryViewProjection)
+                == sizeof(float) * 16u);
+        std::memcpy(
+            matrices.data(),
+            &inputs.inverseViewProjection,
+            sizeof(inputs.inverseViewProjection));
+        std::memcpy(
+            matrices.data() + 16u,
+            &state->m_temporalHistoryViewProjection,
+            sizeof(state->m_temporalHistoryViewProjection));
+        const auto texel = TexelSize(target);
+        const auto source = m_backend->BeginOffscreenPostProcess(target);
+        try
+        {
+            DrawFullscreen(
+                source,
+                fallbackTexture,
+                FullscreenProgram::Temporal,
+                {
+                    std::clamp(settings.historyWeight, 0.0f, 0.98f),
+                    std::max(settings.clampTolerance, 0.0f),
+                    texel[0],
+                    texel[1],
+                    0.0f,
+                    0.0f,
+                    0.0f,
+                    0.0f
+                },
+                { history, depth },
+                matrices);
+        }
+        catch (...)
+        {
+            m_backend->AbortOffscreenPostProcess(target);
+            throw;
+        }
+        m_backend->EndOffscreenPostProcess(target);
+    }
+
     void D3D12SpriteRenderer::MeasureLuminance(
         RenderTarget& target,
         const GraphicsViewHandle& fallbackTexture)
@@ -1034,7 +1204,9 @@ namespace LamaPon::Detail
         const GraphicsViewHandle& texture,
         const GraphicsViewHandle& fallbackTexture,
         const FullscreenProgram program,
-        const std::array<float, 8>& constants)
+        const std::array<float, 8>& constants,
+        const std::array<GraphicsViewHandle, 2>& auxiliaryViews,
+        const std::array<float, 32>& matrixConstants)
     {
         const auto binding = m_backend->TryResolveShaderResource(texture);
         const auto& viewport = m_backend->ActiveViewport();
@@ -1057,6 +1229,26 @@ namespace LamaPon::Detail
             status);
         m_program = program;
         m_passConstants = constants;
+        m_matrixConstants = matrixConstants;
+        m_auxiliaryViews = auxiliaryViews;
+        if (program == FullscreenProgram::Temporal)
+        {
+            for (std::size_t index{};
+                index < m_auxiliaryViews.size();
+                ++index)
+            {
+                const auto auxiliary = m_backend->TryResolveShaderResource(
+                    m_auxiliaryViews[index]);
+                if (!auxiliary)
+                {
+                    Abort(token);
+                    throw std::invalid_argument(
+                        "The DirectX 12 temporal pass requires current "
+                        "history and depth views.");
+                }
+                m_auxiliaryTextures[index] = auxiliary->descriptor;
+            }
+        }
         try
         {
             SpriteDrawRequest request;
@@ -1109,6 +1301,12 @@ namespace LamaPon::Detail
         m_sprites.clear();
         m_scissorStack.clear();
         m_fallbackTexture.Reset();
+        for (auto& view : m_auxiliaryViews)
+        {
+            view.Reset();
+        }
+        m_auxiliaryTextures = {};
+        m_matrixConstants = {};
         m_program = FullscreenProgram::None;
         m_activeToken = 0;
     }
@@ -1197,6 +1395,20 @@ namespace LamaPon::Detail
                 m_passConstants.data(),
                 0);
         }
+        if (m_program == FullscreenProgram::Temporal)
+        {
+            commandList->SetGraphicsRootDescriptorTable(
+                3,
+                m_auxiliaryTextures[0]);
+            commandList->SetGraphicsRootDescriptorTable(
+                4,
+                m_auxiliaryTextures[1]);
+            commandList->SetGraphicsRoot32BitConstants(
+                5,
+                static_cast<UINT>(m_matrixConstants.size()),
+                m_matrixConstants.data(),
+                0);
+        }
         commandList->IASetPrimitiveTopology(
             D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         commandList->IASetVertexBuffers(0, 1, &vertexBufferView);
@@ -1245,7 +1457,7 @@ namespace LamaPon::Detail
             throw std::invalid_argument(
                 "The sprite blend mode is invalid.");
         }
-        if (program > FullscreenProgram::Luminance)
+        if (program > FullscreenProgram::Temporal)
         {
             throw std::invalid_argument(
                 "The sprite pixel program is invalid.");
@@ -1324,6 +1536,9 @@ namespace LamaPon::Detail
             break;
         case FullscreenProgram::Luminance:
             pixelShader = m_luminancePixelShader.Get();
+            break;
+        case FullscreenProgram::Temporal:
+            pixelShader = m_temporalPixelShader.Get();
             break;
         case FullscreenProgram::None:
             break;

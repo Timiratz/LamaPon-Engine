@@ -22,6 +22,8 @@ namespace LamaPon
     class RenderTarget;
     struct BloomSettings;
     struct ColorGradingSettings;
+    struct TemporalAntiAliasingInputs;
+    struct TemporalAntiAliasingSettings;
 }
 
 namespace LamaPon::Detail
@@ -75,6 +77,13 @@ namespace LamaPon::Detail
         void ApplyFXAA(
             RenderTarget& target,
             const GraphicsViewHandle& fallbackTexture);
+        // 前フレームの解決済みカラーと現在深度を使って再投影し、
+        // 近傍クランプ後の履歴をcurrent colorへ混ぜます。
+        void ApplyTemporalAntiAliasing(
+            RenderTarget& target,
+            const GraphicsViewHandle& fallbackTexture,
+            const TemporalAntiAliasingSettings& settings,
+            const TemporalAntiAliasingInputs& inputs);
         // 自動露出用に、current colorの対数輝度を1/4解像度で書いてから
         // 2x2平均で1x1まで縮めます。D3D11のPSLuminanceとGenerateMipsに
         // 相当し、終了後はtargetの通常の描画先へ戻します。
@@ -92,7 +101,8 @@ namespace LamaPon::Detail
             ToneMap,
             Bloom,
             Fxaa,
-            Luminance
+            Luminance,
+            Temporal
         };
 
         struct Vertex final
@@ -121,7 +131,9 @@ namespace LamaPon::Detail
             const GraphicsViewHandle& texture,
             const GraphicsViewHandle& fallbackTexture,
             FullscreenProgram program,
-            const std::array<float, 8>& constants);
+            const std::array<float, 8>& constants,
+            const std::array<GraphicsViewHandle, 2>& auxiliaryViews = {},
+            const std::array<float, 32>& matrixConstants = {});
         // targetのcurrent colorを入力にしたfullscreen passをpost colorへ
         // 書いて交換します。失敗時は交換せず元の出力へ戻します。
         void ApplyPostProcessPass(
@@ -144,9 +156,10 @@ namespace LamaPon::Detail
         Microsoft::WRL::ComPtr<ID3DBlob> m_bloomPixelShader;
         Microsoft::WRL::ComPtr<ID3DBlob> m_fxaaPixelShader;
         Microsoft::WRL::ComPtr<ID3DBlob> m_luminancePixelShader;
+        Microsoft::WRL::ComPtr<ID3DBlob> m_temporalPixelShader;
         // pixel shader、深度format、出力format、blend modeごとに、通常pass
         // とscissor passのcull違いを持ちます。
-        std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 160>
+        std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 192>
             m_pipelineStates;
         Microsoft::WRL::ComPtr<ID3D12Resource> m_indexBuffer;
         GraphicsViewHandle m_fallbackTexture;
@@ -154,6 +167,9 @@ namespace LamaPon::Detail
         std::vector<D3D12_RECT> m_scissorStack;
         SpriteBlendMode m_blend{ SpriteBlendMode::NonPremultiplied };
         std::array<float, 8> m_passConstants{};
+        std::array<float, 32> m_matrixConstants{};
+        std::array<GraphicsViewHandle, 2> m_auxiliaryViews;
+        std::array<D3D12_GPU_DESCRIPTOR_HANDLE, 2> m_auxiliaryTextures{};
         FullscreenProgram m_program{ FullscreenProgram::None };
         std::uint64_t m_activeToken{};
         std::uint64_t m_nextToken{ 1 };

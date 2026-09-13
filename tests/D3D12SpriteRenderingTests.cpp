@@ -1600,13 +1600,15 @@ namespace
     {
         Bloom,
         ToneMapping,
-        Fxaa
+        Fxaa,
+        Temporal
     };
 
-    constexpr std::array<PostProcessCase, 3> PostProcessCases{
+    constexpr std::array<PostProcessCase, 4> PostProcessCases{
         PostProcessCase::Bloom,
         PostProcessCase::ToneMapping,
-        PostProcessCase::Fxaa
+        PostProcessCase::Fxaa,
+        PostProcessCase::Temporal
     };
 
     [[nodiscard]] std::string PostProcessCaseName(
@@ -1620,6 +1622,8 @@ namespace
             return "tone mapping";
         case PostProcessCase::Fxaa:
             return "FXAA";
+        case PostProcessCase::Temporal:
+            return "TAA";
         }
         return "post-process";
     }
@@ -1655,6 +1659,33 @@ namespace
         {
             const auto postProcess = PostProcessCases[index];
             constexpr float clearColor[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+            DirectX::XMFLOAT4X4 identity{};
+            DirectX::XMStoreFloat4x4(
+                &identity,
+                DirectX::XMMatrixIdentity());
+            if (postProcess == PostProcessCase::Temporal)
+            {
+                // 1フレーム目の灰色を履歴へ控えます。次のフレームでは
+                // 白黒境界の近傍範囲内へ履歴が収まり、実際に混ざります。
+                graphics.BeginFrame(clearColor);
+                const auto historyOutput = graphics.CaptureOutputState();
+                graphics.BeginOffscreenTarget(target, clearColor);
+                {
+                    auto pass = graphics.BeginSpritePass();
+                    DrawRectangle(
+                        pass,
+                        0.0f,
+                        0.0f,
+                        64.0f,
+                        32.0f,
+                        { 0.4f, 0.4f, 0.4f, 1.0f });
+                }
+                graphics.CaptureOffscreenTargetTemporalHistory(
+                    target,
+                    identity);
+                graphics.RestoreOutputState(*historyOutput);
+                graphics.EndFrame();
+            }
             graphics.BeginFrame(clearColor);
             const auto primaryOutput = graphics.CaptureOutputState();
             graphics.BeginOffscreenTarget(target, clearColor);
@@ -1672,6 +1703,16 @@ namespace
                     Require(
                         pass.Draw(edge),
                         "The FXAA edge sprite was rejected");
+                }
+                else if (postProcess == PostProcessCase::Temporal)
+                {
+                    DrawRectangle(
+                        pass,
+                        32.0f,
+                        0.0f,
+                        32.0f,
+                        32.0f,
+                        { 1.0f, 1.0f, 1.0f, 1.0f });
                 }
                 else
                 {
@@ -1701,6 +1742,21 @@ namespace
             case PostProcessCase::Fxaa:
                 graphics.ApplyOffscreenTargetFXAA(target);
                 break;
+            case PostProcessCase::Temporal:
+            {
+                LamaPon::TemporalAntiAliasingSettings temporal;
+                temporal.enabled = true;
+                temporal.historyWeight = 0.75f;
+                temporal.clampTolerance = 4.0f;
+                LamaPon::TemporalAntiAliasingInputs inputs;
+                inputs.inverseViewProjection = identity;
+                inputs.viewProjection = identity;
+                graphics.ApplyOffscreenTargetTemporalAntiAliasing(
+                    target,
+                    temporal,
+                    inputs);
+                break;
+            }
             }
             graphics.PublishOffscreenTarget(target);
             graphics.RestoreOutputState(*primaryOutput);
@@ -1792,6 +1848,19 @@ namespace
                         "FXAA did not smooth the rotated edge");
                     break;
                 }
+                case PostProcessCase::Temporal:
+                    // 現在色はx<32が黒、履歴は全面0.4です。境界の1画素は
+                    // 近傍クランプを通過して履歴比率0.75で混ざり、その外側は
+                    // 黒へクランプされます。
+                    Require(
+                        pixels[offset(30u, 16u)] < 4u
+                            && pixels[offset(31u, 16u)] > 65u
+                            && pixels[offset(31u, 16u)] < 90u
+                            && pixels[offset(32u, 16u)] > 125u
+                            && pixels[offset(32u, 16u)] < 155u,
+                        "TAA did not reproject and clamp the temporal "
+                        "history at the edge");
+                    break;
                 }
             }
 
