@@ -426,6 +426,107 @@ float4 MotionBlurPixelShader(PixelInput input) : SV_Target
     return float4(total / totalWeight, source.a);
 }
 
+float DepthOfFieldSceneDistance(float deviceDepth)
+{
+    const float denominator = deviceDepth + PassTertiary.x;
+    return denominator > -1e-6f
+        ? 1e6f
+        : PassTertiary.y / denominator;
+}
+
+float DepthOfFieldSignedCircleOfConfusion(float viewDepth)
+{
+    const float focus = max(PassPrimary.x, 0.01f);
+    const float halfRange = max(PassPrimary.y, 0.0f) * 0.5f;
+    const float nearEdge = max(focus - halfRange, 0.01f);
+    const float farEdge = focus + halfRange;
+    float reference;
+    float direction;
+    if (viewDepth < nearEdge)
+    {
+        reference = nearEdge;
+        direction = -1.0f;
+    }
+    else if (viewDepth > farEdge)
+    {
+        reference = farEdge;
+        direction = 1.0f;
+    }
+    else
+    {
+        return 0.0f;
+    }
+    const float relative = abs(
+        1.0f - reference / max(viewDepth, 0.001f));
+    return direction * saturate(relative * max(PassPrimary.z, 0.0f));
+}
+
+float DepthOfFieldNoise(float2 pixel)
+{
+    return frac(
+        52.9829189f
+        * frac(dot(pixel, float2(0.06711056f, 0.00583715f))));
+}
+
+float4 DepthOfFieldPixelShader(PixelInput input) : SV_Target
+{
+    const float4 sharp = SpriteTexture.Sample(
+        SpriteSampler,
+        input.textureCoordinate);
+    const float centerDepth = DepthTexture.Sample(
+        SpriteSampler,
+        input.textureCoordinate).r;
+    const float centerSignedCoc = DepthOfFieldSignedCircleOfConfusion(
+        DepthOfFieldSceneDistance(centerDepth));
+    const float centerCoc = abs(centerSignedCoc);
+    const float maximumRadius = max(PassPrimary.w, 0.0f);
+    const float mixAmount = saturate(centerCoc * maximumRadius);
+    if (mixAmount <= 0.0f || maximumRadius <= 0.0f)
+    {
+        return sharp;
+    }
+
+    const int sampleCount = clamp((int)PassSecondary.x, 4, 64);
+    const float2 texel = PassSecondary.yz;
+    const float rotation = DepthOfFieldNoise(input.position.xy)
+        * 6.28318531f;
+    float3 total = sharp.rgb;
+    float totalWeight = 1.0f;
+    [loop]
+    for (int index = 0; index < sampleCount; ++index)
+    {
+        const float angle = (float)index * 2.39996323f + rotation;
+        const float radius = sqrt(
+            ((float)index + 0.5f) / (float)sampleCount)
+            * maximumRadius;
+        const float2 uv = clamp(
+            input.textureCoordinate
+                + float2(cos(angle), sin(angle)) * radius * texel,
+            0.0f,
+            1.0f);
+        const float tapDepth = DepthTexture.SampleLevel(
+            SpriteSampler,
+            uv,
+            0.0f).r;
+        const float tapSignedCoc = DepthOfFieldSignedCircleOfConfusion(
+            DepthOfFieldSceneDistance(tapDepth));
+        const float tapCoc = abs(tapSignedCoc);
+        const float spread = tapSignedCoc < 0.0f
+            ? tapCoc
+            : min(tapCoc, centerCoc);
+        const float weight = saturate(
+            spread * maximumRadius - radius + 1.0f);
+        total += SpriteTexture.SampleLevel(
+            SpriteSampler,
+            uv,
+            0.0f).rgb * weight;
+        totalWeight += weight;
+    }
+    return float4(
+        lerp(sharp.rgb, total / totalWeight, mixAmount),
+        sharp.a);
+}
+
 float OutlineSceneDistance(float deviceDepth)
 {
     const float denominator = deviceDepth + PassTertiary.x;
@@ -799,6 +900,9 @@ namespace LamaPon::Detail
             "ps_5_0");
         m_motionBlurPixelShader = CompileSpriteShader(
             "MotionBlurPixelShader",
+            "ps_5_0");
+        m_depthOfFieldPixelShader = CompileSpriteShader(
+            "DepthOfFieldPixelShader",
             "ps_5_0");
 
         D3D12_DESCRIPTOR_RANGE textureRange{};
@@ -1447,6 +1551,57 @@ namespace LamaPon::Detail
         m_backend->EndOffscreenPostProcess(target);
     }
 
+    void D3D12SpriteRenderer::ApplyDepthOfField(
+        RenderTarget& target,
+        const GraphicsViewHandle& fallbackTexture,
+        const DepthOfFieldSettings& settings,
+        const DirectX::XMFLOAT4X4& projection,
+        const std::uint32_t sampleCount)
+    {
+        if (!settings.enabled
+            || settings.maximumRadius <= 0.0f
+            || std::abs(projection._11) < 1e-6f
+            || std::abs(projection._22) < 1e-6f)
+        {
+            return;
+        }
+        const auto depth = target.DepthViewHandle();
+        if (!m_backend->TryResolveShaderResource(depth))
+        {
+            return;
+        }
+        const auto texel = TexelSize(target);
+        const auto source = m_backend->BeginOffscreenPostProcess(target);
+        try
+        {
+            DrawFullscreen(
+                source,
+                fallbackTexture,
+                FullscreenProgram::DepthOfField,
+                {
+                    std::max(settings.focusDistance, 0.01f),
+                    std::clamp(settings.focusRange, 0.0f, 1000.0f),
+                    std::clamp(settings.blurStrength, 0.0f, 8.0f),
+                    std::clamp(settings.maximumRadius, 0.0f, 32.0f),
+                    static_cast<float>(std::clamp(sampleCount, 4u, 64u)),
+                    texel[0],
+                    texel[1],
+                    0.0f,
+                    projection._33,
+                    projection._43,
+                    0.0f,
+                    0.0f
+                },
+                { GraphicsViewHandle{}, depth });
+        }
+        catch (...)
+        {
+            m_backend->AbortOffscreenPostProcess(target);
+            throw;
+        }
+        m_backend->EndOffscreenPostProcess(target);
+    }
+
     void D3D12SpriteRenderer::MeasureLuminance(
         RenderTarget& target,
         const GraphicsViewHandle& fallbackTexture)
@@ -1561,7 +1716,8 @@ namespace LamaPon::Detail
             }
         }
         else if (program == FullscreenProgram::ScreenOutline
-            || program == FullscreenProgram::MotionBlur)
+            || program == FullscreenProgram::MotionBlur
+            || program == FullscreenProgram::DepthOfField)
         {
             const auto depth = m_backend->TryResolveShaderResource(
                 m_auxiliaryViews[1]);
@@ -1735,7 +1891,8 @@ namespace LamaPon::Detail
                 0);
         }
         else if (m_program == FullscreenProgram::ScreenOutline
-            || m_program == FullscreenProgram::MotionBlur)
+            || m_program == FullscreenProgram::MotionBlur
+            || m_program == FullscreenProgram::DepthOfField)
         {
             commandList->SetGraphicsRootDescriptorTable(
                 4,
@@ -1797,7 +1954,7 @@ namespace LamaPon::Detail
             throw std::invalid_argument(
                 "The sprite blend mode is invalid.");
         }
-        if (program > FullscreenProgram::MotionBlur)
+        if (program > FullscreenProgram::DepthOfField)
         {
             throw std::invalid_argument(
                 "The sprite pixel program is invalid.");
@@ -1885,6 +2042,9 @@ namespace LamaPon::Detail
             break;
         case FullscreenProgram::MotionBlur:
             pixelShader = m_motionBlurPixelShader.Get();
+            break;
+        case FullscreenProgram::DepthOfField:
+            pixelShader = m_depthOfFieldPixelShader.Get();
             break;
         case FullscreenProgram::None:
             break;

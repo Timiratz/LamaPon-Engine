@@ -36,6 +36,7 @@
 - DirectX 12へTAAの再投影・近傍クランプ・履歴合成passを移植。main pass直後の深度コピー、前フレームのHDRカラーとビュー射影行列を使い、解決済みカラーをBloomより前に生成して次フレームの履歴へ確定する。
 - DirectX 12へScreen Outlineを移植。main passの深度から距離差とビュー空間法線を再構成し、既存の色・太さ・深度／法線しきい値でトーンマップ後のSceneへ輪郭を重ねてからFXAAへ渡す。
 - DirectX 12へカメラMotion Blurを移植。RenderTargetごとの前フレーム行列とmain passの深度から画面上の移動量を求め、既存の強度・最大半径・品質別サンプル数でHDR Sceneをブラーする。
+- DirectX 12へDepth of Fieldを移植。main passの深度から既存と同じ薄レンズ近似のCoCを求め、焦点帯の外側を深度対応の黄金角サンプリングでぼかしてからBloomへ渡す。
 - `GraphicsDevice`のAPI固有資源所有を抽象interface化し、D3D11のEffect・Shader・Sprite・Shadow・render serviceを単一の具象世代へ集約。停止・再生成・破棄を共通境界から呼ぶ構造へ移行。
 - Effect・Shader cache・Shadow・Environment・Clustered LightsなどDevice世代に属する高水準資源をD3D11内部所有へ分離。非同期Shader workerをAssetManagerより先に停止し、再初期化時に旧Device資源と未消費Screen Effect queueを安全に破棄する。
 - `GraphicsDevice`のnative D3D11 Device / Context / CommonStates / view resolverを非公開化し、D3D11描画島とテストだけがSDK非公開bridgeから利用する境界へ移行。API 64 Game Module向けの旧public binary symbolを維持し、Game Module APIを65へ更新。

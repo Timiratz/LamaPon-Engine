@@ -496,8 +496,10 @@ namespace LamaPon
                     "Sceneの2D/UI、基本3D Mesh/Model、shadow map生成に"
                     "対応しています。方向光、Spot Light、Point Light"
                     "のshadow sampling、基本HDR offscreen合成にも"
-                    "対応し、基本ACES tone mappingも適用します。"
-                    "custom shaderとその他のpost-processは未対応です。");
+                    "対応し、TAA、Depth of Field、カメラMotion Blur、"
+                    "Bloom、自動露出、カラーグレーディング、Screen "
+                    "Outline、FXAAも適用します。custom shaderとSSAO／"
+                    "SSRなど一部のpost-processは未対応です。");
             }
         };
 

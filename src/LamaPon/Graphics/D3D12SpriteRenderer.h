@@ -22,6 +22,7 @@ namespace LamaPon
     class RenderTarget;
     struct BloomSettings;
     struct ColorGradingSettings;
+    struct DepthOfFieldSettings;
     struct MotionBlurSettings;
     struct ScreenOutlineSettings;
     struct TemporalAntiAliasingInputs;
@@ -102,6 +103,14 @@ namespace LamaPon::Detail
             const DirectX::XMFLOAT4X4& inverseViewProjection,
             const DirectX::XMFLOAT4X4& previousViewProjection,
             std::uint32_t sampleCount);
+        // main pass深度からCoCを求め、焦点帯の外側を深度対応の円形
+        // サンプリングでぼかします。
+        void ApplyDepthOfField(
+            RenderTarget& target,
+            const GraphicsViewHandle& fallbackTexture,
+            const DepthOfFieldSettings& settings,
+            const DirectX::XMFLOAT4X4& projection,
+            std::uint32_t sampleCount);
         // 自動露出用に、current colorの対数輝度を1/4解像度で書いてから
         // 2x2平均で1x1まで縮めます。D3D11のPSLuminanceとGenerateMipsに
         // 相当し、終了後はtargetの通常の描画先へ戻します。
@@ -122,7 +131,8 @@ namespace LamaPon::Detail
             Luminance,
             Temporal,
             ScreenOutline,
-            MotionBlur
+            MotionBlur,
+            DepthOfField
         };
 
         struct Vertex final
@@ -179,9 +189,10 @@ namespace LamaPon::Detail
         Microsoft::WRL::ComPtr<ID3DBlob> m_temporalPixelShader;
         Microsoft::WRL::ComPtr<ID3DBlob> m_screenOutlinePixelShader;
         Microsoft::WRL::ComPtr<ID3DBlob> m_motionBlurPixelShader;
+        Microsoft::WRL::ComPtr<ID3DBlob> m_depthOfFieldPixelShader;
         // pixel shader、深度format、出力format、blend modeごとに、通常pass
         // とscissor passのcull違いを持ちます。
-        std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 256>
+        std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 288>
             m_pipelineStates;
         Microsoft::WRL::ComPtr<ID3D12Resource> m_indexBuffer;
         GraphicsViewHandle m_fallbackTexture;

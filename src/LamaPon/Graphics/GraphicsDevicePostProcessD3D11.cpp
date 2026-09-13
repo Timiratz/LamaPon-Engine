@@ -296,6 +296,28 @@ namespace LamaPon
         const DirectX::XMFLOAT4X4& projection,
         const std::uint32_t sampleCount)
     {
+        if (ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            auto& renderer = RequireD3D12PostProcessRenderer(
+                *this,
+                m_state->m_apiResources.get(),
+                target,
+                "ApplyOffscreenTargetDepthOfField");
+            if (!settings.enabled)
+            {
+                return;
+            }
+            m_state->m_backend->CaptureOffscreenTargetDepth(target);
+            renderer.ApplyDepthOfField(
+                target,
+                m_state->m_whiteTextureView,
+                settings,
+                projection,
+                sampleCount);
+            return;
+        }
+
         auto& targetState = RequireCurrentOffscreenTarget(
             *this,
             target,

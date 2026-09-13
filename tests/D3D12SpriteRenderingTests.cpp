@@ -873,6 +873,46 @@ namespace
             greenOutlinePixels > 20u,
             "The DirectX 12 screen outline did not mark scene depth "
             "edges");
+
+        outline.enabled = false;
+        scene.SetScreenOutlineSettings(outline);
+        auto depthOfField = scene.DepthOfField();
+        depthOfField.enabled = true;
+        depthOfField.focusDistance = 20.0f;
+        depthOfField.focusRange = 0.0f;
+        depthOfField.blurStrength = 8.0f;
+        depthOfField.maximumRadius = 8.0f;
+        scene.SetDepthOfFieldSettings(depthOfField);
+        auto postProcessSettings = graphics.Settings();
+        postProcessSettings.depthOfFieldEnabled = true;
+        postProcessSettings.depthOfFieldSampleCount = 16u;
+        graphics.SetGraphicsSettings(postProcessSettings);
+        const auto depthOfFieldPixels = captureComposition();
+        std::size_t depthOfFieldChangedPixels{};
+        std::uint64_t depthOfFieldDifference{};
+        for (std::size_t offset{};
+             offset + 3u < depthOfFieldPixels.size();
+             offset += 4u)
+        {
+            int difference{};
+            for (std::size_t channel{}; channel < 3u; ++channel)
+            {
+                difference += std::abs(
+                    static_cast<int>(depthOfFieldPixels[offset + channel])
+                    - static_cast<int>(compositionPixels[offset + channel]));
+            }
+            if (difference > 12)
+            {
+                ++depthOfFieldChangedPixels;
+                depthOfFieldDifference += static_cast<std::uint64_t>(
+                    difference);
+            }
+        }
+        Require(
+            depthOfFieldChangedPixels > 100u
+                && depthOfFieldDifference > 3000u,
+            "The DirectX 12 depth of field did not blur out-of-focus "
+            "scene geometry");
     }
 
     void RequireD3D12DirectionalShadows()

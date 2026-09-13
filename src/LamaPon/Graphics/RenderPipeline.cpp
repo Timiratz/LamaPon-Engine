@@ -154,8 +154,9 @@ namespace LamaPon
         if (graphics.ActiveRenderingApi()
             == RenderingApi::DirectX12Experimental)
         {
-            // D3D12は移植済みのTAA、Motion Blur、Bloom、自動露出、
-            // トーンマップ、Screen Outline、FXAAをD3D11と同じ順で適用します。
+            // D3D12は移植済みのTAA、Depth of Field、Motion Blur、Bloom、
+            // 自動露出、トーンマップ、Screen Outline、FXAAをD3D11と
+            // 同じ順で適用します。
             // SSAOなど未移植のpassは安全に無処理とします。
             const auto& settings = graphics.Settings();
             graphics.ApplyOffscreenTargetTemporalAntiAliasing(
@@ -168,6 +169,15 @@ namespace LamaPon
                     target,
                     frame.temporal.inputs.viewProjection);
             }
+            auto effectiveDepthOfField = frame.depthOfField.settings;
+            effectiveDepthOfField.enabled =
+                effectiveDepthOfField.enabled
+                && settings.depthOfFieldEnabled;
+            graphics.ApplyOffscreenTargetDepthOfField(
+                target,
+                effectiveDepthOfField,
+                frame.depthOfField.projection,
+                settings.depthOfFieldSampleCount);
             auto effectiveMotionBlur = frame.motionBlur.settings;
             effectiveMotionBlur.enabled =
                 effectiveMotionBlur.enabled
