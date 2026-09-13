@@ -1,6 +1,7 @@
 #include "LamaPon/Assets/AssetManager.h"
 #include "LamaPon/Assets/SdkmeshImporter.h"
 #include "LamaPon/Assets/TextureLoader.h"
+#include "LamaPon/Assets/VboImporter.h"
 #include "LamaPon/Components/CameraComponent.h"
 #include "LamaPon/Components/DirectionalLightComponent.h"
 #include "LamaPon/Components/MeshRendererComponent.h"
@@ -2349,6 +2350,86 @@ namespace
             "The DirectX 12 SDKMESH import did not retain subset materials");
     }
 
+#pragma pack(push, 1)
+    struct TestVboHeader final
+    {
+        std::uint32_t vertexCount;
+        std::uint32_t indexCount;
+    };
+
+    struct TestVboVertex final
+    {
+        DirectX::XMFLOAT3 position;
+        DirectX::XMFLOAT3 normal;
+        DirectX::XMFLOAT2 textureCoordinate;
+    };
+#pragma pack(pop)
+
+    static_assert(sizeof(TestVboHeader) == 8u);
+    static_assert(sizeof(TestVboVertex) == 32u);
+
+    [[nodiscard]] std::vector<std::uint8_t> BuildTestVbo()
+    {
+        constexpr TestVboHeader header{ 4u, 6u };
+        constexpr std::array<TestVboVertex, 4> vertices{ {
+            { { -1.0f, -0.5f, 0.25f }, { 0.0f, 0.0f, -1.0f },
+                { 0.0f, 1.0f } },
+            { { -1.0f, 0.5f, 0.25f }, { 0.0f, 0.0f, -1.0f },
+                { 0.0f, 0.0f } },
+            { { 1.0f, 0.5f, 0.25f }, { 0.0f, 0.0f, -1.0f },
+                { 1.0f, 0.0f } },
+            { { 1.0f, -0.5f, 0.25f }, { 0.0f, 0.0f, -1.0f },
+                { 1.0f, 1.0f } } } };
+        constexpr std::array<std::uint16_t, 6> indices{
+            0u, 1u, 2u, 0u, 2u, 3u };
+        std::vector<std::uint8_t> bytes(
+            sizeof(header) + sizeof(vertices) + sizeof(indices));
+        std::size_t offset{};
+        const auto append = [&bytes, &offset](
+            const void* const data,
+            const std::size_t size)
+        {
+            std::memcpy(bytes.data() + offset, data, size);
+            offset += size;
+        };
+        append(&header, sizeof(header));
+        append(vertices.data(), sizeof(vertices));
+        append(indices.data(), sizeof(indices));
+        return bytes;
+    }
+
+    void RequireD3D12VboModel()
+    {
+        const auto bytes = BuildTestVbo();
+        const auto model = LamaPon::VboImporter::LoadFromMemory(
+            bytes,
+            L"Quad.vbo");
+        Require(
+            model != nullptr
+                && model->hasLocalBounds
+                && model->nodes.size() == 1u
+                && model->primitives.size() == 1u,
+            "The DirectX 12 VBO import did not create one CPU primitive");
+        const auto& primitive = model->primitives.front();
+        Require(
+            primitive.cpuVertexStride == 60u
+                && primitive.cpuVertexData.size() == 4u * 60u
+                && primitive.cpuIndices
+                    == std::vector<std::uint32_t>{ 0u, 1u, 2u, 0u, 2u, 3u }
+                && !primitive.vertexBuffer
+                && !primitive.indexBuffer
+                && !primitive.effect,
+            "The DirectX 12 VBO import did not retain its geometry");
+        Require(
+            model->localBounds.minimum.x == -1.0f
+                && model->localBounds.minimum.y == -0.5f
+                && model->localBounds.minimum.z == 0.25f
+                && model->localBounds.maximum.x == 1.0f
+                && model->localBounds.maximum.y == 0.5f
+                && model->localBounds.maximum.z == 0.25f,
+            "The DirectX 12 VBO import calculated incorrect bounds");
+    }
+
     void RequireD3D12Particles()
     {
         HiddenWindow window{ CanvasWidth, CanvasHeight };
@@ -3699,6 +3780,7 @@ int main()
         RequireD3D12AnimatedFbxModel();
         RequireD3D12CmoModel();
         RequireD3D12SdkmeshModel();
+        RequireD3D12VboModel();
         RequireD3D12Particles();
         LamaPon::GraphicsDevice::SetEnableDebugLayer(false);
         RequireNoD3D12DebugErrors();

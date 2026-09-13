@@ -48,7 +48,9 @@ namespace
             extension,
             extension.begin(),
             std::towlower);
-        return extension == L".cmo" || extension == L".sdkmesh";
+        return extension == L".cmo"
+            || extension == L".sdkmesh"
+            || extension == L".vbo";
     }
 
     struct ImportedModelVertex final
@@ -1645,12 +1647,12 @@ namespace LamaPon
                 extension,
                 extension.begin(),
                 std::towlower);
-            // VBOはまだD3D11 Deviceを必要とするため、D3D12では安全に
-            // 保持・スキップします。CMO/SDKMESH/glTF/GLB/FBXはCPU幾何を
-            // 共通経路で読み込みます。
+            // CMO/SDKMESH/VBO/glTF/GLB/FBXはD3D12でもCPU幾何を共通経路で
+            // 読み込みます。
             if (usesD3D11
                 || extension == L".cmo"
                 || extension == L".sdkmesh"
+                || extension == L".vbo"
                 || extension == L".gltf"
                 || extension == L".glb"
                 || extension == L".fbx")

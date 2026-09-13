@@ -10,6 +10,7 @@
 #include "LamaPon/Assets/SdkmeshImporter.h"
 #include "LamaPon/Assets/TextureCache.h"
 #include "LamaPon/Assets/TextureLoader.h"
+#include "LamaPon/Assets/VboImporter.h"
 #include "LamaPon/Core/Log.h"
 #include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Graphics/D3D11Backend.h"
@@ -2435,11 +2436,19 @@ namespace LamaPon
         }
         else if (extension == L".vbo")
         {
-            const auto bytes = ReadFileBytes(resolvedPath);
-            loadedModel = DirectX::Model::CreateFromVBO(
-                m_device,
-                bytes.data(),
-                bytes.size());
+            if (m_device != nullptr)
+            {
+                // D3D11はDirectXTKの既存loaderとBasicEffectを維持します。
+                const auto bytes = ReadFileBytes(resolvedPath);
+                loadedModel = DirectX::Model::CreateFromVBO(
+                    m_device,
+                    bytes.data(),
+                    bytes.size());
+            }
+            else
+            {
+                skeletalModel = VboImporter::Load(*this, resolvedPath);
+            }
         }
         else if (extension == L".gltf"
             || extension == L".glb")
