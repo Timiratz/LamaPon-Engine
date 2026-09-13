@@ -291,6 +291,22 @@ namespace LamaPon
         const VolumetricLightSettings& settings,
         const VolumetricLightInputs& inputs)
     {
+        if (ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            RequireD3D12PostProcessRenderer(
+                *this,
+                m_state->m_apiResources.get(),
+                target,
+                "ApplyOffscreenTargetVolumetricLight")
+                .ApplyVolumetricLight(
+                    target,
+                    m_state->m_whiteTextureView,
+                    settings,
+                    inputs);
+            return;
+        }
+
         auto& targetState = RequireCurrentOffscreenTarget(
             *this,
             target,

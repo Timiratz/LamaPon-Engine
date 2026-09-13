@@ -981,6 +981,83 @@ namespace
         };
 
         const auto shadowed = capture();
+
+        // Scene Compositionのpost-process列から、同じDirectional Shadowを
+        // 空気中の散乱へ使えることを確認します。無効へ戻したときは
+        // 余分なping-pongや履歴を残さず元の画像へ戻る必要があります。
+        const auto captureComposition = [&]()
+        {
+            graphics.BeginFrame(clearColor);
+            graphics.BeginSceneComposition(clearColor);
+            scene.RenderMainCamera(
+                static_cast<float>(CanvasWidth) / CanvasHeight,
+                false,
+                graphics.SceneCompositionTarget());
+            graphics.EndSceneComposition(scene.PostProcessFrameData());
+            std::uint32_t width{};
+            std::uint32_t height{};
+            auto pixels = graphics.CaptureBackBuffer(width, height);
+            graphics.EndFrame();
+            Require(
+                width == CanvasWidth && height == CanvasHeight,
+                "The DirectX 12 volumetric capture has unexpected "
+                "dimensions");
+            return pixels;
+        };
+        const auto withoutVolumetric = captureComposition();
+        auto volumetric = scene.VolumetricLight();
+        volumetric.enabled = true;
+        volumetric.intensity = 4.0f;
+        volumetric.sampleCount = 12u;
+        volumetric.scattering = 0.0f;
+        scene.SetVolumetricLightSettings(volumetric);
+        const auto withVolumetric = captureComposition();
+        std::size_t volumetricPixels{};
+        std::uint64_t volumetricBrightening{};
+        std::uint64_t totalVolumetricDifference{};
+        int maximumVolumetricDifference{};
+        for (std::size_t offset{};
+            offset + 3u < withVolumetric.size();
+            offset += 4u)
+        {
+            const int difference =
+                static_cast<int>(withVolumetric[offset])
+                    - static_cast<int>(withoutVolumetric[offset])
+                + static_cast<int>(withVolumetric[offset + 1u])
+                    - static_cast<int>(withoutVolumetric[offset + 1u])
+                + static_cast<int>(withVolumetric[offset + 2u])
+                    - static_cast<int>(withoutVolumetric[offset + 2u]);
+            maximumVolumetricDifference = std::max(
+                maximumVolumetricDifference,
+                difference);
+            totalVolumetricDifference += static_cast<std::uint64_t>(
+                std::max(difference, 0));
+            if (difference > 0)
+            {
+                ++volumetricPixels;
+                volumetricBrightening += static_cast<std::uint64_t>(
+                    difference);
+            }
+        }
+        Require(
+            volumetricPixels > 800u
+                && volumetricBrightening > 2000u
+                && maximumVolumetricDifference >= 2,
+            "The DirectX 12 volumetric light did not brighten the camera "
+            "rays ("
+                + std::to_string(volumetricPixels)
+                + " pixels, total "
+                + std::to_string(totalVolumetricDifference)
+                + ", maximum "
+                + std::to_string(maximumVolumetricDifference)
+                + ")");
+        volumetric.enabled = false;
+        scene.SetVolumetricLightSettings(volumetric);
+        Require(
+            captureComposition() == withoutVolumetric,
+            "Disabling DirectX 12 volumetric light did not restore the "
+            "original frame");
+
         light.SetCastsShadows(false);
         const auto unshadowed = capture();
         std::size_t darkerPixels{};

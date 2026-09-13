@@ -29,6 +29,8 @@ namespace LamaPon
     struct ScreenSpaceLensFlareSettings;
     struct TemporalAntiAliasingInputs;
     struct TemporalAntiAliasingSettings;
+    struct VolumetricLightInputs;
+    struct VolumetricLightSettings;
 }
 
 namespace LamaPon::Detail
@@ -95,6 +97,13 @@ namespace LamaPon::Detail
             const GraphicsViewHandle& fallbackTexture,
             const TemporalAntiAliasingSettings& settings,
             const TemporalAntiAliasingInputs& inputs);
+        // 画面深度からカメラレイを復元し、既存のDirectional Lightの
+        // cascade shadowをサンプルして光の筋をHDR Sceneへ足します。
+        void ApplyVolumetricLight(
+            RenderTarget& target,
+            const GraphicsViewHandle& fallbackTexture,
+            const VolumetricLightSettings& settings,
+            const VolumetricLightInputs& inputs);
         // 深度の距離差と再構成法線から輪郭を検出し、current colorへ
         // 指定色を重ねます。
         void ApplyScreenOutline(
@@ -162,6 +171,7 @@ namespace LamaPon::Detail
             DepthOfField,
             AmbientOcclusion,
             AmbientOcclusionBlur,
+            VolumetricLight,
             LensFlareStreak,
             LensFlareComposite,
             ReflectionDepthLinearize,
@@ -170,7 +180,7 @@ namespace LamaPon::Detail
 
         // PSOの組み合わせ数です。深度はprimary / 無し、出力はRGBA8 /
         // RGBA16F / R8 / R32F、blendは4種と通常 / scissor passの2通りです。
-        static constexpr std::size_t FullscreenProgramCount = 15u;
+        static constexpr std::size_t FullscreenProgramCount = 16u;
         static constexpr std::size_t DepthFormatVariants = 2u;
         static constexpr std::size_t ColorFormatVariants = 4u;
         static constexpr std::size_t BlendVariants = 8u;
@@ -191,6 +201,19 @@ namespace LamaPon::Detail
             GraphicsViewHandle view;
         };
 
+        // LamaPonEnvironment.hlslのVolumetricBufferと同じ384 bytesです。
+        // root constantsの上限を越えるためupload CBVとして渡します。
+        struct VolumetricPassConstants final
+        {
+            DirectX::XMFLOAT4X4 inverseViewProjection{};
+            DirectX::XMFLOAT4 cameraPosition{};
+            DirectX::XMFLOAT4 lightDirection{};
+            DirectX::XMFLOAT4 lightColor{};
+            std::array<DirectX::XMFLOAT4X4, 4> cascades{};
+            DirectX::XMFLOAT4 shadowParameters{};
+        };
+        static_assert(sizeof(VolumetricPassConstants) == 384u);
+
         void RequireOwner(std::uint64_t token) const;
         void Flush();
         // 描画送信に失敗したpassを閉じ、再初期化まで新しいpassを拒否します。
@@ -202,7 +225,7 @@ namespace LamaPon::Detail
             const GraphicsViewHandle& fallbackTexture,
             FullscreenProgram program,
             const std::array<float, 16>& constants,
-            const std::array<GraphicsViewHandle, 2>& auxiliaryViews = {},
+            const std::array<GraphicsViewHandle, 3>& auxiliaryViews = {},
             const std::array<float, 32>& matrixConstants = {});
         // targetのcurrent colorを入力にしたfullscreen passをpost colorへ
         // 書いて交換します。失敗時は交換せず元の出力へ戻します。
@@ -232,6 +255,7 @@ namespace LamaPon::Detail
         Microsoft::WRL::ComPtr<ID3DBlob> m_depthOfFieldPixelShader;
         Microsoft::WRL::ComPtr<ID3DBlob> m_ambientOcclusionPixelShader;
         Microsoft::WRL::ComPtr<ID3DBlob> m_ambientOcclusionBlurPixelShader;
+        Microsoft::WRL::ComPtr<ID3DBlob> m_volumetricLightPixelShader;
         Microsoft::WRL::ComPtr<ID3DBlob> m_lensFlareStreakPixelShader;
         Microsoft::WRL::ComPtr<ID3DBlob> m_lensFlareCompositePixelShader;
         Microsoft::WRL::ComPtr<ID3DBlob>
@@ -254,8 +278,9 @@ namespace LamaPon::Detail
         SpriteBlendMode m_blend{ SpriteBlendMode::NonPremultiplied };
         std::array<float, 16> m_passConstants{};
         std::array<float, 32> m_matrixConstants{};
-        std::array<GraphicsViewHandle, 2> m_auxiliaryViews;
-        std::array<D3D12_GPU_DESCRIPTOR_HANDLE, 2> m_auxiliaryTextures{};
+        std::array<GraphicsViewHandle, 3> m_auxiliaryViews;
+        std::array<D3D12_GPU_DESCRIPTOR_HANDLE, 3> m_auxiliaryTextures{};
+        VolumetricPassConstants m_volumetricConstants{};
         FullscreenProgram m_program{ FullscreenProgram::None };
         std::uint64_t m_activeToken{};
         std::uint64_t m_nextToken{ 1 };

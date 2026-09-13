@@ -157,8 +157,7 @@ namespace LamaPon
             // D3D12は移植済みのTAA、Depth of Field、Motion Blur、Bloom、
             // Screen Space Lens Flare、自動露出、トーンマップ、Screen
             // Outline、FXAAをD3D11と同じ順で適用します。SSAOとSSRはLit
-            // 描画の前に済んでいます。Volumetric Lightなど未移植のpassは
-            // 安全に無処理とします。
+            // 描画の前に済んでいます。
             const auto& settings = graphics.Settings();
             graphics.ApplyOffscreenTargetTemporalAntiAliasing(
                 target,
@@ -170,6 +169,10 @@ namespace LamaPon
                     target,
                     frame.temporal.inputs.viewProjection);
             }
+            graphics.ApplyOffscreenTargetVolumetricLight(
+                target,
+                frame.volumetric.settings,
+                frame.volumetric.inputs);
             auto effectiveDepthOfField = frame.depthOfField.settings;
             effectiveDepthOfField.enabled =
                 effectiveDepthOfField.enabled

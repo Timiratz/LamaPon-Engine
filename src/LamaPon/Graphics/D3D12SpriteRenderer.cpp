@@ -47,10 +47,22 @@ cbuffer TemporalPass : register(b2)
     row_major float4x4 TemporalPreviousViewProjection;
 };
 
+cbuffer VolumetricPass : register(b3)
+{
+    row_major float4x4 VolumetricInverseViewProjection;
+    float4 VolumetricCameraPosition;
+    float4 VolumetricLightDirection;
+    float4 VolumetricLightColor;
+    row_major float4x4 VolumetricCascades[4];
+    float4 VolumetricShadowParameters;
+};
+
 Texture2D SpriteTexture : register(t0);
 Texture2D TemporalHistoryTexture : register(t1);
 Texture2D DepthTexture : register(t2);
+Texture2DArray<float> VolumetricShadowTexture : register(t3);
 SamplerState SpriteSampler : register(s0);
+SamplerComparisonState VolumetricShadowSampler : register(s1);
 
 struct VertexInput
 {
@@ -834,6 +846,115 @@ float4 AmbientOcclusionBlurPixelShader(PixelInput input) : SV_Target
     return float4(visibility, visibility, visibility, 1.0f);
 }
 
+static const float VolumetricPi = 3.14159265f;
+
+float VolumetricPhase(float cosineAngle, float scattering)
+{
+    const float g = clamp(scattering, 0.0f, 0.95f);
+    const float gSquared = g * g;
+    const float denominator =
+        1.0f + gSquared - 2.0f * g * cosineAngle;
+    return (1.0f - gSquared)
+        / (4.0f * VolumetricPi
+            * pow(max(denominator, 0.0001f), 1.5f));
+}
+
+float VolumetricShadowAt(float3 worldPosition)
+{
+    const int cascadeCount = (int)VolumetricShadowParameters.x;
+    [loop]
+    for (int cascade = 0; cascade < 4; ++cascade)
+    {
+        if (cascade >= cascadeCount)
+        {
+            break;
+        }
+        const float4 lightPosition = mul(
+            float4(worldPosition, 1.0f),
+            VolumetricCascades[cascade]);
+        if (lightPosition.w <= 0.0001f)
+        {
+            continue;
+        }
+        const float3 projected = lightPosition.xyz / lightPosition.w;
+        const float2 shadowUv =
+            projected.xy * float2(0.5f, -0.5f) + 0.5f;
+        if (shadowUv.x < 0.0f || shadowUv.x > 1.0f
+            || shadowUv.y < 0.0f || shadowUv.y > 1.0f
+            || projected.z <= 0.0f || projected.z >= 1.0f)
+        {
+            continue;
+        }
+        return VolumetricShadowTexture.SampleCmpLevelZero(
+            VolumetricShadowSampler,
+            float3(shadowUv, cascade),
+            projected.z - VolumetricShadowParameters.y);
+    }
+    return 1.0f;
+}
+
+float4 VolumetricLightPixelShader(PixelInput input) : SV_Target
+{
+    const float4 sceneColor = SpriteTexture.Sample(
+        SpriteSampler,
+        input.textureCoordinate);
+    const float depth = DepthTexture.Sample(
+        SpriteSampler,
+        input.textureCoordinate).r;
+    const float2 clip = float2(
+        input.textureCoordinate.x * 2.0f - 1.0f,
+        1.0f - input.textureCoordinate.y * 2.0f);
+    const float4 worldHomogeneous = mul(
+        float4(clip, depth, 1.0f),
+        VolumetricInverseViewProjection);
+    if (worldHomogeneous.w <= 0.0001f)
+    {
+        return sceneColor;
+    }
+    const float3 worldPosition =
+        worldHomogeneous.xyz / worldHomogeneous.w;
+    const float3 cameraPosition = VolumetricCameraPosition.xyz;
+    const float3 toPixel = worldPosition - cameraPosition;
+    const float pixelDistance = length(toPixel);
+    if (pixelDistance <= 0.0001f)
+    {
+        return sceneColor;
+    }
+    const float3 rayDirection = toPixel / pixelDistance;
+    const float marchDistance = min(
+        pixelDistance,
+        VolumetricCameraPosition.w);
+    const int sampleCount = (int)max(VolumetricLightDirection.w, 1.0f);
+    const float stepLength = marchDistance / (float)sampleCount;
+    const float dither = frac(
+        52.9829189f
+        * frac(dot(
+            input.position.xy,
+            float2(0.06711056f, 0.00583715f))));
+    float travelled = stepLength * (0.5f + dither * 0.5f);
+    const float cosineAngle = dot(
+        rayDirection,
+        -normalize(VolumetricLightDirection.xyz));
+    const float phase = VolumetricPhase(
+        cosineAngle,
+        VolumetricLightColor.w);
+    float accumulated = 0.0f;
+    [loop]
+    for (int step = 0; step < sampleCount; ++step)
+    {
+        const float3 samplePosition =
+            cameraPosition + rayDirection * travelled;
+        accumulated += VolumetricShadowAt(samplePosition);
+        travelled += stepLength;
+    }
+    const float visibility = accumulated / (float)sampleCount;
+    const float3 scatter = VolumetricLightColor.rgb
+        * visibility
+        * phase
+        * (marchDistance / max(VolumetricCameraPosition.w, 0.0001f));
+    return float4(sceneColor.rgb + max(scatter, 0.0f), sceneColor.a);
+}
+
 // LamaPonEnvironment.hlslのScreen Space Lens Flareと同じ処理です。
 // PassPrimary=texel/threshold/intensity、PassSecondary=ghost/halo/
 // chromatic/streak intensity、PassTertiary.x=streak length、
@@ -1264,6 +1385,9 @@ namespace LamaPon::Detail
         m_ambientOcclusionBlurPixelShader = CompileSpriteShader(
             "AmbientOcclusionBlurPixelShader",
             "ps_5_0");
+        m_volumetricLightPixelShader = CompileSpriteShader(
+            "VolumetricLightPixelShader",
+            "ps_5_0");
         m_lensFlareStreakPixelShader = CompileSpriteShader(
             "LensFlareStreakPixelShader",
             "ps_5_0");
@@ -1288,8 +1412,10 @@ namespace LamaPon::Detail
         historyRange.BaseShaderRegister = 1;
         D3D12_DESCRIPTOR_RANGE depthRange = textureRange;
         depthRange.BaseShaderRegister = 2;
+        D3D12_DESCRIPTOR_RANGE shadowRange = textureRange;
+        shadowRange.BaseShaderRegister = 3;
 
-        std::array<D3D12_ROOT_PARAMETER, 6> parameters{};
+        std::array<D3D12_ROOT_PARAMETER, 8> parameters{};
         parameters[0].ParameterType =
             D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
         parameters[0].Constants.ShaderRegister = 0;
@@ -1323,9 +1449,21 @@ namespace LamaPon::Detail
         parameters[5].Constants.RegisterSpace = 0;
         parameters[5].Constants.Num32BitValues = 32;
         parameters[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        parameters[6].ParameterType =
+            D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        parameters[6].DescriptorTable.NumDescriptorRanges = 1;
+        parameters[6].DescriptorTable.pDescriptorRanges = &shadowRange;
+        parameters[6].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        parameters[7].ParameterType =
+            D3D12_ROOT_PARAMETER_TYPE_CBV;
+        parameters[7].Descriptor.ShaderRegister = 3;
+        parameters[7].Descriptor.RegisterSpace = 0;
+        parameters[7].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-        // SpriteBatch既定のLinearClampと同じsamplerです。
-        D3D12_STATIC_SAMPLER_DESC sampler{};
+        // SpriteBatch既定のLinearClampと、D3D11 Volumetric Lightと同じ
+        // 範囲外を照射済みとする比較samplerです。
+        std::array<D3D12_STATIC_SAMPLER_DESC, 2> samplers{};
+        auto& sampler = samplers[0];
         sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
         sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
         sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
@@ -1339,13 +1477,29 @@ namespace LamaPon::Detail
         sampler.ShaderRegister = 0;
         sampler.RegisterSpace = 0;
         sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        auto& shadowSampler = samplers[1];
+        shadowSampler.Filter =
+            D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
+        shadowSampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+        shadowSampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+        shadowSampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+        shadowSampler.MipLODBias = 0.0f;
+        shadowSampler.MaxAnisotropy = D3D12_MAX_MAXANISOTROPY;
+        shadowSampler.ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+        shadowSampler.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
+        shadowSampler.MinLOD = 0.0f;
+        shadowSampler.MaxLOD = 0.0f;
+        shadowSampler.ShaderRegister = 1;
+        shadowSampler.RegisterSpace = 0;
+        shadowSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
         D3D12_ROOT_SIGNATURE_DESC rootDescription{};
         rootDescription.NumParameters =
             static_cast<UINT>(parameters.size());
         rootDescription.pParameters = parameters.data();
-        rootDescription.NumStaticSamplers = 1;
-        rootDescription.pStaticSamplers = &sampler;
+        rootDescription.NumStaticSamplers =
+            static_cast<UINT>(samplers.size());
+        rootDescription.pStaticSamplers = samplers.data();
         rootDescription.Flags =
             D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
         Microsoft::WRL::ComPtr<ID3DBlob> serializedRoot;
@@ -1886,6 +2040,72 @@ namespace LamaPon::Detail
         m_backend->EndOffscreenPostProcess(target);
     }
 
+    void D3D12SpriteRenderer::ApplyVolumetricLight(
+        RenderTarget& target,
+        const GraphicsViewHandle& fallbackTexture,
+        const VolumetricLightSettings& settings,
+        const VolumetricLightInputs& inputs)
+    {
+        const auto depth = target.DepthViewHandle();
+        if (!settings.enabled
+            || settings.intensity <= 0.0f
+            || inputs.cascadeCount == 0u
+            || inputs.cascadeCount > 4u
+            || !std::isfinite(inputs.shadowResolution)
+            || inputs.shadowResolution < 1.0f
+            || inputs.shadowResolution
+                > static_cast<float>(
+                    D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION)
+            || !m_backend->TryResolveShaderResource(depth)
+            || !m_backend->TryResolveShaderResource(inputs.cascadeShadow))
+        {
+            return;
+        }
+
+        m_volumetricConstants = {};
+        m_volumetricConstants.inverseViewProjection =
+            inputs.inverseViewProjection;
+        m_volumetricConstants.cameraPosition = {
+            inputs.cameraPosition.x,
+            inputs.cameraPosition.y,
+            inputs.cameraPosition.z,
+            std::max(settings.maximumDistance, 0.1f) };
+        m_volumetricConstants.lightDirection = {
+            inputs.lightDirection.x,
+            inputs.lightDirection.y,
+            inputs.lightDirection.z,
+            static_cast<float>(
+                std::clamp(settings.sampleCount, 1u, 128u)) };
+        m_volumetricConstants.lightColor = {
+            inputs.lightColor.x * settings.intensity,
+            inputs.lightColor.y * settings.intensity,
+            inputs.lightColor.z * settings.intensity,
+            std::clamp(settings.scattering, 0.0f, 0.95f) };
+        m_volumetricConstants.cascades = inputs.cascadeViewProjections;
+        m_volumetricConstants.shadowParameters = {
+            static_cast<float>(inputs.cascadeCount),
+            inputs.shadowBias,
+            1.0f / std::max(inputs.shadowResolution, 1.0f),
+            0.0f };
+
+        const auto source = m_backend->BeginOffscreenPostProcess(target);
+        try
+        {
+            DrawFullscreen(
+                source,
+                fallbackTexture,
+                FullscreenProgram::VolumetricLight,
+                {},
+                { GraphicsViewHandle{}, depth, inputs.cascadeShadow });
+        }
+        catch (...)
+        {
+            m_backend->AbortOffscreenPostProcess(target);
+            throw;
+        }
+        m_backend->EndOffscreenPostProcess(target);
+    }
+
     void D3D12SpriteRenderer::ApplyScreenOutline(
         RenderTarget& target,
         const GraphicsViewHandle& fallbackTexture,
@@ -2241,7 +2461,7 @@ namespace LamaPon::Detail
         const GraphicsViewHandle& fallbackTexture,
         const FullscreenProgram program,
         const std::array<float, 16>& constants,
-        const std::array<GraphicsViewHandle, 2>& auxiliaryViews,
+        const std::array<GraphicsViewHandle, 3>& auxiliaryViews,
         const std::array<float, 32>& matrixConstants)
     {
         const auto binding = m_backend->TryResolveShaderResource(texture);
@@ -2269,9 +2489,7 @@ namespace LamaPon::Detail
         m_auxiliaryViews = auxiliaryViews;
         if (program == FullscreenProgram::Temporal)
         {
-            for (std::size_t index{};
-                index < m_auxiliaryViews.size();
-                ++index)
+            for (std::size_t index{}; index < 2u; ++index)
             {
                 const auto auxiliary = m_backend->TryResolveShaderResource(
                     m_auxiliaryViews[index]);
@@ -2297,6 +2515,22 @@ namespace LamaPon::Detail
                     "streak view.");
             }
             m_auxiliaryTextures[0] = streak->descriptor;
+        }
+        else if (program == FullscreenProgram::VolumetricLight)
+        {
+            const auto depth = m_backend->TryResolveShaderResource(
+                m_auxiliaryViews[1]);
+            const auto shadow = m_backend->TryResolveShaderResource(
+                m_auxiliaryViews[2]);
+            if (!depth || !shadow)
+            {
+                Abort(token);
+                throw std::invalid_argument(
+                    "The DirectX 12 volumetric light pass requires current "
+                    "depth and cascade shadow views.");
+            }
+            m_auxiliaryTextures[1] = depth->descriptor;
+            m_auxiliaryTextures[2] = shadow->descriptor;
         }
         else if (program == FullscreenProgram::ScreenOutline
             || program == FullscreenProgram::MotionBlur
@@ -2373,6 +2607,7 @@ namespace LamaPon::Detail
         }
         m_auxiliaryTextures = {};
         m_matrixConstants = {};
+        m_volumetricConstants = {};
         m_program = FullscreenProgram::None;
         m_activeToken = 0;
     }
@@ -2480,6 +2715,25 @@ namespace LamaPon::Detail
             commandList->SetGraphicsRootDescriptorTable(
                 3,
                 m_auxiliaryTextures[0]);
+        }
+        else if (m_program == FullscreenProgram::VolumetricLight)
+        {
+            const auto constants = m_backend->AllocateFrameUpload(
+                sizeof(m_volumetricConstants),
+                D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+            std::memcpy(
+                constants.data,
+                &m_volumetricConstants,
+                sizeof(m_volumetricConstants));
+            commandList->SetGraphicsRootDescriptorTable(
+                4,
+                m_auxiliaryTextures[1]);
+            commandList->SetGraphicsRootDescriptorTable(
+                6,
+                m_auxiliaryTextures[2]);
+            commandList->SetGraphicsRootConstantBufferView(
+                7,
+                constants.gpuAddress);
         }
         else if (m_program == FullscreenProgram::ScreenOutline
             || m_program == FullscreenProgram::MotionBlur
@@ -2652,6 +2906,9 @@ namespace LamaPon::Detail
             break;
         case FullscreenProgram::AmbientOcclusionBlur:
             pixelShader = m_ambientOcclusionBlurPixelShader.Get();
+            break;
+        case FullscreenProgram::VolumetricLight:
+            pixelShader = m_volumetricLightPixelShader.Get();
             break;
         case FullscreenProgram::LensFlareStreak:
             pixelShader = m_lensFlareStreakPixelShader.Get();

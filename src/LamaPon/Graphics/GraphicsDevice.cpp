@@ -499,8 +499,8 @@ namespace LamaPon
                     "対応し、TAA、Depth of Field、カメラMotion Blur、"
                     "Bloom、自動露出、カラーグレーディング、Screen "
                     "Outline、FXAA、Screen Space Lens Flareも適用します。"
-                    "SSAOとSSRも基本3Dの環境光へ反映します。custom shaderと"
-                    "Volumetric Lightなど一部のpost-processは未対応です。");
+                    "SSAOとSSRも基本3Dの環境光へ反映します。Volumetric "
+                    "Lightにも対応し、custom shaderなど一部機能は未対応です。");
             }
         };
 
