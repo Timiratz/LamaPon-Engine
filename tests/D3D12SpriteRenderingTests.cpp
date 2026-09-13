@@ -404,21 +404,83 @@ namespace
                 20.0f,
                 { 0.0f, 1.0f, 0.0f, 1.0f });
         }
+
+        // b0のカスタム値とSV_Positionを使う同梱Shaderで、青い長方形の
+        // 中央部分だけを描きます。D3D11 / D3D12のキャプチャ比較に
+        // 入るため、単にcompileできるだけでなく定数bindも検証できます。
+        {
+            LamaPon::SpritePassDescription description;
+            description.pixelShader =
+                "shaders/LamaPonSpriteMask.hlsl";
+            description.blend = LamaPon::SpriteBlendMode::Opaque;
+            description.customParameters[0] = {
+                0.0f, 0.0f, 0.0f, 0.0f };
+            description.customParameters[1] = {
+                206.0f, 24.0f, 12.0f, 7.0f };
+            auto pass = graphics.BeginSpritePass(description);
+            const auto status = pass.ShaderStatus();
+            Require(
+                status.fallback == LamaPon::SpriteShaderFallback::None
+                    && status.error.empty()
+                    && status.generation != 0,
+                "The custom sprite shader did not prepare successfully "
+                "(fallback "
+                    + std::to_string(static_cast<int>(status.fallback))
+                    + ", generation "
+                    + std::to_string(status.generation)
+                    + ", error: "
+                    + status.error
+                    + ")");
+            DrawRectangle(
+                pass,
+                188.0f,
+                12.0f,
+                36.0f,
+                24.0f,
+                { 0.1f, 0.25f, 0.95f, 1.0f });
+        }
+
+        // b1のLight2D bufferも外部Shaderへ渡ることを画素で確かめます。
+        {
+            LamaPon::SpritePassDescription description;
+            description.pixelShader =
+                "shaders/LamaPonSpriteLit.hlsl";
+            description.blend = LamaPon::SpriteBlendMode::Opaque;
+            description.lighting.counts.x = 1u;
+            description.lighting.lights[0].positionRadiusIntensity = {
+                240.0f, 84.0f, 14.0f, 1.0f };
+            description.lighting.lights[0].color = {
+                0.8f, 0.15f, 0.05f, 0.0f };
+            auto pass = graphics.BeginSpritePass(description);
+            const auto status = pass.ShaderStatus();
+            Require(
+                status.fallback == LamaPon::SpriteShaderFallback::None
+                    && status.error.empty()
+                    && status.generation != 0,
+                "The lit sprite shader did not prepare successfully");
+            DrawRectangle(
+                pass,
+                228.0f,
+                76.0f,
+                24.0f,
+                16.0f,
+                { 0.25f, 0.25f, 0.25f, 1.0f });
+        }
     }
 
-    void RequireD3D12CustomShaderFallback(
+    void RequireD3D12MissingCustomShaderFallback(
         LamaPon::GraphicsDevice& graphics)
     {
         LamaPon::SpritePassDescription description;
-        description.pixelShader = "shaders/LamaPonSpriteLit.hlsl";
+        description.pixelShader = "shaders/does-not-exist.hlsl";
         auto pass = graphics.BeginSpritePass(description);
         const auto status = pass.ShaderStatus();
         Require(
             status.fallback
                     == LamaPon::SpriteShaderFallback::DefaultPipeline
                 && !status.error.empty(),
-            "A DirectX 12 custom sprite shader did not report its default "
-            "pipeline fallback");
+            "A missing DirectX 12 custom sprite shader did not report its "
+            "default pipeline fallback");
         pass.End();
     }
 
@@ -440,6 +502,7 @@ namespace
         Require(
             static_cast<bool>(graphics.WhiteTextureViewHandle()),
             "The graphics device has no sprite fallback texture");
+        graphics.Assets().SetAssetRoot(LAMAPON_TEST_ASSET_DIR);
 
         constexpr float ClearColor[4]{ 0.08f, 0.12f, 0.18f, 1.0f };
         Capture capture;
@@ -453,7 +516,7 @@ namespace
             Require(
                 graphics.IsD3D12ExperimentalBootstrap(),
                 "The DirectX 12 sprite test did not use the bootstrap path");
-            RequireD3D12CustomShaderFallback(graphics);
+            RequireD3D12MissingCustomShaderFallback(graphics);
         }
         graphics.EndFrame();
 

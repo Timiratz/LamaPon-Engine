@@ -424,6 +424,7 @@ namespace LamaPon
                 const auto token = renderer->Begin(
                     description,
                     m_state->m_whiteTextureView,
+                    &Assets(),
                     state->MutableStatus());
                 state->Activate(token, renderer);
             }

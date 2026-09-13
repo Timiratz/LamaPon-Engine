@@ -1,9 +1,12 @@
 #include "LamaPon/Graphics/D3D12SpriteRenderer.h"
 
+#include "LamaPon/Assets/AssetManager.h"
+#include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Graphics/D3D12Backend.h"
 #include "LamaPon/Graphics/EnvironmentSettings.h"
 #include "LamaPon/Graphics/RenderTarget.h"
 #include "LamaPon/Graphics/RenderTargetBackendState.h"
+#include "LamaPon/Graphics/ShaderCompiler.h"
 
 #include <d3dcompiler.h>
 
@@ -73,9 +76,11 @@ struct VertexInput
 
 struct PixelInput
 {
-    float4 position : SV_Position;
+    // DirectXTK SpriteBatchの順序と同じに保ちます。外部の
+    // PSMainはこの入力register順を公開契約としています。
     float4 color : COLOR;
     float2 textureCoordinate : TEXCOORD;
+    float4 position : SV_Position;
 };
 
 PixelInput SpriteVertexShader(VertexInput input)
@@ -1415,7 +1420,7 @@ namespace LamaPon::Detail
         D3D12_DESCRIPTOR_RANGE shadowRange = textureRange;
         shadowRange.BaseShaderRegister = 3;
 
-        std::array<D3D12_ROOT_PARAMETER, 8> parameters{};
+        std::array<D3D12_ROOT_PARAMETER, 9> parameters{};
         parameters[0].ParameterType =
             D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
         parameters[0].Constants.ShaderRegister = 0;
@@ -1427,11 +1432,9 @@ namespace LamaPon::Detail
         parameters[1].DescriptorTable.NumDescriptorRanges = 1;
         parameters[1].DescriptorTable.pDescriptorRanges = &textureRange;
         parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-        parameters[2].ParameterType =
-            D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        parameters[2].Constants.ShaderRegister = 1;
-        parameters[2].Constants.RegisterSpace = 0;
-        parameters[2].Constants.Num32BitValues = 16;
+        parameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+        parameters[2].Descriptor.ShaderRegister = 1;
+        parameters[2].Descriptor.RegisterSpace = 0;
         parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
         parameters[3].ParameterType =
             D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
@@ -1459,6 +1462,10 @@ namespace LamaPon::Detail
         parameters[7].Descriptor.ShaderRegister = 3;
         parameters[7].Descriptor.RegisterSpace = 0;
         parameters[7].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        parameters[8].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+        parameters[8].Descriptor.ShaderRegister = 0;
+        parameters[8].Descriptor.RegisterSpace = 0;
+        parameters[8].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
         // SpriteBatch既定のLinearClampと、D3D11 Volumetric Lightと同じ
         // 範囲外を照射済みとする比較samplerです。
@@ -1585,6 +1592,7 @@ namespace LamaPon::Detail
     std::uint64_t D3D12SpriteRenderer::Begin(
         const SpritePassDescription& description,
         const GraphicsViewHandle& fallbackTexture,
+        AssetManager* const assets,
         SpriteShaderStatus& status)
     {
         if (m_failed)
@@ -1605,15 +1613,72 @@ namespace LamaPon::Detail
         }
 
         SpriteShaderStatus preparedStatus;
+        m_activeCustomShader = nullptr;
         if (!description.pixelShader.empty())
         {
-            // D3D11でcompileに失敗した場合と同じく、既定pipelineで描いて
-            // 呼び出し側へ理由を返します。
-            preparedStatus.fallback =
-                SpriteShaderFallback::DefaultPipeline;
-            preparedStatus.error =
-                "Custom sprite pixel shaders are not implemented for "
-                "DirectX 12 Experimental.";
+            try
+            {
+                if (assets == nullptr)
+                {
+                    throw std::logic_error(
+                        "A custom DirectX 12 sprite shader requires an "
+                        "asset manager.");
+                }
+                const auto shaderPath = assets->ResolvePath(
+                    description.pixelShader).lexically_normal();
+                if (!assets->FileExists(shaderPath))
+                {
+                    throw std::runtime_error(
+                        "Sprite shader file was not found: "
+                        + PathToUtf8(shaderPath));
+                }
+                auto byteCode = CompileShaderCached(
+                    *assets,
+                    shaderPath,
+                    "PSMain",
+                    "ps_5_0");
+                auto& entry = m_customShaders[shaderPath];
+                const bool changed = entry.pixelShader == nullptr
+                    || byteCode->GetBufferSize()
+                        != entry.pixelShader->GetBufferSize()
+                    || std::memcmp(
+                        byteCode->GetBufferPointer(),
+                        entry.pixelShader->GetBufferPointer(),
+                        byteCode->GetBufferSize()) != 0;
+                if (changed)
+                {
+                    entry.pixelShader = std::move(byteCode);
+                    for (auto& pipeline : entry.pipelineStates)
+                    {
+                        pipeline.Reset();
+                    }
+                    entry.generation = m_nextCustomShaderGeneration++;
+                    if (m_nextCustomShaderGeneration == 0)
+                    {
+                        m_nextCustomShaderGeneration = 1;
+                    }
+                }
+                m_customParameters = description.customParameters;
+                m_spriteLighting = description.lighting;
+                m_activeCustomShader = &entry;
+
+                // PSO作成もBegin中に検証し、ShaderStatusが成功を返した
+                // 後にEndで初めて失敗する状態を作らないようにします。
+                static_cast<void>(PipelineState(
+                    description.blend,
+                    false,
+                    m_backend->ActiveColorFormat(),
+                    m_backend->ActiveDepthFormat(),
+                    FullscreenProgram::None));
+                preparedStatus.generation = entry.generation;
+            }
+            catch (const std::exception& exception)
+            {
+                m_activeCustomShader = nullptr;
+                preparedStatus.fallback =
+                    SpriteShaderFallback::DefaultPipeline;
+                preparedStatus.error = exception.what();
+            }
         }
         auto token = m_nextToken++;
         if (token == 0)
@@ -2482,6 +2547,7 @@ namespace LamaPon::Detail
         const auto token = Begin(
             description,
             fallbackTexture,
+            nullptr,
             status);
         m_program = program;
         m_passConstants = constants;
@@ -2608,7 +2674,10 @@ namespace LamaPon::Detail
         m_auxiliaryTextures = {};
         m_matrixConstants = {};
         m_volumetricConstants = {};
+        m_customParameters = {};
+        m_spriteLighting = {};
         m_program = FullscreenProgram::None;
+        m_activeCustomShader = nullptr;
         m_activeToken = 0;
     }
 
@@ -2688,13 +2757,41 @@ namespace LamaPon::Detail
             static_cast<UINT>(viewportScale.size()),
             viewportScale.data(),
             0);
-        if (m_program != FullscreenProgram::None)
+        if (m_activeCustomShader != nullptr)
         {
-            commandList->SetGraphicsRoot32BitConstants(
+            const auto parameters = m_backend->AllocateFrameUpload(
+                sizeof(m_customParameters),
+                D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+            std::memcpy(
+                parameters.data,
+                m_customParameters.data(),
+                sizeof(m_customParameters));
+            const auto lighting = m_backend->AllocateFrameUpload(
+                sizeof(m_spriteLighting),
+                D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+            std::memcpy(
+                lighting.data,
+                &m_spriteLighting,
+                sizeof(m_spriteLighting));
+            commandList->SetGraphicsRootConstantBufferView(
+                8,
+                parameters.gpuAddress);
+            commandList->SetGraphicsRootConstantBufferView(
                 2,
-                static_cast<UINT>(m_passConstants.size()),
+                lighting.gpuAddress);
+        }
+        else if (m_program != FullscreenProgram::None)
+        {
+            const auto constants = m_backend->AllocateFrameUpload(
+                sizeof(m_passConstants),
+                D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+            std::memcpy(
+                constants.data,
                 m_passConstants.data(),
-                0);
+                sizeof(m_passConstants));
+            commandList->SetGraphicsRootConstantBufferView(
+                2,
+                constants.gpuAddress);
         }
         if (m_program == FullscreenProgram::Temporal)
         {
@@ -2830,14 +2927,20 @@ namespace LamaPon::Detail
                 : throw std::invalid_argument(
                     "The active DirectX 12 sprite depth format is "
                     "unsupported.");
-        auto& pipeline = m_pipelineStates[
-            ((static_cast<std::size_t>(program) * DepthFormatVariants
-                + depthIndex)
-                * ColorFormatVariants
-                + formatIndex)
+        const auto variantIndex =
+            (depthIndex * ColorFormatVariants + formatIndex)
                 * BlendVariants
             + blendIndex * 2u
-            + (scissored ? 1u : 0u)];
+            + (scissored ? 1u : 0u);
+        auto& pipeline = m_activeCustomShader != nullptr
+                && program == FullscreenProgram::None
+            ? m_activeCustomShader->pipelineStates[variantIndex]
+            : m_pipelineStates[
+                static_cast<std::size_t>(program)
+                    * DepthFormatVariants
+                    * ColorFormatVariants
+                    * BlendVariants
+                + variantIndex];
         if (pipeline != nullptr)
         {
             return pipeline.Get();
@@ -2874,7 +2977,10 @@ namespace LamaPon::Detail
                 }
             } };
 
-        ID3DBlob* pixelShader = m_pixelShader.Get();
+        ID3DBlob* pixelShader = m_activeCustomShader != nullptr
+                && program == FullscreenProgram::None
+            ? m_activeCustomShader->pixelShader.Get()
+            : m_pixelShader.Get();
         switch (program)
         {
         case FullscreenProgram::ToneMap:

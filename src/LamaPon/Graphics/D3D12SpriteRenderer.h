@@ -14,10 +14,13 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <unordered_map>
 #include <vector>
 
 namespace LamaPon
 {
+    class AssetManager;
     class D3D12Backend;
     class RenderTarget;
     struct AmbientOcclusionSettings;
@@ -45,11 +48,12 @@ namespace LamaPon::Detail
         D3D12SpriteRenderer& operator=(
             const D3D12SpriteRenderer&) = delete;
 
-        // passを開始してtokenを返します。custom pixel shaderはまだD3D12
-        // pipelineを持たないため、既定pipelineで描いて理由をstatusへ返します。
+        // passを開始してtokenを返します。custom pixel shaderは
+        // AssetManagerからSM5 bytecodeを読み、D3D11と同じb0/b1を渡します。
         [[nodiscard]] std::uint64_t Begin(
             const SpritePassDescription& description,
             const GraphicsViewHandle& fallbackTexture,
+            AssetManager* assets,
             SpriteShaderStatus& status);
         [[nodiscard]] bool Draw(
             std::uint64_t token,
@@ -201,6 +205,18 @@ namespace LamaPon::Detail
             GraphicsViewHandle view;
         };
 
+        struct CustomShaderEntry final
+        {
+            Microsoft::WRL::ComPtr<ID3DBlob> pixelShader;
+            std::array<
+                Microsoft::WRL::ComPtr<ID3D12PipelineState>,
+                DepthFormatVariants
+                    * ColorFormatVariants
+                    * BlendVariants>
+                pipelineStates;
+            std::uint64_t generation{};
+        };
+
         // LamaPonEnvironment.hlslのVolumetricBufferと同じ384 bytesです。
         // root constantsの上限を越えるためupload CBVとして渡します。
         struct VolumetricPassConstants final
@@ -271,6 +287,10 @@ namespace LamaPon::Detail
                 * ColorFormatVariants
                 * BlendVariants>
             m_pipelineStates;
+        std::unordered_map<std::filesystem::path, CustomShaderEntry>
+            m_customShaders;
+        CustomShaderEntry* m_activeCustomShader{};
+        std::uint64_t m_nextCustomShaderGeneration{ 1 };
         Microsoft::WRL::ComPtr<ID3D12Resource> m_indexBuffer;
         GraphicsViewHandle m_fallbackTexture;
         std::vector<QueuedSprite> m_sprites;
@@ -281,6 +301,8 @@ namespace LamaPon::Detail
         std::array<GraphicsViewHandle, 3> m_auxiliaryViews;
         std::array<D3D12_GPU_DESCRIPTOR_HANDLE, 3> m_auxiliaryTextures{};
         VolumetricPassConstants m_volumetricConstants{};
+        std::array<DirectX::XMFLOAT4, 8> m_customParameters{};
+        Sprite2DLighting m_spriteLighting{};
         FullscreenProgram m_program{ FullscreenProgram::None };
         std::uint64_t m_activeToken{};
         std::uint64_t m_nextToken{ 1 };
