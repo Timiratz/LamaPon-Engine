@@ -2128,6 +2128,289 @@ namespace
                 + std::to_string(target.AutoExposureStops())
                 + ")");
     }
+
+    // 床へ置いたCubeを斜め上から見下ろすSceneです。接地部の周りだけに
+    // 遮蔽が生まれ、平らな床の残りと空は遮蔽されません。床もCubeで作り、
+    // D3D11とD3D12で同じ形の深度を書きます（PlaneはD3D11だけ厚みの
+    // ある箱です）。近平面にかからない広さに収めます。
+    void BuildAmbientOcclusionScene(LamaPon::Scene& scene)
+    {
+        auto& cameraObject = scene.CreateGameObject("MainCamera");
+        cameraObject.GetTransform().position = { 0.0f, 2.4f, 6.0f };
+        cameraObject.GetTransform().SetEulerAngles(-0.42f, 0.0f, 0.0f);
+        auto& camera = cameraObject.AddComponent<LamaPon::CameraComponent>();
+        scene.SetMainCamera(camera);
+        scene.SetAmbientLightColor({ 1.0f, 1.0f, 1.0f });
+        scene.SetAmbientLightIntensity(1.0f);
+
+        auto& floor = scene.CreateGameObject("Floor");
+        floor.GetTransform().position = { 0.0f, -1.7f, 0.0f };
+        floor.GetTransform().scale = { 8.0f, 1.0f, 8.0f };
+        floor.AddComponent<LamaPon::MeshRendererComponent>(
+            LamaPon::PrimitiveShape::Cube,
+            DirectX::XMFLOAT4{ 0.8f, 0.8f, 0.8f, 1.0f });
+        auto& cube = scene.CreateGameObject("Cube");
+        cube.GetTransform().position = { 0.0f, -0.7f, 0.0f };
+        cube.AddComponent<LamaPon::MeshRendererComponent>(
+            LamaPon::PrimitiveShape::Cube,
+            DirectX::XMFLOAT4{ 0.8f, 0.8f, 0.8f, 1.0f });
+
+        auto occlusion = scene.AmbientOcclusion();
+        occlusion.enabled = true;
+        occlusion.radius = 0.75f;
+        occlusion.strength = 1.0f;
+        scene.SetAmbientOcclusionSettings(occlusion);
+    }
+
+    void EnableAmbientOcclusionQuality(LamaPon::GraphicsDevice& graphics)
+    {
+        auto settings = graphics.Settings();
+        settings.ambientOcclusionEnabled = true;
+        settings.ambientOcclusionSampleCount = 16u;
+        graphics.SetGraphicsSettings(settings);
+    }
+
+    // 同じSceneをD3D11とD3D12で描き、深度プリパスから求めた遮蔽texture
+    // （半解像度）を画面左上へ等倍で写したcaptureです。
+    [[nodiscard]] Capture RenderAmbientOcclusionCapture(
+        const LamaPon::RenderingApi api,
+        const LamaPon::GraphicsStartupProfile profile)
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            api,
+            profile);
+        Require(
+            graphics.ActiveRenderingApi() == api,
+            "The ambient occlusion capture did not start the requested "
+            "rendering API");
+        // D3D11のLit / Environment shaderはasset rootから読み込みます。
+        graphics.Assets().SetAssetRoot(LAMAPON_TEST_ASSET_DIR);
+        EnableAmbientOcclusionQuality(graphics);
+        LamaPon::Scene scene(graphics);
+        BuildAmbientOcclusionScene(scene);
+
+        constexpr float clearColor[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+        graphics.BeginFrame(clearColor);
+        graphics.BeginSceneComposition(clearColor);
+        auto* const target = graphics.SceneCompositionTarget();
+        Require(
+            target != nullptr,
+            "The ambient occlusion capture has no scene composition target");
+        scene.RenderMainCamera(
+            static_cast<float>(CanvasWidth) / CanvasHeight,
+            false,
+            target);
+        const auto occlusionView = target->AmbientOcclusionViewHandle();
+        const auto& occlusion = graphics.Lighting().screenAmbientOcclusion;
+        Require(
+            occlusion.enabled
+                && occlusion.texture == occlusionView
+                && graphics.IsGraphicsViewCurrent(occlusionView),
+            "The scene did not resolve SSAO from its depth prepass");
+        graphics.EndSceneComposition(scene.PostProcessFrameData());
+        {
+            auto pass = graphics.BeginSpritePass();
+            LamaPon::SpriteDrawRequest request;
+            request.texture = occlusionView;
+            request.tint = { 1.0f, 1.0f, 1.0f, 1.0f };
+            Require(
+                pass.Draw(request),
+                "The ambient occlusion view was rejected");
+        }
+        Capture capture;
+        capture.pixels = graphics.CaptureBackBuffer(
+            capture.width,
+            capture.height);
+        graphics.EndFrame();
+        return capture;
+    }
+
+    void RequireMatchingAmbientOcclusionCaptures(
+        const Capture& d3d11,
+        const Capture& d3d12)
+    {
+        const std::size_t expectedBytes =
+            static_cast<std::size_t>(CanvasWidth) * CanvasHeight * 4u;
+        for (const auto* const capture : { &d3d11, &d3d12 })
+        {
+            Require(
+                capture->width == CanvasWidth
+                    && capture->height == CanvasHeight
+                    && capture->pixels.size() == expectedBytes,
+                "The ambient occlusion captures have unexpected dimensions");
+        }
+
+        // 遮蔽textureはR8なので、Spriteで写すと赤だけに値が入ります。
+        constexpr std::uint32_t OcclusionWidth = CanvasWidth / 2u;
+        constexpr std::uint32_t OcclusionHeight = CanvasHeight / 2u;
+        constexpr int ChannelTolerance = 2;
+        std::size_t d3d11OccludedPixels{};
+        std::size_t d3d12OccludedPixels{};
+        std::size_t mismatchedPixels{};
+        std::size_t firstMismatch =
+            std::numeric_limits<std::size_t>::max();
+        int largestDifference{};
+        for (std::uint32_t y{}; y < OcclusionHeight; ++y)
+        {
+            for (std::uint32_t x{}; x < OcclusionWidth; ++x)
+            {
+                const std::size_t pixel =
+                    static_cast<std::size_t>(y) * CanvasWidth + x;
+                const int d3d11Value = d3d11.pixels[pixel * 4u];
+                const int d3d12Value = d3d12.pixels[pixel * 4u];
+                // 接地部の遮蔽はブラー後で約0.8〜0.9の明るさです。
+                d3d11OccludedPixels += d3d11Value < 240 ? 1u : 0u;
+                d3d12OccludedPixels += d3d12Value < 240 ? 1u : 0u;
+                const int difference = std::abs(d3d11Value - d3d12Value);
+                largestDifference = std::max(largestDifference, difference);
+                if (difference > ChannelTolerance)
+                {
+                    ++mismatchedPixels;
+                    firstMismatch = std::min(firstMismatch, pixel);
+                }
+            }
+        }
+        Require(
+            d3d11OccludedPixels > 20u && d3d12OccludedPixels > 20u,
+            "The ambient occlusion captures did not occlude the cube "
+            "contact (D3D11 "
+                + std::to_string(d3d11OccludedPixels)
+                + ", D3D12 "
+                + std::to_string(d3d12OccludedPixels)
+                + " pixels)");
+        if (mismatchedPixels == 0)
+        {
+            return;
+        }
+        throw std::runtime_error(
+            "DirectX 12 ambient occlusion differed from DirectX 11 in "
+            + std::to_string(mismatchedPixels)
+            + " pixels (largest difference "
+            + std::to_string(largestDifference)
+            + "; first at "
+            + std::to_string(firstMismatch % CanvasWidth)
+            + ","
+            + std::to_string(firstMismatch / CanvasWidth)
+            + " D3D11="
+            + std::to_string(d3d11.pixels[firstMismatch * 4u])
+            + " D3D12="
+            + std::to_string(d3d12.pixels[firstMismatch * 4u])
+            + ")");
+    }
+
+    // SSAOはD3D11と同じく環境光項だけへ掛かります。環境光だけで照らした
+    // Sceneでは接地部が暗くなり、明るくなる画素はありません。環境光を0に
+    // すると掛ける先が無くなるため、SSAOの有無で画像は1bitも変わりません。
+    void RequireD3D12AmbientOcclusion()
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap);
+        EnableAmbientOcclusionQuality(graphics);
+        LamaPon::Scene scene(graphics);
+        BuildAmbientOcclusionScene(scene);
+
+        constexpr float clearColor[4]{ 0.02f, 0.03f, 0.05f, 1.0f };
+        const auto captureComposition = [&]()
+        {
+            graphics.BeginFrame(clearColor);
+            graphics.BeginSceneComposition(clearColor);
+            scene.RenderMainCamera(
+                static_cast<float>(CanvasWidth) / CanvasHeight,
+                false,
+                graphics.SceneCompositionTarget());
+            graphics.EndSceneComposition(scene.PostProcessFrameData());
+            std::uint32_t width{};
+            std::uint32_t height{};
+            auto capture = graphics.CaptureBackBuffer(width, height);
+            graphics.EndFrame();
+            Require(
+                width == CanvasWidth && height == CanvasHeight,
+                "The DirectX 12 SSAO capture has unexpected dimensions");
+            return capture;
+        };
+        const auto setOcclusionEnabled = [&](const bool enabled)
+        {
+            auto occlusion = scene.AmbientOcclusion();
+            occlusion.enabled = enabled;
+            scene.SetAmbientOcclusionSettings(occlusion);
+        };
+
+        setOcclusionEnabled(false);
+        const auto withoutOcclusion = captureComposition();
+        Require(
+            !graphics.Lighting().screenAmbientOcclusion.enabled,
+            "Disabled SSAO reached the DirectX 12 lighting state");
+        setOcclusionEnabled(true);
+        const auto withOcclusion = captureComposition();
+        Require(
+            graphics.Lighting().screenAmbientOcclusion.enabled,
+            "The DirectX 12 scene did not apply its resolved SSAO");
+
+        std::size_t darkenedPixels{};
+        bool brightened{};
+        for (std::size_t offset{};
+             offset + 3u < withOcclusion.size();
+             offset += 4u)
+        {
+            for (std::size_t channel{}; channel < 3u; ++channel)
+            {
+                brightened = brightened
+                    || withOcclusion[offset + channel]
+                        > withoutOcclusion[offset + channel] + 1u;
+            }
+            if (withOcclusion[offset + 1u] + 6u
+                < withoutOcclusion[offset + 1u])
+            {
+                ++darkenedPixels;
+            }
+        }
+        Require(
+            darkenedPixels > 40u
+                && darkenedPixels
+                    < static_cast<std::size_t>(CanvasWidth) * CanvasHeight
+                        / 4u
+                && !brightened,
+            "DirectX 12 SSAO did not darken only the ambient contact "
+            "region ("
+                + std::to_string(darkenedPixels)
+                + " darkened pixels)");
+
+        setOcclusionEnabled(false);
+        Require(
+            captureComposition() == withoutOcclusion,
+            "Disabling DirectX 12 SSAO did not restore the original frame");
+
+        scene.SetAmbientLightIntensity(0.0f);
+        auto& lightObject = scene.CreateGameObject("Sun");
+        lightObject.AddComponent<LamaPon::DirectionalLightComponent>();
+        const auto directOnly = captureComposition();
+        setOcclusionEnabled(true);
+        const auto directOnlyWithOcclusion = captureComposition();
+        std::size_t litPixels{};
+        for (std::size_t offset{};
+             offset + 3u < directOnly.size();
+             offset += 4u)
+        {
+            if (directOnly[offset + 1u] > 40u)
+            {
+                ++litPixels;
+            }
+        }
+        Require(
+            litPixels > 300u && directOnlyWithOcclusion == directOnly,
+            "DirectX 12 SSAO changed a scene without ambient light");
+    }
 }
 
 int main()
@@ -2146,6 +2429,9 @@ int main()
         const auto d3d11PostProcess = RenderPostProcessCaptures(
             LamaPon::RenderingApi::DirectX11,
             LamaPon::GraphicsStartupProfile::FullRenderer);
+        const auto d3d11AmbientOcclusion = RenderAmbientOcclusionCapture(
+            LamaPon::RenderingApi::DirectX11,
+            LamaPon::GraphicsStartupProfile::FullRenderer);
 
         // D3D12側だけdebug layerを有効にし、描画中のvalidation errorを
         // 描画結果の一致とは別に検出します。
@@ -2159,8 +2445,13 @@ int main()
             LamaPon::RenderingApi::DirectX12Experimental,
             LamaPon::GraphicsStartupProfile::
                 AllowD3D12ExperimentalBootstrap);
+        const auto d3d12AmbientOcclusion = RenderAmbientOcclusionCapture(
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::
+                AllowD3D12ExperimentalBootstrap);
         RequireD3D12AutoExposure();
         RequireD3D12PrimitiveScene();
+        RequireD3D12AmbientOcclusion();
         RequireD3D12OffscreenTarget();
         RequireD3D12DirectionalShadows();
         RequireD3D12SpotShadows();
@@ -2176,6 +2467,9 @@ int main()
         RequireMatchingPostProcessCaptures(
             d3d11PostProcess,
             d3d12PostProcess);
+        RequireMatchingAmbientOcclusionCaptures(
+            d3d11AmbientOcclusion,
+            d3d12AmbientOcclusion);
         std::cout << "D3D12 sprite rendering tests passed.\n";
     }
     catch (const std::exception& error)

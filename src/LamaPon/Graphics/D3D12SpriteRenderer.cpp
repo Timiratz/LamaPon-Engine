@@ -648,6 +648,191 @@ float4 ScreenOutlinePixelShader(PixelInput input) : SV_Target
         lerp(source.rgb, PassPrimary.rgb, edge),
         source.a);
 }
+
+// LamaPonEnvironment.hlslのPSAmbientOcclusion / PSAmbientOcclusionBlurと
+// 同じ式です。PassPrimaryは遮蔽textureの1 texel・探索半径・強さ、
+// PassSecondary.xはサンプル数、PassTertiaryは深度から距離とビュー空間位置を
+// 戻す射影値（xy=_33/_43、zw=1/_11・1/_22）です。
+float AmbientOcclusionSceneDistance(float deviceDepth)
+{
+    const float denominator = deviceDepth + PassTertiary.x;
+    if (denominator > -1e-6f)
+    {
+        return 1e6f;
+    }
+    return PassTertiary.y / denominator;
+}
+
+float3 AmbientOcclusionViewPosition(float2 uv, float deviceDepth)
+{
+    const float viewZ = AmbientOcclusionSceneDistance(deviceDepth);
+    const float2 ndc = float2(
+        uv.x * 2.0f - 1.0f,
+        1.0f - uv.y * 2.0f);
+    return float3(
+        ndc.x * PassTertiary.z * viewZ,
+        ndc.y * PassTertiary.w * viewZ,
+        viewZ);
+}
+
+float3 AmbientOcclusionViewPositionAt(float2 uv)
+{
+    return AmbientOcclusionViewPosition(
+        uv,
+        DepthTexture.SampleLevel(SpriteSampler, uv, 0.0f).r);
+}
+
+// 上下左右のうち中心との段差が小さい側を軸ごとに選び、輪郭で手前と奥を
+// またがない法線を作ります。
+float3 AmbientOcclusionReconstructNormal(
+    float2 uv,
+    float3 origin,
+    float2 texelSize)
+{
+    const float2 offsetX = float2(texelSize.x, 0.0f);
+    const float2 offsetY = float2(0.0f, texelSize.y);
+    const float3 left = AmbientOcclusionViewPositionAt(uv - offsetX);
+    const float3 right = AmbientOcclusionViewPositionAt(uv + offsetX);
+    const float3 up = AmbientOcclusionViewPositionAt(uv - offsetY);
+    const float3 down = AmbientOcclusionViewPositionAt(uv + offsetY);
+    const float3 horizontal = abs(left.z - origin.z)
+            < abs(right.z - origin.z)
+        ? origin - left
+        : right - origin;
+    const float3 vertical = abs(up.z - origin.z)
+            < abs(down.z - origin.z)
+        ? up - origin
+        : origin - down;
+    const float3 normal = cross(vertical, horizontal);
+    const float lengthSquared = dot(normal, normal);
+    if (lengthSquared < 1e-12f)
+    {
+        return float3(0.0f, 0.0f, -1.0f);
+    }
+    return normal * rsqrt(lengthSquared);
+}
+
+float AmbientOcclusionNoise(float2 pixel)
+{
+    return frac(
+        52.9829189f
+        * frac(dot(pixel, float2(0.06711056f, 0.00583715f))));
+}
+
+// 半解像度のRへ「残る明るさ」（1.0=遮蔽なし）を書きます。
+float4 AmbientOcclusionPixelShader(PixelInput input) : SV_Target
+{
+    const float2 uv = input.textureCoordinate;
+    const float depth = DepthTexture.SampleLevel(
+        SpriteSampler,
+        uv,
+        0.0f).r;
+    if (depth >= 0.999999f)
+    {
+        return float4(1.0f, 1.0f, 1.0f, 1.0f);
+    }
+
+    const float3 origin = AmbientOcclusionViewPosition(uv, depth);
+    const float2 texelSize = PassPrimary.xy;
+    const float radius = PassPrimary.z;
+    const float strength = PassPrimary.w;
+    const float3 normal = AmbientOcclusionReconstructNormal(
+        uv,
+        origin,
+        texelSize);
+    const float projectedRadius = radius / max(origin.z, 0.001f);
+    const float rotation = AmbientOcclusionNoise(
+        uv / max(texelSize.x, 1e-6f)
+            * float2(1.0f, texelSize.x / max(texelSize.y, 1e-6f)))
+        * 6.2831853f;
+    const int sampleCount = clamp(int(PassSecondary.x), 4, 32);
+    float occlusion = 0.0f;
+    [loop]
+    for (int index = 0; index < sampleCount; ++index)
+    {
+        // 黄金角のらせんで、少ない回数でも偏らせません。
+        const float fraction =
+            (float(index) + 0.5f) / float(sampleCount);
+        const float angle = rotation + fraction * 18.849556f;
+        const float spiralDistance = sqrt(fraction);
+        const float2 sampleUv = uv
+            + float2(cos(angle), sin(angle))
+                * spiralDistance * projectedRadius * 0.5f;
+        if (any(sampleUv < 0.0f) || any(sampleUv > 1.0f))
+        {
+            continue;
+        }
+        const float sampleDepth = DepthTexture.SampleLevel(
+            SpriteSampler,
+            sampleUv,
+            0.0f).r;
+        if (sampleDepth >= 0.999999f)
+        {
+            continue;
+        }
+        float3 difference = AmbientOcclusionViewPosition(
+            sampleUv,
+            sampleDepth) - origin;
+        const float length2 = dot(difference, difference);
+        if (length2 < 1e-8f)
+        {
+            continue;
+        }
+        difference *= rsqrt(length2);
+        const float sampleDistance = sqrt(length2);
+        // 法線より手前側にある分だけを遮蔽とし、半径の外は効かせません。
+        const float facing = saturate(dot(normal, difference) - 0.06f);
+        const float falloff = saturate(
+            1.0f - sampleDistance / max(radius, 0.001f));
+        occlusion += facing * falloff;
+    }
+    occlusion = saturate(
+        occlusion / float(sampleCount) * 2.4f * strength);
+    const float visibility = 1.0f - occlusion;
+    return float4(visibility, visibility, visibility, 1.0f);
+}
+
+// 中心と深度の近い画素だけを混ぜるbilateral blurで、少ないサンプルの
+// ザラつきを輪郭を越えずに均します。
+float4 AmbientOcclusionBlurPixelShader(PixelInput input) : SV_Target
+{
+    const float2 uv = input.textureCoordinate;
+    const float2 texelSize = PassPrimary.xy;
+    const float centerDepth = AmbientOcclusionSceneDistance(
+        DepthTexture.SampleLevel(SpriteSampler, uv, 0.0f).r);
+    const float depthScale = max(centerDepth * 0.08f, 0.05f);
+    float total = 0.0f;
+    float weightSum = 0.0f;
+    [unroll]
+    for (int y = -2; y <= 1; ++y)
+    {
+        [unroll]
+        for (int x = -2; x <= 1; ++x)
+        {
+            const float2 sampleUv = uv + float2(
+                (float(x) + 0.5f) * texelSize.x,
+                (float(y) + 0.5f) * texelSize.y);
+            const float sampleDepth = AmbientOcclusionSceneDistance(
+                DepthTexture.SampleLevel(
+                    SpriteSampler,
+                    sampleUv,
+                    0.0f).r);
+            const float depthRatio =
+                (sampleDepth - centerDepth) / depthScale;
+            const float weight =
+                1.0f / (1.0f + depthRatio * depthRatio);
+            total += SpriteTexture.SampleLevel(
+                SpriteSampler,
+                sampleUv,
+                0.0f).r * weight;
+            weightSum += weight;
+        }
+    }
+    const float visibility = weightSum > 0.0f
+        ? total / weightSum
+        : SpriteTexture.SampleLevel(SpriteSampler, uv, 0.0f).r;
+    return float4(visibility, visibility, visibility, 1.0f);
+}
 )";
 
     void ThrowIfFailed(
@@ -903,6 +1088,12 @@ namespace LamaPon::Detail
             "ps_5_0");
         m_depthOfFieldPixelShader = CompileSpriteShader(
             "DepthOfFieldPixelShader",
+            "ps_5_0");
+        m_ambientOcclusionPixelShader = CompileSpriteShader(
+            "AmbientOcclusionPixelShader",
+            "ps_5_0");
+        m_ambientOcclusionBlurPixelShader = CompileSpriteShader(
+            "AmbientOcclusionBlurPixelShader",
             "ps_5_0");
 
         D3D12_DESCRIPTOR_RANGE textureRange{};
@@ -1602,6 +1793,74 @@ namespace LamaPon::Detail
         m_backend->EndOffscreenPostProcess(target);
     }
 
+    bool D3D12SpriteRenderer::ResolveAmbientOcclusion(
+        RenderTarget& target,
+        const GraphicsViewHandle& fallbackTexture,
+        const AmbientOcclusionSettings& settings,
+        const DirectX::XMFLOAT4X4& projection,
+        const std::uint32_t sampleCount)
+    {
+        // 正投影などで距離を戻せない射影は、D3D11と同じく遮蔽なしです。
+        if (!settings.enabled
+            || std::abs(projection._11) < 1e-6f
+            || std::abs(projection._22) < 1e-6f)
+        {
+            return false;
+        }
+        const auto depth = target.DepthViewHandle();
+        if (!m_backend->TryResolveShaderResource(depth))
+        {
+            return false;
+        }
+        try
+        {
+            const auto source =
+                m_backend->BeginOffscreenAmbientOcclusionPass(target, false);
+            const auto& viewport = m_backend->ActiveViewport();
+            // D3D11のRenderAmbientOcclusionと同じく1 texelは遮蔽textureの
+            // 寸法で、ブラーも同じ定数を読みます。
+            const std::array<float, 16> constants{
+                1.0f / viewport.Width,
+                1.0f / viewport.Height,
+                std::clamp(settings.radius, 0.01f, 10.0f),
+                std::clamp(settings.strength, 0.0f, 1.0f),
+                static_cast<float>(std::clamp(sampleCount, 4u, 32u)),
+                0.0f,
+                0.0f,
+                0.0f,
+                projection._33,
+                projection._43,
+                1.0f / projection._11,
+                1.0f / projection._22,
+                0.0f,
+                0.0f,
+                0.0f,
+                0.0f
+            };
+            DrawFullscreen(
+                source,
+                fallbackTexture,
+                FullscreenProgram::AmbientOcclusion,
+                constants,
+                { GraphicsViewHandle{}, depth });
+            const auto occlusion =
+                m_backend->BeginOffscreenAmbientOcclusionPass(target, true);
+            DrawFullscreen(
+                occlusion,
+                fallbackTexture,
+                FullscreenProgram::AmbientOcclusionBlur,
+                constants,
+                { GraphicsViewHandle{}, depth });
+        }
+        catch (...)
+        {
+            m_backend->AbortOffscreenAmbientOcclusion(target);
+            throw;
+        }
+        m_backend->EndOffscreenAmbientOcclusion(target);
+        return true;
+    }
+
     void D3D12SpriteRenderer::MeasureLuminance(
         RenderTarget& target,
         const GraphicsViewHandle& fallbackTexture)
@@ -1717,7 +1976,9 @@ namespace LamaPon::Detail
         }
         else if (program == FullscreenProgram::ScreenOutline
             || program == FullscreenProgram::MotionBlur
-            || program == FullscreenProgram::DepthOfField)
+            || program == FullscreenProgram::DepthOfField
+            || program == FullscreenProgram::AmbientOcclusion
+            || program == FullscreenProgram::AmbientOcclusionBlur)
         {
             const auto depth = m_backend->TryResolveShaderResource(
                 m_auxiliaryViews[1]);
@@ -1892,7 +2153,9 @@ namespace LamaPon::Detail
         }
         else if (m_program == FullscreenProgram::ScreenOutline
             || m_program == FullscreenProgram::MotionBlur
-            || m_program == FullscreenProgram::DepthOfField)
+            || m_program == FullscreenProgram::DepthOfField
+            || m_program == FullscreenProgram::AmbientOcclusion
+            || m_program == FullscreenProgram::AmbientOcclusionBlur)
         {
             commandList->SetGraphicsRootDescriptorTable(
                 4,
@@ -1954,21 +2217,24 @@ namespace LamaPon::Detail
             throw std::invalid_argument(
                 "The sprite blend mode is invalid.");
         }
-        if (program > FullscreenProgram::DepthOfField)
+        if (program > FullscreenProgram::AmbientOcclusionBlur)
         {
             throw std::invalid_argument(
                 "The sprite pixel program is invalid.");
         }
+        // SSAOの遮蔽とブラーは半解像度のR8へ書きます。
         const std::size_t formatIndex = colorFormat
                 == D3D12Backend::PrimaryColorFormat
             ? 0u
             : colorFormat == DXGI_FORMAT_R16G16B16A16_FLOAT
                 ? 1u
-                : throw std::invalid_argument(
-                    "The active DirectX 12 sprite target format is "
-                    "unsupported.");
-        // 自動露出の縮小段は深度bufferを持たないため、DSV無しのPSOを
-        // 別に作ります。
+                : colorFormat == DXGI_FORMAT_R8_UNORM
+                    ? 2u
+                    : throw std::invalid_argument(
+                        "The active DirectX 12 sprite target format is "
+                        "unsupported.");
+        // 自動露出の縮小段とSSAOは深度bufferを持たないため、DSV無しの
+        // PSOを別に作ります。
         const std::size_t depthIndex = depthFormat
                 == D3D12Backend::PrimaryDepthFormat
             ? 0u
@@ -1978,9 +2244,11 @@ namespace LamaPon::Detail
                     "The active DirectX 12 sprite depth format is "
                     "unsupported.");
         auto& pipeline = m_pipelineStates[
-            static_cast<std::size_t>(program) * 32u
-            + depthIndex * 16u
-            + formatIndex * 8u
+            ((static_cast<std::size_t>(program) * DepthFormatVariants
+                + depthIndex)
+                * ColorFormatVariants
+                + formatIndex)
+                * BlendVariants
             + blendIndex * 2u
             + (scissored ? 1u : 0u)];
         if (pipeline != nullptr)
@@ -2045,6 +2313,12 @@ namespace LamaPon::Detail
             break;
         case FullscreenProgram::DepthOfField:
             pixelShader = m_depthOfFieldPixelShader.Get();
+            break;
+        case FullscreenProgram::AmbientOcclusion:
+            pixelShader = m_ambientOcclusionPixelShader.Get();
+            break;
+        case FullscreenProgram::AmbientOcclusionBlur:
+            pixelShader = m_ambientOcclusionBlurPixelShader.Get();
             break;
         case FullscreenProgram::None:
             break;

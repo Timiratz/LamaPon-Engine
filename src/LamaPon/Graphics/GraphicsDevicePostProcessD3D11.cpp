@@ -209,10 +209,25 @@ namespace LamaPon
         if (ActiveRenderingApi()
             == RenderingApi::DirectX12Experimental)
         {
-            // SSAO shaderはまだD3D11専用ですが、後続パスが
-            // 同じ公開DepthViewを読めるようコピーは確定します。
+            // D3D12の公開DepthViewはshader-readable copyなので、プリパスの
+            // 深度を確定してから遮蔽を求めます。SSRなど後続パスも同じ
+            // コピーを読みます。
             m_state->m_backend->CaptureOffscreenTargetDepth(target);
-            return false;
+            if (!settings.enabled)
+            {
+                return false;
+            }
+            return RequireD3D12PostProcessRenderer(
+                *this,
+                m_state->m_apiResources.get(),
+                target,
+                "ResolveOffscreenTargetAmbientOcclusion")
+                .ResolveAmbientOcclusion(
+                    target,
+                    m_state->m_whiteTextureView,
+                    settings,
+                    projection,
+                    sampleCount);
         }
         auto& targetState = RequireCurrentOffscreenTarget(
             *this,

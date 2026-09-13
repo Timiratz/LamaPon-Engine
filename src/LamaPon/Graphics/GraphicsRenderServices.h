@@ -113,6 +113,16 @@ namespace LamaPon
         bool enabled{};
     };
 
+    // 深度プリパスから求めたSSAOです。textureは描画先の画面全体を覆い、
+    // SV_Positionへ逆寸法を掛けたUVで読んで環境光項だけへ掛けます。
+    struct PrimitiveScreenAmbientOcclusion final
+    {
+        GraphicsViewHandle texture;
+        float inverseWidth{};
+        float inverseHeight{};
+        bool enabled{};
+    };
+
     // MeshRendererがAPI固有objectを持たずに送る最小3D描画要求です。
     // spanはDrawPrimitiveの同期呼び出し中だけ有効です。
     struct PrimitiveDrawRequest final
@@ -143,6 +153,7 @@ namespace LamaPon
         GraphicsViewHandle spotShadowTexture;
         PrimitivePointShadow pointShadow;
         float localShadowInverseResolution{};
+        PrimitiveScreenAmbientOcclusion screenAmbientOcclusion;
         GraphicsViewHandle albedo;
         GraphicsViewHandle normalTexture;
         GraphicsViewHandle roughnessTexture;

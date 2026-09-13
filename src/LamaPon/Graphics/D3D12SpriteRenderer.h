@@ -20,6 +20,7 @@ namespace LamaPon
 {
     class D3D12Backend;
     class RenderTarget;
+    struct AmbientOcclusionSettings;
     struct BloomSettings;
     struct ColorGradingSettings;
     struct DepthOfFieldSettings;
@@ -111,6 +112,16 @@ namespace LamaPon::Detail
             const DepthOfFieldSettings& settings,
             const DirectX::XMFLOAT4X4& projection,
             std::uint32_t sampleCount);
+        // D3D11のRenderAmbientOcclusion / BlurAmbientOcclusionと同じく、
+        // 深度コピーから半解像度の遮蔽を求めて深度対応のブラーを掛け、
+        // AmbientOcclusionViewHandleへ書きます。射影から距離を戻せない
+        // 場合は何もせずfalseを返します。終了後は深度専用の描画先へ戻します。
+        [[nodiscard]] bool ResolveAmbientOcclusion(
+            RenderTarget& target,
+            const GraphicsViewHandle& fallbackTexture,
+            const AmbientOcclusionSettings& settings,
+            const DirectX::XMFLOAT4X4& projection,
+            std::uint32_t sampleCount);
         // 自動露出用に、current colorの対数輝度を1/4解像度で書いてから
         // 2x2平均で1x1まで縮めます。D3D11のPSLuminanceとGenerateMipsに
         // 相当し、終了後はtargetの通常の描画先へ戻します。
@@ -132,8 +143,17 @@ namespace LamaPon::Detail
             Temporal,
             ScreenOutline,
             MotionBlur,
-            DepthOfField
+            DepthOfField,
+            AmbientOcclusion,
+            AmbientOcclusionBlur
         };
+
+        // PSOの組み合わせ数です。深度はprimary / 無し、出力はRGBA8 /
+        // RGBA16F / R8、blendは4種と通常 / scissor passの2通りです。
+        static constexpr std::size_t FullscreenProgramCount = 11u;
+        static constexpr std::size_t DepthFormatVariants = 2u;
+        static constexpr std::size_t ColorFormatVariants = 3u;
+        static constexpr std::size_t BlendVariants = 8u;
 
         struct Vertex final
         {
@@ -190,9 +210,16 @@ namespace LamaPon::Detail
         Microsoft::WRL::ComPtr<ID3DBlob> m_screenOutlinePixelShader;
         Microsoft::WRL::ComPtr<ID3DBlob> m_motionBlurPixelShader;
         Microsoft::WRL::ComPtr<ID3DBlob> m_depthOfFieldPixelShader;
+        Microsoft::WRL::ComPtr<ID3DBlob> m_ambientOcclusionPixelShader;
+        Microsoft::WRL::ComPtr<ID3DBlob> m_ambientOcclusionBlurPixelShader;
         // pixel shader、深度format、出力format、blend modeごとに、通常pass
         // とscissor passのcull違いを持ちます。
-        std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 288>
+        std::array<
+            Microsoft::WRL::ComPtr<ID3D12PipelineState>,
+            FullscreenProgramCount
+                * DepthFormatVariants
+                * ColorFormatVariants
+                * BlendVariants>
             m_pipelineStates;
         Microsoft::WRL::ComPtr<ID3D12Resource> m_indexBuffer;
         GraphicsViewHandle m_fallbackTexture;

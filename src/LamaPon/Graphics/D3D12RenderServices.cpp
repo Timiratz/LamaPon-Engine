@@ -55,6 +55,8 @@ cbuffer PrimitiveConstants : register(b0)
     float4 PointShadowParameters;
     // x=1 / spot shadow resolution, y=1 / point shadow resolution.
     float4 LocalShadowTexelSizes;
+    // xy=1 / SSAO target size, z=enabled, w=reserved.
+    float4 ScreenAmbientOcclusionParameters;
 };
 
 Texture2D AlbedoTexture : register(t0);
@@ -66,6 +68,7 @@ Texture2D EmissiveTexture : register(t5);
 Texture2DArray<float> DirectionalShadowTexture : register(t6);
 Texture2DArray<float> SpotShadowTexture : register(t7);
 TextureCube<float> PointShadowTexture : register(t8);
+Texture2D ScreenAmbientOcclusionTexture : register(t9);
 SamplerState AlbedoSampler : register(s0);
 SamplerComparisonState ShadowSampler : register(s1);
 
@@ -371,10 +374,20 @@ float4 PrimitivePixelShader(PixelInput input) : SV_Target
         1.0f);
     const float metallic = saturate(
         MaterialProperties.y * metallicSample);
-    const float occlusion = lerp(
+    float occlusion = lerp(
         1.0f,
         occlusionSample,
         saturate(MaterialProperties.z));
+    // D3D11のLamaPonLit.hlslと同じく、SSAOも材質の遮蔽と同じ扱いで
+    // 環境光項だけへ掛け、直接光や影の中は暗くしません。
+    if (ScreenAmbientOcclusionParameters.z >= 0.5f)
+    {
+        const float2 screenUv =
+            input.position.xy * ScreenAmbientOcclusionParameters.xy;
+        occlusion *= ScreenAmbientOcclusionTexture.Sample(
+            AlbedoSampler,
+            screenUv).r;
+    }
     const float3 diffuseColor = surfaceColor * (1.0f - metallic);
     const float3 specularColor = lerp(0.04f.xxx, surfaceColor, metallic);
     const float3 viewDirection = normalize(
@@ -802,7 +815,8 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 "ParticlePixelShader",
                 "ps_5_0");
 
-            std::array<D3D12_DESCRIPTOR_RANGE, 9> textureRanges{};
+            // t0〜t5はMaterial、t6〜t8は影、t9はSSAOです。
+            std::array<D3D12_DESCRIPTOR_RANGE, 10> textureRanges{};
             for (UINT index{}; index < textureRanges.size(); ++index)
             {
                 textureRanges[index].RangeType =
@@ -810,7 +824,7 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 textureRanges[index].NumDescriptors = 1;
                 textureRanges[index].BaseShaderRegister = index;
             }
-            std::array<D3D12_ROOT_PARAMETER, 10> parameters{};
+            std::array<D3D12_ROOT_PARAMETER, 11> parameters{};
             parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
             parameters[0].Descriptor.ShaderRegister = 0;
             parameters[0].Descriptor.RegisterSpace = 0;
@@ -1024,7 +1038,10 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 spotShadowBinding{};
             LamaPon::D3D12Backend::ShaderResourceBinding
                 pointShadowBinding{};
+            LamaPon::D3D12Backend::ShaderResourceBinding
+                screenAmbientOcclusionBinding{};
             bool directionalShadowActive{};
+            bool screenAmbientOcclusionActive{};
             bool spotShadowTextureCurrent{};
             bool pointShadowTextureCurrent{};
             ID3D12DescriptorHeap* descriptorHeap{};
@@ -1110,6 +1127,30 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                     }
                     pointShadowBinding = *fallbackPointShadow;
                 }
+                // 深度プリパスが遮蔽を求めたframeだけSSAOを読みます。
+                // 別世代や未解決のviewは白へ置き換え、shaderも読みません。
+                const auto resolvedScreenAmbientOcclusion =
+                    m_backend->TryResolveShaderResource(
+                        request.screenAmbientOcclusion.texture);
+                if (resolvedScreenAmbientOcclusion)
+                {
+                    screenAmbientOcclusionBinding =
+                        *resolvedScreenAmbientOcclusion;
+                    screenAmbientOcclusionActive =
+                        request.screenAmbientOcclusion.enabled;
+                }
+                else
+                {
+                    const auto fallbackScreenAmbientOcclusion =
+                        m_backend->TryResolveShaderResource(
+                            request.fallbackTexture);
+                    if (!fallbackScreenAmbientOcclusion)
+                    {
+                        return false;
+                    }
+                    screenAmbientOcclusionBinding =
+                        *fallbackScreenAmbientOcclusion;
+                }
             }
             else if (!m_backend->IsDepthOnlyPassActive())
             {
@@ -1163,9 +1204,10 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                     spotShadowParameters{};
                 DirectX::XMFLOAT4 pointShadowParameters{};
                 DirectX::XMFLOAT4 localShadowTexelSizes{};
+                DirectX::XMFLOAT4 screenAmbientOcclusionParameters{};
             } constants{};
             // HLSLのPrimitiveConstantsと同じ並び・大きさであることを保証します。
-            static_assert(sizeof(constants) == 2032u);
+            static_assert(sizeof(constants) == 2048u);
             const auto world = DirectX::XMLoadFloat4x4(&request.world);
             const auto view = DirectX::XMLoadFloat4x4(&request.view);
             const auto projection = DirectX::XMLoadFloat4x4(&request.projection);
@@ -1332,6 +1374,19 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 0.0f };
             constants.localShadowTexelSizes.y =
                 std::max(request.localShadowInverseResolution, 0.0f);
+            constants.screenAmbientOcclusionParameters = {
+                screenAmbientOcclusionActive
+                    ? std::max(
+                        request.screenAmbientOcclusion.inverseWidth,
+                        0.0f)
+                    : 0.0f,
+                screenAmbientOcclusionActive
+                    ? std::max(
+                        request.screenAmbientOcclusion.inverseHeight,
+                        0.0f)
+                    : 0.0f,
+                screenAmbientOcclusionActive ? 1.0f : 0.0f,
+                0.0f };
             const auto constantUpload = m_backend->AllocateFrameUpload(
                 sizeof(constants),
                 D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
@@ -1378,6 +1433,9 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 commandList->SetGraphicsRootDescriptorTable(
                     9,
                     pointShadowBinding.descriptor);
+                commandList->SetGraphicsRootDescriptorTable(
+                    10,
+                    screenAmbientOcclusionBinding.descriptor);
             }
             commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             commandList->IASetVertexBuffers(0, 1, &vertexView);

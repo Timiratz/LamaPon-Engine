@@ -1229,12 +1229,12 @@ int main(const int argumentCount, char** arguments)
             !HasPublicDisplayUnorderedAccessView<LamaPon::RenderTarget>);
         static_assert(!HasPublicDisplayTexture<LamaPon::RenderTarget>);
         static_assert(
-            LamaPon::GameModuleApiVersion == 68,
-            "The API-neutral RenderTarget facade requires Game Module API 68");
+            LamaPon::GameModuleApiVersion == 69,
+            "The screen ambient occlusion input requires Game Module API 69");
         static_assert(
             sizeof(LamaPon::RenderTarget) <= 128,
             "RenderTarget leaked native backend state into its public layout");
-        Stage("render-target-api68-facade");
+        Stage("render-target-api69-facade");
         {
             LamaPon::RenderTarget opaqueTarget;
             const auto* const historyProjectionAddress =

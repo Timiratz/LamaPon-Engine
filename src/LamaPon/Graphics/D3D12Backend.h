@@ -247,6 +247,18 @@ namespace LamaPon
             std::uint32_t level);
         // 自動露出を無効にしたとき、読み残した測定値を捨てます。
         void DiscardOffscreenTargetLuminance(RenderTarget& target) noexcept;
+        // SSAOのpassです。blur=falseは深度コピーを読んで半解像度の遮蔽へ、
+        // trueはその遮蔽を読んでブラー先へ書く描画先を深度無しでbindし、
+        // t0へ渡す読み取り用viewを返します。深度はCaptureOffscreenTarget
+        // Depthで確定したコピーを読みます。
+        [[nodiscard]] GraphicsViewHandle BeginOffscreenAmbientOcclusionPass(
+            RenderTarget& target,
+            bool blur);
+        // 遮蔽textureをshaderから読めるstateへ戻し、深度プリパスと同じ
+        // 深度専用の描画先を再bindします。Abortは失敗後の復元で、例外を
+        // 外へ出しません。
+        void EndOffscreenAmbientOcclusion(RenderTarget& target);
+        void AbortOffscreenAmbientOcclusion(RenderTarget& target) noexcept;
 
     private:
         static constexpr std::size_t BackBufferCount = 2;

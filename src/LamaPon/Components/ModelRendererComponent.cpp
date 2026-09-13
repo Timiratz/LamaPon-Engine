@@ -158,6 +158,11 @@ namespace
             1.0f / std::max(
                 lighting.localShadowResolution,
                 1.0f);
+        request.screenAmbientOcclusion = {
+            lighting.screenAmbientOcclusion.texture,
+            lighting.screenAmbientOcclusion.inverseWidth,
+            lighting.screenAmbientOcclusion.inverseHeight,
+            lighting.screenAmbientOcclusion.enabled };
     }
 
     // テセレーションが使えるのは、四角パッチに割れる形状（Plane・

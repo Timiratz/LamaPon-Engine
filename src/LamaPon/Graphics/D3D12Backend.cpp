@@ -543,6 +543,12 @@ namespace
             D3D12_RECT scissor{};
         };
 
+        // offscreen RTV heapの並びです。current / post colorの後にSSAOの
+        // 遮蔽とブラー先、自動露出の測定段を置きます。
+        static constexpr std::uint32_t OcclusionRenderTargetSlot = 2u;
+        static constexpr std::uint32_t OcclusionBlurRenderTargetSlot = 3u;
+        static constexpr std::uint32_t LuminanceRenderTargetSlot = 4u;
+
         ~D3D12RenderTargetState() noexcept override
         {
             if (resourceDomain != nullptr)
@@ -555,7 +561,7 @@ namespace
                 // readback先も含めて、全資源をGPUの完了まで保持します。
                 const std::array<
                     Microsoft::WRL::ComPtr<ID3D12Resource>*,
-                    8> resources{
+                    10> resources{
                         &color,
                         &postColor,
                         &displayColor,
@@ -563,6 +569,8 @@ namespace
                         &temporalHistory,
                         &depth,
                         &depthCopy,
+                        &occlusion,
+                        &occlusionBlur,
                         &luminanceReadback };
                 for (auto* const resource : resources)
                 {
@@ -595,6 +603,8 @@ namespace
                 && temporalHistory != nullptr
                 && depth != nullptr
                 && depthCopy != nullptr
+                && occlusion != nullptr
+                && occlusionBlur != nullptr
                 && !luminanceLevels.empty()
                 && luminanceReadback != nullptr
                 && renderTargetHeap != nullptr
@@ -627,6 +637,18 @@ namespace
             D3D12_RESOURCE_STATE_DEPTH_WRITE };
         D3D12_RESOURCE_STATES depthCopyState{
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE };
+        // SSAOの半解像度R8資源です。公開するのはブラー後の
+        // m_ambientOcclusionViewで、ブラー前のviewはBackend内部だけが
+        // 読みます。
+        Microsoft::WRL::ComPtr<ID3D12Resource> occlusion;
+        Microsoft::WRL::ComPtr<ID3D12Resource> occlusionBlur;
+        D3D12_RESOURCE_STATES occlusionState{
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE };
+        D3D12_RESOURCE_STATES occlusionBlurState{
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE };
+        LamaPon::GraphicsViewHandle occlusionView;
+        D3D12_VIEWPORT occlusionViewport{};
+        D3D12_RECT occlusionScissor{};
         std::vector<LuminanceLevel> luminanceLevels;
         Microsoft::WRL::ComPtr<ID3D12Resource> luminanceReadback;
         D3D12_PLACED_SUBRESOURCE_FOOTPRINT luminanceFootprint{};
@@ -2410,7 +2432,9 @@ namespace LamaPon
             && IsViewCurrent(existing->m_displayView)
             && IsViewCurrent(existing->m_colorHistoryView)
             && IsViewCurrent(existing->m_temporalHistoryView)
-            && IsViewCurrent(existing->m_depthView))
+            && IsViewCurrent(existing->m_depthView)
+            && IsViewCurrent(existing->occlusionView)
+            && IsViewCurrent(existing->m_ambientOcclusionView))
         {
             return;
         }
@@ -2431,9 +2455,11 @@ namespace LamaPon
         D3D12_DESCRIPTOR_HEAP_DESC renderTargetHeapDescription{};
         renderTargetHeapDescription.Type =
             D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-        // current / post colorの2つと、自動露出の測定段ぶんです。
+        // current / post color、SSAOの遮蔽とブラー先、自動露出の測定段
+        // ぶんです。
         renderTargetHeapDescription.NumDescriptors =
-            2u + static_cast<UINT>(luminanceSizes.size());
+            D3D12RenderTargetState::LuminanceRenderTargetSlot
+            + static_cast<UINT>(luminanceSizes.size());
         ThrowIfFailed(
             m_device->CreateDescriptorHeap(
                 &renderTargetHeapDescription,
@@ -2488,7 +2514,8 @@ namespace LamaPon
                 OffsetDescriptor(
                     pending->renderTargetHeap
                         ->GetCPUDescriptorHandleForHeapStart(),
-                    2u + static_cast<std::uint32_t>(index),
+                    D3D12RenderTargetState::LuminanceRenderTargetSlot
+                        + static_cast<std::uint32_t>(index),
                     pending->renderTargetDescriptorSize));
             level.view = CreateTextureView(
                 m_device.Get(),
@@ -2622,6 +2649,48 @@ namespace LamaPon
                 1u,
                 pending->renderTargetDescriptorSize));
 
+        // D3D11RenderTargetStateと同じく、SSAOは半解像度のR8へ遮蔽と
+        // そのブラー結果を書きます。
+        const auto occlusionWidth = std::max(requestedWidth / 2u, 1u);
+        const auto occlusionHeight = std::max(requestedHeight / 2u, 1u);
+        auto occlusionDescription = colorDescription;
+        occlusionDescription.Width = occlusionWidth;
+        occlusionDescription.Height = occlusionHeight;
+        occlusionDescription.Format = DXGI_FORMAT_R8_UNORM;
+        D3D12_CLEAR_VALUE occlusionClear{};
+        occlusionClear.Format = occlusionDescription.Format;
+        const auto createOcclusion =
+            [&](Microsoft::WRL::ComPtr<ID3D12Resource>& destination,
+                const std::uint32_t slot,
+                const char* const operation)
+        {
+            ThrowIfFailed(
+                m_device->CreateCommittedResource(
+                    &defaultHeap,
+                    D3D12_HEAP_FLAG_NONE,
+                    &occlusionDescription,
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                    &occlusionClear,
+                    IID_PPV_ARGS(destination.ReleaseAndGetAddressOf())),
+                operation,
+                m_device.Get());
+            m_device->CreateRenderTargetView(
+                destination.Get(),
+                nullptr,
+                OffsetDescriptor(
+                    renderTargetStart,
+                    slot,
+                    pending->renderTargetDescriptorSize));
+        };
+        createOcclusion(
+            pending->occlusion,
+            D3D12RenderTargetState::OcclusionRenderTargetSlot,
+            "ID3D12Device::CreateCommittedResource(ambient occlusion)");
+        createOcclusion(
+            pending->occlusionBlur,
+            D3D12RenderTargetState::OcclusionBlurRenderTargetSlot,
+            "ID3D12Device::CreateCommittedResource(ambient occlusion blur)");
+
         D3D12_RESOURCE_DESC depthDescription{};
         depthDescription.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
         depthDescription.Width = requestedWidth;
@@ -2732,6 +2801,38 @@ namespace LamaPon
             requestedWidth,
             requestedHeight,
             GraphicsTextureFormat::Rgba8Unorm);
+        // 公開formatにR8が無いため、深度viewと同じくRgba8Unormとして
+        // 扱います。shaderはnative formatのRだけを読みます。
+        auto occlusionViewDescription = colorViewDescription;
+        occlusionViewDescription.Format = DXGI_FORMAT_R8_UNORM;
+        pending->occlusionView = CreateTextureView(
+            m_device.Get(),
+            m_resourceDomain,
+            pending->occlusion,
+            occlusionViewDescription,
+            occlusionWidth,
+            occlusionHeight,
+            GraphicsTextureFormat::Rgba8Unorm);
+        pending->m_ambientOcclusionView = CreateTextureView(
+            m_device.Get(),
+            m_resourceDomain,
+            pending->occlusionBlur,
+            occlusionViewDescription,
+            occlusionWidth,
+            occlusionHeight,
+            GraphicsTextureFormat::Rgba8Unorm);
+        pending->occlusionViewport = {
+            0.0f,
+            0.0f,
+            static_cast<float>(occlusionWidth),
+            static_cast<float>(occlusionHeight),
+            0.0f,
+            1.0f };
+        pending->occlusionScissor = {
+            0,
+            0,
+            static_cast<LONG>(occlusionWidth),
+            static_cast<LONG>(occlusionHeight) };
         pending->viewport = {
             0.0f,
             0.0f,
@@ -3317,7 +3418,7 @@ namespace LamaPon
             D3D12_RESOURCE_STATE_RENDER_TARGET);
         const auto renderTarget = OffsetDescriptor(
             state->renderTargetHeap->GetCPUDescriptorHandleForHeapStart(),
-            2u + level,
+            D3D12RenderTargetState::LuminanceRenderTargetSlot + level,
             state->renderTargetDescriptorSize);
         // 縮小段は深度bufferと寸法が違うため、DSVはbindしません。
         m_commandList->OMSetRenderTargets(
@@ -3334,6 +3435,135 @@ namespace LamaPon
         m_activeOffscreenTarget = &target;
         m_activeOffscreenDepthOnly = false;
         return source;
+    }
+
+    GraphicsViewHandle D3D12Backend::BeginOffscreenAmbientOcclusionPass(
+        RenderTarget& target,
+        const bool blur)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "BeginOffscreenAmbientOcclusionPass requires an initialized "
+                "D3D12 backend.");
+        }
+        auto* const state = dynamic_cast<D3D12RenderTargetState*>(
+            Detail::RenderTargetBackendAccess::Get(target));
+        if (state == nullptr
+            || !state->HasNativeResources()
+            || state->resourceDomain.get() != m_resourceDomain.get()
+            || !IsViewCurrent(state->m_depthView)
+            || !IsViewCurrent(state->occlusionView)
+            || !IsViewCurrent(state->m_ambientOcclusionView))
+        {
+            throw std::invalid_argument(
+                "BeginOffscreenAmbientOcclusionPass requires a target owned "
+                "by this D3D12 backend generation.");
+        }
+        OpenCommandList();
+        m_commandList->OMSetRenderTargets(
+            0,
+            nullptr,
+            FALSE,
+            nullptr);
+        // 両passとも、DSVの本体ではなくCaptureOffscreenTargetDepthで
+        // 確定した深度コピーを読みます。
+        TransitionResource(
+            m_commandList.Get(),
+            state->depthCopy.Get(),
+            state->depthCopyState,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        GraphicsViewHandle source = state->m_depthView;
+        ID3D12Resource* destination = state->occlusion.Get();
+        D3D12_RESOURCE_STATES* destinationState = &state->occlusionState;
+        std::uint32_t slot = D3D12RenderTargetState::OcclusionRenderTargetSlot;
+        if (blur)
+        {
+            TransitionResource(
+                m_commandList.Get(),
+                state->occlusion.Get(),
+                state->occlusionState,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            source = state->occlusionView;
+            destination = state->occlusionBlur.Get();
+            destinationState = &state->occlusionBlurState;
+            slot = D3D12RenderTargetState::OcclusionBlurRenderTargetSlot;
+        }
+        TransitionResource(
+            m_commandList.Get(),
+            destination,
+            *destinationState,
+            D3D12_RESOURCE_STATE_RENDER_TARGET);
+        const auto renderTarget = OffsetDescriptor(
+            state->renderTargetHeap->GetCPUDescriptorHandleForHeapStart(),
+            slot,
+            state->renderTargetDescriptorSize);
+        // 半解像度の遮蔽は深度bufferと寸法が違うため、DSVはbindしません。
+        m_commandList->OMSetRenderTargets(
+            1,
+            &renderTarget,
+            FALSE,
+            nullptr);
+        m_commandList->RSSetViewports(1, &state->occlusionViewport);
+        m_commandList->RSSetScissorRects(1, &state->occlusionScissor);
+        m_activeViewport = state->occlusionViewport;
+        m_activeScissorRect = state->occlusionScissor;
+        m_activeColorFormat = DXGI_FORMAT_R8_UNORM;
+        m_activeDepthFormat = DXGI_FORMAT_UNKNOWN;
+        m_activeOffscreenTarget = &target;
+        m_activeOffscreenDepthOnly = false;
+        return source;
+    }
+
+    void D3D12Backend::EndOffscreenAmbientOcclusion(RenderTarget& target)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "EndOffscreenAmbientOcclusion requires an initialized D3D12 "
+                "backend.");
+        }
+        auto* const state = dynamic_cast<D3D12RenderTargetState*>(
+            Detail::RenderTargetBackendAccess::Get(target));
+        if (state == nullptr
+            || !state->HasNativeResources()
+            || state->resourceDomain.get() != m_resourceDomain.get())
+        {
+            throw std::invalid_argument(
+                "EndOffscreenAmbientOcclusion requires a target owned by "
+                "this D3D12 backend generation.");
+        }
+        OpenCommandList();
+        m_commandList->OMSetRenderTargets(
+            0,
+            nullptr,
+            FALSE,
+            nullptr);
+        // 後続のLit描画が画面UVで読むため、両textureをSRV stateへ戻します。
+        TransitionResource(
+            m_commandList.Get(),
+            state->occlusion.Get(),
+            state->occlusionState,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        TransitionResource(
+            m_commandList.Get(),
+            state->occlusionBlur.Get(),
+            state->occlusionBlurState,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        BindOffscreenTargetDepthOnly(target);
+    }
+
+    void D3D12Backend::AbortOffscreenAmbientOcclusion(
+        RenderTarget& target) noexcept
+    {
+        try
+        {
+            EndOffscreenAmbientOcclusion(target);
+        }
+        catch (...)
+        {
+            // 元の例外を呼び出し側へ返すため、復元の失敗はここで止めます。
+        }
     }
 
     void D3D12Backend::DiscardOffscreenTargetLuminance(
