@@ -1,4 +1,5 @@
 #include "LamaPon/Assets/AssetManager.h"
+#include "LamaPon/Assets/TextureLoader.h"
 #include "LamaPon/Components/CameraComponent.h"
 #include "LamaPon/Components/DirectionalLightComponent.h"
 #include "LamaPon/Components/MeshRendererComponent.h"
@@ -25,6 +26,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <limits>
@@ -45,6 +47,97 @@ namespace
         {
             throw std::runtime_error(message);
         }
+    }
+
+    constexpr std::uint32_t MakeFourCc(
+        const char a,
+        const char b,
+        const char c,
+        const char d) noexcept
+    {
+        return static_cast<std::uint8_t>(a)
+            | static_cast<std::uint32_t>(
+                static_cast<std::uint8_t>(b)) << 8u
+            | static_cast<std::uint32_t>(
+                static_cast<std::uint8_t>(c)) << 16u
+            | static_cast<std::uint32_t>(
+                static_cast<std::uint8_t>(d)) << 24u;
+    }
+
+    void WriteLittleEndian32(
+        std::vector<std::uint8_t>& bytes,
+        const std::size_t offset,
+        const std::uint32_t value)
+    {
+        Require(
+            offset <= bytes.size()
+                && sizeof(value) <= bytes.size() - offset,
+            "The DDS test header offset is invalid");
+        std::memcpy(bytes.data() + offset, &value, sizeof(value));
+    }
+
+    [[nodiscard]] std::vector<std::uint8_t> BuildClassicDds(
+        const std::uint32_t width,
+        const std::uint32_t height,
+        const std::uint32_t mipCount,
+        const std::uint32_t fourCc,
+        const std::vector<std::uint8_t>& payload)
+    {
+        std::vector<std::uint8_t> bytes(128u);
+        WriteLittleEndian32(bytes, 0u, MakeFourCc('D', 'D', 'S', ' '));
+        WriteLittleEndian32(bytes, 4u, 124u);
+        WriteLittleEndian32(bytes, 12u, height);
+        WriteLittleEndian32(bytes, 16u, width);
+        WriteLittleEndian32(bytes, 28u, mipCount);
+        WriteLittleEndian32(bytes, 76u, 32u);
+        WriteLittleEndian32(bytes, 80u, 0x4u);
+        WriteLittleEndian32(bytes, 84u, fourCc);
+        bytes.insert(bytes.end(), payload.begin(), payload.end());
+        return bytes;
+    }
+
+    [[nodiscard]] std::vector<std::uint8_t> BuildRgbaDds()
+    {
+        std::vector<std::uint8_t> bytes(128u);
+        WriteLittleEndian32(bytes, 0u, MakeFourCc('D', 'D', 'S', ' '));
+        WriteLittleEndian32(bytes, 4u, 124u);
+        WriteLittleEndian32(bytes, 12u, 4u);
+        WriteLittleEndian32(bytes, 16u, 4u);
+        WriteLittleEndian32(bytes, 28u, 2u);
+        WriteLittleEndian32(bytes, 76u, 32u);
+        WriteLittleEndian32(bytes, 80u, 0x41u);
+        WriteLittleEndian32(bytes, 88u, 32u);
+        WriteLittleEndian32(bytes, 92u, 0x000000ffu);
+        WriteLittleEndian32(bytes, 96u, 0x0000ff00u);
+        WriteLittleEndian32(bytes, 100u, 0x00ff0000u);
+        WriteLittleEndian32(bytes, 104u, 0xff000000u);
+        for (std::size_t pixel{}; pixel < 16u; ++pixel)
+        {
+            bytes.insert(bytes.end(), { 220u, 40u, 20u, 255u });
+        }
+        for (std::size_t pixel{}; pixel < 4u; ++pixel)
+        {
+            bytes.insert(bytes.end(), { 20u, 40u, 220u, 255u });
+        }
+        return bytes;
+    }
+
+    [[nodiscard]] std::vector<std::uint8_t> BuildDx10Dds(
+        const DXGI_FORMAT format,
+        const std::vector<std::uint8_t>& payload)
+    {
+        auto bytes = BuildClassicDds(
+            4u,
+            4u,
+            1u,
+            MakeFourCc('D', 'X', '1', '0'),
+            {});
+        bytes.resize(148u);
+        WriteLittleEndian32(bytes, 128u, static_cast<std::uint32_t>(format));
+        WriteLittleEndian32(bytes, 132u, 3u);
+        WriteLittleEndian32(bytes, 140u, 1u);
+        bytes.insert(bytes.end(), payload.begin(), payload.end());
+        return bytes;
     }
 
     class HiddenWindow final
@@ -2185,6 +2278,178 @@ namespace
         }
     }
 
+    void RequireD3D12DdsTextures()
+    {
+        const auto rgbaBytes = BuildRgbaDds();
+        const auto rgbaPrepared =
+            LamaPon::TextureLoader::PrepareDdsTextureData(rgbaBytes);
+        Require(
+            rgbaPrepared.format == DXGI_FORMAT_R8G8B8A8_UNORM
+                && rgbaPrepared.levels.size() == 2u
+                && rgbaPrepared.levels[0].width == 4u
+                && rgbaPrepared.levels[0].height == 4u
+                && rgbaPrepared.levels[0].rowPitch == 16u
+                && rgbaPrepared.levels[1].width == 2u
+                && rgbaPrepared.levels[1].height == 2u
+                && rgbaPrepared.levels[1].bytes[2] == 220u,
+            "The DDS parser did not preserve the RGBA8 mip chain");
+
+        const std::vector<std::uint8_t> bc1Block{
+            0x00u, 0xf8u, 0x00u, 0x00u,
+            0x00u, 0x00u, 0x00u, 0x00u };
+        std::vector<std::uint8_t> bc3Block(16u);
+        bc3Block[0] = 255u;
+        bc3Block[1] = 255u;
+        bc3Block[8] = 0xe0u;
+        bc3Block[9] = 0x07u;
+        std::vector<std::uint8_t> bc5Block(16u);
+        bc5Block[0] = 0u;
+        bc5Block[1] = 0u;
+        bc5Block[8] = 255u;
+        bc5Block[9] = 255u;
+        const auto bc1Bytes = BuildClassicDds(
+            4u,
+            4u,
+            1u,
+            MakeFourCc('D', 'X', 'T', '1'),
+            bc1Block);
+        const auto bc3Bytes = BuildClassicDds(
+            4u,
+            4u,
+            1u,
+            MakeFourCc('D', 'X', 'T', '5'),
+            bc3Block);
+        const auto bc5Bytes = BuildClassicDds(
+            4u,
+            4u,
+            1u,
+            MakeFourCc('A', 'T', 'I', '2'),
+            bc5Block);
+        std::vector<std::uint8_t> bgraPixels;
+        for (std::size_t pixel{}; pixel < 16u; ++pixel)
+        {
+            bgraPixels.insert(bgraPixels.end(), { 30u, 60u, 210u, 255u });
+        }
+        const auto bgraBytes = BuildDx10Dds(
+            DXGI_FORMAT_B8G8R8A8_UNORM,
+            bgraPixels);
+        Require(
+            LamaPon::TextureLoader::PrepareDdsTextureData(bc1Bytes).format
+                    == DXGI_FORMAT_BC1_UNORM
+                && LamaPon::TextureLoader::PrepareDdsTextureData(bc3Bytes)
+                        .format == DXGI_FORMAT_BC3_UNORM
+                && LamaPon::TextureLoader::PrepareDdsTextureData(bc5Bytes)
+                        .format == DXGI_FORMAT_BC5_UNORM
+                && LamaPon::TextureLoader::PrepareDdsTextureData(bgraBytes)
+                        .format == DXGI_FORMAT_B8G8R8A8_UNORM,
+            "The DDS parser did not map classic and DX10 formats");
+
+        auto cubeBytes = bc1Bytes;
+        WriteLittleEndian32(cubeBytes, 112u, 0x200u);
+        bool rejectedCube{};
+        try
+        {
+            static_cast<void>(
+                LamaPon::TextureLoader::PrepareDdsTextureData(cubeBytes));
+        }
+        catch (const std::invalid_argument&)
+        {
+            rejectedCube = true;
+        }
+        Require(
+            rejectedCube,
+            "The 2D DDS parser accepted a cube texture as a flat image");
+        auto arrayBytes = bgraBytes;
+        WriteLittleEndian32(arrayBytes, 140u, 2u);
+        bool rejectedArray{};
+        try
+        {
+            static_cast<void>(
+                LamaPon::TextureLoader::PrepareDdsTextureData(arrayBytes));
+        }
+        catch (const std::invalid_argument&)
+        {
+            rejectedArray = true;
+        }
+        Require(
+            rejectedArray,
+            "The 2D DDS parser accepted a DX10 texture array");
+
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap);
+        const std::array views{
+            graphics.Assets().CreateTextureViewHandleFromMemory(
+                bc1Bytes,
+                true),
+            graphics.Assets().CreateTextureViewHandleFromMemory(
+                bc3Bytes,
+                true),
+            graphics.Assets().CreateTextureViewHandleFromMemory(
+                bc5Bytes,
+                true),
+            graphics.Assets().CreateTextureViewHandleFromMemory(
+                rgbaBytes,
+                true),
+            graphics.Assets().CreateTextureViewHandleFromMemory(
+                bgraBytes,
+                true) };
+        for (const auto& view : views)
+        {
+            Require(
+                graphics.IsGraphicsViewCurrent(view),
+                "A parsed DDS view was not created by the DirectX 12 "
+                "backend");
+        }
+
+        constexpr float clearColor[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+        graphics.BeginFrame(clearColor);
+        {
+            auto pass = graphics.BeginSpritePass();
+            for (std::size_t index{}; index < views.size(); ++index)
+            {
+                LamaPon::SpriteDrawRequest request;
+                request.texture = views[index];
+                request.position = {
+                    static_cast<float>(index * 48u),
+                    0.0f };
+                request.scale = { 12.0f, 32.0f };
+                Require(pass.Draw(request), "A DDS sprite was rejected");
+            }
+        }
+        std::uint32_t width{};
+        std::uint32_t height{};
+        const auto pixels = graphics.CaptureBackBuffer(width, height);
+        graphics.EndFrame();
+        const auto channel = [&](const std::uint32_t x, const std::size_t c)
+        {
+            return pixels[(64u * CanvasWidth + x) * 4u + c];
+        };
+        Require(
+            width == CanvasWidth
+                && height == CanvasHeight
+                && channel(24u, 0u) > 220u
+                && channel(24u, 1u) < 20u
+                && channel(72u, 1u) > 220u
+                && channel(72u, 0u) < 20u
+                && channel(120u, 1u) > 220u
+                && channel(120u, 0u) < 20u
+                && channel(168u, 0u) > 190u
+                && channel(168u, 1u) > 25u
+                && channel(168u, 1u) < 60u
+                && channel(216u, 0u) > 190u
+                && channel(216u, 1u) > 40u
+                && channel(216u, 1u) < 80u
+                && channel(216u, 2u) < 45u,
+            "DirectX 12 did not sample RGBA8, BGRA8, BC1, BC3, and BC5 "
+            "DDS textures with their expected colors");
+    }
+
     // 左半分を輝度2.0、右半分を0.125で塗ると、対数平均（幾何平均）は0.5に
     // なり、keyValue 0.18の露出補正はlog2(0.18 / 0.5)段です。算術平均の
     // 約1.06とは大きく変わるため、PSLuminanceと同じ対数平均で測れているかを
@@ -2880,6 +3145,7 @@ int main()
                 LamaPon::GraphicsStartupProfile::
                     AllowD3D12ExperimentalBootstrap);
         RequireD3D12AutoExposure();
+        RequireD3D12DdsTextures();
         RequireD3D12PrimitiveScene();
         RequireD3D12AmbientOcclusion();
         RequireD3D12ScreenSpaceReflection();

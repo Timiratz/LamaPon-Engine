@@ -9,9 +9,95 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace
 {
+    constexpr std::uint32_t MakeFourCc(
+        const char a,
+        const char b,
+        const char c,
+        const char d) noexcept
+    {
+        return static_cast<std::uint8_t>(a)
+            | static_cast<std::uint32_t>(
+                static_cast<std::uint8_t>(b)) << 8u
+            | static_cast<std::uint32_t>(
+                static_cast<std::uint8_t>(c)) << 16u
+            | static_cast<std::uint32_t>(
+                static_cast<std::uint8_t>(d)) << 24u;
+    }
+
+    struct DdsPixelFormat final
+    {
+        std::uint32_t size{};
+        std::uint32_t flags{};
+        std::uint32_t fourCc{};
+        std::uint32_t rgbBitCount{};
+        std::uint32_t redMask{};
+        std::uint32_t greenMask{};
+        std::uint32_t blueMask{};
+        std::uint32_t alphaMask{};
+    };
+
+    struct DdsHeader final
+    {
+        std::uint32_t size{};
+        std::uint32_t flags{};
+        std::uint32_t height{};
+        std::uint32_t width{};
+        std::uint32_t pitchOrLinearSize{};
+        std::uint32_t depth{};
+        std::uint32_t mipMapCount{};
+        std::array<std::uint32_t, 11> reserved{};
+        DdsPixelFormat pixelFormat{};
+        std::uint32_t caps{};
+        std::uint32_t caps2{};
+        std::uint32_t caps3{};
+        std::uint32_t caps4{};
+        std::uint32_t reserved2{};
+    };
+
+    struct DdsHeaderDx10 final
+    {
+        std::uint32_t format{};
+        std::uint32_t resourceDimension{};
+        std::uint32_t miscFlag{};
+        std::uint32_t arraySize{};
+        std::uint32_t miscFlags2{};
+    };
+
+    static_assert(sizeof(DdsPixelFormat) == 32u);
+    static_assert(sizeof(DdsHeader) == 124u);
+    static_assert(sizeof(DdsHeaderDx10) == 20u);
+
+    [[nodiscard]] std::pair<std::uint32_t, std::uint32_t>
+        DdsLevelLayout(
+            const DXGI_FORMAT format,
+            const std::uint32_t width,
+            const std::uint32_t height)
+    {
+        if (format == DXGI_FORMAT_BC1_UNORM)
+        {
+            return {
+                std::max((width + 3u) / 4u, 1u) * 8u,
+                std::max((height + 3u) / 4u, 1u) };
+        }
+        if (format == DXGI_FORMAT_BC3_UNORM
+            || format == DXGI_FORMAT_BC5_UNORM)
+        {
+            return {
+                std::max((width + 3u) / 4u, 1u) * 16u,
+                std::max((height + 3u) / 4u, 1u) };
+        }
+        if (width > std::numeric_limits<std::uint32_t>::max() / 4u)
+        {
+            throw std::invalid_argument(
+                "The DDS texture row pitch cannot be represented.");
+        }
+        return { width * 4u, height };
+    }
+
     void ThrowIfFailed(
         const HRESULT result,
         const char* operation)
@@ -273,6 +359,165 @@ namespace
 
 namespace LamaPon::TextureLoader
 {
+    PreparedTextureData PrepareDdsTextureData(
+        const std::span<const std::uint8_t> bytes)
+    {
+        constexpr std::uint32_t DdsMagic = MakeFourCc('D', 'D', 'S', ' ');
+        constexpr std::uint32_t PixelFormatFourCc = 0x4u;
+        constexpr std::uint32_t PixelFormatRgb = 0x40u;
+        constexpr std::uint32_t Caps2CubeMapMask = 0xfe00u;
+        constexpr std::uint32_t Caps2Volume = 0x200000u;
+        constexpr std::uint32_t ResourceDimensionTexture2D = 3u;
+        constexpr std::uint32_t ResourceMiscTextureCube = 0x4u;
+        constexpr std::uint32_t MaximumTextureDimension = 16384u;
+
+        if (bytes.size() < sizeof(std::uint32_t) + sizeof(DdsHeader))
+        {
+            throw std::invalid_argument("The DDS header is incomplete.");
+        }
+        std::uint32_t magic{};
+        DdsHeader header{};
+        std::memcpy(&magic, bytes.data(), sizeof(magic));
+        std::memcpy(
+            &header,
+            bytes.data() + sizeof(magic),
+            sizeof(header));
+        if (magic != DdsMagic
+            || header.size != sizeof(DdsHeader)
+            || header.pixelFormat.size != sizeof(DdsPixelFormat)
+            || header.width == 0u
+            || header.height == 0u
+            || header.width > MaximumTextureDimension
+            || header.height > MaximumTextureDimension
+            || header.depth > 1u
+            || (header.caps2 & (Caps2CubeMapMask | Caps2Volume)) != 0u)
+        {
+            throw std::invalid_argument(
+                "The DDS is not a supported two-dimensional texture.");
+        }
+
+        std::size_t payloadOffset = sizeof(magic) + sizeof(header);
+        DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+        if ((header.pixelFormat.flags & PixelFormatFourCc) != 0u)
+        {
+            switch (header.pixelFormat.fourCc)
+            {
+            case MakeFourCc('D', 'X', 'T', '1'):
+                format = DXGI_FORMAT_BC1_UNORM;
+                break;
+            case MakeFourCc('D', 'X', 'T', '5'):
+                format = DXGI_FORMAT_BC3_UNORM;
+                break;
+            case MakeFourCc('A', 'T', 'I', '2'):
+            case MakeFourCc('B', 'C', '5', 'U'):
+                format = DXGI_FORMAT_BC5_UNORM;
+                break;
+            case MakeFourCc('D', 'X', '1', '0'):
+            {
+                if (bytes.size() < payloadOffset + sizeof(DdsHeaderDx10))
+                {
+                    throw std::invalid_argument(
+                        "The DDS DX10 header is incomplete.");
+                }
+                DdsHeaderDx10 dx10{};
+                std::memcpy(
+                    &dx10,
+                    bytes.data() + payloadOffset,
+                    sizeof(dx10));
+                payloadOffset += sizeof(dx10);
+                if (dx10.resourceDimension != ResourceDimensionTexture2D
+                    || dx10.arraySize != 1u
+                    || (dx10.miscFlag & ResourceMiscTextureCube) != 0u)
+                {
+                    throw std::invalid_argument(
+                        "DDS arrays, cubes, and volumes are not supported "
+                        "by the graphics texture contract.");
+                }
+                format = static_cast<DXGI_FORMAT>(dx10.format);
+                break;
+            }
+            default:
+                break;
+            }
+        }
+        else if ((header.pixelFormat.flags & PixelFormatRgb) != 0u
+            && header.pixelFormat.rgbBitCount == 32u
+            && header.pixelFormat.alphaMask == 0xff000000u
+            && header.pixelFormat.greenMask == 0x0000ff00u)
+        {
+            if (header.pixelFormat.redMask == 0x000000ffu
+                && header.pixelFormat.blueMask == 0x00ff0000u)
+            {
+                format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            }
+            else if (header.pixelFormat.redMask == 0x00ff0000u
+                && header.pixelFormat.blueMask == 0x000000ffu)
+            {
+                format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            }
+        }
+        switch (format)
+        {
+        case DXGI_FORMAT_R8G8B8A8_UNORM:
+        case DXGI_FORMAT_B8G8R8A8_UNORM:
+        case DXGI_FORMAT_BC1_UNORM:
+        case DXGI_FORMAT_BC3_UNORM:
+        case DXGI_FORMAT_BC5_UNORM:
+            break;
+        default:
+            throw std::invalid_argument(
+                "The DDS texture format is not supported by the active "
+                "graphics backends.");
+        }
+
+        const std::uint32_t mipCount = std::max(header.mipMapCount, 1u);
+        std::uint32_t maximumMipCount = 1u;
+        for (std::uint32_t size = std::max(header.width, header.height);
+            size > 1u;
+            size >>= 1u)
+        {
+            ++maximumMipCount;
+        }
+        if (mipCount > maximumMipCount)
+        {
+            throw std::invalid_argument(
+                "The DDS texture has too many mip levels.");
+        }
+
+        PreparedTextureData result;
+        result.format = format;
+        result.levels.reserve(mipCount);
+        std::size_t offset = payloadOffset;
+        for (std::uint32_t mip{}; mip < mipCount; ++mip)
+        {
+            const auto width = std::max(header.width >> mip, 1u);
+            const auto height = std::max(header.height >> mip, 1u);
+            const auto [rowPitch, rowCount] =
+                DdsLevelLayout(format, width, height);
+            const std::uint64_t levelBytes64 =
+                static_cast<std::uint64_t>(rowPitch) * rowCount;
+            if (offset > bytes.size()
+                || levelBytes64 > std::numeric_limits<std::size_t>::max()
+                || levelBytes64 > bytes.size() - offset)
+            {
+                throw std::invalid_argument(
+                    "The DDS mip data is incomplete.");
+            }
+            const auto levelBytes = static_cast<std::size_t>(levelBytes64);
+            PreparedTextureLevel level;
+            level.width = width;
+            level.height = height;
+            level.rowPitch = rowPitch;
+            level.bytes.assign(
+                bytes.begin() + static_cast<std::ptrdiff_t>(offset),
+                bytes.begin()
+                    + static_cast<std::ptrdiff_t>(offset + levelBytes));
+            result.levels.push_back(std::move(level));
+            offset += levelBytes;
+        }
+        return result;
+    }
+
     CpuImage DecodeImageBytes(
         const std::span<const std::uint8_t> bytes)
     {

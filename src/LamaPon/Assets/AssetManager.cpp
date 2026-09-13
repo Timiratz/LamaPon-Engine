@@ -1295,16 +1295,17 @@ namespace LamaPon
             const bool isDds,
             const TextureLoader::TextureUsage usage)
     {
-        if (bytes.empty() || m_backend == nullptr || isDds)
+        if (bytes.empty() || m_backend == nullptr)
         {
             return {};
         }
-        auto mips = TextureLoader::GenerateMipChain(
-            TextureLoader::DecodeImageBytes(bytes));
-        const auto prepared = TextureLoader::PrepareTextureData(
-            std::move(mips),
-            RuntimeTextureCompressionEnabled(),
-            usage);
+        const auto prepared = isDds
+            ? TextureLoader::PrepareDdsTextureData(bytes)
+            : TextureLoader::PrepareTextureData(
+                TextureLoader::GenerateMipChain(
+                    TextureLoader::DecodeImageBytes(bytes)),
+                RuntimeTextureCompressionEnabled(),
+                usage);
         const auto description = MakeTextureDescription(prepared);
         const auto subresources = MakeTextureSubresources(prepared);
         auto texture = m_backend->CreateTexture2D(
@@ -1337,21 +1338,19 @@ namespace LamaPon
         const auto bytes = ReadFileBytes(resolvedPath);
         if (extension == L".dds")
         {
-            // DDSはコンテキストなし（=ミップ自動生成なし）で
-            // 読み込むため、フリースレッドなデバイスだけで完結
-            // します。
-            Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
-                loadedView;
-            ThrowIfFailed(
-                DirectX::CreateDDSTextureFromMemory(
-                    m_device,
-                    bytes.data(),
-                    bytes.size(),
-                    nullptr,
-                    loadedView.ReleaseAndGetAddressOf()),
-                resolvedPath);
             if (auto* const d3d11 = AsD3D11Backend(m_backend))
             {
+                // D3D11はDirectXTKの全DDS対応範囲を従来どおり維持します。
+                Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
+                    loadedView;
+                ThrowIfFailed(
+                    DirectX::CreateDDSTextureFromMemory(
+                        m_device,
+                        bytes.data(),
+                        bytes.size(),
+                        nullptr,
+                        loadedView.ReleaseAndGetAddressOf()),
+                    resolvedPath);
                 auto [textureHandle, viewHandle] =
                     d3d11->ImportShaderResourceView(
                         loadedView.Get());
@@ -1361,8 +1360,33 @@ namespace LamaPon
                     std::move(textureHandle),
                     std::move(viewHandle));
             }
+            else if (m_backend != nullptr)
+            {
+                // D3D12はDevice非依存のDDSパーサーから共通upload契約へ
+                // 渡します。対応外の配列・cube・formatは例外となり、
+                // 壊れた2D textureとして公開しません。
+                const auto prepared =
+                    TextureLoader::PrepareDdsTextureData(bytes);
+                texture->width = prepared.levels.front().width;
+                texture->height = prepared.levels.front().height;
+                texture->isCube = false;
+                CreatePreparedTextureResources(
+                    *texture,
+                    *m_backend,
+                    prepared);
+            }
             else
             {
+                Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
+                    loadedView;
+                ThrowIfFailed(
+                    DirectX::CreateDDSTextureFromMemory(
+                        m_device,
+                        bytes.data(),
+                        bytes.size(),
+                        nullptr,
+                        loadedView.ReleaseAndGetAddressOf()),
+                    resolvedPath);
                 PublishLegacyTextureView(
                     *texture,
                     std::move(loadedView));
