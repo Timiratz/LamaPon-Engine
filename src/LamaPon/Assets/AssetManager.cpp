@@ -3,9 +3,11 @@
 #include "LamaPon/Animation/AnimationClip.h"
 #include "LamaPon/Animation/AnimatorController.h"
 #include "LamaPon/Assets/AssetArchive.h"
+#include "LamaPon/Assets/CmoImporter.h"
 #include "LamaPon/Assets/DataAsset.h"
 #include "LamaPon/Assets/FbxImporter.h"
 #include "LamaPon/Assets/GltfImporter.h"
+#include "LamaPon/Assets/SdkmeshImporter.h"
 #include "LamaPon/Assets/TextureCache.h"
 #include "LamaPon/Assets/TextureLoader.h"
 #include "LamaPon/Core/Log.h"
@@ -2381,36 +2383,55 @@ namespace LamaPon
             DirectX::XMFLOAT4> embeddedDiffuseColors;
         if (extension == L".cmo")
         {
-            // EffectFactoryは各マテリアルのテクスチャをディスクから直接
-            // 読み込むため、CMOのテクスチャは暗号化アーカイブの対象に
-            // なりません。この形式はLamaPonのアセットパイプラインより
-            // 古いため、暗号化して配布するモデルにはglTFかFBXを使います。
-            const auto bytes = ReadFileBytes(resolvedPath);
-            MaterialCapturingEffectFactory effectFactory(m_device);
-            const auto modelDirectory =
-                FindCmoTextureDirectory(resolvedPath).wstring();
-            effectFactory.SetDirectory(modelDirectory.c_str());
-            loadedModel = DirectX::Model::CreateFromCMO(
-                m_device,
-                bytes.data(),
-                bytes.size(),
-                effectFactory);
-            embeddedDiffuseColors =
-                effectFactory.TakeDiffuseColors();
+            if (m_device != nullptr)
+            {
+                // D3D11はDirectXTKの既存モデル・Effect生成を維持します。
+                // CMOのテクスチャはEffectFactoryがディスクから直接読む
+                // ため、暗号化アーカイブの対象にはなりません。
+                const auto bytes = ReadFileBytes(resolvedPath);
+                MaterialCapturingEffectFactory effectFactory(m_device);
+                const auto modelDirectory =
+                    FindCmoTextureDirectory(resolvedPath).wstring();
+                effectFactory.SetDirectory(modelDirectory.c_str());
+                loadedModel = DirectX::Model::CreateFromCMO(
+                    m_device,
+                    bytes.data(),
+                    bytes.size(),
+                    effectFactory);
+                embeddedDiffuseColors =
+                    effectFactory.TakeDiffuseColors();
+            }
+            else
+            {
+                // D3D12などでは同じファイルをCPU幾何・共通texture
+                // handleへ変換し、既存のModel描画要求へ接続します。
+                skeletalModel = CmoImporter::Load(*this, resolvedPath);
+            }
         }
         else if (extension == L".sdkmesh")
         {
-            const auto bytes = ReadFileBytes(resolvedPath);
-            MaterialCapturingEffectFactory effectFactory(m_device);
-            const auto modelDirectory = resolvedPath.parent_path().wstring();
-            effectFactory.SetDirectory(modelDirectory.c_str());
-            loadedModel = DirectX::Model::CreateFromSDKMESH(
-                m_device,
-                bytes.data(),
-                bytes.size(),
-                effectFactory);
-            embeddedDiffuseColors =
-                effectFactory.TakeDiffuseColors();
+            if (m_device != nullptr)
+            {
+                // D3D11はDirectXTKの既存モデル・Effect生成を維持します。
+                const auto bytes = ReadFileBytes(resolvedPath);
+                MaterialCapturingEffectFactory effectFactory(m_device);
+                const auto modelDirectory =
+                    resolvedPath.parent_path().wstring();
+                effectFactory.SetDirectory(modelDirectory.c_str());
+                loadedModel = DirectX::Model::CreateFromSDKMESH(
+                    m_device,
+                    bytes.data(),
+                    bytes.size(),
+                    effectFactory);
+                embeddedDiffuseColors =
+                    effectFactory.TakeDiffuseColors();
+            }
+            else
+            {
+                // D3D12などでは同じファイルをCPU幾何・共通texture
+                // handleへ変換し、既存のModel描画要求へ接続します。
+                skeletalModel = SdkmeshImporter::Load(*this, resolvedPath);
+            }
         }
         else if (extension == L".vbo")
         {

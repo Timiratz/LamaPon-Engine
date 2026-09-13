@@ -1,4 +1,5 @@
 #include "LamaPon/Assets/AssetManager.h"
+#include "LamaPon/Assets/SdkmeshImporter.h"
 #include "LamaPon/Assets/TextureLoader.h"
 #include "LamaPon/Components/CameraComponent.h"
 #include "LamaPon/Components/DirectionalLightComponent.h"
@@ -1747,6 +1748,607 @@ namespace
             "The DirectX 12 ModelRenderer did not draw the FBX mesh");
     }
 
+    void RequireD3D12CmoModel()
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap);
+        const auto modelPath = std::filesystem::path(
+            LAMAPON_TEST_ASSET_DIR)
+            / "models"
+            / "arrow.cmo";
+        const auto asset = graphics.Assets().LoadModel(modelPath);
+        Require(
+            asset != nullptr
+                && asset->model == nullptr
+                && asset->skeletalModel != nullptr
+                && asset->skeletalModel->hasLocalBounds
+                && !asset->skeletalModel->primitives.empty(),
+            "The DirectX 12 CMO import did not retain its CPU model");
+        for (const auto& primitive : asset->skeletalModel->primitives)
+        {
+            Require(
+                !primitive.cpuVertexData.empty()
+                    && !primitive.cpuIndices.empty()
+                    && !primitive.vertexBuffer
+                    && !primitive.indexBuffer
+                    && !primitive.effect,
+                "The DirectX 12 CMO import created D3D11 resources");
+        }
+
+        LamaPon::Scene scene(graphics);
+        auto& cameraObject = scene.CreateGameObject("MainCamera");
+        cameraObject.GetTransform().position = { 0.0f, 0.0f, 5.0f };
+        auto& camera = cameraObject.AddComponent<LamaPon::CameraComponent>();
+        scene.SetMainCamera(camera);
+        scene.SetAmbientLightColor({ 1.0f, 1.0f, 1.0f });
+        scene.SetAmbientLightIntensity(1.0f);
+
+        const auto& bounds = asset->skeletalModel->localBounds;
+        const DirectX::XMFLOAT3 center{
+            (bounds.minimum.x + bounds.maximum.x) * 0.5f,
+            (bounds.minimum.y + bounds.maximum.y) * 0.5f,
+            (bounds.minimum.z + bounds.maximum.z) * 0.5f };
+        const float maximumExtent = std::max({
+            bounds.maximum.x - bounds.minimum.x,
+            bounds.maximum.y - bounds.minimum.y,
+            bounds.maximum.z - bounds.minimum.z,
+            0.001f });
+        const float scale = 3.0f / maximumExtent;
+        auto& object = scene.CreateGameObject("CmoModel");
+        auto& transform = object.GetTransform();
+        transform.scale = { scale, scale, scale };
+        transform.SetEulerAngles(0.45f, 0.65f, 0.0f);
+        DirectX::XMFLOAT3 transformedCenter{};
+        DirectX::XMStoreFloat3(
+            &transformedCenter,
+            DirectX::XMVector3TransformCoord(
+                DirectX::XMLoadFloat3(&center),
+                DirectX::XMMatrixScaling(scale, scale, scale)
+                    * DirectX::XMMatrixRotationQuaternion(
+                        transform.RotationVector())));
+        transform.position = {
+            -transformedCenter.x,
+            -transformedCenter.y,
+            -transformedCenter.z };
+        static_cast<void>(object.AddComponent<
+            LamaPon::ModelRendererComponent>(modelPath));
+
+        constexpr float clearColor[4]{ 0.1f, 0.2f, 0.3f, 1.0f };
+        graphics.BeginFrame(clearColor);
+        scene.RenderMainCamera(
+            static_cast<float>(CanvasWidth) / CanvasHeight,
+            false,
+            nullptr);
+        std::uint32_t width{};
+        std::uint32_t height{};
+        const auto pixels = graphics.CaptureBackBuffer(width, height);
+        graphics.EndFrame();
+        Require(
+            width == CanvasWidth && height == CanvasHeight,
+            "The DirectX 12 CMO capture has unexpected dimensions");
+        // arrow.cmoの内蔵albedoは真っ黒です。D3D11のDirectXTK Model経路と
+        // 同じくコンポーネントの白へ内蔵textureが掛かり、背景と違う形が
+        // 環境光の下でも黒く描かれることを確かめます。
+        const std::array<int, 3> background{
+            pixels[0],
+            pixels[1],
+            pixels[2] };
+        std::size_t modelPixels{};
+        std::size_t darkPixels{};
+        for (std::size_t offset{};
+            offset + 3u < pixels.size();
+            offset += 4u)
+        {
+            bool differs{};
+            for (std::size_t channel{}; channel < 3u; ++channel)
+            {
+                differs = differs
+                    || std::abs(
+                        static_cast<int>(pixels[offset + channel])
+                        - background[channel]) > 8;
+            }
+            if (!differs)
+            {
+                continue;
+            }
+            ++modelPixels;
+            if (pixels[offset] < 8u
+                && pixels[offset + 1u] < 8u
+                && pixels[offset + 2u] < 8u)
+            {
+                ++darkPixels;
+            }
+        }
+        Require(
+            modelPixels > 100u && darkPixels * 10u >= modelPixels * 9u,
+            "The DirectX 12 ModelRenderer did not draw the CMO mesh with its "
+            "embedded albedo ("
+                + std::to_string(modelPixels) + " visible, "
+                + std::to_string(darkPixels) + " dark pixels)");
+    }
+
+    // 同じCMOをD3D11ではDirectXTK Model、D3D12ではCPU幾何として描きます。
+    // 内蔵の黒いalbedoへコンポーネントの発光色だけが乗る合成画像を比べ、
+    // 形、内蔵textureの適用、コンポーネントmaterialの使用を確かめます。
+    [[nodiscard]] Capture RenderCmoModelCapture(
+        const LamaPon::RenderingApi api,
+        const LamaPon::GraphicsStartupProfile profile)
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            api,
+            profile);
+        Require(
+            graphics.ActiveRenderingApi() == api,
+            "The CMO capture did not start the requested rendering API");
+        // D3D11のLit / Environment shaderはasset rootから読み込みます。
+        graphics.Assets().SetAssetRoot(LAMAPON_TEST_ASSET_DIR);
+        LamaPon::Scene scene(graphics);
+        auto& cameraObject = scene.CreateGameObject("MainCamera");
+        cameraObject.GetTransform().position = { 0.0f, 0.0f, 5.0f };
+        auto& camera = cameraObject.AddComponent<LamaPon::CameraComponent>();
+        scene.SetMainCamera(camera);
+        scene.SetAmbientLightColor({ 1.0f, 1.0f, 1.0f });
+        scene.SetAmbientLightIntensity(1.0f);
+
+        auto& object = scene.CreateGameObject("CmoModel");
+        object.GetTransform().position = { 0.0f, 0.2f, 0.0f };
+        object.GetTransform().scale = { 1.6f, 1.6f, 1.6f };
+        object.GetTransform().SetEulerAngles(0.45f, 0.65f, 0.0f);
+        auto& renderer = object.AddComponent<
+            LamaPon::ModelRendererComponent>(
+                std::filesystem::path(LAMAPON_TEST_ASSET_DIR)
+                    / "models"
+                    / "arrow.cmo");
+        // Material上書き中はD3D11もDirectXTK EffectではなくLamaPon Litで
+        // 描くため、D3D12と同じ合成規則で比べられます。
+        renderer.SetMaterialOverrideEnabled(true);
+        renderer.SetEmissiveColor({ 0.2f, 0.6f, 0.3f });
+
+        constexpr float clearColor[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+        graphics.BeginFrame(clearColor);
+        graphics.BeginSceneComposition(clearColor);
+        scene.RenderMainCamera(
+            static_cast<float>(CanvasWidth) / CanvasHeight,
+            false,
+            graphics.SceneCompositionTarget());
+        graphics.EndSceneComposition(scene.PostProcessFrameData());
+        Capture capture;
+        capture.pixels = graphics.CaptureBackBuffer(
+            capture.width,
+            capture.height);
+        graphics.EndFrame();
+
+        std::size_t emissivePixels{};
+        for (std::size_t offset{};
+            offset + 3u < capture.pixels.size();
+            offset += 4u)
+        {
+            if (capture.pixels[offset + 1u]
+                > capture.pixels[offset] + 30u)
+            {
+                ++emissivePixels;
+            }
+        }
+        Require(
+            capture.width == CanvasWidth
+                && capture.height == CanvasHeight
+                && emissivePixels > 100u,
+            "The CMO capture did not draw the emissive model ("
+                + std::to_string(emissivePixels) + " pixels)");
+        return capture;
+    }
+
+    // 3Dを含む合成画像をD3D11とD3D12で画素ごとに比べます。
+    void RequireMatchingFrameCaptures(
+        const std::string& name,
+        const Capture& d3d11,
+        const Capture& d3d12)
+    {
+        const std::size_t expectedBytes =
+            static_cast<std::size_t>(CanvasWidth) * CanvasHeight * 4u;
+        for (const auto* const capture : { &d3d11, &d3d12 })
+        {
+            Require(
+                capture->width == CanvasWidth
+                    && capture->height == CanvasHeight
+                    && capture->pixels.size() == expectedBytes,
+                "The " + name + " captures have unexpected dimensions");
+        }
+
+        // WARP上の同じ演算でも、最終丸めの1段差だけは許容します。
+        constexpr int ChannelTolerance = 2;
+        std::size_t mismatchedPixels{};
+        std::size_t firstMismatch =
+            std::numeric_limits<std::size_t>::max();
+        int largestDifference{};
+        for (std::size_t pixel{}; pixel < expectedBytes / 4u; ++pixel)
+        {
+            int pixelDifference{};
+            for (std::size_t channel{}; channel < 3u; ++channel)
+            {
+                const auto offset = pixel * 4u + channel;
+                pixelDifference = std::max(
+                    pixelDifference,
+                    std::abs(
+                        static_cast<int>(d3d11.pixels[offset])
+                        - static_cast<int>(d3d12.pixels[offset])));
+            }
+            largestDifference = std::max(largestDifference, pixelDifference);
+            if (pixelDifference > ChannelTolerance)
+            {
+                ++mismatchedPixels;
+                firstMismatch = std::min(firstMismatch, pixel);
+            }
+        }
+        if (mismatchedPixels == 0)
+        {
+            return;
+        }
+        const auto describe = [&](const Capture& capture)
+        {
+            const auto offset = firstMismatch * 4u;
+            return std::to_string(capture.pixels[offset]) + ","
+                + std::to_string(capture.pixels[offset + 1u]) + ","
+                + std::to_string(capture.pixels[offset + 2u]);
+        };
+        throw std::runtime_error(
+            "DirectX 12 " + name + " differed from DirectX 11 in "
+            + std::to_string(mismatchedPixels)
+            + " pixels (largest channel difference "
+            + std::to_string(largestDifference)
+            + "; first at "
+            + std::to_string(firstMismatch % CanvasWidth)
+            + ","
+            + std::to_string(firstMismatch / CanvasWidth)
+            + " D3D11="
+            + describe(d3d11)
+            + " D3D12="
+            + describe(d3d12)
+            + ")");
+    }
+
+#pragma pack(push, 4)
+    // DirectXTKのSDKMesh.hと同じレイアウトです。Importerの定義を共有
+    // せずに合成し、実ファイルのABIを独立に検証します。
+    struct TestSdkmeshVertexElement final
+    {
+        std::uint16_t stream;
+        std::uint16_t offset;
+        std::uint8_t type;
+        std::uint8_t method;
+        std::uint8_t usage;
+        std::uint8_t usageIndex;
+    };
+#pragma pack(pop)
+
+#pragma pack(push, 8)
+    struct TestSdkmeshHeader final
+    {
+        std::uint32_t version;
+        std::uint8_t isBigEndian;
+        std::uint64_t headerSize;
+        std::uint64_t nonBufferDataSize;
+        std::uint64_t bufferDataSize;
+        std::uint32_t numVertexBuffers;
+        std::uint32_t numIndexBuffers;
+        std::uint32_t numMeshes;
+        std::uint32_t numTotalSubsets;
+        std::uint32_t numFrames;
+        std::uint32_t numMaterials;
+        std::uint64_t vertexStreamHeadersOffset;
+        std::uint64_t indexStreamHeadersOffset;
+        std::uint64_t meshDataOffset;
+        std::uint64_t subsetDataOffset;
+        std::uint64_t frameDataOffset;
+        std::uint64_t materialDataOffset;
+    };
+
+    struct TestSdkmeshVertexBufferHeader final
+    {
+        std::uint64_t numVertices;
+        std::uint64_t sizeBytes;
+        std::uint64_t strideBytes;
+        std::array<TestSdkmeshVertexElement, 32> declaration;
+        std::uint64_t dataOffset;
+    };
+
+    struct TestSdkmeshIndexBufferHeader final
+    {
+        std::uint64_t numIndices;
+        std::uint64_t sizeBytes;
+        std::uint32_t indexType;
+        std::uint64_t dataOffset;
+    };
+
+    struct TestSdkmeshMesh final
+    {
+        char name[100];
+        std::uint8_t numVertexBuffers;
+        std::uint32_t vertexBuffers[16];
+        std::uint32_t indexBuffer;
+        std::uint32_t numSubsets;
+        std::uint32_t numFrameInfluences;
+        DirectX::XMFLOAT3 boundingBoxCenter;
+        DirectX::XMFLOAT3 boundingBoxExtents;
+        std::uint64_t subsetOffset;
+        std::uint64_t frameInfluenceOffset;
+    };
+
+    struct TestSdkmeshSubset final
+    {
+        char name[100];
+        std::uint32_t materialId;
+        std::uint32_t primitiveType;
+        std::uint64_t indexStart;
+        std::uint64_t indexCount;
+        std::uint64_t vertexStart;
+        std::uint64_t vertexCount;
+    };
+
+    struct TestSdkmeshFrame final
+    {
+        char name[100];
+        std::uint32_t mesh;
+        std::uint32_t parentFrame;
+        std::uint32_t childFrame;
+        std::uint32_t siblingFrame;
+        DirectX::XMFLOAT4X4 matrix;
+        std::uint32_t animationDataIndex;
+    };
+
+    struct TestSdkmeshMaterial final
+    {
+        char name[100];
+        char materialInstancePath[260];
+        char diffuseTexture[260];
+        char normalTexture[260];
+        char specularTexture[260];
+        DirectX::XMFLOAT4 diffuse;
+        DirectX::XMFLOAT4 ambient;
+        DirectX::XMFLOAT4 specular;
+        DirectX::XMFLOAT4 emissive;
+        float power;
+        std::uint64_t runtimeHandles[6];
+    };
+#pragma pack(pop)
+
+    static_assert(sizeof(TestSdkmeshVertexElement) == 8u);
+    static_assert(sizeof(TestSdkmeshHeader) == 104u);
+    static_assert(sizeof(TestSdkmeshVertexBufferHeader) == 288u);
+    static_assert(sizeof(TestSdkmeshIndexBufferHeader) == 32u);
+    static_assert(sizeof(TestSdkmeshMesh) == 224u);
+    static_assert(sizeof(TestSdkmeshSubset) == 144u);
+    static_assert(sizeof(TestSdkmeshFrame) == 184u);
+    static_assert(sizeof(TestSdkmeshMaterial) == 1256u);
+
+    // 2つの頂点範囲を持つBoxを、VertexStartで範囲を指す2つのsubsetと
+    // 赤／青の2つのMaterialで描くSDKMESH（version 101）へ組み立てます。
+    // subset 0は+Z／-Z／+X面、subset 1は-X／+Y／-Y面です。
+    [[nodiscard]] std::vector<std::uint8_t> BuildTestSdkmesh()
+    {
+        struct BoxVertex final
+        {
+            DirectX::XMFLOAT3 position;
+            DirectX::XMFLOAT3 normal;
+            DirectX::XMFLOAT2 textureCoordinate;
+        };
+        constexpr float h = 0.5f;
+        std::vector<BoxVertex> vertices;
+        std::vector<std::uint16_t> indices;
+        const auto addFace = [&](
+            const std::uint16_t rangeStart,
+            const DirectX::XMFLOAT3& normal,
+            const std::array<DirectX::XMFLOAT3, 4>& corners)
+        {
+            // cornersは外から見た左下、左上、右上、右下です。DirectXTKの
+            // 既定（時計回りが表）で表になり、indexは範囲の先頭から数えます。
+            const auto first = static_cast<std::uint16_t>(
+                vertices.size() - rangeStart);
+            const std::array<DirectX::XMFLOAT2, 4> textureCoordinates{ {
+                { 0.0f, 1.0f },
+                { 0.0f, 0.0f },
+                { 1.0f, 0.0f },
+                { 1.0f, 1.0f } } };
+            for (std::size_t corner{}; corner < corners.size(); ++corner)
+            {
+                vertices.push_back({
+                    corners[corner],
+                    normal,
+                    textureCoordinates[corner] });
+            }
+            constexpr std::array<std::uint16_t, 6> quad{
+                0u, 1u, 2u, 0u, 2u, 3u };
+            for (const auto offset : quad)
+            {
+                indices.push_back(
+                    static_cast<std::uint16_t>(first + offset));
+            }
+        };
+        addFace(0u, { 0.0f, 0.0f, 1.0f }, { {
+            { -h, -h, h }, { -h, h, h }, { h, h, h }, { h, -h, h } } });
+        addFace(0u, { 0.0f, 0.0f, -1.0f }, { {
+            { h, -h, -h }, { h, h, -h }, { -h, h, -h }, { -h, -h, -h } } });
+        addFace(0u, { 1.0f, 0.0f, 0.0f }, { {
+            { h, -h, h }, { h, h, h }, { h, h, -h }, { h, -h, -h } } });
+        addFace(12u, { -1.0f, 0.0f, 0.0f }, { {
+            { -h, -h, -h }, { -h, h, -h }, { -h, h, h }, { -h, -h, h } } });
+        addFace(12u, { 0.0f, 1.0f, 0.0f }, { {
+            { -h, h, h }, { -h, h, -h }, { h, h, -h }, { h, h, h } } });
+        addFace(12u, { 0.0f, -1.0f, 0.0f }, { {
+            { -h, -h, -h }, { -h, -h, h }, { h, -h, h }, { h, -h, -h } } });
+
+        const std::uint64_t vertexHeaderOffset = sizeof(TestSdkmeshHeader);
+        const std::uint64_t indexHeaderOffset =
+            vertexHeaderOffset + sizeof(TestSdkmeshVertexBufferHeader);
+        const std::uint64_t meshOffset =
+            indexHeaderOffset + sizeof(TestSdkmeshIndexBufferHeader);
+        const std::uint64_t subsetOffset = meshOffset + sizeof(TestSdkmeshMesh);
+        const std::uint64_t frameOffset =
+            subsetOffset + 2u * sizeof(TestSdkmeshSubset);
+        const std::uint64_t materialOffset =
+            frameOffset + sizeof(TestSdkmeshFrame);
+        const std::uint64_t subsetTableOffset =
+            materialOffset + 2u * sizeof(TestSdkmeshMaterial);
+        const std::uint64_t bufferOffset =
+            subsetTableOffset + 2u * sizeof(std::uint32_t);
+        const std::uint64_t vertexBytes = vertices.size() * sizeof(BoxVertex);
+        const std::uint64_t indexBytes =
+            indices.size() * sizeof(std::uint16_t);
+
+        TestSdkmeshHeader header{};
+        header.version = 101u;
+        // DirectXTKは、header sizeにVB／IB headerまでを含めることを求めます。
+        header.headerSize = meshOffset;
+        header.nonBufferDataSize = bufferOffset - meshOffset;
+        header.bufferDataSize = vertexBytes + indexBytes;
+        header.numVertexBuffers = 1u;
+        header.numIndexBuffers = 1u;
+        header.numMeshes = 1u;
+        header.numTotalSubsets = 2u;
+        header.numFrames = 1u;
+        header.numMaterials = 2u;
+        header.vertexStreamHeadersOffset = vertexHeaderOffset;
+        header.indexStreamHeadersOffset = indexHeaderOffset;
+        header.meshDataOffset = meshOffset;
+        header.subsetDataOffset = subsetOffset;
+        header.frameDataOffset = frameOffset;
+        header.materialDataOffset = materialOffset;
+
+        TestSdkmeshVertexBufferHeader vertexBuffer{};
+        vertexBuffer.numVertices = vertices.size();
+        vertexBuffer.sizeBytes = vertexBytes;
+        vertexBuffer.strideBytes = sizeof(BoxVertex);
+        // D3DDECL_ENDで埋めてから、position／normal／UVを並べます。
+        vertexBuffer.declaration.fill({ 0xffu, 0u, 17u, 0u, 0u, 0u });
+        vertexBuffer.declaration[0] = { 0u, 0u, 2u, 0u, 0u, 0u };
+        vertexBuffer.declaration[1] = { 0u, 12u, 2u, 0u, 3u, 0u };
+        vertexBuffer.declaration[2] = { 0u, 24u, 1u, 0u, 5u, 0u };
+        vertexBuffer.dataOffset = bufferOffset;
+
+        TestSdkmeshIndexBufferHeader indexBuffer{};
+        indexBuffer.numIndices = indices.size();
+        indexBuffer.sizeBytes = indexBytes;
+        indexBuffer.indexType = 0u;
+        indexBuffer.dataOffset = bufferOffset + vertexBytes;
+
+        TestSdkmeshMesh mesh{};
+        strcpy_s(mesh.name, "TwoMaterialBox");
+        mesh.numVertexBuffers = 1u;
+        mesh.indexBuffer = 0u;
+        mesh.numSubsets = 2u;
+        mesh.boundingBoxExtents = { h, h, h };
+        mesh.subsetOffset = subsetTableOffset;
+
+        std::array<TestSdkmeshSubset, 2> subsets{};
+        for (std::size_t index{}; index < subsets.size(); ++index)
+        {
+            auto& subset = subsets[index];
+            strcpy_s(subset.name, index == 0u ? "Red" : "Blue");
+            subset.materialId = static_cast<std::uint32_t>(index);
+            subset.primitiveType = 0u;
+            subset.indexStart = index * 18u;
+            subset.indexCount = 18u;
+            subset.vertexStart = index * 12u;
+            subset.vertexCount = 12u;
+        }
+
+        TestSdkmeshFrame frame{};
+        strcpy_s(frame.name, "Root");
+        frame.mesh = 0u;
+        frame.parentFrame = 0xffffffffu;
+        frame.childFrame = 0xffffffffu;
+        frame.siblingFrame = 0xffffffffu;
+        DirectX::XMStoreFloat4x4(&frame.matrix, DirectX::XMMatrixIdentity());
+        frame.animationDataIndex = 0xffffffffu;
+
+        std::array<TestSdkmeshMaterial, 2> materials{};
+        strcpy_s(materials[0].name, "Red");
+        materials[0].diffuse = { 0.9f, 0.15f, 0.1f, 1.0f };
+        materials[0].ambient = { 0.9f, 0.15f, 0.1f, 1.0f };
+        strcpy_s(materials[1].name, "Blue");
+        materials[1].diffuse = { 0.1f, 0.2f, 0.9f, 1.0f };
+        materials[1].ambient = { 0.1f, 0.2f, 0.9f, 1.0f };
+
+        const std::array<std::uint32_t, 2> subsetTable{ 0u, 1u };
+        std::vector<std::uint8_t> file(
+            static_cast<std::size_t>(bufferOffset + vertexBytes + indexBytes));
+        const auto write = [&file](
+            const std::uint64_t offset,
+            const void* const data,
+            const std::size_t size)
+        {
+            std::memcpy(file.data() + offset, data, size);
+        };
+        write(0u, &header, sizeof(header));
+        write(vertexHeaderOffset, &vertexBuffer, sizeof(vertexBuffer));
+        write(indexHeaderOffset, &indexBuffer, sizeof(indexBuffer));
+        write(meshOffset, &mesh, sizeof(mesh));
+        write(subsetOffset, subsets.data(), sizeof(subsets));
+        write(frameOffset, &frame, sizeof(frame));
+        write(materialOffset, materials.data(), sizeof(materials));
+        write(subsetTableOffset, subsetTable.data(), sizeof(subsetTable));
+        write(bufferOffset, vertices.data(), vertexBytes);
+        write(bufferOffset + vertexBytes, indices.data(), indexBytes);
+
+        return file;
+    }
+
+    // D3D12 Importerが、DirectXTKと同じくVertexStartで指した2つの頂点
+    // 範囲をsubsetごとの赤／青のMaterialへ変換することを確かめます。
+    // 合成データはメモリから直接渡し、検証用の一時ファイルを作りません。
+    void RequireD3D12SdkmeshModel()
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap);
+        const auto file = BuildTestSdkmesh();
+        const auto model = LamaPon::SdkmeshImporter::LoadFromMemory(
+            graphics.Assets(),
+            file,
+            L"TwoMaterialBox.sdkmesh");
+        Require(
+            model != nullptr
+                && model->hasLocalBounds
+                && model->primitives.size() == 2u,
+            "The DirectX 12 SDKMESH import did not retain its subsets");
+        for (const auto& primitive : model->primitives)
+        {
+            Require(
+                primitive.cpuIndices.size() == 18u
+                    && primitive.cpuVertexStride != 0u
+                    && primitive.cpuVertexData.size()
+                        == 12u * primitive.cpuVertexStride
+                    && !primitive.vertexBuffer
+                    && !primitive.indexBuffer
+                    && !primitive.effect,
+                "The DirectX 12 SDKMESH import did not read its vertex "
+                "ranges");
+        }
+
+        Require(
+            model->primitives[0].baseColor.x > 0.8f
+                && model->primitives[0].baseColor.z < 0.2f
+                && model->primitives[1].baseColor.z > 0.8f
+                && model->primitives[1].baseColor.x < 0.2f,
+            "The DirectX 12 SDKMESH import did not retain subset materials");
+    }
+
     void RequireD3D12Particles()
     {
         HiddenWindow window{ CanvasWidth, CanvasHeight };
@@ -2947,75 +3549,6 @@ namespace
         return capture;
     }
 
-    void RequireMatchingScreenSpaceReflectionCaptures(
-        const Capture& d3d11,
-        const Capture& d3d12)
-    {
-        const std::size_t expectedBytes =
-            static_cast<std::size_t>(CanvasWidth) * CanvasHeight * 4u;
-        for (const auto* const capture : { &d3d11, &d3d12 })
-        {
-            Require(
-                capture->width == CanvasWidth
-                    && capture->height == CanvasHeight
-                    && capture->pixels.size() == expectedBytes,
-                "The screen-space reflection captures have unexpected "
-                "dimensions");
-        }
-
-        // WARP上の同じ演算でも、最終丸めの1段差だけは許容します。
-        constexpr int ChannelTolerance = 2;
-        std::size_t mismatchedPixels{};
-        std::size_t firstMismatch =
-            std::numeric_limits<std::size_t>::max();
-        int largestDifference{};
-        for (std::size_t pixel{}; pixel < expectedBytes / 4u; ++pixel)
-        {
-            int pixelDifference{};
-            for (std::size_t channel{}; channel < 3u; ++channel)
-            {
-                const auto offset = pixel * 4u + channel;
-                pixelDifference = std::max(
-                    pixelDifference,
-                    std::abs(
-                        static_cast<int>(d3d11.pixels[offset])
-                        - static_cast<int>(d3d12.pixels[offset])));
-            }
-            largestDifference = std::max(largestDifference, pixelDifference);
-            if (pixelDifference > ChannelTolerance)
-            {
-                ++mismatchedPixels;
-                firstMismatch = std::min(firstMismatch, pixel);
-            }
-        }
-        if (mismatchedPixels == 0)
-        {
-            return;
-        }
-        const auto describe = [&](const Capture& capture)
-        {
-            const auto offset = firstMismatch * 4u;
-            return std::to_string(capture.pixels[offset]) + ","
-                + std::to_string(capture.pixels[offset + 1u]) + ","
-                + std::to_string(capture.pixels[offset + 2u]);
-        };
-        throw std::runtime_error(
-            "DirectX 12 screen-space reflections differed from DirectX 11 "
-            "in "
-            + std::to_string(mismatchedPixels)
-            + " pixels (largest channel difference "
-            + std::to_string(largestDifference)
-            + "; first at "
-            + std::to_string(firstMismatch % CanvasWidth)
-            + ","
-            + std::to_string(firstMismatch / CanvasWidth)
-            + " D3D11="
-            + describe(d3d11)
-            + " D3D12="
-            + describe(d3d12)
-            + ")");
-    }
-
     // SSRは前フレームのカラーを読むため、有効にした最初のフレームは
     // SSR無しと同じ画像です。2フレーム目から床へCubeの赤が映り、SSRを
     // 切ると元の画像へ戻ります。
@@ -3122,6 +3655,9 @@ int main()
             RenderScreenSpaceReflectionCapture(
                 LamaPon::RenderingApi::DirectX11,
                 LamaPon::GraphicsStartupProfile::FullRenderer);
+        const auto d3d11CmoModel = RenderCmoModelCapture(
+            LamaPon::RenderingApi::DirectX11,
+            LamaPon::GraphicsStartupProfile::FullRenderer);
 
         // D3D12側だけdebug layerを有効にし、描画中のvalidation errorを
         // 描画結果の一致とは別に検出します。
@@ -3144,6 +3680,10 @@ int main()
                 LamaPon::RenderingApi::DirectX12Experimental,
                 LamaPon::GraphicsStartupProfile::
                     AllowD3D12ExperimentalBootstrap);
+        const auto d3d12CmoModel = RenderCmoModelCapture(
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::
+                AllowD3D12ExperimentalBootstrap);
         RequireD3D12AutoExposure();
         RequireD3D12DdsTextures();
         RequireD3D12PrimitiveScene();
@@ -3157,6 +3697,8 @@ int main()
         RequireD3D12MaterialFactors();
         RequireD3D12AnimatedGltfModel();
         RequireD3D12AnimatedFbxModel();
+        RequireD3D12CmoModel();
+        RequireD3D12SdkmeshModel();
         RequireD3D12Particles();
         LamaPon::GraphicsDevice::SetEnableDebugLayer(false);
         RequireNoD3D12DebugErrors();
@@ -3167,9 +3709,14 @@ int main()
         RequireMatchingAmbientOcclusionCaptures(
             d3d11AmbientOcclusion,
             d3d12AmbientOcclusion);
-        RequireMatchingScreenSpaceReflectionCaptures(
+        RequireMatchingFrameCaptures(
+            "screen-space reflections",
             d3d11ScreenSpaceReflection,
             d3d12ScreenSpaceReflection);
+        RequireMatchingFrameCaptures(
+            "CMO model",
+            d3d11CmoModel,
+            d3d12CmoModel);
         std::cout << "D3D12 sprite rendering tests passed.\n";
     }
     catch (const std::exception& error)

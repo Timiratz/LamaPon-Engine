@@ -38,6 +38,19 @@
 
 namespace
 {
+    // CMO／SDKMESHはD3D11でDirectXTK Modelとして描かれます。Material
+    // 上書き中の色の合成規則を、D3D12のCPU幾何経路でも揃えるために判定します。
+    [[nodiscard]] bool UsesDirectXTKModelMaterial(
+        const std::filesystem::path& path)
+    {
+        auto extension = path.extension().wstring();
+        std::ranges::transform(
+            extension,
+            extension.begin(),
+            std::towlower);
+        return extension == L".cmo" || extension == L".sdkmesh";
+    }
+
     struct ImportedModelVertex final
     {
         DirectX::XMFLOAT3 position{};
@@ -1632,10 +1645,12 @@ namespace LamaPon
                 extension,
                 extension.begin(),
                 std::towlower);
-            // CMO/SDKMESHはまだD3D11 Deviceを必要とするため、D3D12では
-            // 安全に保持・スキップします。glTF/GLB/FBXはCPU幾何を
+            // VBOはまだD3D11 Deviceを必要とするため、D3D12では安全に
+            // 保持・スキップします。CMO/SDKMESH/glTF/GLB/FBXはCPU幾何を
             // 共通経路で読み込みます。
             if (usesD3D11
+                || extension == L".cmo"
+                || extension == L".sdkmesh"
                 || extension == L".gltf"
                 || extension == L".glb"
                 || extension == L".fbx")
@@ -1813,6 +1828,12 @@ namespace LamaPon
             view,
             projection,
             m_graphics->Settings().automaticLodQuality);
+        // CMOはD3D11ではDirectXTK Modelとして描かれます。Material上書き中は
+        // D3D11の共通Lit経路と同じく、内蔵のDiffuseColorを
+        // PreserveEmbeddedMaterialColorのときだけTintとして掛けます。
+        const bool directXTKMaterialOverride =
+            m_materialOverrideEnabled
+            && UsesDirectXTKModelMaterial(m_modelPath);
         for (const bool alphaPass : { false, true })
         {
             if (depthOnly && alphaPass)
@@ -1832,12 +1853,25 @@ namespace LamaPon
                 {
                     continue;
                 }
-                const auto baseColor = m_materialOverrideEnabled
+                auto baseColor = m_materialOverrideEnabled
                     ? m_material.BaseColor()
                     : primitive.baseColor;
-                const bool alpha = primitive.alpha
-                    || primitive.textureHasTransparency
-                    || baseColor.w < 0.999f;
+                if (directXTKMaterialOverride
+                    && m_preserveEmbeddedMaterialColor)
+                {
+                    baseColor = {
+                        baseColor.x * primitive.baseColor.x,
+                        baseColor.y * primitive.baseColor.y,
+                        baseColor.z * primitive.baseColor.z,
+                        baseColor.w * primitive.baseColor.w };
+                }
+                // DirectXTK Modelの上書きは、上書き色のalphaと内蔵partの
+                // alphaで半透明passを決めます。
+                const bool alpha = directXTKMaterialOverride
+                    ? m_material.BaseColor().w < 0.999f || primitive.alpha
+                    : primitive.alpha
+                        || primitive.textureHasTransparency
+                        || baseColor.w < 0.999f;
                 if (alpha != alphaPass)
                 {
                     continue;
@@ -1994,9 +2028,10 @@ namespace LamaPon
                 request.emissiveFactor = m_materialOverrideEnabled
                     ? m_material.EmissiveColor()
                     : primitive.emissiveFactor;
-                // D3D11のSkeletalModel::Drawと同じmerge規則です。上書き中も
-                // albedo/normalの未指定はモデル内蔵を継承し、PBR mapは
-                // emptyも含めて外部materialを正とします。
+                // D3D11のSkeletalModel::Draw、およびCMOの共通Lit経路と同じ
+                // merge規則です。上書き中もalbedo/normalの未指定はモデル
+                // 内蔵を継承し、PBR mapはemptyも含めて外部materialを正と
+                // します。
                 const auto& embeddedTextures = primitive.embeddedTextures;
                 const auto& pbrTextures = m_materialOverrideEnabled
                     ? overrideTextures

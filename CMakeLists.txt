@@ -179,6 +179,10 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Assets/AssetPacker.h
     src/LamaPon/Assets/DataAsset.cpp
     src/LamaPon/Assets/DataAsset.h
+    src/LamaPon/Assets/CmoImporter.cpp
+    src/LamaPon/Assets/CmoImporter.h
+    src/LamaPon/Assets/SdkmeshImporter.cpp
+    src/LamaPon/Assets/SdkmeshImporter.h
     src/LamaPon/Assets/GltfImporter.cpp
     src/LamaPon/Assets/GltfImporter.h
     src/LamaPon/Assets/AssetManager.cpp
