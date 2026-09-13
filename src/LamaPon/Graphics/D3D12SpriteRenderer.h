@@ -26,6 +26,7 @@ namespace LamaPon
     struct DepthOfFieldSettings;
     struct MotionBlurSettings;
     struct ScreenOutlineSettings;
+    struct ScreenSpaceLensFlareSettings;
     struct TemporalAntiAliasingInputs;
     struct TemporalAntiAliasingSettings;
 }
@@ -77,6 +78,12 @@ namespace LamaPon::Detail
             RenderTarget& target,
             const GraphicsViewHandle& fallbackTexture,
             const BloomSettings& settings);
+        // D3D11と同じ1/4解像度の3段ストリーク、ゴースト、ハローを
+        // HDR Sceneへ合成します。
+        void ApplyScreenSpaceLensFlare(
+            RenderTarget& target,
+            const GraphicsViewHandle& fallbackTexture,
+            const ScreenSpaceLensFlareSettings& settings);
         // D3D11のPSFXAAと同じ輝度の縁検出で輪郭を平滑化します。
         void ApplyFXAA(
             RenderTarget& target,
@@ -155,13 +162,15 @@ namespace LamaPon::Detail
             DepthOfField,
             AmbientOcclusion,
             AmbientOcclusionBlur,
+            LensFlareStreak,
+            LensFlareComposite,
             ReflectionDepthLinearize,
             ReflectionDepthDownsample
         };
 
         // PSOの組み合わせ数です。深度はprimary / 無し、出力はRGBA8 /
         // RGBA16F / R8 / R32F、blendは4種と通常 / scissor passの2通りです。
-        static constexpr std::size_t FullscreenProgramCount = 13u;
+        static constexpr std::size_t FullscreenProgramCount = 15u;
         static constexpr std::size_t DepthFormatVariants = 2u;
         static constexpr std::size_t ColorFormatVariants = 4u;
         static constexpr std::size_t BlendVariants = 8u;
@@ -223,6 +232,8 @@ namespace LamaPon::Detail
         Microsoft::WRL::ComPtr<ID3DBlob> m_depthOfFieldPixelShader;
         Microsoft::WRL::ComPtr<ID3DBlob> m_ambientOcclusionPixelShader;
         Microsoft::WRL::ComPtr<ID3DBlob> m_ambientOcclusionBlurPixelShader;
+        Microsoft::WRL::ComPtr<ID3DBlob> m_lensFlareStreakPixelShader;
+        Microsoft::WRL::ComPtr<ID3DBlob> m_lensFlareCompositePixelShader;
         Microsoft::WRL::ComPtr<ID3DBlob>
             m_reflectionDepthLinearizePixelShader;
         Microsoft::WRL::ComPtr<ID3DBlob>

@@ -1710,14 +1710,16 @@ namespace
     enum class PostProcessCase : std::uint8_t
     {
         Bloom,
+        LensFlare,
         ToneMapping,
         Fxaa,
         Temporal,
         MotionBlur
     };
 
-    constexpr std::array<PostProcessCase, 5> PostProcessCases{
+    constexpr std::array<PostProcessCase, 6> PostProcessCases{
         PostProcessCase::Bloom,
+        PostProcessCase::LensFlare,
         PostProcessCase::ToneMapping,
         PostProcessCase::Fxaa,
         PostProcessCase::Temporal,
@@ -1731,6 +1733,8 @@ namespace
         {
         case PostProcessCase::Bloom:
             return "bloom";
+        case PostProcessCase::LensFlare:
+            return "screen-space lens flare";
         case PostProcessCase::ToneMapping:
             return "tone mapping";
         case PostProcessCase::Fxaa:
@@ -1884,6 +1888,21 @@ namespace
                 graphics.ApplyOffscreenTargetBloom(target, bloom);
                 break;
             }
+            case PostProcessCase::LensFlare:
+            {
+                LamaPon::ScreenSpaceLensFlareSettings lensFlare;
+                lensFlare.enabled = true;
+                lensFlare.threshold = 1.0f;
+                lensFlare.intensity = 0.5f;
+                lensFlare.streakIntensity = 0.4f;
+                lensFlare.streakLength = 0.3f;
+                lensFlare.streakDirections = 2u;
+                lensFlare.streakAngleDegrees = 15.0f;
+                graphics.ApplyOffscreenTargetScreenSpaceLensFlare(
+                    target,
+                    lensFlare);
+                break;
+            }
             case PostProcessCase::ToneMapping:
                 graphics.ApplyOffscreenTargetToneMapping(
                     target,
@@ -1980,6 +1999,35 @@ namespace
                             && pixels[offset(5u, 5u)] < 4u,
                         "The bloom spread beyond its radius");
                     break;
+                case PostProcessCase::LensFlare:
+                {
+                    // 元の8x8高輝度矩形の外側へ、ゴースト、ハロー、筋が
+                    // 十分な範囲で広がっていることを確認します。
+                    std::size_t flarePixels{};
+                    for (std::uint32_t y{}; y < CanvasHeight; ++y)
+                    {
+                        for (std::uint32_t x{}; x < CanvasWidth; ++x)
+                        {
+                            if (x >= 28u && x < 36u
+                                && y >= 12u && y < 20u)
+                            {
+                                continue;
+                            }
+                            const auto pixelOffset = offset(x, y);
+                            flarePixels +=
+                                pixels[pixelOffset] > 4u
+                                    || pixels[pixelOffset + 1u] > 4u
+                                    || pixels[pixelOffset + 2u] > 4u
+                                ? 1u
+                                : 0u;
+                        }
+                    }
+                    Require(
+                        flarePixels > 40u,
+                        "The screen-space lens flare did not create "
+                        "ghosts, a halo, and streaks");
+                    break;
+                }
                 case PostProcessCase::ToneMapping:
                     // 既定のカラーグレーディングとACESで(4, 2, 0.5)は約
                     // (255, 242, 162)になり、単純clipの(255, 255, 128)とは

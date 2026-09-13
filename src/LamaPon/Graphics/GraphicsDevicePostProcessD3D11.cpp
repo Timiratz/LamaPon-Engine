@@ -445,6 +445,21 @@ namespace LamaPon
         RenderTarget& target,
         const ScreenSpaceLensFlareSettings& settings)
     {
+        if (ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            RequireD3D12PostProcessRenderer(
+                *this,
+                m_state->m_apiResources.get(),
+                target,
+                "ApplyOffscreenTargetScreenSpaceLensFlare")
+                .ApplyScreenSpaceLensFlare(
+                    target,
+                    m_state->m_whiteTextureView,
+                    settings);
+            return;
+        }
+
         auto& targetState = RequireCurrentOffscreenTarget(
             *this,
             target,

@@ -259,6 +259,16 @@ namespace LamaPon
         // 外へ出しません。
         void EndOffscreenAmbientOcclusion(RenderTarget& target);
         void AbortOffscreenAmbientOcclusion(RenderTarget& target) noexcept;
+        // Screen Space Lens Flareの1/4解像度ストリークpassです。pass 0は
+        // current colorを読み、以降は2枚の中間textureを交互に読み書き
+        // します。3pass完了後はEndが最後の結果を返して通常の描画先へ
+        // 戻します。
+        [[nodiscard]] GraphicsViewHandle BeginOffscreenLensFlareStreakPass(
+            RenderTarget& target,
+            std::uint32_t pass);
+        [[nodiscard]] GraphicsViewHandle EndOffscreenLensFlareStreaks(
+            RenderTarget& target);
+        void AbortOffscreenLensFlareStreaks(RenderTarget& target) noexcept;
         // SSRのHi-Z深度ピラミッドを作るpassです。mip 0は深度コピーを、
         // 以降は1段細かいミップを読める状態で指定ミップを深度無しの
         // 描画先にし、t0へ渡す読み取り用viewを返します。

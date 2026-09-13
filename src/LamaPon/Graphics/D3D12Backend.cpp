@@ -544,10 +544,13 @@ namespace
         };
 
         // offscreen RTV heapの並びです。current / post colorの後にSSAOの
-        // 遮蔽とブラー先、自動露出の測定段を置きます。
+        // 遮蔽とブラー先、Lens Flareのストリーク先、自動露出の測定段を
+        // 置きます。
         static constexpr std::uint32_t OcclusionRenderTargetSlot = 2u;
         static constexpr std::uint32_t OcclusionBlurRenderTargetSlot = 3u;
-        static constexpr std::uint32_t LuminanceRenderTargetSlot = 4u;
+        static constexpr std::uint32_t LensFlareFirstRenderTargetSlot = 4u;
+        static constexpr std::uint32_t LensFlareSecondRenderTargetSlot = 5u;
+        static constexpr std::uint32_t LuminanceRenderTargetSlot = 6u;
 
         ~D3D12RenderTargetState() noexcept override
         {
@@ -561,7 +564,7 @@ namespace
                 // readback先も含めて、全資源をGPUの完了まで保持します。
                 const std::array<
                     Microsoft::WRL::ComPtr<ID3D12Resource>*,
-                    11> resources{
+                    13> resources{
                         &color,
                         &postColor,
                         &displayColor,
@@ -571,6 +574,8 @@ namespace
                         &depthCopy,
                         &occlusion,
                         &occlusionBlur,
+                        &lensFlareFirst,
+                        &lensFlareSecond,
                         &reflectionDepthPyramid,
                         &luminanceReadback };
                 for (auto* const resource : resources)
@@ -606,6 +611,8 @@ namespace
                 && depthCopy != nullptr
                 && occlusion != nullptr
                 && occlusionBlur != nullptr
+                && lensFlareFirst != nullptr
+                && lensFlareSecond != nullptr
                 && reflectionDepthPyramid != nullptr
                 && !luminanceLevels.empty()
                 && luminanceReadback != nullptr
@@ -651,6 +658,18 @@ namespace
         LamaPon::GraphicsViewHandle occlusionView;
         D3D12_VIEWPORT occlusionViewport{};
         D3D12_RECT occlusionScissor{};
+        // Screen Space Lens Flareの3段ストリークを交互に書く1/4解像度の
+        // RGBA16F資源です。3pass目はfirst側へ戻ります。
+        Microsoft::WRL::ComPtr<ID3D12Resource> lensFlareFirst;
+        Microsoft::WRL::ComPtr<ID3D12Resource> lensFlareSecond;
+        D3D12_RESOURCE_STATES lensFlareFirstState{
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE };
+        D3D12_RESOURCE_STATES lensFlareSecondState{
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE };
+        LamaPon::GraphicsViewHandle lensFlareFirstView;
+        LamaPon::GraphicsViewHandle lensFlareSecondView;
+        D3D12_VIEWPORT lensFlareViewport{};
+        D3D12_RECT lensFlareScissor{};
         // SSRのHi-Z深度ピラミッド（R32F、全ミップ）です。全ミップのviewは
         // m_reflectionDepthPyramidViewHandleで公開し、ミップ単位のviewと
         // stateは縮小passが1段細かいミップを読むために持ちます。
@@ -2469,6 +2488,8 @@ namespace LamaPon
             && IsViewCurrent(existing->m_depthView)
             && IsViewCurrent(existing->occlusionView)
             && IsViewCurrent(existing->m_ambientOcclusionView)
+            && IsViewCurrent(existing->lensFlareFirstView)
+            && IsViewCurrent(existing->lensFlareSecondView)
             && IsViewCurrent(
                 existing->m_reflectionDepthPyramidViewHandle))
         {
@@ -2503,8 +2524,9 @@ namespace LamaPon
         D3D12_DESCRIPTOR_HEAP_DESC renderTargetHeapDescription{};
         renderTargetHeapDescription.Type =
             D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-        // current / post color、SSAOの遮蔽とブラー先、自動露出の測定段、
-        // Hi-Z深度ピラミッドの各ミップぶんです。
+        // current / post color、SSAOの遮蔽とブラー先、Lens Flareの
+        // ping-pong先、自動露出の測定段、Hi-Z深度ピラミッドの各ミップ
+        // ぶんです。
         renderTargetHeapDescription.NumDescriptors =
             pending->reflectionDepthPyramidRenderTargetSlot
             + reflectionMipCount;
@@ -2739,6 +2761,45 @@ namespace LamaPon
             D3D12RenderTargetState::OcclusionBlurRenderTargetSlot,
             "ID3D12Device::CreateCommittedResource(ambient occlusion blur)");
 
+        // D3D11RenderTargetStateと同じく、Screen Space Lens Flareの筋は
+        // 1/4解像度のRGBA16Fを2枚使って3passのping-pongを行います。
+        const auto lensFlareWidth = std::max(requestedWidth / 4u, 1u);
+        const auto lensFlareHeight = std::max(requestedHeight / 4u, 1u);
+        auto lensFlareDescription = colorDescription;
+        lensFlareDescription.Width = lensFlareWidth;
+        lensFlareDescription.Height = lensFlareHeight;
+        const auto createLensFlare =
+            [&](Microsoft::WRL::ComPtr<ID3D12Resource>& destination,
+                const std::uint32_t slot,
+                const char* const operation)
+        {
+            ThrowIfFailed(
+                m_device->CreateCommittedResource(
+                    &defaultHeap,
+                    D3D12_HEAP_FLAG_NONE,
+                    &lensFlareDescription,
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                    &colorClear,
+                    IID_PPV_ARGS(destination.ReleaseAndGetAddressOf())),
+                operation,
+                m_device.Get());
+            m_device->CreateRenderTargetView(
+                destination.Get(),
+                nullptr,
+                OffsetDescriptor(
+                    renderTargetStart,
+                    slot,
+                    pending->renderTargetDescriptorSize));
+        };
+        createLensFlare(
+            pending->lensFlareFirst,
+            D3D12RenderTargetState::LensFlareFirstRenderTargetSlot,
+            "ID3D12Device::CreateCommittedResource(lens flare first)");
+        createLensFlare(
+            pending->lensFlareSecond,
+            D3D12RenderTargetState::LensFlareSecondRenderTargetSlot,
+            "ID3D12Device::CreateCommittedResource(lens flare second)");
+
         D3D12_RESOURCE_DESC depthDescription{};
         depthDescription.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
         depthDescription.Width = requestedWidth;
@@ -2869,6 +2930,22 @@ namespace LamaPon
             occlusionWidth,
             occlusionHeight,
             GraphicsTextureFormat::Rgba8Unorm);
+        pending->lensFlareFirstView = CreateTextureView(
+            m_device.Get(),
+            m_resourceDomain,
+            pending->lensFlareFirst,
+            colorViewDescription,
+            lensFlareWidth,
+            lensFlareHeight,
+            GraphicsTextureFormat::Rgba16Float);
+        pending->lensFlareSecondView = CreateTextureView(
+            m_device.Get(),
+            m_resourceDomain,
+            pending->lensFlareSecond,
+            colorViewDescription,
+            lensFlareWidth,
+            lensFlareHeight,
+            GraphicsTextureFormat::Rgba16Float);
         pending->occlusionViewport = {
             0.0f,
             0.0f,
@@ -2881,6 +2958,18 @@ namespace LamaPon
             0,
             static_cast<LONG>(occlusionWidth),
             static_cast<LONG>(occlusionHeight) };
+        pending->lensFlareViewport = {
+            0.0f,
+            0.0f,
+            static_cast<float>(lensFlareWidth),
+            static_cast<float>(lensFlareHeight),
+            0.0f,
+            1.0f };
+        pending->lensFlareScissor = {
+            0,
+            0,
+            static_cast<LONG>(lensFlareWidth),
+            static_cast<LONG>(lensFlareHeight) };
 
         // SSRのHi-Z深度ピラミッドです。各ミップをRTVとして書き、1段粗い
         // ミップを作る縮小passが単一ミップのSRVで読みます。
@@ -3687,6 +3776,149 @@ namespace LamaPon
         try
         {
             EndOffscreenAmbientOcclusion(target);
+        }
+        catch (...)
+        {
+            // 元の例外を呼び出し側へ返すため、復元の失敗はここで止めます。
+        }
+    }
+
+    GraphicsViewHandle D3D12Backend::BeginOffscreenLensFlareStreakPass(
+        RenderTarget& target,
+        const std::uint32_t pass)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "BeginOffscreenLensFlareStreakPass requires an initialized "
+                "D3D12 backend.");
+        }
+        auto* const state = dynamic_cast<D3D12RenderTargetState*>(
+            Detail::RenderTargetBackendAccess::Get(target));
+        if (state == nullptr
+            || !state->HasNativeResources()
+            || state->resourceDomain.get() != m_resourceDomain.get()
+            || pass >= 3u
+            || !IsViewCurrent(state->m_currentColorView)
+            || !IsViewCurrent(state->lensFlareFirstView)
+            || !IsViewCurrent(state->lensFlareSecondView))
+        {
+            throw std::invalid_argument(
+                "BeginOffscreenLensFlareStreakPass requires a target owned "
+                "by this D3D12 backend generation and a pass below 3.");
+        }
+        OpenCommandList();
+        m_commandList->OMSetRenderTargets(0, nullptr, FALSE, nullptr);
+
+        GraphicsViewHandle source;
+        ID3D12Resource* destination{};
+        D3D12_RESOURCE_STATES* destinationState{};
+        std::uint32_t destinationSlot{};
+        if (pass == 0u)
+        {
+            TransitionResource(
+                m_commandList.Get(),
+                state->color.Get(),
+                state->colorState,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            source = state->m_currentColorView;
+            destination = state->lensFlareFirst.Get();
+            destinationState = &state->lensFlareFirstState;
+            destinationSlot =
+                D3D12RenderTargetState::LensFlareFirstRenderTargetSlot;
+        }
+        else if (pass == 1u)
+        {
+            TransitionResource(
+                m_commandList.Get(),
+                state->lensFlareFirst.Get(),
+                state->lensFlareFirstState,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            source = state->lensFlareFirstView;
+            destination = state->lensFlareSecond.Get();
+            destinationState = &state->lensFlareSecondState;
+            destinationSlot =
+                D3D12RenderTargetState::LensFlareSecondRenderTargetSlot;
+        }
+        else
+        {
+            TransitionResource(
+                m_commandList.Get(),
+                state->lensFlareSecond.Get(),
+                state->lensFlareSecondState,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            source = state->lensFlareSecondView;
+            destination = state->lensFlareFirst.Get();
+            destinationState = &state->lensFlareFirstState;
+            destinationSlot =
+                D3D12RenderTargetState::LensFlareFirstRenderTargetSlot;
+        }
+        TransitionResource(
+            m_commandList.Get(),
+            destination,
+            *destinationState,
+            D3D12_RESOURCE_STATE_RENDER_TARGET);
+        const auto renderTarget = OffsetDescriptor(
+            state->renderTargetHeap->GetCPUDescriptorHandleForHeapStart(),
+            destinationSlot,
+            state->renderTargetDescriptorSize);
+        m_commandList->OMSetRenderTargets(
+            1,
+            &renderTarget,
+            FALSE,
+            nullptr);
+        m_commandList->RSSetViewports(1, &state->lensFlareViewport);
+        m_commandList->RSSetScissorRects(1, &state->lensFlareScissor);
+        m_activeViewport = state->lensFlareViewport;
+        m_activeScissorRect = state->lensFlareScissor;
+        m_activeColorFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        m_activeDepthFormat = DXGI_FORMAT_UNKNOWN;
+        m_activeOffscreenTarget = &target;
+        m_activeOffscreenDepthOnly = false;
+        return source;
+    }
+
+    GraphicsViewHandle D3D12Backend::EndOffscreenLensFlareStreaks(
+        RenderTarget& target)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "EndOffscreenLensFlareStreaks requires an initialized "
+                "D3D12 backend.");
+        }
+        auto* const state = dynamic_cast<D3D12RenderTargetState*>(
+            Detail::RenderTargetBackendAccess::Get(target));
+        if (state == nullptr
+            || !state->HasNativeResources()
+            || state->resourceDomain.get() != m_resourceDomain.get())
+        {
+            throw std::invalid_argument(
+                "EndOffscreenLensFlareStreaks requires a target owned by "
+                "this D3D12 backend generation.");
+        }
+        OpenCommandList();
+        m_commandList->OMSetRenderTargets(0, nullptr, FALSE, nullptr);
+        TransitionResource(
+            m_commandList.Get(),
+            state->lensFlareFirst.Get(),
+            state->lensFlareFirstState,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        TransitionResource(
+            m_commandList.Get(),
+            state->lensFlareSecond.Get(),
+            state->lensFlareSecondState,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        BindOffscreenTarget(target);
+        return state->lensFlareFirstView;
+    }
+
+    void D3D12Backend::AbortOffscreenLensFlareStreaks(
+        RenderTarget& target) noexcept
+    {
+        try
+        {
+            static_cast<void>(EndOffscreenLensFlareStreaks(target));
         }
         catch (...)
         {

@@ -834,6 +834,114 @@ float4 AmbientOcclusionBlurPixelShader(PixelInput input) : SV_Target
     return float4(visibility, visibility, visibility, 1.0f);
 }
 
+// LamaPonEnvironment.hlslのScreen Space Lens Flareと同じ処理です。
+// PassPrimary=texel/threshold/intensity、PassSecondary=ghost/halo/
+// chromatic/streak intensity、PassTertiary.x=streak length、
+// PassQuaternary=stride/directions/angle/first passです。
+float3 LensFlareBright(float2 uv)
+{
+    if (any(uv < 0.0f) || any(uv > 1.0f))
+    {
+        return 0.0f;
+    }
+    const float3 color = SpriteTexture.Sample(SpriteSampler, uv).rgb;
+    const float brightness = max(color.r, max(color.g, color.b));
+    const float threshold = max(PassPrimary.z, 0.0f);
+    const float gate = smoothstep(
+        threshold,
+        threshold + max(threshold * 0.35f, 0.25f),
+        brightness);
+    return color * gate;
+}
+
+float3 LensFlareChromaticSample(float2 uv, float2 direction)
+{
+    const float chromatic = saturate(PassSecondary.z) * 0.015f;
+    const float2 offset = direction * chromatic;
+    const float3 red = LensFlareBright(uv + offset);
+    const float3 green = LensFlareBright(uv);
+    const float3 blue = LensFlareBright(uv - offset);
+    return float3(red.r, green.g, blue.b);
+}
+
+float4 LensFlareStreakPixelShader(PixelInput input) : SV_Target
+{
+    const float stride = PassQuaternary.x;
+    const int directionCount = clamp((int)PassQuaternary.y, 1, 4);
+    const float baseAngle = PassQuaternary.z;
+    const bool firstPass = PassQuaternary.w > 0.5f;
+    float3 total = 0.0f;
+    float weightTotal = 0.0f;
+    [loop]
+    for (int index = 0; index < directionCount; ++index)
+    {
+        const float angle = baseAngle
+            + 3.14159265f * (float)index / (float)directionCount;
+        const float2 axis = float2(cos(angle), sin(angle));
+        [unroll]
+        for (int tap = -2; tap <= 2; ++tap)
+        {
+            const float2 uv = clamp(
+                input.textureCoordinate + axis * ((float)tap * stride),
+                0.0f,
+                1.0f);
+            const float weight = 1.0f - abs((float)tap) * 0.22f;
+            const float dispersion = saturate(PassSecondary.z);
+            const float shift = (float)tap / 2.0f * dispersion;
+            float3 sample = firstPass
+                ? LensFlareBright(uv)
+                : SpriteTexture.SampleLevel(SpriteSampler, uv, 0.0f).rgb;
+            if (dispersion > 0.0f)
+            {
+                sample *= float3(1.0f + shift, 1.0f, 1.0f - shift);
+            }
+            total += sample * weight;
+            weightTotal += weight;
+        }
+    }
+    total /= max(weightTotal, 0.0001f);
+    return float4(total, 1.0f);
+}
+
+float4 LensFlareCompositePixelShader(PixelInput input) : SV_Target
+{
+    const float2 uv = input.textureCoordinate;
+    const float4 source = SpriteTexture.Sample(SpriteSampler, uv);
+    const float2 center = float2(0.5f, 0.5f);
+    const float2 fromCenter = uv - center;
+    const float radius = length(fromCenter);
+    const float2 direction = radius > 0.0001f
+        ? fromCenter / radius
+        : float2(1.0f, 0.0f);
+    float3 flare = LensFlareBright(uv) * 0.22f;
+    const float dispersal = max(PassSecondary.x, 0.01f);
+    [unroll]
+    for (int index = 1; index <= 4; ++index)
+    {
+        const float scale = dispersal * (float)index;
+        const float2 ghostUv = center - fromCenter * scale;
+        const float ghostWeight = 0.23f - (float)index * 0.025f;
+        flare += LensFlareChromaticSample(ghostUv, direction)
+            * max(ghostWeight, 0.05f);
+    }
+    const float haloRadius = clamp(PassSecondary.y, 0.05f, 1.5f);
+    const float haloDistance = abs(radius - haloRadius);
+    const float halo = 1.0f - smoothstep(
+        0.015f,
+        0.10f + haloRadius * 0.18f,
+        haloDistance);
+    const float2 haloUv = center - direction * haloRadius;
+    flare += LensFlareChromaticSample(haloUv, direction) * halo * 0.32f;
+    const float3 streak = TemporalHistoryTexture.SampleLevel(
+        SpriteSampler,
+        uv,
+        0.0f).rgb;
+    flare += streak * PassSecondary.w;
+    return float4(
+        source.rgb + flare * max(PassPrimary.w, 0.0f),
+        source.a);
+}
+
 // LamaPonEnvironment.hlslのPSReflectionDepthLinearize /
 // PSReflectionDepthDownsampleと同じSSRのHi-Z深度ピラミッドです。
 // mip 0はPassPrimary.xy=射影の_33/_43で深度をカメラからの距離へ直し、
@@ -1155,6 +1263,12 @@ namespace LamaPon::Detail
             "ps_5_0");
         m_ambientOcclusionBlurPixelShader = CompileSpriteShader(
             "AmbientOcclusionBlurPixelShader",
+            "ps_5_0");
+        m_lensFlareStreakPixelShader = CompileSpriteShader(
+            "LensFlareStreakPixelShader",
+            "ps_5_0");
+        m_lensFlareCompositePixelShader = CompileSpriteShader(
+            "LensFlareCompositePixelShader",
             "ps_5_0");
         m_reflectionDepthLinearizePixelShader = CompileSpriteShader(
             "ReflectionDepthLinearizePixelShader",
@@ -1616,6 +1730,83 @@ namespace LamaPon::Detail
                 0.0f,
                 0.0f
             });
+    }
+
+    void D3D12SpriteRenderer::ApplyScreenSpaceLensFlare(
+        RenderTarget& target,
+        const GraphicsViewHandle& fallbackTexture,
+        const ScreenSpaceLensFlareSettings& settings)
+    {
+        if (!settings.enabled)
+        {
+            return;
+        }
+        const auto texel = TexelSize(target);
+        const float longest = std::clamp(settings.streakLength, 0.0f, 1.0f);
+        const float baseStride = longest / 42.0f;
+        const std::array<float, 12> shared{
+            texel[0],
+            texel[1],
+            std::clamp(settings.threshold, 0.0f, 16.0f),
+            std::clamp(settings.intensity, 0.0f, 8.0f),
+            std::clamp(settings.ghostDispersal, 0.01f, 2.0f),
+            std::clamp(settings.haloWidth, 0.05f, 1.5f),
+            std::clamp(settings.chromaticAberration, 0.0f, 1.0f),
+            std::clamp(settings.streakIntensity, 0.0f, 4.0f),
+            longest,
+            0.0f,
+            0.0f,
+            0.0f
+        };
+        try
+        {
+            for (std::uint32_t pass{}; pass < 3u; ++pass)
+            {
+                const auto source =
+                    m_backend->BeginOffscreenLensFlareStreakPass(
+                        target,
+                        pass);
+                std::array<float, 16> constants{};
+                std::copy(shared.begin(), shared.end(), constants.begin());
+                constants[12] = baseStride
+                    * std::pow(4.0f, static_cast<float>(pass));
+                constants[13] = static_cast<float>(
+                    std::clamp(settings.streakDirections, 1u, 4u));
+                constants[14] = settings.streakAngleDegrees
+                    * 3.14159265358979323846f / 180.0f;
+                constants[15] = pass == 0u ? 1.0f : 0.0f;
+                DrawFullscreen(
+                    source,
+                    fallbackTexture,
+                    FullscreenProgram::LensFlareStreak,
+                    constants);
+            }
+        }
+        catch (...)
+        {
+            m_backend->AbortOffscreenLensFlareStreaks(target);
+            throw;
+        }
+        const auto streak =
+            m_backend->EndOffscreenLensFlareStreaks(target);
+        const auto source = m_backend->BeginOffscreenPostProcess(target);
+        try
+        {
+            std::array<float, 16> constants{};
+            std::copy(shared.begin(), shared.end(), constants.begin());
+            DrawFullscreen(
+                source,
+                fallbackTexture,
+                FullscreenProgram::LensFlareComposite,
+                constants,
+                { streak, GraphicsViewHandle{} });
+        }
+        catch (...)
+        {
+            m_backend->AbortOffscreenPostProcess(target);
+            throw;
+        }
+        m_backend->EndOffscreenPostProcess(target);
     }
 
     void D3D12SpriteRenderer::ApplyFXAA(
@@ -2094,6 +2285,19 @@ namespace LamaPon::Detail
                 m_auxiliaryTextures[index] = auxiliary->descriptor;
             }
         }
+        else if (program == FullscreenProgram::LensFlareComposite)
+        {
+            const auto streak = m_backend->TryResolveShaderResource(
+                m_auxiliaryViews[0]);
+            if (!streak)
+            {
+                Abort(token);
+                throw std::invalid_argument(
+                    "The DirectX 12 lens flare pass requires a current "
+                    "streak view.");
+            }
+            m_auxiliaryTextures[0] = streak->descriptor;
+        }
         else if (program == FullscreenProgram::ScreenOutline
             || program == FullscreenProgram::MotionBlur
             || program == FullscreenProgram::DepthOfField
@@ -2271,6 +2475,12 @@ namespace LamaPon::Detail
                 m_matrixConstants.data(),
                 0);
         }
+        else if (m_program == FullscreenProgram::LensFlareComposite)
+        {
+            commandList->SetGraphicsRootDescriptorTable(
+                3,
+                m_auxiliaryTextures[0]);
+        }
         else if (m_program == FullscreenProgram::ScreenOutline
             || m_program == FullscreenProgram::MotionBlur
             || m_program == FullscreenProgram::DepthOfField
@@ -2442,6 +2652,12 @@ namespace LamaPon::Detail
             break;
         case FullscreenProgram::AmbientOcclusionBlur:
             pixelShader = m_ambientOcclusionBlurPixelShader.Get();
+            break;
+        case FullscreenProgram::LensFlareStreak:
+            pixelShader = m_lensFlareStreakPixelShader.Get();
+            break;
+        case FullscreenProgram::LensFlareComposite:
+            pixelShader = m_lensFlareCompositePixelShader.Get();
             break;
         case FullscreenProgram::ReflectionDepthLinearize:
             pixelShader = m_reflectionDepthLinearizePixelShader.Get();

@@ -498,8 +498,8 @@ namespace LamaPon
                     "のshadow sampling、基本HDR offscreen合成にも"
                     "対応し、TAA、Depth of Field、カメラMotion Blur、"
                     "Bloom、自動露出、カラーグレーディング、Screen "
-                    "Outline、FXAAも適用します。SSAOとSSRも基本3Dの"
-                    "環境光へ反映します。custom shaderとLens Flare／"
+                    "Outline、FXAA、Screen Space Lens Flareも適用します。"
+                    "SSAOとSSRも基本3Dの環境光へ反映します。custom shaderと"
                     "Volumetric Lightなど一部のpost-processは未対応です。");
             }
         };
