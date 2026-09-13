@@ -155,10 +155,10 @@ namespace LamaPon
             == RenderingApi::DirectX12Experimental)
         {
             // D3D12は移植済みのTAA、Depth of Field、Motion Blur、Bloom、
-            // 自動露出、トーンマップ、Screen Outline、FXAAをD3D11と
-            // 同じ順で適用します。SSAOとSSRはLit描画の前に済んでいます。
-            // Volumetric LightやLens Flareなど未移植のpassは安全に
-            // 無処理とします。
+            // Screen Space Lens Flare、自動露出、トーンマップ、Screen
+            // Outline、FXAAをD3D11と同じ順で適用します。SSAOとSSRはLit
+            // 描画の前に済んでいます。Volumetric Lightなど未移植のpassは
+            // 安全に無処理とします。
             const auto& settings = graphics.Settings();
             graphics.ApplyOffscreenTargetTemporalAntiAliasing(
                 target,
@@ -196,6 +196,13 @@ namespace LamaPon
             graphics.ApplyOffscreenTargetBloom(
                 target,
                 effectiveBloom);
+            auto effectiveLensFlare = frame.lensFlare;
+            effectiveLensFlare.enabled =
+                effectiveLensFlare.enabled
+                && settings.screenSpaceLensFlareEnabled;
+            graphics.ApplyOffscreenTargetScreenSpaceLensFlare(
+                target,
+                effectiveLensFlare);
             auto effectiveAutoExposure = frame.autoExposure.settings;
             effectiveAutoExposure.enabled =
                 effectiveAutoExposure.enabled
