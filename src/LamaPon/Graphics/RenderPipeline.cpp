@@ -151,85 +151,8 @@ namespace LamaPon
         {
             return;
         }
-        if (graphics.ActiveRenderingApi()
-            == RenderingApi::DirectX12Experimental)
-        {
-            // D3D12は移植済みのTAA、Depth of Field、Motion Blur、Bloom、
-            // Screen Space Lens Flare、自動露出、トーンマップ、Screen
-            // Outline、FXAAをD3D11と同じ順で適用します。SSAOとSSRはLit
-            // 描画の前に済んでいます。
-            const auto& settings = graphics.Settings();
-            graphics.ApplyOffscreenTargetTemporalAntiAliasing(
-                target,
-                frame.temporal.settings,
-                frame.temporal.inputs);
-            if (frame.temporal.settings.enabled)
-            {
-                graphics.CaptureOffscreenTargetTemporalHistory(
-                    target,
-                    frame.temporal.inputs.viewProjection);
-            }
-            graphics.ApplyOffscreenTargetVolumetricLight(
-                target,
-                frame.volumetric.settings,
-                frame.volumetric.inputs);
-            auto effectiveDepthOfField = frame.depthOfField.settings;
-            effectiveDepthOfField.enabled =
-                effectiveDepthOfField.enabled
-                && settings.depthOfFieldEnabled;
-            graphics.ApplyOffscreenTargetDepthOfField(
-                target,
-                effectiveDepthOfField,
-                frame.depthOfField.projection,
-                settings.depthOfFieldSampleCount);
-            auto effectiveMotionBlur = frame.motionBlur.settings;
-            effectiveMotionBlur.enabled =
-                effectiveMotionBlur.enabled
-                && settings.motionBlurEnabled;
-            graphics.ApplyOffscreenTargetMotionBlur(
-                target,
-                effectiveMotionBlur,
-                frame.motionBlur.inverseViewProjection,
-                frame.motionBlur.viewProjection,
-                settings.motionBlurSampleCount);
-            auto effectiveBloom = frame.bloom;
-            effectiveBloom.enabled =
-                effectiveBloom.enabled
-                && settings.bloomEnabled;
-            graphics.ApplyOffscreenTargetBloom(
-                target,
-                effectiveBloom);
-            auto effectiveLensFlare = frame.lensFlare;
-            effectiveLensFlare.enabled =
-                effectiveLensFlare.enabled
-                && settings.screenSpaceLensFlareEnabled;
-            graphics.ApplyOffscreenTargetScreenSpaceLensFlare(
-                target,
-                effectiveLensFlare);
-            auto effectiveAutoExposure = frame.autoExposure.settings;
-            effectiveAutoExposure.enabled =
-                effectiveAutoExposure.enabled
-                && settings.autoExposureEnabled;
-            auto effectiveColorGrading = frame.colorGrading;
-            effectiveColorGrading.autoExposureStops =
-                graphics.UpdateOffscreenTargetAutoExposure(
-                    target,
-                    effectiveAutoExposure,
-                    frame.autoExposure.deltaSeconds);
-            graphics.ApplyOffscreenTargetToneMapping(
-                target,
-                effectiveColorGrading);
-            graphics.ApplyOffscreenTargetScreenOutline(
-                target,
-                frame.screenOutline.settings,
-                frame.screenOutline.projection);
-            if (settings.antiAliasingEnabled)
-            {
-                graphics.ApplyOffscreenTargetFXAA(target);
-            }
-            return;
-        }
-
+        // DirectX 11とDirectX 12は、同じ順序のpassと同じ差し込み地点を
+        // 通ります（SSAOとSSRはLit描画の前に済んでいます）。
         // 5つの描画経路が通る位置で計測し、エディタービューポートの
         // Bloom、トーンマップ、FXAAもGPU時間の内訳へ含めます。
         const GpuProfiler::SectionScope postScope{

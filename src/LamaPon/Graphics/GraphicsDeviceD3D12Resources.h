@@ -4,8 +4,10 @@
 // 既定pipelineと、影を持たない安全なShadowMap facadeを所有します。
 // D3D11 native objectは持たず、SDKにもインストールしません。
 #include "LamaPon/Graphics/GraphicsDeviceApiResources.h"
+#include "LamaPon/Graphics/GraphicsDevice.h"
 
 #include <memory>
+#include <vector>
 
 namespace LamaPon
 {
@@ -14,6 +16,8 @@ namespace LamaPon
 
 namespace LamaPon::Detail
 {
+    class D3D12ComputeEffectRenderer;
+    class D3D12EnvironmentPrefilter;
     class D3D12SpriteRenderer;
 
     class GraphicsDeviceD3D12Resources final
@@ -49,9 +53,20 @@ namespace LamaPon::Detail
 
         // SpriteRenderPassのD3D12 driverです。資源解放後はnullptrです。
         [[nodiscard]] D3D12SpriteRenderer* TrySpriteRenderer() noexcept;
+        // ComputeEffectのD3D12 driverです。資源解放後はnullptrです。
+        [[nodiscard]] D3D12ComputeEffectRenderer*
+            TryComputeEffectRenderer() noexcept;
+        // SkyのIBLを事前畳み込みするD3D12 driverです。資源解放後は
+        // nullptrです。
+        [[nodiscard]] D3D12EnvironmentPrefilter*
+            TryEnvironmentPrefilter() noexcept;
+
+        std::vector<ScreenEffectRequest> queuedScreenEffects;
 
     private:
         std::unique_ptr<D3D12SpriteRenderer> m_spriteRenderer;
+        std::unique_ptr<D3D12ComputeEffectRenderer> m_computeEffectRenderer;
+        std::unique_ptr<D3D12EnvironmentPrefilter> m_environmentPrefilter;
         std::unique_ptr<GraphicsRenderServices> m_renderServices;
         // Sceneの影判定はShadowMap accessorを常に取得できることを前提に
         // するため、Experimental段階でも空のfacadeを保持します。

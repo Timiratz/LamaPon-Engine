@@ -1,10 +1,14 @@
 #include "LamaPon/Graphics/D3D12Backend.h"
 
 #include "LamaPon/Core/Log.h"
+#include "LamaPon/Graphics/ClusteredLights.h"
+#include "LamaPon/Graphics/ClusteredLightsBackendState.h"
 #include "LamaPon/Graphics/DebugRenderer.h"
 #include "LamaPon/Graphics/DxgiTextureLayout.h"
+#include "LamaPon/Graphics/Lighting.h"
 #include "LamaPon/Graphics/RenderTarget.h"
 #include "LamaPon/Graphics/RenderTargetBackendState.h"
+#include "LamaPon/Graphics/ShaderCompiler.h"
 #include "LamaPon/Graphics/ShadowMap.h"
 #include "LamaPon/Graphics/ShadowMapBackendState.h"
 
@@ -429,7 +433,37 @@ namespace
         DXGI_FORMAT format{};
     };
 
-    // Shadow textureは通常の2D texture契約では表せないarray/cubeです。
+    // ベイクした間接光などが読む、初期dataから作る変更不可のTexture3Dです。
+    class D3D12Texture3DPayload final
+        : public LamaPon::Detail::GraphicsTexturePayload
+    {
+    public:
+        D3D12Texture3DPayload(
+            const std::shared_ptr<LamaPon::Detail::D3D12ResourceDomain>&
+                resourceDomain,
+            Microsoft::WRL::ComPtr<ID3D12Resource> texture,
+            const LamaPon::GraphicsTexture3DDescription&
+                textureDescription,
+            const DXGI_FORMAT textureFormat)
+            : GraphicsTexturePayload(resourceDomain)
+            , native(std::move(texture))
+            , description(textureDescription)
+            , format(textureFormat)
+        {
+        }
+
+        ~D3D12Texture3DPayload() noexcept override
+        {
+            static_cast<LamaPon::Detail::D3D12ResourceDomain&>(
+                *Domain()).Retire(std::move(native), std::nullopt);
+        }
+
+        Microsoft::WRL::ComPtr<ID3D12Resource> native;
+        LamaPon::GraphicsTexture3DDescription description;
+        DXGI_FORMAT format{};
+    };
+
+    // Shadow textureやDDS cubeは通常の2D texture契約では表せないarray/cubeです。
     // 専用payloadに閉じ込め、公開側にはShaderResource viewだけを渡します。
     class D3D12ShadowTexturePayload final
         : public LamaPon::Detail::GraphicsTexturePayload
@@ -453,6 +487,61 @@ namespace
         Microsoft::WRL::ComPtr<ID3D12Resource> native;
     };
 
+    // IBLの事前畳み込み先です。Compute Shaderが書くミップごとのUAV slotを
+    // textureと同じ寿命で持ち、GPUの完了後に戻します。
+    class D3D12ComputeCubeTexturePayload final
+        : public LamaPon::Detail::GraphicsTexturePayload
+    {
+    public:
+        D3D12ComputeCubeTexturePayload(
+            const std::shared_ptr<LamaPon::Detail::D3D12ResourceDomain>&
+                resourceDomain,
+            Microsoft::WRL::ComPtr<ID3D12Resource> texture,
+            std::vector<std::uint32_t> accessSlots)
+            : GraphicsTexturePayload(resourceDomain)
+            , native(std::move(texture))
+            , unorderedAccessSlots(std::move(accessSlots))
+        {
+        }
+
+        ~D3D12ComputeCubeTexturePayload() noexcept override
+        {
+            auto& domain = static_cast<LamaPon::Detail::D3D12ResourceDomain&>(
+                *Domain());
+            for (const auto slot : unorderedAccessSlots)
+            {
+                domain.Retire(nullptr, slot);
+            }
+            domain.Retire(std::move(native), std::nullopt);
+        }
+
+        Microsoft::WRL::ComPtr<ID3D12Resource> native;
+        std::vector<std::uint32_t> unorderedAccessSlots;
+    };
+
+    // 共通Buffer handleが所有するDirectX 12側のbufferです。
+    class D3D12BufferPayload final
+        : public LamaPon::Detail::GraphicsBufferPayload
+    {
+    public:
+        D3D12BufferPayload(
+            const std::shared_ptr<LamaPon::Detail::D3D12ResourceDomain>&
+                resourceDomain,
+            Microsoft::WRL::ComPtr<ID3D12Resource> buffer)
+            : GraphicsBufferPayload(resourceDomain)
+            , native(std::move(buffer))
+        {
+        }
+
+        ~D3D12BufferPayload() noexcept override
+        {
+            static_cast<LamaPon::Detail::D3D12ResourceDomain&>(
+                *Domain()).Retire(std::move(native), std::nullopt);
+        }
+
+        Microsoft::WRL::ComPtr<ID3D12Resource> native;
+    };
+
     // shader-visible heap内のSRV descriptorです。参照先textureは基底の
     // GraphicsViewPayloadが強所有します。
     class D3D12ShaderResourceViewPayload final
@@ -465,7 +554,9 @@ namespace
             LamaPon::GraphicsTextureHandle texture,
             const std::uint32_t descriptorSlot,
             const std::uint32_t textureWidth,
-            const std::uint32_t textureHeight)
+            const std::uint32_t textureHeight,
+            const D3D12_SRV_DIMENSION viewDimension =
+                D3D12_SRV_DIMENSION_TEXTURE2D)
             : GraphicsViewPayload(
                 resourceDomain,
                 LamaPon::GraphicsViewKind::ShaderResource,
@@ -473,6 +564,25 @@ namespace
             , slot(descriptorSlot)
             , width(textureWidth)
             , height(textureHeight)
+            , dimension(viewDimension)
+        {
+        }
+
+        // StructuredBufferのSRVです。widthへ要素数を載せます。
+        D3D12ShaderResourceViewPayload(
+            const std::shared_ptr<LamaPon::Detail::D3D12ResourceDomain>&
+                resourceDomain,
+            LamaPon::GraphicsBufferHandle buffer,
+            const std::uint32_t descriptorSlot,
+            const std::uint32_t elementCount)
+            : GraphicsViewPayload(
+                resourceDomain,
+                LamaPon::GraphicsViewKind::ShaderResource,
+                std::move(buffer))
+            , slot(descriptorSlot)
+            , width(elementCount)
+            , height(1u)
+            , dimension(D3D12_SRV_DIMENSION_BUFFER)
         {
         }
 
@@ -485,6 +595,62 @@ namespace
         std::uint32_t slot{};
         std::uint32_t width{};
         std::uint32_t height{};
+        D3D12_SRV_DIMENSION dimension{ D3D12_SRV_DIMENSION_TEXTURE2D };
+    };
+
+    // LamaPonLightCulling.hlslのClusterCullingBuffer（b0）と同じ112 bytesです。
+    struct ClusterCullingConstants final
+    {
+        DirectX::XMFLOAT4X4 view{};
+        DirectX::XMFLOAT4 gridParameters{};
+        DirectX::XMFLOAT4 depthParameters{};
+        DirectX::XMFLOAT4 frustumParameters{};
+    };
+
+    // D3D11ClusteredLightsStateと同じクラスタライトカリングの資源です。
+    // ライト一覧はframe uploadからDEFAULT bufferへ写し、番号表と数は
+    // Compute ShaderがUAVへ書いてからpixel shaderが読みます。
+    struct D3D12ClusteredLightsState final
+        : LamaPon::Detail::ClusteredLightsBackendState
+    {
+        ~D3D12ClusteredLightsState() noexcept override
+        {
+            if (resourceDomain == nullptr)
+            {
+                return;
+            }
+            for (const auto& slot : { indexListAccessSlot, countAccessSlot })
+            {
+                if (slot.has_value())
+                {
+                    resourceDomain->Retire(nullptr, *slot);
+                }
+            }
+        }
+
+        [[nodiscard]] bool HasNativeResources() const noexcept
+        {
+            return m_initialized
+                && rootSignature != nullptr
+                && pipeline != nullptr
+                && lightBuffer != nullptr
+                && indexListBuffer != nullptr
+                && countBuffer != nullptr
+                && indexListAccessSlot.has_value()
+                && countAccessSlot.has_value();
+        }
+
+        std::shared_ptr<LamaPon::Detail::D3D12ResourceDomain> resourceDomain;
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> rootSignature;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> pipeline;
+        Microsoft::WRL::ComPtr<ID3D12Resource> lightBuffer;
+        Microsoft::WRL::ComPtr<ID3D12Resource> indexListBuffer;
+        Microsoft::WRL::ComPtr<ID3D12Resource> countBuffer;
+        D3D12_RESOURCE_STATES lightBufferState{ D3D12_RESOURCE_STATE_COMMON };
+        D3D12_RESOURCE_STATES indexListState{ D3D12_RESOURCE_STATE_COMMON };
+        D3D12_RESOURCE_STATES countState{ D3D12_RESOURCE_STATE_COMMON };
+        std::optional<std::uint32_t> indexListAccessSlot;
+        std::optional<std::uint32_t> countAccessSlot;
     };
 
     struct D3D12ShadowMapState final
@@ -560,6 +726,12 @@ namespace
                     std::move(renderTargetHeap));
                 resourceDomain->RetireDescriptorHeap(
                     std::move(depthStencilHeap));
+                if (displayUnorderedAccessSlot.has_value())
+                {
+                    resourceDomain->Retire(
+                        nullptr,
+                        *displayUnorderedAccessSlot);
+                }
                 // 実行中のframeがまだ参照し得るため、viewを持たない深度や
                 // readback先も含めて、全資源をGPUの完了まで保持します。
                 const std::array<
@@ -618,7 +790,9 @@ namespace
                 && luminanceReadback != nullptr
                 && renderTargetHeap != nullptr
                 && depthStencilHeap != nullptr
-                && renderTargetDescriptorSize != 0u;
+                && renderTargetDescriptorSize != 0u
+                && (!computeWritable
+                    || displayUnorderedAccessSlot.has_value());
         }
 
         std::shared_ptr<LamaPon::Detail::D3D12ResourceDomain>
@@ -688,6 +862,9 @@ namespace
         D3D12_VIEWPORT viewport{};
         D3D12_RECT scissor{};
         bool computeWritable{};
+        // computeWritableのとき、表示用textureへCompute Shaderが書く
+        // UAVのshader resource heap slotです。
+        std::optional<std::uint32_t> displayUnorderedAccessSlot;
     };
 
     class D3D12OutputState final : public LamaPon::GraphicsOutputState
@@ -716,6 +893,20 @@ namespace
             GraphicsResourceHandleAccess::Payload(texture));
     }
 
+    [[nodiscard]] const D3D12Texture3DPayload* TryTexture3DPayload(
+        const LamaPon::GraphicsTextureHandle& texture,
+        const LamaPon::Detail::GraphicsResourceDomain* const domain) noexcept
+    {
+        using LamaPon::Detail::GraphicsResourceHandleAccess;
+        if (domain == nullptr
+            || GraphicsResourceHandleAccess::Domain(texture) != domain)
+        {
+            return nullptr;
+        }
+        return dynamic_cast<const D3D12Texture3DPayload*>(
+            GraphicsResourceHandleAccess::Payload(texture));
+    }
+
     [[nodiscard]] const D3D12ShaderResourceViewPayload*
         TryShaderResourceViewPayload(
             const LamaPon::GraphicsViewHandle& view,
@@ -729,6 +920,114 @@ namespace
         }
         return dynamic_cast<const D3D12ShaderResourceViewPayload*>(
             GraphicsResourceHandleAccess::Payload(view));
+    }
+
+    // 2D、DDS cube、影、IBLの事前畳み込み先のどれでも、handleが持つ
+    // D3D12 resourceを返します。
+    [[nodiscard]] ID3D12Resource* TryNativeTexture(
+        const LamaPon::GraphicsTextureHandle& texture,
+        const LamaPon::Detail::GraphicsResourceDomain* const domain) noexcept
+    {
+        using LamaPon::Detail::GraphicsResourceHandleAccess;
+        if (domain == nullptr
+            || GraphicsResourceHandleAccess::Domain(texture) != domain)
+        {
+            return nullptr;
+        }
+        const auto* const payload =
+            GraphicsResourceHandleAccess::Payload(texture);
+        if (const auto* const texture2D =
+                dynamic_cast<const D3D12TexturePayload*>(payload))
+        {
+            return texture2D->native.Get();
+        }
+        if (const auto* const texture3D =
+                dynamic_cast<const D3D12Texture3DPayload*>(payload))
+        {
+            return texture3D->native.Get();
+        }
+        if (const auto* const shadow =
+                dynamic_cast<const D3D12ShadowTexturePayload*>(payload))
+        {
+            return shadow->native.Get();
+        }
+        if (const auto* const computeCube =
+                dynamic_cast<const D3D12ComputeCubeTexturePayload*>(payload))
+        {
+            return computeCube->native.Get();
+        }
+        return nullptr;
+    }
+
+    [[nodiscard]] const D3D12ComputeCubeTexturePayload*
+        TryComputeCubePayload(
+            const LamaPon::GraphicsTextureHandle& texture,
+            const LamaPon::Detail::GraphicsResourceDomain* const domain) noexcept
+    {
+        using LamaPon::Detail::GraphicsResourceHandleAccess;
+        if (domain == nullptr
+            || GraphicsResourceHandleAccess::Domain(texture) != domain)
+        {
+            return nullptr;
+        }
+        return dynamic_cast<const D3D12ComputeCubeTexturePayload*>(
+            GraphicsResourceHandleAccess::Payload(texture));
+    }
+
+    // Compute Shaderへ渡す入力viewの参照先textureです。同じtextureが
+    // 2回渡されたときは2つ目をnullptrにし、state遷移を1回だけにします。
+    [[nodiscard]] std::array<ID3D12Resource*, 2> ComputeInputTextures(
+        const std::array<LamaPon::GraphicsViewHandle, 2>& inputs,
+        const LamaPon::Detail::GraphicsResourceDomain* const domain) noexcept
+    {
+        using LamaPon::Detail::GraphicsResourceHandleAccess;
+        std::array<ID3D12Resource*, 2> resources{};
+        for (std::size_t index{}; index < inputs.size(); ++index)
+        {
+            const auto* const texture =
+                GraphicsResourceHandleAccess::TextureResource(inputs[index]);
+            const auto* const payload = texture != nullptr
+                ? TryTexturePayload(*texture, domain)
+                : nullptr;
+            resources[index] = payload != nullptr
+                ? payload->native.Get()
+                : nullptr;
+        }
+        if (resources[1] == resources[0])
+        {
+            resources[1] = nullptr;
+        }
+        return resources;
+    }
+
+    // 描画用textureはPIXEL_SHADER_RESOURCEで待機しています。Compute
+    // Shaderが読む間だけNON_PIXEL_SHADER_RESOURCEも付けます。
+    void TransitionComputeInputs(
+        ID3D12GraphicsCommandList* const commandList,
+        const std::array<ID3D12Resource*, 2>& resources,
+        const bool reading) noexcept
+    {
+        const auto shaderStates = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
+            | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        for (auto* const resource : resources)
+        {
+            if (resource == nullptr)
+            {
+                continue;
+            }
+            D3D12_RESOURCE_BARRIER barrier{};
+            barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            barrier.Transition.pResource = resource;
+            barrier.Transition.Subresource =
+                D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            barrier.Transition.StateBefore = reading
+                ? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
+                : shaderStates;
+            barrier.Transition.StateAfter = reading
+                ? shaderStates
+                : D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+            commandList->ResourceBarrier(1, &barrier);
+        }
     }
 
     [[nodiscard]] LamaPon::GraphicsViewHandle CreateTextureView(
@@ -1293,6 +1592,7 @@ namespace LamaPon
             m_resourceDomain->Close();
             m_resourceDomain.reset();
         }
+        m_nullShaderResourceSlots.fill(std::nullopt);
         for (auto& arena : m_frameUploadArenas)
         {
             arena.clear();
@@ -1996,7 +2296,10 @@ namespace LamaPon
         {
             for (UINT index{}; index < subresourceCount; ++index)
             {
-                const auto mipLevel = firstMipLevel + index;
+                // cubeのsubresourceは面ごとに全ミップを並べるため、寸法は
+                // ミップ数で割った余りの段から求めます。
+                const auto mipLevel =
+                    (firstMipLevel + index) % description.MipLevels;
                 const auto layout = Detail::RequiredTextureLayout(
                     description.Format,
                     std::max(
@@ -2014,19 +2317,44 @@ namespace LamaPon
                         "upload layout.");
                 }
                 // 呼び出し側のrow pitchとD3D12のfootprintは一致しないため、
-                // 1行ずつ必要なbyte数だけを詰め直します。
+                // 1行ずつ必要なbyte数だけを詰め直します。Texture3Dは奥行きの
+                // 段ごとに繰り返し、D3D12側の1段はRowPitch×行数です。
                 const auto& subresource = data[index];
-                for (std::uint32_t row{}; row < layout.rowCount; ++row)
+                const std::uint32_t sliceCount =
+                    description.Dimension
+                            == D3D12_RESOURCE_DIMENSION_TEXTURE3D
+                        ? std::max(
+                            static_cast<std::uint32_t>(
+                                description.DepthOrArraySize >> mipLevel),
+                            1u)
+                        : 1u;
+                if (footprint.Footprint.Depth < sliceCount)
                 {
-                    std::memcpy(
-                        static_cast<std::byte*>(mapped)
-                            + footprint.Offset
-                            + static_cast<std::size_t>(row)
-                                * footprint.Footprint.RowPitch,
-                        subresource.bytes.data()
-                            + static_cast<std::size_t>(row)
-                                * subresource.rowPitch,
-                        layout.minimumRowBytes);
+                    throw std::runtime_error(
+                        "The D3D12 texture footprint is smaller than its "
+                        "upload layout.");
+                }
+                const auto destinationSlicePitch =
+                    static_cast<std::size_t>(footprint.Footprint.RowPitch)
+                    * rowCounts[index];
+                for (std::uint32_t slice{}; slice < sliceCount; ++slice)
+                {
+                    for (std::uint32_t row{}; row < layout.rowCount; ++row)
+                    {
+                        std::memcpy(
+                            static_cast<std::byte*>(mapped)
+                                + footprint.Offset
+                                + static_cast<std::size_t>(slice)
+                                    * destinationSlicePitch
+                                + static_cast<std::size_t>(row)
+                                    * footprint.Footprint.RowPitch,
+                            subresource.bytes.data()
+                                + static_cast<std::size_t>(slice)
+                                    * subresource.slicePitch
+                                + static_cast<std::size_t>(row)
+                                    * subresource.rowPitch,
+                            layout.minimumRowBytes);
+                    }
                 }
             }
         }
@@ -2215,7 +2543,8 @@ namespace LamaPon
         return ShaderResourceBinding{
             m_resourceDomain->ShaderResourceGpuHandle(payload->slot),
             payload->width,
-            payload->height
+            payload->height,
+            payload->dimension
         };
     }
 
@@ -2877,6 +3206,23 @@ namespace LamaPon
             requestedWidth,
             requestedHeight,
             GraphicsTextureFormat::Rgba16Float);
+        if (computeWritable)
+        {
+            // D3D11RenderTargetStateと同じく、Compute Shaderの書き込み先に
+            // するtargetだけ表示用textureへUAVを作ります。slotはstateの
+            // 破棄時にGPUの完了を待って戻します。
+            D3D12_UNORDERED_ACCESS_VIEW_DESC accessDescription{};
+            accessDescription.Format = colorDescription.Format;
+            accessDescription.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+            pending->displayUnorderedAccessSlot =
+                m_resourceDomain->AllocateShaderResourceSlot();
+            m_device->CreateUnorderedAccessView(
+                pending->displayColor.Get(),
+                nullptr,
+                &accessDescription,
+                m_resourceDomain->ShaderResourceCpuHandle(
+                    *pending->displayUnorderedAccessSlot));
+        }
         pending->m_colorHistoryView = CreateTextureView(
             m_device.Get(),
             m_resourceDomain,
@@ -3415,6 +3761,155 @@ namespace LamaPon
                 BindOffscreenTarget(target);
             }
         }
+    }
+
+    D3D12Backend::ComputeBindings D3D12Backend::BeginOffscreenCompute(
+        RenderTarget& target,
+        const std::array<GraphicsViewHandle, 2>& inputs)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "BeginOffscreenCompute requires an initialized D3D12 "
+                "backend.");
+        }
+        auto* const state = dynamic_cast<D3D12RenderTargetState*>(
+            Detail::RenderTargetBackendAccess::Get(target));
+        if (state == nullptr
+            || !state->HasNativeResources()
+            || state->resourceDomain.get() != m_resourceDomain.get()
+            || !state->computeWritable
+            || !state->displayUnorderedAccessSlot.has_value()
+            || !IsViewCurrent(state->m_displayView))
+        {
+            throw std::invalid_argument(
+                "BeginOffscreenCompute requires a compute-writable target "
+                "owned by this D3D12 backend generation.");
+        }
+
+        ComputeBindings bindings;
+        bindings.output = m_resourceDomain->ShaderResourceGpuHandle(
+            *state->displayUnorderedAccessSlot);
+        bindings.width = state->m_width;
+        bindings.height = state->m_height;
+        const auto inputTextures =
+            ComputeInputTextures(inputs, m_resourceDomain.get());
+        for (std::size_t index{}; index < inputs.size(); ++index)
+        {
+            const auto* const payload = TryShaderResourceViewPayload(
+                inputs[index],
+                m_resourceDomain.get());
+            // 同じtextureを読み書きするとD3D11は入力を黙って外すため、
+            // D3D12では記録前に拒否します。
+            const auto* const texture =
+                Detail::GraphicsResourceHandleAccess::TextureResource(
+                    inputs[index]);
+            const auto* const texturePayload = texture != nullptr
+                ? TryTexturePayload(*texture, m_resourceDomain.get())
+                : nullptr;
+            if (payload == nullptr
+                || texturePayload == nullptr
+                || texturePayload->native.Get() == state->displayColor.Get())
+            {
+                throw std::invalid_argument(
+                    "BeginOffscreenCompute requires current input texture "
+                    "views that differ from the output.");
+            }
+            bindings.inputs[index] =
+                m_resourceDomain->ShaderResourceGpuHandle(payload->slot);
+        }
+
+        OpenCommandList();
+        TransitionComputeInputs(m_commandList.Get(), inputTextures, true);
+        TransitionResource(
+            m_commandList.Get(),
+            state->displayColor.Get(),
+            state->displayColorState,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        return bindings;
+    }
+
+    void D3D12Backend::EndOffscreenCompute(
+        RenderTarget& target,
+        const std::array<GraphicsViewHandle, 2>& inputs) noexcept
+    {
+        auto* const state = dynamic_cast<D3D12RenderTargetState*>(
+            Detail::RenderTargetBackendAccess::Get(target));
+        if (!IsInitialized()
+            || !m_commandListOpen
+            || state == nullptr
+            || state->displayColor == nullptr
+            || state->resourceDomain.get() != m_resourceDomain.get())
+        {
+            return;
+        }
+        TransitionResource(
+            m_commandList.Get(),
+            state->displayColor.Get(),
+            state->displayColorState,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        TransitionComputeInputs(
+            m_commandList.Get(),
+            ComputeInputTextures(inputs, m_resourceDomain.get()),
+            false);
+    }
+
+    D3D12_GPU_DESCRIPTOR_HANDLE D3D12Backend::NullShaderResourceDescriptor(
+        const D3D12_SRV_DIMENSION dimension)
+    {
+        if (!IsInitialized() || m_resourceDomain == nullptr)
+        {
+            throw std::logic_error(
+                "NullShaderResourceDescriptor requires an initialized D3D12 "
+                "backend.");
+        }
+        D3D12_SHADER_RESOURCE_VIEW_DESC description{};
+        description.ViewDimension = dimension;
+        description.Shader4ComponentMapping =
+            D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        description.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        std::size_t index{};
+        switch (dimension)
+        {
+        case D3D12_SRV_DIMENSION_TEXTURE2D:
+            description.Texture2D.MipLevels = 1u;
+            index = 0u;
+            break;
+        case D3D12_SRV_DIMENSION_TEXTURE2DARRAY:
+            description.Texture2DArray.MipLevels = 1u;
+            description.Texture2DArray.ArraySize = 1u;
+            index = 1u;
+            break;
+        case D3D12_SRV_DIMENSION_TEXTURECUBE:
+            description.TextureCube.MipLevels = 1u;
+            index = 2u;
+            break;
+        case D3D12_SRV_DIMENSION_TEXTURE3D:
+            description.Texture3D.MipLevels = 1u;
+            index = 3u;
+            break;
+        case D3D12_SRV_DIMENSION_BUFFER:
+            description.Format = DXGI_FORMAT_R32_UINT;
+            description.Buffer.NumElements = 1u;
+            index = 4u;
+            break;
+        default:
+            throw std::invalid_argument(
+                "NullShaderResourceDescriptor received an unsupported view "
+                "dimension.");
+        }
+        auto& slot = m_nullShaderResourceSlots[index];
+        if (!slot.has_value())
+        {
+            const auto allocated =
+                m_resourceDomain->AllocateShaderResourceSlot();
+            m_device->CreateShaderResourceView(
+                nullptr,
+                &description,
+                m_resourceDomain->ShaderResourceCpuHandle(allocated));
+            slot = allocated;
+        }
+        return m_resourceDomain->ShaderResourceGpuHandle(*slot);
     }
 
     void D3D12Backend::CaptureOffscreenTargetColorHistory(
@@ -4348,7 +4843,10 @@ namespace LamaPon
                             std::move(texture),
                             descriptorSlot,
                             state->m_resolution,
-                            state->m_resolution));
+                            state->m_resolution,
+                            cube
+                                ? D3D12_SRV_DIMENSION_TEXTURECUBE
+                                : D3D12_SRV_DIMENSION_TEXTURE2DARRAY));
         }
         catch (...)
         {
@@ -4506,14 +5004,167 @@ namespace LamaPon
     }
 
     void D3D12Backend::UpdateClusteredLights(
-        ClusteredLights&,
-        LightingState&,
-        const DirectX::XMFLOAT4X4&,
-        const DirectX::XMFLOAT4X4&,
-        std::uint32_t,
-        std::uint32_t)
+        ClusteredLights& clusteredLights,
+        LightingState& lighting,
+        const DirectX::XMFLOAT4X4& view,
+        const DirectX::XMFLOAT4X4& projection,
+        const std::uint32_t width,
+        const std::uint32_t height)
     {
-        ThrowUnsupported("UpdateClusteredLights");
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "UpdateClusteredLights requires an initialized D3D12 "
+                "backend.");
+        }
+
+        // D3D11と同じく、別世代のstate、正射影、ライト無しでは従来の
+        // 固定配列の経路へ任せます。
+        lighting.clustered = {};
+        auto* const state = dynamic_cast<D3D12ClusteredLightsState*>(
+            Detail::ClusteredLightsBackendAccess::Get(clusteredLights));
+        if (state == nullptr
+            || !state->HasNativeResources()
+            || state->resourceDomain.get() != m_resourceDomain.get()
+            || !IsViewCurrent(state->m_lightView)
+            || !IsViewCurrent(state->m_indexListView)
+            || !IsViewCurrent(state->m_countView))
+        {
+            return;
+        }
+        const bool perspective = std::abs(projection._44) < 0.5f;
+        if (!perspective || lighting.clusteredLights.empty())
+        {
+            return;
+        }
+        // 射影行列からnear/farと視野の広がりを取り出します
+        // （XMMatrixPerspectiveFovRH: _33=f/(n-f), _43=n*f/(n-f)）。
+        const float nearPlane = projection._43 / projection._33;
+        const float farPlane = projection._43 / (projection._33 + 1.0f);
+        if (!(nearPlane > 0.0f) || !(farPlane > nearPlane))
+        {
+            return;
+        }
+        const float tanHalfX = 1.0f / projection._11;
+        const float tanHalfY = 1.0f / projection._22;
+        const auto lightCount = static_cast<std::uint32_t>(
+            std::min(
+                lighting.clusteredLights.size(),
+                MaximumClusteredLights));
+        const auto lightBinding =
+            TryResolveShaderResource(state->m_lightView);
+        if (!lightBinding)
+        {
+            return;
+        }
+
+        OpenCommandList();
+        auto* const commandList = m_commandList.Get();
+        const std::uint64_t lightBytes =
+            static_cast<std::uint64_t>(sizeof(GpuLight)) * lightCount;
+        const auto lightUpload =
+            AllocateFrameUpload(lightBytes, alignof(GpuLight));
+        std::memcpy(
+            lightUpload.data,
+            lighting.clusteredLights.data(),
+            static_cast<std::size_t>(lightBytes));
+        TransitionResource(
+            commandList,
+            state->lightBuffer.Get(),
+            state->lightBufferState,
+            D3D12_RESOURCE_STATE_COPY_DEST);
+        commandList->CopyBufferRegion(
+            state->lightBuffer.Get(),
+            0,
+            lightUpload.resource,
+            lightUpload.offset,
+            lightBytes);
+
+        ClusterCullingConstants constants{};
+        constants.view = view;
+        constants.gridParameters = {
+            static_cast<float>(ClusteredLights::GridWidth),
+            static_cast<float>(ClusteredLights::GridHeight),
+            static_cast<float>(ClusteredLights::GridDepth),
+            static_cast<float>(lightCount)
+        };
+        constants.depthParameters = {
+            nearPlane,
+            farPlane,
+            std::log(farPlane / nearPlane),
+            static_cast<float>(ClusteredLights::MaximumLightsPerCluster)
+        };
+        constants.frustumParameters = { tanHalfX, tanHalfY, 0.0f, 0.0f };
+        const auto constantUpload = AllocateFrameUpload(
+            sizeof(constants),
+            D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+        std::memcpy(constantUpload.data, &constants, sizeof(constants));
+
+        TransitionResource(
+            commandList,
+            state->lightBuffer.Get(),
+            state->lightBufferState,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        TransitionResource(
+            commandList,
+            state->indexListBuffer.Get(),
+            state->indexListState,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        TransitionResource(
+            commandList,
+            state->countBuffer.Get(),
+            state->countState,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        ID3D12DescriptorHeap* heaps[]{ ShaderResourceDescriptorHeap() };
+        commandList->SetDescriptorHeaps(1, heaps);
+        commandList->SetComputeRootSignature(state->rootSignature.Get());
+        commandList->SetPipelineState(state->pipeline.Get());
+        commandList->SetComputeRootConstantBufferView(
+            0,
+            constantUpload.gpuAddress);
+        commandList->SetComputeRootDescriptorTable(
+            1,
+            lightBinding->descriptor);
+        commandList->SetComputeRootDescriptorTable(
+            2,
+            m_resourceDomain->ShaderResourceGpuHandle(
+                *state->indexListAccessSlot));
+        commandList->SetComputeRootDescriptorTable(
+            3,
+            m_resourceDomain->ShaderResourceGpuHandle(
+                *state->countAccessSlot));
+        commandList->Dispatch(
+            (ClusteredLights::ClusterCount + 63u) / 64u,
+            1u,
+            1u);
+        // 描画のpixel shaderが読めるstateへ戻します。
+        TransitionResource(
+            commandList,
+            state->lightBuffer.Get(),
+            state->lightBufferState,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        TransitionResource(
+            commandList,
+            state->indexListBuffer.Get(),
+            state->indexListState,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        TransitionResource(
+            commandList,
+            state->countBuffer.Get(),
+            state->countState,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
+        lighting.clustered.lights = state->m_lightView;
+        lighting.clustered.lightIndices = state->m_indexListView;
+        lighting.clustered.clusterCounts = state->m_countView;
+        lighting.clustered.nearPlane = nearPlane;
+        lighting.clustered.farPlane = farPlane;
+        lighting.clustered.inverseWidth =
+            1.0f / static_cast<float>(std::max(width, 1u));
+        lighting.clustered.inverseHeight =
+            1.0f / static_cast<float>(std::max(height, 1u));
+        lighting.clustered.lightCount = lightCount;
+        lighting.clustered.enabled = true;
     }
 
     std::unique_ptr<GraphicsOutputState>
@@ -4620,7 +5271,10 @@ namespace LamaPon
         const auto* const payload = TryTexturePayload(
             texture,
             m_resourceDomain.get());
-        if (payload == nullptr)
+        const auto* const volumePayload = payload == nullptr
+            ? TryTexture3DPayload(texture, m_resourceDomain.get())
+            : nullptr;
+        if (payload == nullptr && volumePayload == nullptr)
         {
             throw std::invalid_argument(
                 "CreateShaderResourceView requires a texture from this "
@@ -4630,7 +5284,9 @@ namespace LamaPon
             texture,
             GraphicsTextureViewDescription{
                 0,
-                payload->description.mipLevels
+                payload != nullptr
+                    ? payload->description.mipLevels
+                    : volumePayload->description.mipLevels
             });
     }
 
@@ -4770,6 +5426,314 @@ namespace LamaPon
             true);
     }
 
+    std::pair<GraphicsTextureHandle, GraphicsViewHandle>
+        D3D12Backend::CreateTextureCube(
+            const GraphicsTexture2DDescription& faceDescription,
+            const std::span<const GraphicsTextureSubresourceData>
+                subresources)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "CreateTextureCube requires an initialized D3D12 backend.");
+        }
+        constexpr std::uint32_t FaceCount = 6u;
+        if (faceDescription.width == 0
+            || faceDescription.width != faceDescription.height
+            || faceDescription.width > D3D12_REQ_TEXTURECUBE_DIMENSION
+            || faceDescription.mipLevels == 0
+            || faceDescription.mipLevels > Detail::MaximumTextureMipLevels(
+                faceDescription.width,
+                faceDescription.height)
+            || faceDescription.updateMode
+                != GraphicsTextureUpdateMode::Immutable
+            || subresources.size()
+                != static_cast<std::size_t>(faceDescription.mipLevels)
+                    * FaceCount)
+        {
+            throw std::invalid_argument(
+                "CreateTextureCube received an invalid description or "
+                "subresource count.");
+        }
+        const auto format = Detail::ToDxgiTextureFormat(
+            faceDescription.format);
+        for (std::size_t index{}; index < subresources.size(); ++index)
+        {
+            Detail::ValidateTexture2DSubresourceData(
+                format,
+                faceDescription.width,
+                faceDescription.height,
+                faceDescription.mipLevels,
+                static_cast<std::uint32_t>(
+                    index % faceDescription.mipLevels),
+                subresources[index]);
+        }
+
+        D3D12_RESOURCE_DESC nativeDescription{};
+        nativeDescription.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        nativeDescription.Width = faceDescription.width;
+        nativeDescription.Height = faceDescription.height;
+        nativeDescription.DepthOrArraySize = FaceCount;
+        nativeDescription.MipLevels =
+            static_cast<UINT16>(faceDescription.mipLevels);
+        nativeDescription.Format = format;
+        nativeDescription.SampleDesc.Count = 1;
+        nativeDescription.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        nativeDescription.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+        const auto domain = m_resourceDomain;
+        const auto defaultHeap = HeapProperties(D3D12_HEAP_TYPE_DEFAULT);
+        Microsoft::WRL::ComPtr<ID3D12Resource> native;
+        ThrowIfFailed(
+            m_device->CreateCommittedResource(
+                &defaultHeap,
+                D3D12_HEAP_FLAG_NONE,
+                &nativeDescription,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                nullptr,
+                IID_PPV_ARGS(native.GetAddressOf())),
+            "ID3D12Device::CreateCommittedResource(texture cube)",
+            m_device.Get());
+        // 転送完了時に全面・全ミップをPIXEL_SHADER_RESOURCEへ移します。
+        SubmitTextureUpload(native, 0u, subresources, false);
+
+        auto texture = Detail::GraphicsResourceHandleAccess::MakeTexture(
+            std::make_shared<D3D12ShadowTexturePayload>(domain, native));
+        D3D12_SHADER_RESOURCE_VIEW_DESC viewDescription{};
+        viewDescription.Format = format;
+        viewDescription.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+        viewDescription.Shader4ComponentMapping =
+            D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        viewDescription.TextureCube.MostDetailedMip = 0;
+        viewDescription.TextureCube.MipLevels = faceDescription.mipLevels;
+        const auto slot = domain->AllocateShaderResourceSlot();
+        try
+        {
+            m_device->CreateShaderResourceView(
+                native.Get(),
+                &viewDescription,
+                domain->ShaderResourceCpuHandle(slot));
+            auto view = Detail::GraphicsResourceHandleAccess::MakeView(
+                std::make_shared<D3D12ShaderResourceViewPayload>(
+                    domain,
+                    texture,
+                    slot,
+                    faceDescription.width,
+                    faceDescription.height,
+                    D3D12_SRV_DIMENSION_TEXTURECUBE));
+            return { std::move(texture), std::move(view) };
+        }
+        catch (...)
+        {
+            domain->ReleaseUnpublishedShaderResourceSlot(slot);
+            throw;
+        }
+    }
+
+    D3D12Backend::ComputeCubeTarget D3D12Backend::CreateComputeCubeTarget(
+        const std::uint32_t size,
+        const std::uint32_t mipLevels)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "CreateComputeCubeTarget requires an initialized D3D12 "
+                "backend.");
+        }
+        constexpr std::uint16_t FaceCount = 6u;
+        constexpr DXGI_FORMAT Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        if (size == 0u
+            || size > D3D12_REQ_TEXTURECUBE_DIMENSION
+            || mipLevels == 0u
+            || mipLevels > Detail::MaximumTextureMipLevels(size, size))
+        {
+            throw std::invalid_argument(
+                "CreateComputeCubeTarget received an invalid size or mip "
+                "count.");
+        }
+
+        D3D12_RESOURCE_DESC nativeDescription{};
+        nativeDescription.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        nativeDescription.Width = size;
+        nativeDescription.Height = size;
+        nativeDescription.DepthOrArraySize = FaceCount;
+        nativeDescription.MipLevels = static_cast<UINT16>(mipLevels);
+        nativeDescription.Format = Format;
+        nativeDescription.SampleDesc.Count = 1;
+        nativeDescription.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        nativeDescription.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+        const auto domain = m_resourceDomain;
+        const auto defaultHeap = HeapProperties(D3D12_HEAP_TYPE_DEFAULT);
+        Microsoft::WRL::ComPtr<ID3D12Resource> native;
+        ThrowIfFailed(
+            m_device->CreateCommittedResource(
+                &defaultHeap,
+                D3D12_HEAP_FLAG_NONE,
+                &nativeDescription,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                nullptr,
+                IID_PPV_ARGS(native.GetAddressOf())),
+            "ID3D12Device::CreateCommittedResource(compute cube)",
+            m_device.Get());
+
+        // payloadが受け取るまでは、作ったUAV slotをここで戻します。
+        std::vector<std::uint32_t> accessSlots;
+        std::vector<D3D12_GPU_DESCRIPTOR_HANDLE> mipAccess;
+        std::shared_ptr<D3D12ComputeCubeTexturePayload> payload;
+        try
+        {
+            accessSlots.reserve(mipLevels);
+            mipAccess.reserve(mipLevels);
+            for (std::uint32_t mip{}; mip < mipLevels; ++mip)
+            {
+                D3D12_UNORDERED_ACCESS_VIEW_DESC accessDescription{};
+                accessDescription.Format = Format;
+                accessDescription.ViewDimension =
+                    D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+                accessDescription.Texture2DArray.MipSlice = mip;
+                accessDescription.Texture2DArray.FirstArraySlice = 0;
+                accessDescription.Texture2DArray.ArraySize = FaceCount;
+                accessSlots.push_back(domain->AllocateShaderResourceSlot());
+                m_device->CreateUnorderedAccessView(
+                    native.Get(),
+                    nullptr,
+                    &accessDescription,
+                    domain->ShaderResourceCpuHandle(accessSlots.back()));
+                mipAccess.push_back(
+                    domain->ShaderResourceGpuHandle(accessSlots.back()));
+            }
+            payload = std::make_shared<D3D12ComputeCubeTexturePayload>(
+                domain,
+                native,
+                accessSlots);
+        }
+        catch (...)
+        {
+            for (const auto slot : accessSlots)
+            {
+                domain->ReleaseUnpublishedShaderResourceSlot(slot);
+            }
+            throw;
+        }
+
+        ComputeCubeTarget target;
+        target.texture = Detail::GraphicsResourceHandleAccess::MakeTexture(
+            std::move(payload));
+        target.mipAccess = std::move(mipAccess);
+        D3D12_SHADER_RESOURCE_VIEW_DESC viewDescription{};
+        viewDescription.Format = Format;
+        viewDescription.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+        viewDescription.Shader4ComponentMapping =
+            D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        viewDescription.TextureCube.MostDetailedMip = 0;
+        viewDescription.TextureCube.MipLevels = mipLevels;
+        const auto slot = domain->AllocateShaderResourceSlot();
+        try
+        {
+            m_device->CreateShaderResourceView(
+                native.Get(),
+                &viewDescription,
+                domain->ShaderResourceCpuHandle(slot));
+            target.view = Detail::GraphicsResourceHandleAccess::MakeView(
+                std::make_shared<D3D12ShaderResourceViewPayload>(
+                    domain,
+                    target.texture,
+                    slot,
+                    size,
+                    size,
+                    D3D12_SRV_DIMENSION_TEXTURECUBE));
+        }
+        catch (...)
+        {
+            domain->ReleaseUnpublishedShaderResourceSlot(slot);
+            throw;
+        }
+        return target;
+    }
+
+    D3D12Backend::ShaderResourceBinding D3D12Backend::BeginCubeCompute(
+        const GraphicsViewHandle& source,
+        const GraphicsTextureHandle& target)
+    {
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "BeginCubeCompute requires an initialized D3D12 backend.");
+        }
+        const auto binding = TryResolveShaderResource(source);
+        const auto* const sourceTexture =
+            Detail::GraphicsResourceHandleAccess::TextureResource(source);
+        auto* const sourceNative = sourceTexture != nullptr
+            ? TryNativeTexture(*sourceTexture, m_resourceDomain.get())
+            : nullptr;
+        const auto* const targetPayload =
+            TryComputeCubePayload(target, m_resourceDomain.get());
+        if (!binding
+            || (binding->dimension != D3D12_SRV_DIMENSION_TEXTURECUBE
+                && binding->dimension != D3D12_SRV_DIMENSION_TEXTURE2D)
+            || sourceNative == nullptr
+            || targetPayload == nullptr
+            || targetPayload->native.Get() == sourceNative)
+        {
+            throw std::invalid_argument(
+                "BeginCubeCompute requires a current TextureCube or Texture2D "
+                "source and a separate compute cube target from this "
+                "backend generation.");
+        }
+
+        OpenCommandList();
+        TransitionComputeInputs(
+            m_commandList.Get(),
+            std::array<ID3D12Resource*, 2>{ sourceNative, nullptr },
+            true);
+        D3D12_RESOURCE_BARRIER barrier{};
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Transition.pResource = targetPayload->native.Get();
+        barrier.Transition.Subresource =
+            D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        barrier.Transition.StateBefore =
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        barrier.Transition.StateAfter =
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        m_commandList->ResourceBarrier(1, &barrier);
+        return *binding;
+    }
+
+    void D3D12Backend::EndCubeCompute(
+        const GraphicsViewHandle& source,
+        const GraphicsTextureHandle& target) noexcept
+    {
+        if (!IsInitialized() || !m_commandListOpen)
+        {
+            return;
+        }
+        const auto* const targetPayload =
+            TryComputeCubePayload(target, m_resourceDomain.get());
+        if (targetPayload != nullptr)
+        {
+            D3D12_RESOURCE_BARRIER barrier{};
+            barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            barrier.Transition.pResource = targetPayload->native.Get();
+            barrier.Transition.Subresource =
+                D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            barrier.Transition.StateBefore =
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+            barrier.Transition.StateAfter =
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+            m_commandList->ResourceBarrier(1, &barrier);
+        }
+        const auto* const sourceTexture =
+            Detail::GraphicsResourceHandleAccess::TextureResource(source);
+        TransitionComputeInputs(
+            m_commandList.Get(),
+            std::array<ID3D12Resource*, 2>{
+                sourceTexture != nullptr
+                    ? TryNativeTexture(*sourceTexture, m_resourceDomain.get())
+                    : nullptr,
+                nullptr },
+            false);
+    }
+
     GraphicsViewHandle D3D12Backend::CreateShaderResourceView(
         const GraphicsTextureHandle& texture,
         const GraphicsTextureViewDescription& description)
@@ -4783,9 +5747,14 @@ namespace LamaPon
         const auto* const payload = TryTexturePayload(
             texture,
             m_resourceDomain.get());
+        const auto* const volumePayload = payload == nullptr
+            ? TryTexture3DPayload(texture, m_resourceDomain.get())
+            : nullptr;
         const auto availableMipLevels = payload != nullptr
             ? payload->description.mipLevels
-            : 0u;
+            : volumePayload != nullptr
+                ? volumePayload->description.mipLevels
+                : 0u;
         if (availableMipLevels == 0
             || description.mipLevels == 0
             || description.mostDetailedMip >= availableMipLevels
@@ -4797,21 +5766,42 @@ namespace LamaPon
                 "a texture from this backend generation.");
         }
 
+        // D3D11と同じく、Texture3Dは3D次元のviewで読みます。
         D3D12_SHADER_RESOURCE_VIEW_DESC nativeDescription{};
-        nativeDescription.Format = payload->format;
-        nativeDescription.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         nativeDescription.Shader4ComponentMapping =
             D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        nativeDescription.Texture2D.MostDetailedMip =
-            description.mostDetailedMip;
-        nativeDescription.Texture2D.MipLevels = description.mipLevels;
+        if (payload != nullptr)
+        {
+            nativeDescription.Format = payload->format;
+            nativeDescription.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            nativeDescription.Texture2D.MostDetailedMip =
+                description.mostDetailedMip;
+            nativeDescription.Texture2D.MipLevels = description.mipLevels;
+        }
+        else
+        {
+            nativeDescription.Format = volumePayload->format;
+            nativeDescription.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+            nativeDescription.Texture3D.MostDetailedMip =
+                description.mostDetailedMip;
+            nativeDescription.Texture3D.MipLevels = description.mipLevels;
+        }
+        auto* const native = payload != nullptr
+            ? payload->native.Get()
+            : volumePayload->native.Get();
+        const auto width = payload != nullptr
+            ? payload->description.width
+            : volumePayload->description.width;
+        const auto height = payload != nullptr
+            ? payload->description.height
+            : volumePayload->description.height;
 
         const auto domain = m_resourceDomain;
         const auto slot = domain->AllocateShaderResourceSlot();
         try
         {
             m_device->CreateShaderResourceView(
-                payload->native.Get(),
+                native,
                 &nativeDescription,
                 domain->ShaderResourceCpuHandle(slot));
             return Detail::GraphicsResourceHandleAccess::MakeView(
@@ -4819,8 +5809,9 @@ namespace LamaPon
                     domain,
                     texture,
                     slot,
-                    payload->description.width,
-                    payload->description.height));
+                    width,
+                    height,
+                    nativeDescription.ViewDimension));
         }
         catch (...)
         {
@@ -4873,10 +5864,97 @@ namespace LamaPon
     }
 
     GraphicsTextureHandle D3D12Backend::CreateTexture3D(
-        const GraphicsTexture3DDescription&,
-        std::span<const GraphicsTextureSubresourceData>)
+        const GraphicsTexture3DDescription& description,
+        const std::span<const GraphicsTextureSubresourceData> initialData)
     {
-        ThrowUnsupported("CreateTexture3D");
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "CreateTexture3D requires an initialized D3D12 backend.");
+        }
+        if (description.width == 0
+            || description.height == 0
+            || description.depth == 0
+            || description.width > D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION
+            || description.height > D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION
+            || description.depth > D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION
+            || description.mipLevels == 0
+            || description.mipLevels > Detail::MaximumTextureMipLevels(
+                description.width,
+                description.height,
+                description.depth)
+            || initialData.size() != description.mipLevels)
+        {
+            throw std::invalid_argument(
+                "CreateTexture3D received an invalid description or "
+                "subresource count.");
+        }
+
+        // D3D11と同じく、shaderから読めるTexture3D形式だけを受け付けます。
+        const auto format = Detail::ToDxgiTextureFormat(description.format);
+        D3D12_FEATURE_DATA_FORMAT_SUPPORT formatSupport{ format };
+        const auto requiredSupport =
+            D3D12_FORMAT_SUPPORT1_TEXTURE3D
+            | D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE;
+        if (FAILED(m_device->CheckFeatureSupport(
+                D3D12_FEATURE_FORMAT_SUPPORT,
+                &formatSupport,
+                sizeof(formatSupport)))
+            || (formatSupport.Support1 & requiredSupport) != requiredSupport)
+        {
+            throw std::invalid_argument(
+                "CreateTexture3D requires a shader-readable 3D texture "
+                "format supported by the active backend.");
+        }
+        for (std::size_t mipLevel{};
+            mipLevel < initialData.size();
+            ++mipLevel)
+        {
+            Detail::ValidateTexture3DSubresourceData(
+                format,
+                description.width,
+                description.height,
+                description.depth,
+                description.mipLevels,
+                static_cast<std::uint32_t>(mipLevel),
+                initialData[mipLevel]);
+        }
+
+        D3D12_RESOURCE_DESC nativeDescription{};
+        nativeDescription.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
+        nativeDescription.Width = description.width;
+        nativeDescription.Height = description.height;
+        nativeDescription.DepthOrArraySize =
+            static_cast<UINT16>(description.depth);
+        nativeDescription.MipLevels =
+            static_cast<UINT16>(description.mipLevels);
+        nativeDescription.Format = format;
+        nativeDescription.SampleDesc.Count = 1;
+        nativeDescription.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        nativeDescription.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+        const auto domain = m_resourceDomain;
+        const auto defaultHeap = HeapProperties(D3D12_HEAP_TYPE_DEFAULT);
+        Microsoft::WRL::ComPtr<ID3D12Resource> texture;
+        ThrowIfFailed(
+            m_device->CreateCommittedResource(
+                &defaultHeap,
+                D3D12_HEAP_FLAG_NONE,
+                &nativeDescription,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                nullptr,
+                IID_PPV_ARGS(texture.GetAddressOf())),
+            "ID3D12Device::CreateCommittedResource(texture 3D)",
+            m_device.Get());
+        // D3D11のimmutable Texture3Dと同じく全ミップを転送し、完了時に
+        // PIXEL_SHADER_RESOURCEへ移します。
+        SubmitTextureUpload(texture, 0u, initialData, false);
+        return Detail::GraphicsResourceHandleAccess::MakeTexture(
+            std::make_shared<D3D12Texture3DPayload>(
+                domain,
+                std::move(texture),
+                description,
+                format));
     }
 
     bool D3D12Backend::IsViewCurrent(
@@ -4888,10 +5966,211 @@ namespace LamaPon
     }
 
     void D3D12Backend::InitializeClusteredLights(
-        ClusteredLights&,
-        AssetManager&,
-        const std::filesystem::path&)
+        ClusteredLights& clusteredLights,
+        AssetManager& assets,
+        const std::filesystem::path& shaderPath)
     {
-        ThrowUnsupported("InitializeClusteredLights");
+        if (!IsInitialized())
+        {
+            throw std::logic_error(
+                "InitializeClusteredLights requires an initialized D3D12 "
+                "backend.");
+        }
+
+        // native資源と3本のneutral viewを一時stateへ全て作り、完成した
+        // 世代だけをfacadeへ公開します。途中失敗時は既存stateを保ちます。
+        auto state = std::make_unique<D3D12ClusteredLightsState>();
+        state->resourceDomain = m_resourceDomain;
+
+        // D3D11と同じLamaPonLightCulling.hlslのCSMainを、b0の定数、t0の
+        // ライト一覧、u0の番号表、u1のクラスタごとの数で実行します。
+        const auto byteCode = CompileShaderCached(
+            assets,
+            shaderPath,
+            "CSMain",
+            "cs_5_0");
+        std::array<D3D12_DESCRIPTOR_RANGE, 3> ranges{};
+        ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        ranges[0].NumDescriptors = 1;
+        ranges[0].BaseShaderRegister = 0;
+        ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+        ranges[1].NumDescriptors = 1;
+        ranges[1].BaseShaderRegister = 0;
+        ranges[2].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+        ranges[2].NumDescriptors = 1;
+        ranges[2].BaseShaderRegister = 1;
+        std::array<D3D12_ROOT_PARAMETER, 4> parameters{};
+        parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+        parameters[0].Descriptor.ShaderRegister = 0;
+        parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        for (std::size_t index{}; index < ranges.size(); ++index)
+        {
+            auto& parameter = parameters[index + 1u];
+            parameter.ParameterType =
+                D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+            parameter.DescriptorTable.NumDescriptorRanges = 1;
+            parameter.DescriptorTable.pDescriptorRanges = &ranges[index];
+            parameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        }
+        D3D12_ROOT_SIGNATURE_DESC rootDescription{};
+        rootDescription.NumParameters = static_cast<UINT>(parameters.size());
+        rootDescription.pParameters = parameters.data();
+        Microsoft::WRL::ComPtr<ID3DBlob> serialized;
+        Microsoft::WRL::ComPtr<ID3DBlob> errors;
+        const HRESULT serializedResult = D3D12SerializeRootSignature(
+            &rootDescription,
+            D3D_ROOT_SIGNATURE_VERSION_1,
+            serialized.GetAddressOf(),
+            errors.GetAddressOf());
+        if (FAILED(serializedResult))
+        {
+            std::string message =
+                "D3D12SerializeRootSignature(light culling) failed";
+            if (errors != nullptr && errors->GetBufferSize() > 0)
+            {
+                message += ": ";
+                message.append(
+                    static_cast<const char*>(errors->GetBufferPointer()),
+                    errors->GetBufferSize());
+            }
+            throw std::runtime_error(message);
+        }
+        ThrowIfFailed(
+            m_device->CreateRootSignature(
+                0,
+                serialized->GetBufferPointer(),
+                serialized->GetBufferSize(),
+                IID_PPV_ARGS(state->rootSignature.ReleaseAndGetAddressOf())),
+            "ID3D12Device::CreateRootSignature(light culling)",
+            m_device.Get());
+        D3D12_COMPUTE_PIPELINE_STATE_DESC pipelineDescription{};
+        pipelineDescription.pRootSignature = state->rootSignature.Get();
+        pipelineDescription.CS = {
+            byteCode->GetBufferPointer(),
+            byteCode->GetBufferSize()
+        };
+        ThrowIfFailed(
+            m_device->CreateComputePipelineState(
+                &pipelineDescription,
+                IID_PPV_ARGS(state->pipeline.ReleaseAndGetAddressOf())),
+            "ID3D12Device::CreateComputePipelineState(light culling)",
+            m_device.Get());
+
+        const auto createBuffer = [this](
+            const std::uint64_t bytes,
+            const D3D12_RESOURCE_FLAGS flags,
+            const char* const operation)
+        {
+            const auto heap = HeapProperties(D3D12_HEAP_TYPE_DEFAULT);
+            auto description = BufferDescription(bytes);
+            description.Flags = flags;
+            Microsoft::WRL::ComPtr<ID3D12Resource> buffer;
+            ThrowIfFailed(
+                m_device->CreateCommittedResource(
+                    &heap,
+                    D3D12_HEAP_FLAG_NONE,
+                    &description,
+                    D3D12_RESOURCE_STATE_COMMON,
+                    nullptr,
+                    IID_PPV_ARGS(buffer.GetAddressOf())),
+                operation,
+                m_device.Get());
+            return buffer;
+        };
+        const auto createStructuredView = [this](
+            const Microsoft::WRL::ComPtr<ID3D12Resource>& buffer,
+            const std::uint32_t elementCount,
+            const std::uint32_t stride)
+        {
+            auto bufferHandle =
+                Detail::GraphicsResourceHandleAccess::MakeBuffer(
+                    std::make_shared<D3D12BufferPayload>(
+                        m_resourceDomain,
+                        buffer));
+            D3D12_SHADER_RESOURCE_VIEW_DESC description{};
+            description.Format = DXGI_FORMAT_UNKNOWN;
+            description.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+            description.Shader4ComponentMapping =
+                D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            description.Buffer.NumElements = elementCount;
+            description.Buffer.StructureByteStride = stride;
+            const auto slot = m_resourceDomain->AllocateShaderResourceSlot();
+            try
+            {
+                m_device->CreateShaderResourceView(
+                    buffer.Get(),
+                    &description,
+                    m_resourceDomain->ShaderResourceCpuHandle(slot));
+                return Detail::GraphicsResourceHandleAccess::MakeView(
+                    std::make_shared<D3D12ShaderResourceViewPayload>(
+                        m_resourceDomain,
+                        std::move(bufferHandle),
+                        slot,
+                        elementCount));
+            }
+            catch (...)
+            {
+                m_resourceDomain->ReleaseUnpublishedShaderResourceSlot(slot);
+                throw;
+            }
+        };
+        const auto createAccessSlot = [this](
+            const Microsoft::WRL::ComPtr<ID3D12Resource>& buffer,
+            const std::uint32_t elementCount)
+        {
+            D3D12_UNORDERED_ACCESS_VIEW_DESC description{};
+            description.Format = DXGI_FORMAT_UNKNOWN;
+            description.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+            description.Buffer.NumElements = elementCount;
+            description.Buffer.StructureByteStride =
+                static_cast<UINT>(sizeof(std::uint32_t));
+            const auto slot = m_resourceDomain->AllocateShaderResourceSlot();
+            m_device->CreateUnorderedAccessView(
+                buffer.Get(),
+                nullptr,
+                &description,
+                m_resourceDomain->ShaderResourceCpuHandle(slot));
+            return slot;
+        };
+
+        const std::uint32_t indexCount = ClusteredLights::ClusterCount
+            * ClusteredLights::MaximumLightsPerCluster;
+        const auto uintStride = static_cast<std::uint32_t>(
+            sizeof(std::uint32_t));
+        state->lightBuffer = createBuffer(
+            static_cast<std::uint64_t>(sizeof(GpuLight))
+                * MaximumClusteredLights,
+            D3D12_RESOURCE_FLAG_NONE,
+            "ID3D12Device::CreateCommittedResource(cluster lights)");
+        state->indexListBuffer = createBuffer(
+            static_cast<std::uint64_t>(uintStride) * indexCount,
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+            "ID3D12Device::CreateCommittedResource(cluster index list)");
+        state->countBuffer = createBuffer(
+            static_cast<std::uint64_t>(uintStride)
+                * ClusteredLights::ClusterCount,
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+            "ID3D12Device::CreateCommittedResource(cluster counts)");
+        state->indexListAccessSlot =
+            createAccessSlot(state->indexListBuffer, indexCount);
+        state->countAccessSlot = createAccessSlot(
+            state->countBuffer,
+            ClusteredLights::ClusterCount);
+        state->m_lightView = createStructuredView(
+            state->lightBuffer,
+            static_cast<std::uint32_t>(MaximumClusteredLights),
+            static_cast<std::uint32_t>(sizeof(GpuLight)));
+        state->m_indexListView = createStructuredView(
+            state->indexListBuffer,
+            indexCount,
+            uintStride);
+        state->m_countView = createStructuredView(
+            state->countBuffer,
+            ClusteredLights::ClusterCount,
+            uintStride);
+        state->m_initialized = true;
+        Detail::ClusteredLightsBackendAccess::Publish(
+            clusteredLights,
+            std::move(state));
     }
 }

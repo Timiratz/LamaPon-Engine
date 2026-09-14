@@ -9,6 +9,7 @@
 #include "LamaPon/Graphics/LitEffect.h"
 #include "LamaPon/Graphics/LitMaterialAsset.h"
 #include "LamaPon/Graphics/LitTextureRequest.h"
+#include "LamaPon/Graphics/MaterialShaderDrawRequest.h"
 #include "LamaPon/Physics/CollisionTypes.h"
 #include "LamaPon/Scene/GameObject.h"
 #include "LamaPon/Scene/Scene.h"
@@ -129,7 +130,8 @@ namespace
             request.directionalLights[index] = {
                 source.direction,
                 source.color,
-                source.intensity };
+                source.intensity,
+                source.angularRadius };
         }
         request.pointLightCount = std::min(
             request.pointLights.size(),
@@ -221,6 +223,138 @@ namespace
             reflection.stepCount,
             reflection.depthPyramidMaximumMip,
             reflection.enabled };
+        const auto& environment = lighting.environment;
+        request.environment = {
+            environment.texture,
+            environment.specular,
+            environment.irradiance,
+            environment.specularMaximumMip,
+            environment.intensity,
+            environment.enabled };
+        request.fog = {
+            lighting.fog.color,
+            lighting.fog.startDistance,
+            lighting.fog.endDistance,
+            lighting.fog.density,
+            LamaPon::PrimitiveFogModel::LamaPonLit,
+            lighting.fog.enabled };
+        const auto& clustered = lighting.clustered;
+        request.clustered = {
+            clustered.lights,
+            clustered.lightIndices,
+            clustered.clusterCounts,
+            clustered.nearPlane,
+            clustered.farPlane,
+            clustered.inverseWidth,
+            clustered.inverseHeight,
+            clustered.lightCount,
+            clustered.enabled };
+        const auto& bakedGi = lighting.bakedGlobalIllumination;
+        request.bakedGlobalIllumination = {
+            bakedGi.redCoefficients,
+            bakedGi.greenCoefficients,
+            bakedGi.blueCoefficients,
+            bakedGi.volumeMinimum,
+            bakedGi.volumeSize,
+            bakedGi.resolution,
+            bakedGi.intensity,
+            bakedGi.enabled };
+    }
+
+    // テセレーション用の四角パッチの制御点です。D3D11の頂点バッファと
+    // D3D12の描画要求が同じ並びを使います。四角パッチに割れない形状では
+    // 空を返します。
+    [[nodiscard]] std::vector<DirectX::VertexPositionNormalTexture>
+        BuildTessellationControlPoints(const LamaPon::PrimitiveShape shape)
+    {
+        // 1つの四角パッチ。制御点の並びは Plane から続く
+        // (u0,v0) (u1,v0) (u0,v1) (u1,v1) で、u×v が法線になる向きに
+        // 揃えます。揃えておくと、面ごとに表裏が裏返りません。
+        std::vector<DirectX::VertexPositionNormalTexture>
+            controlPoints;
+        const auto addQuad =
+            [&controlPoints](
+                const DirectX::XMFLOAT3& center,
+                const DirectX::XMFLOAT3& uAxis,
+                const DirectX::XMFLOAT3& vAxis,
+                const DirectX::XMFLOAT3& normal)
+        {
+            const auto corner =
+                [&](const float u, const float v)
+            {
+                return DirectX::VertexPositionNormalTexture{
+                    DirectX::XMFLOAT3{
+                        center.x
+                            + uAxis.x * (u - 0.5f)
+                            + vAxis.x * (v - 0.5f),
+                        center.y
+                            + uAxis.y * (u - 0.5f)
+                            + vAxis.y * (v - 0.5f),
+                        center.z
+                            + uAxis.z * (u - 0.5f)
+                            + vAxis.z * (v - 0.5f) },
+                    normal,
+                    DirectX::XMFLOAT2{ u, v }
+                };
+            };
+            controlPoints.push_back(corner(0.0f, 0.0f));
+            controlPoints.push_back(corner(1.0f, 0.0f));
+            controlPoints.push_back(corner(0.0f, 1.0f));
+            controlPoints.push_back(corner(1.0f, 1.0f));
+        };
+
+        switch (shape)
+        {
+        case LamaPon::PrimitiveShape::Plane:
+            // 原作の SnowSurface と同じ並びの4制御点になります。
+            addQuad(
+                { 0.0f, 0.0f, 0.0f },
+                { 1.0f, 0.0f, 0.0f },
+                { 0.0f, 0.0f, -1.0f },
+                { 0.0f, 1.0f, 0.0f });
+            break;
+
+        case LamaPon::PrimitiveShape::Cube:
+            // 6面をそれぞれ1枚の四角パッチにします。面の中心は
+            // 法線方向へ0.5（DirectXTKのCubeは一辺1）。
+            addQuad(
+                { 0.0f, 0.5f, 0.0f },
+                { 1.0f, 0.0f, 0.0f },
+                { 0.0f, 0.0f, -1.0f },
+                { 0.0f, 1.0f, 0.0f });
+            addQuad(
+                { 0.0f, -0.5f, 0.0f },
+                { 1.0f, 0.0f, 0.0f },
+                { 0.0f, 0.0f, 1.0f },
+                { 0.0f, -1.0f, 0.0f });
+            addQuad(
+                { 0.5f, 0.0f, 0.0f },
+                { 0.0f, 0.0f, -1.0f },
+                { 0.0f, 1.0f, 0.0f },
+                { 1.0f, 0.0f, 0.0f });
+            addQuad(
+                { -0.5f, 0.0f, 0.0f },
+                { 0.0f, 0.0f, 1.0f },
+                { 0.0f, 1.0f, 0.0f },
+                { -1.0f, 0.0f, 0.0f });
+            addQuad(
+                { 0.0f, 0.0f, 0.5f },
+                { 1.0f, 0.0f, 0.0f },
+                { 0.0f, 1.0f, 0.0f },
+                { 0.0f, 0.0f, 1.0f });
+            addQuad(
+                { 0.0f, 0.0f, -0.5f },
+                { -1.0f, 0.0f, 0.0f },
+                { 0.0f, 1.0f, 0.0f },
+                { 0.0f, 0.0f, -1.0f });
+            break;
+
+        default:
+            // Sphere／Cylinderは四角パッチに割れません。作らない
+            // ことが「この形では使えない」の印になります。
+            break;
+        }
+        return controlPoints;
     }
 }
 
@@ -745,89 +879,9 @@ namespace LamaPon
             return;
         }
 
-        // 1つの四角パッチ。制御点の並びは Plane から続く
-        // (u0,v0) (u1,v0) (u0,v1) (u1,v1) で、u×v が法線になる向きに
-        // 揃えます。揃えておくと、面ごとに表裏が裏返りません。
-        std::vector<DirectX::VertexPositionNormalTexture>
-            controlPoints;
-        const auto addQuad =
-            [&controlPoints](
-                const DirectX::XMFLOAT3& center,
-                const DirectX::XMFLOAT3& uAxis,
-                const DirectX::XMFLOAT3& vAxis,
-                const DirectX::XMFLOAT3& normal)
+        const auto controlPoints = BuildTessellationControlPoints(m_shape);
+        if (controlPoints.empty())
         {
-            const auto corner =
-                [&](const float u, const float v)
-            {
-                return DirectX::VertexPositionNormalTexture{
-                    DirectX::XMFLOAT3{
-                        center.x
-                            + uAxis.x * (u - 0.5f)
-                            + vAxis.x * (v - 0.5f),
-                        center.y
-                            + uAxis.y * (u - 0.5f)
-                            + vAxis.y * (v - 0.5f),
-                        center.z
-                            + uAxis.z * (u - 0.5f)
-                            + vAxis.z * (v - 0.5f) },
-                    normal,
-                    DirectX::XMFLOAT2{ u, v }
-                };
-            };
-            controlPoints.push_back(corner(0.0f, 0.0f));
-            controlPoints.push_back(corner(1.0f, 0.0f));
-            controlPoints.push_back(corner(0.0f, 1.0f));
-            controlPoints.push_back(corner(1.0f, 1.0f));
-        };
-
-        switch (m_shape)
-        {
-        case PrimitiveShape::Plane:
-            // 原作の SnowSurface と同じ並びの4制御点になります。
-            addQuad(
-                { 0.0f, 0.0f, 0.0f },
-                { 1.0f, 0.0f, 0.0f },
-                { 0.0f, 0.0f, -1.0f },
-                { 0.0f, 1.0f, 0.0f });
-            break;
-
-        case PrimitiveShape::Cube:
-            // 6面をそれぞれ1枚の四角パッチにします。面の中心は
-            // 法線方向へ0.5（DirectXTKのCubeは一辺1）。
-            addQuad(
-                { 0.0f, 0.5f, 0.0f },
-                { 1.0f, 0.0f, 0.0f },
-                { 0.0f, 0.0f, -1.0f },
-                { 0.0f, 1.0f, 0.0f });
-            addQuad(
-                { 0.0f, -0.5f, 0.0f },
-                { 1.0f, 0.0f, 0.0f },
-                { 0.0f, 0.0f, 1.0f },
-                { 0.0f, -1.0f, 0.0f });
-            addQuad(
-                { 0.5f, 0.0f, 0.0f },
-                { 0.0f, 0.0f, -1.0f },
-                { 0.0f, 1.0f, 0.0f },
-                { 1.0f, 0.0f, 0.0f });
-            addQuad(
-                { -0.5f, 0.0f, 0.0f },
-                { 0.0f, 0.0f, 1.0f },
-                { 0.0f, 1.0f, 0.0f },
-                { -1.0f, 0.0f, 0.0f });
-            addQuad(
-                { 0.0f, 0.0f, 0.5f },
-                { 1.0f, 0.0f, 0.0f },
-                { 0.0f, 1.0f, 0.0f },
-                { 0.0f, 0.0f, 1.0f });
-            addQuad(
-                { 0.0f, 0.0f, -0.5f },
-                { -1.0f, 0.0f, 0.0f },
-                { 0.0f, 1.0f, 0.0f },
-                { 0.0f, 0.0f, -1.0f });
-            break;
-
-        default:
             // Sphere／Cylinderは四角パッチに割れません。作らない
             // ことが「この形では使えない」の印になります。
             return;
@@ -1213,6 +1267,17 @@ namespace LamaPon
             request.emissiveFactor =
                 m_material.EmissiveColor();
             CopyPrimitiveLighting(m_graphics->Lighting(), request);
+            if (!depthOnly)
+            {
+                // D3D11のApplyReflectionProbeと同じく、位置で選んだプローブを
+                // 渡します。解決できないプローブは描画側がSkyのIBLへ戻します。
+                DirectX::XMFLOAT3 position{};
+                DirectX::XMStoreFloat3(
+                    &position,
+                    Owner().WorldMatrix().r[3]);
+                request.reflectionProbe = Owner().GetScene()
+                    .ReflectionProbeEnvironmentAt(position);
+            }
             if (!request.directionalShadow.texture
                 && m_graphics->Shadows().IsValid())
             {
@@ -1251,6 +1316,46 @@ namespace LamaPon
                 request.alphaBlend = false;
                 request.depthTest = true;
                 request.depthWrite = true;
+            }
+            if (!m_material.Shader().empty())
+            {
+                // D3D11のLitEffect経路と同じMaterial custom shaderの契約で
+                // 描きます。compileに失敗したShaderは代替表示で描き、
+                // InspectorへD3D11と同じ説明を出します。
+                Detail::MaterialShaderDrawRequest material;
+                material.material = &m_material;
+                material.customTextures = textures.customTextures;
+                material.worldOverlay = m_worldOverlay;
+                // D3D11と同じく、テセレーションShaderはPlaneとCubeの四角
+                // パッチで描きます（Procedural Meshはパッチへ分けません）。
+                std::vector<PrimitiveRenderVertex> tessellationPatches;
+                if (!HasProceduralMesh())
+                {
+                    for (const auto& point :
+                        BuildTessellationControlPoints(m_shape))
+                    {
+                        tessellationPatches.push_back({
+                            point.position,
+                            point.normal,
+                            point.textureCoordinate });
+                    }
+                }
+                material.tessellationPatches = tessellationPatches;
+                if (m_cullModeOverride)
+                {
+                    material.cullOverride = m_cullMode;
+                }
+                std::uint64_t generation{};
+                std::string shaderError;
+                static_cast<void>(m_graphics->DrawMaterialShaderPrimitive(
+                    request,
+                    material,
+                    generation,
+                    shaderError));
+                m_shaderError = std::move(shaderError);
+                m_shaderGeneration = generation;
+                m_activeShaderPath = m_material.Shader();
+                return;
             }
             static_cast<void>(m_graphics->DrawPrimitive(request));
             return;
@@ -1494,6 +1599,24 @@ namespace LamaPon
         // m_primitive->Draw呼び出し）と同じものです。片方だけ
         // 直すと「並べ替えの対象から外れたのに半透明で描かれる」
         // 物ができるので、変えるときは必ず両方。
+        if (m_graphics != nullptr
+            && m_graphics->ActiveRenderingApi()
+                == RenderingApi::DirectX12Experimental
+            && !m_material.Shader().empty())
+        {
+            // D3D12はShaderの宣言をrender service側で解釈します。
+            ShaderRenderState state;
+            if (m_graphics->TryGetMaterialShaderRenderState(
+                    m_material.Shader(),
+                    m_material.ShaderKeywords(),
+                    state)
+                && state.declared)
+            {
+                return state.blend == ShaderBlendMode::Alpha
+                    || state.blend == ShaderBlendMode::Premultiplied;
+            }
+            return m_material.BaseColor().w < 1.0f;
+        }
         if (m_effect != nullptr
             && m_effect->RenderState().declared)
         {

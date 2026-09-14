@@ -1,6 +1,8 @@
 #include "LamaPon/Graphics/GraphicsDeviceD3D12Resources.h"
 
 #include "LamaPon/Graphics/D3D12Backend.h"
+#include "LamaPon/Graphics/D3D12ComputeEffectRenderer.h"
+#include "LamaPon/Graphics/D3D12EnvironmentPrefilter.h"
 #include "LamaPon/Graphics/D3D12RenderServices.h"
 #include "LamaPon/Graphics/D3D12SpriteRenderer.h"
 #include "LamaPon/Graphics/GraphicsBackend.h"
@@ -19,6 +21,10 @@ namespace LamaPon::Detail
         D3D12Backend& backend)
         : m_spriteRenderer(
             std::make_unique<D3D12SpriteRenderer>(backend))
+        , m_computeEffectRenderer(
+            std::make_unique<D3D12ComputeEffectRenderer>(backend))
+        , m_environmentPrefilter(
+            std::make_unique<D3D12EnvironmentPrefilter>(backend))
         , m_renderServices(CreateD3D12GraphicsRenderServices(backend))
     {
     }
@@ -37,6 +43,9 @@ namespace LamaPon::Detail
     void GraphicsDeviceD3D12Resources::ResetHighLevelResources() noexcept
     {
         QuiesceResourceWork();
+        queuedScreenEffects.clear();
+        m_environmentPrefilter.reset();
+        m_computeEffectRenderer.reset();
         m_spriteRenderer.reset();
         m_renderServices.reset();
         m_directionalShadowMap.reset();
@@ -120,6 +129,18 @@ namespace LamaPon::Detail
         GraphicsDeviceD3D12Resources::TrySpriteRenderer() noexcept
     {
         return m_spriteRenderer.get();
+    }
+
+    D3D12ComputeEffectRenderer*
+        GraphicsDeviceD3D12Resources::TryComputeEffectRenderer() noexcept
+    {
+        return m_computeEffectRenderer.get();
+    }
+
+    D3D12EnvironmentPrefilter*
+        GraphicsDeviceD3D12Resources::TryEnvironmentPrefilter() noexcept
+    {
+        return m_environmentPrefilter.get();
     }
 
     std::unique_ptr<GraphicsDeviceApiResources>

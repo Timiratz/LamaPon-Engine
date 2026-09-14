@@ -284,48 +284,14 @@ namespace
         const std::uint32_t mipLevel,
         const LamaPon::GraphicsTextureSubresourceData& data)
     {
-        if (mipLevel >= texture.MipLevels
-            || data.bytes.empty()
-            || data.rowPitch == 0
-            || data.slicePitch == 0)
-        {
-            throw std::invalid_argument(
-                "The Texture3D subresource data is incomplete.");
-        }
-
-        const auto mipWidth = std::max(
-            texture.Width >> mipLevel,
-            1u);
-        const auto mipHeight = std::max(
-            texture.Height >> mipLevel,
-            1u);
-        const auto mipDepth = std::max(
-            texture.Depth >> mipLevel,
-            1u);
-        const auto layout = RequiredTextureLayout(
+        LamaPon::Detail::ValidateTexture3DSubresourceData(
             texture.Format,
-            mipWidth,
-            mipHeight);
-        if (data.rowPitch < layout.minimumRowBytes)
-        {
-            throw std::invalid_argument(
-                "The Texture3D row pitch is too small.");
-        }
-        const auto requiredSliceBytes =
-            static_cast<std::uint64_t>(data.rowPitch)
-                * (layout.rowCount - 1u)
-            + layout.minimumRowBytes;
-        const auto requiredBytes =
-            static_cast<std::uint64_t>(data.slicePitch)
-                * (mipDepth - 1u)
-            + requiredSliceBytes;
-        if (requiredSliceBytes > data.slicePitch
-            || data.slicePitch > data.bytes.size()
-            || requiredBytes > data.bytes.size())
-        {
-            throw std::invalid_argument(
-                "The Texture3D subresource byte range is too small.");
-        }
+            texture.Width,
+            texture.Height,
+            texture.Depth,
+            texture.MipLevels,
+            mipLevel,
+            data);
     }
 
     [[nodiscard]] LamaPon::Detail::D3D11RenderTargetState&

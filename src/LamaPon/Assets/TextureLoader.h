@@ -106,6 +106,18 @@ namespace LamaPon::TextureLoader
     [[nodiscard]] PreparedTextureData PrepareDdsTextureData(
         std::span<const std::uint8_t> bytes);
 
+    // 6面を持つcube DDSかをヘッダーだけで判定します。壊れたヘッダーは
+    // falseで、読み込み時にPrepare側が理由付きで拒否します。
+    [[nodiscard]] bool IsDdsCubeTexture(
+        std::span<const std::uint8_t> bytes) noexcept;
+
+    // cube DDSを面ごと・ミップごとの転送データへ展開します。levelsは
+    // +X、-X、+Y、-Y、+Z、-Zの順に各面の全ミップを並べ（面数×ミップ数）、
+    // 対応formatは2D DDSと同じです。cubeの配列、欠けた面、正方形でない
+    // 面は例外にします。
+    [[nodiscard]] PreparedTextureData PrepareDdsCubeTextureData(
+        std::span<const std::uint8_t> bytes);
+
     // ミップ列を段階アップロード用の転送データへ変換します
     // （CPU側のBC圧縮もここで行います）。ワーカースレッド可。
     [[nodiscard]] PreparedTextureData PrepareTextureData(

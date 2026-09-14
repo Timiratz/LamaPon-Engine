@@ -86,6 +86,17 @@ color.rgb = lerp(color.rgb,
 自由枠が`t7`〜`t10`で途切れて`t11`からエンジンに戻るのは、自由枠が公開済みの取り決めだからです。
 エンジンの追加分を`t7`以降へ詰めると、既存の自作Shaderが**別のテクスチャを黙って読む**ことになるため、番号の連続性より互換性を取っています。
 
+### DirectX 12 Experimentalでの対応
+
+DirectX 12 Experimentalで書き出したゲームでは、Mesh RendererのMaterial custom shaderを上の表と同じ`b0`〜`b3`、`t0`〜`t25`、`s0`／`s1`で描きます。
+glTF／GLB／FBXのModel Rendererは、DirectX 11と同じくDirectXTK SkinnedEffectと同じ計算のエンジン内蔵頂点シェーダーで骨を変形し、`PSSkinnedMain`で描きます。
+`VSMain`／`PSMain`／`GSMain`、`LAMAPON_RENDER_STATE`、keyword（`#pragma multi_compile`）、影などの深度パス、ホットリロード、compile失敗時のマゼンタ表示はDirectX 11と同じです。
+SkyのcubemapによるIBL（`t3`の事前畳み込み済みスペキュラ、`t6`の放射照度、LightingBufferの`EnvironmentParameters`）、範囲に入ったリフレクションプローブ（`t3`／`t6`の差し替え、混ぜる2個目の`t19`／`t20`、`ReflectionBoxCenter`などのボックス射影と`ReflectionBlendParameters`）、Forward+のクラスタライト（`t16`〜`t18`とLightingBufferの`ClusteredParameters`など）、ベイクした間接光（`t23`〜`t25`とLightingBufferの`BakedGiVolumeMinimum`など）はDirectX 11と同じく入ります。
+CMO／SDKMESH／VBOのModel Rendererは、DirectX 11と同じくMaterial上書き中だけ`VSMain`／`PSMain`で描き、DirectXTKのModelMeshと同じ既定の描画状態へShaderの宣言を重ねます。
+Mesh RendererのPlane／Cubeでは`HSMain`／`DSMain`のテセレーションもDirectX 11と同じ四角パッチで描き、パッチへ分けられない形はDirectX 11と同じくマゼンタの代替表示になります。
+CMO／SDKMESH／VBOでは、`VSOutline`／`PSOutline`の輪郭と`PSOccluded`の遮蔽表示もDirectX 11と同じ描画状態と順番で重ねます。
+インスタンス描画と、glTF／GLB／FBXの`VSSkinnedOutline`／`PSOccluded`はまだ対応していません。
+
 ### SSAOを受け取る
 
 SSAO（[グラフィックス](graphics.md#ssao遮蔽による陰り)）は、ライティングの前に用意された遮蔽テクスチャを**Shader側が読んで環境光へ掛ける**方式です。

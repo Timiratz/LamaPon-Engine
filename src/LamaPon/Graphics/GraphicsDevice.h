@@ -42,6 +42,8 @@ namespace LamaPon
         class GraphicsDeviceApiResources;
         class GraphicsDeviceD3D11Access;
         struct GraphicsDeviceD3D11Resources;
+        struct MaterialShaderDrawRequest;
+        struct MaterialShaderPasses;
     }
 
     struct FrameStatistics final
@@ -97,6 +99,7 @@ namespace LamaPon
     struct ReflectionProbeEnvironment;
     struct ParticleDrawRequest;
     struct PrimitiveDrawRequest;
+    struct ShaderRenderState;
     class SpriteEffect;
     class ShadowMap;
     class RenderTarget;
@@ -652,6 +655,28 @@ namespace LamaPon
             const ShaderKeywordSet& keywords = {}) const;
         void InvalidateMaterialShader(
             const std::filesystem::path& shaderPath) const;
+        // DirectX 12 ExperimentalのMesh Rendererで、Material custom shaderを
+        // D3D11のLitEffectと同じ定数・texture枠・描画状態で描きます。
+        // compileに失敗したときはerrorへ説明を入れ、D3D11と同じマゼンタの
+        // 代替表示で描きます。DirectX 12以外ではfalseを返します。
+        [[nodiscard]] bool DrawMaterialShaderPrimitive(
+            const PrimitiveDrawRequest& request,
+            const Detail::MaterialShaderDrawRequest& material,
+            std::uint64_t& generation,
+            std::string& error);
+        // DirectX 12で描いたMaterial custom shaderの描画状態です。まだ
+        // 使えるShaderを用意していないときはfalseを返します。
+        [[nodiscard]] bool TryGetMaterialShaderRenderState(
+            const std::filesystem::path& shaderPath,
+            const ShaderKeywordSet& keywords,
+            ShaderRenderState& state) const;
+        // DirectX 12で、Material custom shaderがD3D11のLitEffectと同じ輪郭
+        // （VSOutline／PSOutline）と遮蔽表示（PSOccluded）の入口を持つかです。
+        // まだ用意していないShaderはここでcompileします。DirectX 12以外では
+        // どちらもfalseです。
+        [[nodiscard]] Detail::MaterialShaderPasses PrepareMaterialShaderPasses(
+            const std::filesystem::path& shaderPath,
+            const ShaderKeywordSet& keywords);
         void InvalidateSpriteShader(
             const std::filesystem::path& shaderPath) const;
         // Sprite/Particle 共通のピクセルシェーダー経路です。

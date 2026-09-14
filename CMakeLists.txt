@@ -308,6 +308,13 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Graphics/D3D12RenderServices.h
     src/LamaPon/Graphics/D3D12SpriteRenderer.cpp
     src/LamaPon/Graphics/D3D12SpriteRenderer.h
+    src/LamaPon/Graphics/D3D12ComputeEffectRenderer.cpp
+    src/LamaPon/Graphics/D3D12ComputeEffectRenderer.h
+    src/LamaPon/Graphics/D3D12EnvironmentPrefilter.cpp
+    src/LamaPon/Graphics/D3D12EnvironmentPrefilter.h
+    src/LamaPon/Graphics/D3D12MaterialShaderRenderer.cpp
+    src/LamaPon/Graphics/D3D12MaterialShaderRenderer.h
+    src/LamaPon/Graphics/MaterialShaderDrawRequest.h
     src/LamaPon/Graphics/DxgiTextureLayout.h
     src/LamaPon/Graphics/D3D11ClusteredLightsState.cpp
     src/LamaPon/Graphics/D3D11ClusteredLightsState.h
@@ -1864,6 +1871,10 @@ install(
         PATTERN "D3D11ShadowMapState.h" EXCLUDE
         PATTERN "D3D12Backend.h" EXCLUDE
         PATTERN "D3D12SpriteRenderer.h" EXCLUDE
+        PATTERN "D3D12ComputeEffectRenderer.h" EXCLUDE
+        PATTERN "D3D12EnvironmentPrefilter.h" EXCLUDE
+        PATTERN "D3D12MaterialShaderRenderer.h" EXCLUDE
+        PATTERN "MaterialShaderDrawRequest.h" EXCLUDE
         PATTERN "D3D12RenderServices.h" EXCLUDE
         PATTERN "DxgiTextureLayout.h" EXCLUDE
         PATTERN "GraphicsRenderServices.h" EXCLUDE

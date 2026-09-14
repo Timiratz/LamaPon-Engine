@@ -13,6 +13,7 @@
 #include "LamaPon/Graphics/LitEffect.h"
 #include "LamaPon/Graphics/LitMaterialAsset.h"
 #include "LamaPon/Graphics/LitTextureRequest.h"
+#include "LamaPon/Graphics/MaterialShaderDrawRequest.h"
 #include "LamaPon/Graphics/SkeletalModel.h"
 #include "LamaPon/Scene/GameObject.h"
 #include "LamaPon/Scene/Scene.h"
@@ -51,6 +52,34 @@ namespace
         return extension == L".cmo"
             || extension == L".sdkmesh"
             || extension == L".vbo";
+    }
+
+    // DirectXTKのCreateFromCMOは既定でModelLoader_CounterClockwise、
+    // SDKMESHとVBOはModelLoader_Clockwiseで読み込みます。
+    [[nodiscard]] bool LoadsCounterClockwiseDirectXTKModel(
+        const std::filesystem::path& path)
+    {
+        auto extension = path.extension().wstring();
+        std::ranges::transform(
+            extension,
+            extension.begin(),
+            std::towlower);
+        return extension == L".cmo";
+    }
+
+    // glTF／GLB／FBXはD3D11でSkeletalModelとして読み込まれ、Material custom
+    // shaderをDirectXTK SkinnedEffectの頂点シェーダーとPSSkinnedMainで描きます。
+    [[nodiscard]] bool UsesSkinnedMaterialShader(
+        const std::filesystem::path& path)
+    {
+        auto extension = path.extension().wstring();
+        std::ranges::transform(
+            extension,
+            extension.begin(),
+            std::towlower);
+        return extension == L".gltf"
+            || extension == L".glb"
+            || extension == L".fbx";
     }
 
     struct ImportedModelVertex final
@@ -100,7 +129,8 @@ namespace
             request.directionalLights[index] = {
                 source.direction,
                 source.color,
-                source.intensity };
+                source.intensity,
+                source.angularRadius };
         }
         request.pointLightCount = std::min(
             request.pointLights.size(),
@@ -192,6 +222,42 @@ namespace
             reflection.stepCount,
             reflection.depthPyramidMaximumMip,
             reflection.enabled };
+        const auto& environment = lighting.environment;
+        request.environment = {
+            environment.texture,
+            environment.specular,
+            environment.irradiance,
+            environment.specularMaximumMip,
+            environment.intensity,
+            environment.enabled };
+        request.fog = {
+            lighting.fog.color,
+            lighting.fog.startDistance,
+            lighting.fog.endDistance,
+            lighting.fog.density,
+            LamaPon::PrimitiveFogModel::LamaPonLit,
+            lighting.fog.enabled };
+        const auto& clustered = lighting.clustered;
+        request.clustered = {
+            clustered.lights,
+            clustered.lightIndices,
+            clustered.clusterCounts,
+            clustered.nearPlane,
+            clustered.farPlane,
+            clustered.inverseWidth,
+            clustered.inverseHeight,
+            clustered.lightCount,
+            clustered.enabled };
+        const auto& bakedGi = lighting.bakedGlobalIllumination;
+        request.bakedGlobalIllumination = {
+            bakedGi.redCoefficients,
+            bakedGi.greenCoefficients,
+            bakedGi.blueCoefficients,
+            bakedGi.volumeMinimum,
+            bakedGi.volumeSize,
+            bakedGi.resolution,
+            bakedGi.intensity,
+            bakedGi.enabled };
     }
 
     // テセレーションが使えるのは、四角パッチに割れる形状（Plane・
@@ -1721,6 +1787,24 @@ namespace LamaPon
     {
         if (m_graphics != nullptr
             && m_graphics->ActiveRenderingApi()
+                == RenderingApi::DirectX12Experimental)
+        {
+            // D3D12はCMO／SDKMESH／VBOのMaterial custom shaderだけが、D3D11の
+            // DrawCommonLitと同じ遮蔽表示を持ちます（glTF／FBXはD3D11でも
+            // 描かれないため、描かないまま揃えています）。
+            return !m_wireframe
+                && m_materialOverrideEnabled
+                && !m_material.Shader().empty()
+                && m_model
+                && m_model->skeletalModel
+                && UsesDirectXTKModelMaterial(m_modelPath)
+                && m_material.CustomParameter(4).w > 0.0f
+                && m_graphics->PrepareMaterialShaderPasses(
+                    m_material.Shader(),
+                    m_material.ShaderKeywords()).occluded;
+        }
+        if (m_graphics != nullptr
+            && m_graphics->ActiveRenderingApi()
                 != RenderingApi::DirectX11)
         {
             return false;
@@ -1738,15 +1822,24 @@ namespace LamaPon
         DirectX::CXMMATRIX projection)
     {
         // 原作と同様、キャラクター全パーツの通常描画より先に遮蔽部分だけを描きます。
-        if (HasPreRender3DPass())
+        if (!HasPreRender3DPass())
         {
-            DrawCommonLit(view, projection, true);
+            return;
         }
+        if (m_graphics != nullptr
+            && m_graphics->ActiveRenderingApi()
+                == RenderingApi::DirectX12Experimental)
+        {
+            DrawD3D12Model(view, projection, true);
+            return;
+        }
+        DrawCommonLit(view, projection, true);
     }
 
     void ModelRendererComponent::DrawD3D12Model(
         DirectX::FXMMATRIX view,
-        DirectX::CXMMATRIX projection)
+        DirectX::CXMMATRIX projection,
+        const bool occludedOnly)
     {
         if (m_graphics == nullptr
             || !m_model
@@ -1836,6 +1929,30 @@ namespace LamaPon
         const bool directXTKMaterialOverride =
             m_materialOverrideEnabled
             && UsesDirectXTKModelMaterial(m_modelPath);
+        // D3D11のSkeletalModel::DrawD3D11と同じく、glTF／FBXのMaterial
+        // custom shaderは既定Litの代わりに描きます。
+        const bool skinnedMaterialShader =
+            !m_material.Shader().empty()
+            && UsesSkinnedMaterialShader(m_modelPath);
+        // CMO／SDKMESH／VBOは、D3D11のDrawCommonLitと同じくMaterial上書き中
+        // だけcustom shaderで描きます（上書きが無いときはDirectXTK Effectです）。
+        const bool directXTKMaterialShader =
+            directXTKMaterialOverride
+            && !m_material.Shader().empty();
+        // D3D11のDrawCommonLitと同じく、遮蔽表示と輪郭は通常のパスだけで
+        // 描き、深度・影のパスでは描きません。
+        if (occludedOnly && (depthOnly || !directXTKMaterialShader))
+        {
+            return;
+        }
+        const bool drawOutline = directXTKMaterialShader
+            && !occludedOnly
+            && !m_wireframe
+            && !depthOnly
+            && m_material.CustomParameter(3).x > 0.0f;
+        // 上書きが無いときに、モデル自身の色・粗さ・金属度だけを渡す
+        // Materialです。D3D11と同じく、custom値は既定の0です。
+        LitMaterial primitiveMaterial;
         for (const bool alphaPass : { false, true })
         {
             if (depthOnly && alphaPass)
@@ -1869,7 +1986,11 @@ namespace LamaPon
                 }
                 // DirectXTK Modelの上書きは、上書き色のalphaと内蔵partの
                 // alphaで半透明passを決めます。
-                const bool alpha = directXTKMaterialOverride
+                // D3D11のSkeletalModelは、custom shaderの半透明passを内蔵
+                // partのalphaと色のalphaだけで決めます。
+                const bool alpha = skinnedMaterialShader
+                    ? primitive.alpha || baseColor.w < 0.999f
+                    : directXTKMaterialOverride
                     ? m_material.BaseColor().w < 0.999f || primitive.alpha
                     : primitive.alpha
                         || primitive.textureHasTransparency
@@ -1921,8 +2042,15 @@ namespace LamaPon
                 const auto vertexCount = primitive.cpuVertexData.size()
                     / primitive.cpuVertexStride;
                 std::vector<PrimitiveRenderVertex> vertices;
-                vertices.reserve(vertexCount);
-                for (std::size_t index{}; index < vertexCount; ++index)
+                // custom shaderは頂点シェーダーで骨を変形するため、CPUでの
+                // スキニングを行いません。
+                if (!skinnedMaterialShader)
+                {
+                    vertices.reserve(vertexCount);
+                }
+                for (std::size_t index{};
+                    !skinnedMaterialShader && index < vertexCount;
+                    ++index)
                 {
                     ImportedModelVertex source{};
                     std::memcpy(
@@ -2055,9 +2183,31 @@ namespace LamaPon
                 request.alphaBlend = alpha;
                 request.depthWrite = !alpha;
                 request.depthOnly = depthOnly;
+                // D3D11のModel::Draw／SkeletalModel::Drawと同じく、影や深度の
+                // パスもワイヤーフレームの形で描きます。
+                request.wireframe = m_wireframe;
                 CopyPrimitiveLighting(
                     m_graphics->Lighting(),
                     request);
+                if (!depthOnly)
+                {
+                    // D3D11と同じく、モデルの位置で選んだプローブを渡します
+                    // （解決できないプローブは描画側がSkyのIBLへ戻します）。
+                    DirectX::XMFLOAT3 ownerPosition{};
+                    DirectX::XMStoreFloat3(
+                        &ownerPosition,
+                        Owner().WorldMatrix().r[3]);
+                    request.reflectionProbe = Owner().GetScene()
+                        .ReflectionProbeEnvironmentAt(ownerPosition);
+                }
+                // D3D11のCMO／SDKMESH／VBOは、Material上書きが無いとDirectXTKの
+                // Effectで描かれ、その線形霧が掛かります。glTF／FBXと上書き中の
+                // モデルはLitEffectの霧です。
+                if (UsesDirectXTKModelMaterial(m_modelPath)
+                    && !m_materialOverrideEnabled)
+                {
+                    request.fog.model = PrimitiveFogModel::DirectXTK;
+                }
                 if (!request.directionalShadow.texture
                     && m_graphics->Shadows().IsValid())
                 {
@@ -2075,6 +2225,95 @@ namespace LamaPon
                 {
                     request.pointShadow.texture =
                         m_graphics->PointShadows().ViewHandle();
+                }
+                if (directXTKMaterialShader)
+                {
+                    // D3D11のDrawCommonLitのpartMaterialと同じく、内蔵
+                    // DiffuseColorのTintを反映した色だけを差し替えます。
+                    LitMaterial partMaterial = m_material;
+                    partMaterial.SetBaseColor(baseColor);
+                    // D3D11はDirectXTKのModelLoader既定のフラグで読み込む
+                    // ため、プレマルチプライドにはならず、三角形の向きは
+                    // 形式で決まります。
+                    Detail::DirectXTKModelPartState partState;
+                    partState.alphaPass = alpha;
+                    partState.counterClockwise =
+                        LoadsCounterClockwiseDirectXTKModel(m_modelPath);
+                    Detail::MaterialShaderDrawRequest material;
+                    material.material = &partMaterial;
+                    material.shaderMaterial = &m_material;
+                    material.directXTKPart = &partState;
+                    material.customTextures = pbrTextures.customTextures;
+                    std::uint64_t generation{};
+                    std::string shaderError;
+                    // D3D11のDrawCommonLitと同じく、遮蔽表示はOnPreRender3Dで
+                    // 全partを先に描き、輪郭は各partの通常描画の直前に重ねます。
+                    // どちらもShaderに入口が無ければ何も描きません。
+                    if (occludedOnly || drawOutline)
+                    {
+                        material.pass = occludedOnly
+                            ? Detail::MaterialShaderPass::Occluded
+                            : Detail::MaterialShaderPass::Outline;
+                        static_cast<void>(
+                            m_graphics->DrawMaterialShaderPrimitive(
+                                request,
+                                material,
+                                generation,
+                                shaderError));
+                        if (occludedOnly)
+                        {
+                            continue;
+                        }
+                        material.pass = Detail::MaterialShaderPass::Main;
+                    }
+                    static_cast<void>(m_graphics->DrawMaterialShaderPrimitive(
+                        request,
+                        material,
+                        generation,
+                        shaderError));
+                    m_shaderError = std::move(shaderError);
+                    m_shaderGeneration = generation;
+                    m_activeShaderPath = m_material.Shader();
+                    continue;
+                }
+                if (skinnedMaterialShader)
+                {
+                    const LitMaterial* drawMaterial = &m_material;
+                    if (!m_materialOverrideEnabled)
+                    {
+                        primitiveMaterial.SetBaseColor(baseColor);
+                        primitiveMaterial.SetRoughness(primitive.roughness);
+                        primitiveMaterial.SetMetallic(primitive.metallic);
+                        drawMaterial = &primitiveMaterial;
+                    }
+                    std::vector<DirectX::XMFLOAT4X4> bones(palette.size());
+                    for (std::size_t bone{}; bone < palette.size(); ++bone)
+                    {
+                        DirectX::XMStoreFloat4x4(&bones[bone], palette[bone]);
+                    }
+                    Detail::SkinnedMaterialShaderGeometry geometry;
+                    geometry.vertices = primitive.cpuVertexData;
+                    geometry.vertexStride = primitive.cpuVertexStride;
+                    geometry.indices = indices;
+                    geometry.bones = bones;
+                    geometry.alphaPass = alpha;
+                    geometry.doubleSided = primitive.doubleSided;
+                    Detail::MaterialShaderDrawRequest material;
+                    material.material = drawMaterial;
+                    material.shaderMaterial = &m_material;
+                    material.skinned = &geometry;
+                    material.customTextures = pbrTextures.customTextures;
+                    std::uint64_t generation{};
+                    std::string shaderError;
+                    static_cast<void>(m_graphics->DrawMaterialShaderPrimitive(
+                        request,
+                        material,
+                        generation,
+                        shaderError));
+                    m_shaderError = std::move(shaderError);
+                    m_shaderGeneration = generation;
+                    m_activeShaderPath = m_material.Shader();
+                    continue;
                 }
                 static_cast<void>(m_graphics->DrawPrimitive(request));
             }

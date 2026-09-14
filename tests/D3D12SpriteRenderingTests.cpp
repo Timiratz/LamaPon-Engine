@@ -8,6 +8,7 @@
 #include "LamaPon/Components/ModelRendererComponent.h"
 #include "LamaPon/Components/ParticleSystemComponent.h"
 #include "LamaPon/Components/PointLightComponent.h"
+#include "LamaPon/Components/ReflectionProbeComponent.h"
 #include "LamaPon/Components/SpotLightComponent.h"
 #include "LamaPon/Core/Log.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
@@ -21,6 +22,7 @@
 
 #include <Windows.h>
 #include <objbase.h>
+#include <DirectXPackedVector.h>
 
 #include <algorithm>
 #include <array>
@@ -139,6 +141,37 @@ namespace
         WriteLittleEndian32(bytes, 132u, 3u);
         WriteLittleEndian32(bytes, 140u, 1u);
         bytes.insert(bytes.end(), payload.begin(), payload.end());
+        return bytes;
+    }
+
+    // 4x4 RGBA8で1ミップのcube DDSです。面は+X、-X、+Y、-Y、+Z、-Zの
+    // 順で、caps2へDDSCAPS2_CUBEMAPと6面すべての印を立てます。
+    [[nodiscard]] std::vector<std::uint8_t> BuildCubeDds(
+        const std::array<std::array<std::uint8_t, 3>, 6>& faceColors)
+    {
+        std::vector<std::uint8_t> bytes(128u);
+        WriteLittleEndian32(bytes, 0u, MakeFourCc('D', 'D', 'S', ' '));
+        WriteLittleEndian32(bytes, 4u, 124u);
+        WriteLittleEndian32(bytes, 12u, 4u);
+        WriteLittleEndian32(bytes, 16u, 4u);
+        WriteLittleEndian32(bytes, 28u, 1u);
+        WriteLittleEndian32(bytes, 76u, 32u);
+        WriteLittleEndian32(bytes, 80u, 0x41u);
+        WriteLittleEndian32(bytes, 88u, 32u);
+        WriteLittleEndian32(bytes, 92u, 0x000000ffu);
+        WriteLittleEndian32(bytes, 96u, 0x0000ff00u);
+        WriteLittleEndian32(bytes, 100u, 0x00ff0000u);
+        WriteLittleEndian32(bytes, 104u, 0xff000000u);
+        WriteLittleEndian32(bytes, 112u, 0xfe00u);
+        for (const auto& color : faceColors)
+        {
+            for (std::size_t pixel{}; pixel < 16u; ++pixel)
+            {
+                bytes.insert(
+                    bytes.end(),
+                    { color[0], color[1], color[2], 255u });
+            }
+        }
         return bytes;
     }
 
@@ -535,6 +568,86 @@ namespace
                 && secondHeight == capture.height
                 && secondPixels == capture.pixels,
             "A repeated sprite frame did not reproduce the first frame");
+        return capture;
+    }
+
+    // bright-dotのScreenEffectをトーンマップ後へ掛け、D3D11と同じ
+    // VSMain／PSMain、b0のカスタム値、t0のScene色で描くことを比べます。
+    [[nodiscard]] Capture RenderCustomScreenEffectCapture(
+        const LamaPon::RenderingApi api,
+        const LamaPon::GraphicsStartupProfile profile)
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            api,
+            profile);
+        // D3D11の合成はEnvironment shaderをasset rootから読み込みます。
+        graphics.Assets().SetAssetRoot(LAMAPON_TEST_ASSET_DIR);
+
+        constexpr float clearColor[4]{ 0.08f, 0.12f, 0.18f, 1.0f };
+        graphics.BeginFrame(clearColor);
+        graphics.BeginSceneComposition(clearColor);
+        {
+            auto pass = graphics.BeginSpritePass();
+            DrawRectangle(
+                pass,
+                24.0f,
+                20.0f,
+                80.0f,
+                48.0f,
+                { 0.15f, 0.35f, 0.7f, 1.0f });
+        }
+
+        LamaPon::ScreenEffectRequest request;
+        request.shader =
+            std::filesystem::path{ LAMAPON_TEST_ASSET_DIR }.parent_path()
+            / "tests/fixtures/bright-dot.hlsl";
+        request.customParameters[0] = {
+            0.08f, 0.75f, 0.0f, 0.0f };
+        request.point = LamaPon::ScreenEffectPoint::AfterToneMapping;
+        std::uint64_t generation{};
+        std::string error;
+        Require(
+            graphics.QueueScreenEffect(request, &generation, &error)
+                && generation != 0
+                && error.empty(),
+            "The custom screen effect was not queued: " + error);
+
+        LamaPon::PostProcessFrame frame;
+        graphics.EndSceneComposition(frame);
+        Capture capture;
+        capture.pixels = graphics.CaptureBackBuffer(
+            capture.width,
+            capture.height);
+        graphics.EndFrame();
+
+        const std::size_t center =
+            (static_cast<std::size_t>(CanvasHeight / 2u) * CanvasWidth
+                + CanvasWidth / 2u) * 4u;
+        const auto describeCenter = [&capture, center]()
+        {
+            return capture.pixels.size() > center + 3u
+                ? std::to_string(capture.pixels[center]) + ", "
+                    + std::to_string(capture.pixels[center + 1u]) + ", "
+                    + std::to_string(capture.pixels[center + 2u])
+                : std::string("missing");
+        };
+        Require(
+            capture.pixels.size() > center + 3u
+                && capture.pixels[center] >= 185u
+                && capture.pixels[center] <= 195u
+                && capture.pixels[center + 1u] >= 185u
+                && capture.pixels[center + 1u] <= 195u,
+            std::string("The custom screen effect did not draw its center "
+                "square on ")
+                + (api == LamaPon::RenderingApi::DirectX11
+                    ? "DirectX 11"
+                    : "DirectX 12")
+                + " (" + describeCenter() + ")");
         return capture;
     }
 
@@ -1549,11 +1662,13 @@ namespace
                 pixels[offset + 2u] });
         };
 
+        // D3D11のLamaPonLit.hlslと同じGGXの拡散（albedo/π）なので、灰色の
+        // 壁の正面は点光源で約110、スポットで約80の明るさになります。
         Require(
-            brightnessAt({ -0.8f, 0.0f, 0.05f }) > 200u,
+            brightnessAt({ -0.8f, 0.0f, 0.05f }) > 90u,
             "The DirectX 12 point light did not light the wall");
         Require(
-            brightnessAt({ 0.9f, 0.0f, 0.05f }) > 180u,
+            brightnessAt({ 0.9f, 0.0f, 0.05f }) > 60u,
             "The DirectX 12 spot light did not light the wall");
         Require(
             brightnessAt({ 0.9f, 0.6f, 0.05f }) < 20u,
@@ -3693,6 +3808,728 @@ namespace
         return capture;
     }
 
+    // depth-probeのScreenEffectをProcedural MeshのSceneへ掛けます。
+    // 距離をR／Gへ書くため、D3D11と同じ深度（t3）と射影の係数（b0）を
+    // 渡していれば合成画像が一致します。
+    [[nodiscard]] Capture RenderScreenEffectDepthCapture(
+        const LamaPon::RenderingApi api,
+        const LamaPon::GraphicsStartupProfile profile)
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            api,
+            profile);
+        Require(
+            graphics.ActiveRenderingApi() == api,
+            "The screen effect depth capture did not start the requested "
+            "rendering API");
+        // D3D11のLit / Environment shaderはasset rootから読み込みます。
+        graphics.Assets().SetAssetRoot(LAMAPON_TEST_ASSET_DIR);
+        LamaPon::Scene scene(graphics);
+        BuildScreenSpaceReflectionScene(scene);
+        auto reflection = scene.ScreenSpaceReflection();
+        reflection.enabled = false;
+        scene.SetScreenSpaceReflectionSettings(reflection);
+
+        constexpr float clearColor[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+        graphics.BeginFrame(clearColor);
+        graphics.BeginSceneComposition(clearColor);
+        scene.RenderMainCamera(
+            static_cast<float>(CanvasWidth) / CanvasHeight,
+            false,
+            graphics.SceneCompositionTarget());
+        LamaPon::ScreenEffectRequest request;
+        request.shader =
+            std::filesystem::path{ LAMAPON_TEST_ASSET_DIR }.parent_path()
+            / "tests/fixtures/depth-probe.hlsl";
+        // 距離を12mで割った値を書きます。
+        request.customParameters[0] = { 12.0f, 0.0f, 0.0f, 0.0f };
+        request.point = LamaPon::ScreenEffectPoint::AfterToneMapping;
+        std::uint64_t generation{};
+        std::string error;
+        Require(
+            graphics.QueueScreenEffect(request, &generation, &error)
+                && generation != 0
+                && error.empty(),
+            "The depth screen effect was not queued: " + error);
+        graphics.EndSceneComposition(scene.PostProcessFrameData());
+        Capture capture;
+        capture.pixels = graphics.CaptureBackBuffer(
+            capture.width,
+            capture.height);
+        graphics.EndFrame();
+
+        // 深度が欠けるとShaderは青を返します。Cubeと床と背景で距離が
+        // 違うため、赤（距離の上位）は画面内で大きく変わります。
+        std::size_t missingDepthPixels{};
+        int minimumRed = 255;
+        int maximumRed = 0;
+        for (std::size_t offset{};
+            offset + 3u < capture.pixels.size();
+            offset += 4u)
+        {
+            if (capture.pixels[offset + 2u] > 128u)
+            {
+                ++missingDepthPixels;
+            }
+            minimumRed = std::min(
+                minimumRed,
+                static_cast<int>(capture.pixels[offset]));
+            maximumRed = std::max(
+                maximumRed,
+                static_cast<int>(capture.pixels[offset]));
+        }
+        Require(
+            capture.width == CanvasWidth
+                && capture.height == CanvasHeight
+                && missingDepthPixels == 0u
+                && maximumRed > minimumRed + 40,
+            "The screen effect did not read the scene depth ("
+                + std::to_string(missingDepthPixels) + " blue pixels, red "
+                + std::to_string(minimumRed) + "-"
+                + std::to_string(maximumRed) + ")");
+        return capture;
+    }
+
+    // auxiliary-probeのScreenEffectで、補助texture（t1／t2）が決まった
+    // registerへ届き、指定しなかった側がD3D11と同じく白になることを
+    // 確かめます。
+    [[nodiscard]] Capture RenderScreenEffectAuxiliaryCapture(
+        const LamaPon::RenderingApi api,
+        const LamaPon::GraphicsStartupProfile profile)
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            api,
+            profile);
+        Require(
+            graphics.ActiveRenderingApi() == api,
+            "The screen effect texture capture did not start the requested "
+            "rendering API");
+        // Environment shaderと補助textureはasset rootから読み込みます。
+        graphics.Assets().SetAssetRoot(LAMAPON_TEST_ASSET_DIR);
+
+        constexpr float clearColor[4]{ 0.08f, 0.12f, 0.18f, 1.0f };
+        graphics.BeginFrame(clearColor);
+        graphics.BeginSceneComposition(clearColor);
+        LamaPon::ScreenEffectRequest request;
+        request.shader =
+            std::filesystem::path{ LAMAPON_TEST_ASSET_DIR }.parent_path()
+            / "tests/fixtures/auxiliary-probe.hlsl";
+        request.auxiliaryTextures[0] = "textures/LamaPonLogo.png";
+        request.customParameters[0] = { 0.8f, 0.0f, 0.0f, 0.0f };
+        request.point = LamaPon::ScreenEffectPoint::AfterToneMapping;
+        std::uint64_t generation{};
+        std::string error;
+        Require(
+            graphics.QueueScreenEffect(request, &generation, &error)
+                && generation != 0
+                && error.empty(),
+            "The texture screen effect was not queued: " + error);
+        LamaPon::PostProcessFrame frame;
+        graphics.EndSceneComposition(frame);
+        Capture capture;
+        capture.pixels = graphics.CaptureBackBuffer(
+            capture.width,
+            capture.height);
+        graphics.EndFrame();
+
+        // 右半分はt2を指定していないため、白へ倍率0.8を掛けた色です。
+        const std::size_t rightCenter =
+            (static_cast<std::size_t>(CanvasHeight / 2u) * CanvasWidth
+                + CanvasWidth * 3u / 4u) * 4u;
+        bool whiteFallback = capture.pixels.size() > rightCenter + 3u;
+        for (std::size_t channel{}; whiteFallback && channel < 3u; ++channel)
+        {
+            whiteFallback =
+                std::abs(
+                    static_cast<int>(capture.pixels[rightCenter + channel])
+                    - 204) <= 2;
+        }
+        // 左半分はLogo画像を引き伸ばすため、一様な色になりません。
+        int minimumLeft = 255;
+        int maximumLeft = 0;
+        for (std::uint32_t y{}; y < CanvasHeight; ++y)
+        {
+            for (std::uint32_t x{}; x < CanvasWidth / 2u; ++x)
+            {
+                const auto offset =
+                    (static_cast<std::size_t>(y) * CanvasWidth + x) * 4u;
+                if (offset + 3u >= capture.pixels.size())
+                {
+                    continue;
+                }
+                const int luminance = capture.pixels[offset]
+                    + capture.pixels[offset + 1u]
+                    + capture.pixels[offset + 2u];
+                minimumLeft = std::min(minimumLeft, luminance);
+                maximumLeft = std::max(maximumLeft, luminance);
+            }
+        }
+        Require(
+            capture.width == CanvasWidth
+                && capture.height == CanvasHeight
+                && whiteFallback
+                && maximumLeft > minimumLeft + 60,
+            "The screen effect did not bind its auxiliary textures (left "
+                + std::to_string(minimumLeft) + "-"
+                + std::to_string(maximumLeft) + ")");
+        return capture;
+    }
+
+    // compileに失敗するScreenEffect／ComputeEffectと存在しないShader、
+    // 寸法の無いCompute要求は、D3D11と同じく説明付きで拒否し、描画
+    // キューへ積みません。
+    void RequireD3D12CustomShaderFailures()
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap);
+        const auto fixtures =
+            std::filesystem::path{ LAMAPON_TEST_ASSET_DIR }.parent_path()
+            / "tests/fixtures";
+        LamaPon::ScreenEffectRequest request;
+        request.shader = fixtures / "broken-shader.hlsl";
+        std::uint64_t generation{ 1 };
+        std::string error;
+        Require(
+            !graphics.QueueScreenEffect(request, &generation, &error)
+                && generation == 0
+                && !error.empty(),
+            "The DirectX 12 screen effect accepted a shader that does not "
+            "compile");
+
+        request.shader = fixtures / "missing-screen-effect.hlsl";
+        error.clear();
+        Require(
+            !graphics.QueueScreenEffect(request, &generation, &error)
+                && error.find("not found") != std::string::npos,
+            "The DirectX 12 screen effect did not report a missing shader: "
+                + error);
+
+        LamaPon::ComputeEffectRequest compute;
+        compute.shader = fixtures / "broken-shader.hlsl";
+        compute.outputTexture = "brokenCompute";
+        compute.outputWidth = 16;
+        compute.outputHeight = 16;
+        error.clear();
+        Require(
+            !graphics.DispatchComputeEffect(compute, &error)
+                && !error.empty(),
+            "The DirectX 12 compute effect accepted a shader that does not "
+            "compile");
+        compute.shader = fixtures / "compute-probe.hlsl";
+        compute.outputWidth = 0;
+        error.clear();
+        Require(
+            !graphics.DispatchComputeEffect(compute, &error)
+                && !error.empty(),
+            "The DirectX 12 compute effect accepted an empty output size");
+
+        // 失敗した要求は積まれていないため、合成しても何も起きません。
+        constexpr float clearColor[4]{ 0.08f, 0.12f, 0.18f, 1.0f };
+        graphics.BeginFrame(clearColor);
+        graphics.BeginSceneComposition(clearColor);
+        LamaPon::PostProcessFrame frame;
+        graphics.EndSceneComposition(frame);
+        graphics.EndFrame();
+    }
+
+    // ComputeEffectを8で割り切れない寸法の名前付きRenderTextureへ書き、
+    // その表示用textureをSpriteで画面全体へ引き伸ばします。D3D11と同じ
+    // CSMain、b0、t0／t1、s0、u0と切り上げたthread group数で書いていれば
+    // 合成画像が一致します。readInputsはcompute-input-probeでLogo画像を
+    // t0へ渡し、falseはcompute-probeの模様を書きます。
+    [[nodiscard]] Capture RenderComputeEffectCapture(
+        const LamaPon::RenderingApi api,
+        const LamaPon::GraphicsStartupProfile profile,
+        const bool readInputs)
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            api,
+            profile);
+        Require(
+            graphics.ActiveRenderingApi() == api,
+            "The compute effect capture did not start the requested "
+            "rendering API");
+        // 入力textureはasset rootから読み込みます。
+        graphics.Assets().SetAssetRoot(LAMAPON_TEST_ASSET_DIR);
+        const auto fixtures =
+            std::filesystem::path{ LAMAPON_TEST_ASSET_DIR }.parent_path()
+            / "tests/fixtures";
+        LamaPon::ComputeEffectRequest request;
+        request.shader = fixtures
+            / (readInputs ? "compute-input-probe.hlsl" : "compute-probe.hlsl");
+        request.outputTexture =
+            readInputs ? "computeInputProbe" : "computeProbe";
+        request.outputWidth = 100;
+        request.outputHeight = 60;
+        request.customParameters[0] = { 0.75f, 0.0f, 0.0f, 0.0f };
+        if (readInputs)
+        {
+            request.inputTextures[0] = "textures/LamaPonLogo.png";
+        }
+
+        constexpr float clearColor[4]{ 0.08f, 0.12f, 0.18f, 1.0f };
+        graphics.BeginFrame(clearColor);
+        std::string error;
+        Require(
+            graphics.DispatchComputeEffect(request, &error) && error.empty(),
+            "The compute effect did not run: " + error);
+        const auto output =
+            graphics.RenderTextureViewHandle(request.outputTexture);
+        Require(
+            static_cast<bool>(output),
+            "The compute effect output texture is unavailable");
+        {
+            LamaPon::SpritePassDescription description;
+            description.blend = LamaPon::SpriteBlendMode::Opaque;
+            auto pass = graphics.BeginSpritePass(description);
+            LamaPon::SpriteDrawRequest sprite;
+            sprite.texture = output;
+            sprite.scale = {
+                static_cast<float>(CanvasWidth) / request.outputWidth,
+                static_cast<float>(CanvasHeight) / request.outputHeight };
+            Require(pass.Draw(sprite), "The compute output sprite was rejected");
+        }
+        Capture capture;
+        capture.pixels = graphics.CaptureBackBuffer(
+            capture.width,
+            capture.height);
+        graphics.EndFrame();
+        Require(
+            capture.width == CanvasWidth
+                && capture.height == CanvasHeight
+                && capture.pixels.size()
+                    == static_cast<std::size_t>(CanvasWidth)
+                        * CanvasHeight * 4u,
+            "The compute effect capture has unexpected dimensions");
+
+        const auto pixel = [&capture](
+            const std::uint32_t x,
+            const std::uint32_t y)
+        {
+            const auto offset =
+                (static_cast<std::size_t>(y) * CanvasWidth + x) * 4u;
+            return std::array<int, 3>{
+                capture.pixels[offset],
+                capture.pixels[offset + 1u],
+                capture.pixels[offset + 2u] };
+        };
+        const auto describe = [](const std::array<int, 3>& color)
+        {
+            return std::to_string(color[0]) + ", "
+                + std::to_string(color[1]) + ", "
+                + std::to_string(color[2]);
+        };
+        if (readInputs)
+        {
+            // 右半分はt1を指定していないため、白へ倍率0.75を掛けた色です。
+            const auto right = pixel(CanvasWidth * 3u / 4u, CanvasHeight / 2u);
+            bool whiteFallback = true;
+            for (const int channel : right)
+            {
+                whiteFallback = whiteFallback && std::abs(channel - 191) <= 2;
+            }
+            // 左半分はLogo画像を引き伸ばすため、一様な色になりません。
+            int minimumLeft = 765;
+            int maximumLeft = 0;
+            for (std::uint32_t y{}; y < CanvasHeight; ++y)
+            {
+                for (std::uint32_t x{}; x < CanvasWidth / 2u - 2u; ++x)
+                {
+                    const auto color = pixel(x, y);
+                    const int luminance = color[0] + color[1] + color[2];
+                    minimumLeft = std::min(minimumLeft, luminance);
+                    maximumLeft = std::max(maximumLeft, luminance);
+                }
+            }
+            Require(
+                whiteFallback && maximumLeft > minimumLeft + 60,
+                "The compute effect did not read its input textures (right "
+                    + describe(right) + ", left "
+                    + std::to_string(minimumLeft) + "-"
+                    + std::to_string(maximumLeft) + ")");
+        }
+        else
+        {
+            // 左半分は赤0.75、右半分は上から下への緑のグラデーションです。
+            const auto left = pixel(CanvasWidth / 4u, CanvasHeight / 2u);
+            const auto top = pixel(CanvasWidth * 3u / 4u, 4u);
+            const auto bottom = pixel(CanvasWidth * 3u / 4u, CanvasHeight - 5u);
+            Require(
+                std::abs(left[0] - 191) <= 2
+                    && left[1] <= 2
+                    && left[2] <= 2
+                    && top[0] <= 2
+                    && top[1] < 40
+                    && bottom[1] > 215,
+                "The compute effect did not write the probe pattern (left "
+                    + describe(left) + ", top " + describe(top)
+                    + ", bottom " + describe(bottom) + ")");
+        }
+        return capture;
+    }
+
+    // 1辺1の6面Procedural Cubeです。D3D11のGeometricPrimitiveとD3D12の
+    // 組み込み形状は三角形の頂点順が異なるため、API間の画素比較には
+    // 頂点と添字を明示した形を使います。
+    void BuildProceduralCube(
+        std::vector<LamaPon::ProceduralMeshVertex>& vertices,
+        std::vector<std::uint32_t>& indices)
+    {
+        const auto addFace = [&vertices, &indices](
+            const DirectX::XMFLOAT3& normal,
+            const std::array<DirectX::XMFLOAT3, 4>& corners)
+        {
+            // cornersは外から見た左下、左上、右上、右下で、D3D11が裏面として
+            // 捨てないよう画面上で時計回りの三角形にします。
+            const auto first = static_cast<std::uint32_t>(vertices.size());
+            const std::array<DirectX::XMFLOAT2, 4> textureCoordinates{ {
+                { 0.0f, 1.0f },
+                { 0.0f, 0.0f },
+                { 1.0f, 0.0f },
+                { 1.0f, 1.0f } } };
+            for (std::size_t corner{}; corner < corners.size(); ++corner)
+            {
+                vertices.push_back({
+                    corners[corner],
+                    normal,
+                    textureCoordinates[corner] });
+            }
+            indices.insert(
+                indices.end(),
+                { first, first + 1u, first + 2u,
+                    first, first + 2u, first + 3u });
+        };
+        constexpr float h = 0.5f;
+        addFace({ 0.0f, 0.0f, 1.0f }, { {
+            { -h, -h, h }, { -h, h, h }, { h, h, h }, { h, -h, h } } });
+        addFace({ 0.0f, 0.0f, -1.0f }, { {
+            { h, -h, -h }, { h, h, -h }, { -h, h, -h }, { -h, -h, -h } } });
+        addFace({ 1.0f, 0.0f, 0.0f }, { {
+            { h, -h, h }, { h, h, h }, { h, h, -h }, { h, -h, -h } } });
+        addFace({ -1.0f, 0.0f, 0.0f }, { {
+            { -h, -h, -h }, { -h, h, -h }, { -h, h, h }, { -h, -h, h } } });
+        addFace({ 0.0f, 1.0f, 0.0f }, { {
+            { -h, h, h }, { -h, h, -h }, { h, h, -h }, { h, h, h } } });
+        addFace({ 0.0f, -1.0f, 0.0f }, { {
+            { -h, -h, -h }, { -h, -h, h }, { h, -h, h }, { h, -h, -h } } });
+    }
+
+    struct MaterialShaderCapture final
+    {
+        Capture frame;
+        std::array<std::string, 4> errors;
+    };
+
+    // Mesh RendererのMaterial custom shaderを4つのProcedural Cubeで描きます。
+    // 雛形LamaPonCustomMaterial（t0とb0のカスタム値）、b1の光源・b3・t7・
+    // 点サンプリング・半透明の宣言を読むmaterial-lighting-probe、keyword付きの
+    // variant-probe、compileに失敗してマゼンタの代替表示になるbroken-shader
+    // です。深度パス（影）も同じShaderの頂点シェーダーで描きます。
+    [[nodiscard]] MaterialShaderCapture RenderMaterialShaderCapture(
+        const LamaPon::RenderingApi api,
+        const LamaPon::GraphicsStartupProfile profile)
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            api,
+            profile);
+        Require(
+            graphics.ActiveRenderingApi() == api,
+            "The material shader capture did not start the requested "
+            "rendering API");
+        // D3D11のLit / Environment shaderと雛形はasset rootから読み込みます。
+        graphics.Assets().SetAssetRoot(LAMAPON_TEST_ASSET_DIR);
+        // D3D11の非同期compileは最初のフレームを標準Litで描くため止めます。
+        graphics.SetAsyncShaderCompilationEnabled(false);
+
+        LamaPon::Scene scene(graphics);
+        auto& cameraObject = scene.CreateGameObject("MainCamera");
+        cameraObject.GetTransform().position = { 0.0f, 0.5f, 5.5f };
+        cameraObject.GetTransform().SetEulerAngles(-0.08f, 0.0f, 0.0f);
+        auto& camera = cameraObject.AddComponent<LamaPon::CameraComponent>();
+        scene.SetMainCamera(camera);
+        scene.SetAmbientLightColor({ 1.0f, 1.0f, 1.0f });
+        scene.SetAmbientLightIntensity(0.35f);
+        auto& sun = scene.CreateGameObject("Sun");
+        sun.GetTransform().SetEulerAngles(0.8f, -0.5f, 0.0f);
+        sun.AddComponent<LamaPon::DirectionalLightComponent>();
+        auto& bulb = scene.CreateGameObject("PointLight");
+        bulb.GetTransform().position = { 0.0f, 1.2f, 1.6f };
+        bulb.AddComponent<LamaPon::PointLightComponent>(
+            DirectX::XMFLOAT3{ 1.0f, 0.8f, 0.6f },
+            3.0f,
+            2.0f);
+
+        std::vector<LamaPon::ProceduralMeshVertex> cubeVertices;
+        std::vector<std::uint32_t> cubeIndices;
+        BuildProceduralCube(cubeVertices, cubeIndices);
+        const auto fixtures =
+            std::filesystem::path{ LAMAPON_TEST_ASSET_DIR }.parent_path()
+            / "tests/fixtures";
+        const auto addCube = [&](
+            const char* const name,
+            const float x,
+            const DirectX::XMFLOAT4& color,
+            std::filesystem::path albedo) -> LamaPon::MeshRendererComponent&
+        {
+            auto& object = scene.CreateGameObject(name);
+            object.GetTransform().position = { x, 0.0f, 0.0f };
+            object.GetTransform().scale = { 1.2f, 1.2f, 1.2f };
+            object.GetTransform().SetEulerAngles(0.5f, 0.7f, 0.0f);
+            auto& mesh = object.AddComponent<LamaPon::MeshRendererComponent>(
+                LamaPon::PrimitiveShape::Cube,
+                color,
+                std::move(albedo));
+            mesh.SetProceduralMesh(cubeVertices, cubeIndices);
+            return mesh;
+        };
+
+        auto& templateMesh = addCube(
+            "TemplateMaterial",
+            -2.25f,
+            { 1.0f, 1.0f, 1.0f, 1.0f },
+            "textures/LamaPonLogo.png");
+        templateMesh.SetShaderPath("shaders/LamaPonCustomMaterial.hlsl");
+        templateMesh.SetCustomParameter(0, { 1.0f, 0.55f, 0.2f, 0.5f });
+        templateMesh.SetCustomParameter(1, { 0.3f, 0.9f, 0.0f, 0.0f });
+        templateMesh.SetCustomParameter(2, { 1.0f, 1.0f, 0.0f, 0.0f });
+
+        auto& lightingMesh = addCube(
+            "LightingProbe",
+            -0.75f,
+            { 0.9f, 0.9f, 0.9f, 0.7f },
+            "textures/LamaPonLogo.png");
+        lightingMesh.SetShaderPath(fixtures / "material-lighting-probe.hlsl");
+        lightingMesh.SetCustomTexturePath(0, "textures/particle-glow.png");
+        lightingMesh.SetCustomVector(0, { 0.05f, 0.1f, 0.0f, 0.0f });
+        lightingMesh.SetCustomParameter(7, { 0.0f, 0.0f, 0.0f, 1.0f });
+
+        auto& variantMesh = addCube(
+            "VariantProbe",
+            0.75f,
+            { 1.0f, 1.0f, 1.0f, 1.0f },
+            {});
+        variantMesh.SetShaderPath(fixtures / "variant-probe.hlsl");
+        variantMesh.EnableShaderKeyword("VARIANT_PROBE_GREEN");
+        variantMesh.EnableShaderKeyword("VARIANT_PROBE_BRIGHT");
+
+        auto& brokenMesh = addCube(
+            "BrokenShader",
+            2.25f,
+            { 1.0f, 1.0f, 1.0f, 1.0f },
+            {});
+        brokenMesh.SetShaderPath(fixtures / "broken-shader.hlsl");
+
+        constexpr float clearColor[4]{ 0.08f, 0.1f, 0.14f, 1.0f };
+        graphics.BeginFrame(clearColor);
+        graphics.BeginSceneComposition(clearColor);
+        scene.RenderMainCamera(
+            static_cast<float>(CanvasWidth) / CanvasHeight,
+            false,
+            graphics.SceneCompositionTarget());
+        graphics.EndSceneComposition(scene.PostProcessFrameData());
+        MaterialShaderCapture capture;
+        capture.frame.pixels = graphics.CaptureBackBuffer(
+            capture.frame.width,
+            capture.frame.height);
+        graphics.EndFrame();
+        capture.errors = {
+            templateMesh.ShaderError(),
+            lightingMesh.ShaderError(),
+            variantMesh.ShaderError(),
+            brokenMesh.ShaderError() };
+
+        // keyword付きのvariantは緑、compileに失敗したShaderはマゼンタで
+        // 描かれます。
+        std::size_t magentaPixels{};
+        std::size_t greenPixels{};
+        for (std::size_t offset{};
+            offset + 3u < capture.frame.pixels.size();
+            offset += 4u)
+        {
+            const int red = capture.frame.pixels[offset];
+            const int green = capture.frame.pixels[offset + 1u];
+            const int blue = capture.frame.pixels[offset + 2u];
+            if (red > 150 && blue > 150 && green < 80)
+            {
+                ++magentaPixels;
+            }
+            if (green > red + 60 && green > blue + 60)
+            {
+                ++greenPixels;
+            }
+        }
+        Require(
+            capture.frame.width == CanvasWidth
+                && capture.frame.height == CanvasHeight
+                && capture.errors[0].empty()
+                && capture.errors[1].empty()
+                && capture.errors[2].empty()
+                && !capture.errors[3].empty()
+                && magentaPixels > 30u
+                && greenPixels > 30u,
+            std::string("The material shaders did not draw as expected on ")
+                + (api == LamaPon::RenderingApi::DirectX11
+                    ? "DirectX 11"
+                    : "DirectX 12")
+                + " (" + std::to_string(magentaPixels) + " magenta, "
+                + std::to_string(greenPixels) + " green pixels; errors: ["
+                + capture.errors[0] + "] [" + capture.errors[1] + "] ["
+                + capture.errors[2] + "])");
+        return capture;
+    }
+
+    // glTF（TexturedRiggedSimple）のModel RendererへMaterial custom shaderを
+    // 割り当てて描きます。D3D11はDirectXTK SkinnedEffectの頂点シェーダーと
+    // PSSkinnedMain、D3D12は同じ計算の内蔵頂点シェーダーとPSSkinnedMainで、
+    // 骨を動かした姿勢、Material上書きのcustom値、compileに失敗したShaderの
+    // マゼンタ表示を比べます。
+    [[nodiscard]] MaterialShaderCapture RenderSkinnedMaterialShaderCapture(
+        const LamaPon::RenderingApi api,
+        const LamaPon::GraphicsStartupProfile profile)
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            api,
+            profile);
+        Require(
+            graphics.ActiveRenderingApi() == api,
+            "The skinned material shader capture did not start the requested "
+            "rendering API");
+        graphics.Assets().SetAssetRoot(LAMAPON_TEST_ASSET_DIR);
+        graphics.SetAsyncShaderCompilationEnabled(false);
+
+        LamaPon::Scene scene(graphics);
+        auto& cameraObject = scene.CreateGameObject("MainCamera");
+        cameraObject.GetTransform().position = { 0.0f, 0.0f, 14.0f };
+        auto& camera = cameraObject.AddComponent<LamaPon::CameraComponent>();
+        scene.SetMainCamera(camera);
+        scene.SetAmbientLightColor({ 1.0f, 1.0f, 1.0f });
+        scene.SetAmbientLightIntensity(0.9f);
+
+        const auto modelPath = std::filesystem::path(LAMAPON_TEST_ASSET_DIR)
+            / "models"
+            / "TexturedRiggedSimple.gltf";
+        const auto fixtures =
+            std::filesystem::path{ LAMAPON_TEST_ASSET_DIR }.parent_path()
+            / "tests/fixtures";
+        const auto addModel = [&](
+            const char* const name,
+            const float x) -> LamaPon::ModelRendererComponent&
+        {
+            auto& object = scene.CreateGameObject(name);
+            object.GetTransform().position = { x, 0.0f, 0.0f };
+            auto& model =
+                object.AddComponent<LamaPon::ModelRendererComponent>(modelPath);
+            model.SetAnimationPlayOnStart(false);
+            return model;
+        };
+        auto& templateModel = addModel("TemplateModel", -2.5f);
+        templateModel.SetMaterialOverrideEnabled(true);
+        templateModel.SetShaderPath("shaders/LamaPonCustomMaterial.hlsl");
+        templateModel.SetCustomParameter(0, { 1.0f, 0.5f, 0.2f, 0.6f });
+        templateModel.SetCustomParameter(1, { 0.2f, 1.2f, 0.0f, 0.0f });
+        templateModel.SetCustomParameter(2, { 1.0f, 1.0f, 0.0f, 0.0f });
+        auto& brokenModel = addModel("BrokenModel", 2.5f);
+        brokenModel.SetShaderPath(fixtures / "broken-shader.hlsl");
+
+        constexpr float clearColor[4]{ 0.08f, 0.1f, 0.14f, 1.0f };
+        const auto render = [&]()
+        {
+            graphics.BeginFrame(clearColor);
+            graphics.BeginSceneComposition(clearColor);
+            scene.RenderMainCamera(
+                static_cast<float>(CanvasWidth) / CanvasHeight,
+                false,
+                graphics.SceneCompositionTarget());
+            graphics.EndSceneComposition(scene.PostProcessFrameData());
+            Capture frame;
+            frame.pixels = graphics.CaptureBackBuffer(frame.width, frame.height);
+            graphics.EndFrame();
+            return frame;
+        };
+        // 最初のフレームでModelを読み込み、骨を動かした姿勢で描き直します。
+        static_cast<void>(render());
+        templateModel.SetAnimationTime(templateModel.AnimationDuration() * 0.5f);
+        brokenModel.SetAnimationTime(brokenModel.AnimationDuration() * 0.5f);
+        MaterialShaderCapture capture;
+        capture.frame = render();
+        capture.errors = {
+            templateModel.ShaderError(),
+            {},
+            {},
+            brokenModel.ShaderError() };
+
+        const std::array<int, 3> background{
+            capture.frame.pixels[0],
+            capture.frame.pixels[1],
+            capture.frame.pixels[2] };
+        std::size_t magentaPixels{};
+        std::size_t shadedPixels{};
+        for (std::size_t offset{};
+            offset + 3u < capture.frame.pixels.size();
+            offset += 4u)
+        {
+            const int red = capture.frame.pixels[offset];
+            const int green = capture.frame.pixels[offset + 1u];
+            const int blue = capture.frame.pixels[offset + 2u];
+            if (red > 150 && blue > 150 && green < 80)
+            {
+                ++magentaPixels;
+            }
+            else if (std::abs(red - background[0]) > 12
+                || std::abs(green - background[1]) > 12
+                || std::abs(blue - background[2]) > 12)
+            {
+                ++shadedPixels;
+            }
+        }
+        Require(
+            capture.frame.width == CanvasWidth
+                && capture.frame.height == CanvasHeight
+                && capture.errors[0].empty()
+                && !capture.errors[3].empty()
+                && magentaPixels > 30u
+                && shadedPixels > 30u,
+            std::string("The skinned material shaders did not draw as expected on ")
+                + (api == LamaPon::RenderingApi::DirectX11
+                    ? "DirectX 11"
+                    : "DirectX 12")
+                + " (" + std::to_string(magentaPixels) + " magenta, "
+                + std::to_string(shadedPixels) + " shaded pixels; error: ["
+                + capture.errors[0] + "])");
+        return capture;
+    }
+
     // SSRは前フレームのカラーを読むため、有効にした最初のフレームは
     // SSR無しと同じ画像です。2フレーム目から床へCubeの赤が映り、SSRを
     // 切ると元の画像へ戻ります。
@@ -3774,6 +4611,1538 @@ namespace
             captureComposition() == withoutReflection,
             "Disabling DirectX 12 SSR did not restore the original frame");
     }
+
+    // Sceneのグラデーション空を朝昼夜モードで描きます。天頂・地平線・
+    // 地面の3色と太陽円盤、にじみが画面に入るようカメラを少し上へ向け、
+    // 手前のProcedural Cubeで空が深度を書かず3Dの背後に残ることも同じ
+    // 画像で比べます。
+    [[nodiscard]] Capture RenderSkyCapture(
+        const LamaPon::RenderingApi api,
+        const LamaPon::GraphicsStartupProfile profile)
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            api,
+            profile);
+        Require(
+            graphics.ActiveRenderingApi() == api,
+            "The sky capture did not start the requested rendering API");
+        // D3D11のLit / Environment shaderはasset rootから読み込みます。
+        graphics.Assets().SetAssetRoot(LAMAPON_TEST_ASSET_DIR);
+        LamaPon::Scene scene(graphics);
+
+        auto& cameraObject = scene.CreateGameObject("MainCamera");
+        cameraObject.GetTransform().position = { 0.0f, 0.0f, 4.0f };
+        // 正のピッチで少し上を向き、下端に地面、上端に天頂が入ります。
+        cameraObject.GetTransform().SetEulerAngles(0.25f, 0.0f, 0.0f);
+        auto& camera = cameraObject.AddComponent<LamaPon::CameraComponent>();
+        scene.SetMainCamera(camera);
+
+        // Directional Lightは自分の-Z軸の向きへ進みます。180度振り返らせて
+        // 少し下へ傾け、カメラの正面やや上に太陽が見えるようにします。
+        auto& sunObject = scene.CreateGameObject("Sun");
+        sunObject.GetTransform().SetEulerAngles(
+            -0.3f,
+            DirectX::XM_PI,
+            0.0f);
+        auto& sun = sunObject.AddComponent<
+            LamaPon::DirectionalLightComponent>();
+        sun.SetCastsShadows(false);
+        // トーンマップ後も円盤がほぼ白く残り、数十画素を占めるように
+        // 実際の太陽より明るく大きくします。
+        sun.SetIntensity(4.0f);
+        sun.SetAngularDiameterDegrees(8.0f);
+
+        LamaPon::SkySettings sky;
+        sky.enabled = true;
+        sky.sunDriven = true;
+        scene.SetSkySettings(sky);
+
+        std::vector<LamaPon::ProceduralMeshVertex> cubeVertices;
+        std::vector<std::uint32_t> cubeIndices;
+        BuildProceduralCube(cubeVertices, cubeIndices);
+        auto& cube = scene.CreateGameObject("Cube");
+        cube.GetTransform().position = { -1.2f, 0.3f, 0.0f };
+        auto& cubeMesh = cube.AddComponent<LamaPon::MeshRendererComponent>(
+            LamaPon::PrimitiveShape::Cube,
+            DirectX::XMFLOAT4{ 0.9f, 0.15f, 0.1f, 1.0f });
+        cubeMesh.SetProceduralMesh(cubeVertices, cubeIndices);
+
+        constexpr float clearColor[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+        graphics.BeginFrame(clearColor);
+        graphics.BeginSceneComposition(clearColor);
+        auto* const target = graphics.SceneCompositionTarget();
+        Require(
+            target != nullptr,
+            "The sky capture has no scene composition target");
+        scene.RenderMainCamera(
+            static_cast<float>(CanvasWidth) / CanvasHeight,
+            false,
+            target);
+        graphics.EndSceneComposition(scene.PostProcessFrameData());
+        Capture capture;
+        capture.pixels = graphics.CaptureBackBuffer(
+            capture.width,
+            capture.height);
+        graphics.EndFrame();
+
+        // 空は画面全体を塗るためclearの黒は残らず、太陽円盤とにじみは
+        // ほぼ白い画素になります。両APIとも空を描かずに一致する誤検出を
+        // 防ぎます。
+        std::size_t clearPixels{};
+        std::size_t sunPixels{};
+        for (std::size_t offset{};
+             offset + 3u < capture.pixels.size();
+             offset += 4u)
+        {
+            const auto red = capture.pixels[offset];
+            const auto green = capture.pixels[offset + 1u];
+            const auto blue = capture.pixels[offset + 2u];
+            if (red == 0u && green == 0u && blue == 0u)
+            {
+                ++clearPixels;
+            }
+            if (red > 230u && green > 230u && blue > 230u)
+            {
+                ++sunPixels;
+            }
+        }
+        Require(
+            clearPixels == 0u && sunPixels > 40u,
+            std::string{ api == LamaPon::RenderingApi::DirectX11
+                    ? "DirectX 11"
+                    : "DirectX 12" }
+                + " did not draw the gradient sky and sun disk ("
+                + std::to_string(clearPixels) + " clear pixels, "
+                + std::to_string(sunPixels) + " sun pixels)");
+        return capture;
+    }
+
+    // cube DDSのパーサーが面ごとのミップ列へ分けることと、2Dとcube、
+    // 欠けた面のDDSを取り違えないことを確かめます。
+    void RequireDdsCubeParser(const std::vector<std::uint8_t>& cubeBytes)
+    {
+        const auto prepared =
+            LamaPon::TextureLoader::PrepareDdsCubeTextureData(cubeBytes);
+        Require(
+            LamaPon::TextureLoader::IsDdsCubeTexture(cubeBytes)
+                && !LamaPon::TextureLoader::IsDdsCubeTexture(BuildRgbaDds())
+                && prepared.format == DXGI_FORMAT_R8G8B8A8_UNORM
+                && prepared.levels.size() == 6u
+                && prepared.levels[0].width == 4u
+                && prepared.levels[5].height == 4u
+                && prepared.levels[5].bytes.size() == 64u
+                && prepared.levels[1].bytes[0] == cubeBytes[128u + 64u],
+            "The DDS parser did not split the cube into six faces");
+
+        const auto rejects = [](const auto& prepare)
+        {
+            try
+            {
+                static_cast<void>(prepare());
+            }
+            catch (const std::invalid_argument&)
+            {
+                return true;
+            }
+            return false;
+        };
+        auto partialCube = cubeBytes;
+        WriteLittleEndian32(partialCube, 112u, 0x0600u);
+        Require(
+            rejects([&cubeBytes]
+            {
+                return LamaPon::TextureLoader::PrepareDdsTextureData(
+                    cubeBytes);
+            })
+                && rejects([]
+                {
+                    return LamaPon::TextureLoader::PrepareDdsCubeTextureData(
+                        BuildRgbaDds());
+                })
+                && rejects([&partialCube]
+                {
+                    return LamaPon::TextureLoader::PrepareDdsCubeTextureData(
+                        partialCube);
+                }),
+            "The DDS parser accepted a cube as 2D, a 2D texture as a cube, "
+            "or a cube with missing faces");
+    }
+
+    // DDS cubeのSkyを描きます。カメラを斜め上へ向けて複数の面をまたぎ、
+    // D3D11と同じくTextureCubeとして読めていることと、同じSceneの
+    // グラデーション空とは違う画像になることを確かめます。
+    [[nodiscard]] Capture RenderCubemapSkyCapture(
+        const LamaPon::RenderingApi api,
+        const LamaPon::GraphicsStartupProfile profile,
+        const std::span<const std::uint8_t> cubemapBytes)
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            api,
+            profile);
+        Require(
+            graphics.ActiveRenderingApi() == api,
+            "The cubemap sky capture did not start the requested rendering "
+            "API");
+        // D3D11のLit / Environment shaderはasset rootから読み込みます。
+        graphics.Assets().SetAssetRoot(LAMAPON_TEST_ASSET_DIR);
+        const std::string apiName = api == LamaPon::RenderingApi::DirectX11
+            ? "DirectX 11"
+            : "DirectX 12";
+
+        const auto cubemapView =
+            graphics.Assets().CreateTextureViewHandleFromMemory(
+                cubemapBytes,
+                true);
+        Require(
+            graphics.IsSampleableCubeView(cubemapView),
+            apiName + " did not load the DDS cube as a sampleable "
+                "TextureCube");
+
+        LamaPon::SkySettings sky;
+        sky.enabled = true;
+        sky.intensity = 1.5f;
+        sky.iblIntensity = 0.0f;
+
+        constexpr float clearColor[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+        const auto view = DirectX::XMMatrixLookAtLH(
+            DirectX::XMVectorZero(),
+            DirectX::XMVectorSet(0.65f, 0.34f, -0.68f, 0.0f),
+            DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f));
+        const auto projection = DirectX::XMMatrixPerspectiveFovLH(
+            DirectX::XMConvertToRadians(60.0f),
+            static_cast<float>(CanvasWidth) / CanvasHeight,
+            0.1f,
+            100.0f);
+        const auto captureFrame = [
+            &graphics,
+            &clearColor,
+            &sky,
+            &view,
+            &projection](const LamaPon::GraphicsViewHandle& texture)
+        {
+            graphics.BeginFrame(clearColor);
+            graphics.BeginSceneComposition(clearColor);
+            graphics.DrawSky(view, projection, sky, texture);
+            graphics.EndSceneComposition({});
+            Capture frame;
+            frame.pixels = graphics.CaptureBackBuffer(
+                frame.width,
+                frame.height);
+            graphics.EndFrame();
+            return frame;
+        };
+        const auto cubemapFrame = captureFrame(cubemapView);
+        const auto gradientFrame = captureFrame({});
+
+        graphics.BeginFrame(clearColor);
+        const auto prefiltered =
+            graphics.TryGetPrefilteredEnvironmentViews(cubemapView, 1u);
+        graphics.EndFrame();
+        Require(
+            prefiltered.IsValid()
+                && graphics.IsSampleableCubeView(prefiltered.specular)
+                && graphics.IsSampleableCubeView(prefiltered.irradiance)
+                && prefiltered.specularMaximumMip == 7.0f,
+            apiName + " did not prefilter the in-memory cubemap");
+
+        std::size_t changedPixels{};
+        for (std::size_t offset{};
+             offset + 3u < cubemapFrame.pixels.size()
+                 && offset + 3u < gradientFrame.pixels.size();
+             offset += 4u)
+        {
+            if (!std::equal(
+                    cubemapFrame.pixels.begin()
+                        + static_cast<std::ptrdiff_t>(offset),
+                    cubemapFrame.pixels.begin()
+                        + static_cast<std::ptrdiff_t>(offset + 3u),
+                    gradientFrame.pixels.begin()
+                        + static_cast<std::ptrdiff_t>(offset)))
+            {
+                ++changedPixels;
+            }
+        }
+        Require(
+            changedPixels > cubemapFrame.pixels.size() / 8u,
+            apiName + " drew the cubemap sky like the gradient sky ("
+                + std::to_string(changedPixels) + " changed pixels)");
+        return cubemapFrame;
+    }
+
+    // 2枚の合成画像で、RGBのどれかが違う画素を数えます。
+    [[nodiscard]] std::size_t CountChangedPixels(
+        const Capture& first,
+        const Capture& second)
+    {
+        std::size_t changedPixels{};
+        for (std::size_t offset{};
+             offset + 3u < first.pixels.size()
+                 && offset + 3u < second.pixels.size();
+             offset += 4u)
+        {
+            if (!std::equal(
+                    first.pixels.begin()
+                        + static_cast<std::ptrdiff_t>(offset),
+                    first.pixels.begin()
+                        + static_cast<std::ptrdiff_t>(offset + 3u),
+                    second.pixels.begin()
+                        + static_cast<std::ptrdiff_t>(offset)))
+            {
+                ++changedPixels;
+            }
+        }
+        return changedPixels;
+    }
+
+    // 霧を掛けたSceneを描きます。距離の違うProcedural CubeとMaterial上書き中の
+    // CMOはLitEffectの範囲霧と指数霧で、この画像をD3D11と比べます。上書きを
+    // 外したCMOはDirectXTK Effectの線形霧です。開始0と終了0.01でどちらの式も
+    // 霧の色へ振り切れるので、霧が掛かったことだけを確かめます（内蔵partの
+    // 半透明の扱いはこの段階の比較対象外です）。
+    [[nodiscard]] Capture RenderFogCapture(
+        const LamaPon::RenderingApi api,
+        const LamaPon::GraphicsStartupProfile profile)
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            api,
+            profile);
+        Require(
+            graphics.ActiveRenderingApi() == api,
+            "The fog capture did not start the requested rendering API");
+        // D3D11のLit / Environment shaderはasset rootから読み込みます。
+        graphics.Assets().SetAssetRoot(LAMAPON_TEST_ASSET_DIR);
+        const std::string apiName = api == LamaPon::RenderingApi::DirectX11
+            ? "DirectX 11"
+            : "DirectX 12";
+
+        LamaPon::Scene scene(graphics);
+        auto& cameraObject = scene.CreateGameObject("MainCamera");
+        cameraObject.GetTransform().position = { 0.0f, 0.6f, 6.0f };
+        cameraObject.GetTransform().SetEulerAngles(-0.08f, 0.0f, 0.0f);
+        auto& camera = cameraObject.AddComponent<LamaPon::CameraComponent>();
+        scene.SetMainCamera(camera);
+        scene.SetAmbientLightColor({ 1.0f, 1.0f, 1.0f });
+        scene.SetAmbientLightIntensity(0.8f);
+
+        std::vector<LamaPon::ProceduralMeshVertex> cubeVertices;
+        std::vector<std::uint32_t> cubeIndices;
+        BuildProceduralCube(cubeVertices, cubeIndices);
+        constexpr std::array<const char*, 4> cubeNames{
+            "NearCube", "MiddleCube", "FarCube", "FarthestCube" };
+        constexpr std::array<DirectX::XMFLOAT3, 4> cubePositions{ {
+            { -2.0f, 0.8f, 2.5f },
+            { -0.8f, 0.8f, -1.0f },
+            { 0.8f, 0.8f, -5.0f },
+            { 2.8f, 0.8f, -10.0f } } };
+        for (std::size_t index{}; index < cubeNames.size(); ++index)
+        {
+            auto& object = scene.CreateGameObject(cubeNames[index]);
+            object.GetTransform().position = cubePositions[index];
+            object.GetTransform().SetEulerAngles(0.4f, 0.6f, 0.0f);
+            auto& mesh = object.AddComponent<LamaPon::MeshRendererComponent>(
+                LamaPon::PrimitiveShape::Cube,
+                DirectX::XMFLOAT4{ 0.9f, 0.2f, 0.15f, 1.0f });
+            mesh.SetProceduralMesh(cubeVertices, cubeIndices);
+        }
+
+        auto& modelObject = scene.CreateGameObject("CmoModel");
+        modelObject.GetTransform().position = { 0.0f, -0.9f, 1.0f };
+        modelObject.GetTransform().scale = { 1.2f, 1.2f, 1.2f };
+        modelObject.GetTransform().SetEulerAngles(0.45f, 0.65f, 0.0f);
+        auto& model = modelObject.AddComponent<
+            LamaPon::ModelRendererComponent>(
+                std::filesystem::path(LAMAPON_TEST_ASSET_DIR)
+                    / "models"
+                    / "arrow.cmo");
+        // Material上書き中はD3D11もDirectXTK EffectではなくLamaPon Litで
+        // 描くため、D3D12と同じ霧の式で比べられます。
+        model.SetMaterialOverrideEnabled(true);
+        model.SetEmissiveColor({ 0.2f, 0.6f, 0.3f });
+
+        constexpr float clearColor[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+        const auto captureFrame = [&graphics, &scene, &clearColor]()
+        {
+            graphics.BeginFrame(clearColor);
+            graphics.BeginSceneComposition(clearColor);
+            auto* const target = graphics.SceneCompositionTarget();
+            Require(
+                target != nullptr,
+                "The fog capture has no scene composition target");
+            scene.RenderMainCamera(
+                static_cast<float>(CanvasWidth) / CanvasHeight,
+                false,
+                target);
+            graphics.EndSceneComposition(scene.PostProcessFrameData());
+            Capture frame;
+            frame.pixels = graphics.CaptureBackBuffer(
+                frame.width,
+                frame.height);
+            graphics.EndFrame();
+            return frame;
+        };
+
+        LamaPon::FogSettings fog;
+        fog.enabled = true;
+        fog.color = { 0.55f, 0.65f, 0.8f };
+        fog.startDistance = 4.0f;
+        fog.endDistance = 18.0f;
+        fog.density = 0.04f;
+        scene.SetFogSettings(fog);
+        const auto litFogFrame = captureFrame();
+        fog.enabled = false;
+        scene.SetFogSettings(fog);
+        const auto litClearFrame = captureFrame();
+
+        model.SetMaterialOverrideEnabled(false);
+        fog.enabled = true;
+        fog.startDistance = 0.0f;
+        fog.endDistance = 0.01f;
+        fog.density = 0.0f;
+        scene.SetFogSettings(fog);
+        const auto fullFogFrame = captureFrame();
+        fog.enabled = false;
+        scene.SetFogSettings(fog);
+        const auto unfoggedFrame = captureFrame();
+
+        const auto litFogPixels =
+            CountChangedPixels(litFogFrame, litClearFrame);
+        const auto fullFogPixels =
+            CountChangedPixels(fullFogFrame, unfoggedFrame);
+        Require(
+            litFogPixels > 400u && fullFogPixels > 800u,
+            apiName + " did not apply the scene fog ("
+                + std::to_string(litFogPixels) + " lit fog pixels, "
+                + std::to_string(fullFogPixels) + " full fog pixels)");
+        return litFogFrame;
+    }
+
+    // Directional／Point／Spot LightでProcedural Cubeを照らします。D3D11の
+    // LamaPonLit.hlslと同じCook-Torrance GGX、太陽の見かけの大きさ、法線
+    // マップの強さの掛け方で、D3D12の基本3D描画が一致することを比べます。
+    // 影の比較はこの段階の対象外なので、光源の影は切ります。
+    [[nodiscard]] Capture RenderDirectLightingCapture(
+        const LamaPon::RenderingApi api,
+        const LamaPon::GraphicsStartupProfile profile)
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            api,
+            profile);
+        Require(
+            graphics.ActiveRenderingApi() == api,
+            "The direct lighting capture did not start the requested "
+            "rendering API");
+        // D3D11のLit / Environment shaderはasset rootから読み込みます。
+        graphics.Assets().SetAssetRoot(LAMAPON_TEST_ASSET_DIR);
+        const bool directX11 = api == LamaPon::RenderingApi::DirectX11;
+        const std::string apiName = directX11 ? "DirectX 11" : "DirectX 12";
+
+        LamaPon::Scene scene(graphics);
+        auto& cameraObject = scene.CreateGameObject("MainCamera");
+        cameraObject.GetTransform().position = { 0.0f, 0.3f, 5.0f };
+        cameraObject.GetTransform().SetEulerAngles(-0.05f, 0.0f, 0.0f);
+        auto& camera = cameraObject.AddComponent<LamaPon::CameraComponent>();
+        scene.SetMainCamera(camera);
+        scene.SetAmbientLightColor({ 1.0f, 1.0f, 1.0f });
+        scene.SetAmbientLightIntensity(0.05f);
+
+        // 光は自分の-Z軸の向きへ進むので、上から手前へ差し込むよう傾けます。
+        auto& sunObject = scene.CreateGameObject("Sun");
+        sunObject.GetTransform().SetEulerAngles(-0.6f, 0.35f, 0.0f);
+        auto& sun = sunObject.AddComponent<
+            LamaPon::DirectionalLightComponent>();
+        sun.SetCastsShadows(false);
+        sun.SetAngularDiameterDegrees(3.0f);
+
+        auto& pointObject = scene.CreateGameObject("PointLight");
+        pointObject.GetTransform().position = { -1.2f, 0.9f, 1.6f };
+        auto& pointLight = pointObject.AddComponent<
+            LamaPon::PointLightComponent>(
+                DirectX::XMFLOAT3{ 1.0f, 0.7f, 0.4f },
+                4.0f,
+                4.0f);
+        pointLight.SetCastsShadows(false);
+
+        auto& spotObject = scene.CreateGameObject("SpotLight");
+        spotObject.GetTransform().position = { 1.4f, 0.4f, 2.2f };
+        auto& spotLight = spotObject.AddComponent<
+            LamaPon::SpotLightComponent>(
+                DirectX::XMFLOAT3{ 0.4f, 0.7f, 1.0f },
+                6.0f,
+                6.0f,
+                DirectX::XMConvertToRadians(18.0f),
+                DirectX::XMConvertToRadians(28.0f));
+        spotLight.SetCastsShadows(false);
+
+        std::vector<LamaPon::ProceduralMeshVertex> cubeVertices;
+        std::vector<std::uint32_t> cubeIndices;
+        BuildProceduralCube(cubeVertices, cubeIndices);
+        const auto addCube = [&](
+            const char* const name,
+            const float x,
+            const DirectX::XMFLOAT4& color,
+            const float metallic,
+            const float roughness) -> LamaPon::MeshRendererComponent&
+        {
+            auto& object = scene.CreateGameObject(name);
+            object.GetTransform().position = { x, 0.0f, 0.0f };
+            object.GetTransform().scale = { 0.9f, 0.9f, 0.9f };
+            object.GetTransform().SetEulerAngles(0.5f, 0.7f, 0.0f);
+            auto& mesh = object.AddComponent<LamaPon::MeshRendererComponent>(
+                LamaPon::PrimitiveShape::Cube,
+                color);
+            mesh.SetProceduralMesh(cubeVertices, cubeIndices);
+            mesh.SetMetallic(metallic);
+            mesh.SetRoughness(roughness);
+            return mesh;
+        };
+        addCube("GoldMetal", -1.6f, { 1.0f, 0.78f, 0.35f, 1.0f }, 0.9f, 0.15f);
+        auto& mapped = addCube(
+            "NormalMapped",
+            0.0f,
+            { 0.6f, 0.7f, 0.9f, 1.0f },
+            0.0f,
+            0.55f);
+        // 既存の画像を法線として読み、法線textureとstrengthの経路を
+        // D3D11 / D3D12で同じ入力にします。
+        mapped.SetNormalTexturePath("textures/LamaPonLogo.png");
+        mapped.SetNormalStrength(1.5f);
+        auto& plastic = addCube(
+            "RoughPlastic",
+            1.6f,
+            { 0.9f, 0.3f, 0.25f, 1.0f },
+            0.25f,
+            0.8f);
+        // 非一様スケールでも、D3D11と同じ逆転置行列で法線を変換します。
+        plastic.Owner().GetTransform().scale = { 1.2f, 0.6f, 0.9f };
+
+        constexpr float clearColor[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+        const auto captureFrame = [&graphics, &scene, &clearColor]()
+        {
+            graphics.BeginFrame(clearColor);
+            graphics.BeginSceneComposition(clearColor);
+            auto* const target = graphics.SceneCompositionTarget();
+            Require(
+                target != nullptr,
+                "The direct lighting capture has no scene composition "
+                "target");
+            scene.RenderMainCamera(
+                static_cast<float>(CanvasWidth) / CanvasHeight,
+                false,
+                target);
+            graphics.EndSceneComposition(scene.PostProcessFrameData());
+            Capture frame;
+            frame.pixels = graphics.CaptureBackBuffer(
+                frame.width,
+                frame.height);
+            graphics.EndFrame();
+            return frame;
+        };
+        // 法線マップの読み込みを待たずに比べないよう、2フレーム目を使います。
+        static_cast<void>(captureFrame());
+        const auto capture = captureFrame();
+        std::size_t litPixels{};
+        for (std::size_t offset{};
+             offset + 3u < capture.pixels.size();
+             offset += 4u)
+        {
+            if (std::max({
+                    capture.pixels[offset],
+                    capture.pixels[offset + 1u],
+                    capture.pixels[offset + 2u] }) > 40u)
+            {
+                ++litPixels;
+            }
+        }
+        Require(
+            litPixels > 1500u,
+            apiName + " did not light the cubes with the direct lights ("
+                + std::to_string(litPixels) + " lit pixels)");
+        return capture;
+    }
+
+    // Forward+のクラスタライトを、固定配列の16灯を超える24灯のPoint Lightと
+    // 10灯のSpot Lightで確かめます。D3D11と同じカリングの番号表とGGXで
+    // 床が照らされることを比べます（影は対象外）。
+    [[nodiscard]] Capture RenderClusteredLightingCapture(
+        const LamaPon::RenderingApi api,
+        const LamaPon::GraphicsStartupProfile profile)
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            api,
+            profile);
+        Require(
+            graphics.ActiveRenderingApi() == api,
+            "The clustered lighting capture did not start the requested "
+            "rendering API");
+        // Lit、Environment、Light culling shaderはasset rootから読み込みます。
+        graphics.Assets().SetAssetRoot(LAMAPON_TEST_ASSET_DIR);
+        const std::string apiName = api == LamaPon::RenderingApi::DirectX11
+            ? "DirectX 11"
+            : "DirectX 12";
+
+        LamaPon::Scene scene(graphics);
+        auto& cameraObject = scene.CreateGameObject("MainCamera");
+        cameraObject.GetTransform().position = { 0.0f, 4.0f, 7.5f };
+        cameraObject.GetTransform().SetEulerAngles(-0.5f, 0.0f, 0.0f);
+        auto& camera = cameraObject.AddComponent<LamaPon::CameraComponent>();
+        scene.SetMainCamera(camera);
+        scene.SetAmbientLightColor({ 1.0f, 1.0f, 1.0f });
+        scene.SetAmbientLightIntensity(0.02f);
+
+        std::vector<LamaPon::ProceduralMeshVertex> cubeVertices;
+        std::vector<std::uint32_t> cubeIndices;
+        BuildProceduralCube(cubeVertices, cubeIndices);
+        auto& floorObject = scene.CreateGameObject("Floor");
+        floorObject.GetTransform().position = { 0.0f, -0.1f, 0.0f };
+        floorObject.GetTransform().scale = { 12.0f, 0.2f, 10.0f };
+        auto& floor = floorObject.AddComponent<
+            LamaPon::MeshRendererComponent>(
+                LamaPon::PrimitiveShape::Cube,
+                DirectX::XMFLOAT4{ 0.8f, 0.8f, 0.8f, 1.0f });
+        floor.SetProceduralMesh(cubeVertices, cubeIndices);
+        floor.SetRoughness(0.7f);
+
+        constexpr std::array<DirectX::XMFLOAT3, 4> pointColors{ {
+            { 1.0f, 0.35f, 0.3f },
+            { 0.35f, 1.0f, 0.4f },
+            { 0.35f, 0.5f, 1.0f },
+            { 1.0f, 0.9f, 0.35f } } };
+        std::size_t pointIndex{};
+        for (int row{}; row < 4; ++row)
+        {
+            for (int column{}; column < 6; ++column)
+            {
+                auto& object = scene.CreateGameObject("ClusterPoint");
+                object.GetTransform().position = {
+                    -5.0f + 2.0f * static_cast<float>(column),
+                    0.6f,
+                    -3.0f + 2.0f * static_cast<float>(row) };
+                auto& light = object.AddComponent<
+                    LamaPon::PointLightComponent>(
+                        pointColors[pointIndex % pointColors.size()],
+                        2.0f,
+                        2.2f);
+                light.SetCastsShadows(false);
+                ++pointIndex;
+            }
+        }
+        // 回転の無いSpot Lightは-Zを向くため、ピッチ-90度で真下を照らします。
+        for (int index{}; index < 10; ++index)
+        {
+            auto& object = scene.CreateGameObject("ClusterSpot");
+            object.GetTransform().position = {
+                -4.5f + static_cast<float>(index),
+                2.5f,
+                -4.4f };
+            object.GetTransform().SetEulerAngles(
+                -DirectX::XM_PIDIV2,
+                0.0f,
+                0.0f);
+            auto& light = object.AddComponent<LamaPon::SpotLightComponent>(
+                DirectX::XMFLOAT3{ 0.9f, 0.8f, 1.0f },
+                3.0f,
+                4.0f,
+                DirectX::XMConvertToRadians(20.0f),
+                DirectX::XMConvertToRadians(30.0f));
+            light.SetCastsShadows(false);
+        }
+
+        constexpr float clearColor[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+        graphics.BeginFrame(clearColor);
+        graphics.BeginSceneComposition(clearColor);
+        auto* const target = graphics.SceneCompositionTarget();
+        Require(
+            target != nullptr,
+            "The clustered lighting capture has no scene composition target");
+        scene.RenderMainCamera(
+            static_cast<float>(CanvasWidth) / CanvasHeight,
+            false,
+            target);
+        graphics.EndSceneComposition(scene.PostProcessFrameData());
+        Capture capture;
+        capture.pixels = graphics.CaptureBackBuffer(
+            capture.width,
+            capture.height);
+        graphics.EndFrame();
+
+        const auto& clustered = graphics.Lighting().clustered;
+        const bool clusteredActive =
+            clustered.enabled && clustered.lightCount == 34u;
+        std::size_t litPixels{};
+        for (std::size_t offset{};
+             offset + 3u < capture.pixels.size();
+             offset += 4u)
+        {
+            if (std::max({
+                    capture.pixels[offset],
+                    capture.pixels[offset + 1u],
+                    capture.pixels[offset + 2u] }) > 40u)
+            {
+                ++litPixels;
+            }
+        }
+        Require(
+            clusteredActive && litPixels > 3000u,
+            apiName + " did not light the floor with Forward+ clustered "
+                "lights (clustered: " + (clusteredActive ? "yes" : "no")
+                + ", " + std::to_string(litPixels) + " lit pixels)");
+        return capture;
+    }
+
+    // Sceneへ復元した2×2×2のベイクした間接光（L1球面調和）を確かめます。
+    // 左ほど青く右ほど赤く、上向きの面ほど緑が強い係数で、Litの2つのCubeと
+    // t23〜t25を読むbaked-gi-probeを照らし、GIを切った画像と違うことと、
+    // D3D11と一致することを比べます。
+    [[nodiscard]] Capture RenderBakedGlobalIlluminationCapture(
+        const LamaPon::RenderingApi api,
+        const LamaPon::GraphicsStartupProfile profile)
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            api,
+            profile);
+        Require(
+            graphics.ActiveRenderingApi() == api,
+            "The baked global illumination capture did not start the "
+            "requested rendering API");
+        // D3D11のLit / Environment shaderはasset rootから読み込みます。
+        graphics.Assets().SetAssetRoot(LAMAPON_TEST_ASSET_DIR);
+        // D3D11の非同期compileは最初のフレームを標準Litで描くため止めます。
+        graphics.SetAsyncShaderCompilationEnabled(false);
+        const std::string apiName = api == LamaPon::RenderingApi::DirectX11
+            ? "DirectX 11"
+            : "DirectX 12";
+
+        LamaPon::Scene scene(graphics);
+        auto& cameraObject = scene.CreateGameObject("MainCamera");
+        cameraObject.GetTransform().position = { 0.0f, 0.4f, 4.5f };
+        cameraObject.GetTransform().SetEulerAngles(-0.06f, 0.0f, 0.0f);
+        auto& camera = cameraObject.AddComponent<LamaPon::CameraComponent>();
+        scene.SetMainCamera(camera);
+        scene.SetAmbientLightColor({ 1.0f, 1.0f, 1.0f });
+        scene.SetAmbientLightIntensity(0.3f);
+
+        std::vector<LamaPon::ProceduralMeshVertex> cubeVertices;
+        std::vector<std::uint32_t> cubeIndices;
+        BuildProceduralCube(cubeVertices, cubeIndices);
+        const auto addCube = [&](
+            const char* const name,
+            const float x,
+            const float metallic,
+            const float roughness) -> LamaPon::MeshRendererComponent&
+        {
+            auto& object = scene.CreateGameObject(name);
+            object.GetTransform().position = { x, 0.0f, 0.0f };
+            object.GetTransform().scale = { 1.1f, 1.1f, 1.1f };
+            object.GetTransform().SetEulerAngles(0.45f, 0.6f, 0.0f);
+            auto& mesh = object.AddComponent<LamaPon::MeshRendererComponent>(
+                LamaPon::PrimitiveShape::Cube,
+                DirectX::XMFLOAT4{ 0.9f, 0.9f, 0.9f, 1.0f });
+            mesh.SetProceduralMesh(cubeVertices, cubeIndices);
+            mesh.SetMetallic(metallic);
+            mesh.SetRoughness(roughness);
+            return mesh;
+        };
+        addCube("GiDielectric", -1.7f, 0.0f, 0.8f);
+        addCube("GiMetal", 0.0f, 0.6f, 0.4f);
+        auto& probe = addCube("BakedGiProbe", 1.7f, 0.0f, 0.5f);
+        probe.SetShaderPath(
+            std::filesystem::path{ LAMAPON_TEST_ASSET_DIR }.parent_path()
+            / "tests/fixtures/baked-gi-probe.hlsl");
+
+        LamaPon::BakedGlobalIlluminationSettings settings;
+        settings.enabled = true;
+        settings.center = { 0.0f, 0.0f, 0.0f };
+        settings.size = { 6.0f, 4.0f, 4.0f };
+        settings.resolutionX = 2;
+        settings.resolutionY = 2;
+        settings.resolutionZ = 2;
+        settings.intensity = 1.0f;
+        scene.SetBakedGlobalIlluminationSettings(settings);
+
+        // 並びは[R,G,B]×[z,y,x]×(x係数, y係数, z係数, 定数項)のfp16です。
+        constexpr std::size_t ProbeCount = 8u;
+        std::vector<std::uint16_t> payload(
+            ProbeCount
+            * LamaPon::BakedGlobalIlluminationCoefficientsPerProbe);
+        for (std::size_t z{}; z < 2u; ++z)
+        {
+            for (std::size_t y{}; y < 2u; ++y)
+            {
+                for (std::size_t x{}; x < 2u; ++x)
+                {
+                    const std::size_t probeIndex = (z * 2u + y) * 2u + x;
+                    const float side = static_cast<float>(x);
+                    const float height = static_cast<float>(y);
+                    const std::array<std::array<float, 4>, 3> channels{ {
+                        { 0.3f, 0.0f, 0.0f, 0.2f + 0.8f * side },
+                        { 0.0f, 0.4f, 0.0f, 0.3f + 0.3f * height },
+                        { 0.0f, 0.0f, 0.25f, 1.0f - 0.8f * side } } };
+                    for (std::size_t channel{}; channel < 3u; ++channel)
+                    {
+                        for (std::size_t term{}; term < 4u; ++term)
+                        {
+                            payload[(channel * ProbeCount + probeIndex) * 4u
+                                + term] =
+                                DirectX::PackedVector::XMConvertFloatToHalf(
+                                    channels[channel][term]);
+                        }
+                    }
+                }
+            }
+        }
+        scene.RestoreBakedGlobalIllumination(settings, payload);
+        Require(
+            scene.HasBakedGlobalIllumination(),
+            apiName + " rejected the baked global illumination payload");
+
+        constexpr float clearColor[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+        const auto captureFrame = [&graphics, &scene, &clearColor]()
+        {
+            graphics.BeginFrame(clearColor);
+            graphics.BeginSceneComposition(clearColor);
+            auto* const target = graphics.SceneCompositionTarget();
+            Require(
+                target != nullptr,
+                "The baked global illumination capture has no scene "
+                "composition target");
+            scene.RenderMainCamera(
+                static_cast<float>(CanvasWidth) / CanvasHeight,
+                false,
+                target);
+            graphics.EndSceneComposition(scene.PostProcessFrameData());
+            Capture frame;
+            frame.pixels = graphics.CaptureBackBuffer(
+                frame.width,
+                frame.height);
+            graphics.EndFrame();
+            return frame;
+        };
+        const auto giFrame = captureFrame();
+        const auto shaderError = probe.ShaderError();
+        // 3本のTexture3Dを作れずにフラットな環境光へ落ちていないことを
+        // 確かめます。
+        const auto& bakedGi = graphics.Lighting().bakedGlobalIllumination;
+        const bool giActive = bakedGi.enabled
+            && bakedGi.redCoefficients
+            && bakedGi.greenCoefficients
+            && bakedGi.blueCoefficients;
+        settings.enabled = false;
+        scene.SetBakedGlobalIlluminationSettings(settings);
+        const auto flatFrame = captureFrame();
+        const auto changedPixels = CountChangedPixels(giFrame, flatFrame);
+        Require(
+            giActive && shaderError.empty() && changedPixels > 1500u,
+            apiName + " did not light the cubes with baked global "
+                "illumination (active: " + (giActive ? "yes" : "no") + ", "
+                + std::to_string(changedPixels)
+                + " changed pixels; error: [" + shaderError + "])");
+        return giFrame;
+    }
+
+    // リフレクションプローブを、Scene読み込み後と同じ実行中のベイクで
+    // 確かめます。赤・緑・青の発光壁に囲まれた場所へ、ボックス射影付きの
+    // プローブと、境界で混ぜる2個目のプローブを置きます。滑らかな金属、
+    // 粗い誘電体、t3／t6を読むenvironment-probeのCubeへ映り込みが入り、
+    // プローブを切った画像と違うことと、D3D11と一致することを比べます。
+    [[nodiscard]] Capture RenderReflectionProbeCapture(
+        const LamaPon::RenderingApi api,
+        const LamaPon::GraphicsStartupProfile profile)
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            api,
+            profile);
+        Require(
+            graphics.ActiveRenderingApi() == api,
+            "The reflection probe capture did not start the requested "
+            "rendering API");
+        // D3D11のLit / Environment shaderはasset rootから読み込みます。
+        graphics.Assets().SetAssetRoot(LAMAPON_TEST_ASSET_DIR);
+        // D3D11の非同期compileは最初のフレームを標準Litで描くため止めます。
+        graphics.SetAsyncShaderCompilationEnabled(false);
+        const std::string apiName = api == LamaPon::RenderingApi::DirectX11
+            ? "DirectX 11"
+            : "DirectX 12";
+
+        LamaPon::Scene scene(graphics);
+        auto& cameraObject = scene.CreateGameObject("MainCamera");
+        cameraObject.GetTransform().position = { 0.0f, 0.4f, 4.5f };
+        cameraObject.GetTransform().SetEulerAngles(-0.06f, 0.0f, 0.0f);
+        auto& camera = cameraObject.AddComponent<LamaPon::CameraComponent>();
+        scene.SetMainCamera(camera);
+        scene.SetAmbientLightColor({ 1.0f, 1.0f, 1.0f });
+        scene.SetAmbientLightIntensity(0.1f);
+
+        std::vector<LamaPon::ProceduralMeshVertex> cubeVertices;
+        std::vector<std::uint32_t> cubeIndices;
+        BuildProceduralCube(cubeVertices, cubeIndices);
+        const auto addWall = [&](
+            const char* const name,
+            const DirectX::XMFLOAT3& position,
+            const DirectX::XMFLOAT3& scale,
+            const DirectX::XMFLOAT3& emissive)
+        {
+            auto& object = scene.CreateGameObject(name);
+            object.GetTransform().position = position;
+            object.GetTransform().scale = scale;
+            auto& mesh = object.AddComponent<LamaPon::MeshRendererComponent>(
+                LamaPon::PrimitiveShape::Cube,
+                DirectX::XMFLOAT4{ 0.2f, 0.2f, 0.2f, 1.0f });
+            mesh.SetProceduralMesh(cubeVertices, cubeIndices);
+            mesh.SetRoughness(0.9f);
+            mesh.SetEmissiveColor(emissive);
+        };
+        addWall("RedWall", { -6.0f, 1.0f, 0.0f }, { 0.5f, 8.0f, 14.0f },
+            { 1.5f, 0.1f, 0.1f });
+        addWall("GreenWall", { 6.0f, 1.0f, 0.0f }, { 0.5f, 8.0f, 14.0f },
+            { 0.1f, 1.5f, 0.2f });
+        addWall("BlueCeiling", { 0.0f, 5.0f, 0.0f }, { 12.0f, 0.5f, 14.0f },
+            { 0.1f, 0.2f, 1.5f });
+        addWall("Floor", { 0.0f, -1.5f, 0.0f }, { 12.0f, 0.5f, 14.0f },
+            { 0.35f, 0.35f, 0.35f });
+        addWall("BackWall", { 0.0f, 1.0f, -7.0f }, { 12.0f, 8.0f, 0.5f },
+            { 0.6f, 0.45f, 0.15f });
+
+        const auto addCube = [&](
+            const char* const name,
+            const float x,
+            const float metallic,
+            const float roughness) -> LamaPon::MeshRendererComponent&
+        {
+            auto& object = scene.CreateGameObject(name);
+            object.GetTransform().position = { x, 0.0f, 0.0f };
+            object.GetTransform().scale = { 1.1f, 1.1f, 1.1f };
+            object.GetTransform().SetEulerAngles(0.45f, 0.6f, 0.0f);
+            auto& mesh = object.AddComponent<LamaPon::MeshRendererComponent>(
+                LamaPon::PrimitiveShape::Cube,
+                DirectX::XMFLOAT4{ 0.9f, 0.9f, 0.9f, 1.0f });
+            mesh.SetProceduralMesh(cubeVertices, cubeIndices);
+            mesh.SetMetallic(metallic);
+            mesh.SetRoughness(roughness);
+            return mesh;
+        };
+        addCube("ProbeMetal", -1.7f, 1.0f, 0.15f);
+        addCube("ProbeRough", 0.0f, 0.0f, 0.9f);
+        auto& shaderCube = addCube("ProbeShader", 1.7f, 0.0f, 0.5f);
+        shaderCube.SetShaderPath(
+            std::filesystem::path{ LAMAPON_TEST_ASSET_DIR }.parent_path()
+            / "tests/fixtures/environment-probe.hlsl");
+
+        // 左のプローブはボックス射影付きです。範囲4、混ぜ始め2なので、中央と
+        // 右のCubeは2個目のプローブと比率で混ざります。
+        auto& primaryObject = scene.CreateGameObject("PrimaryProbe");
+        primaryObject.GetTransform().position = { -1.0f, 1.5f, 0.0f };
+        auto& primaryProbe = primaryObject.AddComponent<
+            LamaPon::ReflectionProbeComponent>(4.0f, 1.0f);
+        primaryProbe.SetBoxExtents({ 5.0f, 2.75f, 6.5f });
+        primaryProbe.SetBlendDistance(2.0f);
+        primaryProbe.RequestBake();
+        auto& secondaryObject = scene.CreateGameObject("SecondaryProbe");
+        secondaryObject.GetTransform().position = { 2.5f, 1.5f, 0.0f };
+        auto& secondaryProbe = secondaryObject.AddComponent<
+            LamaPon::ReflectionProbeComponent>(4.0f, 1.2f);
+        secondaryProbe.SetBlendDistance(2.0f);
+        secondaryProbe.RequestBake();
+
+        constexpr float clearColor[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+        const auto captureFrame = [&graphics, &scene, &clearColor]()
+        {
+            graphics.BeginFrame(clearColor);
+            graphics.BeginSceneComposition(clearColor);
+            auto* const target = graphics.SceneCompositionTarget();
+            Require(
+                target != nullptr,
+                "The reflection probe capture has no scene composition "
+                "target");
+            scene.RenderMainCamera(
+                static_cast<float>(CanvasWidth) / CanvasHeight,
+                false,
+                target);
+            graphics.EndSceneComposition(scene.PostProcessFrameData());
+            Capture frame;
+            frame.pixels = graphics.CaptureBackBuffer(
+                frame.width,
+                frame.height);
+            graphics.EndFrame();
+            return frame;
+        };
+        // 最初のフレームの頭で2つのプローブを焼き、同じフレームから使います。
+        const auto probeFrame = captureFrame();
+        const auto shaderError = shaderCube.ShaderError();
+        const bool baked = primaryProbe.IsBaked()
+            && secondaryProbe.IsBaked()
+            && graphics.IsSampleableCubeView(
+                primaryProbe.BakedEnvironment().specular)
+            && graphics.IsSampleableCubeView(
+                secondaryProbe.BakedEnvironment().irradiance);
+        primaryProbe.SetEnabled(false);
+        secondaryProbe.SetEnabled(false);
+        const auto flatFrame = captureFrame();
+        const auto changedPixels = CountChangedPixels(probeFrame, flatFrame);
+        Require(
+            baked && shaderError.empty() && changedPixels > 1500u,
+            apiName + " did not light the cubes with baked reflection "
+                "probes (baked: " + (baked ? "yes" : "no") + ", "
+                + std::to_string(changedPixels)
+                + " changed pixels; error: [" + shaderError + "])");
+        return probeFrame;
+    }
+
+    // Material上書き中のCMOをMaterial custom shaderで描きます。左は描画状態を
+    // 宣言しロゴを貼ったテンプレートで、宣言による上書きとテクスチャ座標を、
+    // 右は宣言の無いfacing-probeで、DirectXTKのModelMeshと同じ既定の合成・
+    // 深度・カリング（表面と裏面のどちらを描くか）を、D3D11との一致で確かめます。
+    [[nodiscard]] Capture RenderCmoMaterialShaderCapture(
+        const LamaPon::RenderingApi api,
+        const LamaPon::GraphicsStartupProfile profile)
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            api,
+            profile);
+        Require(
+            graphics.ActiveRenderingApi() == api,
+            "The CMO material shader capture did not start the requested "
+            "rendering API");
+        graphics.Assets().SetAssetRoot(LAMAPON_TEST_ASSET_DIR);
+        // D3D11の非同期compileは最初のフレームを標準Litで描くため止めます。
+        graphics.SetAsyncShaderCompilationEnabled(false);
+        const std::string apiName = api == LamaPon::RenderingApi::DirectX11
+            ? "DirectX 11"
+            : "DirectX 12";
+
+        LamaPon::Scene scene(graphics);
+        auto& cameraObject = scene.CreateGameObject("MainCamera");
+        cameraObject.GetTransform().position = { 0.0f, 0.0f, 6.0f };
+        auto& camera = cameraObject.AddComponent<LamaPon::CameraComponent>();
+        scene.SetMainCamera(camera);
+        scene.SetAmbientLightColor({ 1.0f, 1.0f, 1.0f });
+        scene.SetAmbientLightIntensity(1.0f);
+
+        const auto addModel = [&](
+            const char* const name,
+            const float x) -> LamaPon::ModelRendererComponent&
+        {
+            auto& object = scene.CreateGameObject(name);
+            object.GetTransform().position = { x, 0.0f, 0.0f };
+            object.GetTransform().scale = { 1.4f, 1.4f, 1.4f };
+            object.GetTransform().SetEulerAngles(0.45f, 0.65f, 0.0f);
+            auto& renderer = object.AddComponent<
+                LamaPon::ModelRendererComponent>(
+                    std::filesystem::path(LAMAPON_TEST_ASSET_DIR)
+                        / "models"
+                        / "arrow.cmo");
+            renderer.SetMaterialOverrideEnabled(true);
+            return renderer;
+        };
+        // arrow.cmoの内蔵albedoは黒いため、テンプレートにはロゴを貼ります。
+        auto& declared = addModel("DeclaredCmo", -1.3f);
+        declared.SetShaderPath("shaders/LamaPonCustomMaterial.hlsl");
+        declared.SetAlbedoTexturePath("textures/LamaPonLogo.png");
+        declared.SetCustomParameter(0, { 1.0f, 0.4f, 0.2f, 0.7f });
+        declared.SetCustomParameter(1, { 0.3f, 1.0f, 0.0f, 0.0f });
+        auto& defaultState = addModel("DefaultStateCmo", 1.3f);
+        defaultState.SetShaderPath(
+            std::filesystem::path{ LAMAPON_TEST_ASSET_DIR }.parent_path()
+            / "tests/fixtures/facing-probe.hlsl");
+
+        constexpr float clearColor[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+        const auto render = [&]()
+        {
+            graphics.BeginFrame(clearColor);
+            graphics.BeginSceneComposition(clearColor);
+            scene.RenderMainCamera(
+                static_cast<float>(CanvasWidth) / CanvasHeight,
+                false,
+                graphics.SceneCompositionTarget());
+            graphics.EndSceneComposition(scene.PostProcessFrameData());
+            Capture frame;
+            frame.pixels = graphics.CaptureBackBuffer(frame.width, frame.height);
+            graphics.EndFrame();
+            return frame;
+        };
+        // 最初のフレームでModelとShaderを読み込みます。
+        static_cast<void>(render());
+        const auto capture = render();
+        const auto declaredError = declared.ShaderError();
+        const auto defaultStateError = defaultState.ShaderError();
+
+        std::size_t leftPixels{};
+        std::size_t rightPixels{};
+        for (std::size_t offset{};
+             offset + 3u < capture.pixels.size();
+             offset += 4u)
+        {
+            if (std::max({
+                    capture.pixels[offset],
+                    capture.pixels[offset + 1u],
+                    capture.pixels[offset + 2u] }) <= 12u)
+            {
+                continue;
+            }
+            const auto x = (offset / 4u) % capture.width;
+            if (x < capture.width / 2u)
+            {
+                ++leftPixels;
+            }
+            else
+            {
+                ++rightPixels;
+            }
+        }
+        Require(
+            declaredError.empty()
+                && defaultStateError.empty()
+                && leftPixels > 100u
+                && rightPixels > 100u,
+            apiName + " did not draw the CMO material shaders ("
+                + std::to_string(leftPixels) + " declared, "
+                + std::to_string(rightPixels) + " default-state pixels; "
+                "errors: [" + declaredError + "] [" + defaultStateError
+                + "])");
+        return capture;
+    }
+
+    // Mesh RendererのテセレーションShader（LamaPonTessellatedTerrain）を
+    // D3D11と比べます。PlaneとCubeはD3D11と同じ四角パッチの制御点を
+    // HSMain／DSMainで割って波打たせ、Procedural MeshのCubeは四角パッチへ
+    // 分けないため、D3D11と同じ説明付きの代替表示になります。
+    [[nodiscard]] Capture RenderTessellationCapture(
+        const LamaPon::RenderingApi api,
+        const LamaPon::GraphicsStartupProfile profile)
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            api,
+            profile);
+        Require(
+            graphics.ActiveRenderingApi() == api,
+            "The tessellation capture did not start the requested rendering "
+            "API");
+        graphics.Assets().SetAssetRoot(LAMAPON_TEST_ASSET_DIR);
+        // D3D11の非同期compileは最初のフレームを標準Litで描くため止めます。
+        graphics.SetAsyncShaderCompilationEnabled(false);
+        const std::string apiName = api == LamaPon::RenderingApi::DirectX11
+            ? "DirectX 11"
+            : "DirectX 12";
+
+        LamaPon::Scene scene(graphics);
+        auto& cameraObject = scene.CreateGameObject("MainCamera");
+        cameraObject.GetTransform().position = { 0.0f, 2.2f, 5.5f };
+        cameraObject.GetTransform().SetEulerAngles(-0.35f, 0.0f, 0.0f);
+        auto& camera = cameraObject.AddComponent<LamaPon::CameraComponent>();
+        scene.SetMainCamera(camera);
+        scene.SetAmbientLightColor({ 1.0f, 1.0f, 1.0f });
+        scene.SetAmbientLightIntensity(0.6f);
+
+        const auto addMesh = [&](
+            const char* const name,
+            const LamaPon::PrimitiveShape shape,
+            const DirectX::XMFLOAT3& position,
+            const DirectX::XMFLOAT3& scale,
+            const float yaw) -> LamaPon::MeshRendererComponent&
+        {
+            auto& object = scene.CreateGameObject(name);
+            object.GetTransform().position = position;
+            object.GetTransform().scale = scale;
+            object.GetTransform().SetEulerAngles(0.0f, yaw, 0.0f);
+            auto& mesh = object.AddComponent<LamaPon::MeshRendererComponent>(
+                shape,
+                DirectX::XMFLOAT4{ 1.0f, 1.0f, 1.0f, 1.0f });
+            mesh.SetShaderPath(
+                std::filesystem::path{ "shaders" }
+                / "LamaPonTessellatedTerrain.hlsl");
+            // 0=地面の色、1=起伏の高さ／細かさ／速さ、3.x=分割数です。
+            mesh.SetCustomParameter(0, { 0.3f, 0.85f, 0.35f, 1.0f });
+            mesh.SetCustomParameter(1, { 0.25f, 2.0f, 0.0f, 0.0f });
+            mesh.SetCustomParameter(3, { 12.0f, 0.0f, 0.0f, 0.0f });
+            return mesh;
+        };
+        auto& plane = addMesh(
+            "TessellatedPlane",
+            LamaPon::PrimitiveShape::Plane,
+            { -1.4f, 0.0f, 0.0f },
+            { 2.6f, 1.0f, 2.6f },
+            0.3f);
+        auto& cube = addMesh(
+            "TessellatedCube",
+            LamaPon::PrimitiveShape::Cube,
+            { 1.5f, 0.7f, 0.0f },
+            { 1.3f, 1.3f, 1.3f },
+            0.6f);
+        std::vector<LamaPon::ProceduralMeshVertex> cubeVertices;
+        std::vector<std::uint32_t> cubeIndices;
+        BuildProceduralCube(cubeVertices, cubeIndices);
+        auto& procedural = addMesh(
+            "ProceduralCube",
+            LamaPon::PrimitiveShape::Cube,
+            { 0.3f, 1.9f, -1.2f },
+            { 0.7f, 0.7f, 0.7f },
+            0.4f);
+        procedural.SetProceduralMesh(cubeVertices, cubeIndices);
+
+        constexpr float clearColor[4]{ 0.05f, 0.05f, 0.08f, 1.0f };
+        const auto render = [&]()
+        {
+            graphics.BeginFrame(clearColor);
+            graphics.BeginSceneComposition(clearColor);
+            scene.RenderMainCamera(
+                static_cast<float>(CanvasWidth) / CanvasHeight,
+                false,
+                graphics.SceneCompositionTarget());
+            graphics.EndSceneComposition(scene.PostProcessFrameData());
+            Capture frame;
+            frame.pixels = graphics.CaptureBackBuffer(frame.width, frame.height);
+            graphics.EndFrame();
+            return frame;
+        };
+        // 最初のフレームでShaderを読み込みます。
+        static_cast<void>(render());
+        const auto capture = render();
+        const auto planeError = plane.ShaderError();
+        const auto cubeError = cube.ShaderError();
+        const auto proceduralError = procedural.ShaderError();
+
+        std::size_t terrainPixels{};
+        std::size_t magentaPixels{};
+        for (std::size_t offset{};
+             offset + 3u < capture.pixels.size();
+             offset += 4u)
+        {
+            const int red = capture.pixels[offset];
+            const int green = capture.pixels[offset + 1u];
+            const int blue = capture.pixels[offset + 2u];
+            if (green > red + 40 && green > blue + 40)
+            {
+                ++terrainPixels;
+            }
+            else if (red > 150 && blue > 150 && green < 80)
+            {
+                ++magentaPixels;
+            }
+        }
+        Require(
+            planeError.empty()
+                && cubeError.empty()
+                && proceduralError.find("quad patches") != std::string::npos
+                && terrainPixels > 1000u
+                && magentaPixels > 50u,
+            apiName + " did not draw the tessellation shaders ("
+                + std::to_string(terrainPixels) + " terrain, "
+                + std::to_string(magentaPixels) + " placeholder pixels; "
+                "errors: [" + planeError + "] [" + cubeError + "] ["
+                + proceduralError + "])");
+        return capture;
+    }
+
+    // Material上書き中のCMOで、custom shaderの輪郭（VSOutline／PSOutline）と
+    // 遮蔽表示（PSOccluded）をD3D11と比べます。手前の箱に隠れた部分は
+    // 遮蔽表示の青、シルエットの外側は輪郭の黄色になります。
+    [[nodiscard]] Capture RenderCmoOutlineCapture(
+        const LamaPon::RenderingApi api,
+        const LamaPon::GraphicsStartupProfile profile)
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            api,
+            profile);
+        Require(
+            graphics.ActiveRenderingApi() == api,
+            "The CMO outline capture did not start the requested rendering "
+            "API");
+        graphics.Assets().SetAssetRoot(LAMAPON_TEST_ASSET_DIR);
+        // D3D11の非同期compileは最初のフレームを標準Litで描くため止めます。
+        graphics.SetAsyncShaderCompilationEnabled(false);
+        const std::string apiName = api == LamaPon::RenderingApi::DirectX11
+            ? "DirectX 11"
+            : "DirectX 12";
+
+        LamaPon::Scene scene(graphics);
+        auto& cameraObject = scene.CreateGameObject("MainCamera");
+        cameraObject.GetTransform().position = { 0.0f, 0.0f, 5.0f };
+        auto& camera = cameraObject.AddComponent<LamaPon::CameraComponent>();
+        scene.SetMainCamera(camera);
+        scene.SetAmbientLightColor({ 1.0f, 1.0f, 1.0f });
+        scene.SetAmbientLightIntensity(1.0f);
+
+        // モデルより先に描かれて深度を書く、手前の箱です。
+        std::vector<LamaPon::ProceduralMeshVertex> cubeVertices;
+        std::vector<std::uint32_t> cubeIndices;
+        BuildProceduralCube(cubeVertices, cubeIndices);
+        auto& occluderObject = scene.CreateGameObject("Occluder");
+        occluderObject.GetTransform().position = { 0.0f, -0.3f, 2.0f };
+        occluderObject.GetTransform().scale = { 0.8f, 0.5f, 0.2f };
+        auto& occluder = occluderObject.AddComponent<
+            LamaPon::MeshRendererComponent>(
+                LamaPon::PrimitiveShape::Cube,
+                DirectX::XMFLOAT4{ 0.35f, 0.35f, 0.35f, 1.0f });
+        occluder.SetProceduralMesh(cubeVertices, cubeIndices);
+
+        auto& object = scene.CreateGameObject("OutlinedCmo");
+        object.GetTransform().position = { 0.0f, 0.2f, 0.0f };
+        object.GetTransform().scale = { 1.6f, 1.6f, 1.6f };
+        object.GetTransform().SetEulerAngles(0.45f, 0.65f, 0.0f);
+        auto& renderer = object.AddComponent<
+            LamaPon::ModelRendererComponent>(
+                std::filesystem::path(LAMAPON_TEST_ASSET_DIR)
+                    / "models"
+                    / "arrow.cmo");
+        renderer.SetMaterialOverrideEnabled(true);
+        renderer.SetShaderPath(
+            std::filesystem::path{ LAMAPON_TEST_ASSET_DIR }.parent_path()
+            / "tests/fixtures/outline-probe.hlsl");
+        // 3: x = 輪郭の太さ、yzw = 輪郭の色。4: rgb = 遮蔽表示の色、
+        // w > 0で遮蔽表示を有効にします。
+        renderer.SetCustomParameter(3, { 0.08f, 1.0f, 0.85f, 0.1f });
+        renderer.SetCustomParameter(4, { 0.2f, 0.6f, 1.0f, 1.0f });
+
+        constexpr float clearColor[4]{ 0.08f, 0.1f, 0.14f, 1.0f };
+        const auto render = [&]()
+        {
+            graphics.BeginFrame(clearColor);
+            graphics.BeginSceneComposition(clearColor);
+            scene.RenderMainCamera(
+                static_cast<float>(CanvasWidth) / CanvasHeight,
+                false,
+                graphics.SceneCompositionTarget());
+            graphics.EndSceneComposition(scene.PostProcessFrameData());
+            Capture frame;
+            frame.pixels = graphics.CaptureBackBuffer(frame.width, frame.height);
+            graphics.EndFrame();
+            return frame;
+        };
+        // 最初のフレームでModelとShaderを読み込みます。
+        static_cast<void>(render());
+        const auto capture = render();
+        const auto shaderError = renderer.ShaderError();
+
+        std::size_t outlinePixels{};
+        std::size_t occludedPixels{};
+        for (std::size_t offset{};
+             offset + 3u < capture.pixels.size();
+             offset += 4u)
+        {
+            const int red = capture.pixels[offset];
+            const int green = capture.pixels[offset + 1u];
+            const int blue = capture.pixels[offset + 2u];
+            if (red > 170 && green > 140 && blue < 90)
+            {
+                ++outlinePixels;
+            }
+            else if (blue > red + 50 && blue > green + 15)
+            {
+                ++occludedPixels;
+            }
+        }
+        Require(
+            shaderError.empty()
+                && outlinePixels > 20u
+                && occludedPixels > 150u,
+            apiName + " did not draw the CMO outline and occluded passes ("
+                + std::to_string(outlinePixels) + " outline, "
+                + std::to_string(occludedPixels) + " occluded pixels; "
+                "error: [" + shaderError + "])");
+        return capture;
+    }
+
+    // Model Rendererのワイヤーフレーム表示をD3D11と比べます。上の段はMaterial
+    // 上書きの無いCMO（DirectXTK Effect）、上書き中のLit、宣言の無いcustom
+    // shaderです。下の段は宣言付きのcustom shaderのCMO（D3D11と同じく塗り
+    // つぶしに戻ります）、glTFの既定Lit、glTFのcustom shader（宣言より
+    // ワイヤーフレームを優先します）です。
+    [[nodiscard]] Capture RenderWireframeCapture(
+        const LamaPon::RenderingApi api,
+        const LamaPon::GraphicsStartupProfile profile)
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            api,
+            profile);
+        Require(
+            graphics.ActiveRenderingApi() == api,
+            "The wireframe capture did not start the requested rendering API");
+        graphics.Assets().SetAssetRoot(LAMAPON_TEST_ASSET_DIR);
+        // D3D11の非同期compileは最初のフレームを標準Litで描くため止めます。
+        graphics.SetAsyncShaderCompilationEnabled(false);
+        const std::string apiName = api == LamaPon::RenderingApi::DirectX11
+            ? "DirectX 11"
+            : "DirectX 12";
+
+        LamaPon::Scene scene(graphics);
+        auto& cameraObject = scene.CreateGameObject("MainCamera");
+        cameraObject.GetTransform().position = { 0.0f, 0.0f, 8.0f };
+        auto& camera = cameraObject.AddComponent<LamaPon::CameraComponent>();
+        scene.SetMainCamera(camera);
+        scene.SetAmbientLightColor({ 1.0f, 1.0f, 1.0f });
+        scene.SetAmbientLightIntensity(1.0f);
+
+        // 暗い線も見分けられるよう、奥に明るい板を置きます。
+        std::vector<LamaPon::ProceduralMeshVertex> cubeVertices;
+        std::vector<std::uint32_t> cubeIndices;
+        BuildProceduralCube(cubeVertices, cubeIndices);
+        auto& backdropObject = scene.CreateGameObject("Backdrop");
+        backdropObject.GetTransform().position = { 0.0f, 0.0f, -3.0f };
+        backdropObject.GetTransform().scale = { 24.0f, 12.0f, 0.2f };
+        auto& backdrop = backdropObject.AddComponent<
+            LamaPon::MeshRendererComponent>(
+                LamaPon::PrimitiveShape::Cube,
+                DirectX::XMFLOAT4{ 0.55f, 0.55f, 0.6f, 1.0f });
+        backdrop.SetProceduralMesh(cubeVertices, cubeIndices);
+
+        const auto models = std::filesystem::path(LAMAPON_TEST_ASSET_DIR)
+            / "models";
+        const auto fixtures =
+            std::filesystem::path{ LAMAPON_TEST_ASSET_DIR }.parent_path()
+            / "tests/fixtures";
+        std::vector<LamaPon::ModelRendererComponent*> renderers;
+        const auto addModel = [&](
+            const char* const name,
+            const std::filesystem::path& path,
+            const DirectX::XMFLOAT3& position,
+            const float scale,
+            const float roll = 0.0f) -> LamaPon::ModelRendererComponent&
+        {
+            auto& object = scene.CreateGameObject(name);
+            object.GetTransform().position = position;
+            object.GetTransform().scale = { scale, scale, scale };
+            object.GetTransform().SetEulerAngles(0.45f, 0.65f, roll);
+            auto& renderer =
+                object.AddComponent<LamaPon::ModelRendererComponent>(path);
+            renderer.SetAnimationPlayOnStart(false);
+            renderer.SetWireframe(true);
+            renderers.push_back(&renderer);
+            return renderer;
+        };
+        static_cast<void>(addModel(
+            "EffectCmo",
+            models / "arrow.cmo",
+            { -3.0f, 1.6f, 0.0f },
+            1.6f));
+        auto& litCmo = addModel(
+            "LitCmo",
+            models / "arrow.cmo",
+            { 0.0f, 1.6f, 0.0f },
+            1.6f);
+        litCmo.SetMaterialOverrideEnabled(true);
+        litCmo.SetAlbedoTexturePath("textures/LamaPonLogo.png");
+        auto& undeclaredCmo = addModel(
+            "UndeclaredShaderCmo",
+            models / "arrow.cmo",
+            { 3.0f, 1.6f, 0.0f },
+            1.6f);
+        undeclaredCmo.SetMaterialOverrideEnabled(true);
+        undeclaredCmo.SetShaderPath(fixtures / "facing-probe.hlsl");
+        auto& declaredCmo = addModel(
+            "DeclaredShaderCmo",
+            models / "arrow.cmo",
+            { -3.0f, -1.6f, 0.0f },
+            1.6f);
+        declaredCmo.SetMaterialOverrideEnabled(true);
+        declaredCmo.SetShaderPath("shaders/LamaPonCustomMaterial.hlsl");
+        declaredCmo.SetAlbedoTexturePath("textures/LamaPonLogo.png");
+        static_cast<void>(addModel(
+            "LitGltf",
+            models / "TexturedRiggedSimple.gltf",
+            { 0.0f, -1.6f, 0.0f },
+            0.4f,
+            1.1f));
+        auto& shaderGltf = addModel(
+            "ShaderGltf",
+            models / "TexturedRiggedSimple.gltf",
+            { 3.0f, -1.6f, 0.0f },
+            0.4f,
+            1.1f);
+        shaderGltf.SetMaterialOverrideEnabled(true);
+        shaderGltf.SetShaderPath("shaders/LamaPonCustomMaterial.hlsl");
+        shaderGltf.SetCustomParameter(0, { 1.0f, 0.5f, 0.2f, 0.6f });
+
+        constexpr float clearColor[4]{ 0.08f, 0.1f, 0.14f, 1.0f };
+        const auto render = [&]()
+        {
+            graphics.BeginFrame(clearColor);
+            graphics.BeginSceneComposition(clearColor);
+            scene.RenderMainCamera(
+                static_cast<float>(CanvasWidth) / CanvasHeight,
+                false,
+                graphics.SceneCompositionTarget());
+            graphics.EndSceneComposition(scene.PostProcessFrameData());
+            Capture frame;
+            frame.pixels = graphics.CaptureBackBuffer(frame.width, frame.height);
+            graphics.EndFrame();
+            return frame;
+        };
+        // 最初のフレームでModelとShaderを読み込みます。
+        static_cast<void>(render());
+        const auto wireframe = render();
+        std::string errors;
+        for (auto* const renderer : renderers)
+        {
+            if (!renderer->ShaderError().empty())
+            {
+                errors += "[" + renderer->ShaderError() + "] ";
+            }
+            renderer->SetWireframe(false);
+        }
+        const auto solid = render();
+        const auto changedPixels = CountChangedPixels(wireframe, solid);
+        Require(
+            errors.empty() && changedPixels > 1000u,
+            apiName + " did not draw the Model Renderer wireframes ("
+                + std::to_string(changedPixels)
+                + " pixels changed from the solid frame; errors: " + errors
+                + ")");
+        return wireframe;
+    }
 }
 
 int main()
@@ -3786,6 +6155,15 @@ int main()
     try
     {
         LamaPon::GraphicsDevice::SetPreferWarpAdapter(true);
+        // D3D11のDirectXTKとD3D12の読み込みで同じcube DDSを使います。
+        const auto cubeSkyBytes = BuildCubeDds({ {
+            { 230u, 60u, 40u },
+            { 40u, 180u, 70u },
+            { 60u, 90u, 230u },
+            { 230u, 210u, 50u },
+            { 200u, 60u, 200u },
+            { 50u, 200u, 210u } } });
+        RequireDdsCubeParser(cubeSkyBytes);
         const auto d3d11 = RenderCapture(
             LamaPon::RenderingApi::DirectX11,
             LamaPon::GraphicsStartupProfile::FullRenderer);
@@ -3800,6 +6178,67 @@ int main()
                 LamaPon::RenderingApi::DirectX11,
                 LamaPon::GraphicsStartupProfile::FullRenderer);
         const auto d3d11CmoModel = RenderCmoModelCapture(
+            LamaPon::RenderingApi::DirectX11,
+            LamaPon::GraphicsStartupProfile::FullRenderer);
+        const auto d3d11CustomScreenEffect =
+            RenderCustomScreenEffectCapture(
+                LamaPon::RenderingApi::DirectX11,
+                LamaPon::GraphicsStartupProfile::FullRenderer);
+        const auto d3d11ScreenEffectDepth = RenderScreenEffectDepthCapture(
+            LamaPon::RenderingApi::DirectX11,
+            LamaPon::GraphicsStartupProfile::FullRenderer);
+        const auto d3d11ScreenEffectTextures =
+            RenderScreenEffectAuxiliaryCapture(
+                LamaPon::RenderingApi::DirectX11,
+                LamaPon::GraphicsStartupProfile::FullRenderer);
+        const auto d3d11ComputeEffect = RenderComputeEffectCapture(
+            LamaPon::RenderingApi::DirectX11,
+            LamaPon::GraphicsStartupProfile::FullRenderer,
+            false);
+        const auto d3d11ComputeEffectInputs = RenderComputeEffectCapture(
+            LamaPon::RenderingApi::DirectX11,
+            LamaPon::GraphicsStartupProfile::FullRenderer,
+            true);
+        const auto d3d11MaterialShaders = RenderMaterialShaderCapture(
+            LamaPon::RenderingApi::DirectX11,
+            LamaPon::GraphicsStartupProfile::FullRenderer);
+        const auto d3d11SkinnedMaterialShaders =
+            RenderSkinnedMaterialShaderCapture(
+                LamaPon::RenderingApi::DirectX11,
+                LamaPon::GraphicsStartupProfile::FullRenderer);
+        const auto d3d11Sky = RenderSkyCapture(
+            LamaPon::RenderingApi::DirectX11,
+            LamaPon::GraphicsStartupProfile::FullRenderer);
+        const auto d3d11CubemapSky = RenderCubemapSkyCapture(
+            LamaPon::RenderingApi::DirectX11,
+            LamaPon::GraphicsStartupProfile::FullRenderer,
+            cubeSkyBytes);
+        const auto d3d11Fog = RenderFogCapture(
+            LamaPon::RenderingApi::DirectX11,
+            LamaPon::GraphicsStartupProfile::FullRenderer);
+        const auto d3d11DirectLighting = RenderDirectLightingCapture(
+            LamaPon::RenderingApi::DirectX11,
+            LamaPon::GraphicsStartupProfile::FullRenderer);
+        const auto d3d11ClusteredLighting = RenderClusteredLightingCapture(
+            LamaPon::RenderingApi::DirectX11,
+            LamaPon::GraphicsStartupProfile::FullRenderer);
+        const auto d3d11BakedGlobalIllumination =
+            RenderBakedGlobalIlluminationCapture(
+                LamaPon::RenderingApi::DirectX11,
+                LamaPon::GraphicsStartupProfile::FullRenderer);
+        const auto d3d11ReflectionProbes = RenderReflectionProbeCapture(
+            LamaPon::RenderingApi::DirectX11,
+            LamaPon::GraphicsStartupProfile::FullRenderer);
+        const auto d3d11CmoMaterialShaders = RenderCmoMaterialShaderCapture(
+            LamaPon::RenderingApi::DirectX11,
+            LamaPon::GraphicsStartupProfile::FullRenderer);
+        const auto d3d11Tessellation = RenderTessellationCapture(
+            LamaPon::RenderingApi::DirectX11,
+            LamaPon::GraphicsStartupProfile::FullRenderer);
+        const auto d3d11CmoOutline = RenderCmoOutlineCapture(
+            LamaPon::RenderingApi::DirectX11,
+            LamaPon::GraphicsStartupProfile::FullRenderer);
+        const auto d3d11Wireframe = RenderWireframeCapture(
             LamaPon::RenderingApi::DirectX11,
             LamaPon::GraphicsStartupProfile::FullRenderer);
 
@@ -3828,6 +6267,72 @@ int main()
             LamaPon::RenderingApi::DirectX12Experimental,
             LamaPon::GraphicsStartupProfile::
                 AllowD3D12ExperimentalBootstrap);
+        const auto d3d12CustomScreenEffect =
+            RenderCustomScreenEffectCapture(
+                LamaPon::RenderingApi::DirectX12Experimental,
+                LamaPon::GraphicsStartupProfile::
+                    AllowD3D12ExperimentalBootstrap);
+        const auto d3d12ScreenEffectDepth = RenderScreenEffectDepthCapture(
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::
+                AllowD3D12ExperimentalBootstrap);
+        const auto d3d12ScreenEffectTextures =
+            RenderScreenEffectAuxiliaryCapture(
+                LamaPon::RenderingApi::DirectX12Experimental,
+                LamaPon::GraphicsStartupProfile::
+                    AllowD3D12ExperimentalBootstrap);
+        const auto d3d12ComputeEffect = RenderComputeEffectCapture(
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap,
+            false);
+        const auto d3d12ComputeEffectInputs = RenderComputeEffectCapture(
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap,
+            true);
+        const auto d3d12MaterialShaders = RenderMaterialShaderCapture(
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap);
+        const auto d3d12SkinnedMaterialShaders =
+            RenderSkinnedMaterialShaderCapture(
+                LamaPon::RenderingApi::DirectX12Experimental,
+                LamaPon::GraphicsStartupProfile::
+                    AllowD3D12ExperimentalBootstrap);
+        const auto d3d12Sky = RenderSkyCapture(
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap);
+        const auto d3d12CubemapSky = RenderCubemapSkyCapture(
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap,
+            cubeSkyBytes);
+        const auto d3d12Fog = RenderFogCapture(
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap);
+        const auto d3d12DirectLighting = RenderDirectLightingCapture(
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap);
+        const auto d3d12ClusteredLighting = RenderClusteredLightingCapture(
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap);
+        const auto d3d12BakedGlobalIllumination =
+            RenderBakedGlobalIlluminationCapture(
+                LamaPon::RenderingApi::DirectX12Experimental,
+                LamaPon::GraphicsStartupProfile::
+                    AllowD3D12ExperimentalBootstrap);
+        const auto d3d12ReflectionProbes = RenderReflectionProbeCapture(
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap);
+        const auto d3d12CmoMaterialShaders = RenderCmoMaterialShaderCapture(
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap);
+        const auto d3d12Tessellation = RenderTessellationCapture(
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap);
+        const auto d3d12CmoOutline = RenderCmoOutlineCapture(
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap);
+        const auto d3d12Wireframe = RenderWireframeCapture(
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap);
         RequireD3D12AutoExposure();
         RequireD3D12DdsTextures();
         RequireD3D12PrimitiveScene();
@@ -3847,6 +6352,8 @@ int main()
         RequireD3D12Particles();
         LamaPon::GraphicsDevice::SetEnableDebugLayer(false);
         RequireNoD3D12DebugErrors();
+        // compile errorの診断はdebug layerの検査と分けて確かめます。
+        RequireD3D12CustomShaderFailures();
         RequireMatchingCaptures(d3d11, d3d12);
         RequireMatchingPostProcessCaptures(
             d3d11PostProcess,
@@ -3862,6 +6369,72 @@ int main()
             "CMO model",
             d3d11CmoModel,
             d3d12CmoModel);
+        RequireMatchingFrameCaptures(
+            "custom screen effect",
+            d3d11CustomScreenEffect,
+            d3d12CustomScreenEffect);
+        RequireMatchingFrameCaptures(
+            "screen effect depth",
+            d3d11ScreenEffectDepth,
+            d3d12ScreenEffectDepth);
+        RequireMatchingFrameCaptures(
+            "screen effect textures",
+            d3d11ScreenEffectTextures,
+            d3d12ScreenEffectTextures);
+        RequireMatchingFrameCaptures(
+            "compute effect",
+            d3d11ComputeEffect,
+            d3d12ComputeEffect);
+        RequireMatchingFrameCaptures(
+            "compute effect inputs",
+            d3d11ComputeEffectInputs,
+            d3d12ComputeEffectInputs);
+        RequireMatchingFrameCaptures(
+            "material shaders",
+            d3d11MaterialShaders.frame,
+            d3d12MaterialShaders.frame);
+        RequireMatchingFrameCaptures(
+            "skinned material shaders",
+            d3d11SkinnedMaterialShaders.frame,
+            d3d12SkinnedMaterialShaders.frame);
+        RequireMatchingFrameCaptures("sky", d3d11Sky, d3d12Sky);
+        RequireMatchingFrameCaptures(
+            "cubemap sky",
+            d3d11CubemapSky,
+            d3d12CubemapSky);
+        RequireMatchingFrameCaptures("fog", d3d11Fog, d3d12Fog);
+        RequireMatchingFrameCaptures(
+            "direct lighting",
+            d3d11DirectLighting,
+            d3d12DirectLighting);
+        RequireMatchingFrameCaptures(
+            "clustered lighting",
+            d3d11ClusteredLighting,
+            d3d12ClusteredLighting);
+        RequireMatchingFrameCaptures(
+            "baked global illumination",
+            d3d11BakedGlobalIllumination,
+            d3d12BakedGlobalIllumination);
+        RequireMatchingFrameCaptures(
+            "reflection probes",
+            d3d11ReflectionProbes,
+            d3d12ReflectionProbes);
+        RequireMatchingFrameCaptures(
+            "CMO material shaders",
+            d3d11CmoMaterialShaders,
+            d3d12CmoMaterialShaders);
+        RequireMatchingFrameCaptures(
+            "tessellation shaders",
+            d3d11Tessellation,
+            d3d12Tessellation);
+        RequireMatchingFrameCaptures(
+            "CMO outline and occluded passes",
+            d3d11CmoOutline,
+            d3d12CmoOutline);
+        RequireMatchingFrameCaptures(
+            "model wireframes",
+            d3d11Wireframe,
+            d3d12Wireframe);
         std::cout << "D3D12 sprite rendering tests passed.\n";
     }
     catch (const std::exception& error)

@@ -6,10 +6,16 @@
 #include "LamaPon/Graphics/ComputeEffect.h"
 #include "LamaPon/Graphics/ClusteredLights.h"
 #include "LamaPon/Graphics/D3D11RenderTargetState.h"
+#include "LamaPon/Graphics/D3D12ComputeEffectRenderer.h"
+#include "LamaPon/Graphics/D3D12RenderServices.h"
+#include "LamaPon/Graphics/D3D12SpriteRenderer.h"
 #include "LamaPon/Graphics/GraphicsDeviceD3D11Resources.h"
+#include "LamaPon/Graphics/GraphicsDeviceD3D12Resources.h"
 #include "LamaPon/Graphics/GraphicsDeviceD3D11Access.h"
 #include "LamaPon/Graphics/GraphicsDeviceShaderState.h"
+#include "LamaPon/Graphics/GraphicsRenderServices.h"
 #include "LamaPon/Graphics/LitEffect.h"
+#include "LamaPon/Graphics/MaterialShaderDrawRequest.h"
 #include "LamaPon/Graphics/LitTextureRequest.h"
 #include "LamaPon/Graphics/RenderTarget.h"
 #include "LamaPon/Graphics/ScreenEffect.h"
@@ -61,6 +67,52 @@ namespace
             compilerMessage != nullptr ? compilerMessage : "",
             source,
             usage);
+    }
+
+    // D3D11のMaterialShaderと同じく、宣言に無いkeywordを落とした
+    // 「パス?キーワード」をcache keyにします。
+    [[nodiscard]] LamaPon::Detail::MaterialShaderSource
+        MakeMaterialShaderSource(
+            const LamaPon::GraphicsDevice& graphics,
+            const std::filesystem::path& shaderPath,
+            const LamaPon::ShaderKeywordSet& keywords)
+    {
+        LamaPon::Detail::MaterialShaderSource source;
+        source.path =
+            graphics.Assets().ResolvePath(shaderPath).lexically_normal();
+        const auto normalized = LamaPon::NormalizeKeywords(
+            graphics.ShaderVariantsFor(source.path),
+            keywords);
+        const auto variantKey = normalized.Key();
+        source.cacheKey = variantKey.empty()
+            ? source.path
+            : std::filesystem::path(
+                source.path.wstring()
+                + L"?"
+                + LamaPon::Utf8ToWide(variantKey));
+        source.keywords = normalized.Keywords();
+        auto* const assets = &graphics.Assets();
+        source.describeFailure =
+            [assets, path = source.path](const char* const message)
+            {
+                return DescribeShaderFailure(
+                    *assets,
+                    path,
+                    message,
+                    LamaPon::ShaderUsage::Material);
+            };
+        return source;
+    }
+
+    [[nodiscard]] LamaPon::Detail::D3D12MaterialShaderServices*
+        TryD3D12MaterialShaderServices(
+            LamaPon::Detail::GraphicsDeviceApiResources* const resources)
+                noexcept
+    {
+        return resources != nullptr
+            ? dynamic_cast<LamaPon::Detail::D3D12MaterialShaderServices*>(
+                resources->TryRenderServices())
+            : nullptr;
     }
 
     [[nodiscard]] bool IsFinite(
@@ -417,6 +469,104 @@ namespace LamaPon
         RenderTarget& target,
         const ScreenEffectPoint point)
     {
+        if (ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            auto* const resources = dynamic_cast<
+                Detail::GraphicsDeviceD3D12Resources*>(
+                    m_state->m_apiResources.get());
+            auto* const renderer = resources != nullptr
+                ? resources->TrySpriteRenderer()
+                : nullptr;
+            if (renderer == nullptr
+                || std::ranges::none_of(
+                    resources->queuedScreenEffects,
+                    [point](const ScreenEffectRequest& queued)
+                    {
+                        return queued.point == point;
+                    }))
+            {
+                return;
+            }
+
+            // t3はSceneの深度copyです。地点ごとにshader-readableへ
+            // 確定します。D3D11は深度viewが揃わないtargetでは適用を
+            // 飛ばしてキューから外すだけなので、同じ扱いにします。
+            m_state->m_backend->CaptureOffscreenTargetDepth(target);
+            const bool hasDepth = IsGraphicsViewCurrent(
+                target.DepthViewHandle());
+            // 深度を距離へ直す係数と法線再構成用の係数は、D3D11経路と
+            // 同じくこの画像を描いたときの射影から求めます。
+            const auto& projection = SceneProjection();
+            const DirectX::XMFLOAT4 depthParameters{
+                projection._33,
+                projection._43,
+                1.0f,
+                0.0f
+            };
+            const DirectX::XMFLOAT4 depthUnprojection{
+                1.0f / (std::abs(projection._11) > 1e-6f
+                    ? projection._11
+                    : 1.0f),
+                1.0f / (std::abs(projection._22) > 1e-6f
+                    ? projection._22
+                    : 1.0f),
+                0.0f,
+                0.0f
+            };
+            for (const auto& queued : resources->queuedScreenEffects)
+            {
+                if (queued.point != point || !hasDepth)
+                {
+                    continue;
+                }
+                // 描画を記録し終えるまでtexture snapshotを保持します。
+                // 読めない補助textureはD3D11と同じく白へ置き換わります。
+                std::array<std::shared_ptr<
+                    const TextureResourceSnapshot>, 2>
+                    auxiliaryResources{};
+                std::array<GraphicsViewHandle, 2> auxiliaryViews{};
+                for (std::size_t index{};
+                    index < queued.auxiliaryTextures.size();
+                    ++index)
+                {
+                    if (queued.auxiliaryTextures[index].empty())
+                    {
+                        continue;
+                    }
+                    const auto texture = Assets().LoadTexture(
+                        queued.auxiliaryTextures[index]);
+                    auxiliaryResources[index] = texture != nullptr
+                        ? texture->resources.Acquire()
+                        : nullptr;
+                    if (auxiliaryResources[index] != nullptr
+                        && IsGraphicsViewCurrent(
+                            auxiliaryResources[index]
+                                ->shaderResourceView))
+                    {
+                        auxiliaryViews[index] =
+                            auxiliaryResources[index]->shaderResourceView;
+                    }
+                }
+                renderer->ApplyScreenEffect(
+                    target,
+                    m_state->m_whiteTextureView,
+                    Assets(),
+                    queued.shader,
+                    auxiliaryViews,
+                    queued.customParameters,
+                    depthParameters,
+                    depthUnprojection);
+            }
+            std::erase_if(
+                resources->queuedScreenEffects,
+                [point](const ScreenEffectRequest& queued)
+                {
+                    return queued.point == point;
+                });
+            return;
+        }
+
         // 対象地点にエフェクトが無い場合は、深度変換係数の計算を省略します。
         if (std::ranges::none_of(
                 RequireD3D11ApiResources().queuedScreenEffects,
@@ -527,6 +677,39 @@ namespace LamaPon
         if (request.shader.empty())
         {
             return false;
+        }
+
+        if (ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            auto* const resources = dynamic_cast<
+                Detail::GraphicsDeviceD3D12Resources*>(
+                    m_state->m_apiResources.get());
+            auto* const renderer = resources != nullptr
+                ? resources->TrySpriteRenderer()
+                : nullptr;
+            const auto describeFailure =
+                [this, &request](const char* const message)
+                {
+                    return DescribeShaderFailure(
+                        Assets(),
+                        Assets().ResolvePath(request.shader)
+                            .lexically_normal(),
+                        message,
+                        ShaderUsage::ScreenEffect);
+                };
+            if (renderer == nullptr
+                || !renderer->PrepareScreenEffect(
+                    Assets(),
+                    request.shader,
+                    describeFailure,
+                    generation,
+                    error))
+            {
+                return false;
+            }
+            resources->queuedScreenEffects.push_back(request);
+            return true;
         }
 
         const auto absolutePath =
@@ -655,6 +838,104 @@ namespace LamaPon
                     " size.";
             }
             return false;
+        }
+
+        if (ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            auto* const resources = dynamic_cast<
+                Detail::GraphicsDeviceD3D12Resources*>(
+                    m_state->m_apiResources.get());
+            auto* const renderer = resources != nullptr
+                ? resources->TryComputeEffectRenderer()
+                : nullptr;
+            if (renderer == nullptr)
+            {
+                if (error != nullptr)
+                {
+                    *error =
+                        "The DirectX 12 compute effect renderer is not"
+                        " available.";
+                }
+                return false;
+            }
+            const auto describeFailure =
+                [this, &request](const char* const message)
+                {
+                    return DescribeShaderFailure(
+                        Assets(),
+                        Assets().ResolvePath(request.shader)
+                            .lexically_normal(),
+                        message,
+                        ShaderUsage::Compute);
+                };
+            if (!renderer->Prepare(
+                    Assets(),
+                    request.shader,
+                    describeFailure,
+                    error))
+            {
+                return false;
+            }
+
+            // 書き込み先。D3D11と同じくResizeの前にUAVの印を付けます。
+            auto& target = AcquireComputeTexture(
+                request.outputTexture,
+                request.outputWidth,
+                request.outputHeight);
+            if (!IsGraphicsViewCurrent(target.DisplayViewHandle()))
+            {
+                if (error != nullptr)
+                {
+                    *error =
+                        "The compute output texture could not"
+                        " be created for writing.";
+                }
+                return false;
+            }
+
+            // 描画を記録し終えるまでtexture snapshotを保持します。読めない
+            // 入力はD3D11と同じく白へ置き換わります。
+            std::array<std::shared_ptr<
+                const TextureResourceSnapshot>, 2>
+                inputResources{};
+            std::array<GraphicsViewHandle, 2> inputs{};
+            const auto whiteTextureView = WhiteTextureViewHandle();
+            for (std::size_t index = 0;
+                index < request.inputTextures.size();
+                ++index)
+            {
+                inputs[index] = whiteTextureView;
+                if (request.inputTextures[index].empty())
+                {
+                    continue;
+                }
+                const auto texture = Assets().LoadTexture(
+                    request.inputTextures[index]);
+                inputResources[index] = texture != nullptr
+                    ? texture->resources.Acquire()
+                    : nullptr;
+                if (inputResources[index] != nullptr
+                    && IsGraphicsViewCurrent(
+                        inputResources[index]->shaderResourceView))
+                {
+                    inputs[index] =
+                        inputResources[index]->shaderResourceView;
+                }
+            }
+
+            GpuProfiler::SectionScope computeSection{
+                m_state->m_gpuProfiler,
+                "Compute"
+            };
+            renderer->Dispatch(
+                Assets(),
+                request.shader,
+                target,
+                inputs,
+                request.customParameters);
+            computeSection.End();
+            return true;
         }
 
         const auto absolutePath =
@@ -807,6 +1088,21 @@ namespace LamaPon
     void GraphicsDevice::InvalidateComputeEffectShader(
         const std::filesystem::path& shaderPath) const
     {
+        if (ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            auto* const d3d12Resources = dynamic_cast<
+                Detail::GraphicsDeviceD3D12Resources*>(
+                    m_state->m_apiResources.get());
+            auto* const renderer = d3d12Resources != nullptr
+                ? d3d12Resources->TryComputeEffectRenderer()
+                : nullptr;
+            if (renderer != nullptr && TryAssets() != nullptr)
+            {
+                renderer->Invalidate(Assets(), shaderPath);
+            }
+            return;
+        }
         auto* const resources = TryD3D11ApiResources();
         if (shaderPath.empty() || !TryAssets() || resources == nullptr)
         {
@@ -826,6 +1122,23 @@ namespace LamaPon
     void GraphicsDevice::InvalidateScreenEffectShader(
         const std::filesystem::path& shaderPath) const
     {
+        if (ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            auto* const resources = dynamic_cast<
+                Detail::GraphicsDeviceD3D12Resources*>(
+                    m_state->m_apiResources.get());
+            auto* const renderer = resources != nullptr
+                ? resources->TrySpriteRenderer()
+                : nullptr;
+            if (renderer != nullptr && TryAssets() != nullptr)
+            {
+                renderer->InvalidateScreenEffect(
+                    Assets(),
+                    shaderPath);
+            }
+            return;
+        }
         auto* const resources = TryD3D11ApiResources();
         if (shaderPath.empty() || !TryAssets() || resources == nullptr)
         {
@@ -2012,6 +2325,112 @@ namespace LamaPon
         return resolve();
     }
 
+    bool GraphicsDevice::DrawMaterialShaderPrimitive(
+        const PrimitiveDrawRequest& request,
+        const Detail::MaterialShaderDrawRequest& material,
+        std::uint64_t& generation,
+        std::string& error)
+    {
+        generation = 0;
+        error.clear();
+        // glTF／FBXでMaterial上書きが無いときは、定数はモデル自身の材質、
+        // Shaderとkeywordはコンポーネントの材質から読みます。
+        const auto* const shaderMaterial = material.shaderMaterial != nullptr
+            ? material.shaderMaterial
+            : material.material;
+        if (material.material == nullptr
+            || shaderMaterial == nullptr
+            || shaderMaterial->Shader().empty()
+            || ActiveRenderingApi()
+                != RenderingApi::DirectX12Experimental)
+        {
+            return false;
+        }
+        auto* const services = TryD3D12MaterialShaderServices(
+            m_state->m_apiResources.get());
+        if (services == nullptr)
+        {
+            return false;
+        }
+
+        const auto shader = MakeMaterialShaderSource(
+            *this,
+            shaderMaterial->Shader(),
+            shaderMaterial->ShaderKeywords());
+        // D3D11のShaderErrorPlaceholderと同じく、プロジェクトに代替
+        // Shaderが無いときはエンジン同梱版を使います。
+        constexpr const char* placeholderRelativePath =
+            "shaders/LamaPonShaderError.hlsl";
+        auto placeholderPath = Assets().ResolvePath(placeholderRelativePath);
+        if (!Assets().FileExists(placeholderPath))
+        {
+            placeholderPath =
+                ExecutableDirectory() / "assets" / placeholderRelativePath;
+        }
+        Detail::MaterialShaderSource placeholder;
+        placeholder.path = placeholderPath.lexically_normal();
+        placeholder.cacheKey = placeholder.path;
+        const auto result = services->DrawMaterialShader(
+            Assets(),
+            shader,
+            placeholder,
+            DepthPass() == DepthPassKind::Prepass,
+            request,
+            material,
+            Lighting());
+        generation = result.generation;
+        // 通常の描画に問題が無くても、輪郭／遮蔽表示だけを止めたときは
+        // その説明を出します。
+        error = result.error.empty() ? result.passError : result.error;
+        if (result.drawn && result.placeholder)
+        {
+            // 代替表示を使った回数をFrameStatisticsへ記録します。
+            ++m_state->m_frameStatistics.shaderFallbackDraws;
+        }
+        return result.drawn;
+    }
+
+    bool GraphicsDevice::TryGetMaterialShaderRenderState(
+        const std::filesystem::path& shaderPath,
+        const ShaderKeywordSet& keywords,
+        ShaderRenderState& state) const
+    {
+        if (shaderPath.empty()
+            || TryAssets() == nullptr
+            || ActiveRenderingApi()
+                != RenderingApi::DirectX12Experimental)
+        {
+            return false;
+        }
+        auto* const services = TryD3D12MaterialShaderServices(
+            m_state->m_apiResources.get());
+        return services != nullptr
+            && services->TryGetMaterialShaderRenderState(
+                MakeMaterialShaderSource(*this, shaderPath, keywords)
+                    .cacheKey,
+                state);
+    }
+
+    Detail::MaterialShaderPasses GraphicsDevice::PrepareMaterialShaderPasses(
+        const std::filesystem::path& shaderPath,
+        const ShaderKeywordSet& keywords)
+    {
+        if (shaderPath.empty()
+            || TryAssets() == nullptr
+            || ActiveRenderingApi()
+                != RenderingApi::DirectX12Experimental)
+        {
+            return {};
+        }
+        auto* const services = TryD3D12MaterialShaderServices(
+            m_state->m_apiResources.get());
+        return services != nullptr
+            ? services->PrepareMaterialShaderPasses(
+                Assets(),
+                MakeMaterialShaderSource(*this, shaderPath, keywords))
+            : Detail::MaterialShaderPasses{};
+    }
+
     void GraphicsDevice::InvalidateMaterialShader(
         const std::filesystem::path& shaderPath) const
     {
@@ -2024,6 +2443,16 @@ namespace LamaPon
         // 宣言そのものも読み直します（multi_compileの行を
         // 足し引きしたときに追従するため）。
         m_state->m_shaderVariants.erase(absolutePath);
+        if (ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            if (auto* const services = TryD3D12MaterialShaderServices(
+                    m_state->m_apiResources.get()))
+            {
+                services->InvalidateMaterialShader(absolutePath);
+            }
+            return;
+        }
         auto* const resources = TryD3D11ApiResources();
         if (resources == nullptr)
         {

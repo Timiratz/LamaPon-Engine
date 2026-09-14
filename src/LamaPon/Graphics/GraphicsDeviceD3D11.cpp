@@ -3,6 +3,8 @@
 
 #include "LamaPon/Assets/AssetManager.h"
 #include "LamaPon/Graphics/D3D11Backend.h"
+#include "LamaPon/Graphics/D3D12Backend.h"
+#include "LamaPon/Graphics/D3D12EnvironmentPrefilter.h"
 #include "LamaPon/Graphics/D3D12SpriteRenderer.h"
 #include "LamaPon/Graphics/EnvironmentCache.h"
 #include "LamaPon/Graphics/EnvironmentSettings.h"
@@ -478,6 +480,18 @@ namespace LamaPon
     bool GraphicsDevice::IsSampleableCubeView(
         const GraphicsViewHandle& cubemap) const noexcept
     {
+        if (const auto* const d3d12 = dynamic_cast<const D3D12Backend*>(
+                m_state->m_backend.get());
+            d3d12 != nullptr)
+        {
+            // D3D12は現在のBackend世代のSRVがTextureCubeかを確かめます。
+            // DDS cubeとPoint Lightの影がこの形です。
+            const auto binding = d3d12->TryResolveShaderResource(cubemap);
+            return binding.has_value()
+                && binding->dimension == D3D12_SRV_DIMENSION_TEXTURECUBE
+                && binding->width != 0u
+                && binding->width == binding->height;
+        }
         const auto* const backend =
             AsD3D11Backend(m_state->m_backend.get());
         if (!cubemap || backend == nullptr)
@@ -503,6 +517,32 @@ namespace LamaPon
         const GraphicsViewHandle& cubemap,
         const SkySunDescription* const sun) const
     {
+        if (ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            // D3D12はSprite rendererのfullscreen passで同じ空と太陽を
+            // 描きます。TextureCubeでないcubemapはD3D11と同じく
+            // グラデーションへ戻します。
+            auto* const resources = dynamic_cast<
+                Detail::GraphicsDeviceD3D12Resources*>(
+                    m_state->m_apiResources.get());
+            auto* const renderer = resources != nullptr
+                ? resources->TrySpriteRenderer()
+                : nullptr;
+            if (renderer == nullptr)
+            {
+                throw std::logic_error(
+                    "Sky rendering requires an active backend.");
+            }
+            renderer->DrawSky(
+                view,
+                projection,
+                settings,
+                cubemap,
+                sun,
+                m_state->m_whiteTextureView);
+            return;
+        }
         auto* const backend = AsD3D11Backend(m_state->m_backend.get());
         if (backend == nullptr || backend->Device() == nullptr)
         {
@@ -751,6 +791,22 @@ namespace LamaPon
 
     void GraphicsDevice::PrepareEnvironmentProbeBake() const
     {
+        if (ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            // D3D12はSkyのIBLと同じ畳み込みdriverがプローブのベイクも
+            // 受け持ち、描画先とcubeは最初のベイクで作ります。
+            auto* const resources = dynamic_cast<
+                Detail::GraphicsDeviceD3D12Resources*>(
+                    m_state->m_apiResources.get());
+            if (resources == nullptr
+                || resources->TryEnvironmentPrefilter() == nullptr)
+            {
+                throw std::logic_error(
+                    "Environment probe baking requires an active backend.");
+            }
+            return;
+        }
         auto* const backend = AsD3D11Backend(m_state->m_backend.get());
         if (backend == nullptr || backend->Device() == nullptr)
         {
@@ -765,6 +821,31 @@ namespace LamaPon
             const EnvironmentProbeFaceRenderer& renderFace,
             const std::optional<std::uint64_t> cacheKey) const
     {
+        if (ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            auto* const resources = dynamic_cast<
+                Detail::GraphicsDeviceD3D12Resources*>(
+                    m_state->m_apiResources.get());
+            auto* const prefilter = resources != nullptr
+                ? resources->TryEnvironmentPrefilter()
+                : nullptr;
+            if (prefilter == nullptr)
+            {
+                throw std::logic_error(
+                    "Reflection probe baking requires an active backend.");
+            }
+            // D3D11のディスクキャッシュはD3D11のreadbackで保存するため、
+            // D3D12では保存せず、読み込むたびにGPUで焼きます。
+            auto result = prefilter->BakeReflectionProbe(renderFace);
+            if (!result.IsValid())
+            {
+                throw std::runtime_error(
+                    "Reflection probe baking produced invalid environment "
+                    "views.");
+            }
+            return result;
+        }
         auto* const backend = AsD3D11Backend(m_state->m_backend.get());
         if (backend == nullptr || backend->Device() == nullptr)
         {
@@ -815,6 +896,30 @@ namespace LamaPon
             const GraphicsViewHandle& source,
             const std::uint64_t cacheKey) const noexcept
     {
+        if (ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            // D3D12はCompute Shaderで同じGGX畳み込みを作り、sourceとkeyが
+            // 同じ間は結果を使い回します。
+            auto* const resources = dynamic_cast<
+                Detail::GraphicsDeviceD3D12Resources*>(
+                    m_state->m_apiResources.get());
+            auto* const prefilter = resources != nullptr
+                ? resources->TryEnvironmentPrefilter()
+                : nullptr;
+            if (prefilter == nullptr || !IsSampleableCubeView(source))
+            {
+                return {};
+            }
+            try
+            {
+                return prefilter->Prefilter(source, cacheKey);
+            }
+            catch (...)
+            {
+                return {};
+            }
+        }
         auto* const backend = AsD3D11Backend(m_state->m_backend.get());
         auto* const apiResources = TryD3D11ApiResources();
         if (!source || backend == nullptr || apiResources == nullptr)

@@ -289,8 +289,9 @@ namespace
             | static_cast<std::uint32_t>(values[3]) << 24u;
     }
 
-    // D3D11のDirectXTK EffectFactoryはCMOのUVTransformを使わないため、
-    // UVもそのまま保持します。
+    // D3D11のDirectXTK EffectFactoryはCMOのUVTransformを使いません。
+    // DirectXTKのCMO loaderはテクスチャ座標のVを反転して読み込むため、
+    // 同じ向きへ揃えます（WARPでD3D11とUVを比べて確かめています）。
     [[nodiscard]] CpuModelVertex ConvertVertex(
         const CmoVertex& source,
         const CmoSkinningVertex* const skinning)
@@ -300,7 +301,9 @@ namespace
         result.normal = source.normal;
         result.tangent = source.tangent;
         result.color = source.color;
-        result.textureCoordinate = source.textureCoordinate;
+        result.textureCoordinate = {
+            source.textureCoordinate.x,
+            1.0f - source.textureCoordinate.y };
         if (skinning != nullptr)
         {
             std::array<std::uint8_t, 4> indices{};

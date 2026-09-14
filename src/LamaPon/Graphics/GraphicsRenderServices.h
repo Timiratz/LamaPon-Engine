@@ -1,6 +1,7 @@
 #pragma once
 
 #include "LamaPon/Graphics/GraphicsResource.h"
+#include "LamaPon/Graphics/ReflectionProbeEnvironment.h"
 
 #include <DirectXMath.h>
 
@@ -57,6 +58,8 @@ namespace LamaPon
         DirectX::XMFLOAT3 direction{ 0.0f, -1.0f, 0.0f };
         DirectX::XMFLOAT3 color{ 1.0f, 1.0f, 1.0f };
         float intensity{ 1.0f };
+        // 太陽の見かけの角半径（ラジアン）。鏡面の代表点を寄せます。
+        float angularRadius{};
     };
 
     struct PrimitivePointLight final
@@ -142,6 +145,66 @@ namespace LamaPon
         bool enabled{};
     };
 
+    // Skyのcubemapによる環境光（IBL）です。specular／irradianceは事前畳み込み
+    // の結果で、揃わないときはD3D11と同じくtextureを直接読みます。
+    struct PrimitiveEnvironment final
+    {
+        GraphicsViewHandle texture;
+        GraphicsViewHandle specular;
+        GraphicsViewHandle irradiance;
+        float specularMaximumMip{};
+        float intensity{ 1.0f };
+        bool enabled{};
+    };
+
+    // Forward+のクラスタライトです。3本のviewが揃ったframeだけ、固定配列の
+    // 代わりにクラスタの番号表でPoint／Spot Lightを計算します。
+    struct PrimitiveClusteredLights final
+    {
+        GraphicsViewHandle lights;
+        GraphicsViewHandle lightIndices;
+        GraphicsViewHandle clusterCounts;
+        float nearPlane{ 0.1f };
+        float farPlane{ 1000.0f };
+        float inverseWidth{};
+        float inverseHeight{};
+        std::uint32_t lightCount{};
+        bool enabled{};
+    };
+
+    // 霧の式です。LamaPonLitはLitEffectと同じ距離の範囲霧と指数霧、
+    // DirectXTKはDirectXTK Effectと同じビュー深度の線形霧です。
+    enum class PrimitiveFogModel : std::uint8_t
+    {
+        LamaPonLit,
+        DirectXTK
+    };
+
+    struct PrimitiveFog final
+    {
+        DirectX::XMFLOAT3 color{ 0.48f, 0.62f, 0.76f };
+        float startDistance{ 8.0f };
+        float endDistance{ 35.0f };
+        float density{ 0.015f };
+        PrimitiveFogModel model{ PrimitiveFogModel::LamaPonLit };
+        bool enabled{};
+    };
+
+    // ベイクした間接光（L1球面調和の照度ボリューム）です。RGB別の3本の
+    // Texture3Dとボリュームの形は、LitEffectのt23〜t25とBakedGi*定数と
+    // 同じ意味です。
+    struct PrimitiveBakedGlobalIllumination final
+    {
+        GraphicsViewHandle redCoefficients;
+        GraphicsViewHandle greenCoefficients;
+        GraphicsViewHandle blueCoefficients;
+        DirectX::XMFLOAT3 volumeMinimum{};
+        DirectX::XMFLOAT3 volumeSize{ 1.0f, 1.0f, 1.0f };
+        DirectX::XMFLOAT3 resolution{ 1.0f, 1.0f, 1.0f };
+        float intensity{ 1.0f };
+        bool enabled{};
+    };
+
     // MeshRendererがAPI固有objectを持たずに送る最小3D描画要求です。
     // spanはDrawPrimitiveの同期呼び出し中だけ有効です。
     struct PrimitiveDrawRequest final
@@ -174,6 +237,13 @@ namespace LamaPon
         float localShadowInverseResolution{};
         PrimitiveScreenAmbientOcclusion screenAmbientOcclusion;
         PrimitiveScreenSpaceReflection screenSpaceReflection;
+        PrimitiveEnvironment environment;
+        PrimitiveFog fog;
+        PrimitiveClusteredLights clustered;
+        PrimitiveBakedGlobalIllumination bakedGlobalIllumination;
+        // 描画する位置で選んだリフレクションプローブです。使えないときは
+        // environmentのSky IBLで描きます。
+        ReflectionProbeEnvironment reflectionProbe;
         GraphicsViewHandle albedo;
         GraphicsViewHandle normalTexture;
         GraphicsViewHandle roughnessTexture;
@@ -188,6 +258,9 @@ namespace LamaPon
         // Backendは現在bind済みの深度描画先を維持し、pixel shaderや
         // material textureを使わずに描画します。
         bool depthOnly{};
+        // Model Rendererのワイヤーフレーム表示です。DirectXTKの
+        // CommonStates::Wireframeと同じく、カリングせず辺だけを描きます。
+        bool wireframe{};
     };
 
     // 高レベルrendererが生成済みの描画要求を実効APIへ送る同期serviceです。

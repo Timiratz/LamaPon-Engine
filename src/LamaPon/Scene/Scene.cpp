@@ -6111,27 +6111,6 @@ namespace LamaPon
         const bool include2D,
         RenderTarget* target)
     {
-        if (m_graphics.ActiveRenderingApi()
-            == RenderingApi::DirectX12Experimental)
-        {
-            // probe bakeは未移植のままですが、通常のゲーム描画は渡された
-            // Scene Composition targetへ出力します。targetを捨てると3Dだけ
-            // back bufferへ描かれ、後続のHDR／post-process合成で消えます。
-            if (m_mainCamera != nullptr && m_mainCamera->IsEnabled())
-            {
-                RenderWithMatrices(
-                    m_mainCamera->ViewMatrix(),
-                    m_mainCamera->ProjectionMatrix(aspectRatio),
-                    include2D,
-                    false,
-                    target);
-            }
-            else if (include2D)
-            {
-                Render2D();
-            }
-            return;
-        }
         // ベイク待ちのプローブはフレームの頭で焼きます（この後の
         // 描画からすぐ反射に使えるように）。
         BakePendingReflectionProbes();
@@ -7043,8 +7022,7 @@ namespace LamaPon
         // 従来の16灯経路（品質設定のポイント／スポット上限が効く方）
         // へ落ちます。Compute Shaderのディスパッチごと省けます。
         const bool clusteredRequested =
-            m_graphics.ActiveRenderingApi() == RenderingApi::DirectX11
-            && m_graphics.Settings().renderingPath
+            m_graphics.Settings().renderingPath
                 == RenderingPath::ForwardPlus;
         if (clusteredRequested
             && !lighting.clusteredLights.empty()
@@ -7112,7 +7090,6 @@ namespace LamaPon
         }
 
         m_graphics.SetLightingState(lighting);
-        if (m_graphics.ActiveRenderingApi() == RenderingApi::DirectX11)
         {
             GpuProfiler::SectionScope gpuSectionScope{
                 m_graphics.Gpu(),

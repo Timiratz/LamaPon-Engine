@@ -17,6 +17,7 @@
 #include <mutex>
 #include <optional>
 #include <span>
+#include <utility>
 #include <vector>
 
 namespace LamaPon
@@ -161,6 +162,8 @@ namespace LamaPon
             // viewが参照するtextureの最上位mipの寸法です。
             std::uint32_t width{};
             std::uint32_t height{};
+            // TextureCubeなど、shaderから見えるviewの次元です。
+            D3D12_SRV_DIMENSION dimension{ D3D12_SRV_DIMENSION_TEXTURE2D };
         };
 
         // 現在のframe command listがGPUで完了するまで有効なupload領域です。
@@ -287,6 +290,61 @@ namespace LamaPon
         // targetが深度プリパスなどの深度専用描画先としてbindされているかです。
         [[nodiscard]] bool IsOffscreenTargetBoundDepthOnly(
             const RenderTarget& target) const noexcept;
+        // Compute Shaderの入出力passです。computeWritableなtargetの表示用
+        // textureをUAVとして書けるstateへ、入力textureをcompute shaderから
+        // も読めるstateへ移し、descriptorと出力の寸法を返します。Endは
+        // 入力と出力をpixel shader用のstateへ戻し、例外を外へ出しません。
+        struct ComputeBindings final
+        {
+            D3D12_GPU_DESCRIPTOR_HANDLE output{};
+            std::array<D3D12_GPU_DESCRIPTOR_HANDLE, 2> inputs{};
+            std::uint32_t width{};
+            std::uint32_t height{};
+        };
+        [[nodiscard]] ComputeBindings BeginOffscreenCompute(
+            RenderTarget& target,
+            const std::array<GraphicsViewHandle, 2>& inputs);
+        void EndOffscreenCompute(
+            RenderTarget& target,
+            const std::array<GraphicsViewHandle, 2>& inputs) noexcept;
+        // 使わないtexture枠へ置く、次元ごとのnull SRVです。D3D11で
+        // nullptrをbindしたときと同じく、shaderの読み取り結果は0になります。
+        // 対応する次元はTEXTURE2D／TEXTURE2DARRAY／TEXTURECUBE／TEXTURE3D／
+        // BUFFERです。
+        [[nodiscard]] D3D12_GPU_DESCRIPTOR_HANDLE
+            NullShaderResourceDescriptor(D3D12_SRV_DIMENSION dimension);
+        // DDS cubeなど6面のimmutable textureを作り、TextureCubeのSRVと
+        // 組で返します。subresourcesは面ごとに全ミップを並べます（面数×
+        // ミップ数）。共通Backend契約には足さず、D3D12のAsset読み込み
+        // だけが使います。
+        [[nodiscard]] std::pair<GraphicsTextureHandle, GraphicsViewHandle>
+            CreateTextureCube(
+                const GraphicsTexture2DDescription& faceDescription,
+                std::span<const GraphicsTextureSubresourceData>
+                    subresources);
+        // IBLの事前畳み込み先です。Compute Shaderがミップごとの6面UAV
+        // （Texture2DArray）へ書き、描画ではTextureCubeとして読みます。
+        struct ComputeCubeTarget final
+        {
+            GraphicsTextureHandle texture;
+            GraphicsViewHandle view;
+            std::vector<D3D12_GPU_DESCRIPTOR_HANDLE> mipAccess;
+        };
+        // RGBA16Fで一辺size、mipLevels段のcubeをpixel shader用のstateで
+        // 作ります。
+        [[nodiscard]] ComputeCubeTarget CreateComputeCubeTarget(
+            std::uint32_t size,
+            std::uint32_t mipLevels);
+        // source（TextureCube、またはプローブの面を写す2D texture）を
+        // Compute Shaderからも読めるstateへ、targetの全ミップをUAVへ移し、
+        // sourceのbindingを返します。Endは両方をpixel shader用のstateへ
+        // 戻し、例外を外へ出しません。
+        [[nodiscard]] ShaderResourceBinding BeginCubeCompute(
+            const GraphicsViewHandle& source,
+            const GraphicsTextureHandle& target);
+        void EndCubeCompute(
+            const GraphicsViewHandle& source,
+            const GraphicsTextureHandle& target) noexcept;
 
     private:
         static constexpr std::size_t BackBufferCount = 2;
@@ -381,6 +439,10 @@ namespace LamaPon
         // handleが最後の参照を失ったresource / descriptorを、GPUの完了まで
         // 退避するBackend世代のdomainです。
         std::shared_ptr<Detail::D3D12ResourceDomain> m_resourceDomain;
+        // NullShaderResourceDescriptorが次元ごとに1つだけ作るslotです。
+        // domainと同じ寿命で、Shutdownで忘れます。
+        std::array<std::optional<std::uint32_t>, 5>
+            m_nullShaderResourceSlots{};
         // back bufferごとのframe allocatorと同じ寿命で再利用します。
         std::array<std::vector<FrameUploadChunk>, BackBufferCount>
             m_frameUploadArenas;

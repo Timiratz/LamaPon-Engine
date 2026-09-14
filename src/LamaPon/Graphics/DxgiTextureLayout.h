@@ -144,4 +144,53 @@ namespace LamaPon::Detail
                 "The texture subresource byte range is too small.");
         }
     }
+
+    // Texture3Dの1 mip分として渡されたCPU dataが、row pitch、slice pitch、
+    // byte範囲のすべてで必要量を満たすか検証します。slicePitchは省略できません。
+    inline void ValidateTexture3DSubresourceData(
+        const DXGI_FORMAT format,
+        const std::uint32_t width,
+        const std::uint32_t height,
+        const std::uint32_t depth,
+        const std::uint32_t mipLevels,
+        const std::uint32_t mipLevel,
+        const GraphicsTextureSubresourceData& data)
+    {
+        if (mipLevel >= mipLevels
+            || data.bytes.empty()
+            || data.rowPitch == 0
+            || data.slicePitch == 0)
+        {
+            throw std::invalid_argument(
+                "The Texture3D subresource data is incomplete.");
+        }
+
+        const auto mipWidth = std::max(width >> mipLevel, 1u);
+        const auto mipHeight = std::max(height >> mipLevel, 1u);
+        const auto mipDepth = std::max(depth >> mipLevel, 1u);
+        const auto layout = RequiredTextureLayout(
+            format,
+            mipWidth,
+            mipHeight);
+        if (data.rowPitch < layout.minimumRowBytes)
+        {
+            throw std::invalid_argument(
+                "The Texture3D row pitch is too small.");
+        }
+        const auto requiredSliceBytes =
+            static_cast<std::uint64_t>(data.rowPitch)
+                * (layout.rowCount - 1u)
+            + layout.minimumRowBytes;
+        const auto requiredBytes =
+            static_cast<std::uint64_t>(data.slicePitch)
+                * (mipDepth - 1u)
+            + requiredSliceBytes;
+        if (requiredSliceBytes > data.slicePitch
+            || data.slicePitch > data.bytes.size()
+            || requiredBytes > data.bytes.size())
+        {
+            throw std::invalid_argument(
+                "The Texture3D subresource byte range is too small.");
+        }
+    }
 }

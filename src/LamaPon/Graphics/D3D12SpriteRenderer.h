@@ -12,9 +12,12 @@
 #include <wrl/client.h>
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -30,6 +33,8 @@ namespace LamaPon
     struct MotionBlurSettings;
     struct ScreenOutlineSettings;
     struct ScreenSpaceLensFlareSettings;
+    struct SkySettings;
+    struct SkySunDescription;
     struct TemporalAntiAliasingInputs;
     struct TemporalAntiAliasingSettings;
     struct VolumetricLightInputs;
@@ -157,6 +162,40 @@ namespace LamaPon::Detail
         void MeasureLuminance(
             RenderTarget& target,
             const GraphicsViewHandle& fallbackTexture);
+        // VSMain / PSMainを持つプロジェクトのScreenEffectを
+        // D3D11と同じb0とt0〜t3で実行します。PrepareはD3D11と同じく
+        // 保存を250ミリ秒ごとに確かめ、compileに失敗したときは
+        // describeFailureの説明を返しつつ直前の正常版を保ちます。
+        [[nodiscard]] bool PrepareScreenEffect(
+            AssetManager& assets,
+            const std::filesystem::path& shaderPath,
+            const std::function<std::string(const char*)>& describeFailure,
+            std::uint64_t* generation,
+            std::string* error);
+        void ApplyScreenEffect(
+            RenderTarget& target,
+            const GraphicsViewHandle& fallbackTexture,
+            AssetManager& assets,
+            const std::filesystem::path& shaderPath,
+            const std::array<GraphicsViewHandle, 2>& auxiliaryTextures,
+            const std::array<DirectX::XMFLOAT4, 8>& parameters,
+            const DirectX::XMFLOAT4& depthParameters,
+            const DirectX::XMFLOAT4& depthUnprojection);
+        // 次のPrepareで、保存時刻に関係なく作り直させます。
+        void InvalidateScreenEffect(
+            AssetManager& assets,
+            const std::filesystem::path& shaderPath) noexcept;
+        // D3D11のEnvironmentRenderer::DrawSkyと同じグラデーションまたは
+        // cubemapの空と太陽円盤を、深度を読まず書かずに現在の出力全体へ
+        // 描きます。深度専用の描画先ではD3D11と同じく色を残さず、
+        // TextureCubeでないcubemapはグラデーションへ戻します。
+        void DrawSky(
+            DirectX::FXMMATRIX view,
+            DirectX::CXMMATRIX projection,
+            const SkySettings& settings,
+            const GraphicsViewHandle& cubemap,
+            const SkySunDescription* sun,
+            const GraphicsViewHandle& fallbackTexture);
 
     private:
         // quadを塗るpixel shaderです。None以外は出力全体へ1枚を描く
@@ -179,12 +218,13 @@ namespace LamaPon::Detail
             LensFlareStreak,
             LensFlareComposite,
             ReflectionDepthLinearize,
-            ReflectionDepthDownsample
+            ReflectionDepthDownsample,
+            Sky
         };
 
         // PSOの組み合わせ数です。深度はprimary / 無し、出力はRGBA8 /
         // RGBA16F / R8 / R32F、blendは4種と通常 / scissor passの2通りです。
-        static constexpr std::size_t FullscreenProgramCount = 16u;
+        static constexpr std::size_t FullscreenProgramCount = 17u;
         static constexpr std::size_t DepthFormatVariants = 2u;
         static constexpr std::size_t ColorFormatVariants = 4u;
         static constexpr std::size_t BlendVariants = 8u;
@@ -216,6 +256,33 @@ namespace LamaPon::Detail
                 pipelineStates;
             std::uint64_t generation{};
         };
+
+        struct ScreenShaderEntry final
+        {
+            Microsoft::WRL::ComPtr<ID3DBlob> vertexShader;
+            Microsoft::WRL::ComPtr<ID3DBlob> pixelShader;
+            std::array<
+                Microsoft::WRL::ComPtr<ID3D12PipelineState>,
+                ColorFormatVariants>
+                pipelineStates;
+            std::uint64_t generation{};
+            std::string error;
+            // D3D11のScreenShaderEntryと同じ保存監視の状態です。
+            std::chrono::steady_clock::time_point nextCheck{};
+            std::filesystem::file_time_type writeTime{};
+            bool observed{};
+            bool forceReload{};
+            bool sourceExists{};
+        };
+
+        struct ScreenEffectConstants final
+        {
+            std::array<DirectX::XMFLOAT4, 8> parameters{};
+            DirectX::XMFLOAT4 screenSize{};
+            DirectX::XMFLOAT4 depthParameters{};
+            DirectX::XMFLOAT4 depthUnprojection{};
+        };
+        static_assert(sizeof(ScreenEffectConstants) == 176u);
 
         // LamaPonEnvironment.hlslのVolumetricBufferと同じ384 bytesです。
         // root constantsの上限を越えるためupload CBVとして渡します。
@@ -256,9 +323,14 @@ namespace LamaPon::Detail
             DXGI_FORMAT colorFormat,
             DXGI_FORMAT depthFormat,
             FullscreenProgram program);
+        [[nodiscard]] ID3D12PipelineState* ScreenEffectPipelineState(
+            ScreenShaderEntry& shader,
+            DXGI_FORMAT colorFormat);
 
         D3D12Backend* m_backend{};
         Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSignature;
+        Microsoft::WRL::ComPtr<ID3D12RootSignature>
+            m_screenEffectRootSignature;
         Microsoft::WRL::ComPtr<ID3DBlob> m_vertexShader;
         Microsoft::WRL::ComPtr<ID3DBlob> m_pixelShader;
         Microsoft::WRL::ComPtr<ID3DBlob> m_toneMapPixelShader;
@@ -278,6 +350,7 @@ namespace LamaPon::Detail
             m_reflectionDepthLinearizePixelShader;
         Microsoft::WRL::ComPtr<ID3DBlob>
             m_reflectionDepthDownsamplePixelShader;
+        Microsoft::WRL::ComPtr<ID3DBlob> m_skyPixelShader;
         // pixel shader、深度format、出力format、blend modeごとに、通常pass
         // とscissor passのcull違いを持ちます。
         std::array<
@@ -289,8 +362,11 @@ namespace LamaPon::Detail
             m_pipelineStates;
         std::unordered_map<std::filesystem::path, CustomShaderEntry>
             m_customShaders;
+        std::unordered_map<std::filesystem::path, ScreenShaderEntry>
+            m_screenShaders;
         CustomShaderEntry* m_activeCustomShader{};
         std::uint64_t m_nextCustomShaderGeneration{ 1 };
+        std::uint64_t m_nextScreenShaderGeneration{ 1 };
         Microsoft::WRL::ComPtr<ID3D12Resource> m_indexBuffer;
         GraphicsViewHandle m_fallbackTexture;
         std::vector<QueuedSprite> m_sprites;

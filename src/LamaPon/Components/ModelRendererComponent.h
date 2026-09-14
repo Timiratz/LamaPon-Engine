@@ -423,9 +423,12 @@ namespace LamaPon
         // 外部マテリアルの全textureをBackend-neutralな1要求へまとめます。
         [[nodiscard]] LitTextureRequest
             BuildLitTextureRequest() const noexcept;
+        // occludedOnlyはD3D11のDrawCommonLit(…, true)と同じく、CMO／SDKMESH／
+        // VBOのMaterial custom shaderの遮蔽表示だけを描きます。
         void DrawD3D12Model(
             DirectX::FXMMATRIX view,
-            DirectX::CXMMATRIX projection);
+            DirectX::CXMMATRIX projection,
+            bool occludedOnly = false);
         struct CommonLitResources;
 
         void ReloadModel();

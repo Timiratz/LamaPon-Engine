@@ -213,9 +213,10 @@ namespace LamaPon
                 TextureLoader::TextureUsage usage
                     = TextureLoader::TextureUsage::Color);
 
-        // エンコード済みWIC画像または対応2D DDSをdisk cacheやD3D11互換
-        // viewを介さず、現在のBackend世代へ直接取り込みます。モデル
-        // Importerなど、元画像をメモリ上に持つ内部経路向けです。
+        // エンコード済みWIC画像または対応DDS（2D / TextureCube）をdisk
+        // cacheやD3D11互換viewを介さず、現在のBackend世代へ直接
+        // 取り込みます。モデルImporterなど、元画像をメモリ上に持つ内部
+        // 経路向けです。
         [[nodiscard]] GraphicsViewHandle
             CreateTextureViewHandleFromMemory(
                 std::span<const std::uint8_t> bytes,

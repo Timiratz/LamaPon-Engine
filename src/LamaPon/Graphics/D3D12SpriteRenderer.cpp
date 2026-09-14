@@ -11,12 +11,15 @@
 #include <d3dcompiler.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <iterator>
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <utility>
 
 namespace
@@ -1130,6 +1133,99 @@ float4 ReflectionDepthDownsamplePixelShader(PixelInput input) : SV_Target
 }
 )";
 
+    // LamaPonEnvironment.hlslのPSSkyと同じグラデーションまたはcubemapの
+    // 空です。Spriteのroot signatureに合わせ、4色をb1、逆view-projection・
+    // カメラ・太陽の向き・cubemapの有無をb2のroot constants、cubemapをt1で
+    // 受け取ります。uvはviewport全体を覆うquadのTEXCOORDで、D3D11の
+    // フルスクリーン三角形と同じ画素中心の値です。
+    constexpr char SkyShaderSource[] = R"(
+cbuffer SkyColors : register(b1)
+{
+    // rgb=天頂の色, a=明るさ
+    float4 TopColor;
+    float4 HorizonColor;
+    float4 GroundColor;
+    // rgb=太陽の色×強さ, w=0より大きければ描く。
+    float4 SunDiskColor;
+};
+
+cbuffer SkyView : register(b2)
+{
+    row_major float4x4 InverseViewProjection;
+    float4 CameraPosition;
+    // xyz=太陽へ向かう向き, w=角半径（ラジアン）。
+    float4 SunDirection;
+    // x=キューブマップ使用, y/z/w=予約
+    float4 SkyOptions;
+};
+
+TextureCube SkyCubemap : register(t1);
+SamplerState SkySampler : register(s0);
+
+struct PixelInput
+{
+    float4 color : COLOR;
+    float2 textureCoordinate : TEXCOORD;
+    float4 position : SV_Position;
+};
+
+float4 SkyPixelShader(PixelInput input) : SV_Target
+{
+    const float2 clip = float2(
+        input.textureCoordinate.x * 2.0f - 1.0f,
+        1.0f - input.textureCoordinate.y * 2.0f);
+    const float4 farPosition = mul(
+        float4(clip, 1.0f, 1.0f),
+        InverseViewProjection);
+    const float3 worldPosition =
+        farPosition.xyz / max(abs(farPosition.w), 0.00001f);
+    const float3 direction = normalize(
+        worldPosition - CameraPosition.xyz);
+    if (SkyOptions.x > 0.5f)
+    {
+        const float3 cubeColor = SkyCubemap.SampleLevel(
+            SkySampler,
+            direction,
+            0.0f).rgb;
+        return float4(
+            cubeColor * max(TopColor.a, 0.0f),
+            1.0f);
+    }
+    const float above = smoothstep(
+        -0.03f, 0.85f, direction.y);
+    const float below = smoothstep(
+        0.0f, 0.65f, -direction.y);
+    float3 color = lerp(
+        HorizonColor.rgb,
+        TopColor.rgb,
+        above);
+    color = lerp(color, GroundColor.rgb, below);
+
+    if (SunDiskColor.a > 0.0f)
+    {
+        const float cosine = dot(direction, SunDirection.xyz);
+        const float radius = max(SunDirection.w, 0.0001f);
+        const float disk = smoothstep(
+            cos(radius * 1.05f),
+            cos(radius * 0.95f),
+            cosine);
+        const float glow = pow(
+            saturate(
+                (cosine - cos(radius * 30.0f))
+                / max(1.0f - cos(radius * 30.0f), 0.0001f)),
+            4.0f);
+        const float horizonFade = smoothstep(
+            -0.12f, 0.02f, SunDirection.y);
+        color += SunDiskColor.rgb * glow * 0.35f * horizonFade;
+        color = lerp(
+            color,
+            SunDiskColor.rgb,
+            disk * horizonFade);
+    }
+    return float4(color * max(TopColor.a, 0.0f), 1.0f);
+}
+)";
+
     void ThrowIfFailed(
         const HRESULT result,
         const char* const operation)
@@ -1145,13 +1241,16 @@ float4 ReflectionDepthDownsamplePixelShader(PixelInput input) : SV_Target
 
     [[nodiscard]] Microsoft::WRL::ComPtr<ID3DBlob> CompileSpriteShader(
         const char* const entryPoint,
-        const char* const target)
+        const char* const target,
+        const std::string_view source = std::string_view{
+            SpriteShaderSource,
+            sizeof(SpriteShaderSource) - 1u })
     {
         Microsoft::WRL::ComPtr<ID3DBlob> bytecode;
         Microsoft::WRL::ComPtr<ID3DBlob> errors;
         const HRESULT result = D3DCompile(
-            SpriteShaderSource,
-            sizeof(SpriteShaderSource) - 1u,
+            source.data(),
+            source.size(),
             "LamaPonD3D12Sprite",
             nullptr,
             nullptr,
@@ -1405,6 +1504,12 @@ namespace LamaPon::Detail
         m_reflectionDepthDownsamplePixelShader = CompileSpriteShader(
             "ReflectionDepthDownsamplePixelShader",
             "ps_5_0");
+        m_skyPixelShader = CompileSpriteShader(
+            "SkyPixelShader",
+            "ps_5_0",
+            std::string_view{
+                SkyShaderSource,
+                sizeof(SkyShaderSource) - 1u });
 
         D3D12_DESCRIPTOR_RANGE textureRange{};
         textureRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
@@ -1537,6 +1642,78 @@ namespace LamaPon::Detail
                 serializedRoot->GetBufferSize(),
                 IID_PPV_ARGS(m_rootSignature.ReleaseAndGetAddressOf())),
             "ID3D12Device::CreateRootSignature(sprite)");
+
+        // ScreenEffectはフルスクリーン三角形用のVSMainも差し替える
+        // ため、Spriteのviewport変換とは分離した小さなrootを使います。
+        std::array<D3D12_DESCRIPTOR_RANGE, 4> screenTextureRanges{};
+        for (UINT index{}; index < screenTextureRanges.size(); ++index)
+        {
+            auto& range = screenTextureRanges[index];
+            range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+            range.NumDescriptors = 1;
+            range.BaseShaderRegister = index;
+        }
+        std::array<D3D12_ROOT_PARAMETER, 5> screenParameters{};
+        screenParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+        screenParameters[0].Descriptor.ShaderRegister = 0;
+        screenParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        for (std::size_t index{}; index < screenTextureRanges.size(); ++index)
+        {
+            auto& parameter = screenParameters[index + 1u];
+            parameter.ParameterType =
+                D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+            parameter.DescriptorTable.NumDescriptorRanges = 1;
+            parameter.DescriptorTable.pDescriptorRanges =
+                &screenTextureRanges[index];
+            parameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        }
+        D3D12_STATIC_SAMPLER_DESC screenSampler{};
+        screenSampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+        screenSampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+        screenSampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+        screenSampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+        screenSampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+        screenSampler.MaxLOD = D3D12_FLOAT32_MAX;
+        screenSampler.ShaderRegister = 0;
+        screenSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        D3D12_ROOT_SIGNATURE_DESC screenRootDescription{};
+        screenRootDescription.NumParameters =
+            static_cast<UINT>(screenParameters.size());
+        screenRootDescription.pParameters = screenParameters.data();
+        screenRootDescription.NumStaticSamplers = 1;
+        screenRootDescription.pStaticSamplers = &screenSampler;
+        screenRootDescription.Flags =
+            D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+        Microsoft::WRL::ComPtr<ID3DBlob> serializedScreenRoot;
+        Microsoft::WRL::ComPtr<ID3DBlob> screenRootErrors;
+        const HRESULT serializedScreen = D3D12SerializeRootSignature(
+            &screenRootDescription,
+            D3D_ROOT_SIGNATURE_VERSION_1,
+            serializedScreenRoot.GetAddressOf(),
+            screenRootErrors.GetAddressOf());
+        if (FAILED(serializedScreen))
+        {
+            std::string message =
+                "D3D12SerializeRootSignature(screen effect) failed";
+            if (screenRootErrors != nullptr
+                && screenRootErrors->GetBufferSize() > 0)
+            {
+                message += ": ";
+                message.append(
+                    static_cast<const char*>(
+                        screenRootErrors->GetBufferPointer()),
+                    screenRootErrors->GetBufferSize());
+            }
+            throw std::runtime_error(message);
+        }
+        ThrowIfFailed(
+            device->CreateRootSignature(
+                0,
+                serializedScreenRoot->GetBufferPointer(),
+                serializedScreenRoot->GetBufferSize(),
+                IID_PPV_ARGS(
+                    m_screenEffectRootSignature.ReleaseAndGetAddressOf())),
+            "ID3D12Device::CreateRootSignature(screen effect)");
 
         const auto indexBytes =
             MaximumSpritesPerDraw * IndicesPerSprite
@@ -2457,6 +2634,97 @@ namespace LamaPon::Detail
         return true;
     }
 
+    void D3D12SpriteRenderer::DrawSky(
+        const DirectX::FXMMATRIX view,
+        const DirectX::CXMMATRIX projection,
+        const SkySettings& settings,
+        const GraphicsViewHandle& cubemap,
+        const SkySunDescription* const sun,
+        const GraphicsViewHandle& fallbackTexture)
+    {
+        // 深度プリパス中のように色の描画先が無いときは、D3D11で
+        // RTV無しに描いた場合と同じく何も残しません。
+        if (!settings.enabled
+            || m_backend->ActiveColorFormat() == DXGI_FORMAT_UNKNOWN)
+        {
+            return;
+        }
+        using namespace DirectX;
+        // EnvironmentRenderer::DrawSkyと同じ値を、b1の4色とb2の逆
+        // view-projection・カメラ位置・太陽の向きへ詰めます。
+        XMVECTOR determinant{};
+        XMFLOAT4X4 inverseViewProjection{};
+        XMStoreFloat4x4(
+            &inverseViewProjection,
+            XMMatrixInverse(&determinant, view * projection));
+        const XMMATRIX inverseView = XMMatrixInverse(&determinant, view);
+        XMFLOAT4 cameraPosition{};
+        XMStoreFloat4(&cameraPosition, inverseView.r[3]);
+
+        std::array<float, 16> colors{
+            settings.topColor.x,
+            settings.topColor.y,
+            settings.topColor.z,
+            settings.intensity,
+            settings.horizonColor.x,
+            settings.horizonColor.y,
+            settings.horizonColor.z,
+            1.0f,
+            settings.groundColor.x,
+            settings.groundColor.y,
+            settings.groundColor.z,
+            1.0f,
+            0.0f,
+            0.0f,
+            0.0f,
+            0.0f
+        };
+        std::array<float, 32> viewConstants{};
+        std::memcpy(
+            viewConstants.data(),
+            &inverseViewProjection,
+            sizeof(inverseViewProjection));
+        std::memcpy(
+            viewConstants.data() + 16,
+            &cameraPosition,
+            sizeof(cameraPosition));
+        if (sun != nullptr)
+        {
+            const auto length = std::sqrt(
+                sun->directionToSun.x * sun->directionToSun.x
+                + sun->directionToSun.y * sun->directionToSun.y
+                + sun->directionToSun.z * sun->directionToSun.z);
+            const float scale =
+                length > 0.0001f ? 1.0f / length : 0.0f;
+            viewConstants[20] = sun->directionToSun.x * scale;
+            viewConstants[21] = sun->directionToSun.y * scale;
+            viewConstants[22] = sun->directionToSun.z * scale;
+            // D3D11と同じく、角半径0でも太陽円盤が消えない最小値です。
+            viewConstants[23] = std::max(sun->angularRadius, 0.004625f);
+            colors[12] = sun->color.x;
+            colors[13] = sun->color.y;
+            colors[14] = sun->color.z;
+            colors[15] = 1.0f;
+        }
+        // TextureCubeでないcubemapはD3D11と同じくグラデーションへ戻します。
+        const auto cubemapBinding =
+            m_backend->TryResolveShaderResource(cubemap);
+        const bool useCubemap = cubemapBinding.has_value()
+            && cubemapBinding->dimension == D3D12_SRV_DIMENSION_TEXTURECUBE;
+        viewConstants[24] = useCubemap ? 1.0f : 0.0f;
+        DrawFullscreen(
+            fallbackTexture,
+            fallbackTexture,
+            FullscreenProgram::Sky,
+            colors,
+            {
+                useCubemap ? cubemap : GraphicsViewHandle{},
+                GraphicsViewHandle{},
+                GraphicsViewHandle{}
+            },
+            viewConstants);
+    }
+
     void D3D12SpriteRenderer::MeasureLuminance(
         RenderTarget& target,
         const GraphicsViewHandle& fallbackTexture)
@@ -2496,6 +2764,243 @@ namespace LamaPon::Detail
             throw;
         }
         m_backend->BindOffscreenTarget(target);
+    }
+
+    bool D3D12SpriteRenderer::PrepareScreenEffect(
+        AssetManager& assets,
+        const std::filesystem::path& shaderPath,
+        const std::function<std::string(const char*)>& describeFailure,
+        std::uint64_t* const generation,
+        std::string* const error)
+    {
+        if (generation != nullptr)
+        {
+            *generation = 0;
+        }
+        if (error != nullptr)
+        {
+            error->clear();
+        }
+        if (shaderPath.empty())
+        {
+            return false;
+        }
+
+        const auto absolutePath =
+            assets.ResolvePath(shaderPath).lexically_normal();
+        auto& entry = m_screenShaders[absolutePath];
+
+        // D3D11のQueueScreenEffectと同じく、保存の確認は250ミリ秒ごとに
+        // 行い、時刻か有無が変わったときだけ作り直します。
+        const auto now = std::chrono::steady_clock::now();
+        if (!entry.observed
+            || entry.forceReload
+            || now >= entry.nextCheck)
+        {
+            entry.nextCheck = now + std::chrono::milliseconds(250);
+            const bool archived = assets.IsArchived();
+            std::error_code fileError;
+            const bool sourceExists = assets.FileExists(absolutePath);
+            const auto writeTime = (sourceExists && !archived)
+                ? std::filesystem::last_write_time(absolutePath, fileError)
+                : std::filesystem::file_time_type{};
+            const bool changed = !entry.observed
+                || entry.forceReload
+                || entry.sourceExists != sourceExists
+                || (sourceExists
+                    && !archived
+                    && entry.writeTime != writeTime);
+            if (changed)
+            {
+                entry.observed = true;
+                entry.forceReload = false;
+                entry.sourceExists = sourceExists;
+                entry.writeTime = writeTime;
+                if (!sourceExists)
+                {
+                    entry.error =
+                        "Screen effect shader file was not found: "
+                        + PathToUtf8(absolutePath);
+                }
+                else
+                {
+                    try
+                    {
+                        auto vertexShader = CompileShaderCached(
+                            assets,
+                            absolutePath,
+                            "VSMain",
+                            "vs_5_0");
+                        auto pixelShader = CompileShaderCached(
+                            assets,
+                            absolutePath,
+                            "PSMain",
+                            "ps_5_0");
+                        entry.vertexShader = std::move(vertexShader);
+                        entry.pixelShader = std::move(pixelShader);
+                        for (auto& pipeline : entry.pipelineStates)
+                        {
+                            pipeline.Reset();
+                        }
+                        entry.generation = m_nextScreenShaderGeneration++;
+                        if (m_nextScreenShaderGeneration == 0)
+                        {
+                            m_nextScreenShaderGeneration = 1;
+                        }
+                        entry.error.clear();
+                    }
+                    catch (const std::exception& exception)
+                    {
+                        // 再compileに失敗しても、直前の正常版は維持します。
+                        entry.error = describeFailure
+                            ? describeFailure(exception.what())
+                            : std::string(exception.what());
+                    }
+                }
+            }
+        }
+
+        if (generation != nullptr)
+        {
+            *generation = entry.generation;
+        }
+        if (error != nullptr)
+        {
+            *error = entry.error;
+        }
+        return entry.vertexShader != nullptr
+            && entry.pixelShader != nullptr;
+    }
+
+    void D3D12SpriteRenderer::ApplyScreenEffect(
+        RenderTarget& target,
+        const GraphicsViewHandle& fallbackTexture,
+        AssetManager& assets,
+        const std::filesystem::path& shaderPath,
+        const std::array<GraphicsViewHandle, 2>& auxiliaryTextures,
+        const std::array<DirectX::XMFLOAT4, 8>& parameters,
+        const DirectX::XMFLOAT4& depthParameters,
+        const DirectX::XMFLOAT4& depthUnprojection)
+    {
+        const auto absolutePath =
+            assets.ResolvePath(shaderPath).lexically_normal();
+        const auto found = m_screenShaders.find(absolutePath);
+        if (found == m_screenShaders.end()
+            || found->second.vertexShader == nullptr
+            || found->second.pixelShader == nullptr)
+        {
+            throw std::logic_error(
+                "The DirectX 12 screen effect was not prepared.");
+        }
+
+        const auto source = m_backend->BeginOffscreenPostProcess(target);
+        try
+        {
+            std::array<GraphicsViewHandle, 4> views{
+                source,
+                auxiliaryTextures[0]
+                    ? auxiliaryTextures[0]
+                    : fallbackTexture,
+                auxiliaryTextures[1]
+                    ? auxiliaryTextures[1]
+                    : fallbackTexture,
+                target.DepthViewHandle()
+                    ? target.DepthViewHandle()
+                    : fallbackTexture
+            };
+            std::array<D3D12_GPU_DESCRIPTOR_HANDLE, 4> descriptors{};
+            for (std::size_t index{}; index < views.size(); ++index)
+            {
+                const auto binding =
+                    m_backend->TryResolveShaderResource(views[index]);
+                if (!binding)
+                {
+                    throw std::invalid_argument(
+                        "A DirectX 12 screen effect requires current "
+                        "source, auxiliary, and depth views.");
+                }
+                descriptors[index] = binding->descriptor;
+            }
+            auto* const descriptorHeap =
+                m_backend->ShaderResourceDescriptorHeap();
+            if (descriptorHeap == nullptr)
+            {
+                throw std::logic_error(
+                    "A DirectX 12 screen effect requires a shader resource "
+                    "descriptor heap.");
+            }
+
+            ScreenEffectConstants constants;
+            constants.parameters = parameters;
+            constants.screenSize = {
+                static_cast<float>(std::max(target.Width(), 1u)),
+                static_cast<float>(std::max(target.Height(), 1u)),
+                1.0f / static_cast<float>(std::max(target.Width(), 1u)),
+                1.0f / static_cast<float>(std::max(target.Height(), 1u))
+            };
+            constants.depthParameters = depthParameters;
+            constants.depthUnprojection = depthUnprojection;
+            const auto upload = m_backend->AllocateFrameUpload(
+                sizeof(constants),
+                D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+            std::memcpy(upload.data, &constants, sizeof(constants));
+
+            auto* const commandList = m_backend->BeginFrameCommands();
+            ID3D12DescriptorHeap* heaps[]{ descriptorHeap };
+            commandList->SetGraphicsRootSignature(
+                m_screenEffectRootSignature.Get());
+            commandList->SetPipelineState(ScreenEffectPipelineState(
+                found->second,
+                m_backend->ActiveColorFormat()));
+            commandList->SetDescriptorHeaps(1, heaps);
+            commandList->SetGraphicsRootConstantBufferView(
+                0,
+                upload.gpuAddress);
+            for (std::size_t index{}; index < descriptors.size(); ++index)
+            {
+                commandList->SetGraphicsRootDescriptorTable(
+                    static_cast<UINT>(index + 1u),
+                    descriptors[index]);
+            }
+            const auto& viewport = m_backend->ActiveViewport();
+            const auto& scissor = m_backend->ActiveScissorRectangle();
+            commandList->RSSetViewports(1, &viewport);
+            commandList->RSSetScissorRects(1, &scissor);
+            commandList->IASetPrimitiveTopology(
+                D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            commandList->IASetVertexBuffers(0, 0, nullptr);
+            commandList->IASetIndexBuffer(nullptr);
+            commandList->DrawInstanced(3, 1, 0, 0);
+        }
+        catch (...)
+        {
+            m_backend->AbortOffscreenPostProcess(target);
+            throw;
+        }
+        m_backend->EndOffscreenPostProcess(target);
+    }
+
+    void D3D12SpriteRenderer::InvalidateScreenEffect(
+        AssetManager& assets,
+        const std::filesystem::path& shaderPath) noexcept
+    {
+        if (shaderPath.empty())
+        {
+            return;
+        }
+        try
+        {
+            // D3D11と同じく、直前の正常版は作り直せるまで残します。
+            const auto found = m_screenShaders.find(
+                assets.ResolvePath(shaderPath).lexically_normal());
+            if (found != m_screenShaders.end())
+            {
+                found->second.forceReload = true;
+            }
+        }
+        catch (...)
+        {
+        }
     }
 
     void D3D12SpriteRenderer::ApplyPostProcessPass(
@@ -2597,6 +3102,25 @@ namespace LamaPon::Detail
             }
             m_auxiliaryTextures[1] = depth->descriptor;
             m_auxiliaryTextures[2] = shadow->descriptor;
+        }
+        else if (program == FullscreenProgram::Sky)
+        {
+            // cubemapを使わないときも、shaderのt1へnull TextureCubeを
+            // 置きます。
+            const auto cubemap = m_backend->TryResolveShaderResource(
+                m_auxiliaryViews[0]);
+            try
+            {
+                m_auxiliaryTextures[0] = cubemap.has_value()
+                    ? cubemap->descriptor
+                    : m_backend->NullShaderResourceDescriptor(
+                        D3D12_SRV_DIMENSION_TEXTURECUBE);
+            }
+            catch (...)
+            {
+                Abort(token);
+                throw;
+            }
         }
         else if (program == FullscreenProgram::ScreenOutline
             || program == FullscreenProgram::MotionBlur
@@ -2850,6 +3374,17 @@ namespace LamaPon::Detail
                     0);
             }
         }
+        else if (m_program == FullscreenProgram::Sky)
+        {
+            commandList->SetGraphicsRootDescriptorTable(
+                3,
+                m_auxiliaryTextures[0]);
+            commandList->SetGraphicsRoot32BitConstants(
+                5,
+                static_cast<UINT>(m_matrixConstants.size()),
+                m_matrixConstants.data(),
+                0);
+        }
         commandList->IASetPrimitiveTopology(
             D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         commandList->IASetVertexBuffers(0, 1, &vertexBufferView);
@@ -2885,6 +3420,57 @@ namespace LamaPon::Detail
         m_sprites.clear();
     }
 
+    ID3D12PipelineState* D3D12SpriteRenderer::ScreenEffectPipelineState(
+        ScreenShaderEntry& shader,
+        const DXGI_FORMAT colorFormat)
+    {
+        const std::size_t formatIndex = colorFormat
+                == D3D12Backend::PrimaryColorFormat
+            ? 0u
+            : colorFormat == DXGI_FORMAT_R16G16B16A16_FLOAT
+                ? 1u
+                : colorFormat == DXGI_FORMAT_R8_UNORM
+                    ? 2u
+                    : colorFormat == DXGI_FORMAT_R32_FLOAT
+                        ? 3u
+                        : throw std::invalid_argument(
+                            "The active DirectX 12 screen effect target "
+                            "format is unsupported.");
+        auto& pipeline = shader.pipelineStates[formatIndex];
+        if (pipeline != nullptr)
+        {
+            return pipeline.Get();
+        }
+
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC description{};
+        description.pRootSignature = m_screenEffectRootSignature.Get();
+        description.VS = {
+            shader.vertexShader->GetBufferPointer(),
+            shader.vertexShader->GetBufferSize()
+        };
+        description.PS = {
+            shader.pixelShader->GetBufferPointer(),
+            shader.pixelShader->GetBufferSize()
+        };
+        description.BlendState =
+            MakeBlendDescription(SpriteBlendMode::Opaque);
+        description.SampleMask = std::numeric_limits<UINT>::max();
+        description.RasterizerState = MakeRasterizerDescription(true);
+        description.DepthStencilState = MakeDepthStencilDescription();
+        description.PrimitiveTopologyType =
+            D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        description.NumRenderTargets = 1;
+        description.RTVFormats[0] = colorFormat;
+        description.DSVFormat = DXGI_FORMAT_UNKNOWN;
+        description.SampleDesc.Count = 1;
+        ThrowIfFailed(
+            m_backend->Device()->CreateGraphicsPipelineState(
+                &description,
+                IID_PPV_ARGS(pipeline.ReleaseAndGetAddressOf())),
+            "ID3D12Device::CreateGraphicsPipelineState(screen effect)");
+        return pipeline.Get();
+    }
+
     ID3D12PipelineState* D3D12SpriteRenderer::PipelineState(
         const SpriteBlendMode blend,
         const bool scissored,
@@ -2898,7 +3484,7 @@ namespace LamaPon::Detail
             throw std::invalid_argument(
                 "The sprite blend mode is invalid.");
         }
-        if (program > FullscreenProgram::ReflectionDepthDownsample)
+        if (program > FullscreenProgram::Sky)
         {
             throw std::invalid_argument(
                 "The sprite pixel program is invalid.");
@@ -3027,6 +3613,9 @@ namespace LamaPon::Detail
             break;
         case FullscreenProgram::ReflectionDepthDownsample:
             pixelShader = m_reflectionDepthDownsamplePixelShader.Get();
+            break;
+        case FullscreenProgram::Sky:
+            pixelShader = m_skyPixelShader.Get();
             break;
         case FullscreenProgram::None:
             break;

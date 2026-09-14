@@ -1,5 +1,7 @@
 #include "LamaPon/Graphics/D3D12RenderServices.h"
 
+#include "LamaPon/Graphics/ClusteredLights.h"
+#include "LamaPon/Graphics/D3D12EnvironmentPrefilter.h"
 #include "LamaPon/Graphics/D3D12Backend.h"
 #include "LamaPon/Graphics/GraphicsRenderServices.h"
 
@@ -12,7 +14,9 @@
 #include <cstddef>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <numbers>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -65,6 +69,37 @@ cbuffer PrimitiveConstants : register(b0)
     // x=thickness, y=roughness cutoff, z=last Hi-Z mip, w=reserved.
     float4 ScreenReflectionQuality;
     row_major float4x4 ScreenReflectionPreviousViewProjection;
+    // IBL. x=intensity, y=enabled, z=last prefiltered specular mip,
+    // w=reserved.
+    float4 EnvironmentParameters;
+    // Fog. rgb=color, w=0 for the LitEffect range/exponential fog or 1 for
+    // the DirectXTK linear view-depth fog.
+    float4 FogColorModel;
+    // x=start, y=end, z=density, w=enabled.
+    float4 FogParameters;
+    // 法線用の逆転置行列です（非一様スケールでも面に垂直なまま）。
+    row_major float4x4 WorldInverseTranspose;
+    // Forward+. xyz=grid size, w=enabled.
+    float4 ClusteredParameters;
+    // x=near, y=far, z=log(far/near), w=lights per cluster.
+    float4 ClusteredDepthParameters;
+    // xy=1 / target size, z=light count, w=reserved.
+    float4 ClusteredScreenParameters;
+    // Baked GI. xyz=volume minimum corner, w=enabled.
+    float4 BakedGiVolumeMinimum;
+    // xyz=1 / volume size, w=intensity.
+    float4 BakedGiInverseSize;
+    // xyz=probe count per axis, w=reserved.
+    float4 BakedGiResolution;
+    // Reflection probe box projection. xyz=box center, w=reserved.
+    float4 ReflectionBoxCenter;
+    // xyz=box half extents, w=enabled.
+    float4 ReflectionBoxParameters;
+    // The same box projection for the blended second probe.
+    float4 ReflectionSecondaryBoxCenter;
+    float4 ReflectionSecondaryBoxParameters;
+    // x=second probe weight (0 disables blending), y=its last specular mip.
+    float4 ReflectionBlendParameters;
 };
 
 Texture2D AlbedoTexture : register(t0);
@@ -80,8 +115,110 @@ Texture2D ScreenAmbientOcclusionTexture : register(t9);
 // SSR. t10 is the previous HDR color, t11 the Hi-Z distance pyramid.
 Texture2D ScreenReflectionColorTexture : register(t10);
 Texture2D ScreenReflectionDepthTexture : register(t11);
+// IBL. t12 is the prefiltered specular (or source) cube, t13 the irradiance.
+TextureCube EnvironmentMap : register(t12);
+TextureCube IrradianceMap : register(t13);
+// Forward+. t14 are the lights, t15 the per-cluster light numbers and t16
+// the per-cluster counts written by LamaPonLightCulling.hlsl.
+struct ClusterLight
+{
+    float4 PositionRange;
+    float4 ColorIntensity;
+    float4 DirectionInnerCosine;
+    // x=outer cosine, y=type (0 point, 1 spot), z=shadow reference.
+    float4 ExtraParameters;
+};
+StructuredBuffer<ClusterLight> ClusterLights : register(t14);
+StructuredBuffer<uint> ClusterLightIndexList : register(t15);
+StructuredBuffer<uint> ClusterLightCounts : register(t16);
+// Baked GI. t17-t19 are the red, green and blue L1 spherical harmonics
+// volumes (texel = x, y, z, constant term).
+Texture3D BakedGiRedTexture : register(t17);
+Texture3D BakedGiGreenTexture : register(t18);
+Texture3D BakedGiBlueTexture : register(t19);
+// The blended second reflection probe. t20 is its prefiltered specular cube
+// and t21 its irradiance cube.
+TextureCube SecondaryEnvironmentMap : register(t20);
+TextureCube SecondaryIrradianceMap : register(t21);
 SamplerState AlbedoSampler : register(s0);
 SamplerComparisonState ShadowSampler : register(s1);
+
+// D3D11のLamaPonLit.hlslのEvaluateBakedAmbientと同じ、場所ごとの環境光です。
+// ボリューム内はベイクした間接光、範囲外や無効時は通常の環境光を返し、
+// ボリュームの縁5%の帯で滑らかに混ぜます。
+float3 EvaluateBakedAmbient(float3 worldPosition, float3 normal)
+{
+    const float3 ambient = AmbientColorIntensity.rgb * AmbientColorIntensity.w;
+    if (BakedGiVolumeMinimum.w < 0.5f)
+    {
+        return ambient;
+    }
+    const float3 volumeUvw =
+        (worldPosition - BakedGiVolumeMinimum.xyz) * BakedGiInverseSize.xyz;
+    // プローブは格子の角にあるので、テクセル中心へ寄せて読みます。
+    const float3 resolution = BakedGiResolution.xyz;
+    const float3 texelUvw =
+        (volumeUvw * (resolution - 1.0f) + 0.5f) / resolution;
+    const float4 basis = float4(normal, 1.0f);
+    float3 gi;
+    gi.r = dot(
+        basis,
+        BakedGiRedTexture.SampleLevel(AlbedoSampler, texelUvw, 0.0f));
+    gi.g = dot(
+        basis,
+        BakedGiGreenTexture.SampleLevel(AlbedoSampler, texelUvw, 0.0f));
+    gi.b = dot(
+        basis,
+        BakedGiBlueTexture.SampleLevel(AlbedoSampler, texelUvw, 0.0f));
+    gi = max(gi, 0.0f.xxx) * BakedGiInverseSize.w;
+    const float3 edge = (0.5f - abs(volumeUvw - 0.5f)) / 0.05f;
+    const float weight = saturate(min(min(edge.x, edge.y), edge.z));
+    return lerp(ambient, gi, weight);
+}
+
+// D3D11のLamaPonLit.hlslと同じリフレクションプローブのボックス射影です。
+// 反射レイと箱の交点を、プローブ中心から見た向きにして読みます。
+float3 ApplyBoxProjection(
+    float3 reflection,
+    float3 worldPosition,
+    float3 boxCenter,
+    float3 boxExtents)
+{
+    const float3 firstPlane =
+        (boxCenter + boxExtents - worldPosition) / reflection;
+    const float3 secondPlane =
+        (boxCenter - boxExtents - worldPosition) / reflection;
+    const float3 furthest = max(firstPlane, secondPlane);
+    const float distance = min(min(furthest.x, furthest.y), furthest.z);
+    const float3 intersection = worldPosition + reflection * distance;
+    return intersection - boxCenter;
+}
+
+// プローブ1個ぶんのスペキュラです。反射はプローブごとの箱で補正します。
+float3 SampleProbeSpecular(
+    TextureCube probeMap,
+    float3 normal,
+    float3 viewDirection,
+    float3 worldPosition,
+    float roughness,
+    float maximumMip,
+    float4 boxCenter,
+    float4 boxParameters)
+{
+    float3 reflection = reflect(-viewDirection, normal);
+    if (boxParameters.w >= 0.5f)
+    {
+        reflection = ApplyBoxProjection(
+            reflection,
+            worldPosition,
+            boxCenter.xyz,
+            boxParameters.xyz);
+    }
+    return probeMap.SampleLevel(
+        AlbedoSampler,
+        reflection,
+        roughness * maximumMip).rgb;
+}
 
 struct VertexInput
 {
@@ -107,7 +244,9 @@ PixelInput PrimitiveVertexShader(VertexInput input)
     const float4 worldPosition = mul(float4(input.position, 1.0f), World);
     output.position = mul(worldPosition, ViewProjection);
     output.worldPosition = worldPosition.xyz;
-    output.normal = normalize(mul(float4(input.normal, 0.0f), World).xyz);
+    // D3D11のVSMainと同じく、法線は逆転置行列で変換します。
+    output.normal = normalize(
+        mul(float4(input.normal, 0.0f), WorldInverseTranspose).xyz);
     output.textureCoordinate = input.textureCoordinate;
     return output;
 }
@@ -594,6 +733,145 @@ float4 EvaluateScreenSpaceReflection(
     return 0.0f.xxxx;
 }
 
+static const float LamaPonPi = 3.14159265f;
+
+// LamaPonLit.hlslのSourceRepresentativeDirectionと同じく、太陽の見かけの
+// 大きさを反映した鏡面の代表点へ光の向きを寄せます。
+float3 SourceRepresentativeDirection(
+    float3 toLight,
+    float3 normal,
+    float3 viewDirection,
+    float angularRadius)
+{
+    if (angularRadius <= 0.0f)
+    {
+        return toLight;
+    }
+    const float3 reflected = reflect(-viewDirection, normal);
+    const float alignment = dot(toLight, reflected);
+    const float diskCosine = cos(angularRadius);
+    if (alignment >= diskCosine)
+    {
+        return reflected;
+    }
+    const float3 sideways = reflected - alignment * toLight;
+    const float sidewaysLength = length(sideways);
+    if (sidewaysLength <= 1.0e-5f)
+    {
+        return toLight;
+    }
+    return normalize(
+        toLight * diskCosine
+        + (sideways / sidewaysLength) * sin(angularRadius));
+}
+
+// 代表点へ寄せて広がったハイライトの明るさを戻します（LamaPonLit.hlslの
+// SourceSpecularEnergyと同じ）。
+float SourceSpecularEnergy(
+    float roughness,
+    float angularRadius)
+{
+    if (angularRadius <= 0.0f)
+    {
+        return 1.0f;
+    }
+    const float alpha = max(roughness * roughness, 1.0e-4f);
+    const float widened =
+        saturate(alpha + sin(angularRadius) * 0.5f);
+    const float ratio = alpha / max(widened, 1.0e-4f);
+    return ratio * ratio;
+}
+
+// LamaPonLit.hlslのEvaluateLightPbrSizedと同じCook-Torrance GGXです。拡散と
+// 陰りは本当の光の向き、鏡面は代表点の向きで求めます。
+float3 EvaluateLightPbrSized(
+    float3 normal,
+    float3 toLight,
+    float3 specularToLight,
+    float3 viewDirection,
+    float3 albedo,
+    float roughness,
+    float metallic,
+    float3 radiance,
+    float specularEnergy)
+{
+    const float normalDotLight =
+        saturate(dot(normal, toLight));
+    if (normalDotLight <= 0.0f)
+    {
+        return 0.0f.xxx;
+    }
+    const float3 halfVector =
+        normalize(specularToLight + viewDirection);
+    const float normalDotView = max(
+        dot(normal, viewDirection),
+        0.0001f);
+    const float normalDotHalf =
+        saturate(dot(normal, halfVector));
+    const float viewDotHalf =
+        saturate(dot(viewDirection, halfVector));
+
+    const float alpha = roughness * roughness;
+    const float alphaSquared = alpha * alpha;
+    const float denominator =
+        normalDotHalf * normalDotHalf
+            * (alphaSquared - 1.0f)
+        + 1.0f;
+    const float distribution =
+        alphaSquared
+        / max(LamaPonPi * denominator * denominator,
+            1.0e-12f);
+
+    const float k = alpha * 0.5f + 0.0001f;
+    const float geometryView =
+        normalDotView / (normalDotView * (1.0f - k) + k);
+    const float geometryLight =
+        normalDotLight
+        / (normalDotLight * (1.0f - k) + k);
+    const float geometry = geometryView * geometryLight;
+
+    const float3 f0 = lerp(0.04f.xxx, albedo, metallic);
+    const float3 fresnel =
+        f0
+        + (1.0f.xxx - f0)
+            * pow(1.0f - viewDotHalf, 5.0f);
+
+    const float3 specular =
+        distribution * geometry * fresnel
+        * specularEnergy
+        / max(4.0f * normalDotView * normalDotLight,
+            0.0001f);
+    const float3 diffuse =
+        (1.0f.xxx - fresnel)
+        * (1.0f - metallic)
+        * albedo
+        / LamaPonPi;
+    return (diffuse + specular)
+        * radiance
+        * normalDotLight;
+}
+
+float3 EvaluateLightPbr(
+    float3 normal,
+    float3 toLight,
+    float3 viewDirection,
+    float3 albedo,
+    float roughness,
+    float metallic,
+    float3 radiance)
+{
+    return EvaluateLightPbrSized(
+        normal,
+        toLight,
+        toLight,
+        viewDirection,
+        albedo,
+        roughness,
+        metallic,
+        radiance,
+        1.0f);
+}
+
 float4 PrimitivePixelShader(PixelInput input) : SV_Target
 {
     float3 normal = normalize(input.normal);
@@ -601,9 +879,12 @@ float4 PrimitivePixelShader(PixelInput input) : SV_Target
     {
         // BC5 stores only XY. Reconstructing Z also keeps ordinary RGB
         // normal maps equivalent after their XY channels are sampled.
-        const float2 sampledNormalXY = NormalTexture.Sample(
+        // D3D11のApplyNormalMapと同じく、強さをxyへ掛けてからzを復元し、
+        // 傾けても長さが1に保たれるようにします。
+        const float strength = max(EmissiveFactor.w, 0.0f);
+        const float2 sampledNormalXY = (NormalTexture.Sample(
             AlbedoSampler,
-            input.textureCoordinate).xy * 2.0f - 1.0f;
+            input.textureCoordinate).xy * 2.0f - 1.0f) * strength;
         const float3 sampledNormal = float3(
             sampledNormalXY,
             sqrt(saturate(
@@ -624,10 +905,9 @@ float4 PrimitivePixelShader(PixelInput input) : SV_Target
             0.000001f));
         const float3 tangent = tangentUnscaled * inverseScale;
         const float3 bitangent = bitangentUnscaled * inverseScale;
-        const float strength = max(EmissiveFactor.w, 0.0f);
         normal = normalize(
-            tangent * sampledNormal.x * strength
-            + bitangent * sampledNormal.y * strength
+            tangent * sampledNormal.x
+            + bitangent * sampledNormal.y
             + normal * sampledNormal.z);
     }
     const float4 albedo = AlbedoTexture.Sample(
@@ -666,31 +946,112 @@ float4 PrimitivePixelShader(PixelInput input) : SV_Target
             AlbedoSampler,
             screenUv).r;
     }
-    const float3 diffuseColor = surfaceColor * (1.0f - metallic);
     const float3 specularColor = lerp(0.04f.xxx, surfaceColor, metallic);
     const float3 viewDirection = normalize(
         CameraPosition.xyz - input.worldPosition);
-    const float specularPower = lerp(128.0f, 4.0f, roughness);
-    const float specularScale = lerp(1.0f, 0.08f, roughness);
-    // D3D11のEvaluateEnvironment（キューブマップ無し）と同じく、環境光は
-    // 金属ほど弱め、SSRが当たった分をF0の重みで足してから遮蔽を掛けます。
-    // SSRの粗さはD3D11のLit shaderと同じ下限で求めます。
-    float3 ambient = surfaceColor
-        * AmbientColorIntensity.rgb
-        * AmbientColorIntensity.w
-        * (1.0f - metallic * 0.5f);
+    // D3D11のEvaluateEnvironmentと同じく、環境光とSSRを組み合わせてから
+    // 遮蔽を掛けます。粗さはD3D11のLit shaderと同じ下限で求めます。
+    const float environmentRoughness =
+        clamp(MaterialProperties.x * roughnessSample, 0.04f, 1.0f);
     const float4 screenReflection = EvaluateScreenSpaceReflection(
         input.worldPosition,
         reflect(-viewDirection, normal),
         viewDirection,
-        clamp(MaterialProperties.x * roughnessSample, 0.04f, 1.0f));
-    if (screenReflection.a > 0.0f)
+        environmentRoughness);
+    float3 ambient = 0.0f.xxx;
+    if (EnvironmentParameters.y < 0.5f)
     {
-        ambient += screenReflection.rgb
-            * specularColor
-            * screenReflection.a;
+        // キューブマップが無いときは金属ほど弱め、SSRが当たった分を
+        // F0の重みで足します。
+        ambient = surfaceColor
+            * EvaluateBakedAmbient(input.worldPosition, normal)
+            * (1.0f - metallic * 0.5f);
+        if (screenReflection.a > 0.0f)
+        {
+            ambient += screenReflection.rgb
+                * specularColor
+                * screenReflection.a;
+        }
+    }
+    else
+    {
+        // zは事前畳み込み済みスペキュラの最終ミップ番号です。0のときは
+        // cubemapを直接読み、最も粗いミップで拡散を近似します。
+        const float prefilteredMaximumMip = EnvironmentParameters.z;
+        float maximumMip = prefilteredMaximumMip;
+        if (maximumMip <= 0.0f)
+        {
+            uint width;
+            uint height;
+            uint mipCount;
+            EnvironmentMap.GetDimensions(0, width, height, mipCount);
+            maximumMip = max((float)mipCount - 1.0f, 0.0f);
+        }
+        float3 irradiance = prefilteredMaximumMip > 0.0f
+            ? IrradianceMap.SampleLevel(AlbedoSampler, normal, 0.0f).rgb
+            : EnvironmentMap.SampleLevel(
+                AlbedoSampler,
+                normal,
+                maximumMip).rgb;
+        // D3D11と同じく、リフレクションプローブの箱で反射を補正し、2個目の
+        // プローブがあれば比率で混ぜてからSSRを被せます。
+        float3 prefiltered = SampleProbeSpecular(
+            EnvironmentMap,
+            normal,
+            viewDirection,
+            input.worldPosition,
+            environmentRoughness,
+            maximumMip,
+            ReflectionBoxCenter,
+            ReflectionBoxParameters);
+        const float blendWeight = ReflectionBlendParameters.x;
+        if (blendWeight > 0.0f)
+        {
+            irradiance = lerp(
+                irradiance,
+                SecondaryIrradianceMap.SampleLevel(
+                    AlbedoSampler,
+                    normal,
+                    0.0f).rgb,
+                blendWeight);
+            prefiltered = lerp(
+                prefiltered,
+                SampleProbeSpecular(
+                    SecondaryEnvironmentMap,
+                    normal,
+                    viewDirection,
+                    input.worldPosition,
+                    environmentRoughness,
+                    ReflectionBlendParameters.y,
+                    ReflectionSecondaryBoxCenter,
+                    ReflectionSecondaryBoxParameters),
+                blendWeight);
+        }
+        if (screenReflection.a > 0.0f)
+        {
+            prefiltered = lerp(
+                prefiltered,
+                screenReflection.rgb,
+                screenReflection.a);
+        }
+        const float normalDotView = max(dot(normal, viewDirection), 0.0001f);
+        // split-sumのBRDF項はD3D11と同じKarisの解析近似です。
+        const float4 c0 = float4(-1.0f, -0.0275f, -0.572f, 0.022f);
+        const float4 c1 = float4(1.0f, 0.0425f, 1.04f, -0.04f);
+        const float4 r = environmentRoughness * c0 + c1;
+        const float a004 =
+            min(r.x * r.x, exp2(-9.28f * normalDotView)) * r.x + r.y;
+        const float2 brdf = float2(-1.04f, 1.04f) * a004 + r.zw;
+        const float3 diffuse = irradiance * surfaceColor * (1.0f - metallic);
+        const float3 specular =
+            prefiltered * (specularColor * brdf.x + brdf.y);
+        ambient = (diffuse + specular) * EnvironmentParameters.x
+            + surfaceColor
+                * EvaluateBakedAmbient(input.worldPosition, normal);
     }
     float3 result = ambient * occlusion;
+    // 直接光はD3D11のLamaPonLit.hlslと同じCook-Torrance GGXです。太陽は
+    // DirectionalColors.wの角半径で鏡面の代表点を寄せます。
     [loop]
     for (uint index = 0; index < min(LightCounts.x, 4u); ++index)
     {
@@ -698,22 +1059,129 @@ float4 PrimitivePixelShader(PixelInput input) : SV_Target
             input.worldPosition,
             normal,
             index);
-        const float3 lightDirection = normalize(
+        const float3 toLight = normalize(
             -DirectionalDirectionIntensity[index].xyz);
-        const float diffuse = saturate(dot(normal, lightDirection));
-        const float3 halfVector = normalize(
-            lightDirection + viewDirection);
-        const float specular = pow(
-            saturate(dot(normal, halfVector)),
-            specularPower) * specularScale;
-        result += DirectionalColors[index].rgb
-            * DirectionalDirectionIntensity[index].w
-            * shadow
-            * (diffuseColor * diffuse + specularColor * specular);
+        const float angularRadius = DirectionalColors[index].w;
+        result += EvaluateLightPbrSized(
+            normal,
+            toLight,
+            SourceRepresentativeDirection(
+                toLight,
+                normal,
+                viewDirection,
+                angularRadius),
+            viewDirection,
+            surfaceColor,
+            environmentRoughness,
+            metallic,
+            DirectionalColors[index].rgb
+                * DirectionalDirectionIntensity[index].w
+                * shadow,
+            SourceSpecularEnergy(environmentRoughness, angularRadius));
     }
 
+    if (ClusteredParameters.w >= 0.5f)
+    {
+        // D3D11のLamaPonLit.hlslと同じForward+です。自分のピクセルが入る
+        // クラスタの番号表だけを見てPoint／Spot Lightを計算します。
+        const uint gridX = (uint)ClusteredParameters.x;
+        const uint gridY = (uint)ClusteredParameters.y;
+        const uint gridZ = (uint)ClusteredParameters.z;
+        const float2 screenRatio = saturate(
+            input.position.xy
+            * ClusteredScreenParameters.xy);
+        const uint clusterX = min(
+            (uint)(screenRatio.x * gridX),
+            gridX - 1u);
+        const uint clusterY = min(
+            (uint)(screenRatio.y * gridY),
+            gridY - 1u);
+        // カメラからの奥行きから、カリングと同じ指数分割のスライスを
+        // 求めます。
+        const float nearPlane = ClusteredDepthParameters.x;
+        const float viewDepth = max(
+            dot(
+                CameraForwardShadowTexel.xyz,
+                input.worldPosition - CameraPosition.xyz),
+            nearPlane);
+        const uint clusterZ = min(
+            (uint)(log(viewDepth / nearPlane)
+                / ClusteredDepthParameters.z
+                * gridZ),
+            gridZ - 1u);
+        const uint cluster =
+            clusterZ * gridX * gridY
+            + clusterY * gridX
+            + clusterX;
+        const uint maximumPerCluster =
+            (uint)ClusteredDepthParameters.w;
+        const uint clusterOffset = cluster * maximumPerCluster;
+        const uint clusterLightCount = min(
+            ClusterLightCounts[cluster],
+            maximumPerCluster);
+        [loop]
+        for (uint slot = 0; slot < clusterLightCount; ++slot)
+        {
+            const ClusterLight light = ClusterLights[
+                ClusterLightIndexList[clusterOffset + slot]];
+            const float3 delta =
+                light.PositionRange.xyz - input.worldPosition;
+            const float lightDistance = length(delta);
+            const float range = max(light.PositionRange.w, 0.001f);
+            const float distanceAttenuation =
+                pow(saturate(1.0f - lightDistance / range), 2.0f);
+            const float3 toLight =
+                delta / max(lightDistance, 0.0001f);
+            float attenuation = distanceAttenuation;
+            float shadow = 1.0f;
+            if (light.ExtraParameters.y < 0.5f)
+            {
+                // Point Light。影の参照はライト番号+1です。
+                if (light.ExtraParameters.z >= 1.0f)
+                {
+                    shadow = EvaluatePointShadow(
+                        input.worldPosition,
+                        (uint)light.ExtraParameters.z - 1u,
+                        light.PositionRange.xyz,
+                        range);
+                }
+            }
+            else
+            {
+                // Spot Light。コーン減衰は従来経路と同じく2乗します。
+                const float cone = dot(
+                    normalize(light.DirectionInnerCosine.xyz),
+                    -toLight);
+                const float coneFalloff = smoothstep(
+                    light.ExtraParameters.x,
+                    light.DirectionInnerCosine.w,
+                    cone);
+                attenuation *= coneFalloff * coneFalloff;
+                if (light.ExtraParameters.z >= 1.0f)
+                {
+                    shadow = EvaluateSpotShadow(
+                        input.worldPosition,
+                        normal,
+                        (uint)light.ExtraParameters.z - 1u);
+                }
+            }
+            result += EvaluateLightPbr(
+                normal,
+                toLight,
+                viewDirection,
+                surfaceColor,
+                environmentRoughness,
+                metallic,
+                light.ColorIntensity.rgb
+                    * light.ColorIntensity.w
+                    * attenuation
+                    * shadow);
+        }
+    }
+    else
+    {
     // Point / SpotはD3D11の従来経路（LamaPonLit.hlsl）と同じ距離減衰と
-    // コーン減衰を、この最小pipelineのLambert拡散へ掛けます。
+    // コーン減衰です。
     [loop]
     for (uint pointIndex = 0; pointIndex < min(LightCounts.y, 16u); ++pointIndex)
     {
@@ -721,22 +1189,22 @@ float4 PrimitivePixelShader(PixelInput input) : SV_Target
         const float lightDistance = length(delta);
         const float range = max(PointPositionRange[pointIndex].w, 0.001f);
         const float attenuation = pow(saturate(1.0f - lightDistance / range), 2.0f);
-        const float3 lightDirection = delta / max(lightDistance, 0.0001f);
-        const float diffuse = saturate(dot(normal, lightDirection));
-        const float3 halfVector = normalize(lightDirection + viewDirection);
-        const float specular = pow(
-            saturate(dot(normal, halfVector)),
-            specularPower) * specularScale;
         const float shadow = EvaluatePointShadow(
             input.worldPosition,
             pointIndex,
             PointPositionRange[pointIndex].xyz,
             range);
-        result += PointColorIntensity[pointIndex].rgb
-            * PointColorIntensity[pointIndex].w
-            * attenuation
-            * shadow
-            * (diffuseColor * diffuse + specularColor * specular);
+        result += EvaluateLightPbr(
+            normal,
+            delta / max(lightDistance, 0.0001f),
+            viewDirection,
+            surfaceColor,
+            environmentRoughness,
+            metallic,
+            PointColorIntensity[pointIndex].rgb
+                * PointColorIntensity[pointIndex].w
+                * attenuation
+                * shadow);
     }
 
     [loop]
@@ -752,11 +1220,6 @@ float4 PrimitivePixelShader(PixelInput input) : SV_Target
             SpotDirectionInnerCosine[spotIndex].w,
             cone);
         const float distanceAttenuation = pow(saturate(1.0f - lightDistance / range), 2.0f);
-        const float diffuse = saturate(dot(normal, -rayDirection));
-        const float3 halfVector = normalize(-rayDirection + viewDirection);
-        const float specular = pow(
-            saturate(dot(normal, halfVector)),
-            specularPower) * specularScale;
         const uint shadowSlot =
             (uint)SpotOuterCosine[spotIndex].y;
         const float shadow = shadowSlot > 0u
@@ -765,16 +1228,60 @@ float4 PrimitivePixelShader(PixelInput input) : SV_Target
                 normal,
                 shadowSlot - 1u)
             : 1.0f;
-        result += SpotColorIntensity[spotIndex].rgb
-            * SpotColorIntensity[spotIndex].w
-            * distanceAttenuation
-            * coneAttenuation
-            * coneAttenuation
-            * shadow
-            * (diffuseColor * diffuse + specularColor * specular);
+        result += EvaluateLightPbr(
+            normal,
+            -rayDirection,
+            viewDirection,
+            surfaceColor,
+            environmentRoughness,
+            metallic,
+            SpotColorIntensity[spotIndex].rgb
+                * SpotColorIntensity[spotIndex].w
+                * distanceAttenuation
+                * coneAttenuation
+                * coneAttenuation
+                * shadow);
     }
+    } // Forward+が無効なときの従来経路の終わり
     result += emissiveSample * EmissiveFactor.rgb;
-    return float4(result, albedo.a * BaseColor.a);
+    const float outputAlpha = albedo.a * BaseColor.a;
+    if (FogParameters.w < 0.5f)
+    {
+        return float4(result, outputAlpha);
+    }
+    if (FogColorModel.w < 0.5f)
+    {
+        // D3D11のLamaPonLit.hlslと同じく、発光の後にカメラからの距離で
+        // 範囲霧と指数霧の濃い方を掛けます。
+        const float3 litColor = max(result, 0.0f);
+        const float distanceToCamera =
+            length(input.worldPosition - CameraPosition.xyz);
+        const float rangeFog = smoothstep(
+            FogParameters.x,
+            max(FogParameters.y, FogParameters.x + 0.001f),
+            distanceToCamera);
+        const float exponentialFog = 1.0f
+            - exp(
+                -max(FogParameters.z, 0.0f)
+                * max(distanceToCamera - FogParameters.x, 0.0f));
+        const float fogAmount = saturate(max(rangeFog, exponentialFog));
+        return float4(
+            lerp(litColor, FogColorModel.rgb, fogAmount),
+            outputAlpha);
+    }
+    // DirectXTK Effectと同じく、ビュー深度で開始から終了まで線形に霧を
+    // 掛け、霧の色にはalphaを掛けます。開始と終了が同じなら全体が霧です。
+    const float viewDepth = dot(
+        input.worldPosition - CameraPosition.xyz,
+        CameraForwardShadowTexel.xyz);
+    const float fogFactor = FogParameters.y != FogParameters.x
+        ? saturate(
+            (viewDepth - FogParameters.x)
+            / (FogParameters.y - FogParameters.x))
+        : 1.0f;
+    return float4(
+        lerp(result, FogColorModel.rgb * outputAlpha, fogFactor),
+        outputAlpha);
 }
 )";
 
@@ -1039,11 +1546,18 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
         return result;
     }
 
-    [[nodiscard]] D3D12_RASTERIZER_DESC MakeRasterizerDescription() noexcept
+    // wireframeはDirectXTKのCommonStates::Wireframeと同じく、カリングせず
+    // 辺だけを描きます。
+    [[nodiscard]] D3D12_RASTERIZER_DESC MakeRasterizerDescription(
+        const bool wireframe = false) noexcept
     {
         D3D12_RASTERIZER_DESC result{};
-        result.FillMode = D3D12_FILL_MODE_SOLID;
+        result.FillMode = wireframe
+            ? D3D12_FILL_MODE_WIREFRAME
+            : D3D12_FILL_MODE_SOLID;
         result.CullMode = D3D12_CULL_MODE_NONE;
+        // DirectXTKのCommonStatesと同じく、辺は四角形の線で描きます。
+        result.MultisampleEnable = wireframe ? TRUE : FALSE;
         result.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
         result.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
         result.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
@@ -1068,7 +1582,9 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
         return result;
     }
 
-    class D3D12RenderServices final : public LamaPon::GraphicsRenderServices
+    class D3D12RenderServices final
+        : public LamaPon::GraphicsRenderServices
+        , public LamaPon::Detail::D3D12MaterialShaderServices
     {
     public:
         explicit D3D12RenderServices(LamaPon::D3D12Backend& backend)
@@ -1108,8 +1624,11 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 "ParticlePixelShader",
                 "ps_5_0");
 
-            // t0〜t5はMaterial、t6〜t8は影、t9はSSAO、t10とt11はSSRです。
-            std::array<D3D12_DESCRIPTOR_RANGE, 12> textureRanges{};
+            // t0〜t5はMaterial、t6〜t8は影、t9はSSAO、t10とt11はSSR、
+            // t12とt13はIBL、t14〜t16はForward+のクラスタライト、t17〜t19は
+            // ベイクした間接光、t20とt21は混ぜる2個目のリフレクションプローブ
+            // です。
+            std::array<D3D12_DESCRIPTOR_RANGE, 22> textureRanges{};
             for (UINT index{}; index < textureRanges.size(); ++index)
             {
                 textureRanges[index].RangeType =
@@ -1117,7 +1636,7 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 textureRanges[index].NumDescriptors = 1;
                 textureRanges[index].BaseShaderRegister = index;
             }
-            std::array<D3D12_ROOT_PARAMETER, 13> parameters{};
+            std::array<D3D12_ROOT_PARAMETER, 23> parameters{};
             parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
             parameters[0].Descriptor.ShaderRegister = 0;
             parameters[0].Descriptor.RegisterSpace = 0;
@@ -1176,6 +1695,59 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                     0, serialized->GetBufferPointer(), serialized->GetBufferSize(),
                     IID_PPV_ARGS(m_rootSignature.ReleaseAndGetAddressOf())),
                 "ID3D12Device::CreateRootSignature(primitive)");
+            m_materialShaders = std::make_unique<
+                LamaPon::Detail::D3D12MaterialShaderRenderer>(backend);
+        }
+
+        [[nodiscard]] LamaPon::Detail::MaterialShaderDrawResult
+            DrawMaterialShader(
+                LamaPon::AssetManager& assets,
+                const LamaPon::Detail::MaterialShaderSource& shader,
+                const LamaPon::Detail::MaterialShaderSource& placeholder,
+                const bool prepass,
+                const LamaPon::PrimitiveDrawRequest& request,
+                const LamaPon::Detail::MaterialShaderDrawRequest& material,
+                const LamaPon::LightingState& lighting) override
+        {
+            std::span<const PrimitiveRenderVertex> vertices;
+            std::span<const std::uint32_t> indices;
+            // glTF／FBXのスキニング経路は、要求が頂点列を直接持ちます。
+            if (material.skinned == nullptr
+                && !ResolveGeometry(request, vertices, indices))
+            {
+                return {};
+            }
+            return m_materialShaders->Draw(
+                assets,
+                shader,
+                placeholder,
+                prepass,
+                request,
+                vertices,
+                indices,
+                material,
+                lighting);
+        }
+
+        void InvalidateMaterialShader(
+            const std::filesystem::path& shaderPath) noexcept override
+        {
+            m_materialShaders->Invalidate(shaderPath);
+        }
+
+        [[nodiscard]] bool TryGetMaterialShaderRenderState(
+            const std::filesystem::path& cacheKey,
+            LamaPon::ShaderRenderState& state) const noexcept override
+        {
+            return m_materialShaders->TryGetRenderState(cacheKey, state);
+        }
+
+        [[nodiscard]] LamaPon::Detail::MaterialShaderPasses
+            PrepareMaterialShaderPasses(
+                LamaPon::AssetManager& assets,
+                const LamaPon::Detail::MaterialShaderSource& shader) override
+        {
+            return m_materialShaders->PreparePasses(assets, shader);
         }
 
         [[nodiscard]] bool DrawParticles(
@@ -1342,6 +1914,21 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
             bool screenReflectionActive{};
             bool spotShadowTextureCurrent{};
             bool pointShadowTextureCurrent{};
+            bool environmentActive{};
+            bool prefilteredEnvironmentActive{};
+            D3D12_GPU_DESCRIPTOR_HANDLE environmentDescriptor{};
+            D3D12_GPU_DESCRIPTOR_HANDLE irradianceDescriptor{};
+            bool clusteredActive{};
+            D3D12_GPU_DESCRIPTOR_HANDLE clusterLightsDescriptor{};
+            D3D12_GPU_DESCRIPTOR_HANDLE clusterIndicesDescriptor{};
+            D3D12_GPU_DESCRIPTOR_HANDLE clusterCountsDescriptor{};
+            bool bakedGiActive{};
+            D3D12_GPU_DESCRIPTOR_HANDLE bakedGiRedDescriptor{};
+            D3D12_GPU_DESCRIPTOR_HANDLE bakedGiGreenDescriptor{};
+            D3D12_GPU_DESCRIPTOR_HANDLE bakedGiBlueDescriptor{};
+            LamaPon::Detail::D3D12ReflectionProbeBindings probe;
+            D3D12_GPU_DESCRIPTOR_HANDLE secondaryEnvironmentDescriptor{};
+            D3D12_GPU_DESCRIPTOR_HANDLE secondaryIrradianceDescriptor{};
             ID3D12DescriptorHeap* descriptorHeap{};
             if (!request.depthOnly)
             {
@@ -1478,6 +2065,125 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                     screenReflectionColorBinding = *fallbackReflection;
                     screenReflectionDepthBinding = *fallbackReflection;
                 }
+                // D3D11のLitEffectと同じく、cubemapを読めるときだけIBLを使い、
+                // 事前畳み込みの2本が揃えばそちらを読みます。使わない枠は
+                // null TextureCubeです。
+                const auto resolvedEnvironment =
+                    m_backend->TryResolveShaderResource(
+                        request.environment.texture);
+                const auto resolvedSpecular =
+                    m_backend->TryResolveShaderResource(
+                        request.environment.specular);
+                const auto resolvedIrradiance =
+                    m_backend->TryResolveShaderResource(
+                        request.environment.irradiance);
+                const auto isCube = [](const auto& binding)
+                {
+                    return binding.has_value()
+                        && binding->dimension
+                            == D3D12_SRV_DIMENSION_TEXTURECUBE;
+                };
+                environmentActive = request.environment.enabled
+                    && isCube(resolvedEnvironment);
+                prefilteredEnvironmentActive = environmentActive
+                    && isCube(resolvedSpecular)
+                    && isCube(resolvedIrradiance);
+                const auto nullCube =
+                    m_backend->NullShaderResourceDescriptor(
+                        D3D12_SRV_DIMENSION_TEXTURECUBE);
+                environmentDescriptor = environmentActive
+                    ? (prefilteredEnvironmentActive
+                        ? resolvedSpecular->descriptor
+                        : resolvedEnvironment->descriptor)
+                    : nullCube;
+                irradianceDescriptor = prefilteredEnvironmentActive
+                    ? resolvedIrradiance->descriptor
+                    : nullCube;
+                // D3D11のTrySetLitEffectReflectionProbeと同じく、範囲に入った
+                // プローブを解決できたときだけSkyのIBLを差し替えます。
+                probe = LamaPon::Detail::ResolveD3D12ReflectionProbe(
+                    *m_backend,
+                    request.reflectionProbe);
+                if (probe.active)
+                {
+                    environmentActive = true;
+                    prefilteredEnvironmentActive = true;
+                    environmentDescriptor = probe.specular;
+                    irradianceDescriptor = probe.irradiance;
+                }
+                secondaryEnvironmentDescriptor = probe.blended
+                    ? probe.secondarySpecular
+                    : nullCube;
+                secondaryIrradianceDescriptor = probe.blended
+                    ? probe.secondaryIrradiance
+                    : nullCube;
+                // D3D11のLitEffectと同じく、3本のviewを解決できたframeだけ
+                // Forward+を使います。使わない枠はnull bufferです。
+                const auto isBuffer = [](const auto& binding)
+                {
+                    return binding.has_value()
+                        && binding->dimension == D3D12_SRV_DIMENSION_BUFFER;
+                };
+                const auto resolvedClusterLights =
+                    m_backend->TryResolveShaderResource(
+                        request.clustered.lights);
+                const auto resolvedClusterIndices =
+                    m_backend->TryResolveShaderResource(
+                        request.clustered.lightIndices);
+                const auto resolvedClusterCounts =
+                    m_backend->TryResolveShaderResource(
+                        request.clustered.clusterCounts);
+                clusteredActive = request.clustered.enabled
+                    && isBuffer(resolvedClusterLights)
+                    && isBuffer(resolvedClusterIndices)
+                    && isBuffer(resolvedClusterCounts);
+                const auto nullBuffer =
+                    m_backend->NullShaderResourceDescriptor(
+                        D3D12_SRV_DIMENSION_BUFFER);
+                clusterLightsDescriptor = clusteredActive
+                    ? resolvedClusterLights->descriptor
+                    : nullBuffer;
+                clusterIndicesDescriptor = clusteredActive
+                    ? resolvedClusterIndices->descriptor
+                    : nullBuffer;
+                clusterCountsDescriptor = clusteredActive
+                    ? resolvedClusterCounts->descriptor
+                    : nullBuffer;
+                // D3D11のLitEffectと同じく、RGB別の3本のTexture3Dを解決
+                // できたframeだけベイクした間接光を読みます。使わない枠は
+                // null Texture3Dです。
+                const auto isVolume = [](const auto& binding)
+                {
+                    return binding.has_value()
+                        && binding->dimension
+                            == D3D12_SRV_DIMENSION_TEXTURE3D;
+                };
+                const auto& bakedGi = request.bakedGlobalIllumination;
+                const auto resolvedBakedGiRed =
+                    m_backend->TryResolveShaderResource(
+                        bakedGi.redCoefficients);
+                const auto resolvedBakedGiGreen =
+                    m_backend->TryResolveShaderResource(
+                        bakedGi.greenCoefficients);
+                const auto resolvedBakedGiBlue =
+                    m_backend->TryResolveShaderResource(
+                        bakedGi.blueCoefficients);
+                bakedGiActive = bakedGi.enabled
+                    && isVolume(resolvedBakedGiRed)
+                    && isVolume(resolvedBakedGiGreen)
+                    && isVolume(resolvedBakedGiBlue);
+                const auto nullVolume =
+                    m_backend->NullShaderResourceDescriptor(
+                        D3D12_SRV_DIMENSION_TEXTURE3D);
+                bakedGiRedDescriptor = bakedGiActive
+                    ? resolvedBakedGiRed->descriptor
+                    : nullVolume;
+                bakedGiGreenDescriptor = bakedGiActive
+                    ? resolvedBakedGiGreen->descriptor
+                    : nullVolume;
+                bakedGiBlueDescriptor = bakedGiActive
+                    ? resolvedBakedGiBlue->descriptor
+                    : nullVolume;
             }
             else if (!m_backend->IsDepthOnlyPassActive())
             {
@@ -1536,12 +2242,34 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 DirectX::XMFLOAT4 screenReflectionScreen{};
                 DirectX::XMFLOAT4 screenReflectionQuality{};
                 DirectX::XMFLOAT4X4 screenReflectionPreviousViewProjection{};
+                DirectX::XMFLOAT4 environmentParameters{};
+                DirectX::XMFLOAT4 fogColorModel{};
+                DirectX::XMFLOAT4 fogParameters{};
+                DirectX::XMFLOAT4X4 worldInverseTranspose{};
+                DirectX::XMFLOAT4 clusteredParameters{};
+                DirectX::XMFLOAT4 clusteredDepthParameters{};
+                DirectX::XMFLOAT4 clusteredScreenParameters{};
+                DirectX::XMFLOAT4 bakedGiVolumeMinimum{};
+                DirectX::XMFLOAT4 bakedGiInverseSize{};
+                DirectX::XMFLOAT4 bakedGiResolution{};
+                DirectX::XMFLOAT4 reflectionBoxCenter{};
+                DirectX::XMFLOAT4 reflectionBoxParameters{};
+                DirectX::XMFLOAT4 reflectionSecondaryBoxCenter{};
+                DirectX::XMFLOAT4 reflectionSecondaryBoxParameters{};
+                DirectX::XMFLOAT4 reflectionBlendParameters{};
             } constants{};
             // HLSLのPrimitiveConstantsと同じ並び・大きさであることを保証します。
-            static_assert(sizeof(constants) == 2160u);
+            static_assert(sizeof(constants) == 2448u);
             const auto view = DirectX::XMLoadFloat4x4(&request.view);
             const auto projection = DirectX::XMLoadFloat4x4(&request.projection);
             constants.world = request.world;
+            // LitEffect::SetMatricesと同じ逆転置行列です。
+            DirectX::XMVECTOR worldDeterminant{};
+            DirectX::XMStoreFloat4x4(
+                &constants.worldInverseTranspose,
+                DirectX::XMMatrixTranspose(DirectX::XMMatrixInverse(
+                    &worldDeterminant,
+                    DirectX::XMLoadFloat4x4(&request.world))));
             constants.baseColor = request.baseColor;
             const auto inverseView = DirectX::XMMatrixInverse(nullptr, view);
             DirectX::XMStoreFloat4(
@@ -1581,11 +2309,12 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                     light.direction.y,
                     light.direction.z,
                     light.intensity };
+                // D3D11のLitEffectと同じく、wへ太陽の角半径を載せます。
                 constants.directionalColors[index] = {
                     light.color.x,
                     light.color.y,
                     light.color.z,
-                    1.0f };
+                    light.angularRadius };
             }
             constants.lightCounts[1] = static_cast<std::uint32_t>(
                 std::min(
@@ -1738,6 +2467,80 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 0.0f };
             constants.screenReflectionPreviousViewProjection =
                 reflection.previousViewProjection;
+            // LitEffect::SetLightingD3D11と同じ値です。
+            constants.environmentParameters = {
+                environmentActive
+                    ? std::max(request.environment.intensity, 0.0f)
+                    : 0.0f,
+                environmentActive ? 1.0f : 0.0f,
+                prefilteredEnvironmentActive
+                    ? request.environment.specularMaximumMip
+                    : 0.0f,
+                0.0f };
+            // LitEffect::SetLightingとDirectXTKのIEffectFogへ渡す値と同じです。
+            constants.fogColorModel = {
+                request.fog.color.x,
+                request.fog.color.y,
+                request.fog.color.z,
+                request.fog.model == LamaPon::PrimitiveFogModel::DirectXTK
+                    ? 1.0f
+                    : 0.0f };
+            constants.fogParameters = {
+                request.fog.startDistance,
+                request.fog.endDistance,
+                request.fog.density,
+                request.fog.enabled ? 1.0f : 0.0f };
+            // リフレクションプローブは、LitEffect::SetEnvironmentOverrideD3D11
+            // と同じ値でSkyのIBLを差し替えます。
+            if (probe.active)
+            {
+                constants.environmentParameters = probe.environmentParameters;
+                constants.reflectionBoxCenter = probe.boxCenter;
+                constants.reflectionBoxParameters = probe.boxParameters;
+                constants.reflectionSecondaryBoxCenter =
+                    probe.secondaryBoxCenter;
+                constants.reflectionSecondaryBoxParameters =
+                    probe.secondaryBoxParameters;
+                constants.reflectionBlendParameters = probe.blendParameters;
+            }
+            // LitEffect::SetLightingD3D11と同じForward+の値です。
+            const auto& clustered = request.clustered;
+            constants.clusteredParameters = {
+                static_cast<float>(LamaPon::ClusteredLights::GridWidth),
+                static_cast<float>(LamaPon::ClusteredLights::GridHeight),
+                static_cast<float>(LamaPon::ClusteredLights::GridDepth),
+                clusteredActive ? 1.0f : 0.0f };
+            constants.clusteredDepthParameters = {
+                clustered.nearPlane,
+                clustered.farPlane,
+                std::log(std::max(
+                    clustered.farPlane
+                        / std::max(clustered.nearPlane, 0.0001f),
+                    1.0001f)),
+                static_cast<float>(
+                    LamaPon::ClusteredLights::MaximumLightsPerCluster) };
+            constants.clusteredScreenParameters = {
+                clustered.inverseWidth,
+                clustered.inverseHeight,
+                static_cast<float>(clustered.lightCount),
+                0.0f };
+            // LitEffect::SetLightingD3D11と同じベイクした間接光の値です。
+            const auto& bakedGi = request.bakedGlobalIllumination;
+            constants.bakedGiVolumeMinimum = {
+                bakedGi.volumeMinimum.x,
+                bakedGi.volumeMinimum.y,
+                bakedGi.volumeMinimum.z,
+                bakedGiActive ? 1.0f : 0.0f };
+            constants.bakedGiInverseSize = {
+                1.0f / std::max(bakedGi.volumeSize.x, 0.0001f),
+                1.0f / std::max(bakedGi.volumeSize.y, 0.0001f),
+                1.0f / std::max(bakedGi.volumeSize.z, 0.0001f),
+                std::max(bakedGi.intensity, 0.0f) };
+            constants.bakedGiResolution = {
+                std::max(bakedGi.resolution.x, 1.0f),
+                std::max(bakedGi.resolution.y, 1.0f),
+                std::max(bakedGi.resolution.z, 1.0f),
+                0.0f };
             const auto constantUpload = m_backend->AllocateFrameUpload(
                 sizeof(constants),
                 D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
@@ -1755,11 +2558,12 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 static_cast<UINT>(indexBytes),
                 DXGI_FORMAT_R32_UINT };
             auto* pipeline = request.depthOnly
-                ? DepthOnlyPipelineState()
+                ? DepthOnlyPipelineState(request.wireframe)
                 : PipelineState(
                     request.alphaBlend,
                     request.depthTest,
-                    request.depthWrite);
+                    request.depthWrite,
+                    request.wireframe);
             commandList->SetGraphicsRootSignature(m_rootSignature.Get());
             commandList->SetPipelineState(pipeline);
             commandList->SetGraphicsRootConstantBufferView(
@@ -1793,6 +2597,36 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 commandList->SetGraphicsRootDescriptorTable(
                     12,
                     screenReflectionDepthBinding.descriptor);
+                commandList->SetGraphicsRootDescriptorTable(
+                    13,
+                    environmentDescriptor);
+                commandList->SetGraphicsRootDescriptorTable(
+                    14,
+                    irradianceDescriptor);
+                commandList->SetGraphicsRootDescriptorTable(
+                    15,
+                    clusterLightsDescriptor);
+                commandList->SetGraphicsRootDescriptorTable(
+                    16,
+                    clusterIndicesDescriptor);
+                commandList->SetGraphicsRootDescriptorTable(
+                    17,
+                    clusterCountsDescriptor);
+                commandList->SetGraphicsRootDescriptorTable(
+                    18,
+                    bakedGiRedDescriptor);
+                commandList->SetGraphicsRootDescriptorTable(
+                    19,
+                    bakedGiGreenDescriptor);
+                commandList->SetGraphicsRootDescriptorTable(
+                    20,
+                    bakedGiBlueDescriptor);
+                commandList->SetGraphicsRootDescriptorTable(
+                    21,
+                    secondaryEnvironmentDescriptor);
+                commandList->SetGraphicsRootDescriptorTable(
+                    22,
+                    secondaryIrradianceDescriptor);
             }
             commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             commandList->IASetVertexBuffers(0, 1, &vertexView);
@@ -1811,6 +2645,42 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
         }
 
     private:
+        // DrawPrimitiveと同じく、組み込み形状かProcedural Meshの頂点を選び、
+        // 添字が範囲内の三角形列であることを確かめます。
+        [[nodiscard]] bool ResolveGeometry(
+            const LamaPon::PrimitiveDrawRequest& request,
+            std::span<const PrimitiveRenderVertex>& vertices,
+            std::span<const std::uint32_t>& indices) const
+        {
+            const Geometry* geometry{};
+            switch (request.shape)
+            {
+            case LamaPon::PrimitiveRenderShape::Cube: geometry = &m_cube; break;
+            case LamaPon::PrimitiveRenderShape::Sphere: geometry = &m_sphere; break;
+            case LamaPon::PrimitiveRenderShape::Cylinder: geometry = &m_cylinder; break;
+            case LamaPon::PrimitiveRenderShape::Plane: geometry = &m_plane; break;
+            case LamaPon::PrimitiveRenderShape::Procedural: break;
+            default: return false;
+            }
+            vertices = geometry != nullptr
+                ? std::span<const PrimitiveRenderVertex>(geometry->vertices)
+                : request.vertices;
+            indices = geometry != nullptr
+                ? std::span<const std::uint32_t>(geometry->indices)
+                : request.indices;
+            return !vertices.empty()
+                && !indices.empty()
+                && indices.size() % 3u == 0u
+                && vertices.size() <= std::numeric_limits<UINT>::max()
+                && indices.size() <= std::numeric_limits<UINT>::max()
+                && std::ranges::none_of(
+                    indices,
+                    [vertices](const std::uint32_t index)
+                    {
+                        return index >= vertices.size();
+                    });
+        }
+
         [[nodiscard]] ID3D12PipelineState* ParticlePipelineState(
             bool additive)
         {
@@ -1872,7 +2742,8 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
         [[nodiscard]] ID3D12PipelineState* PipelineState(
             bool alphaBlend,
             bool depthTest,
-            bool depthWrite)
+            bool depthWrite,
+            bool wireframe)
         {
             const auto colorFormat = m_backend->ActiveColorFormat();
             const std::size_t formatIndex = colorFormat
@@ -1883,7 +2754,8 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                     : throw std::invalid_argument(
                         "The active DirectX 12 primitive target format is "
                         "unsupported.");
-            const std::size_t index = formatIndex * 3u
+            const std::size_t index = formatIndex * 6u
+                + (wireframe ? 3u : 0u)
                 + (!depthTest ? 2u : (alphaBlend ? 1u : 0u));
             auto& pipeline = m_pipelineStates[index];
             if (pipeline != nullptr)
@@ -1907,7 +2779,7 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
             description.PS = { m_pixelShader->GetBufferPointer(), m_pixelShader->GetBufferSize() };
             description.BlendState = MakeBlendDescription(alphaBlend || !depthTest);
             description.SampleMask = std::numeric_limits<UINT>::max();
-            description.RasterizerState = MakeRasterizerDescription();
+            description.RasterizerState = MakeRasterizerDescription(wireframe);
             description.DepthStencilState = MakeDepthDescription(depthTest, depthWrite);
             description.InputLayout = { inputs.data(), static_cast<UINT>(inputs.size()) };
             description.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
@@ -1922,7 +2794,8 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
             return pipeline.Get();
         }
 
-        [[nodiscard]] ID3D12PipelineState* DepthOnlyPipelineState()
+        [[nodiscard]] ID3D12PipelineState* DepthOnlyPipelineState(
+            bool wireframe)
         {
             const auto depthFormat = m_backend->ActiveDepthFormat();
             const std::size_t formatIndex = depthFormat
@@ -1933,7 +2806,8 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                     : throw std::invalid_argument(
                         "The active DirectX 12 depth target format is "
                         "unsupported.");
-            auto& pipeline = m_depthOnlyPipelineStates[formatIndex];
+            auto& pipeline = m_depthOnlyPipelineStates[
+                formatIndex * 2u + (wireframe ? 1u : 0u)];
             if (pipeline != nullptr)
             {
                 return pipeline.Get();
@@ -1956,7 +2830,7 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 m_vertexShader->GetBufferSize() };
             description.BlendState = MakeBlendDescription(false);
             description.SampleMask = std::numeric_limits<UINT>::max();
-            description.RasterizerState = MakeRasterizerDescription();
+            description.RasterizerState = MakeRasterizerDescription(wireframe);
             if (depthFormat == LamaPon::D3D12Backend::ShadowDepthFormat)
             {
                 // Shadow mapの自己遮蔽を抑えるbiasは、通常の
@@ -1991,14 +2865,16 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
         Microsoft::WRL::ComPtr<ID3DBlob> m_particlePixelShader;
         std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4>
             m_particlePipelineStates;
-        std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 6>
+        std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 12>
             m_pipelineStates;
-        std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2>
+        std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4>
             m_depthOnlyPipelineStates;
         Geometry m_cube;
         Geometry m_sphere;
         Geometry m_cylinder;
         Geometry m_plane;
+        std::unique_ptr<LamaPon::Detail::D3D12MaterialShaderRenderer>
+            m_materialShaders;
     };
 }
 

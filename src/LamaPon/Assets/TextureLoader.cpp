@@ -355,20 +355,23 @@ namespace
     {
         return std::max((size + 3) / 4, 1u);
     }
-}
 
-namespace LamaPon::TextureLoader
-{
-    PreparedTextureData PrepareDdsTextureData(
-        const std::span<const std::uint8_t> bytes)
+    constexpr std::uint32_t DdsMagic = MakeFourCc('D', 'D', 'S', ' ');
+    constexpr std::uint32_t PixelFormatFourCc = 0x4u;
+    // caps2のDDSCAPS2_CUBEMAPと6面すべての印です。
+    constexpr std::uint32_t Caps2CubeMapMask = 0xfe00u;
+    constexpr std::uint32_t ResourceMiscTextureCube = 0x4u;
+
+    // 2D DDSとcube DDSが共有するパーサーです。cubeのときlevelsは面ごとに
+    // 全ミップを並べます（D3D11／D3D12のsubresourceと同じ順）。
+    [[nodiscard]] LamaPon::TextureLoader::PreparedTextureData
+        ParseDdsTextureData(
+            const std::span<const std::uint8_t> bytes,
+            const bool cube)
     {
-        constexpr std::uint32_t DdsMagic = MakeFourCc('D', 'D', 'S', ' ');
-        constexpr std::uint32_t PixelFormatFourCc = 0x4u;
         constexpr std::uint32_t PixelFormatRgb = 0x40u;
-        constexpr std::uint32_t Caps2CubeMapMask = 0xfe00u;
         constexpr std::uint32_t Caps2Volume = 0x200000u;
         constexpr std::uint32_t ResourceDimensionTexture2D = 3u;
-        constexpr std::uint32_t ResourceMiscTextureCube = 0x4u;
         constexpr std::uint32_t MaximumTextureDimension = 16384u;
 
         if (bytes.size() < sizeof(std::uint32_t) + sizeof(DdsHeader))
@@ -390,10 +393,21 @@ namespace LamaPon::TextureLoader
             || header.width > MaximumTextureDimension
             || header.height > MaximumTextureDimension
             || header.depth > 1u
-            || (header.caps2 & (Caps2CubeMapMask | Caps2Volume)) != 0u)
+            || (header.caps2 & Caps2Volume) != 0u)
         {
             throw std::invalid_argument(
-                "The DDS is not a supported two-dimensional texture.");
+                cube
+                    ? "The DDS is not a supported cube texture."
+                    : "The DDS is not a supported two-dimensional texture.");
+        }
+        // 古い形式のcubeはcaps2へDDSCAPS2_CUBEMAPと6面の印を持ちます。
+        // 面が欠けたcubeはD3D11のDirectXTKと同じく読みません。
+        bool fileCube = (header.caps2 & Caps2CubeMapMask) != 0u;
+        if (fileCube
+            && (header.caps2 & Caps2CubeMapMask) != Caps2CubeMapMask)
+        {
+            throw std::invalid_argument(
+                "DDS cubes without all six faces are not supported.");
         }
 
         std::size_t payloadOffset = sizeof(magic) + sizeof(header);
@@ -426,12 +440,15 @@ namespace LamaPon::TextureLoader
                     sizeof(dx10));
                 payloadOffset += sizeof(dx10);
                 if (dx10.resourceDimension != ResourceDimensionTexture2D
-                    || dx10.arraySize != 1u
-                    || (dx10.miscFlag & ResourceMiscTextureCube) != 0u)
+                    || dx10.arraySize != 1u)
                 {
                     throw std::invalid_argument(
                         "DDS arrays, cubes, and volumes are not supported "
                         "by the graphics texture contract.");
+                }
+                if ((dx10.miscFlag & ResourceMiscTextureCube) != 0u)
+                {
+                    fileCube = true;
                 }
                 format = static_cast<DXGI_FORMAT>(dx10.format);
                 break;
@@ -469,6 +486,19 @@ namespace LamaPon::TextureLoader
                 "The DDS texture format is not supported by the active "
                 "graphics backends.");
         }
+        if (fileCube != cube)
+        {
+            throw std::invalid_argument(
+                cube
+                    ? "The DDS is not a cube texture."
+                    : "DDS arrays, cubes, and volumes are not supported "
+                        "by the graphics texture contract.");
+        }
+        if (cube && header.width != header.height)
+        {
+            throw std::invalid_argument(
+                "The DDS cube faces must be square.");
+        }
 
         const std::uint32_t mipCount = std::max(header.mipMapCount, 1u);
         std::uint32_t maximumMipCount = 1u;
@@ -484,38 +514,98 @@ namespace LamaPon::TextureLoader
                 "The DDS texture has too many mip levels.");
         }
 
-        PreparedTextureData result;
+        // cubeは+X、-X、+Y、-Y、+Z、-Zの順に、各面の全ミップが続きます。
+        const std::uint32_t faceCount = cube ? 6u : 1u;
+        LamaPon::TextureLoader::PreparedTextureData result;
         result.format = format;
-        result.levels.reserve(mipCount);
+        result.levels.reserve(
+            static_cast<std::size_t>(mipCount) * faceCount);
         std::size_t offset = payloadOffset;
-        for (std::uint32_t mip{}; mip < mipCount; ++mip)
+        for (std::uint32_t face{}; face < faceCount; ++face)
         {
-            const auto width = std::max(header.width >> mip, 1u);
-            const auto height = std::max(header.height >> mip, 1u);
-            const auto [rowPitch, rowCount] =
-                DdsLevelLayout(format, width, height);
-            const std::uint64_t levelBytes64 =
-                static_cast<std::uint64_t>(rowPitch) * rowCount;
-            if (offset > bytes.size()
-                || levelBytes64 > std::numeric_limits<std::size_t>::max()
-                || levelBytes64 > bytes.size() - offset)
+            for (std::uint32_t mip{}; mip < mipCount; ++mip)
             {
-                throw std::invalid_argument(
-                    "The DDS mip data is incomplete.");
+                const auto width = std::max(header.width >> mip, 1u);
+                const auto height = std::max(header.height >> mip, 1u);
+                const auto [rowPitch, rowCount] =
+                    DdsLevelLayout(format, width, height);
+                const std::uint64_t levelBytes64 =
+                    static_cast<std::uint64_t>(rowPitch) * rowCount;
+                if (offset > bytes.size()
+                    || levelBytes64 > std::numeric_limits<std::size_t>::max()
+                    || levelBytes64 > bytes.size() - offset)
+                {
+                    throw std::invalid_argument(
+                        "The DDS mip data is incomplete.");
+                }
+                const auto levelBytes =
+                    static_cast<std::size_t>(levelBytes64);
+                LamaPon::TextureLoader::PreparedTextureLevel level;
+                level.width = width;
+                level.height = height;
+                level.rowPitch = rowPitch;
+                level.bytes.assign(
+                    bytes.begin() + static_cast<std::ptrdiff_t>(offset),
+                    bytes.begin()
+                        + static_cast<std::ptrdiff_t>(offset + levelBytes));
+                result.levels.push_back(std::move(level));
+                offset += levelBytes;
             }
-            const auto levelBytes = static_cast<std::size_t>(levelBytes64);
-            PreparedTextureLevel level;
-            level.width = width;
-            level.height = height;
-            level.rowPitch = rowPitch;
-            level.bytes.assign(
-                bytes.begin() + static_cast<std::ptrdiff_t>(offset),
-                bytes.begin()
-                    + static_cast<std::ptrdiff_t>(offset + levelBytes));
-            result.levels.push_back(std::move(level));
-            offset += levelBytes;
         }
         return result;
+    }
+}
+
+namespace LamaPon::TextureLoader
+{
+    PreparedTextureData PrepareDdsTextureData(
+        const std::span<const std::uint8_t> bytes)
+    {
+        return ParseDdsTextureData(bytes, false);
+    }
+
+    bool IsDdsCubeTexture(
+        const std::span<const std::uint8_t> bytes) noexcept
+    {
+        const std::size_t headerOffset = sizeof(std::uint32_t);
+        if (bytes.size() < headerOffset + sizeof(DdsHeader))
+        {
+            return false;
+        }
+        std::uint32_t magic{};
+        DdsHeader header{};
+        std::memcpy(&magic, bytes.data(), sizeof(magic));
+        std::memcpy(
+            &header,
+            bytes.data() + headerOffset,
+            sizeof(header));
+        if (magic != DdsMagic || header.size != sizeof(DdsHeader))
+        {
+            return false;
+        }
+        if ((header.caps2 & Caps2CubeMapMask) != 0u)
+        {
+            return true;
+        }
+        const std::size_t extendedOffset = headerOffset + sizeof(header);
+        if ((header.pixelFormat.flags & PixelFormatFourCc) == 0u
+            || header.pixelFormat.fourCc != MakeFourCc('D', 'X', '1', '0')
+            || bytes.size() < extendedOffset + sizeof(DdsHeaderDx10))
+        {
+            return false;
+        }
+        DdsHeaderDx10 dx10{};
+        std::memcpy(
+            &dx10,
+            bytes.data() + extendedOffset,
+            sizeof(dx10));
+        return (dx10.miscFlag & ResourceMiscTextureCube) != 0u;
+    }
+
+    PreparedTextureData PrepareDdsCubeTextureData(
+        const std::span<const std::uint8_t> bytes)
+    {
+        return ParseDdsTextureData(bytes, true);
     }
 
     CpuImage DecodeImageBytes(

@@ -14,6 +14,7 @@
 #include "LamaPon/Core/Log.h"
 #include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Graphics/D3D11Backend.h"
+#include "LamaPon/Graphics/D3D12Backend.h"
 #include "LamaPon/Graphics/GraphicsBackend.h"
 #include "LamaPon/Graphics/SkeletalModel.h"
 
@@ -1302,6 +1303,32 @@ namespace LamaPon
         {
             return {};
         }
+        if (isDds && TextureLoader::IsDdsCubeTexture(bytes))
+        {
+            if (auto* const d3d12 = dynamic_cast<D3D12Backend*>(m_backend))
+            {
+                const auto prepared =
+                    TextureLoader::PrepareDdsCubeTextureData(bytes);
+                constexpr std::size_t FaceCount = 6u;
+                auto description = MakeTextureDescription(prepared);
+                description.mipLevels = static_cast<std::uint32_t>(
+                    prepared.levels.size() / FaceCount);
+                const auto subresources = MakeTextureSubresources(prepared);
+                return d3d12->CreateTextureCube(
+                    description,
+                    subresources).second;
+            }
+            if (auto* const d3d11 = AsD3D11Backend(m_backend))
+            {
+                auto nativeView = CreateTextureViewFromMemory(
+                    bytes,
+                    true,
+                    usage);
+                return d3d11->ImportShaderResourceView(nativeView.Get())
+                    .second;
+            }
+            return {};
+        }
         const auto prepared = isDds
             ? TextureLoader::PrepareDdsTextureData(bytes)
             : TextureLoader::PrepareTextureData(
@@ -1357,6 +1384,31 @@ namespace LamaPon
                 auto [textureHandle, viewHandle] =
                     d3d11->ImportShaderResourceView(
                         loadedView.Get());
+                PublishTextureResources(
+                    *texture,
+                    m_backend,
+                    std::move(textureHandle),
+                    std::move(viewHandle));
+            }
+            else if (auto* const d3d12 = dynamic_cast<D3D12Backend*>(
+                    m_backend);
+                d3d12 != nullptr && TextureLoader::IsDdsCubeTexture(bytes))
+            {
+                // Skyのcubemapなど6面のDDSは、D3D12だけが持つcube texture
+                // 入口へ渡します。levelsは面ごとに全ミップが並びます。
+                const auto prepared =
+                    TextureLoader::PrepareDdsCubeTextureData(bytes);
+                constexpr std::size_t FaceCount = 6u;
+                auto description = MakeTextureDescription(prepared);
+                description.mipLevels = static_cast<std::uint32_t>(
+                    prepared.levels.size() / FaceCount);
+                const auto subresources =
+                    MakeTextureSubresources(prepared);
+                auto [textureHandle, viewHandle] =
+                    d3d12->CreateTextureCube(description, subresources);
+                texture->width = description.width;
+                texture->height = description.height;
+                texture->isCube = true;
                 PublishTextureResources(
                     *texture,
                     m_backend,
