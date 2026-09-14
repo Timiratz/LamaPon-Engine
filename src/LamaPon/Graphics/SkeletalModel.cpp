@@ -1112,6 +1112,13 @@ namespace LamaPon
                         meshGlobal * ownerWorld,
                         view,
                         projection);
+                    // 通常描画はDirectXTKのSkinnedEffectが頂点を変形しますが、
+                    // 輪郭／遮蔽passはLitEffect自身のskinned vertex shaderを
+                    // 使います。両方へ同じpaletteを渡さないと、追加passだけ
+                    // bind pose（初期identity palette）で描かれてしまいます。
+                    customEffect->SetBoneTransforms(
+                        palette.data(),
+                        palette.size());
                     if (materialOverride != nullptr)
                     {
                         customEffect->SetMaterial(

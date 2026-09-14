@@ -95,7 +95,8 @@ SkyのcubemapによるIBL（`t3`の事前畳み込み済みスペキュラ、`t6
 CMO／SDKMESH／VBOのModel Rendererは、DirectX 11と同じくMaterial上書き中だけ`VSMain`／`PSMain`で描き、DirectXTKのModelMeshと同じ既定の描画状態へShaderの宣言を重ねます。
 Mesh RendererのPlane／Cubeでは`HSMain`／`DSMain`のテセレーションもDirectX 11と同じ四角パッチで描き、パッチへ分けられない形はDirectX 11と同じくマゼンタの代替表示になります。
 CMO／SDKMESH／VBOでは、`VSOutline`／`PSOutline`の輪郭と`PSOccluded`の遮蔽表示もDirectX 11と同じ描画状態と順番で重ねます。
-インスタンス描画と、glTF／GLB／FBXの`VSSkinnedOutline`／`PSOccluded`はまだ対応していません。
+glTF／GLB／FBXでは、`VSSkinnedOutline`／`PSOutline`の輪郭と`PSSkinnedOccluded`の遮蔽表示も骨パレットを反映して重ねます。`PSSkinnedOccluded`が無い既存Shaderは`PSOccluded`へフォールバックします。
+インスタンス描画はまだ対応していません。
 
 ### SSAOを受け取る
 

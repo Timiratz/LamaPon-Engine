@@ -1950,6 +1950,16 @@ namespace LamaPon
             && !m_wireframe
             && !depthOnly
             && m_material.CustomParameter(3).x > 0.0f;
+        const bool drawSkinnedOutline = skinnedMaterialShader
+            && !occludedOnly
+            && !m_wireframe
+            && !depthOnly
+            && m_material.CustomParameter(3).x > 0.0f;
+        const bool drawSkinnedOccluded = skinnedMaterialShader
+            && !occludedOnly
+            && !m_wireframe
+            && !depthOnly
+            && m_material.CustomParameter(4).w > 0.0f;
         // 上書きが無いときに、モデル自身の色・粗さ・金属度だけを渡す
         // Materialです。D3D11と同じく、custom値は既定の0です。
         LitMaterial primitiveMaterial;
@@ -2305,6 +2315,30 @@ namespace LamaPon
                     material.customTextures = pbrTextures.customTextures;
                     std::uint64_t generation{};
                     std::string shaderError;
+                    // D3D11のSkeletalModelと同じく、各primitiveで遮蔽表示、
+                    // 輪郭、通常描画の順に重ねます。入口が無いShaderでは
+                    // 追加passだけが安全に何も描きません。
+                    if (drawSkinnedOccluded)
+                    {
+                        material.pass = Detail::MaterialShaderPass::Occluded;
+                        static_cast<void>(
+                            m_graphics->DrawMaterialShaderPrimitive(
+                                request,
+                                material,
+                                generation,
+                                shaderError));
+                    }
+                    if (drawSkinnedOutline)
+                    {
+                        material.pass = Detail::MaterialShaderPass::Outline;
+                        static_cast<void>(
+                            m_graphics->DrawMaterialShaderPrimitive(
+                                request,
+                                material,
+                                generation,
+                                shaderError));
+                    }
+                    material.pass = Detail::MaterialShaderPass::Main;
                     static_cast<void>(m_graphics->DrawMaterialShaderPrimitive(
                         request,
                         material,

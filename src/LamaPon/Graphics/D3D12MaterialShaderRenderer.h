@@ -116,6 +116,9 @@ namespace LamaPon::Detail
             Microsoft::WRL::ComPtr<ID3DBlob> outlineVertexShader;
             Microsoft::WRL::ComPtr<ID3DBlob> outlinePixelShader;
             Microsoft::WRL::ComPtr<ID3DBlob> occludedPixelShader;
+            // PSSkinnedOccludedが無くPSOccludedへ戻った場合は、段間signatureを
+            // 合わせるためVSSkinnedMainと組み合わせます。
+            bool occludedUsesMaterialVertexShader{};
             // 輪郭／遮蔽表示のpipelineを作れず、そのpassを止めた説明です。
             std::string passError;
             std::map<

@@ -231,3 +231,17 @@ float4 PSOutline(OutlinePixelInput input) : SV_Target
     clip(alpha - 0.08f);
     return float4(saturate(CustomParameters[3].yzw), 1.0f);
 }
+
+float4 PSOccluded(PixelInput input) : SV_Target
+{
+    return float4(
+        saturate(CustomParameters[4].xyz),
+        saturate(CustomParameters[4].w));
+}
+
+float4 PSSkinnedOccluded(SkinnedPixelInput input) : SV_Target
+{
+    return float4(
+        saturate(CustomParameters[4].xyz),
+        saturate(CustomParameters[4].w));
+}

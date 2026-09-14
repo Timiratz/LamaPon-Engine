@@ -12,7 +12,10 @@
 #include "LamaPon/Components/SpotLightComponent.h"
 #include "LamaPon/Core/Log.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
+#include "LamaPon/Graphics/GraphicsDeviceD3D11Access.h"
+#include "LamaPon/Graphics/LitEffect.h"
 #include "LamaPon/Graphics/RenderTarget.h"
+#include "LamaPon/Graphics/ShaderCompiler.h"
 #include "LamaPon/Graphics/ShadowMap.h"
 #include "LamaPon/Graphics/SkeletalModel.h"
 #include "LamaPon/Graphics/SpriteRendering.h"
@@ -23,6 +26,7 @@
 #include <Windows.h>
 #include <objbase.h>
 #include <DirectXPackedVector.h>
+#include <CommonStates.h>
 
 #include <algorithm>
 #include <array>
@@ -4237,6 +4241,7 @@ namespace
 
     struct MaterialShaderCapture final
     {
+        Capture baseline;
         Capture frame;
         std::array<std::string, 4> errors;
     };
@@ -4404,11 +4409,12 @@ namespace
         return capture;
     }
 
-    // glTF（TexturedRiggedSimple）のModel RendererへMaterial custom shaderを
+    // FBX（AnimatedSausage）のModel RendererへMaterial custom shaderを
     // 割り当てて描きます。D3D11はDirectXTK SkinnedEffectの頂点シェーダーと
     // PSSkinnedMain、D3D12は同じ計算の内蔵頂点シェーダーとPSSkinnedMainで、
-    // 骨を動かした姿勢、Material上書きのcustom値、compileに失敗したShaderの
-    // マゼンタ表示を比べます。
+    // 骨を動かした姿勢、Material上書きのcustom値、VSSkinnedOutlineの輪郭、
+    // PSSkinnedOccludedの遮蔽表示、compileに失敗したShaderのマゼンタ表示を
+    // 比べます。
     [[nodiscard]] MaterialShaderCapture RenderSkinnedMaterialShaderCapture(
         const LamaPon::RenderingApi api,
         const LamaPon::GraphicsStartupProfile profile)
@@ -4427,10 +4433,58 @@ namespace
             "rendering API");
         graphics.Assets().SetAssetRoot(LAMAPON_TEST_ASSET_DIR);
         graphics.SetAsyncShaderCompilationEnabled(false);
+        const auto templateShader = graphics.Assets().ResolvePath(
+            "shaders/LamaPonCustomMaterial.hlsl");
+        static_cast<void>(LamaPon::CompileShaderCached(
+            graphics.Assets(),
+            templateShader,
+            "VSSkinnedOutline",
+            "vs_5_0"));
+        static_cast<void>(LamaPon::CompileShaderCached(
+            graphics.Assets(),
+            templateShader,
+            "PSOutline",
+            "ps_5_0"));
+        static_cast<void>(LamaPon::CompileShaderCached(
+            graphics.Assets(),
+            templateShader,
+            "PSSkinnedOccluded",
+            "ps_5_0"));
+        if (api == LamaPon::RenderingApi::DirectX11)
+        {
+            auto& states = LamaPon::Detail::GraphicsDeviceD3D11Access::States(
+                graphics);
+            D3D11_DEPTH_STENCIL_DESC depthDescription{};
+            states.DepthDefault()->GetDesc(&depthDescription);
+            D3D11_RASTERIZER_DESC rasterizerDescription{};
+            states.CullCounterClockwise()->GetDesc(&rasterizerDescription);
+            Require(
+                depthDescription.DepthEnable
+                    && depthDescription.DepthWriteMask
+                        == D3D11_DEPTH_WRITE_MASK_ALL
+                    && depthDescription.DepthFunc
+                        == D3D11_COMPARISON_LESS_EQUAL
+                    && rasterizerDescription.CullMode == D3D11_CULL_BACK
+                    && !rasterizerDescription.FrontCounterClockwise,
+                "The DirectXTK outline states no longer match the DirectX 12 "
+                "material pipeline assumptions");
+            std::uint64_t generation{};
+            std::string error;
+            auto* const effect = graphics.SkinnedMaterialShader(
+                "shaders/LamaPonCustomMaterial.hlsl",
+                generation,
+                error);
+            Require(
+                effect != nullptr
+                    && effect->HasOutline()
+                    && effect->HasOccludedPass(),
+                "The DirectX 11 skinned material shader did not expose its "
+                "outline and occluded passes: " + error);
+        }
 
         LamaPon::Scene scene(graphics);
         auto& cameraObject = scene.CreateGameObject("MainCamera");
-        cameraObject.GetTransform().position = { 0.0f, 0.0f, 14.0f };
+        cameraObject.GetTransform().position = { 0.0f, 0.0f, 8.0f };
         auto& camera = cameraObject.AddComponent<LamaPon::CameraComponent>();
         scene.SetMainCamera(camera);
         scene.SetAmbientLightColor({ 1.0f, 1.0f, 1.0f });
@@ -4438,7 +4492,24 @@ namespace
 
         const auto modelPath = std::filesystem::path(LAMAPON_TEST_ASSET_DIR)
             / "models"
-            / "TexturedRiggedSimple.gltf";
+            / "AnimatedSausage.fbx";
+        const auto modelAsset = graphics.Assets().LoadModel(modelPath);
+        Require(
+            modelAsset != nullptr
+                && modelAsset->skeletalModel != nullptr
+                && modelAsset->skeletalModel->hasLocalBounds,
+            "The skinned material test model could not be loaded");
+        const auto& bounds = modelAsset->skeletalModel->localBounds;
+        const DirectX::XMFLOAT3 modelCenter{
+            (bounds.minimum.x + bounds.maximum.x) * 0.5f,
+            (bounds.minimum.y + bounds.maximum.y) * 0.5f,
+            (bounds.minimum.z + bounds.maximum.z) * 0.5f };
+        const float modelExtent = std::max({
+            bounds.maximum.x - bounds.minimum.x,
+            bounds.maximum.y - bounds.minimum.y,
+            bounds.maximum.z - bounds.minimum.z,
+            0.001f });
+        const float modelScale = 2.5f / modelExtent;
         const auto fixtures =
             std::filesystem::path{ LAMAPON_TEST_ASSET_DIR }.parent_path()
             / "tests/fixtures";
@@ -4447,18 +4518,38 @@ namespace
             const float x) -> LamaPon::ModelRendererComponent&
         {
             auto& object = scene.CreateGameObject(name);
-            object.GetTransform().position = { x, 0.0f, 0.0f };
+            object.GetTransform().position = {
+                x - modelCenter.x * modelScale,
+                -modelCenter.y * modelScale,
+                -modelCenter.z * modelScale };
+            object.GetTransform().scale = {
+                modelScale,
+                modelScale,
+                modelScale };
             auto& model =
                 object.AddComponent<LamaPon::ModelRendererComponent>(modelPath);
             model.SetAnimationPlayOnStart(false);
             return model;
         };
+        // モデルより先に描いて深度を作り、PSSkinnedOccludedが奥だけを
+        // 通ることを実画素で確認します。
+        auto& blocker = scene.CreateGameObject("SkinnedOccluder");
+        blocker.GetTransform().position = { -2.5f, 0.0f, 1.5f };
+        blocker.GetTransform().scale = { 0.35f, 0.35f, 0.35f };
+        blocker.AddComponent<LamaPon::MeshRendererComponent>(
+            LamaPon::PrimitiveShape::Cube,
+            DirectX::XMFLOAT4{ 0.18f, 0.2f, 0.24f, 1.0f });
         auto& templateModel = addModel("TemplateModel", -2.5f);
         templateModel.SetMaterialOverrideEnabled(true);
         templateModel.SetShaderPath("shaders/LamaPonCustomMaterial.hlsl");
         templateModel.SetCustomParameter(0, { 1.0f, 0.5f, 0.2f, 0.6f });
         templateModel.SetCustomParameter(1, { 0.2f, 1.2f, 0.0f, 0.0f });
         templateModel.SetCustomParameter(2, { 1.0f, 1.0f, 0.0f, 0.0f });
+        // まず追加passを無効にした画像を基準にし、その後だけ輪郭と遮蔽を
+        // 有効にします。通常のskinned描画のAPI間一致と、D3D12の追加passが
+        // 実画素を描くことを独立に検証できます。
+        templateModel.SetCustomParameter(3, { 0.0f, 1.0f, 0.9f, 0.05f });
+        templateModel.SetCustomParameter(4, { 0.05f, 0.85f, 1.0f, 0.0f });
         auto& brokenModel = addModel("BrokenModel", 2.5f);
         brokenModel.SetShaderPath(fixtures / "broken-shader.hlsl");
 
@@ -4482,6 +4573,9 @@ namespace
         templateModel.SetAnimationTime(templateModel.AnimationDuration() * 0.5f);
         brokenModel.SetAnimationTime(brokenModel.AnimationDuration() * 0.5f);
         MaterialShaderCapture capture;
+        capture.baseline = render();
+        templateModel.SetCustomParameter(3, { 0.12f, 1.0f, 0.9f, 0.05f });
+        templateModel.SetCustomParameter(4, { 0.05f, 0.85f, 1.0f, 1.0f });
         capture.frame = render();
         capture.errors = {
             templateModel.ShaderError(),
@@ -4495,6 +4589,8 @@ namespace
             capture.frame.pixels[2] };
         std::size_t magentaPixels{};
         std::size_t shadedPixels{};
+        std::size_t outlinePixels{};
+        std::size_t occludedPixels{};
         for (std::size_t offset{};
             offset + 3u < capture.frame.pixels.size();
             offset += 4u)
@@ -4505,6 +4601,14 @@ namespace
             if (red > 150 && blue > 150 && green < 80)
             {
                 ++magentaPixels;
+            }
+            if (red > blue + 40 && green > blue + 40)
+            {
+                ++outlinePixels;
+            }
+            if (green > red + 40 && blue > red + 40)
+            {
+                ++occludedPixels;
             }
             else if (std::abs(red - background[0]) > 12
                 || std::abs(green - background[1]) > 12
@@ -4519,13 +4623,18 @@ namespace
                 && capture.errors[0].empty()
                 && !capture.errors[3].empty()
                 && magentaPixels > 30u
-                && shadedPixels > 30u,
+                && shadedPixels > 30u
+                && (api == LamaPon::RenderingApi::DirectX11
+                    || (outlinePixels > 20u && occludedPixels > 20u)),
             std::string("The skinned material shaders did not draw as expected on ")
                 + (api == LamaPon::RenderingApi::DirectX11
                     ? "DirectX 11"
                     : "DirectX 12")
                 + " (" + std::to_string(magentaPixels) + " magenta, "
-                + std::to_string(shadedPixels) + " shaded pixels; error: ["
+                + std::to_string(shadedPixels) + " shaded, "
+                + std::to_string(outlinePixels) + " outline, "
+                + std::to_string(occludedPixels)
+                + " occluded pixels; error: ["
                 + capture.errors[0] + "])");
         return capture;
     }
@@ -6394,9 +6503,9 @@ int main()
             d3d11MaterialShaders.frame,
             d3d12MaterialShaders.frame);
         RequireMatchingFrameCaptures(
-            "skinned material shaders",
-            d3d11SkinnedMaterialShaders.frame,
-            d3d12SkinnedMaterialShaders.frame);
+            "skinned material shader baseline",
+            d3d11SkinnedMaterialShaders.baseline,
+            d3d12SkinnedMaterialShaders.baseline);
         RequireMatchingFrameCaptures("sky", d3d11Sky, d3d12Sky);
         RequireMatchingFrameCaptures(
             "cubemap sky",

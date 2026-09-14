@@ -948,6 +948,7 @@ namespace LamaPon::Detail
             entry.outlineVertexShader.Reset();
             entry.outlinePixelShader.Reset();
             entry.occludedPixelShader.Reset();
+            entry.occludedUsesMaterialVertexShader = false;
             entry.passError.clear();
             return entry;
         }
@@ -1008,38 +1009,48 @@ namespace LamaPon::Detail
                 domainShader.Reset();
             }
             const bool hasTessellation = hullShader != nullptr;
-            // D3D11のLitEffectと同じく、VSOutlineとPSOutlineは両方あるとき
-            // だけ輪郭に使います。D3D12はglTF／FBXの輪郭と遮蔽表示を描かない
-            // ため、スキニング用には用意しません。
+            // D3D11のLitEffectと同じく、VSOutline（スキニング時は
+            // VSSkinnedOutline）とPSOutlineが両方あるときだけ輪郭に使います。
             Microsoft::WRL::ComPtr<ID3DBlob> outlineVertexShader;
             Microsoft::WRL::ComPtr<ID3DBlob> outlinePixelShader;
             Microsoft::WRL::ComPtr<ID3DBlob> occludedPixelShader;
-            if (!skinned)
+            bool occludedUsesMaterialVertexShader{};
+            outlineVertexShader = TryCompileShader(
+                assets,
+                source.path,
+                skinned ? "VSSkinnedOutline" : "VSOutline",
+                "vs_5_0",
+                source.keywords);
+            outlinePixelShader = TryCompileShader(
+                assets,
+                source.path,
+                "PSOutline",
+                "ps_5_0",
+                source.keywords);
+            if (outlineVertexShader == nullptr
+                || outlinePixelShader == nullptr)
             {
-                outlineVertexShader = TryCompileShader(
-                    assets,
-                    source.path,
-                    "VSOutline",
-                    "vs_5_0",
-                    source.keywords);
-                outlinePixelShader = TryCompileShader(
-                    assets,
-                    source.path,
-                    "PSOutline",
-                    "ps_5_0",
-                    source.keywords);
-                if (outlineVertexShader == nullptr
-                    || outlinePixelShader == nullptr)
-                {
-                    outlineVertexShader.Reset();
-                    outlinePixelShader.Reset();
-                }
+                outlineVertexShader.Reset();
+                outlinePixelShader.Reset();
+            }
+            occludedPixelShader = TryCompileShader(
+                assets,
+                source.path,
+                skinned ? "PSSkinnedOccluded" : "PSOccluded",
+                "ps_5_0",
+                source.keywords);
+            if (skinned && occludedPixelShader == nullptr)
+            {
+                // 既存ShaderはPSOccludedだけを持つため、その入口も
+                // D3D11と同じ互換フォールバックとして試します。
                 occludedPixelShader = TryCompileShader(
                     assets,
                     source.path,
                     "PSOccluded",
                     "ps_5_0",
                     source.keywords);
+                occludedUsesMaterialVertexShader =
+                    occludedPixelShader != nullptr;
             }
             std::array<bool, ConstantBufferCount> constantBuffers{};
             MarkConstantBuffers(vertexShader.Get(), constantBuffers);
@@ -1059,6 +1070,8 @@ namespace LamaPon::Detail
             entry.outlineVertexShader = std::move(outlineVertexShader);
             entry.outlinePixelShader = std::move(outlinePixelShader);
             entry.occludedPixelShader = std::move(occludedPixelShader);
+            entry.occludedUsesMaterialVertexShader =
+                occludedUsesMaterialVertexShader;
             entry.renderState = renderState;
             entry.constantBuffers = constantBuffers;
             entry.hasTessellation = hasTessellation;
@@ -1081,6 +1094,7 @@ namespace LamaPon::Detail
             entry.outlineVertexShader.Reset();
             entry.outlinePixelShader.Reset();
             entry.occludedPixelShader.Reset();
+            entry.occludedUsesMaterialVertexShader = false;
             entry.passError.clear();
         }
         return entry;
@@ -1132,10 +1146,14 @@ namespace LamaPon::Detail
             : m_linearRootSignature.Get();
         // 輪郭はVSOutline／PSOutline、遮蔽表示はVSMain／PSOccludedで描きます。
         const auto pass = static_cast<MaterialShaderPass>(key.pass);
-        auto* const vertexShader = key.skinned
-            ? m_skinnedVertexShader.Get()
-            : pass == MaterialShaderPass::Outline
-                ? entry.outlineVertexShader.Get()
+        auto* const vertexShader = pass == MaterialShaderPass::Outline
+            ? entry.outlineVertexShader.Get()
+            : pass == MaterialShaderPass::Occluded
+                    && key.skinned
+                    && entry.occludedUsesMaterialVertexShader
+                ? entry.vertexShader.Get()
+            : key.skinned
+                ? m_skinnedVertexShader.Get()
                 : entry.vertexShader.Get();
         auto* const pixelShader = pass == MaterialShaderPass::Outline
             ? entry.outlinePixelShader.Get()
@@ -1334,13 +1352,10 @@ namespace LamaPon::Detail
             return result;
         }
 
-        // D3D11のDrawCommonLitと同じく、輪郭と遮蔽表示はShaderがその入口を
-        // 持つときだけ、通常のパスでCMO／SDKMESH／VBOのpartへ重ねます。
-        // 代替表示のShaderにはどちらもありません。
+        // D3D11と同じく、輪郭と遮蔽表示はShaderがその入口を持つときだけ
+        // 通常のパスへ重ねます。代替表示のShaderにはどちらもありません。
         if (material.pass != MaterialShaderPass::Main
             && (result.placeholder
-                || skinned != nullptr
-                || material.directXTKPart == nullptr
                 || depthOnly
                 || (material.pass == MaterialShaderPass::Outline
                     ? active->outlineVertexShader == nullptr
@@ -1525,12 +1540,18 @@ namespace LamaPon::Detail
             key.pass = static_cast<std::uint8_t>(material.pass);
             if (material.pass == MaterialShaderPass::Outline)
             {
-                // D3D11のDrawCommonLitが輪郭の描画で置く状態です
-                // （NonPremultiplied／DepthRead／CullClockwise）。Shaderの宣言は
-                // 通常の描画にだけ効きます。
-                blend = BlendKind::NonPremultiplied;
-                depth = DepthKind::Read;
-                cull = ShaderCullMode::Front;
+                // DirectXTK Modelの上書きはDrawCommonLit、glTF／FBXは
+                // SkeletalModel::DrawD3D11が輪郭の描画で置く状態です。
+                // Shaderの宣言は通常の描画にだけ効きます。
+                blend = key.skinned
+                    ? BlendKind::Opaque
+                    : BlendKind::NonPremultiplied;
+                depth = key.skinned
+                    ? DepthKind::Default
+                    : DepthKind::Read;
+                cull = key.skinned
+                    ? ShaderCullMode::Back
+                    : ShaderCullMode::Front;
                 wireframe = false;
             }
             else if (material.pass == MaterialShaderPass::Occluded)
@@ -1584,6 +1605,7 @@ namespace LamaPon::Detail
                 else
                 {
                     active->occludedPixelShader.Reset();
+                    active->occludedUsesMaterialVertexShader = false;
                 }
                 active->passError = failure;
                 result.passError = failure;
@@ -1600,6 +1622,7 @@ namespace LamaPon::Detail
             active->outlineVertexShader.Reset();
             active->outlinePixelShader.Reset();
             active->occludedPixelShader.Reset();
+            active->occludedUsesMaterialVertexShader = false;
             active->pipelines.clear();
             result.error = active->error;
             if (!usePlaceholder())
@@ -1940,11 +1963,25 @@ namespace LamaPon::Detail
         }
         if (active->constantBuffers[2])
         {
-            // Mesh Rendererは骨を持たないため、単位行列を渡します。
+            // Mesh Rendererは単位行列、glTF／FBXのskinned custom shaderは
+            // LitEffect::SetBoneTransformsと同じ実骨paletteをb2へ渡します。
+            // 通常passは互換頂点Shaderのb4を使いますが、VSSkinnedOutline
+            // などShader自身の頂点入口はb2を読むため、両方が必要です。
             BoneConstants bones;
             DirectX::XMFLOAT3X4 identity{};
             DirectX::XMStoreFloat3x4(&identity, DirectX::XMMatrixIdentity());
             bones.transforms.fill(identity);
+            if (skinned != nullptr)
+            {
+                const auto boneCount =
+                    std::min(skinned->bones.size(), bones.transforms.size());
+                for (std::size_t bone{}; bone < boneCount; ++bone)
+                {
+                    DirectX::XMStoreFloat3x4(
+                        &bones.transforms[bone],
+                        DirectX::XMLoadFloat4x4(&skinned->bones[bone]));
+                }
+            }
             constantBuffers[2] = uploadConstants(bones);
         }
         if (active->constantBuffers[3])

@@ -292,13 +292,23 @@ namespace LamaPon
                     "ID3D11Device::CreatePixelShader(outline)");
             }
         }
-        const auto occludedPixelByteCode =
-            TryCompileShader(
+        auto occludedPixelByteCode = TryCompileShader(
+            assets,
+            shaderPath,
+            skinned ? "PSSkinnedOccluded" : "PSOccluded",
+            "ps_5_0",
+            keywords);
+        if (skinned && !occludedPixelByteCode)
+        {
+            // 既存のMaterial ShaderはPSOccludedだけを持つため、専用入口が
+            // 無い場合は従来の入口をそのまま使います。
+            occludedPixelByteCode = TryCompileShader(
                 assets,
                 shaderPath,
                 "PSOccluded",
                 "ps_5_0",
-            keywords);
+                keywords);
+        }
         if (occludedPixelByteCode)
         {
             ThrowIfFailed(
