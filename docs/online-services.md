@@ -1,7 +1,20 @@
-# Discordログインとクラウドセーブ
+# Discordログイン、クラウドセーブ、Rich Presence
 
 LamaPonは、Windows x64ゲームでDiscordアカウントを使ったログインと、
 ログインしたプレイヤーごとのクラウドセーブ同期を扱えます。
+さらに、プレイ中の状況をDiscordのプロフィールへ表示する
+**Rich Presence**を、ログインなしでも利用できます。
+
+```text
+OnlineServices
+├─ DiscordAuth      アカウント連携（ログイン）
+├─ CloudSave        プレイヤー単位のセーブ同期
+└─ DiscordPresence  Rich Presence表示
+```
+
+この3つは独立しています。Rich Presenceだけを使う、ログインとクラウドセーブ
+だけを使う、両方使う、どれも選べます。Rich Presenceの説明は
+[Discord Rich Presence](#discord-rich-presence)にあります。
 
 > [!IMPORTANT]
 > この機能だけでオンラインサービスは完成しません。LamaPonが提供するのは
@@ -21,6 +34,8 @@ LamaPonは、Windows x64ゲームでDiscordアカウントを使ったログイ�
 | 複数端末の同時更新 | 検出して競合として停止し、ローカル版／クラウド版を選択 |
 | Discordへのセーブ保存 | 非対応。Discordは本人確認に使い、データは自前サーバーへ保存 |
 | バックエンドサーバーの同梱 | 非対応。このリポジトリにはサーバー実装を含まない |
+| Rich Presence（プレイ状況の表示） | 対応。Discordログインは不要 |
+| Rich Presenceのアダプター同梱 | 非対応。Discord SDKはこのリポジトリに含めない |
 | Webエクスポート | オンラインランタイムは未対応 |
 
 Discordログインはゲーム専用パスワードを保存しなくてよい利点がありますが、
@@ -85,6 +100,10 @@ LamaPonゲームはDiscordの`client_secret`を受け取りません。ブラウ
   }
 }
 ```
+
+Rich Presenceの設定は同じ`online`オブジェクトの`discordPresence`に入ります
+（[Discord Rich Presence](#discord-rich-presence)を参照）。
+`discordPresence`が無い古い`project.json`は、Rich Presence無効として読み込みます。
 
 `gameId`は1〜128文字、`environmentId`は1〜64文字で、ASCIIの英数字、`.`、`_`、`-`だけを
 使えます。有効化時はURL、ゲームID、環境IDがすべて必要です。通常はHTTPSだけを許可します。
@@ -202,6 +221,285 @@ ResolveCloudConflict(
 
 - `UseLocal`: 競合検出時のローカル版を、現在のクラウド版に対する新しい更新として再送
 - `UseRemote`: クラウド版でローカルを上書き
+
+## Discord Rich Presence
+
+Rich Presenceは、プレイ中の状況をDiscordのプロフィールとフレンド一覧へ
+表示する機能です。
+
+```text
+My Awesome Game
+
+Chapter 3
+Boss Battle
+
+[ゲームアイコン]
+
+00:18:42
+```
+
+> [!IMPORTANT]
+> **Rich PresenceとDiscordアカウント連携は別の機能です。**
+> Rich Presenceを使うために、Discordログインもクラウドセーブも
+> バックエンドも必要ありません。逆に、ログインとクラウドセーブを使いながら
+> Rich Presenceを切っておくこともできます。
+
+LamaPonは表示内容を決め打ちしません。`details`と`state`へ何を入れるかは
+ゲーム制作者が決めます。
+
+| ジャンル | `details` | `state` |
+|---|---|---|
+| アクション | `Stage 5` | `Boss Battle` |
+| シミュレーション | `Year 12` | `Population 120000` |
+| RPG | `Royal Capital` | `Quest: The Lost Sword` |
+| パズル | `Puzzle 48` | `87% Complete` |
+| レース | `Circuit A` | `Time Attack` |
+
+### 1. Discord Applicationを作る
+
+Rich Presenceは、ゲームごとに用意したDiscord Applicationとして表示されます。
+LamaPonは特定のApplication IDを強制しません。
+
+```text
+ゲームA → Discord Application A
+ゲームB → Discord Application B
+```
+
+1. [Discord Developer Portal](https://discord.com/developers/applications)で
+   **New Application**を作り、Discordへ表示したいゲーム名を付けます。
+   この名前がプロフィールの1行目になります。
+2. **General Information**の**Application ID**を控えます。
+   これは公開情報で、秘密情報ではありません。
+3. **Rich Presence** → **Art Assets**で画像を登録します。ここで付けた名前が
+   `largeImageKey` / `smallImageKey`になります（例: `game_icon`）。
+   登録後、Discord側へ反映されるまで時間がかかることがあります。
+
+> [!CAUTION]
+> Application IDだけをLamaPonへ設定します。**OAuth2のClient Secret、Bot Token、
+> access token、refresh tokenは、ゲームにも`project.json`にも入れないでください。**
+> 配布ファイルから誰でも取り出せます。LamaPonはASCII数字以外のApplication IDを
+> 拒否するので、秘密情報を貼り付けた場合は保存時にエラーになります。
+
+### 2. プロジェクト設定
+
+「ファイル」→「プロジェクト設定とビルド...」→「オンライン」→
+「Discord Rich Presence」で設定します。
+
+- **Discord Rich Presenceを有効にする**: Rich Presenceの利用可否
+- **Application ID**: 上で控えたID（ASCII数字、最大32文字）
+- **既定の大画像キー**: Activity側で指定しなかったときに使うArt Asset名
+- **既定の大画像テキスト**: 画像へカーソルを合わせたときの説明（最大128バイト）
+
+同じ画面の「動作確認」から、エディターのままテスト表示を送れます。
+ここで入力したDetails / Stateは`project.json`へ保存しません。
+
+`.lamapon/project.json`では次の形式です。
+
+```json
+{
+  "online": {
+    "enabled": false,
+
+    "discordPresence": {
+      "enabled": true,
+      "applicationId": "123456789012345678",
+      "defaultLargeImageKey": "game_icon",
+      "defaultLargeImageText": "My Awesome Game"
+    }
+  }
+}
+```
+
+この例のように`online.enabled`が`false`でもRich Presenceは動きます。
+`discordPresence`が無い古い`project.json`は、Rich Presence無効として
+読み込みます（既存プロジェクトの挙動は変わりません）。
+`applicationId`が空のまま`enabled`を`true`にしても保存はできますが、
+実行時に警告を出して安全に無効化します。
+
+### 3. C++スクリプトからActivityを設定する
+
+```cpp
+#include "LamaPon/Scripting/Script.h"
+
+class BossRoom final : public LamaPon::Script
+{
+public:
+    void Start() override
+    {
+        LamaPon::DiscordActivity activity;
+        activity.details = "Chapter 3";
+        activity.state = "Boss Battle";
+        activity.largeImageKey = "game_icon";
+        activity.largeImageText = "My Awesome Game";
+        // 経過時間（00:18:42）をDiscordへ表示します。
+        activity.startTimestamp =
+            LamaPon::DiscordPresenceUnixTime();
+        static_cast<void>(SetDiscordActivity(activity));
+    }
+
+    void OnDestroy() override
+    {
+        ClearDiscordActivity();
+    }
+};
+```
+
+`details`と`state`だけでよければ簡易版を使えます。
+
+```cpp
+static_cast<void>(
+    SetDiscordActivity("Chapter 3", "Boss Battle"));
+```
+
+主なメソッドは次の通りです。
+
+| メソッド | 用途 |
+|---|---|
+| `SetDiscordActivity(activity)` | 表示内容を設定。受理され、いま反映できたときtrue |
+| `SetDiscordActivity(details, state)` | 上の簡易版 |
+| `ClearDiscordActivity()` | 表示を消す。何度呼んでも安全 |
+| `IsDiscordPresenceAvailable()` | いまDiscordへ反映できるか |
+| `DiscordPresenceStatus()` | `Disabled` / `Unavailable` / `Ready` / `Active` |
+| `DiscordPresenceError()` | 直前の失敗理由（利用者向けではありません） |
+
+`DiscordActivity`のフィールドは次の通りです。
+
+| フィールド | 内容 | 上限 |
+|---|---|---|
+| `details` | 1行目。例: `Chapter 3` | 2〜128バイト |
+| `state` | 2行目。例: `Boss Battle` | 2〜128バイト |
+| `largeImageKey` | 大画像のArt Asset名 | 256バイト |
+| `largeImageText` | 大画像の説明 | 2〜128バイト |
+| `smallImageKey` | 小画像のArt Asset名（大画像が必要） | 256バイト |
+| `smallImageText` | 小画像の説明 | 2〜128バイト |
+| `startTimestamp` | 開始時刻（Unix秒）。経過時間を表示 | 0で指定なし |
+| `endTimestamp` | 終了時刻（Unix秒）。残り時間を表示 | 0で指定なし |
+
+上限を超える値、制御文字、負のタイムスタンプ、`startTimestamp`より前の
+`endTimestamp`は送信せずに`false`を返します。`largeImageKey`を空にすると、
+プロジェクト設定の既定値で補います。
+
+### 4. タイムスタンプ
+
+`startTimestamp`と`endTimestamp`は**Unix秒**です。`0`は「指定なし」で、
+Discordは経過時間を表示しません。LamaPonは`0`を勝手に現在時刻へ
+置き換えません（Discordの仕様に合わせています）。経過時間を出したいときは
+明示的に現在時刻を入れてください。
+
+```cpp
+// 経過時間（数え上がり）
+activity.startTimestamp = LamaPon::DiscordPresenceUnixTime();
+
+// 残り時間（数え下がり）— 例: 5分のタイムアタック
+activity.startTimestamp = 0;
+activity.endTimestamp =
+    LamaPon::DiscordPresenceUnixTime() + 5 * 60;
+```
+
+同じ`startTimestamp`を渡し続けるかぎり、Discord側の経過時間は
+リセットされません。ステージを移るたびに計り直したいときだけ、
+新しい時刻を入れてください。
+
+### 5. 更新の頻度
+
+Discordは1クライアントあたり**15秒に1回**しかActivity更新を受け付けず、
+超過分を黙って捨てます。LamaPonは最新の要求だけを保持し、次の更新枠で
+まとめて送ります。毎フレーム`SetDiscordActivity()`を呼んでも安全ですが、
+Discordへ届くのは最後の内容です。
+
+通信の進行は`Application::Update` → `OnlineServices::Update`から行います。
+Rich Presenceのために独自スレッドは作りません。`DiscordActivity`を扱う
+すべてのメソッドは、`Application`を動かす同じスレッドから呼んでください。
+
+### 6. Discordが起動していない場合
+
+Rich Presenceは、Discordが入っていない・起動していない・Presenceアダプターが
+未導入といった場合でも、**ゲームを止めません**。
+
+```text
+Presence初期化 → 失敗 → 警告ログ → Presence無効化 → ゲームは通常動作
+```
+
+ログには次のように出ます。
+
+```text
+Discord Rich Presenceを利用できません。
+Discord Activityなしでゲームを続行します: <理由>
+```
+
+このとき`IsDiscordPresenceAvailable()`は`false`、`DiscordPresenceStatus()`は
+`Unavailable`を返します。`SetDiscordActivity()`も`false`を返しますが、
+最後に渡した内容は保持され、Discordへ接続できた時点で送られます。
+接続はエンジン側が定期的にやり直すので、ゲームを起動した後にDiscordを
+起動した場合も表示されます。
+
+### 7. Presenceアダプター
+
+LamaPonはDiscordのSDKを同梱しません。Discord SDKの利用条件により、SDKを
+LamaPonのリポジトリへ取り込んだり、改変したり、単体で再配布したりできない
+ためです。非公式のDiscord RPCライブラリにも依存しません。そのため、標準の
+ビルドではRich Presenceは常に`Unavailable`になります（ゲームは正常に動きます）。
+
+Discordへ実際に表示するには、
+[Discord Social SDK](https://discord.com/developers/docs/discord-social-sdk/overview)を
+各自でDiscordから入手し、`DiscordPresenceBackend`を実装したアダプターを
+登録します。Discord固有の型はこのアダプターの内側だけに閉じ込めます。
+
+```text
+Game / Script
+  ↓
+LamaPon API（DiscordActivity）
+  ↓
+DiscordPresenceBackend（アダプター）
+  ↓
+Discord SDK / API
+```
+
+```cpp
+#include "LamaPon/Online/DiscordPresence.h"
+
+class MyDiscordBackend final
+    : public LamaPon::DiscordPresenceBackend
+{
+public:
+    bool Initialize(std::string_view applicationId) override;
+    void Shutdown() noexcept override;
+    bool SetActivity(
+        const LamaPon::DiscordActivity& activity) override;
+    void ClearActivity() noexcept override;
+    void Tick(float elapsedSeconds) noexcept override;
+    bool IsAvailable() const noexcept override;
+};
+
+// Applicationを作った後、Presenceを設定する前に一度だけ登録します。
+LamaPon::SetDiscordPresenceBackendFactory(
+    []
+    {
+        return std::make_unique<MyDiscordBackend>();
+    });
+```
+
+アダプターの約束事は次の通りです。
+
+- `Initialize()`は接続できなければ`false`を返します。**例外を投げない**でください。
+- `Tick()`は毎フレーム呼ばれます。**ブロックしない**でください。再接続や
+  受信処理はここで少しずつ進めます。
+- `IsAvailable()`が`false`になると、LamaPonは表示内容を保持したまま待ち、
+  `true`へ戻った時点で送り直します。
+- LamaPonが渡す`DiscordActivity`は検証済みで、15秒間隔にまとめられています。
+
+`LamaPon::Detail::FakeDiscordPresenceBackend`
+（`LamaPon/Online/DiscordPresenceTesting.h`）は、Discordを起動せずに
+Presenceの動作を確かめるためのbackendです。単体テストはこれだけで動くので、
+CIにDiscordクライアントは必要ありません。
+
+### 8. 今回の範囲
+
+このバージョンは**表示だけ**です。Party、Secrets、Join、Ask to Join、Invite、
+Spectate、Matchmaking、Achievements、Overlay制御は含みません。
+`DiscordActivity`は、これらを将来フィールドとして追加できる形にしています
+（Game Module DLLのレイアウトを壊さないよう、新しいフィールドは必ず末尾へ
+追加します）。
 
 ## 中断した保存処理を復旧する
 
@@ -325,7 +623,9 @@ read要求は`{"protocolVersion":1,"resource":{...}}`、PUT要求はそれに`by
 [対応プラットフォーム](https://docs.discord.com/developers/discord-social-sdk/core-concepts/platform-compatibility)を参照してください。
 
 LamaPonはUnityではなくC++エンジンであり、このブランチはSocial SDKを同梱していません。
-Discordが案内する標準OAuth2のWeb Flowを自前バックエンド経由で使う構成です。
+ログインは、Discordが案内する標準OAuth2のWeb Flowを自前バックエンド経由で使う構成です。
+Rich Presenceは、Social SDKのアダプターを差し込める形だけをLamaPonが用意します
+（[Presenceアダプター](#7-presenceアダプター)を参照）。
 [Discord OAuth2ドキュメント](https://docs.discord.com/developers/topics/oauth2)も参照してください。
 このため、Social SDK側が対応するプラットフォームと、LamaPonのオンライン機能の対応範囲は別です。
 現在のLamaPonオンライン機能はWindows x64だけを対象とします。
@@ -342,6 +642,15 @@ Discordが案内する標準OAuth2のWeb Flowを自前バックエンド経由�
 - ログへtoken、認証URLの秘密部分、セーブ本文を出していない
 - バックアップと復元手順、削除・プライバシーポリシーを用意した
 - Windows x64の複数端末、オフライン、強制終了、競合を実機で確認した
+
+Rich Presenceを使う場合は次も確認してください。
+
+- Discord Developer Portalでゲーム専用のApplicationを作り、そのIDだけを設定した
+- `client_secret`、Bot Token、access tokenを`project.json`とゲームへ入れていない
+- 表示するdetails / stateに、利用者の本名やメールなど公開したくない情報を入れていない
+- Discordを起動していない状態でゲームが通常どおり動くことを確認した
+- Discordを終了・再起動しても表示が壊れず、ゲームが落ちないことを確認した
+- Rich PresenceだけをONにした構成（Discordログインなし）で動作を確認した
 
 関連ページ: [プロジェクト設定](project.md)、[Sceneとセーブデータ](scenes.md)、
 [C++スクリプティング](scripting.md)、[エディター](editor.md)、

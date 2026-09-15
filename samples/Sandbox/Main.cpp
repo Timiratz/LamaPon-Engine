@@ -429,6 +429,26 @@ int WINAPI wWinMain(
                 projectSettings.online.openAuthorizationBrowser;
             application.Online().Configure(std::move(online));
         }
+        // Rich Presenceはアカウント連携と独立しています。ログイン設定
+        // （online.enabled）に関係なく、Presenceの設定だけで有効化します。
+        if (!safeMode
+            && !unattended
+            && projectSettings.online.discordPresence.enabled)
+        {
+            LamaPon::DiscordPresenceConfiguration presence;
+            presence.enabled = true;
+            presence.applicationId =
+                projectSettings.online.discordPresence
+                    .applicationId;
+            presence.defaultLargeImageKey =
+                projectSettings.online.discordPresence
+                    .defaultLargeImageKey;
+            presence.defaultLargeImageText =
+                projectSettings.online.discordPresence
+                    .defaultLargeImageText;
+            application.Online().ConfigureDiscordPresence(
+                std::move(presence));
+        }
         application.Graphics().SetGraphicsSettings(
             projectSettings.graphics);
         application.Input().SetActions(

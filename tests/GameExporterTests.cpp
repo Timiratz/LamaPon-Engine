@@ -320,6 +320,14 @@ int main()
         projectSettings.online.gameId = "com.example.export-test";
         projectSettings.online.environmentId = "production";
         projectSettings.online.openAuthorizationBrowser = false;
+        // Rich Presenceはアカウント連携と独立した公開設定です。
+        projectSettings.online.discordPresence.enabled = true;
+        projectSettings.online.discordPresence.applicationId =
+            "123456789012345678";
+        projectSettings.online.discordPresence
+            .defaultLargeImageKey = "game_icon";
+        projectSettings.online.discordPresence
+            .defaultLargeImageText = "My Awesome Game";
 
         // 書き出し時にシェーダーが事前コンパイルされることを見るため、
         // 本物としてコンパイルできるHLSLを1本置きます。#includeも
@@ -786,7 +794,7 @@ int main()
             "Game name was not exported.");
         const auto& onlineSettings = settings.at("online");
         Require(
-            onlineSettings.size() == 6
+            onlineSettings.size() == 7
                 && onlineSettings.at("enabled").get<bool>()
                 && onlineSettings.at("serviceBaseUrl")
                     .get<std::string>()
@@ -804,6 +812,22 @@ int main()
                 && !onlineSettings.contains("accessToken")
                 && !onlineSettings.contains("refreshToken"),
             "Only public online connection settings may be exported.");
+        const auto& presenceSettings =
+            onlineSettings.at("discordPresence");
+        Require(
+            presenceSettings.size() == 4
+                && presenceSettings.at("enabled").get<bool>()
+                && presenceSettings.at("applicationId")
+                    .get<std::string>()
+                    == "123456789012345678"
+                && presenceSettings.at("defaultLargeImageKey")
+                    .get<std::string>() == "game_icon"
+                && presenceSettings.at("defaultLargeImageText")
+                    .get<std::string>() == "My Awesome Game"
+                && !presenceSettings.contains("clientSecret")
+                && !presenceSettings.contains("accessToken"),
+            "Only public Discord rich presence settings may be"
+            " exported.");
         Require(
             settings.at("window").at("width").get<int>()
                 == 1600
@@ -864,7 +888,20 @@ int main()
                     == "production"
                 && !loadedSettings.online.allowInsecureLoopback
                 && !loadedSettings.online
-                    .openAuthorizationBrowser,
+                    .openAuthorizationBrowser
+                && loadedSettings.online.discordPresence.enabled
+                && loadedSettings.online.discordPresence
+                        .applicationId
+                    == projectSettings.online.discordPresence
+                        .applicationId
+                && loadedSettings.online.discordPresence
+                        .defaultLargeImageKey
+                    == projectSettings.online.discordPresence
+                        .defaultLargeImageKey
+                && loadedSettings.online.discordPresence
+                        .defaultLargeImageText
+                    == projectSettings.online.discordPresence
+                        .defaultLargeImageText,
             "Exported project settings did not round-trip.");
 
         bool invalidSettingsRejected = false;

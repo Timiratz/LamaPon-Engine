@@ -352,6 +352,13 @@ int main()
             settings.online.gameId = "com.example.online-game";
             settings.online.environmentId = "staging_2";
             settings.online.openAuthorizationBrowser = false;
+            settings.online.discordPresence.enabled = true;
+            settings.online.discordPresence.applicationId =
+                "123456789012345678";
+            settings.online.discordPresence
+                .defaultLargeImageKey = "game_icon";
+            settings.online.discordPresence
+                .defaultLargeImageText = "My Awesome Game";
 
             for (const auto fileType : {
                     LamaPon::ProjectSettingsFileType::Project,
@@ -383,12 +390,29 @@ int main()
                             .openAuthorizationBrowser,
                     "online project settings must survive both"
                     " project and game-package round trips");
+                Require(
+                    loaded.online.discordPresence.enabled
+                        && loaded.online.discordPresence
+                                .applicationId
+                            == settings.online.discordPresence
+                                .applicationId
+                        && loaded.online.discordPresence
+                                .defaultLargeImageKey
+                            == settings.online.discordPresence
+                                .defaultLargeImageKey
+                        && loaded.online.discordPresence
+                                .defaultLargeImageText
+                            == settings.online.discordPresence
+                                .defaultLargeImageText,
+                    "Discord rich presence settings must"
+                    " survive project and game-package round"
+                    " trips");
 
                 const auto document = nlohmann::json::parse(
                     ReadFile(settingsFile));
                 const auto& online = document.at("online");
                 Require(
-                    online.size() == 6
+                    online.size() == 7
                         && !online.contains("client_secret")
                         && !online.contains("clientSecret")
                         && !online.contains("accessToken")
@@ -396,6 +420,18 @@ int main()
                         && !online.contains("token"),
                     "project settings must never retain Discord"
                     " secrets or session tokens");
+                const auto& presence =
+                    online.at("discordPresence");
+                Require(
+                    presence.size() == 4
+                        && presence.contains("enabled")
+                        && presence.contains("applicationId")
+                        && presence.contains(
+                            "defaultLargeImageKey")
+                        && presence.contains(
+                            "defaultLargeImageText"),
+                    "Discord rich presence must store only its"
+                    " four public settings");
             }
 
             // HTTPは明示したloopback開発だけProjectで許可し、同じ設定を

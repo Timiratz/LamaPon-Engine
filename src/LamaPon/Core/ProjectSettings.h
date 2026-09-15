@@ -40,6 +40,20 @@ namespace LamaPon
         GamePackage
     };
 
+    // Discord Rich Presenceの公開設定です。Discordアカウント連携
+    // （OnlineProjectSettings::enabled）とは独立していて、片方だけを
+    // 有効にできます。Application IDはDiscord Developer Portalが
+    // ゲームごとに発行する公開IDで、秘密情報ではありません。
+    // client_secretやtokenはここへ入れません。
+    struct DiscordPresenceProjectSettings final
+    {
+        bool enabled{};
+        std::string applicationId;
+        // Activity側で指定しなかったときに補う既定の大画像です。
+        std::string defaultLargeImageKey;
+        std::string defaultLargeImageText;
+    };
+
     // プロジェクトへ保存してよいオンライン接続設定です。
     // Discordのclient_secretやaccess/refresh tokenはゲームへ置かず、
     // serviceBaseUrlで指定したLamaPon用バックエンドだけが保持します。
@@ -53,6 +67,9 @@ namespace LamaPon
         // 設定と一緒に保存できません。
         bool allowInsecureLoopback{};
         bool openAuthorizationBrowser{ true };
+        // ABIを保つため末尾へ追加します。アカウント連携が無効でも
+        // Rich Presenceだけを有効にできます。
+        DiscordPresenceProjectSettings discordPresence;
     };
 
     struct ProjectSettings final

@@ -2085,6 +2085,9 @@ namespace LamaPon
         bool cloudUnauthorizedRefreshQueued{};
         bool credentialUsageLeaseHeld{};
         TaskKind cancelledTaskKind{ TaskKind::StartLogin };
+        // Rich Presenceはアカウント連携から独立しています。
+        // Configure()やSignOut()はここへ触れません。
+        DiscordPresence presence;
     };
 
     OnlineServices::OnlineServices()
@@ -2271,6 +2274,10 @@ namespace LamaPon
         {
             elapsedSeconds = 0.0f;
         }
+        // アカウント状態に関係なく毎フレーム進めます。以降の
+        // 早期returnより前に置き、ログインの進行がPresenceの
+        // 再接続を止めないようにします。
+        implementation.presence.Tick(elapsedSeconds);
         implementation.ConsumeCloudSaveSignals(elapsedSeconds);
         const bool refreshElapsedApplied =
             implementation.state
@@ -2534,6 +2541,23 @@ namespace LamaPon
     OnlineAccountState OnlineServices::State() const noexcept
     {
         return m_implementation->state;
+    }
+
+    void OnlineServices::ConfigureDiscordPresence(
+        DiscordPresenceConfiguration configuration)
+    {
+        m_implementation->presence.Configure(
+            std::move(configuration));
+    }
+
+    DiscordPresence& OnlineServices::Presence() noexcept
+    {
+        return m_implementation->presence;
+    }
+
+    const DiscordPresence& OnlineServices::Presence() const noexcept
+    {
+        return m_implementation->presence;
     }
 
     bool OnlineServices::IsSignedIn() const noexcept

@@ -517,6 +517,7 @@ namespace LamaPon
         void DrawProjectSettingsScriptingSection();
         void DrawProjectSettingsBuildSection();
         void DrawProjectSettingsOnlineSection();
+        void DrawProjectSettingsDiscordPresenceSection();
         [[nodiscard]] bool SaveProjectSettingsDraft();
         void BrowseForScriptEditor();
         [[nodiscard]] std::filesystem::path ProjectSettingsPath() const;
@@ -771,6 +772,18 @@ namespace LamaPon
         std::array<char, 129> m_projectOnlineGameIdBuffer{};
         std::array<char, 65>
             m_projectOnlineEnvironmentIdBuffer{};
+        std::array<char, 33>
+            m_projectDiscordPresenceApplicationIdBuffer{};
+        std::array<char, 257>
+            m_projectDiscordPresenceImageKeyBuffer{};
+        std::array<char, 129>
+            m_projectDiscordPresenceImageTextBuffer{};
+        // Rich Presenceの動作確認用。project.jsonへは保存しません。
+        std::array<char, 129>
+            m_projectDiscordPresenceTestDetailsBuffer{};
+        std::array<char, 129>
+            m_projectDiscordPresenceTestStateBuffer{};
+        std::string m_projectDiscordPresenceTestMessage;
         // プロジェクト設定で選択中のカテゴリー（0=ゲーム）。
         int m_projectSettingsCategory{};
         std::optional<GameExportTarget>

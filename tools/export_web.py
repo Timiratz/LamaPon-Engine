@@ -627,6 +627,9 @@ def validate_lamapon_online_for_web(project: dict[str, Any]) -> None:
 
     # C++のGamePackage保存と同様に、許可した6項目だけを後段へ渡し、
     # 手編集で混入したclient_secretやtokenをWeb出力へ残しません。
+    # discordPresenceもここで落とします。Discord Rich Presenceは
+    # ローカルのDiscordクライアントを使うWindows専用機能で、
+    # ブラウザーでは動かないためです。
     project["online"] = normalized
 
 

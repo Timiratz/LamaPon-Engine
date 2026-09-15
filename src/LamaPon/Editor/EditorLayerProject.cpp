@@ -10,6 +10,7 @@
 #include "LamaPon/Core/Time.h"
 #include "LamaPon/Editor/GameExportDialog.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
+#include "LamaPon/Online/OnlineServices.h"
 #include "LamaPon/Scene/Scene.h"
 #include "LamaPon/Scene/SceneManager.h"
 
@@ -359,6 +360,35 @@ namespace LamaPon
             m_projectOnlineEnvironmentIdBuffer.size(),
             m_projectSettings.online.environmentId.c_str(),
             _TRUNCATE);
+        strncpy_s(
+            m_projectDiscordPresenceApplicationIdBuffer.data(),
+            m_projectDiscordPresenceApplicationIdBuffer.size(),
+            m_projectSettings.online.discordPresence
+                .applicationId.c_str(),
+            _TRUNCATE);
+        strncpy_s(
+            m_projectDiscordPresenceImageKeyBuffer.data(),
+            m_projectDiscordPresenceImageKeyBuffer.size(),
+            m_projectSettings.online.discordPresence
+                .defaultLargeImageKey.c_str(),
+            _TRUNCATE);
+        strncpy_s(
+            m_projectDiscordPresenceImageTextBuffer.data(),
+            m_projectDiscordPresenceImageTextBuffer.size(),
+            m_projectSettings.online.discordPresence
+                .defaultLargeImageText.c_str(),
+            _TRUNCATE);
+        strncpy_s(
+            m_projectDiscordPresenceTestDetailsBuffer.data(),
+            m_projectDiscordPresenceTestDetailsBuffer.size(),
+            "Test Game",
+            _TRUNCATE);
+        strncpy_s(
+            m_projectDiscordPresenceTestStateBuffer.data(),
+            m_projectDiscordPresenceTestStateBuffer.size(),
+            "Testing Discord Presence",
+            _TRUNCATE);
+        m_projectDiscordPresenceTestMessage.clear();
         // ダイアログを開くたびに検出し直すことで、ダイアログを
         // 開いたまま新しくエディターをインストールした場合にも
         // 対応します（頻繁に呼ばれる処理ではないため許容範囲）。
@@ -518,6 +548,7 @@ namespace LamaPon
     {
         ImGui::TextUnformatted("オンライン");
         ImGui::Separator();
+        ImGui::SeparatorText("アカウント連携");
         ImGui::Checkbox(
             "Discordアカウント連携を有効にする",
             &m_projectOnlineDraft.enabled);
@@ -564,6 +595,9 @@ namespace LamaPon
         ImGui::PopStyleColor();
 
         ImGui::Spacing();
+        DrawProjectSettingsDiscordPresenceSection();
+
+        ImGui::Spacing();
         ImGui::SeparatorText("セキュリティ");
         ImGui::PushStyleColor(
             ImGuiCol_Text,
@@ -573,6 +607,141 @@ namespace LamaPon
         ImGui::PopStyleColor();
         ImGui::TextWrapped(
             "client_secretはバックエンドの環境変数またはシークレット管理へ保存します。ゲームに入れると、配布ファイルから誰でも取り出せます。");
+    }
+
+    // Rich PresenceはDiscordアカウント連携と別機能です。片方だけを
+    // 有効にでき、ログインもクラウドセーブも必要ありません。
+    void EditorLayer::DrawProjectSettingsDiscordPresenceSection()
+    {
+        ImGui::SeparatorText("Discord Rich Presence");
+        ImGui::Checkbox(
+            "Discord Rich Presenceを有効にする",
+            &m_projectOnlineDraft.discordPresence.enabled);
+        ImGui::TextWrapped(
+            "プレイ中の状況をDiscordのプロフィールへ表示します。Discordアカウント連携とは独立していて、ログインしていなくても使えます。");
+
+        ImGui::SetNextItemWidth(360.0f);
+        ImGui::InputText(
+            "Application ID",
+            m_projectDiscordPresenceApplicationIdBuffer.data(),
+            m_projectDiscordPresenceApplicationIdBuffer.size(),
+            ImGuiInputTextFlags_CharsDecimal);
+        ImGui::TextDisabled(
+            "Discord Developer Portalでゲームごとに作成したApplicationのIDです。\n"
+            "公開情報なのでproject.jsonへ保存します。");
+
+        ImGui::SetNextItemWidth(360.0f);
+        ImGui::InputText(
+            "既定の大画像キー",
+            m_projectDiscordPresenceImageKeyBuffer.data(),
+            m_projectDiscordPresenceImageKeyBuffer.size());
+        ImGui::TextDisabled(
+            "Discord Applicationの Rich Presence > Art Assets へ登録した画像名です。\n"
+            "例: game_icon");
+
+        ImGui::SetNextItemWidth(360.0f);
+        ImGui::InputText(
+            "既定の大画像テキスト",
+            m_projectDiscordPresenceImageTextBuffer.data(),
+            m_projectDiscordPresenceImageTextBuffer.size());
+        ImGui::TextDisabled(
+            "画像へカーソルを合わせたときの説明です。例: My Awesome Game");
+
+        const bool applicationIdMissing =
+            m_projectDiscordPresenceApplicationIdBuffer[0]
+                == '\0';
+        if (m_projectOnlineDraft.discordPresence.enabled
+            && applicationIdMissing)
+        {
+            ImGui::PushStyleColor(
+                ImGuiCol_Text,
+                ImVec4{ 1.0f, 0.65f, 0.25f, 1.0f });
+            ImGui::TextWrapped(
+                "Application IDが未設定のため、Rich Presenceは実行時に無効化されます（ゲームは通常どおり動きます）。");
+            ImGui::PopStyleColor();
+        }
+
+        ImGui::Spacing();
+        ImGui::SeparatorText("動作確認");
+        ImGui::TextDisabled(
+            "このエディターからテスト表示を送ります。ここで入力した内容はproject.jsonへ保存しません。");
+        ImGui::SetNextItemWidth(360.0f);
+        ImGui::InputText(
+            "Details",
+            m_projectDiscordPresenceTestDetailsBuffer.data(),
+            m_projectDiscordPresenceTestDetailsBuffer.size());
+        ImGui::SetNextItemWidth(360.0f);
+        ImGui::InputText(
+            "State",
+            m_projectDiscordPresenceTestStateBuffer.data(),
+            m_projectDiscordPresenceTestStateBuffer.size());
+
+        if (ImGui::Button(
+            "テスト表示を送信",
+            ImVec2{ 180.0f, 0.0f }))
+        {
+            if (applicationIdMissing)
+            {
+                m_projectDiscordPresenceTestMessage =
+                    "Application IDを入力してください。";
+            }
+            else
+            {
+                DiscordPresenceConfiguration configuration;
+                configuration.enabled = true;
+                configuration.applicationId =
+                    m_projectDiscordPresenceApplicationIdBuffer
+                        .data();
+                configuration.defaultLargeImageKey =
+                    m_projectDiscordPresenceImageKeyBuffer
+                        .data();
+                configuration.defaultLargeImageText =
+                    m_projectDiscordPresenceImageTextBuffer
+                        .data();
+                m_onlineServices.ConfigureDiscordPresence(
+                    std::move(configuration));
+                auto& presence = m_onlineServices.Presence();
+                if (presence.SetActivity(
+                    m_projectDiscordPresenceTestDetailsBuffer
+                        .data(),
+                    m_projectDiscordPresenceTestStateBuffer
+                        .data()))
+                {
+                    m_projectDiscordPresenceTestMessage =
+                        "テスト表示を送信しました。";
+                }
+                else
+                {
+                    m_projectDiscordPresenceTestMessage =
+                        presence.LastError().empty()
+                            ? std::string{
+                                "テスト表示を送信できませんでした。" }
+                            : presence.LastError();
+                }
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("表示を消す", ImVec2{ 140.0f, 0.0f }))
+        {
+            m_onlineServices.Presence().ClearActivity();
+            m_projectDiscordPresenceTestMessage =
+                "表示を消しました。";
+        }
+
+        const auto stateName = DiscordPresenceStateName(
+            m_onlineServices.Presence().State());
+        ImGui::Text(
+            "状態: %.*s",
+            static_cast<int>(stateName.size()),
+            stateName.data());
+        if (!m_projectDiscordPresenceTestMessage.empty())
+        {
+            ImGui::TextWrapped(
+                "%s",
+                m_projectDiscordPresenceTestMessage.c_str());
+        }
+        ImGui::TextDisabled(
+            "Discordが起動していない、またはPresenceアダプターが未導入の場合はUnavailableのままです。ゲームはそのまま動きます。");
     }
 
     void EditorLayer::DrawProjectSettingsBuildSection()
@@ -1820,6 +1989,15 @@ namespace LamaPon
                 m_projectOnlineGameIdBuffer.data();
             settings.online.environmentId =
                 m_projectOnlineEnvironmentIdBuffer.data();
+            settings.online.discordPresence.applicationId =
+                m_projectDiscordPresenceApplicationIdBuffer
+                    .data();
+            settings.online.discordPresence
+                .defaultLargeImageKey =
+                m_projectDiscordPresenceImageKeyBuffer.data();
+            settings.online.discordPresence
+                .defaultLargeImageText =
+                m_projectDiscordPresenceImageTextBuffer.data();
             ValidateProjectSettings(settings);
 
             const auto startupScene =

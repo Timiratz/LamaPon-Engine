@@ -83,6 +83,24 @@ int WINAPI wWinMain(
                 settings.online.openAuthorizationBrowser;
             application.Online().Configure(std::move(online));
         }
+        // Rich PresenceはDiscordログインから独立しています。
+        // online.enabledがfalseでも、Presenceだけを有効にできます。
+        if (!validateStartup
+            && settings.online.discordPresence.enabled)
+        {
+            LamaPon::DiscordPresenceConfiguration presence;
+            presence.enabled = true;
+            presence.applicationId =
+                settings.online.discordPresence.applicationId;
+            presence.defaultLargeImageKey =
+                settings.online.discordPresence
+                    .defaultLargeImageKey;
+            presence.defaultLargeImageText =
+                settings.online.discordPresence
+                    .defaultLargeImageText;
+            application.Online().ConfigureDiscordPresence(
+                std::move(presence));
+        }
         // Game Moduleが存在するのに互換性などで読めなかった場合、Sceneを
         // 続けて表示すると「背景だけで止まった」ように見えます。配布ゲーム
         // では起動を止め、既にApplicationが記録した具体的な理由を画面へ

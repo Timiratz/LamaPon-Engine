@@ -1,6 +1,7 @@
 #pragma once
 
 #include "LamaPon/Core/Api.h"
+#include "LamaPon/Online/DiscordPresence.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -160,6 +161,14 @@ namespace LamaPon
     // Discordログインの非同期進行とオンラインアカウント状態を
     // ゲームループ上で管理します。すべての公開メソッドは、
     // Applicationを動かす同じスレッドから呼んでください。
+    //
+    //   OnlineServices
+    //   ├─ DiscordAuth     アカウント連携
+    //   ├─ CloudSave       プレイヤー単位の同期
+    //   └─ DiscordPresence Rich Presence表示
+    //
+    // DiscordPresenceはアカウント連携から独立しています。Configure()
+    // を呼ばなくても、ログインしていなくてもPresenceだけを使えます。
     class OnlineServices final
     {
     public:
@@ -218,6 +227,17 @@ namespace LamaPon
             RestorePersistence(std::uint64_t expectedRevision) noexcept;
         [[nodiscard]] LAMAPON_API OnlinePersistenceOperationResult
             DiscardPersistence(std::uint64_t expectedRevision) noexcept;
+
+        // Rich Presenceはアカウント連携と独立した設定です。
+        // Configure()やSignOut()はPresenceへ影響しません。逆に、
+        // ここでPresenceを無効にしてもログインとクラウドセーブは
+        // そのまま使えます。
+        LAMAPON_API void ConfigureDiscordPresence(
+            DiscordPresenceConfiguration configuration);
+        [[nodiscard]] LAMAPON_API DiscordPresence&
+            Presence() noexcept;
+        [[nodiscard]] LAMAPON_API const DiscordPresence&
+            Presence() const noexcept;
 
     private:
         struct Implementation;

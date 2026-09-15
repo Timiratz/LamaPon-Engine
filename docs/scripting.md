@@ -389,7 +389,7 @@ const int hitPoints = enemy->GetInt("hitPoints");
 中断した永続化処理は`PersistenceRecoveryStatus()`のrevisionを使って復元または破棄します。
 
 バックエンドが別途必要です。設定、API一覧、安全上の注意、通信契約は
-[Discordログインとクラウドセーブ](online-services.md)を参照してください。
+[Discordログイン、クラウドセーブ、Rich Presence](online-services.md)を参照してください。
 
 エンジンはDLLを`.lamapon-hot-reload`へシャドウコピーして読み込むため、エディターを終了せずに`LamaPonGameModule`を再ビルドできます。
 更新は約0.5秒ごとに検出され、実行中インスタンスをSerializeして破棄した後、新しいDLLで復元します。

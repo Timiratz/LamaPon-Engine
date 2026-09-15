@@ -160,7 +160,7 @@ GPUが無い・正しく動かない環境（仮想マシン、リモートデ�
 - 入力Actionとキーボード／ゲームパッドBinding
 - 外部スクリプトエディター（`.cpp`／`.hlsl`を開くときに使うエディター）
 - Inspectorの小数点桁数
-- オンラインサービス（Discordアカウント連携、バックエンドURL、ゲームID、環境ID）
+- オンラインサービス（Discordアカウント連携、バックエンドURL、ゲームID、環境ID、Discord Rich Presence）
 - ビルドプロファイル（Windows／Web）と書き出し先の設定画面への入口
 
 タグを登録すると、InspectorのTag欄がドロップダウン選択になり、Scene／Prefab読み込み時に未登録タグの使用をConsoleへ警告します。
@@ -202,8 +202,16 @@ Exportすると配布用`LamaPonGame.json`へ変換され、ゲームはウィ�
 
 HTTPは開発用の`127.0.0.1`、`localhost`、`[::1]`だけを明示的に許可できます。
 この許可を有効にしたオンライン設定は配布用ゲームへ書き出せません。Webエクスポートの
-オンラインランタイムは現在未対応です。詳しい構成、設定値、バックエンド通信契約は
-[Discordログインとクラウドセーブ](online-services.md)を参照してください。
+オンラインランタイムは現在未対応です。
+
+同じカテゴリーの「Discord Rich Presence」では、プレイ中の状況をDiscordのプロフィールへ
+表示する設定を行います。Discord Developer Portalでゲームごとに作ったApplicationのIDと、
+既定の大画像キー・テキストを指定します。**Rich Presenceはアカウント連携とは独立していて、
+Discordログインもクラウドセーブも必要ありません。** Application IDは公開情報ですが、
+client secretやtokenは入れないでください。
+
+詳しい構成、設定値、Rich Presenceの使い方、バックエンド通信契約は
+[Discordログイン、クラウドセーブ、Rich Presence](online-services.md)を参照してください。
 
 プリセットの既定値は次の通りです。
 

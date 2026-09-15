@@ -280,6 +280,9 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Online/CloudSaveJournal.h
     src/LamaPon/Online/CloudSaveSynchronizer.cpp
     src/LamaPon/Online/CloudSaveSynchronizer.h
+    src/LamaPon/Online/DiscordPresence.cpp
+    src/LamaPon/Online/DiscordPresence.h
+    src/LamaPon/Online/DiscordPresenceTesting.h
     src/LamaPon/Online/OnlineHttpValidation.cpp
     src/LamaPon/Online/OnlineHttpValidation.h
     src/LamaPon/Online/OnlinePersistenceCoordinator.cpp
@@ -1383,6 +1386,30 @@ if(BUILD_TESTING)
     set_tests_properties(
         OnlineServicesStateMachine
         PROPERTIES LABELS "online;state-machine"
+    )
+
+    add_executable(LamaPonDiscordPresenceTests
+        tests/DiscordPresenceTests.cpp
+    )
+    target_link_libraries(
+        LamaPonDiscordPresenceTests
+        PRIVATE
+            LamaPonRuntime
+    )
+    target_compile_options(LamaPonDiscordPresenceTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    # Discordクライアントを必要としません。Fake backendだけで
+    # 動かすため、CIの必須テストに含められます。
+    add_test(
+        NAME DiscordRichPresence
+        COMMAND LamaPonDiscordPresenceTests
+    )
+    set_tests_properties(
+        DiscordRichPresence
+        PROPERTIES LABELS "online;discord;presence"
     )
 
     add_executable(LamaPonOnlinePersistenceCoordinatorTests

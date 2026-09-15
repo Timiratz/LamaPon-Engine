@@ -453,6 +453,12 @@ class WebExportToolTests(unittest.TestCase):
                 "client_secret": "must-not-ship",
                 "accessToken": "must-not-ship",
                 "refreshToken": "must-not-ship",
+                # Rich PresenceはWindows専用なので、Web出力へは
+                # 持ち出しません。
+                "discordPresence": {
+                    "enabled": True,
+                    "applicationId": "123456789012345678",
+                },
             }
             project_path.write_text(
                 json.dumps({
