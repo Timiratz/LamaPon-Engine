@@ -307,6 +307,8 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Graphics/D3D12Backend.h
     src/LamaPon/Graphics/D3D12DebugDrawingBackend.cpp
     src/LamaPon/Graphics/D3D12DebugDrawingBackend.h
+    src/LamaPon/Graphics/D3D12GpuProfilerBackend.cpp
+    src/LamaPon/Graphics/D3D12GpuProfilerBackend.h
     src/LamaPon/Graphics/D3D12RenderServices.cpp
     src/LamaPon/Graphics/D3D12RenderServices.h
     src/LamaPon/Graphics/D3D12SpriteRenderer.cpp

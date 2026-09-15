@@ -28,6 +28,8 @@ namespace LamaPon
         struct ShadowMapBackendState;
     }
 
+    class D3D12GpuProfilerBackend;
+
     class D3D12Backend final : public GraphicsBackend
     {
     public:
@@ -110,10 +112,7 @@ namespace LamaPon
         [[nodiscard]] std::unique_ptr<DebugDrawingBackend>
             CreateDebugDrawingBackend() override;
         [[nodiscard]] GpuProfilerBackend*
-            ProfilerBackend() noexcept override
-        {
-            return nullptr;
-        }
+            ProfilerBackend() noexcept override;
         [[nodiscard]] GraphicsTextureHandle CreateSolidRgba8Texture(
             const std::array<std::uint8_t, 4>& color) override;
         [[nodiscard]] GraphicsViewHandle CreateShaderResourceView(
@@ -200,6 +199,10 @@ namespace LamaPon
         [[nodiscard]] std::size_t FramesInFlight() const noexcept
         {
             return BackBufferCount;
+        }
+        [[nodiscard]] std::size_t CurrentBackBufferIndex() const noexcept
+        {
+            return m_currentBackBufferIndex;
         }
         // frame command listを開いてprimary outputをbindし、記録先を返します。
         [[nodiscard]] ID3D12GraphicsCommandList* BeginFrameCommands();
@@ -478,5 +481,6 @@ namespace LamaPon
         std::uint64_t m_nextUploadFenceValue{ 1 };
         std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>
             m_retainedUploadResources;
+        std::unique_ptr<D3D12GpuProfilerBackend> m_gpuProfilerBackend;
     };
 }

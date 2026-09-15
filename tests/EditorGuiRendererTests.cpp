@@ -4282,6 +4282,42 @@ namespace
             modelPixelCount >= 8u,
             "The DirectX 12 model preview renderer did not draw the model");
 
+        Require(
+            graphics.Gpu().IsSupported(),
+            "The DirectX 12 editor did not expose GPU timestamp profiling");
+        for (std::size_t frame{}; frame < 4u; ++frame)
+        {
+            graphics.BeginFrame(clearColor);
+            {
+                LamaPon::GpuProfiler::SectionScope section{
+                    graphics.Gpu(), "D3D12EditorProfiler" };
+                graphics.Debug().DrawLines(
+                    debugLinePoints,
+                    DirectX::XMVectorSet(1.0f, 0.1f, 0.05f, 1.0f),
+                    DirectX::XMMatrixIdentity(),
+                    DirectX::XMMatrixIdentity());
+            }
+            graphics.EndFrame();
+        }
+        const auto& gpuSections = graphics.Gpu().LatestSections();
+        Require(
+            std::ranges::any_of(
+                gpuSections,
+                [](const LamaPon::GpuProfiler::SectionTime& section)
+                {
+                    return section.name == "D3D12EditorProfiler"
+                        && section.milliseconds >= 0.0f;
+                }),
+            "The DirectX 12 editor GPU profiler did not resolve its section");
+        const auto& pipelineStatistics =
+            graphics.Gpu().LatestPipelineStatistics();
+        Require(
+            pipelineStatistics.valid
+                && pipelineStatistics.inputAssemblerVertices >= 2u
+                && pipelineStatistics.vertexShaderInvocations >= 2u,
+            "The DirectX 12 editor GPU profiler did not resolve pipeline "
+            "statistics");
+
         renderer->Shutdown();
         Require(
             !renderer->IsInitialized()

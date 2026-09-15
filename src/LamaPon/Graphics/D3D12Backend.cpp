@@ -4,6 +4,7 @@
 #include "LamaPon/Graphics/ClusteredLights.h"
 #include "LamaPon/Graphics/ClusteredLightsBackendState.h"
 #include "LamaPon/Graphics/D3D12DebugDrawingBackend.h"
+#include "LamaPon/Graphics/D3D12GpuProfilerBackend.h"
 #include "LamaPon/Graphics/DebugRenderer.h"
 #include "LamaPon/Graphics/DxgiTextureLayout.h"
 #include "LamaPon/Graphics/Lighting.h"
@@ -1540,6 +1541,8 @@ namespace LamaPon
             CreateUploadContext();
 
             CreateSizeDependentResources(width, height);
+            m_gpuProfilerBackend =
+                std::make_unique<D3D12GpuProfilerBackend>(*this);
         }
         catch (...)
         {
@@ -1571,6 +1574,7 @@ namespace LamaPon
     void D3D12Backend::Shutdown() noexcept
     {
         PrepareForResourceRelease();
+        m_gpuProfilerBackend.reset();
         m_activeShadowMap = nullptr;
         // GPUの完了を待った後で、handleが退避したresource / descriptorを
         // 解放します。以後に破棄されるhandleは即時解放されます。
@@ -2085,6 +2089,11 @@ namespace LamaPon
         if (!m_commandListOpen)
         {
             return;
+        }
+        if (m_gpuProfilerBackend != nullptr)
+        {
+            m_gpuProfilerBackend->BeforeCommandListClose(
+                m_commandList.Get());
         }
         ThrowIfFailed(
             m_commandList->Close(),
@@ -5254,6 +5263,11 @@ namespace LamaPon
                 "D3D12 backend.");
         }
         return std::make_unique<D3D12DebugDrawingBackend>(*this);
+    }
+
+    GpuProfilerBackend* D3D12Backend::ProfilerBackend() noexcept
+    {
+        return m_gpuProfilerBackend.get();
     }
 
     GraphicsTextureHandle D3D12Backend::CreateSolidRgba8Texture(
