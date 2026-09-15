@@ -1719,11 +1719,15 @@ install(
     DESTINATION "."
 )
 # assetsはエンジンが実行時に参照する組み込みアセットだけを
-# 同梱します（shaders/materialsはHub::CreateProjectが新規プロジェクト
+# 同梱します（shadersとEngineロゴはHub::CreateProjectが新規プロジェクト
 # へコピー、icons/filetypesはエディターのAsset Browser種別アイコン）。
 install(
     DIRECTORY assets/shaders
     DESTINATION assets
+)
+install(
+    FILES assets/textures/LamaPonEngineLogo.png
+    DESTINATION assets/textures
 )
 install(
     DIRECTORY assets/icons/filetypes
