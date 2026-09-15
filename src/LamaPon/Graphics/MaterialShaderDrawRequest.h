@@ -19,6 +19,9 @@
 
 namespace LamaPon::Detail
 {
+    // VSInstancedMainのslot 1へ渡す、D3D11のInstanceDataと同じ80 bytesです。
+    using MaterialShaderInstanceData = PrimitiveInstanceData;
+
     // Model RendererのglTF／FBXです。D3D11はDirectXTK SkinnedEffectの
     // 頂点シェーダーで骨を変形し、PSSkinnedMainだけを差し替えて描きます。
     struct SkinnedMaterialShaderGeometry final
@@ -64,6 +67,7 @@ namespace LamaPon::Detail
     {
         bool outline{};
         bool occluded{};
+        bool instanced{};
     };
 
     struct MaterialShaderDrawRequest final
@@ -84,6 +88,8 @@ namespace LamaPon::Detail
         // BuildTessellationPatchesと同じ並び）。テセレーションShaderは
         // これを索引なしで描き、空ならパッチへ分けられない形として扱います。
         std::span<const PrimitiveRenderVertex> tessellationPatches;
+        // 空でなければVSInstancedMainとslot 1を使って一度に描きます。
+        std::span<const MaterialShaderInstanceData> instances;
         // t7〜t10です。emptyの枠は白になります。
         std::array<GraphicsViewHandle, LitMaterial::CustomTextureCount>
             customTextures{};

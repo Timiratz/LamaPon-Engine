@@ -96,7 +96,8 @@ CMO／SDKMESH／VBOのModel Rendererは、DirectX 11と同じくMaterial上書�
 Mesh RendererのPlane／Cubeでは`HSMain`／`DSMain`のテセレーションもDirectX 11と同じ四角パッチで描き、パッチへ分けられない形はDirectX 11と同じくマゼンタの代替表示になります。
 CMO／SDKMESH／VBOでは、`VSOutline`／`PSOutline`の輪郭と`PSOccluded`の遮蔽表示もDirectX 11と同じ描画状態と順番で重ねます。
 glTF／GLB／FBXでは、`VSSkinnedOutline`／`PSOutline`の輪郭と`PSSkinnedOccluded`の遮蔽表示も骨パレットを反映して重ねます。`PSSkinnedOccluded`が無い既存Shaderは`PSOccluded`へフォールバックします。
-インスタンス描画はまだ対応していません。
+Mesh Rendererで`VSInstancedMain`を持つShaderは、DirectX 11と同じく同じ形状・Material（色を含む）のRendererを1回にまとめ、slot 1の`INSTANCE_TRANSFORM0`〜`INSTANCE_TRANSFORM3`（world行列の各行）と`INSTANCE_COLOR0`で描きます。まとめた描画では`World`は単位行列で、Material・光源・リフレクションプローブは代表のRendererのものです。
+組み込みLitのMesh Rendererと、アニメーションしないglTF／GLB／FBXのModel Rendererも、DirectX 11と同じくまとめて描きます。
 
 ### SSAOを受け取る
 
@@ -370,6 +371,7 @@ float4 PSMain(
 - Particle SystemはInspectorで**補助テクスチャ**を1枚割り当てられ、
   `t1`から読めます（未設定時は白）。
   ノイズやマスクに便利です。
+- DirectX 12 Experimentalで書き出したゲームでも、Particle Systemの`PSMain`はDirectX 11と同じ`t0`／`t1`、`b0`、`s0`（線形・繰り返し）で描き、compileに失敗したShaderはマゼンタで表示します。
 - Shaderパスとパラメーターはシーンへ保存され、アセットの改名・移動にも
   参照が追従します。
 

@@ -4639,6 +4639,399 @@ namespace
         return capture;
     }
 
+    // VSInstancedMainを持つ同じMaterialのCubeを2個まとめ、D3D11とD3D12が
+    // どちらも1回のinstance batchで同じ画像を描くことを確認します。非一様
+    // スケールにして、まとめない描画と同じ画像になることも確かめます。
+    [[nodiscard]] Capture RenderMaterialShaderInstancingCapture(
+        const LamaPon::RenderingApi api,
+        const LamaPon::GraphicsStartupProfile profile)
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            api,
+            profile);
+        Require(
+            graphics.ActiveRenderingApi() == api,
+            "The material shader instancing capture did not start the "
+            "requested rendering API");
+        const std::string apiName = api == LamaPon::RenderingApi::DirectX11
+            ? "DirectX 11"
+            : "DirectX 12";
+        graphics.Assets().SetAssetRoot(LAMAPON_TEST_ASSET_DIR);
+        graphics.SetAsyncShaderCompilationEnabled(false);
+        if (api == LamaPon::RenderingApi::DirectX11)
+        {
+            std::uint64_t generation{};
+            std::string error;
+            auto& effect = graphics.MaterialShader(
+                "shaders/LamaPonCustomMaterial.hlsl",
+                generation,
+                error);
+            Require(
+                error.empty() && effect.SupportsInstancing(),
+                "The DirectX 11 template material did not compile "
+                "VSInstancedMain: " + error);
+        }
+
+        LamaPon::Scene scene(graphics);
+        auto& cameraObject = scene.CreateGameObject("MainCamera");
+        cameraObject.GetTransform().position = { 0.0f, 0.2f, 6.0f };
+        auto& camera = cameraObject.AddComponent<LamaPon::CameraComponent>();
+        scene.SetMainCamera(camera);
+        scene.SetAmbientLightColor({ 1.0f, 1.0f, 1.0f });
+        scene.SetAmbientLightIntensity(1.0f);
+
+        const auto addCube = [&](const char* const name, const float x)
+            -> LamaPon::MeshRendererComponent&
+        {
+            auto& object = scene.CreateGameObject(name);
+            object.GetTransform().position = { x, 0.0f, 0.0f };
+            object.GetTransform().scale = { 1.3f, 0.8f, 1.1f };
+            object.GetTransform().SetEulerAngles(0.35f, 0.55f, 0.0f);
+            auto& mesh = object.AddComponent<LamaPon::MeshRendererComponent>(
+                LamaPon::PrimitiveShape::Cube,
+                DirectX::XMFLOAT4{ 0.9f, 0.8f, 0.6f, 1.0f });
+            mesh.SetShaderPath("shaders/LamaPonCustomMaterial.hlsl");
+            mesh.SetCustomParameter(0, { 0.3f, 0.8f, 1.0f, 0.55f });
+            mesh.SetCustomParameter(1, { 0.15f, 0.0f, 0.0f, 0.0f });
+            return mesh;
+        };
+        auto& left = addCube("InstancedLeft", -1.4f);
+        auto& right = addCube("InstancedRight", 1.4f);
+
+        constexpr float clearColor[4]{ 0.08f, 0.1f, 0.14f, 1.0f };
+        const auto render = [&]()
+        {
+            graphics.BeginFrame(clearColor);
+            graphics.BeginSceneComposition(clearColor);
+            scene.RenderMainCamera(
+                static_cast<float>(CanvasWidth) / CanvasHeight,
+                false,
+                graphics.SceneCompositionTarget());
+            graphics.EndSceneComposition(scene.PostProcessFrameData());
+            Capture frame;
+            frame.pixels = graphics.CaptureBackBuffer(
+                frame.width,
+                frame.height);
+            graphics.EndFrame();
+            return frame;
+        };
+        // 初回描画でComponentとShader cacheを用意し、次のフレームでSceneの
+        // batch収集へ入る状態にします。
+        static_cast<void>(render());
+        const auto capture = render();
+
+        const auto& stats = scene.VisibilityStats();
+        Require(
+            stats.meshInstanceBatchCount == 1u
+                && stats.meshInstancedRendererCount == 2u,
+            "The material shader instance batch was not used on " + apiName
+                + " (eligible " + std::to_string(left.CanBeInstanced())
+                + "/" + std::to_string(right.CanBeInstanced())
+                + ", keys " + std::to_string(left.InstanceBatchKey())
+                + "/" + std::to_string(right.InstanceBatchKey()) + ")");
+        const auto errors = left.ShaderError() + right.ShaderError();
+        Require(
+            errors.empty(),
+            apiName + " reported a material shader instancing error: "
+                + errors);
+
+        // テンプレートが読まないcustom vectorだけを変えるとbatch keyが分かれ、
+        // 見た目を変えずに1個ずつの描画になります。
+        right.SetCustomVector(7, { 1.0f, 0.0f, 0.0f, 0.0f });
+        const auto individual = render();
+        Require(
+            scene.VisibilityStats().meshInstanceBatchCount == 0u,
+            "The material shader instancing capture could not split the "
+            "batch on " + apiName);
+        std::size_t differentPixels{};
+        for (std::size_t offset{};
+             offset + 3u < capture.pixels.size()
+                 && offset + 3u < individual.pixels.size();
+             offset += 4u)
+        {
+            for (std::size_t channel{}; channel < 3u; ++channel)
+            {
+                if (std::abs(
+                        static_cast<int>(capture.pixels[offset + channel])
+                        - static_cast<int>(
+                            individual.pixels[offset + channel])) > 2)
+                {
+                    ++differentPixels;
+                    break;
+                }
+            }
+        }
+        Require(
+            differentPixels == 0u,
+            apiName + " drew the material shader instance batch differently "
+                "from individual draws in "
+                + std::to_string(differentPixels) + " pixels");
+        return capture;
+    }
+
+    // 組み込みLitのインスタンス描画をD3D11と比べます。色と非一様スケールの
+    // 違うCube 2個はMesh Rendererの1 batchに、アニメーションの無いglTFの箱
+    // 2個はModel Rendererの1 batchになり、D3D11のLamaPonLit.hlslの
+    // VSInstancedMainと同じく、instanceの色とworldで変換した法線で描きます。
+    [[nodiscard]] Capture RenderBuiltInInstancingCapture(
+        const LamaPon::RenderingApi api,
+        const LamaPon::GraphicsStartupProfile profile)
+    {
+        // アニメーションもskinも無い、色付きの箱です（bufferはbase64で内蔵）。
+        const auto staticModelPath =
+            std::filesystem::path{ LAMAPON_TEST_ASSET_DIR }.parent_path()
+            / "tests/fixtures/static-box.gltf";
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            api,
+            profile);
+        Require(
+            graphics.ActiveRenderingApi() == api,
+            "The built-in instancing capture did not start the requested "
+            "rendering API");
+        // D3D11のLit / Environment shaderはasset rootから読み込みます。
+        graphics.Assets().SetAssetRoot(LAMAPON_TEST_ASSET_DIR);
+        const std::string apiName = api == LamaPon::RenderingApi::DirectX11
+            ? "DirectX 11"
+            : "DirectX 12";
+
+        LamaPon::Scene scene(graphics);
+        auto& cameraObject = scene.CreateGameObject("MainCamera");
+        cameraObject.GetTransform().position = { 0.0f, 0.3f, 6.0f };
+        auto& camera = cameraObject.AddComponent<LamaPon::CameraComponent>();
+        scene.SetMainCamera(camera);
+        scene.SetAmbientLightColor({ 1.0f, 1.0f, 1.0f });
+        scene.SetAmbientLightIntensity(0.25f);
+        // 法線の違いが明暗に出るよう、影の無い斜めの光を当てます。
+        auto& sunObject = scene.CreateGameObject("Sun");
+        sunObject.GetTransform().SetEulerAngles(-0.6f, 0.35f, 0.0f);
+        auto& sun = sunObject.AddComponent<
+            LamaPon::DirectionalLightComponent>();
+        sun.SetCastsShadows(false);
+
+        const auto addCube = [&](
+            const char* const name,
+            const DirectX::XMFLOAT3& position,
+            const DirectX::XMFLOAT3& scale,
+            const DirectX::XMFLOAT4& color)
+        {
+            auto& object = scene.CreateGameObject(name);
+            object.GetTransform().position = position;
+            object.GetTransform().scale = scale;
+            object.GetTransform().SetEulerAngles(0.5f, 0.7f, 0.0f);
+            static_cast<void>(
+                object.AddComponent<LamaPon::MeshRendererComponent>(
+                    LamaPon::PrimitiveShape::Cube,
+                    color));
+        };
+        addCube(
+            "LitCubeA",
+            { -2.3f, 0.7f, 0.0f },
+            { 1.2f, 0.6f, 0.9f },
+            { 0.9f, 0.4f, 0.3f, 1.0f });
+        addCube(
+            "LitCubeB",
+            { -0.8f, -0.6f, 0.0f },
+            { 0.7f, 1.1f, 0.8f },
+            { 0.3f, 0.6f, 0.9f, 1.0f });
+        const auto addModel = [&](
+            const char* const name,
+            const DirectX::XMFLOAT3& position,
+            const DirectX::XMFLOAT3& scale)
+        {
+            auto& object = scene.CreateGameObject(name);
+            object.GetTransform().position = position;
+            object.GetTransform().scale = scale;
+            object.GetTransform().SetEulerAngles(0.4f, 0.6f, 0.0f);
+            static_cast<void>(
+                object.AddComponent<LamaPon::ModelRendererComponent>(
+                    staticModelPath));
+        };
+        addModel("StaticBoxA", { 0.9f, 0.7f, 0.0f }, { 1.3f, 0.7f, 1.0f });
+        addModel("StaticBoxB", { 2.4f, -0.6f, 0.0f }, { 0.8f, 1.2f, 0.9f });
+
+        constexpr float clearColor[4]{ 0.08f, 0.1f, 0.14f, 1.0f };
+        const auto render = [&]()
+        {
+            graphics.BeginFrame(clearColor);
+            graphics.BeginSceneComposition(clearColor);
+            scene.RenderMainCamera(
+                static_cast<float>(CanvasWidth) / CanvasHeight,
+                false,
+                graphics.SceneCompositionTarget());
+            graphics.EndSceneComposition(scene.PostProcessFrameData());
+            Capture frame;
+            frame.pixels = graphics.CaptureBackBuffer(frame.width, frame.height);
+            graphics.EndFrame();
+            return frame;
+        };
+        // 最初のフレームでComponentとModelを用意し、次のフレームでSceneの
+        // batch収集へ入れます。
+        static_cast<void>(render());
+        const auto capture = render();
+
+        const auto& stats = scene.VisibilityStats();
+        Require(
+            stats.meshInstanceBatchCount == 1u
+                && stats.meshInstancedRendererCount == 2u
+                && stats.modelInstanceBatchCount == 1u
+                && stats.modelInstancedRendererCount == 2u,
+            apiName + " did not batch the built-in Lit renderers ("
+                + std::to_string(stats.meshInstanceBatchCount) + " mesh / "
+                + std::to_string(stats.modelInstanceBatchCount)
+                + " model batches)");
+
+        const std::array<int, 3> background{
+            capture.pixels[0],
+            capture.pixels[1],
+            capture.pixels[2] };
+        std::size_t leftPixels{};
+        std::size_t rightPixels{};
+        for (std::size_t offset{};
+             offset + 3u < capture.pixels.size();
+             offset += 4u)
+        {
+            int difference{};
+            for (std::size_t channel{}; channel < 3u; ++channel)
+            {
+                difference = std::max(
+                    difference,
+                    std::abs(
+                        static_cast<int>(capture.pixels[offset + channel])
+                        - background[channel]));
+            }
+            if (difference <= 12)
+            {
+                continue;
+            }
+            if ((offset / 4u) % capture.width < capture.width / 2u)
+            {
+                ++leftPixels;
+            }
+            else
+            {
+                ++rightPixels;
+            }
+        }
+        Require(
+            leftPixels > 300u && rightPixels > 300u,
+            apiName + " did not draw the batched built-in Lit renderers ("
+                + std::to_string(leftPixels) + " mesh, "
+                + std::to_string(rightPixels) + " model pixels)");
+        return capture;
+    }
+
+    // ParticleSystemのcustom pixel shaderをD3D11と比べます。左は既定の
+    // particle、中央は頂点色・UV・t0／t1・カスタム値を読むparticle-probe、
+    // 右はcompileに失敗したShaderのマゼンタの代替表示です。
+    [[nodiscard]] Capture RenderCustomParticleShaderCapture(
+        const LamaPon::RenderingApi api,
+        const LamaPon::GraphicsStartupProfile profile)
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            api,
+            profile);
+        Require(
+            graphics.ActiveRenderingApi() == api,
+            "The custom particle shader capture did not start the requested "
+            "rendering API");
+        graphics.Assets().SetAssetRoot(LAMAPON_TEST_ASSET_DIR);
+        const std::string apiName = api == LamaPon::RenderingApi::DirectX11
+            ? "DirectX 11"
+            : "DirectX 12";
+
+        LamaPon::Scene scene(graphics);
+        auto& cameraObject = scene.CreateGameObject("MainCamera");
+        cameraObject.GetTransform().position = { 0.0f, 0.0f, 4.0f };
+        auto& camera = cameraObject.AddComponent<LamaPon::CameraComponent>();
+        scene.SetMainCamera(camera);
+
+        const auto fixtures =
+            std::filesystem::path{ LAMAPON_TEST_ASSET_DIR }.parent_path()
+            / "tests/fixtures";
+        const auto addParticles = [&](
+            const char* const name,
+            const float x) -> LamaPon::ParticleSystemComponent&
+        {
+            auto& object = scene.CreateGameObject(name);
+            auto& particles = object.AddComponent<
+                LamaPon::ParticleSystemComponent>();
+            particles.SetPlayOnStart(false);
+            particles.SetAdditive(false);
+            particles.SetStartColor({ 0.9f, 0.75f, 0.4f, 1.0f });
+            particles.SetEndColor({ 0.9f, 0.75f, 0.4f, 1.0f });
+            particles.EmitParticle(
+                { x, 0.0f, 0.0f },
+                { 0.0f, 0.0f, 0.0f },
+                1.0f,
+                1.1f);
+            return particles;
+        };
+        static_cast<void>(addParticles("DefaultParticles", -1.4f));
+        auto& probe = addParticles("ProbeParticles", 0.0f);
+        probe.SetShaderPath(fixtures / "particle-probe.hlsl");
+        probe.SetAuxiliaryTexturePath("textures/LamaPonLogo.png");
+        probe.SetCustomParameter(0, { 0.35f, 1.0f, 0.6f, 0.0f });
+        auto& broken = addParticles("BrokenParticles", 1.4f);
+        broken.SetShaderPath(fixtures / "broken-shader.hlsl");
+
+        constexpr float clearColor[4]{ 0.05f, 0.05f, 0.08f, 1.0f };
+        const auto render = [&]()
+        {
+            graphics.BeginFrame(clearColor);
+            graphics.BeginSceneComposition(clearColor);
+            scene.RenderMainCamera(
+                static_cast<float>(CanvasWidth) / CanvasHeight,
+                false,
+                graphics.SceneCompositionTarget());
+            graphics.EndSceneComposition(scene.PostProcessFrameData());
+            Capture frame;
+            frame.pixels = graphics.CaptureBackBuffer(frame.width, frame.height);
+            graphics.EndFrame();
+            return frame;
+        };
+        // 最初のフレームでtextureとShaderを読み込みます。
+        static_cast<void>(render());
+        const auto capture = render();
+        const std::string probeError(probe.ShaderError());
+        const std::string brokenError(broken.ShaderError());
+
+        std::size_t magentaPixels{};
+        for (std::size_t offset{};
+             offset + 3u < capture.pixels.size();
+             offset += 4u)
+        {
+            if (capture.pixels[offset] > 150u
+                && capture.pixels[offset + 2u] > 150u
+                && capture.pixels[offset + 1u] < 80u)
+            {
+                ++magentaPixels;
+            }
+        }
+        Require(
+            probeError.empty()
+                && !brokenError.empty()
+                && magentaPixels > 100u,
+            apiName + " did not draw the custom particle shaders ("
+                + std::to_string(magentaPixels) + " placeholder pixels; "
+                "errors: [" + probeError + "] [" + brokenError + "])");
+        return capture;
+    }
+
     // SSRは前フレームのカラーを読むため、有効にした最初のフレームは
     // SSR無しと同じ画像です。2フレーム目から床へCubeの赤が映り、SSRを
     // 切ると元の画像へ戻ります。
@@ -6311,6 +6704,17 @@ int main()
         const auto d3d11MaterialShaders = RenderMaterialShaderCapture(
             LamaPon::RenderingApi::DirectX11,
             LamaPon::GraphicsStartupProfile::FullRenderer);
+        const auto d3d11MaterialShaderInstancing =
+            RenderMaterialShaderInstancingCapture(
+                LamaPon::RenderingApi::DirectX11,
+                LamaPon::GraphicsStartupProfile::FullRenderer);
+        const auto d3d11BuiltInInstancing = RenderBuiltInInstancingCapture(
+            LamaPon::RenderingApi::DirectX11,
+            LamaPon::GraphicsStartupProfile::FullRenderer);
+        const auto d3d11CustomParticleShaders =
+            RenderCustomParticleShaderCapture(
+                LamaPon::RenderingApi::DirectX11,
+                LamaPon::GraphicsStartupProfile::FullRenderer);
         const auto d3d11SkinnedMaterialShaders =
             RenderSkinnedMaterialShaderCapture(
                 LamaPon::RenderingApi::DirectX11,
@@ -6401,6 +6805,19 @@ int main()
         const auto d3d12MaterialShaders = RenderMaterialShaderCapture(
             LamaPon::RenderingApi::DirectX12Experimental,
             LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap);
+        const auto d3d12MaterialShaderInstancing =
+            RenderMaterialShaderInstancingCapture(
+                LamaPon::RenderingApi::DirectX12Experimental,
+                LamaPon::GraphicsStartupProfile::
+                    AllowD3D12ExperimentalBootstrap);
+        const auto d3d12BuiltInInstancing = RenderBuiltInInstancingCapture(
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap);
+        const auto d3d12CustomParticleShaders =
+            RenderCustomParticleShaderCapture(
+                LamaPon::RenderingApi::DirectX12Experimental,
+                LamaPon::GraphicsStartupProfile::
+                    AllowD3D12ExperimentalBootstrap);
         const auto d3d12SkinnedMaterialShaders =
             RenderSkinnedMaterialShaderCapture(
                 LamaPon::RenderingApi::DirectX12Experimental,
@@ -6502,6 +6919,18 @@ int main()
             "material shaders",
             d3d11MaterialShaders.frame,
             d3d12MaterialShaders.frame);
+        RequireMatchingFrameCaptures(
+            "material shader instancing",
+            d3d11MaterialShaderInstancing,
+            d3d12MaterialShaderInstancing);
+        RequireMatchingFrameCaptures(
+            "built-in Lit instancing",
+            d3d11BuiltInInstancing,
+            d3d12BuiltInInstancing);
+        RequireMatchingFrameCaptures(
+            "custom particle shaders",
+            d3d11CustomParticleShaders,
+            d3d12CustomParticleShaders);
         RequireMatchingFrameCaptures(
             "skinned material shader baseline",
             d3d11SkinnedMaterialShaders.baseline,

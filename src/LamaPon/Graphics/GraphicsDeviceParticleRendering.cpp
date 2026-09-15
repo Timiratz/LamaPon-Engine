@@ -32,6 +32,20 @@ namespace LamaPon
         }
 
         auto effectiveRequest = request;
+        if (!shaderPath.empty()
+            && ActiveRenderingApi() == RenderingApi::DirectX12Experimental)
+        {
+            // D3D12はrender serviceがcustom pixel shaderのpipelineを作ります。
+            // Shaderも代替表示も使えないときは、D3D11と同じく既定の
+            // pipelineで描きます。
+            return DrawD3D12CustomParticles(
+                    request,
+                    shaderPath,
+                    customParameters,
+                    shaderGeneration,
+                    shaderError)
+                || renderServices->DrawParticles(request);
+        }
         if (!shaderPath.empty())
         {
             effectiveRequest.applyCustomPixelShader =

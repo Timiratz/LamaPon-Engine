@@ -924,6 +924,14 @@ namespace LamaPon
         [[nodiscard]] ClusteredLights& Clusters() const;
         [[nodiscard]] SpriteEffect*
             SpriteErrorPlaceholder() const;
+        // DirectX 12でParticleSystemのcustom pixel shaderを描きます。Shaderも
+        // 代替表示も使えないときはfalseを返し、既定のpipelineへ任せます。
+        [[nodiscard]] bool DrawD3D12CustomParticles(
+            const ParticleDrawRequest& request,
+            const std::filesystem::path& shaderPath,
+            const std::array<DirectX::XMFLOAT4, 8>& customParameters,
+            std::uint64_t* shaderGeneration,
+            std::string* shaderError);
         [[nodiscard]] std::uint64_t BeginD3D11SpritePass(
             const SpritePassDescription& description,
             bool neutralOwner,

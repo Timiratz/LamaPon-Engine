@@ -3122,16 +3122,22 @@ namespace LamaPon
 
     bool ModelRendererComponent::CanBeInstanced() const
     {
+        const bool usesD3D12 = m_graphics != nullptr
+            && m_graphics->ActiveRenderingApi()
+                == RenderingApi::DirectX12Experimental;
         if (m_wireframe
             || m_materialOverrideEnabled
             || m_useLegacyShading
             || !m_material.Shader().empty()
             || m_graphics == nullptr
-            || m_graphics->ActiveRenderingApi()
-                != RenderingApi::DirectX11
+            || (!usesD3D12
+                && m_graphics->ActiveRenderingApi()
+                    != RenderingApi::DirectX11)
             || m_graphics->IsDepthOnlyPass()
             || !m_model
-            || !m_model->skeletalModel)
+            || !m_model->skeletalModel
+            // D3D11のCMO／SDKMESH／VBOはDirectXTK Modelで、まとめて描きません。
+            || (usesD3D12 && UsesDirectXTKModelMaterial(m_modelPath)))
         {
             return false;
         }
@@ -3139,17 +3145,25 @@ namespace LamaPon
         if (!model.skins.empty()
             || !model.animations.empty()
             || model.primitives.empty()
-            || !m_graphics->Lit().SupportsInstancing())
+            || (!usesD3D12 && !m_graphics->Lit().SupportsInstancing()))
         {
             return false;
         }
         return std::ranges::all_of(
             model.primitives,
-            [](const SkeletalPrimitive& primitive)
+            [usesD3D12](const SkeletalPrimitive& primitive)
             {
+                // D3D12はGPU bufferの代わりにCPU側の頂点と索引を描きます。
+                const bool hasGeometry = usesD3D12
+                    ? primitive.cpuVertexStride
+                            >= sizeof(ImportedModelVertex)
+                        && !primitive.cpuVertexData.empty()
+                        && primitive.cpuVertexData.size()
+                            % primitive.cpuVertexStride == 0u
+                        && !primitive.cpuIndices.empty()
+                    : primitive.vertexBuffer && primitive.indexBuffer;
                 return primitive.skin < 0
-                    && primitive.vertexBuffer
-                    && primitive.indexBuffer
+                    && hasGeometry
                     && !primitive.alpha
                     && !primitive.textureHasTransparency
                     && primitive.baseColor.w >= 0.999f;
@@ -3205,6 +3219,11 @@ namespace LamaPon
         if (batch.size() < 2 || !CanBeInstanced())
         {
             return false;
+        }
+        if (m_graphics->ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            return RenderD3D12InstancedBatch(batch, view, projection);
         }
 
         using Vertex = DirectX::
@@ -3469,6 +3488,171 @@ namespace LamaPon
             {
                 component->m_instancedThisPass = true;
             }
+        }
+        return true;
+    }
+
+    bool ModelRendererComponent::RenderD3D12InstancedBatch(
+        const std::vector<ModelRendererComponent*>& batch,
+        DirectX::FXMMATRIX view,
+        DirectX::CXMMATRIX projection)
+    {
+        if (batch.size() < 2 || !CanBeInstanced())
+        {
+            return false;
+        }
+        const auto& model = *m_model->skeletalModel;
+        // D3D11と同じく、アニメーションの無いモデルを初期姿勢で描き、
+        // 自動LODの段ごとにまとめます。
+        std::vector<SkeletalPoseTransform> localPose;
+        std::vector<DirectX::XMFLOAT4X4> bindPose;
+        SkeletalModel::SamplePose(
+            model.nodes,
+            nullptr,
+            0.0f,
+            localPose,
+            bindPose);
+        std::array<std::vector<ModelRendererComponent*>, 3> lodBatches;
+        for (auto* const component : batch)
+        {
+            if (component != nullptr && component->CanBeInstanced())
+            {
+                lodBatches[std::min<std::size_t>(
+                    component->AutomaticLodLevel(view, projection),
+                    2u)].push_back(component);
+            }
+        }
+
+        std::vector<ModelRendererComponent*> drawnComponents;
+        for (std::size_t lodLevel{}; lodLevel < lodBatches.size(); ++lodLevel)
+        {
+            const auto& components = lodBatches[lodLevel];
+            if (components.empty())
+            {
+                continue;
+            }
+            bool drewLevel{};
+            for (const auto& primitive : model.primitives)
+            {
+                if (primitive.meshNode >= bindPose.size())
+                {
+                    continue;
+                }
+                const auto meshGlobal = DirectX::XMLoadFloat4x4(
+                    &bindPose[primitive.meshNode]);
+                // D3D11と同じく、instanceの色はprimitiveの色です。
+                std::vector<PrimitiveInstanceData> instances;
+                instances.reserve(components.size());
+                for (const auto* const component : components)
+                {
+                    PrimitiveInstanceData instance;
+                    DirectX::XMStoreFloat4x4(
+                        &instance.world,
+                        meshGlobal * component->Owner().WorldMatrix());
+                    instance.color = primitive.baseColor;
+                    instances.push_back(instance);
+                }
+
+                const auto vertexCount = primitive.cpuVertexData.size()
+                    / primitive.cpuVertexStride;
+                std::vector<PrimitiveRenderVertex> vertices;
+                vertices.reserve(vertexCount);
+                for (std::size_t index{}; index < vertexCount; ++index)
+                {
+                    ImportedModelVertex source{};
+                    std::memcpy(
+                        &source,
+                        primitive.cpuVertexData.data()
+                            + index * primitive.cpuVertexStride,
+                        sizeof(source));
+                    vertices.push_back({
+                        source.position,
+                        source.normal,
+                        source.textureCoordinate });
+                }
+                std::span<const std::uint32_t> indices =
+                    primitive.cpuIndices;
+                for (std::size_t level = std::min<std::size_t>(
+                        lodLevel,
+                        primitive.cpuLodIndices.size());
+                    level > 0;
+                    --level)
+                {
+                    if (!primitive.cpuLodIndices[level - 1u].empty())
+                    {
+                        indices = primitive.cpuLodIndices[level - 1u];
+                        break;
+                    }
+                }
+
+                PrimitiveDrawRequest request;
+                request.shape = PrimitiveRenderShape::Procedural;
+                request.vertices = vertices;
+                request.indices = indices;
+                DirectX::XMStoreFloat4x4(
+                    &request.world,
+                    DirectX::XMMatrixIdentity());
+                DirectX::XMStoreFloat4x4(&request.view, view);
+                DirectX::XMStoreFloat4x4(&request.projection, projection);
+                // D3D11のまとめ描きと同じく、primitive自身の色・粗さ・
+                // 金属度・PBR mapで描きます。
+                request.baseColor = primitive.baseColor;
+                request.roughness = primitive.roughness;
+                request.metallic = primitive.metallic;
+                request.occlusionStrength = primitive.occlusionStrength;
+                request.emissiveFactor = primitive.emissiveFactor;
+                const auto& textures = primitive.embeddedTextures;
+                request.albedo = textures.albedo;
+                request.normalTexture = textures.normal;
+                request.roughnessTexture = textures.roughness;
+                request.metallicTexture = textures.metallic;
+                request.occlusionTexture = textures.occlusion;
+                request.emissiveTexture = textures.emissive;
+                request.fallbackTexture =
+                    m_graphics->WhiteTextureViewHandle();
+                // D3D11のまとめ描きはリフレクションプローブを適用しないため、
+                // SkyのIBLのまま描きます。
+                CopyPrimitiveLighting(m_graphics->Lighting(), request);
+                if (!request.directionalShadow.texture
+                    && m_graphics->Shadows().IsValid())
+                {
+                    request.directionalShadow.texture =
+                        m_graphics->Shadows().ViewHandle();
+                }
+                if (!request.spotShadowTexture
+                    && m_graphics->SpotShadows().IsValid())
+                {
+                    request.spotShadowTexture =
+                        m_graphics->SpotShadows().ViewHandle();
+                }
+                if (!request.pointShadow.texture
+                    && m_graphics->PointShadows().IsValid())
+                {
+                    request.pointShadow.texture =
+                        m_graphics->PointShadows().ViewHandle();
+                }
+                request.instances = instances;
+                if (m_graphics->DrawPrimitive(request))
+                {
+                    drewLevel = true;
+                }
+            }
+            if (drewLevel)
+            {
+                drawnComponents.insert(
+                    drawnComponents.end(),
+                    components.begin(),
+                    components.end());
+            }
+        }
+        if (drawnComponents.empty())
+        {
+            return false;
+        }
+        // まとめて描いたRendererだけ、このパスの個別描画を飛ばします。
+        for (auto* const component : drawnComponents)
+        {
+            component->m_instancedThisPass = true;
         }
         return true;
     }

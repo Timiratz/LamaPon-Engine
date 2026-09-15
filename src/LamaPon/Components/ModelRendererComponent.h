@@ -429,6 +429,12 @@ namespace LamaPon
             DirectX::FXMMATRIX view,
             DirectX::CXMMATRIX projection,
             bool occludedOnly = false);
+        // D3D11のRenderInstancedBatchと同じまとめ方で、DirectX 12の組み込み
+        // Litへinstance描画します。
+        [[nodiscard]] bool RenderD3D12InstancedBatch(
+            const std::vector<ModelRendererComponent*>& batch,
+            DirectX::FXMMATRIX view,
+            DirectX::CXMMATRIX projection);
         struct CommonLitResources;
 
         void ReloadModel();

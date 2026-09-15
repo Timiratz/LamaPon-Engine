@@ -1633,6 +1633,33 @@ namespace LamaPon
     bool MeshRendererComponent::CanBeInstanced()
         const noexcept
     {
+        if (m_graphics != nullptr
+            && m_graphics->ActiveRenderingApi()
+                == RenderingApi::DirectX12Experimental)
+        {
+            if (m_worldOverlay
+                || HasProceduralMesh()
+                || m_graphics->IsDepthOnlyPass())
+            {
+                return false;
+            }
+            // 組み込みLitはD3D11のLamaPonLit.hlslと同じく、常にinstance描画へ
+            // まとめられます。
+            if (m_material.Shader().empty())
+            {
+                return true;
+            }
+            try
+            {
+                return m_graphics->PrepareMaterialShaderPasses(
+                    m_material.Shader(),
+                    m_material.ShaderKeywords()).instanced;
+            }
+            catch (...)
+            {
+                return false;
+            }
+        }
         return !m_worldOverlay
             && !HasProceduralMesh()
             && m_primitive != nullptr
@@ -1762,6 +1789,146 @@ namespace LamaPon
         DirectX::FXMMATRIX view,
         DirectX::CXMMATRIX projection)
     {
+        if (m_graphics != nullptr
+            && m_graphics->ActiveRenderingApi()
+                == RenderingApi::DirectX12Experimental)
+        {
+            if (batch.size() < 2 || !CanBeInstanced())
+            {
+                return;
+            }
+            // D3D11の経路と同じく、Worldは単位行列、Material・光源・プローブは
+            // 代表（先頭）のRendererのものを使い、各Rendererのworldと色を
+            // slot 1へ並べます。
+            std::vector<Detail::MaterialShaderInstanceData> instances;
+            std::vector<MeshRendererComponent*> instancedComponents;
+            instances.reserve(batch.size());
+            instancedComponents.reserve(batch.size());
+            for (auto* const component : batch)
+            {
+                if (component == nullptr || !component->CanBeInstanced())
+                {
+                    continue;
+                }
+                Detail::MaterialShaderInstanceData instance{};
+                DirectX::XMStoreFloat4x4(
+                    &instance.world,
+                    component->Owner().WorldMatrix());
+                instance.color = component->m_material.BaseColor();
+                instances.push_back(instance);
+                instancedComponents.push_back(component);
+            }
+            if (instances.size() < 2)
+            {
+                return;
+            }
+
+            PrimitiveDrawRequest request;
+            switch (m_shape)
+            {
+            case PrimitiveShape::Cube:
+                request.shape = PrimitiveRenderShape::Cube;
+                break;
+            case PrimitiveShape::Sphere:
+                request.shape = PrimitiveRenderShape::Sphere;
+                break;
+            case PrimitiveShape::Cylinder:
+                request.shape = PrimitiveRenderShape::Cylinder;
+                break;
+            case PrimitiveShape::Plane:
+                request.shape = PrimitiveRenderShape::Plane;
+                break;
+            default:
+                return;
+            }
+            DirectX::XMStoreFloat4x4(
+                &request.world,
+                DirectX::XMMatrixIdentity());
+            DirectX::XMStoreFloat4x4(&request.view, view);
+            DirectX::XMStoreFloat4x4(&request.projection, projection);
+            request.baseColor = m_material.BaseColor();
+            request.roughness = m_material.Roughness();
+            request.metallic = m_material.Metallic();
+            request.normalStrength = m_material.NormalStrength();
+            request.occlusionStrength = m_material.OcclusionStrength();
+            request.emissiveFactor = m_material.EmissiveColor();
+            CopyPrimitiveLighting(m_graphics->Lighting(), request);
+            DirectX::XMFLOAT3 position{};
+            DirectX::XMStoreFloat3(
+                &position,
+                Owner().WorldMatrix().r[3]);
+            request.reflectionProbe = Owner().GetScene()
+                .ReflectionProbeEnvironmentAt(position);
+            if (!request.directionalShadow.texture
+                && m_graphics->Shadows().IsValid())
+            {
+                request.directionalShadow.texture =
+                    m_graphics->Shadows().ViewHandle();
+            }
+            if (!request.spotShadowTexture
+                && m_graphics->SpotShadows().IsValid())
+            {
+                request.spotShadowTexture =
+                    m_graphics->SpotShadows().ViewHandle();
+            }
+            if (!request.pointShadow.texture
+                && m_graphics->PointShadows().IsValid())
+            {
+                request.pointShadow.texture =
+                    m_graphics->PointShadows().ViewHandle();
+            }
+            const auto textures = BuildLitTextureRequest();
+            request.albedo = textures.albedo;
+            request.normalTexture = textures.normal;
+            request.roughnessTexture = textures.roughness;
+            request.metallicTexture = textures.metallic;
+            request.occlusionTexture = textures.occlusion;
+            request.emissiveTexture = textures.emissive;
+            request.fallbackTexture = m_graphics->WhiteTextureViewHandle();
+            request.alphaBlend = request.baseColor.w < 1.0f;
+            request.depthTest = true;
+            request.depthWrite = !request.alphaBlend;
+
+            bool drawn{};
+            if (m_material.Shader().empty())
+            {
+                // 組み込みLitはD3D11のVSInstancedMainと同じく、instanceの色を
+                // Tintにして描きます。
+                request.instances = instances;
+                drawn = m_graphics->DrawPrimitive(request);
+            }
+            else
+            {
+                Detail::MaterialShaderDrawRequest material;
+                material.material = &m_material;
+                material.instances = instances;
+                material.customTextures = textures.customTextures;
+                if (m_cullModeOverride)
+                {
+                    material.cullOverride = m_cullMode;
+                }
+                std::uint64_t generation{};
+                std::string shaderError;
+                drawn = m_graphics->DrawMaterialShaderPrimitive(
+                    request,
+                    material,
+                    generation,
+                    shaderError);
+                m_shaderError = std::move(shaderError);
+                m_shaderGeneration = generation;
+                m_activeShaderPath = m_material.Shader();
+            }
+            if (!drawn)
+            {
+                return;
+            }
+            // まとめて描いたRendererだけ、このパスの個別描画を飛ばします。
+            for (auto* const component : instancedComponents)
+            {
+                component->m_instancedThisPass = true;
+            }
+            return;
+        }
         RefreshShader(false);
         if (batch.empty() || !CanBeInstanced())
         {

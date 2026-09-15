@@ -2485,9 +2485,90 @@ namespace LamaPon
         }
     }
 
+    bool GraphicsDevice::DrawD3D12CustomParticles(
+        const ParticleDrawRequest& request,
+        const std::filesystem::path& shaderPath,
+        const std::array<DirectX::XMFLOAT4, 8>& customParameters,
+        std::uint64_t* const shaderGeneration,
+        std::string* const shaderError)
+    {
+        auto* const services = TryD3D12MaterialShaderServices(
+            m_state->m_apiResources.get());
+        if (services == nullptr
+            || shaderPath.empty()
+            || TryAssets() == nullptr)
+        {
+            return false;
+        }
+        // D3D11のApplyCustomPixelShaderと同じく絶対パスをcache keyにし、
+        // compile失敗の説明は2DのShaderとして出します。
+        Detail::MaterialShaderSource shader;
+        shader.path = Assets().ResolvePath(shaderPath).lexically_normal();
+        shader.cacheKey = shader.path;
+        auto* const assets = &Assets();
+        shader.describeFailure =
+            [assets, path = shader.path](const char* const message)
+            {
+                return DescribeShaderFailure(
+                    *assets,
+                    path,
+                    message,
+                    ShaderUsage::Sprite);
+            };
+        // D3D11のSpriteErrorPlaceholderと同じく、プロジェクトに代替Shaderが
+        // 無いときはエンジン同梱版を使います。
+        constexpr const char* placeholderRelativePath =
+            "shaders/LamaPonSpriteError.hlsl";
+        auto placeholderPath = Assets().ResolvePath(placeholderRelativePath);
+        if (!Assets().FileExists(placeholderPath))
+        {
+            placeholderPath =
+                ExecutableDirectory() / "assets" / placeholderRelativePath;
+        }
+        Detail::MaterialShaderSource placeholder;
+        placeholder.path = placeholderPath.lexically_normal();
+        placeholder.cacheKey = placeholder.path;
+        const auto result = services->DrawCustomParticles(
+            Assets(),
+            shader,
+            placeholder,
+            request,
+            customParameters);
+        if (shaderGeneration != nullptr)
+        {
+            *shaderGeneration = result.generation;
+        }
+        if (shaderError != nullptr)
+        {
+            *shaderError = result.error;
+        }
+        if (result.drawn && result.placeholder)
+        {
+            // D3D11と同じく、代替表示を使った回数を数えます。
+            ++m_state->m_frameStatistics.shaderFallbackDraws;
+        }
+        return result.drawn;
+    }
+
     void GraphicsDevice::InvalidateSpriteShader(
         const std::filesystem::path& shaderPath) const
     {
+        if (ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            // D3D12のSpriteは描くたびにcompile cacheを確かめるため、
+            // ParticleSystemのcustom pixel shaderだけを作り直させます。
+            auto* const services = TryD3D12MaterialShaderServices(
+                m_state->m_apiResources.get());
+            if (services != nullptr
+                && !shaderPath.empty()
+                && TryAssets() != nullptr)
+            {
+                services->InvalidateCustomPixelShader(
+                    Assets().ResolvePath(shaderPath).lexically_normal());
+            }
+            return;
+        }
         auto* const resources = TryD3D11ApiResources();
         if (shaderPath.empty() || resources == nullptr)
         {

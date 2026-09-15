@@ -93,6 +93,8 @@ namespace LamaPon::Detail
             bool pointSampler{};
             bool shadowBias{};
             bool skinned{};
+            // VSInstancedMainとslot 1のworld／colorを使います。
+            bool instanced{};
             // HSMain／DSMainを束ね、4制御点パッチで描くpipelineです。
             bool tessellated{};
             // MaterialShaderPassです。
@@ -108,6 +110,7 @@ namespace LamaPon::Detail
         {
             Microsoft::WRL::ComPtr<ID3DBlob> vertexShader;
             Microsoft::WRL::ComPtr<ID3DBlob> pixelShader;
+            Microsoft::WRL::ComPtr<ID3DBlob> instancedVertexShader;
             Microsoft::WRL::ComPtr<ID3DBlob> geometryShader;
             // HSMainとDSMainが両方あるときだけ持ちます。
             Microsoft::WRL::ComPtr<ID3DBlob> hullShader;

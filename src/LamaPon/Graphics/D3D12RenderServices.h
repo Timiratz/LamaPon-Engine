@@ -46,6 +46,19 @@ namespace LamaPon::Detail
             PrepareMaterialShaderPasses(
                 AssetManager& assets,
                 const MaterialShaderSource& shader) = 0;
+        // D3D11のApplyCustomPixelShaderと同じく、ParticleSystemの`PSMain`を
+        // b0の8本のfloat4、b1のLight2D、t0のparticle texture、t1の補助
+        // texture、s0の線形wrapで描きます。compileに失敗したShaderは
+        // placeholderで描き、どちらも使えないときはdrawnをfalseで返します。
+        [[nodiscard]] virtual MaterialShaderDrawResult DrawCustomParticles(
+            AssetManager& assets,
+            const MaterialShaderSource& shader,
+            const MaterialShaderSource& placeholder,
+            const ParticleDrawRequest& request,
+            const std::array<DirectX::XMFLOAT4, 8>& parameters) = 0;
+        // 次の描画で、保存時刻に関係なくParticleSystemのShaderを作り直させます。
+        virtual void InvalidateCustomPixelShader(
+            const std::filesystem::path& shaderPath) noexcept = 0;
 
     protected:
         D3D12MaterialShaderServices() = default;

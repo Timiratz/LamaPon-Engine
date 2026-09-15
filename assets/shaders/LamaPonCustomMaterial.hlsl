@@ -84,6 +84,18 @@ struct VertexInput
     float2 TexCoord : TEXCOORD0;
 };
 
+struct InstancedVertexInput
+{
+    float3 Position : SV_Position;
+    float3 Normal : NORMAL;
+    float2 TexCoord : TEXCOORD0;
+    float4 InstanceWorld0 : INSTANCE_TRANSFORM0;
+    float4 InstanceWorld1 : INSTANCE_TRANSFORM1;
+    float4 InstanceWorld2 : INSTANCE_TRANSFORM2;
+    float4 InstanceWorld3 : INSTANCE_TRANSFORM3;
+    float4 InstanceColor : INSTANCE_COLOR0;
+};
+
 struct SkinnedVertexInput
 {
     float3 Position : SV_Position;
@@ -139,6 +151,32 @@ PixelInput VSMain(VertexInput input)
         input.Position,
         input.Normal,
         input.TexCoord);
+}
+
+PixelInput VSInstancedMain(InstancedVertexInput input)
+{
+    const float4x4 world = float4x4(
+        input.InstanceWorld0,
+        input.InstanceWorld1,
+        input.InstanceWorld2,
+        input.InstanceWorld3);
+    // 逆転置行列の代わりに、同じ向きになる余因子行列で法線を変換します。
+    // 非一様スケールでも、まとめずに描いたとき（VSMain）と同じ法線です。
+    const float3x3 basis = (float3x3)world;
+    const float3x3 cofactor = float3x3(
+        cross(basis[1], basis[2]),
+        cross(basis[2], basis[0]),
+        cross(basis[0], basis[1]));
+    const float handedness =
+        dot(basis[0], cofactor[0]) < 0.0f ? -1.0f : 1.0f;
+    PixelInput output;
+    const float4 worldPosition = mul(float4(input.Position, 1.0f), world);
+    output.Position = mul(worldPosition, ViewProjection);
+    output.WorldPosition = worldPosition.xyz;
+    output.WorldNormal = normalize(
+        mul(input.Normal, cofactor) * handedness);
+    output.TexCoord = input.TexCoord;
+    return output;
 }
 
 void SkinVertex(

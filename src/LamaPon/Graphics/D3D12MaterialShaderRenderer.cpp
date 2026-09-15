@@ -942,6 +942,7 @@ namespace LamaPon::Detail
                 "Shader file was not found: " + PathToUtf8(source.path);
             entry.vertexShader.Reset();
             entry.pixelShader.Reset();
+            entry.instancedVertexShader.Reset();
             entry.geometryShader.Reset();
             entry.hullShader.Reset();
             entry.domainShader.Reset();
@@ -975,6 +976,14 @@ namespace LamaPon::Detail
                 skinned ? "PSSkinnedMain" : "PSMain",
                 "ps_5_0",
                 source.keywords);
+            auto instancedVertexShader = skinned
+                ? Microsoft::WRL::ComPtr<ID3DBlob>{}
+                : TryCompileShader(
+                    assets,
+                    source.path,
+                    "VSInstancedMain",
+                    "vs_5_0",
+                    source.keywords);
             auto geometryShader = TryCompileShader(
                 assets,
                 source.path,
@@ -1055,6 +1064,7 @@ namespace LamaPon::Detail
             std::array<bool, ConstantBufferCount> constantBuffers{};
             MarkConstantBuffers(vertexShader.Get(), constantBuffers);
             MarkConstantBuffers(pixelShader.Get(), constantBuffers);
+            MarkConstantBuffers(instancedVertexShader.Get(), constantBuffers);
             MarkConstantBuffers(geometryShader.Get(), constantBuffers);
             MarkConstantBuffers(hullShader.Get(), constantBuffers);
             MarkConstantBuffers(domainShader.Get(), constantBuffers);
@@ -1064,6 +1074,7 @@ namespace LamaPon::Detail
 
             entry.vertexShader = std::move(vertexShader);
             entry.pixelShader = std::move(pixelShader);
+            entry.instancedVertexShader = std::move(instancedVertexShader);
             entry.geometryShader = std::move(geometryShader);
             entry.hullShader = std::move(hullShader);
             entry.domainShader = std::move(domainShader);
@@ -1088,6 +1099,7 @@ namespace LamaPon::Detail
             // 壊れていることが見えるように代替表示へ切り替えます。
             entry.vertexShader.Reset();
             entry.pixelShader.Reset();
+            entry.instancedVertexShader.Reset();
             entry.geometryShader.Reset();
             entry.hullShader.Reset();
             entry.domainShader.Reset();
@@ -1140,6 +1152,24 @@ namespace LamaPon::Detail
                 offsetof(PrimitiveRenderVertex, textureCoordinate),
                 D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
         } };
+        // D3D11のMeshRendererComponent::RenderInstancedBatchと同じく、
+        // slot 1にworld行列4行と色を80 bytesで並べます。
+        static const std::array<D3D12_INPUT_ELEMENT_DESC, 8>
+            instancedInputs{ {
+            inputs[0],
+            inputs[1],
+            inputs[2],
+            { "INSTANCE_TRANSFORM", 0, DXGI_FORMAT_R32G32B32A32_FLOAT,
+                1, 0u, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+            { "INSTANCE_TRANSFORM", 1, DXGI_FORMAT_R32G32B32A32_FLOAT,
+                1, 16u, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+            { "INSTANCE_TRANSFORM", 2, DXGI_FORMAT_R32G32B32A32_FLOAT,
+                1, 32u, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+            { "INSTANCE_TRANSFORM", 3, DXGI_FORMAT_R32G32B32A32_FLOAT,
+                1, 48u, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+            { "INSTANCE_COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT,
+                1, 64u, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 }
+        } };
         D3D12_GRAPHICS_PIPELINE_STATE_DESC description{};
         description.pRootSignature = key.pointSampler
             ? m_pointRootSignature.Get()
@@ -1152,6 +1182,8 @@ namespace LamaPon::Detail
                     && key.skinned
                     && entry.occludedUsesMaterialVertexShader
                 ? entry.vertexShader.Get()
+            : key.instanced
+                ? entry.instancedVertexShader.Get()
             : key.skinned
                 ? m_skinnedVertexShader.Get()
                 : entry.vertexShader.Get();
@@ -1222,6 +1254,10 @@ namespace LamaPon::Detail
             ? D3D12_INPUT_LAYOUT_DESC{
                 skinnedInputs.data(),
                 static_cast<UINT>(skinnedInputs.size()) }
+            : key.instanced
+                ? D3D12_INPUT_LAYOUT_DESC{
+                    instancedInputs.data(),
+                    static_cast<UINT>(instancedInputs.size()) }
             : D3D12_INPUT_LAYOUT_DESC{
                 inputs.data(),
                 static_cast<UINT>(inputs.size()) };
@@ -1258,6 +1294,8 @@ namespace LamaPon::Detail
     {
         MaterialShaderDrawResult result;
         const auto* const skinned = material.skinned;
+        const bool instanced = skinned == nullptr
+            && !material.instances.empty();
         // Mesh RendererはPrimitiveRenderVertex、glTF／FBXは
         // ImportedModelVertexの列を描きます。
         const auto drawVertices = skinned != nullptr
@@ -1273,7 +1311,12 @@ namespace LamaPon::Detail
             : static_cast<std::uint32_t>(sizeof(PrimitiveRenderVertex));
         if (material.material == nullptr
             || drawVertices.empty()
-            || drawIndices.empty())
+            || drawIndices.empty()
+            || material.instances.size()
+                > std::numeric_limits<UINT>::max()
+            || material.instances.size_bytes()
+                > std::numeric_limits<UINT>::max()
+            || (instanced && material.pass != MaterialShaderPass::Main))
         {
             return result;
         }
@@ -1351,6 +1394,10 @@ namespace LamaPon::Detail
         {
             return result;
         }
+        if (instanced && active->instancedVertexShader == nullptr)
+        {
+            return result;
+        }
 
         // D3D11と同じく、輪郭と遮蔽表示はShaderがその入口を持つときだけ
         // 通常のパスへ重ねます。代替表示のShaderにはどちらもありません。
@@ -1395,9 +1442,11 @@ namespace LamaPon::Detail
             // DepthRead、CullCounterClockwise）の後に、World Overlayか
             // Shaderの宣言を上書きします。深度パスは常に既定です。
             key.skinned = skinned != nullptr;
+            key.instanced = instanced;
             // 代替表示のShaderはテセレーションを持たないため、通常の三角形で
             // 描きます。
             key.tessellated = entry.hasTessellation
+                && !instanced
                 && entry.hullShader != nullptr
                 && skinned == nullptr
                 && !material.tessellationPatches.empty();
@@ -1593,6 +1642,15 @@ namespace LamaPon::Detail
             const auto failure = shader.describeFailure
                 ? shader.describeFailure(exception.what())
                 : std::string(exception.what());
+            if (instanced)
+            {
+                // VSInstancedMainのpipelineだけを作れないときは、まとめ描きを
+                // 止めて各Rendererの個別描画へ戻し、Shaderの説明に出します。
+                active->instancedVertexShader.Reset();
+                active->passError = failure;
+                result.passError = failure;
+                return result;
+            }
             if (material.pass != MaterialShaderPass::Main)
             {
                 // 輪郭／遮蔽表示だけのpipelineを作れないときは、通常の描画を
@@ -1616,6 +1674,7 @@ namespace LamaPon::Detail
             active->error = failure;
             active->vertexShader.Reset();
             active->pixelShader.Reset();
+            active->instancedVertexShader.Reset();
             active->geometryShader.Reset();
             active->hullShader.Reset();
             active->domainShader.Reset();
@@ -1935,6 +1994,17 @@ namespace LamaPon::Detail
             vertexUpload.data,
             uploadVertices.data(),
             uploadVertices.size());
+        D3D12Backend::FrameUploadAllocation instanceUpload{};
+        if (instanced)
+        {
+            instanceUpload = m_backend->AllocateFrameUpload(
+                static_cast<std::uint64_t>(material.instances.size_bytes()),
+                alignof(float));
+            std::memcpy(
+                instanceUpload.data,
+                material.instances.data(),
+                material.instances.size_bytes());
+        }
         D3D12Backend::FrameUploadAllocation indexUpload{};
         if (!key.tessellated)
         {
@@ -2062,7 +2132,25 @@ namespace LamaPon::Detail
             static_cast<UINT>(vertexBytes),
             vertexStride
         };
-        commandList->IASetVertexBuffers(0, 1, &vertexView);
+        if (instanced)
+        {
+            const std::array<D3D12_VERTEX_BUFFER_VIEW, 2> vertexViews{ {
+                vertexView,
+                {
+                    instanceUpload.gpuAddress,
+                    static_cast<UINT>(material.instances.size_bytes()),
+                    static_cast<UINT>(sizeof(MaterialShaderInstanceData))
+                }
+            } };
+            commandList->IASetVertexBuffers(
+                0,
+                static_cast<UINT>(vertexViews.size()),
+                vertexViews.data());
+        }
+        else
+        {
+            commandList->IASetVertexBuffers(0, 1, &vertexView);
+        }
         if (key.tessellated)
         {
             commandList->IASetPrimitiveTopology(
@@ -2098,7 +2186,9 @@ namespace LamaPon::Detail
         {
             commandList->DrawIndexedInstanced(
                 static_cast<UINT>(drawIndices.size()),
-                1,
+                instanced
+                    ? static_cast<UINT>(material.instances.size())
+                    : 1u,
                 0,
                 0,
                 0);
@@ -2151,6 +2241,7 @@ namespace LamaPon::Detail
         }
         passes.outline = entry.outlineVertexShader != nullptr;
         passes.occluded = entry.occludedPixelShader != nullptr;
+        passes.instanced = entry.instancedVertexShader != nullptr;
         return passes;
     }
 

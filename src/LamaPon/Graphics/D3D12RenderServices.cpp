@@ -4,21 +4,29 @@
 #include "LamaPon/Graphics/D3D12EnvironmentPrefilter.h"
 #include "LamaPon/Graphics/D3D12Backend.h"
 #include "LamaPon/Graphics/GraphicsRenderServices.h"
+#include "LamaPon/Graphics/ShaderCompiler.h"
+#include "LamaPon/Graphics/SpriteRendering.h"
+#include "LamaPon/Assets/AssetManager.h"
+#include "LamaPon/Core/PathUtils.h"
 
 #include <d3dcompiler.h>
 #include <wrl/client.h>
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
+#include <filesystem>
 #include <limits>
 #include <memory>
 #include <numbers>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <system_error>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -233,6 +241,9 @@ struct PixelInput
     float3 worldPosition : TEXCOORD1;
     float3 normal : NORMAL;
     float2 textureCoordinate : TEXCOORD;
+    // D3D11のLamaPonLit.hlslのTintと同じく、1個ずつの描画はBaseColor、
+    // インスタンス描画はinstanceの色です。
+    float4 tint : COLOR0;
 };
 
 PixelInput PrimitiveVertexShader(VertexInput input)
@@ -248,6 +259,38 @@ PixelInput PrimitiveVertexShader(VertexInput input)
     output.normal = normalize(
         mul(float4(input.normal, 0.0f), WorldInverseTranspose).xyz);
     output.textureCoordinate = input.textureCoordinate;
+    output.tint = BaseColor;
+    return output;
+}
+
+struct InstancedVertexInput
+{
+    float3 position : POSITION;
+    float3 normal : NORMAL;
+    float2 textureCoordinate : TEXCOORD;
+    float4 instanceWorld0 : INSTANCE_TRANSFORM0;
+    float4 instanceWorld1 : INSTANCE_TRANSFORM1;
+    float4 instanceWorld2 : INSTANCE_TRANSFORM2;
+    float4 instanceWorld3 : INSTANCE_TRANSFORM3;
+    float4 instanceColor : INSTANCE_COLOR0;
+};
+
+// D3D11のLamaPonLit.hlslのVSInstancedMainと同じく、slot 1のworld行列と色で
+// 描きます。法線は逆転置行列の代わりにworldで変換して正規化します。
+PixelInput PrimitiveInstancedVertexShader(InstancedVertexInput input)
+{
+    const float4x4 world = float4x4(
+        input.instanceWorld0,
+        input.instanceWorld1,
+        input.instanceWorld2,
+        input.instanceWorld3);
+    PixelInput output;
+    const float4 worldPosition = mul(float4(input.position, 1.0f), world);
+    output.position = mul(worldPosition, ViewProjection);
+    output.worldPosition = worldPosition.xyz;
+    output.normal = normalize(mul(float4(input.normal, 0.0f), world).xyz);
+    output.textureCoordinate = input.textureCoordinate;
+    output.tint = input.instanceColor;
     return output;
 }
 
@@ -913,7 +956,7 @@ float4 PrimitivePixelShader(PixelInput input) : SV_Target
     const float4 albedo = AlbedoTexture.Sample(
         AlbedoSampler,
         input.textureCoordinate);
-    const float3 surfaceColor = albedo.rgb * BaseColor.rgb;
+    const float3 surfaceColor = albedo.rgb * input.tint.rgb;
     const float roughnessSample = RoughnessTexture.Sample(
         AlbedoSampler,
         input.textureCoordinate).g;
@@ -1244,7 +1287,7 @@ float4 PrimitivePixelShader(PixelInput input) : SV_Target
     }
     } // Forward+が無効なときの従来経路の終わり
     result += emissiveSample * EmissiveFactor.rgb;
-    const float outputAlpha = albedo.a * BaseColor.a;
+    const float outputAlpha = albedo.a * input.tint.a;
     if (FogParameters.w < 0.5f)
     {
         return float4(result, outputAlpha);
@@ -1321,6 +1364,25 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
 {
     return ParticleTexture.Sample(ParticleSampler, input.textureCoordinate)
         * input.color;
+}
+
+// D3D11のDirectXTK BasicEffect（頂点色とtexture、霧なし）と同じく、COLOR0、
+// TEXCOORD0、SV_Positionの順で出力します。ParticleSystemのcustom pixel
+// shaderはこの並びで受け取ります。
+struct CustomPixelInput
+{
+    float4 color : COLOR0;
+    float2 textureCoordinate : TEXCOORD0;
+    float4 position : SV_Position;
+};
+
+CustomPixelInput CustomParticleVertexShader(VertexInput input)
+{
+    CustomPixelInput output;
+    output.color = input.color;
+    output.textureCoordinate = input.textureCoordinate;
+    output.position = mul(float4(input.position, 1.0f), ViewProjection);
+    return output;
 }
 )";
 
@@ -1611,6 +1673,12 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 "LamaPonD3D12Primitive",
                 "PrimitivePixelShader",
                 "ps_5_0");
+            m_instancedVertexShader = CompileShader(
+                PrimitiveShaderSource,
+                sizeof(PrimitiveShaderSource) - 1u,
+                "LamaPonD3D12Primitive",
+                "PrimitiveInstancedVertexShader",
+                "vs_5_0");
             m_particleVertexShader = CompileShader(
                 ParticleShaderSource,
                 sizeof(ParticleShaderSource) - 1u,
@@ -1623,6 +1691,12 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 "LamaPonD3D12Particle",
                 "ParticlePixelShader",
                 "ps_5_0");
+            m_customParticleVertexShader = CompileShader(
+                ParticleShaderSource,
+                sizeof(ParticleShaderSource) - 1u,
+                "LamaPonD3D12Particle",
+                "CustomParticleVertexShader",
+                "vs_5_0");
 
             // t0〜t5はMaterial、t6〜t8は影、t9はSSAO、t10とt11はSSR、
             // t12とt13はIBL、t14〜t16はForward+のクラスタライト、t17〜t19は
@@ -1695,6 +1769,81 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                     0, serialized->GetBufferPointer(), serialized->GetBufferSize(),
                     IID_PPV_ARGS(m_rootSignature.ReleaseAndGetAddressOf())),
                 "ID3D12Device::CreateRootSignature(primitive)");
+
+            // ParticleSystemのcustom pixel shader用です。D3D11と同じく、頂点
+            // シェーダーのb0（ViewProjection）とピクセルシェーダーのb0／b1
+            // （カスタム値／Light2D）を別の枠にし、t0／t1とs0を渡します。
+            {
+                std::array<D3D12_DESCRIPTOR_RANGE, 2> particleRanges{};
+                for (UINT index{}; index < particleRanges.size(); ++index)
+                {
+                    particleRanges[index].RangeType =
+                        D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+                    particleRanges[index].NumDescriptors = 1;
+                    particleRanges[index].BaseShaderRegister = index;
+                }
+                std::array<D3D12_ROOT_PARAMETER, 5> particleParameters{};
+                particleParameters[0].ParameterType =
+                    D3D12_ROOT_PARAMETER_TYPE_CBV;
+                particleParameters[0].Descriptor.ShaderRegister = 0;
+                particleParameters[0].ShaderVisibility =
+                    D3D12_SHADER_VISIBILITY_VERTEX;
+                for (UINT index{}; index < 2u; ++index)
+                {
+                    auto& parameter = particleParameters[index + 1u];
+                    parameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+                    parameter.Descriptor.ShaderRegister = index;
+                    parameter.ShaderVisibility =
+                        D3D12_SHADER_VISIBILITY_PIXEL;
+                }
+                for (UINT index{}; index < particleRanges.size(); ++index)
+                {
+                    auto& parameter = particleParameters[index + 3u];
+                    parameter.ParameterType =
+                        D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+                    parameter.DescriptorTable.NumDescriptorRanges = 1;
+                    parameter.DescriptorTable.pDescriptorRanges =
+                        &particleRanges[index];
+                    parameter.ShaderVisibility =
+                        D3D12_SHADER_VISIBILITY_PIXEL;
+                }
+                // DirectXTKのCommonStates::LinearWrapと同じです。
+                D3D12_STATIC_SAMPLER_DESC particleSampler{};
+                particleSampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+                particleSampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+                particleSampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+                particleSampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+                particleSampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+                particleSampler.MaxLOD = D3D12_FLOAT32_MAX;
+                particleSampler.ShaderRegister = 0;
+                particleSampler.ShaderVisibility =
+                    D3D12_SHADER_VISIBILITY_PIXEL;
+                D3D12_ROOT_SIGNATURE_DESC particleDescription{};
+                particleDescription.NumParameters =
+                    static_cast<UINT>(particleParameters.size());
+                particleDescription.pParameters = particleParameters.data();
+                particleDescription.NumStaticSamplers = 1;
+                particleDescription.pStaticSamplers = &particleSampler;
+                particleDescription.Flags =
+                    D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+                Microsoft::WRL::ComPtr<ID3DBlob> particleSignature;
+                Microsoft::WRL::ComPtr<ID3DBlob> particleErrors;
+                ThrowIfFailed(
+                    D3D12SerializeRootSignature(
+                        &particleDescription,
+                        D3D_ROOT_SIGNATURE_VERSION_1,
+                        particleSignature.GetAddressOf(),
+                        particleErrors.GetAddressOf()),
+                    "D3D12SerializeRootSignature(custom particle)");
+                ThrowIfFailed(
+                    backend.Device()->CreateRootSignature(
+                        0,
+                        particleSignature->GetBufferPointer(),
+                        particleSignature->GetBufferSize(),
+                        IID_PPV_ARGS(m_customParticleRootSignature
+                            .ReleaseAndGetAddressOf())),
+                    "ID3D12Device::CreateRootSignature(custom particle)");
+            }
             m_materialShaders = std::make_unique<
                 LamaPon::Detail::D3D12MaterialShaderRenderer>(backend);
         }
@@ -1750,6 +1899,167 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
             return m_materialShaders->PreparePasses(assets, shader);
         }
 
+        [[nodiscard]] LamaPon::Detail::MaterialShaderDrawResult
+            DrawCustomParticles(
+                LamaPon::AssetManager& assets,
+                const LamaPon::Detail::MaterialShaderSource& shader,
+                const LamaPon::Detail::MaterialShaderSource& placeholder,
+                const LamaPon::ParticleDrawRequest& request,
+                const std::array<DirectX::XMFLOAT4, 8>& parameters) override
+        {
+            LamaPon::Detail::MaterialShaderDrawResult result;
+            auto* active = &PrepareCustomParticleShader(assets, shader);
+            result.generation = active->generation;
+            result.error = active->error;
+            // 既定のparticleと同じく、半透明particleはshadow casterにしません。
+            if (m_backend->IsShadowPassActive() || request.vertices.empty())
+            {
+                result.drawn = true;
+                return result;
+            }
+            RequireCompleteParticleQuads(request);
+
+            const auto usePlaceholder = [&]()
+            {
+                auto& fallback =
+                    PrepareCustomParticleShader(assets, placeholder);
+                if (fallback.pixelShader == nullptr)
+                {
+                    return false;
+                }
+                active = &fallback;
+                result.placeholder = true;
+                return true;
+            };
+            // D3D11のApplyCustomPixelShaderと同じく、説明の付いた失敗だけを
+            // マゼンタの代替表示で描きます。
+            if (active->pixelShader == nullptr
+                && (active->error.empty() || !usePlaceholder()))
+            {
+                return result;
+            }
+            ID3D12PipelineState* pipeline{};
+            try
+            {
+                pipeline = CustomParticlePipelineState(
+                    *active,
+                    request.additive);
+            }
+            catch (const std::exception& exception)
+            {
+                if (result.placeholder)
+                {
+                    throw;
+                }
+                // 頂点出力との並びが合わないなど、pipelineを作れないShaderも
+                // compile失敗と同じく説明を出して代替表示で描きます。
+                active->error = shader.describeFailure
+                    ? shader.describeFailure(exception.what())
+                    : std::string(exception.what());
+                active->pixelShader.Reset();
+                for (auto& state : active->pipelineStates)
+                {
+                    state.Reset();
+                }
+                result.error = active->error;
+                if (!usePlaceholder())
+                {
+                    return result;
+                }
+                pipeline = CustomParticlePipelineState(
+                    *active,
+                    request.additive);
+            }
+
+            // D3D11と同じく、t0はparticle texture、t1は補助textureで、
+            // 未設定の枠は白です。
+            const auto resolve = [this, &request](
+                const LamaPon::GraphicsViewHandle& view)
+            {
+                return m_backend->TryResolveShaderResource(
+                    view ? view : request.fallbackTexture);
+            };
+            const auto texture = resolve(request.texture);
+            const auto auxiliaryTexture = resolve(request.auxiliaryTexture);
+            auto* const descriptorHeap =
+                m_backend->ShaderResourceDescriptorHeap();
+            if (!texture || !auxiliaryTexture || descriptorHeap == nullptr)
+            {
+                return result;
+            }
+
+            auto* const commandList = m_backend->BeginFrameCommands();
+            const auto geometry = UploadParticleGeometry(request);
+            const auto viewProjection = UploadParticleViewProjection(request);
+            const auto parameterUpload = m_backend->AllocateFrameUpload(
+                sizeof(parameters),
+                D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+            std::memcpy(
+                parameterUpload.data,
+                parameters.data(),
+                sizeof(parameters));
+            // D3D11のApplyCustomPixelShaderはLight2Dを設定しないため、灯の
+            // 無い一覧を渡します。
+            const LamaPon::Sprite2DLighting lighting{};
+            const auto lightingUpload = m_backend->AllocateFrameUpload(
+                sizeof(lighting),
+                D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+            std::memcpy(lightingUpload.data, &lighting, sizeof(lighting));
+
+            ID3D12DescriptorHeap* heaps[]{ descriptorHeap };
+            commandList->SetGraphicsRootSignature(
+                m_customParticleRootSignature.Get());
+            commandList->SetPipelineState(pipeline);
+            commandList->SetDescriptorHeaps(1, heaps);
+            commandList->SetGraphicsRootConstantBufferView(
+                0,
+                viewProjection.gpuAddress);
+            commandList->SetGraphicsRootConstantBufferView(
+                1,
+                parameterUpload.gpuAddress);
+            commandList->SetGraphicsRootConstantBufferView(
+                2,
+                lightingUpload.gpuAddress);
+            commandList->SetGraphicsRootDescriptorTable(
+                3,
+                texture->descriptor);
+            commandList->SetGraphicsRootDescriptorTable(
+                4,
+                auxiliaryTexture->descriptor);
+            commandList->IASetPrimitiveTopology(
+                D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            commandList->IASetVertexBuffers(0, 1, &geometry.vertexView);
+            commandList->IASetIndexBuffer(&geometry.indexView);
+            const auto& viewport = m_backend->ActiveViewport();
+            const auto& scissor = m_backend->ActiveScissorRectangle();
+            commandList->RSSetViewports(1, &viewport);
+            commandList->RSSetScissorRects(1, &scissor);
+            commandList->DrawIndexedInstanced(
+                geometry.indexCount,
+                1,
+                0,
+                0,
+                0);
+            result.drawn = true;
+            return result;
+        }
+
+        void InvalidateCustomPixelShader(
+            const std::filesystem::path& shaderPath) noexcept override
+        {
+            try
+            {
+                const auto found = m_customParticleShaders.find(shaderPath);
+                if (found != m_customParticleShaders.end())
+                {
+                    found->second.forceReload = true;
+                }
+            }
+            catch (...)
+            {
+            }
+        }
+
         [[nodiscard]] bool DrawParticles(
             const LamaPon::ParticleDrawRequest& request) override
         {
@@ -1760,18 +2070,11 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
             {
                 return true;
             }
-            constexpr std::size_t maximumParticleCount = 4096u;
             if (request.vertices.empty())
             {
                 return true;
             }
-            if (request.vertices.size() % 4u != 0u
-                || request.vertices.size() > maximumParticleCount * 4u)
-            {
-                throw std::invalid_argument(
-                    "Particle draw requests require complete quads within "
-                    "the service capacity.");
-            }
+            RequireCompleteParticleQuads(request);
             const auto& texture = request.texture
                 ? request.texture
                 : request.fallbackTexture;
@@ -1783,57 +2086,11 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
             }
 
             auto* commandList = m_backend->BeginFrameCommands();
-            const auto quadCount = request.vertices.size() / 4u;
-            const auto indexCount = quadCount * 6u;
-            const auto vertexBytes = static_cast<std::uint64_t>(
-                request.vertices.size_bytes());
-            const auto indexBytes = static_cast<std::uint64_t>(
-                indexCount * sizeof(std::uint32_t));
-            const auto vertexUpload = m_backend->AllocateFrameUpload(
-                vertexBytes,
-                alignof(LamaPon::ParticleRenderVertex));
-            const auto indexUpload = m_backend->AllocateFrameUpload(
-                indexBytes,
-                alignof(std::uint32_t));
-            std::memcpy(
-                vertexUpload.data,
-                request.vertices.data(),
-                request.vertices.size_bytes());
-            auto* indices = reinterpret_cast<std::uint32_t*>(indexUpload.data);
-            for (std::size_t quad{}; quad < quadCount; ++quad)
-            {
-                const auto first = static_cast<std::uint32_t>(quad * 4u);
-                const auto offset = quad * 6u;
-                indices[offset] = first;
-                indices[offset + 1u] = first + 1u;
-                indices[offset + 2u] = first + 2u;
-                indices[offset + 3u] = first;
-                indices[offset + 4u] = first + 2u;
-                indices[offset + 5u] = first + 3u;
-            }
-
-            DirectX::XMFLOAT4X4 viewProjection{};
-            DirectX::XMStoreFloat4x4(
-                &viewProjection,
-                DirectX::XMMatrixMultiply(
-                    DirectX::XMLoadFloat4x4(&request.view),
-                    DirectX::XMLoadFloat4x4(&request.projection)));
-            const auto constantUpload = m_backend->AllocateFrameUpload(
-                sizeof(viewProjection),
-                D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
-            std::memcpy(
-                constantUpload.data,
-                &viewProjection,
-                sizeof(viewProjection));
-
-            const D3D12_VERTEX_BUFFER_VIEW vertexView{
-                vertexUpload.gpuAddress,
-                static_cast<UINT>(vertexBytes),
-                static_cast<UINT>(sizeof(LamaPon::ParticleRenderVertex)) };
-            const D3D12_INDEX_BUFFER_VIEW indexView{
-                indexUpload.gpuAddress,
-                static_cast<UINT>(indexBytes),
-                DXGI_FORMAT_R32_UINT };
+            const auto geometry = UploadParticleGeometry(request);
+            const auto& vertexView = geometry.vertexView;
+            const auto& indexView = geometry.indexView;
+            const auto indexCount = geometry.indexCount;
+            const auto constantUpload = UploadParticleViewProjection(request);
             ID3D12DescriptorHeap* heaps[]{ descriptorHeap };
             commandList->SetGraphicsRootSignature(m_rootSignature.Get());
             commandList->SetPipelineState(ParticlePipelineState(request.additive));
@@ -1880,6 +2137,15 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
             if (vertices.empty() || indices.empty() || indices.size() % 3u != 0u
                 || vertices.size() > std::numeric_limits<UINT>::max()
                 || indices.size() > std::numeric_limits<UINT>::max())
+            {
+                return false;
+            }
+            // インスタンス描画は、D3D11と同じく色を書く通常のパスだけで行います。
+            const bool instanced = !request.instances.empty();
+            if (instanced
+                && (request.depthOnly
+                    || request.instances.size_bytes()
+                        > std::numeric_limits<UINT>::max()))
             {
                 return false;
             }
@@ -2557,13 +2823,29 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 indexUpload.gpuAddress,
                 static_cast<UINT>(indexBytes),
                 DXGI_FORMAT_R32_UINT };
+            D3D12_VERTEX_BUFFER_VIEW instanceView{};
+            if (instanced)
+            {
+                const auto instanceUpload = m_backend->AllocateFrameUpload(
+                    static_cast<std::uint64_t>(request.instances.size_bytes()),
+                    alignof(LamaPon::PrimitiveInstanceData));
+                std::memcpy(
+                    instanceUpload.data,
+                    request.instances.data(),
+                    request.instances.size_bytes());
+                instanceView = {
+                    instanceUpload.gpuAddress,
+                    static_cast<UINT>(request.instances.size_bytes()),
+                    static_cast<UINT>(sizeof(LamaPon::PrimitiveInstanceData)) };
+            }
             auto* pipeline = request.depthOnly
                 ? DepthOnlyPipelineState(request.wireframe)
                 : PipelineState(
                     request.alphaBlend,
                     request.depthTest,
                     request.depthWrite,
-                    request.wireframe);
+                    request.wireframe,
+                    instanced);
             commandList->SetGraphicsRootSignature(m_rootSignature.Get());
             commandList->SetPipelineState(pipeline);
             commandList->SetGraphicsRootConstantBufferView(
@@ -2629,7 +2911,20 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                     secondaryIrradianceDescriptor);
             }
             commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-            commandList->IASetVertexBuffers(0, 1, &vertexView);
+            if (instanced)
+            {
+                const std::array<D3D12_VERTEX_BUFFER_VIEW, 2> vertexViews{
+                    vertexView,
+                    instanceView };
+                commandList->IASetVertexBuffers(
+                    0,
+                    static_cast<UINT>(vertexViews.size()),
+                    vertexViews.data());
+            }
+            else
+            {
+                commandList->IASetVertexBuffers(0, 1, &vertexView);
+            }
             commandList->IASetIndexBuffer(&indexView);
             if (!request.depthOnly)
             {
@@ -2640,7 +2935,13 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                 commandList->RSSetScissorRects(1, &scissor);
             }
             commandList->DrawIndexedInstanced(
-                static_cast<UINT>(indices.size()), 1, 0, 0, 0);
+                static_cast<UINT>(indices.size()),
+                instanced
+                    ? static_cast<UINT>(request.instances.size())
+                    : 1u,
+                0,
+                0,
+                0);
             return true;
         }
 
@@ -2679,6 +2980,230 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                     {
                         return index >= vertices.size();
                     });
+        }
+
+        // D3D11のApplyCustomPixelShaderのSpriteShaderEntryと同じ保存監視の
+        // 状態を持つ、ParticleSystemのcustom pixel shaderです。
+        struct CustomParticleShaderEntry final
+        {
+            Microsoft::WRL::ComPtr<ID3DBlob> pixelShader;
+            // 出力format（RGBA8／RGBA16F）と、通常／加算の合成ごとです。
+            std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4>
+                pipelineStates;
+            std::uint64_t generation{};
+            std::string error;
+            std::chrono::steady_clock::time_point nextCheck{};
+            std::filesystem::file_time_type writeTime{};
+            bool observed{};
+            bool forceReload{};
+            bool sourceExists{};
+        };
+
+        struct ParticleGeometry final
+        {
+            D3D12_VERTEX_BUFFER_VIEW vertexView{};
+            D3D12_INDEX_BUFFER_VIEW indexView{};
+            UINT indexCount{};
+        };
+
+        static void RequireCompleteParticleQuads(
+            const LamaPon::ParticleDrawRequest& request)
+        {
+            constexpr std::size_t maximumParticleCount = 4096u;
+            if (request.vertices.size() % 4u != 0u
+                || request.vertices.size() > maximumParticleCount * 4u)
+            {
+                throw std::invalid_argument(
+                    "Particle draw requests require complete quads within "
+                    "the service capacity.");
+            }
+        }
+
+        // D3D11のPrimitiveBatch::DrawQuadと同じく、4頂点のquadを2枚の
+        // 三角形へ分けてframe uploadへ積みます。
+        [[nodiscard]] ParticleGeometry UploadParticleGeometry(
+            const LamaPon::ParticleDrawRequest& request)
+        {
+            const auto quadCount = request.vertices.size() / 4u;
+            const auto indexCount = quadCount * 6u;
+            const auto vertexBytes = static_cast<std::uint64_t>(
+                request.vertices.size_bytes());
+            const auto indexBytes = static_cast<std::uint64_t>(
+                indexCount * sizeof(std::uint32_t));
+            const auto vertexUpload = m_backend->AllocateFrameUpload(
+                vertexBytes,
+                alignof(LamaPon::ParticleRenderVertex));
+            const auto indexUpload = m_backend->AllocateFrameUpload(
+                indexBytes,
+                alignof(std::uint32_t));
+            std::memcpy(
+                vertexUpload.data,
+                request.vertices.data(),
+                request.vertices.size_bytes());
+            auto* indices = reinterpret_cast<std::uint32_t*>(indexUpload.data);
+            for (std::size_t quad{}; quad < quadCount; ++quad)
+            {
+                const auto first = static_cast<std::uint32_t>(quad * 4u);
+                const auto offset = quad * 6u;
+                indices[offset] = first;
+                indices[offset + 1u] = first + 1u;
+                indices[offset + 2u] = first + 2u;
+                indices[offset + 3u] = first;
+                indices[offset + 4u] = first + 2u;
+                indices[offset + 5u] = first + 3u;
+            }
+            ParticleGeometry geometry;
+            geometry.vertexView = {
+                vertexUpload.gpuAddress,
+                static_cast<UINT>(vertexBytes),
+                static_cast<UINT>(sizeof(LamaPon::ParticleRenderVertex)) };
+            geometry.indexView = {
+                indexUpload.gpuAddress,
+                static_cast<UINT>(indexBytes),
+                DXGI_FORMAT_R32_UINT };
+            geometry.indexCount = static_cast<UINT>(indexCount);
+            return geometry;
+        }
+
+        [[nodiscard]] LamaPon::D3D12Backend::FrameUploadAllocation
+            UploadParticleViewProjection(
+                const LamaPon::ParticleDrawRequest& request)
+        {
+            DirectX::XMFLOAT4X4 viewProjection{};
+            DirectX::XMStoreFloat4x4(
+                &viewProjection,
+                DirectX::XMMatrixMultiply(
+                    DirectX::XMLoadFloat4x4(&request.view),
+                    DirectX::XMLoadFloat4x4(&request.projection)));
+            const auto upload = m_backend->AllocateFrameUpload(
+                sizeof(viewProjection),
+                D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+            std::memcpy(upload.data, &viewProjection, sizeof(viewProjection));
+            return upload;
+        }
+
+        // D3D11のApplyCustomPixelShaderと同じく、保存を250ミリ秒ごとに
+        // 確かめて作り直し、失敗したShaderは残しません。
+        [[nodiscard]] CustomParticleShaderEntry& PrepareCustomParticleShader(
+            LamaPon::AssetManager& assets,
+            const LamaPon::Detail::MaterialShaderSource& source)
+        {
+            auto& entry = m_customParticleShaders[source.cacheKey];
+            const auto now = std::chrono::steady_clock::now();
+            if (entry.observed && !entry.forceReload && now < entry.nextCheck)
+            {
+                return entry;
+            }
+            entry.nextCheck = now + std::chrono::milliseconds(250);
+            const bool archived = assets.IsArchived();
+            std::error_code fileError;
+            const bool sourceExists = assets.FileExists(source.path);
+            const auto writeTime = (sourceExists && !archived)
+                ? std::filesystem::last_write_time(source.path, fileError)
+                : std::filesystem::file_time_type{};
+            const bool changed = !entry.observed
+                || entry.forceReload
+                || entry.sourceExists != sourceExists
+                || (sourceExists
+                    && !archived
+                    && entry.writeTime != writeTime);
+            if (!changed)
+            {
+                return entry;
+            }
+            entry.observed = true;
+            entry.forceReload = false;
+            entry.sourceExists = sourceExists;
+            entry.writeTime = writeTime;
+            for (auto& pipeline : entry.pipelineStates)
+            {
+                pipeline.Reset();
+            }
+            if (!sourceExists)
+            {
+                entry.error = "Custom pixel shader file was not found: "
+                    + LamaPon::PathToUtf8(source.path);
+                entry.pixelShader.Reset();
+                return entry;
+            }
+            try
+            {
+                entry.pixelShader = LamaPon::CompileShaderCached(
+                    assets,
+                    source.path,
+                    "PSMain",
+                    "ps_5_0");
+                entry.generation = m_nextCustomParticleGeneration++;
+                entry.error.clear();
+            }
+            catch (const std::exception& exception)
+            {
+                entry.error = source.describeFailure
+                    ? source.describeFailure(exception.what())
+                    : std::string(exception.what());
+                entry.pixelShader.Reset();
+            }
+            return entry;
+        }
+
+        [[nodiscard]] ID3D12PipelineState* CustomParticlePipelineState(
+            CustomParticleShaderEntry& entry,
+            const bool additive)
+        {
+            const auto colorFormat = m_backend->ActiveColorFormat();
+            const std::size_t formatIndex = colorFormat
+                    == LamaPon::D3D12Backend::PrimaryColorFormat
+                ? 0u
+                : colorFormat == DXGI_FORMAT_R16G16B16A16_FLOAT
+                    ? 1u
+                    : throw std::invalid_argument(
+                        "The active DirectX 12 particle target format is "
+                        "unsupported.");
+            auto& pipeline = entry.pipelineStates[
+                formatIndex * 2u + (additive ? 1u : 0u)];
+            if (pipeline != nullptr)
+            {
+                return pipeline.Get();
+            }
+            static const std::array<D3D12_INPUT_ELEMENT_DESC, 3> inputs{ {
+                { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,
+                    offsetof(LamaPon::ParticleRenderVertex, position),
+                    D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+                { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0,
+                    offsetof(LamaPon::ParticleRenderVertex, color),
+                    D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+                { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0,
+                    offsetof(LamaPon::ParticleRenderVertex, textureCoordinate),
+                    D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+            } };
+            D3D12_GRAPHICS_PIPELINE_STATE_DESC description{};
+            description.pRootSignature = m_customParticleRootSignature.Get();
+            description.VS = {
+                m_customParticleVertexShader->GetBufferPointer(),
+                m_customParticleVertexShader->GetBufferSize() };
+            description.PS = {
+                entry.pixelShader->GetBufferPointer(),
+                entry.pixelShader->GetBufferSize() };
+            // D3D11と同じく通常／加算の合成、深度は読むだけ、カリングなしです。
+            description.BlendState = MakeParticleBlendDescription(additive);
+            description.SampleMask = std::numeric_limits<UINT>::max();
+            description.RasterizerState = MakeRasterizerDescription();
+            description.DepthStencilState = MakeDepthDescription(true, false);
+            description.InputLayout = {
+                inputs.data(),
+                static_cast<UINT>(inputs.size()) };
+            description.PrimitiveTopologyType =
+                D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+            description.NumRenderTargets = 1;
+            description.RTVFormats[0] = colorFormat;
+            description.DSVFormat = m_backend->ActiveDepthFormat();
+            description.SampleDesc.Count = 1;
+            ThrowIfFailed(
+                m_backend->Device()->CreateGraphicsPipelineState(
+                    &description,
+                    IID_PPV_ARGS(pipeline.ReleaseAndGetAddressOf())),
+                "ID3D12Device::CreateGraphicsPipelineState(custom particle)");
+            return pipeline.Get();
         }
 
         [[nodiscard]] ID3D12PipelineState* ParticlePipelineState(
@@ -2743,7 +3268,8 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
             bool alphaBlend,
             bool depthTest,
             bool depthWrite,
-            bool wireframe)
+            bool wireframe,
+            bool instanced)
         {
             const auto colorFormat = m_backend->ActiveColorFormat();
             const std::size_t formatIndex = colorFormat
@@ -2754,7 +3280,8 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
                     : throw std::invalid_argument(
                         "The active DirectX 12 primitive target format is "
                         "unsupported.");
-            const std::size_t index = formatIndex * 6u
+            const std::size_t index = formatIndex * 12u
+                + (instanced ? 6u : 0u)
                 + (wireframe ? 3u : 0u)
                 + (!depthTest ? 2u : (alphaBlend ? 1u : 0u));
             auto& pipeline = m_pipelineStates[index];
@@ -2775,13 +3302,40 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
             } };
             D3D12_GRAPHICS_PIPELINE_STATE_DESC description{};
             description.pRootSignature = m_rootSignature.Get();
-            description.VS = { m_vertexShader->GetBufferPointer(), m_vertexShader->GetBufferSize() };
+            // D3D11のLamaPonLit.hlslのVSInstancedMainと同じ入力で、slot 1に
+            // world行列4行と色を80 bytesずつ並べます。
+            static const std::array<D3D12_INPUT_ELEMENT_DESC, 8>
+                instancedInputs{ {
+                inputs[0],
+                inputs[1],
+                inputs[2],
+                { "INSTANCE_TRANSFORM", 0, DXGI_FORMAT_R32G32B32A32_FLOAT,
+                    1, 0u, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+                { "INSTANCE_TRANSFORM", 1, DXGI_FORMAT_R32G32B32A32_FLOAT,
+                    1, 16u, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+                { "INSTANCE_TRANSFORM", 2, DXGI_FORMAT_R32G32B32A32_FLOAT,
+                    1, 32u, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+                { "INSTANCE_TRANSFORM", 3, DXGI_FORMAT_R32G32B32A32_FLOAT,
+                    1, 48u, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+                { "INSTANCE_COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT,
+                    1, 64u, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 }
+            } };
+            auto* const vertexShader = instanced
+                ? m_instancedVertexShader.Get()
+                : m_vertexShader.Get();
+            description.VS = { vertexShader->GetBufferPointer(), vertexShader->GetBufferSize() };
             description.PS = { m_pixelShader->GetBufferPointer(), m_pixelShader->GetBufferSize() };
             description.BlendState = MakeBlendDescription(alphaBlend || !depthTest);
             description.SampleMask = std::numeric_limits<UINT>::max();
             description.RasterizerState = MakeRasterizerDescription(wireframe);
             description.DepthStencilState = MakeDepthDescription(depthTest, depthWrite);
-            description.InputLayout = { inputs.data(), static_cast<UINT>(inputs.size()) };
+            description.InputLayout = instanced
+                ? D3D12_INPUT_LAYOUT_DESC{
+                    instancedInputs.data(),
+                    static_cast<UINT>(instancedInputs.size()) }
+                : D3D12_INPUT_LAYOUT_DESC{
+                    inputs.data(),
+                    static_cast<UINT>(inputs.size()) };
             description.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
             description.NumRenderTargets = 1;
             description.RTVFormats[0] = colorFormat;
@@ -2861,11 +3415,18 @@ float4 ParticlePixelShader(PixelInput input) : SV_Target
         Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSignature;
         Microsoft::WRL::ComPtr<ID3DBlob> m_vertexShader;
         Microsoft::WRL::ComPtr<ID3DBlob> m_pixelShader;
+        Microsoft::WRL::ComPtr<ID3DBlob> m_instancedVertexShader;
         Microsoft::WRL::ComPtr<ID3DBlob> m_particleVertexShader;
         Microsoft::WRL::ComPtr<ID3DBlob> m_particlePixelShader;
         std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4>
             m_particlePipelineStates;
-        std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 12>
+        Microsoft::WRL::ComPtr<ID3DBlob> m_customParticleVertexShader;
+        Microsoft::WRL::ComPtr<ID3D12RootSignature>
+            m_customParticleRootSignature;
+        std::unordered_map<std::filesystem::path, CustomParticleShaderEntry>
+            m_customParticleShaders;
+        std::uint64_t m_nextCustomParticleGeneration{ 1 };
+        std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 24>
             m_pipelineStates;
         std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4>
             m_depthOnlyPipelineStates;

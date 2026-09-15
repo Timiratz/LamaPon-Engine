@@ -53,6 +53,14 @@ namespace LamaPon
         DirectX::XMFLOAT2 textureCoordinate{};
     };
 
+    // インスタンス描画でslot 1へ並べる、D3D11のInstanceDataと同じ80 bytesです。
+    struct PrimitiveInstanceData final
+    {
+        DirectX::XMFLOAT4X4 world{};
+        DirectX::XMFLOAT4 color{ 1.0f, 1.0f, 1.0f, 1.0f };
+    };
+    static_assert(sizeof(PrimitiveInstanceData) == 80u);
+
     struct PrimitiveDirectionalLight final
     {
         DirectX::XMFLOAT3 direction{ 0.0f, -1.0f, 0.0f };
@@ -261,6 +269,9 @@ namespace LamaPon
         // Model Rendererのワイヤーフレーム表示です。DirectXTKの
         // CommonStates::Wireframeと同じく、カリングせず辺だけを描きます。
         bool wireframe{};
+        // 空でなければ、D3D11のLamaPonLit.hlslのVSInstancedMainと同じく、
+        // 各instanceのworldと色で一度に描きます（worldは単位行列にします）。
+        std::span<const PrimitiveInstanceData> instances;
     };
 
     // 高レベルrendererが生成済みの描画要求を実効APIへ送る同期serviceです。
