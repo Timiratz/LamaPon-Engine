@@ -1,5 +1,6 @@
 #include "LamaPon/LamaPon.h"
 #include "LamaPon/Editor/Editor.h"
+#include "LamaPon/Editor/PackageNativeDependencies.h"
 // セーフモードで、覚えているシェーダーの失敗を捨てるため。
 #include "LamaPon/Graphics/ShaderCompiler.h"
 
@@ -472,6 +473,13 @@ int WINAPI wWinMain(
         }
         else
         {
+            // パッケージが持ち込むSDKのDLLを、Game Moduleが解決
+            // できるようにします（assets/packages/<名前>/ の下に
+            // あるため、既定のDLL探索順では見つかりません）。
+            application.GameModule().SetNativeSearchDirectories(
+                LamaPon::PackageNativeSearchDirectories(
+                    LamaPon::ScanPackageNativeDependencies(
+                        assetRoot).packages));
             static_cast<void>(application.GameModule().Load(
                 projectRoot
                     / L".lamapon"

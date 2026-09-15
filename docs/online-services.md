@@ -488,6 +488,14 @@ LamaPon::SetDiscordPresenceBackendFactory(
   `true`へ戻った時点で送り直します。
 - LamaPonが渡す`DiscordActivity`は検証済みで、15秒間隔にまとめられています。
 
+アダプターは[パッケージ](packages.md)として配れます。`package.json`の
+`native`へSDKのインクルードパス・`.lib`・`.dll`を書けば、Game Moduleの
+ビルドとゲームの書き出しへ自動で反映されます。SDK本体は再配布できない
+ため、パッケージには空の`sdk/`フォルダーと配置手順だけを入れ、利用者が
+Discordから自分でダウンロードして置く形にします。詳しくは
+[ネイティブライブラリを含むパッケージ](packages.md#ネイティブライブラリを含むパッケージ)を
+参照してください。
+
 `LamaPon::Detail::FakeDiscordPresenceBackend`
 （`LamaPon/Online/DiscordPresenceTesting.h`）は、Discordを起動せずに
 Presenceの動作を確かめるためのbackendです。単体テストはこれだけで動くので、

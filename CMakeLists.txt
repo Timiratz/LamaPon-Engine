@@ -485,6 +485,8 @@ set(LAMAPON_EDITOR_SOURCES
     src/LamaPon/Editor/GameModuleBuilder.h
     src/LamaPon/Editor/PackageManager.cpp
     src/LamaPon/Editor/PackageManager.h
+    src/LamaPon/Editor/PackageNativeDependencies.cpp
+    src/LamaPon/Editor/PackageNativeDependencies.h
     src/LamaPon/Editor/ScriptEditorDetection.cpp
     src/LamaPon/Editor/ScriptEditorDetection.h
     src/LamaPon/Editor/ShaderProperties.cpp
@@ -1386,6 +1388,29 @@ if(BUILD_TESTING)
     set_tests_properties(
         OnlineServicesStateMachine
         PROPERTIES LABELS "online;state-machine"
+    )
+
+    add_executable(LamaPonPackageNativeDependencyTests
+        tests/PackageNativeDependencyTests.cpp
+    )
+    target_link_libraries(
+        LamaPonPackageNativeDependencyTests
+        PRIVATE
+            LamaPonRuntime
+    )
+    target_compile_options(
+        LamaPonPackageNativeDependencyTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_test(
+        NAME PackageNativeDependencies
+        COMMAND LamaPonPackageNativeDependencyTests
+    )
+    set_tests_properties(
+        PackageNativeDependencies
+        PROPERTIES LABELS "packages;native"
     )
 
     add_executable(LamaPonDiscordPresenceTests
