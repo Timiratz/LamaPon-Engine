@@ -293,9 +293,6 @@ namespace LamaPon
 
         MSG message{};
         auto previousTime = std::chrono::steady_clock::now();
-        const bool d3d12ExperimentalBootstrap =
-            m_graphics.IsD3D12ExperimentalBootstrap();
-
         while (message.message != WM_QUIT)
         {
             if (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
@@ -439,13 +436,10 @@ namespace LamaPon
                         }
                         // F1でデバッグオーバーレイを表示します
                         // （timeScaleの影響を受けないよう実時間で更新）。
-                        if (!d3d12ExperimentalBootstrap)
-                        {
-                            m_debugOverlay.Update(
-                                m_graphics,
-                                *m_scene,
-                                rawDeltaTime);
-                        }
+                        m_debugOverlay.Update(
+                            m_graphics,
+                            *m_scene,
+                            rawDeltaTime);
                     }
                     catch (const std::exception& exception)
                     {

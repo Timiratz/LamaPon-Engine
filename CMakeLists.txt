@@ -127,6 +127,7 @@ add_library(DearImGui STATIC
     third_party/imgui/imgui_tables.cpp
     third_party/imgui/imgui_widgets.cpp
     third_party/imgui/backends/imgui_impl_dx11.cpp
+    third_party/imgui/backends/imgui_impl_dx12.cpp
     third_party/imgui/backends/imgui_impl_win32.cpp
     # UIを記録するテストエンジンフックはimgui.objから参照されます。
     # LamaPonHubでもリンクできるよう、実装はこのターゲットに置きます。
@@ -150,7 +151,7 @@ target_compile_options(DearImGui PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/W3>
     $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
 )
-target_link_libraries(DearImGui PRIVATE d3d11)
+target_link_libraries(DearImGui PRIVATE d3d11 d3d12 dxgi)
 
 add_library(ImGuizmo STATIC
     third_party/ImGuizmo/src/ImGuizmo.cpp
@@ -304,6 +305,8 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Graphics/D3D11Backend.h
     src/LamaPon/Graphics/D3D12Backend.cpp
     src/LamaPon/Graphics/D3D12Backend.h
+    src/LamaPon/Graphics/D3D12DebugDrawingBackend.cpp
+    src/LamaPon/Graphics/D3D12DebugDrawingBackend.h
     src/LamaPon/Graphics/D3D12RenderServices.cpp
     src/LamaPon/Graphics/D3D12RenderServices.h
     src/LamaPon/Graphics/D3D12SpriteRenderer.cpp
@@ -495,10 +498,16 @@ set(LAMAPON_EDITOR_SOURCES
     src/LamaPon/Editor/EditorGuiRenderer.h
     src/LamaPon/Editor/D3D11EditorGuiRenderer.cpp
     src/LamaPon/Editor/D3D11EditorGuiRenderer.h
+    src/LamaPon/Editor/D3D12EditorGuiRenderer.cpp
+    src/LamaPon/Editor/D3D12EditorGuiRenderer.h
+    src/LamaPon/Graphics/GraphicsDeviceD3D12Access.cpp
+    src/LamaPon/Graphics/GraphicsDeviceD3D12Access.h
     src/LamaPon/Editor/EditorModelPreviewRenderer.cpp
     src/LamaPon/Editor/EditorModelPreviewRenderer.h
     src/LamaPon/Editor/D3D11EditorModelPreviewRenderer.cpp
     src/LamaPon/Editor/D3D11EditorModelPreviewRenderer.h
+    src/LamaPon/Editor/D3D12EditorModelPreviewRenderer.cpp
+    src/LamaPon/Editor/D3D12EditorModelPreviewRenderer.h
     src/LamaPon/Editor/EditorLayer.cpp
     src/LamaPon/Editor/EditorLayer.h
     src/LamaPon/Editor/EditorLayerAnimationTools.cpp

@@ -41,6 +41,7 @@ namespace LamaPon
     {
         class GraphicsDeviceApiResources;
         class GraphicsDeviceD3D11Access;
+        class GraphicsDeviceD3D12Access;
         struct GraphicsDeviceD3D11Resources;
         struct MaterialShaderDrawRequest;
         struct MaterialShaderPasses;
@@ -95,6 +96,7 @@ namespace LamaPon
     class ModelRendererComponent;
     class MeshRendererComponent;
     class ParticleSystemComponent;
+    class D3D12EditorModelPreviewRenderer;
     struct LitTextureRequest;
     struct ReflectionProbeEnvironment;
     struct ParticleDrawRequest;
@@ -219,9 +221,9 @@ namespace LamaPon
             std::uint32_t width,
             std::uint32_t height,
             RenderingApi requestedApi);
-        // GameがD3D12 Experimentalのpresentation bootstrapを明示的に
-        // 許可する入口です。通常のInitializeは完全なrendererを必要とする
-        // ため、D3D12設定でも従来どおりD3D11へフォールバックします。
+        // 対応済みの起動経路がD3D12 Experimental rendererを明示的に
+        // 許可する入口です。通常のInitializeは安全側でD3D11へ
+        // フォールバックします。
         void Initialize(
             HWND window,
             std::uint32_t width,
@@ -358,9 +360,13 @@ namespace LamaPon
         // 起動時の要求と生成されたBackendが異なる理由です。
         [[nodiscard]] RenderingApiFallbackReason
             RenderingApiFallback() const noexcept;
-        // trueはD3D12 ExperimentalでGameのScene更新と2D/UI描画を行う
-        // bootstrapです。3D Mesh/Modelとoffscreen描画はまだ利用できません。
+        // 旧名はGame Moduleのソース互換用です。trueならD3D12
+        // Experimental rendererが実際に起動しています。
         [[nodiscard]] bool IsD3D12ExperimentalBootstrap() const noexcept;
+        [[nodiscard]] bool IsD3D12ExperimentalRenderer() const noexcept
+        {
+            return IsD3D12ExperimentalBootstrap();
+        }
         [[nodiscard]] const FrameStatistics&
             FrameStats() const noexcept;
         [[nodiscard]] const GraphicsMemoryStatistics&
@@ -765,8 +771,10 @@ namespace LamaPon
         friend class ModelRendererComponent;
         friend class MeshRendererComponent;
         friend class ParticleSystemComponent;
+        friend class D3D12EditorModelPreviewRenderer;
         friend class SkeletalModel;
         friend class Detail::GraphicsDeviceD3D11Access;
+        friend class Detail::GraphicsDeviceD3D12Access;
         friend struct Detail::GraphicsDeviceD3D11Resources;
         friend class Detail::SpriteRenderPassState;
 

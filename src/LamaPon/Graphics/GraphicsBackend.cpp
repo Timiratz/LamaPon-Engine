@@ -36,7 +36,7 @@ namespace LamaPon
         case RenderingApi::DirectX12Experimental:
             if (profile
                 == GraphicsStartupProfile::
-                    AllowD3D12ExperimentalBootstrap)
+                    AllowD3D12ExperimentalRenderer)
             {
                 return {
                     RenderingApi::DirectX12Experimental,

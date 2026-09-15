@@ -6,6 +6,8 @@
 #include "LamaPon/Components/UIRectTransformComponent.h"
 #include "LamaPon/Components/UIScrollViewComponent.h"
 #include "LamaPon/Core/DebugOverlay.h"
+#include "LamaPon/Core/Log.h"
+#include "LamaPon/Graphics/DebugRenderer.h"
 #include "LamaPon/Graphics/EnvironmentSettings.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Graphics/GraphicsDeviceD3D11Access.h"
@@ -371,7 +373,11 @@ namespace
             LamaPon::GraphicsTextureViewDescription{ 0, 1 });
         auto* const d3d11View =
             D3D11Access::TryResolveD3D11ShaderResourceView(graphics, view);
-        Require(d3d11View != nullptr,
+        Require(
+            graphics.IsGraphicsViewCurrent(view)
+                && (graphics.ActiveRenderingApi()
+                        != LamaPon::RenderingApi::DirectX11
+                    || d3d11View != nullptr),
             "Editor GUI test texture view creation failed");
 
         LamaPon::TextureResourceSnapshot resources;
@@ -4029,6 +4035,269 @@ namespace
         Require(ImGui::GetIO().BackendRendererUserData == nullptr,
             "Editor GUI renderer destructor must release backend data");
     }
+
+    void CheckD3D12GuiLifecycle()
+    {
+        HiddenWindow window;
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            Width,
+            Height,
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::
+                AllowD3D12ExperimentalBootstrap);
+        if (graphics.ActiveRenderingApi()
+            != LamaPon::RenderingApi::DirectX12Experimental)
+        {
+            const auto entries = LamaPon::Logger::Instance().Snapshot();
+            std::string message{
+                "DirectX 12 editor GUI test did not activate DirectX 12" };
+            for (const auto& entry : entries)
+            {
+                message += "\n";
+                message += entry.message;
+            }
+            throw std::runtime_error(message);
+        }
+        Require(
+            graphics.ActiveRenderingApi()
+                == LamaPon::RenderingApi::DirectX12Experimental,
+            "DirectX 12 editor GUI test did not activate DirectX 12");
+
+        ImGuiContextScope imguiContext;
+        auto renderer = LamaPon::CreateEditorGuiRenderer(
+            graphics.ActiveRenderingApi());
+        Require(
+            renderer != nullptr
+                && renderer->Api()
+                    == LamaPon::RenderingApi::DirectX12Experimental
+                && !renderer->IsInitialized(),
+            "DirectX 12 editor GUI factory returned an invalid renderer");
+        renderer->Initialize(graphics);
+        Require(
+            renderer->IsInitialized()
+                && ImGui::GetIO().BackendRendererUserData != nullptr,
+            "DirectX 12 Dear ImGui backend did not initialize");
+        RequireThrowsExactly<std::logic_error>(
+            [&] { renderer->Initialize(graphics); },
+            "DirectX 12 editor GUI renderer accepted duplicate initialization");
+        RequireThrowsExactly<std::logic_error>(
+            [&]
+            {
+                graphics.Initialize(
+                    window.Get(),
+                    Width,
+                    Height,
+                    LamaPon::RenderingApi::DirectX11);
+            },
+            "DirectX 12 editor GUI renderer did not hold a graphics lease");
+
+        constexpr float clearColor[]{ 0.0f, 0.0f, 0.0f, 1.0f };
+        graphics.BeginFrame(clearColor);
+        const std::array debugLinePoints{
+            DirectX::XMFLOAT3{ -0.8f, 0.0f, 0.0f },
+            DirectX::XMFLOAT3{ 0.8f, 0.0f, 0.0f }
+        };
+        graphics.Debug().DrawLines(
+            debugLinePoints,
+            DirectX::XMVectorSet(1.0f, 0.1f, 0.05f, 1.0f),
+            DirectX::XMMatrixIdentity(),
+            DirectX::XMMatrixIdentity());
+        std::uint32_t capturedWidth{};
+        std::uint32_t capturedHeight{};
+        const auto debugPixels = graphics.CaptureBackBuffer(
+            capturedWidth,
+            capturedHeight);
+        graphics.EndFrame();
+        std::size_t debugLinePixelCount{};
+        for (std::uint32_t y = Height / 2u - 2u;
+            y <= Height / 2u + 2u;
+            ++y)
+        {
+            for (std::uint32_t x{}; x < Width; ++x)
+            {
+                const auto offset =
+                    (static_cast<std::size_t>(y) * Width + x) * 4u;
+                if (debugPixels[offset] > 180u
+                    && debugPixels[offset + 1u] < 80u
+                    && debugPixels[offset + 2u] < 80u)
+                {
+                    ++debugLinePixelCount;
+                }
+            }
+        }
+        Require(
+            debugLinePixelCount >= Width / 3u,
+            "DirectX 12 debug renderer did not draw the editor line");
+
+        auto texture = CreateSolidTexture(
+            graphics,
+            { 230u, 40u, 20u, 255u });
+        renderer->NewFrame();
+        ImGui::NewFrame();
+        DrawImageWindow(
+            "D3D12Image",
+            ImVec2{ 8.0f, 8.0f },
+            renderer->TextureReference(texture));
+        ImGui::Render();
+
+        graphics.BeginFrame(clearColor);
+        renderer->RenderDrawData(ImGui::GetDrawData());
+        const auto pixels = graphics.CaptureBackBuffer(
+            capturedWidth,
+            capturedHeight);
+        Require(
+            capturedWidth == Width
+                && capturedHeight == Height
+                && pixels.size()
+                    == static_cast<std::size_t>(Width) * Height * 4u,
+            "DirectX 12 editor GUI capture returned an invalid image");
+        RequirePixelNear(
+            pixels,
+            20u,
+            20u,
+            { 230u, 40u, 20u },
+            "DirectX 12 editor GUI did not sample the texture asset");
+        graphics.EndFrame();
+
+        graphics.Assets().SetAssetRoot(
+            std::filesystem::path{ LAMAPON_TEST_ASSET_DIR });
+        const auto modelPath =
+            std::filesystem::path{ LAMAPON_TEST_ASSET_DIR }
+            / "models"
+            / "arrow.cmo";
+        const auto model = graphics.Assets().LoadModel(modelPath);
+        Require(
+            model != nullptr
+                && model->skeletalModel != nullptr
+                && model->hasLocalBounds,
+            "The DirectX 12 editor preview model did not load neutral "
+            "geometry");
+        auto modelRenderer =
+            LamaPon::CreateEditorModelPreviewRenderer(
+                graphics.ActiveRenderingApi(),
+                graphics);
+        Require(
+            modelRenderer != nullptr
+                && modelRenderer->Api()
+                    == LamaPon::RenderingApi::DirectX12Experimental,
+            "DirectX 12 model preview factory returned an invalid renderer");
+        const LamaPon::LitMaterial previewMaterial{
+            DirectX::XMFLOAT4{ 0.15f, 0.82f, 1.0f, 1.0f },
+            {},
+            {},
+            0.8f
+        };
+        const auto identity = DirectX::XMMatrixIdentity();
+        const LamaPon::ModelAsset emptyModel;
+        RequireThrowsExactly<std::invalid_argument>(
+            [&]
+            {
+                modelRenderer->DrawModel(
+                    emptyModel,
+                    identity,
+                    identity,
+                    identity,
+                    previewMaterial,
+                    true);
+            },
+            "DirectX 12 model preview accepted an empty model");
+
+        const auto& bounds = model->localBounds;
+        const DirectX::XMFLOAT3 modelCenter{
+            (bounds.minimum.x + bounds.maximum.x) * 0.5f,
+            (bounds.minimum.y + bounds.maximum.y) * 0.5f,
+            (bounds.minimum.z + bounds.maximum.z) * 0.5f
+        };
+        const float modelSpan = std::max({
+            bounds.maximum.x - bounds.minimum.x,
+            bounds.maximum.y - bounds.minimum.y,
+            bounds.maximum.z - bounds.minimum.z,
+            0.1f
+        });
+        const float modelDistance = modelSpan * 3.0f + 1.0f;
+        const auto modelView = DirectX::XMMatrixLookAtLH(
+            DirectX::XMVectorSet(
+                modelCenter.x + modelDistance,
+                modelCenter.y + modelDistance * 0.75f,
+                modelCenter.z - modelDistance,
+                1.0f),
+            DirectX::XMLoadFloat3(&modelCenter),
+            DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f));
+        const auto modelProjection = DirectX::XMMatrixOrthographicLH(
+            modelSpan * 2.2f,
+            modelSpan * 2.2f,
+            0.01f,
+            modelDistance * 4.0f);
+        LamaPon::RenderTarget modelTarget;
+        graphics.ResizeOffscreenTarget(modelTarget, 64u, 64u);
+        constexpr float modelClear[]{ 0.035f, 0.045f, 0.06f, 1.0f };
+        graphics.BeginOffscreenTarget(modelTarget, modelClear);
+        modelRenderer->DrawModel(
+            *model,
+            identity,
+            modelView,
+            modelProjection,
+            previewMaterial,
+            true);
+        graphics.PublishOffscreenTarget(modelTarget);
+
+        renderer->NewFrame();
+        ImGui::NewFrame();
+        DrawImageWindow(
+            "D3D12ModelPreview",
+            ImVec2{ 28.0f, 8.0f },
+            renderer->DisplayTextureReference(modelTarget));
+        ImGui::Render();
+        graphics.BeginFrame(clearColor);
+        renderer->RenderDrawData(ImGui::GetDrawData());
+        const auto modelPixels = graphics.CaptureBackBuffer(
+            capturedWidth,
+            capturedHeight);
+        graphics.EndFrame();
+
+        std::size_t modelPixelCount{};
+        constexpr std::array<int, 3> expectedModelClear{ 9, 11, 15 };
+        for (std::uint32_t y = 10u; y < 54u; ++y)
+        {
+            for (std::uint32_t x = 30u; x < 66u; ++x)
+            {
+                const auto offset =
+                    (static_cast<std::size_t>(y) * Width + x) * 4u;
+                const int difference =
+                    std::abs(static_cast<int>(modelPixels[offset])
+                        - expectedModelClear[0])
+                    + std::abs(static_cast<int>(modelPixels[offset + 1u])
+                        - expectedModelClear[1])
+                    + std::abs(static_cast<int>(modelPixels[offset + 2u])
+                        - expectedModelClear[2]);
+                if (difference > 20)
+                {
+                    ++modelPixelCount;
+                }
+            }
+        }
+        Require(
+            modelPixelCount >= 8u,
+            "The DirectX 12 model preview renderer did not draw the model");
+
+        renderer->Shutdown();
+        Require(
+            !renderer->IsInitialized()
+                && ImGui::GetIO().BackendRendererUserData == nullptr,
+            "DirectX 12 editor GUI shutdown retained backend data");
+        renderer->Shutdown();
+        graphics.Initialize(
+            window.Get(),
+            Width,
+            Height,
+            LamaPon::RenderingApi::DirectX11);
+        Require(
+            graphics.ActiveRenderingApi()
+                == LamaPon::RenderingApi::DirectX11,
+            "DirectX 12 editor GUI shutdown retained its graphics lease");
+    }
 }
 
 static_assert(!std::is_copy_constructible_v<
@@ -4211,10 +4480,27 @@ int main()
             LamaPon::RenderingApi::Auto,
             graphics,
             "Model preview factory must reject unresolved Auto");
-        RequireModelPreviewFactoryRejected(
-            LamaPon::RenderingApi::DirectX12Experimental,
-            graphics,
-            "Model preview factory must reject unimplemented DirectX 12");
+        const auto uninitializedD3D12ModelPreview =
+            LamaPon::CreateEditorModelPreviewRenderer(
+                LamaPon::RenderingApi::DirectX12Experimental,
+                graphics);
+        Require(
+            uninitializedD3D12ModelPreview != nullptr
+                && uninitializedD3D12ModelPreview->Api()
+                    == LamaPon::RenderingApi::DirectX12Experimental,
+            "Model preview factory must create a DirectX 12 renderer");
+        RequireThrowsExactly<std::logic_error>(
+            [&]
+            {
+                uninitializedD3D12ModelPreview->DrawModel(
+                    emptyModel,
+                    identity,
+                    identity,
+                    identity,
+                    previewMaterial,
+                    true);
+            },
+            "DirectX 12 model preview must reject an uninitialized device");
         RequireModelPreviewFactoryRejected(
             static_cast<LamaPon::RenderingApi>(-1),
             graphics,
@@ -4247,14 +4533,31 @@ int main()
         RequireFactoryRejected(
             LamaPon::RenderingApi::Auto,
             "Editor GUI factory must reject unresolved Auto");
-        RequireFactoryRejected(
-            LamaPon::RenderingApi::DirectX12Experimental,
-            "Editor GUI factory must reject unimplemented DirectX 12");
+        const auto uninitializedD3D12Renderer =
+            LamaPon::CreateEditorGuiRenderer(
+                LamaPon::RenderingApi::DirectX12Experimental);
+        Require(
+            uninitializedD3D12Renderer != nullptr
+                && uninitializedD3D12Renderer->Api()
+                    == LamaPon::RenderingApi::DirectX12Experimental
+                && !uninitializedD3D12Renderer->IsInitialized(),
+            "Editor GUI factory must create a DirectX 12 renderer");
+        {
+            ImGuiContextScope imguiContext;
+            RequireThrowsExactly<std::invalid_argument>(
+                [&]
+                {
+                    uninitializedD3D12Renderer->Initialize(graphics);
+                },
+                "DirectX 12 editor GUI initialization must reject an "
+                "uninitialized device");
+        }
         RequireFactoryRejected(
             static_cast<LamaPon::RenderingApi>(-1),
             "Editor GUI factory must reject an unknown rendering API");
 
         CheckD3D11Lifecycle();
+        CheckD3D12GuiLifecycle();
     }
     catch (const std::exception& error)
     {

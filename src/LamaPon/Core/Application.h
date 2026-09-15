@@ -37,9 +37,9 @@ namespace LamaPon
         LAMAPON_API void Initialize(
             HINSTANCE instance,
             RenderingApi requestedApi);
-        // FullRenderer は従来のD3D11 renderer一式を初期化する既定の
-        // 起動プロファイルです。D3D12 Experimentalのbootstrapだけは、
-        // 描画バックエンドの最小経路を検証するため明示的に選びます。
+        // FullRendererは安全側でD3D11を選ぶ既定プロファイルです。
+        // 対応済みのGame／EditorだけがD3D12 Experimental rendererを
+        // 明示的に許可します。
         LAMAPON_API void Initialize(
             HINSTANCE instance,
             RenderingApi requestedApi,

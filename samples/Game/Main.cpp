@@ -65,22 +65,21 @@ int WINAPI wWinMain(
             settings.windowHeight,
             settings.gameName);
 
-        // D3D12 Experimentalは、D3D11前提の3D/offscreen rendererを
-        // 作らずに実シーンのSimulationと2D/UI描画を動かす起動プロファイルです。
+        // D3D12 Experimentalの実シーンrendererを許可します。
         // 実際にD3D12 backendが作れない環境ではGraphicsDeviceがD3D11へ
         // フォールバックするため、その場合は従来の完全なゲームを起動します。
         const auto graphicsStartupProfile =
             settings.graphics.renderingApi
                 == LamaPon::RenderingApi::DirectX12Experimental
-            ? LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap
+            ? LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalRenderer
             : LamaPon::GraphicsStartupProfile::FullRenderer;
         // 描画APIはデバイス初期化時にだけ選択し、実行中は切り替えません。
         application.Initialize(
             instance,
             settings.graphics.renderingApi,
             graphicsStartupProfile);
-        const bool d3d12ExperimentalBootstrap =
-            application.Graphics().IsD3D12ExperimentalBootstrap();
+        const bool d3d12ExperimentalRenderer =
+            application.Graphics().IsD3D12ExperimentalRenderer();
         // Game Moduleが存在するのに互換性などで読めなかった場合、Sceneを
         // 続けて表示すると「背景だけで止まった」ように見えます。配布ゲーム
         // では起動を止め、既にApplicationが記録した具体的な理由を画面へ
@@ -129,7 +128,7 @@ int WINAPI wWinMain(
                     }
                 }
             }
-            if (d3d12ExperimentalBootstrap)
+            if (d3d12ExperimentalRenderer)
             {
                 // D3D12でも実シーンの初期化・Script更新・最小3D・2D/UI
                 // 描画を無人起動検証に含めます。

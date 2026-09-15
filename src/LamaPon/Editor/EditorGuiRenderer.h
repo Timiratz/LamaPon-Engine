@@ -48,7 +48,6 @@ namespace LamaPon
     };
 
     // activeApiにはGraphicsDeviceで解決済みの実効APIを渡します。
-    // 現段階で生成できるEditor GUI rendererはDirectX 11だけです。
     [[nodiscard]] std::unique_ptr<EditorGuiRenderer>
         CreateEditorGuiRenderer(RenderingApi activeApi);
 }

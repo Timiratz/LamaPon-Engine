@@ -4,6 +4,7 @@
 
 ### 描画API設定
 
+- DirectX 12 ExperimentalでLamaPon Editorを起動できるようにし、Dear ImGui、Viewport／アセットのテクスチャ表示、モデルプレビュー、grid／bounds／light gizmoのデバッグラインをD3D12へ対応。D3D12初期化に失敗した場合は従来どおりD3D11へ安全にフォールバックする。
 - DirectX 12 Experimentalの有効化、起動時の選択、対応範囲、D3D11互換の考え方、既知の差、フォールバックと切り分け手順をまとめた利用者向けガイドを追加。
 - Project SettingsのGraphicsへ`Auto` / `DirectX 11` / `DirectX 12 Experimental`の選択を追加。既定は従来どおりDirectX 11で、変更は次回起動時に反映する。
 - Editor / CLIなど完全なrendererが必要な起動経路では、DirectX 12 Experimentalを選んでも安全にDirectX 11へフォールバックする。将来のD3D11 / D3D12バックエンド分離に備えて起動時の選択経路を追加。

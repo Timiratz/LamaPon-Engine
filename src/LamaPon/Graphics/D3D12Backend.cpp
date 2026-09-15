@@ -3,6 +3,7 @@
 #include "LamaPon/Core/Log.h"
 #include "LamaPon/Graphics/ClusteredLights.h"
 #include "LamaPon/Graphics/ClusteredLightsBackendState.h"
+#include "LamaPon/Graphics/D3D12DebugDrawingBackend.h"
 #include "LamaPon/Graphics/DebugRenderer.h"
 #include "LamaPon/Graphics/DxgiTextureLayout.h"
 #include "LamaPon/Graphics/Lighting.h"
@@ -138,20 +139,6 @@ namespace
         return name;
     }
 
-    // D3D12 bootstrapではdebug line用のpipelineをまだ持たないため、
-    // GraphicsDeviceのDebugRenderer契約だけを満たすno-op sinkです。
-    // Scene/UI描画を有効にするものではありません。
-    class D3D12BootstrapDebugDrawingBackend final
-        : public LamaPon::DebugDrawingBackend
-    {
-    public:
-        void DrawLines(
-            std::span<const LamaPon::DebugLine>,
-            const DirectX::XMFLOAT4X4&,
-            const DirectX::XMFLOAT4X4&) override
-        {
-        }
-    };
 }
 
 namespace LamaPon::Detail
@@ -2527,6 +2514,35 @@ namespace LamaPon
         return m_resourceDomain != nullptr
             ? m_resourceDomain->ShaderResourceHeap()
             : nullptr;
+    }
+
+    D3D12Backend::ExternalShaderResourceDescriptor
+        D3D12Backend::AllocateExternalShaderResourceDescriptor()
+    {
+        if (!IsInitialized() || m_resourceDomain == nullptr)
+        {
+            throw std::logic_error(
+                "Allocating a DirectX 12 shader resource descriptor "
+                "requires an initialized backend.");
+        }
+        const auto slot = m_resourceDomain->AllocateShaderResourceSlot();
+        return ExternalShaderResourceDescriptor{
+            m_resourceDomain->ShaderResourceCpuHandle(slot),
+            m_resourceDomain->ShaderResourceGpuHandle(slot),
+            slot
+        };
+    }
+
+    void D3D12Backend::ReleaseExternalShaderResourceDescriptor(
+        const std::uint32_t slot) noexcept
+    {
+        if (m_resourceDomain != nullptr
+            && slot < Detail::D3D12ResourceDomain::ShaderResourceCapacity)
+        {
+            // ImGuiのfont textureを参照するcommand listが実行中でも、
+            // 次のframe fenceが完了するまではslotを再利用しません。
+            m_resourceDomain->Retire(nullptr, slot);
+        }
     }
 
     std::optional<D3D12Backend::ShaderResourceBinding>
@@ -5237,7 +5253,7 @@ namespace LamaPon
                 "CreateDebugDrawingBackend requires an initialized "
                 "D3D12 backend.");
         }
-        return std::make_unique<D3D12BootstrapDebugDrawingBackend>();
+        return std::make_unique<D3D12DebugDrawingBackend>(*this);
     }
 
     GraphicsTextureHandle D3D12Backend::CreateSolidRgba8Texture(

@@ -182,9 +182,24 @@ namespace LamaPon
         static constexpr DXGI_FORMAT ShadowDepthFormat =
             DXGI_FORMAT_D32_FLOAT;
 
+        struct ExternalShaderResourceDescriptor final
+        {
+            D3D12_CPU_DESCRIPTOR_HANDLE cpu{};
+            D3D12_GPU_DESCRIPTOR_HANDLE gpu{};
+            std::uint32_t slot{};
+        };
+
         [[nodiscard]] ID3D12Device* Device() const noexcept
         {
             return m_device.Get();
+        }
+        [[nodiscard]] ID3D12CommandQueue* CommandQueue() const noexcept
+        {
+            return m_commandQueue.Get();
+        }
+        [[nodiscard]] std::size_t FramesInFlight() const noexcept
+        {
+            return BackBufferCount;
         }
         // frame command listを開いてprimary outputをbindし、記録先を返します。
         [[nodiscard]] ID3D12GraphicsCommandList* BeginFrameCommands();
@@ -204,6 +219,13 @@ namespace LamaPon
         }
         [[nodiscard]] ID3D12DescriptorHeap*
             ShaderResourceDescriptorHeap() const noexcept;
+        // Dear ImGuiなどBackend外の内部rendererが、同じshader-visible
+        // heapへ自分のSRVを作るためのdescriptorです。返したslotは必ず
+        // ReleaseExternalShaderResourceDescriptorへ返します。
+        [[nodiscard]] ExternalShaderResourceDescriptor
+            AllocateExternalShaderResourceDescriptor();
+        void ReleaseExternalShaderResourceDescriptor(
+            std::uint32_t slot) noexcept;
         // 別Backend世代やShaderResource以外のviewはnulloptです。
         [[nodiscard]] std::optional<ShaderResourceBinding>
             TryResolveShaderResource(

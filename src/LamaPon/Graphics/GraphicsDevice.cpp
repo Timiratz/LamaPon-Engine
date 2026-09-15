@@ -127,7 +127,7 @@ namespace LamaPon
         return IsInitialized()
             && m_state->m_graphicsStartupProfile
                 == GraphicsStartupProfile::
-                    AllowD3D12ExperimentalBootstrap
+                    AllowD3D12ExperimentalRenderer
             && ActiveRenderingApi()
                 == RenderingApi::DirectX12Experimental;
     }
@@ -469,7 +469,7 @@ namespace LamaPon
                     "ティアリング許可が使えない環境です。VSyncを切っても"
                     "モニターのリフレッシュレートがFPSの上限になります。");
             }
-            const bool d3d12Bootstrap = selection.activeApi
+            const bool d3d12ExperimentalRenderer = selection.activeApi
                 == RenderingApi::DirectX12Experimental;
             // Spriteのtexture無しdrawが使うfallbackです。D3D12でも同じ
             // API非依存handleで作ります。
@@ -488,22 +488,14 @@ namespace LamaPon
                 m_state->m_graphicsSettings);
             m_state->m_sceneCompositionTarget =
                 std::make_unique<RenderTarget>();
-            if (d3d12Bootstrap)
+            if (d3d12ExperimentalRenderer)
             {
                 Logger::Instance().Warning(
-                    "DirectX 12 Experimental bootstrapで起動しています。"
-                    "現在はclear / present / resize / capture、texture、"
-                    "Sceneの2D/UI、基本3D Mesh/Model、shadow map生成に"
-                    "対応しています。方向光、Spot Light、Point Light"
-                    "のshadow sampling、基本HDR offscreen合成にも"
-                    "対応し、TAA、Depth of Field、カメラMotion Blur、"
-                    "Bloom、自動露出、カラーグレーディング、Screen "
-                    "Outline、FXAA、Screen Space Lens Flareも適用します。"
-                    "SSAOとSSRも基本3Dの環境光へ反映します。Volumetric "
-                    "Light、Material／Screen／Compute／Particleのcustom "
-                    "shader、Mesh／Modelのインスタンス描画にも対応しています。"
-                    "実験的なrendererのため、DirectX 11と一致しない拡張機能が"
-                    "残る場合があります。");
+                    "DirectX 12 Experimental rendererで起動しています。"
+                    "GameとEditorのScene、2D/UI、3D Mesh/Model、shadow、"
+                    "HDR/post-process、custom shader、particle、debug "
+                    "drawingに対応しています。実験的なrendererのため、"
+                    "DirectX 11と一致しない拡張機能が残る場合があります。");
             }
         };
 
@@ -520,7 +512,7 @@ namespace LamaPon
                 == RenderingApi::DirectX12Experimental
                 && profile
                     == GraphicsStartupProfile::
-                        AllowD3D12ExperimentalBootstrap;
+                        AllowD3D12ExperimentalRenderer;
             if (!retryWithD3D11)
             {
                 throw;
@@ -528,7 +520,7 @@ namespace LamaPon
 
             Logger::Instance().Warning(
                 std::string(
-                    "DirectX 12 Experimental bootstrapを開始できないため、"
+                    "DirectX 12 Experimental rendererを開始できないため、"
                     "DirectX 11へフォールバックします: ")
                 + exception.what());
             // backendだけを差し替えず、AssetManager/DebugRenderer/Profilerが
