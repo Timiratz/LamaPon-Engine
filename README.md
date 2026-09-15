@@ -74,7 +74,7 @@ ctest --preset windows-release
 - [入門チュートリアル](docs/getting-started.md) — 最初のゲームを30〜60分で
 - [学習ロードマップ](docs/learning-path.md) — C++とゲーム制作を学ぶ順序
 - [エディター](docs/editor.md) / [C++スクリプティング](docs/scripting.md)
-- [グラフィックス](docs/graphics.md) / [物理](docs/physics.md) / [UIと2D](docs/ui-2d.md) / [Animation](docs/animation.md)
+- [グラフィックス](docs/graphics.md) / [DirectX 12 Experimental](docs/directx12.md) / [物理](docs/physics.md) / [UIと2D](docs/ui-2d.md) / [Animation](docs/animation.md)
 - [SceneとPrefab](docs/scenes.md) / [オーディオ](docs/audio.md) / [入力](docs/input.md) / [NavMesh](docs/navigation.md)
 - [プロジェクト管理とビルド](docs/project.md)
 - [WebGLエクスポート](docs/web-export.md) — 通常のLamaPonプロジェクトをC++／Wasm／WebGLの単一HTMLへ変換
@@ -85,7 +85,7 @@ ctest --preset windows-release
 - **開発環境** — LamaPon Hub、ドッキング対応Editor、エディターなしのGame Runtime、CLI
 - **ゲーム構成** — `Scene`、`GameObject`、`Component`、親子Transform、Prefab、Undo／Redo
 - **C++スクリプト** — Game Module、Hot Reload、ライフサイクル、タイマー、コルーチン、イベント
-- **3D描画** — Direct3D 11、PBRマテリアル、各種ライトと影、glTF／GLB／FBX、スキニング、LOD、ポストエフェクト
+- **3D描画** — Direct3D 11／Direct3D 12 Experimental、PBRマテリアル、各種ライトと影、glTF／GLB／FBX、スキニング、LOD、ポストエフェクト
 - **2DとUI** — Sprite、Tilemap、Particle、Canvas、各種UIウィジェット、日本語テキストとIME入力
 - **物理と移動** — 2D／3D Collider、Rigidbody、CCD、Joint、Raycast、Character Controller、NavMesh
 - **アニメーションと音声** — Animation Clip、Animator Controller、WAV／OGG、3D音声、ストリーミング、ミキサー
