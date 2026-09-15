@@ -500,7 +500,10 @@ namespace LamaPon
                     "Bloom、自動露出、カラーグレーディング、Screen "
                     "Outline、FXAA、Screen Space Lens Flareも適用します。"
                     "SSAOとSSRも基本3Dの環境光へ反映します。Volumetric "
-                    "Lightにも対応し、custom shaderなど一部機能は未対応です。");
+                    "Light、Material／Screen／Compute／Particleのcustom "
+                    "shader、Mesh／Modelのインスタンス描画にも対応しています。"
+                    "実験的なrendererのため、DirectX 11と一致しない拡張機能が"
+                    "残る場合があります。");
             }
         };
 
