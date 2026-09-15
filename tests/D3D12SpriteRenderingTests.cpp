@@ -3226,6 +3226,10 @@ namespace
             "The 2D DDS parser accepted a cube texture as a flat image");
         auto arrayBytes = bgraBytes;
         WriteLittleEndian32(arrayBytes, 140u, 2u);
+        arrayBytes.insert(
+            arrayBytes.end(),
+            bgraPixels.begin(),
+            bgraPixels.end());
         bool rejectedArray{};
         try
         {
@@ -3238,7 +3242,45 @@ namespace
         }
         Require(
             rejectedArray,
-            "The 2D DDS parser accepted a DX10 texture array");
+            "The single-2D DDS parser accepted a DX10 texture array");
+        const auto arrayPrepared =
+            LamaPon::TextureLoader::PrepareDdsResourceData(arrayBytes);
+
+        std::vector<std::uint8_t> rgbaPixels;
+        for (std::size_t pixel{}; pixel < 16u; ++pixel)
+        {
+            rgbaPixels.insert(
+                rgbaPixels.end(),
+                { 40u, 170u, 230u, 255u });
+        }
+        auto volumeBytes = BuildDx10Dds(
+            DXGI_FORMAT_R8G8B8A8_UNORM,
+            rgbaPixels);
+        WriteLittleEndian32(volumeBytes, 24u, 2u);
+        WriteLittleEndian32(volumeBytes, 112u, 0x200000u);
+        WriteLittleEndian32(volumeBytes, 132u, 4u);
+        volumeBytes.insert(
+            volumeBytes.end(),
+            rgbaPixels.begin(),
+            rgbaPixels.end());
+        const auto volumePrepared =
+            LamaPon::TextureLoader::PrepareDdsResourceData(volumeBytes);
+        Require(
+            arrayPrepared.dimension
+                    == LamaPon::TextureLoader::
+                        PreparedDdsTextureDimension::Texture2DArray
+                && arrayPrepared.arraySize == 2u
+                && arrayPrepared.mipLevels == 1u
+                && arrayPrepared.subresources.size() == 2u
+                && volumePrepared.dimension
+                    == LamaPon::TextureLoader::
+                        PreparedDdsTextureDimension::Texture3D
+                && volumePrepared.depth == 2u
+                && volumePrepared.subresources.size() == 1u
+                && volumePrepared.subresources.front().bytes.size()
+                    == 128u,
+            "The DDS resource parser did not preserve array and volume "
+            "dimensions");
 
         HiddenWindow window{ CanvasWidth, CanvasHeight };
         LamaPon::GraphicsDevice graphics;
@@ -3271,6 +3313,18 @@ namespace
                 "A parsed DDS view was not created by the DirectX 12 "
                 "backend");
         }
+        const auto arrayView =
+            graphics.Assets().CreateTextureViewHandleFromMemory(
+                arrayBytes,
+                true);
+        const auto volumeView =
+            graphics.Assets().CreateTextureViewHandleFromMemory(
+                volumeBytes,
+                true);
+        Require(
+            graphics.IsGraphicsViewCurrent(arrayView)
+                && graphics.IsGraphicsViewCurrent(volumeView),
+            "DirectX 12 did not create DDS array and volume views");
 
         constexpr float clearColor[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
         graphics.BeginFrame(clearColor);
@@ -5032,6 +5086,113 @@ namespace
         return capture;
     }
 
+    // DDSの2D array、volume、cube arrayを、Material custom shaderの自由枠
+    // （t7〜t9）から読んだ画像をD3D11と比べます。左から2D arrayの2枚目、
+    // volumeの奥側の層、2個目のcubeの+Y面の色になります。
+    [[nodiscard]] Capture RenderDdsDimensionCapture(
+        const LamaPon::RenderingApi api,
+        const LamaPon::GraphicsStartupProfile profile)
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            api,
+            profile);
+        Require(
+            graphics.ActiveRenderingApi() == api,
+            "The DDS dimension capture did not start the requested rendering "
+            "API");
+        graphics.Assets().SetAssetRoot(LAMAPON_TEST_ASSET_DIR);
+        // D3D11の非同期compileは最初のフレームを標準Litで描くため止めます。
+        graphics.SetAsyncShaderCompilationEnabled(false);
+        const std::string apiName = api == LamaPon::RenderingApi::DirectX11
+            ? "DirectX 11"
+            : "DirectX 12";
+
+        LamaPon::Scene scene(graphics);
+        auto& cameraObject = scene.CreateGameObject("MainCamera");
+        cameraObject.GetTransform().position = { 0.0f, 0.0f, 2.2f };
+        auto& camera = cameraObject.AddComponent<LamaPon::CameraComponent>();
+        scene.SetMainCamera(camera);
+
+        const auto fixtures =
+            std::filesystem::path{ LAMAPON_TEST_ASSET_DIR }.parent_path()
+            / "tests/fixtures";
+        // カメラへ向いた横長の四角形です。三角形の並びを両APIで揃えるため
+        // Procedural Meshにします。
+        std::vector<LamaPon::ProceduralMeshVertex> vertices{
+            { { -1.5f, -0.5f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 1.0f } },
+            { { -1.5f, 0.5f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f } },
+            { { 1.5f, 0.5f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f } },
+            { { 1.5f, -0.5f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 1.0f } } };
+        std::vector<std::uint32_t> indices{ 0u, 1u, 2u, 0u, 2u, 3u };
+        auto& object = scene.CreateGameObject("DdsDimensions");
+        auto& mesh = object.AddComponent<LamaPon::MeshRendererComponent>(
+            LamaPon::PrimitiveShape::Plane,
+            DirectX::XMFLOAT4{ 1.0f, 1.0f, 1.0f, 1.0f });
+        mesh.SetProceduralMesh(std::move(vertices), std::move(indices));
+        mesh.SetShaderPath(fixtures / "dds-dimension-probe.hlsl");
+        mesh.SetCustomTexturePath(0, fixtures / "array-probe.dds");
+        mesh.SetCustomTexturePath(1, fixtures / "volume-probe.dds");
+        mesh.SetCustomTexturePath(2, fixtures / "cube-array-probe.dds");
+
+        constexpr float clearColor[4]{ 0.05f, 0.05f, 0.08f, 1.0f };
+        const auto render = [&]()
+        {
+            graphics.BeginFrame(clearColor);
+            graphics.BeginSceneComposition(clearColor);
+            scene.RenderMainCamera(
+                static_cast<float>(CanvasWidth) / CanvasHeight,
+                false,
+                graphics.SceneCompositionTarget());
+            graphics.EndSceneComposition(scene.PostProcessFrameData());
+            Capture frame;
+            frame.pixels = graphics.CaptureBackBuffer(frame.width, frame.height);
+            graphics.EndFrame();
+            return frame;
+        };
+        // 最初のフレームでtextureとShaderを読み込みます。
+        static_cast<void>(render());
+        const auto capture = render();
+        const std::string shaderError(mesh.ShaderError());
+
+        const auto pixel = [&](const std::uint32_t x)
+        {
+            const auto offset =
+                (static_cast<std::size_t>(CanvasHeight / 2u) * CanvasWidth
+                    + x) * 4u;
+            return std::array<int, 3>{
+                capture.pixels[offset],
+                capture.pixels[offset + 1u],
+                capture.pixels[offset + 2u] };
+        };
+        const auto slice = pixel(CanvasWidth * 5u / 16u);
+        const auto volume = pixel(CanvasWidth / 2u);
+        const auto cube = pixel(CanvasWidth * 11u / 16u);
+        const auto describe = [](const std::array<int, 3>& color)
+        {
+            return std::to_string(color[0]) + ","
+                + std::to_string(color[1]) + ","
+                + std::to_string(color[2]);
+        };
+        Require(
+            shaderError.empty()
+                && slice[1] > slice[0] + 60
+                && slice[1] > slice[2] + 60
+                && volume[2] > volume[0] + 60
+                && volume[2] > volume[1] + 60
+                && cube[0] > 150
+                && cube[1] > 140
+                && cube[2] < 100,
+            apiName + " did not sample the DDS array, volume, and cube array "
+                "textures (" + describe(slice) + " / " + describe(volume)
+                + " / " + describe(cube) + "; error: [" + shaderError + "])");
+        return capture;
+    }
+
     // SSRは前フレームのカラーを読むため、有効にした最初のフレームは
     // SSR無しと同じ画像です。2フレーム目から床へCubeの赤が映り、SSRを
     // 切ると元の画像へ戻ります。
@@ -6715,6 +6876,9 @@ int main()
             RenderCustomParticleShaderCapture(
                 LamaPon::RenderingApi::DirectX11,
                 LamaPon::GraphicsStartupProfile::FullRenderer);
+        const auto d3d11DdsDimensions = RenderDdsDimensionCapture(
+            LamaPon::RenderingApi::DirectX11,
+            LamaPon::GraphicsStartupProfile::FullRenderer);
         const auto d3d11SkinnedMaterialShaders =
             RenderSkinnedMaterialShaderCapture(
                 LamaPon::RenderingApi::DirectX11,
@@ -6818,6 +6982,9 @@ int main()
                 LamaPon::RenderingApi::DirectX12Experimental,
                 LamaPon::GraphicsStartupProfile::
                     AllowD3D12ExperimentalBootstrap);
+        const auto d3d12DdsDimensions = RenderDdsDimensionCapture(
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap);
         const auto d3d12SkinnedMaterialShaders =
             RenderSkinnedMaterialShaderCapture(
                 LamaPon::RenderingApi::DirectX12Experimental,
@@ -6931,6 +7098,10 @@ int main()
             "custom particle shaders",
             d3d11CustomParticleShaders,
             d3d12CustomParticleShaders);
+        RequireMatchingFrameCaptures(
+            "DDS array, volume, and cube array textures",
+            d3d11DdsDimensions,
+            d3d12DdsDimensions);
         RequireMatchingFrameCaptures(
             "skinned material shader baseline",
             d3d11SkinnedMaterialShaders.baseline,

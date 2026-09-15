@@ -4,6 +4,7 @@
 
 ### 描画API設定
 
+- DirectX 12でDDSの2D array、cube array、volume textureを読み込む。D3D11／D3D12共通のDDS解析でresource次元（2D／2D array／cube／cube array／3D）とarray数・depthを保ち、D3D12はTexture2DArray／TextureCubeArray／Texture3Dのnative resourceと同じ次元のSRVで公開する（従来の2Dとcubeの入口も同じ解析を使う）。2D arrayの2枚目、volumeの奥側の層、cube arrayの2個目の+Y面をMaterial custom shaderの自由枠から読んだ画像がD3D11と一致することをWARPで検証する。あわせて、D3D11でDirectXTKが読んだDDSのvolume textureを取り込むときに2D textureとして扱って読み込みに失敗していた問題を修正した。
 - CLIのruntime／screenshot描画もプロジェクトのDirectX 12 Experimental設定を使用し、D3D12初期化失敗時だけD3D11へフォールバックするように変更。Project Settingsのフォールバック表示も実際の起動結果に合わせた。
 - DirectX 12へtimestamp queryとpipeline statistics queryによるGPU Profiler backendを追加。Editor／Debug Overlayでフレーム・入れ子区間・GPU投入頂点やshader invocationを表示し、スクリーンショット等でcommand listを途中送信するフレームも安全に処理する。
 - DirectX 12 ExperimentalでLamaPon Editorを起動できるようにし、Dear ImGui、Viewport／アセットのテクスチャ表示、モデルプレビュー、grid／bounds／light gizmoのデバッグラインをD3D12へ対応。D3D12初期化に失敗した場合は従来どおりD3D11へ安全にフォールバックする。

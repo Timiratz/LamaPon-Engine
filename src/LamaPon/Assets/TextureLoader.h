@@ -100,6 +100,36 @@ namespace LamaPon::TextureLoader
         }
     };
 
+    enum class PreparedDdsTextureDimension : std::uint8_t
+    {
+        Texture2D,
+        Texture2DArray,
+        TextureCube,
+        TextureCubeArray,
+        Texture3D
+    };
+
+    // DDSが持つresource次元を保った、D3D11／D3D12共通の転送表現です。
+    // 2D系のsubresourcesはarray sliceごとに全mip、3Dはmipごとに
+    // 全depth sliceを1要素へまとめます。
+    struct PreparedDdsTextureData final
+    {
+        DXGI_FORMAT format{ DXGI_FORMAT_R8G8B8A8_UNORM };
+        PreparedDdsTextureDimension dimension{
+            PreparedDdsTextureDimension::Texture2D };
+        std::uint32_t width{};
+        std::uint32_t height{};
+        std::uint32_t depth{ 1 };
+        // Texture2DArrayはslice数、TextureCubeArrayはcube数です。
+        std::uint32_t arraySize{ 1 };
+        std::uint32_t mipLevels{ 1 };
+        std::vector<PreparedTextureLevel> subresources;
+    };
+
+    // 2D／array／cube／cube array／volumeをresource次元付きで展開します。
+    [[nodiscard]] PreparedDdsTextureData PrepareDdsResourceData(
+        std::span<const std::uint8_t> bytes);
+
     // 2D DDSのヘッダーとミップ列をAPI非依存な転送データへ展開します。
     // RGBA8 / BGRA8 / BC1 / BC3 / BC5に対応し、配列・キューブ・volumeや
     // 未対応formatは誤ったtextureとして作らず例外にします。

@@ -121,9 +121,9 @@ int main()
         const std::string runtimeLogText{
             std::istreambuf_iterator<char>(runtimeLogFile),
             std::istreambuf_iterator<char>() };
-        Require(runtimeLogText.find("DirectX 12 Experimental bootstrap")
+        Require(runtimeLogText.find("DirectX 12 Experimental renderer")
                 != std::string::npos,
-            "The exported DirectX 12 Experimental game did not use its bootstrap startup path.");
+            "The exported DirectX 12 Experimental game did not use its renderer startup path.");
         Require(runtimeLogText.find("Sceneの3Dと2D/UI描画を検証")
                 != std::string::npos,
             "The exported DirectX 12 Experimental game did not render its scene.");

@@ -166,7 +166,7 @@ GPUが無い・正しく動かない環境（仮想マシン、リモートデ�
 Rendering APIの既定はDirectX 11です。変更は実行中に切り替わらず、エディターまたはゲームの再起動後に反映されます。
 DirectX 12 Experimentalを選んだWindows書き出しゲームはD3D12で起動し、主要な3D／2D描画、Model、影、ポストプロセス、custom shader、インスタンス描画を利用できます。詳しい対応範囲、D3D11との互換状況、制限は[DirectX 12 Experimental](directx12.md)を参照してください。
 D3D12を初期化できない環境では、DirectX 11へ自動的にフォールバックして通常どおり起動します。
-エディターとCLIは完全なレンダラーが必要なため、DirectX 12 Experimentalを選んでもDirectX 11で起動します。
+エディターとCLIもDirectX 12 Experimentalで起動し、Dear ImGui、モデルプレビュー、デバッグライン、GPU ProfilerをD3D12で描画します。
 
 タグを登録すると、InspectorのTag欄がドロップダウン選択になり、Scene／Prefab読み込み時に未登録タグの使用をConsoleへ警告します。
 一覧が空の間は従来通り検査なしで動作します。

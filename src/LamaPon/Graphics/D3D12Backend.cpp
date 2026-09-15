@@ -5462,31 +5462,60 @@ namespace LamaPon
             const std::span<const GraphicsTextureSubresourceData>
                 subresources)
     {
+        return CreateTextureArray(
+            faceDescription,
+            1u,
+            true,
+            subresources);
+    }
+
+    std::pair<GraphicsTextureHandle, GraphicsViewHandle>
+        D3D12Backend::CreateTextureArray(
+            const GraphicsTexture2DDescription& faceDescription,
+            const std::uint32_t arraySize,
+            const bool cubeArray,
+            const std::span<const GraphicsTextureSubresourceData>
+                subresources)
+    {
         if (!IsInitialized())
         {
             throw std::logic_error(
-                "CreateTextureCube requires an initialized D3D12 backend.");
+                "CreateTextureArray requires an initialized D3D12 backend.");
         }
         constexpr std::uint32_t FaceCount = 6u;
+        const std::uint64_t nativeArraySize64 = cubeArray
+            ? static_cast<std::uint64_t>(arraySize) * FaceCount
+            : arraySize;
         if (faceDescription.width == 0
-            || faceDescription.width != faceDescription.height
-            || faceDescription.width > D3D12_REQ_TEXTURECUBE_DIMENSION
+            || faceDescription.height == 0
+            || (cubeArray
+                && faceDescription.width != faceDescription.height)
+            || faceDescription.width > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION
+            || faceDescription.height > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION
             || faceDescription.mipLevels == 0
             || faceDescription.mipLevels > Detail::MaximumTextureMipLevels(
                 faceDescription.width,
                 faceDescription.height)
             || faceDescription.updateMode
                 != GraphicsTextureUpdateMode::Immutable
+            || arraySize == 0u
+            || (cubeArray
+                && arraySize
+                    > D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION / FaceCount)
+            || nativeArraySize64
+                > D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION
             || subresources.size()
                 != static_cast<std::size_t>(faceDescription.mipLevels)
-                    * FaceCount)
+                    * nativeArraySize64)
         {
             throw std::invalid_argument(
-                "CreateTextureCube received an invalid description or "
+                "CreateTextureArray received an invalid description or "
                 "subresource count.");
         }
         const auto format = Detail::ToDxgiTextureFormat(
             faceDescription.format);
+        const auto nativeArraySize = static_cast<std::uint32_t>(
+            nativeArraySize64);
         for (std::size_t index{}; index < subresources.size(); ++index)
         {
             Detail::ValidateTexture2DSubresourceData(
@@ -5503,7 +5532,8 @@ namespace LamaPon
         nativeDescription.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
         nativeDescription.Width = faceDescription.width;
         nativeDescription.Height = faceDescription.height;
-        nativeDescription.DepthOrArraySize = FaceCount;
+        nativeDescription.DepthOrArraySize =
+            static_cast<UINT16>(nativeArraySize);
         nativeDescription.MipLevels =
             static_cast<UINT16>(faceDescription.mipLevels);
         nativeDescription.Format = format;
@@ -5522,7 +5552,7 @@ namespace LamaPon
                 D3D12_RESOURCE_STATE_COPY_DEST,
                 nullptr,
                 IID_PPV_ARGS(native.GetAddressOf())),
-            "ID3D12Device::CreateCommittedResource(texture cube)",
+            "ID3D12Device::CreateCommittedResource(texture array)",
             m_device.Get());
         // 転送完了時に全面・全ミップをPIXEL_SHADER_RESOURCEへ移します。
         SubmitTextureUpload(native, 0u, subresources, false);
@@ -5531,11 +5561,36 @@ namespace LamaPon
             std::make_shared<D3D12ShadowTexturePayload>(domain, native));
         D3D12_SHADER_RESOURCE_VIEW_DESC viewDescription{};
         viewDescription.Format = format;
-        viewDescription.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+        viewDescription.ViewDimension = cubeArray
+            ? arraySize == 1u
+                ? D3D12_SRV_DIMENSION_TEXTURECUBE
+                : D3D12_SRV_DIMENSION_TEXTURECUBEARRAY
+            : D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
         viewDescription.Shader4ComponentMapping =
             D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        viewDescription.TextureCube.MostDetailedMip = 0;
-        viewDescription.TextureCube.MipLevels = faceDescription.mipLevels;
+        if (viewDescription.ViewDimension == D3D12_SRV_DIMENSION_TEXTURECUBE)
+        {
+            viewDescription.TextureCube.MostDetailedMip = 0;
+            viewDescription.TextureCube.MipLevels =
+                faceDescription.mipLevels;
+        }
+        else if (viewDescription.ViewDimension
+            == D3D12_SRV_DIMENSION_TEXTURECUBEARRAY)
+        {
+            viewDescription.TextureCubeArray.MostDetailedMip = 0;
+            viewDescription.TextureCubeArray.MipLevels =
+                faceDescription.mipLevels;
+            viewDescription.TextureCubeArray.First2DArrayFace = 0;
+            viewDescription.TextureCubeArray.NumCubes = arraySize;
+        }
+        else
+        {
+            viewDescription.Texture2DArray.MostDetailedMip = 0;
+            viewDescription.Texture2DArray.MipLevels =
+                faceDescription.mipLevels;
+            viewDescription.Texture2DArray.FirstArraySlice = 0;
+            viewDescription.Texture2DArray.ArraySize = arraySize;
+        }
         const auto slot = domain->AllocateShaderResourceSlot();
         try
         {
@@ -5550,7 +5605,7 @@ namespace LamaPon
                     slot,
                     faceDescription.width,
                     faceDescription.height,
-                    D3D12_SRV_DIMENSION_TEXTURECUBE));
+                    viewDescription.ViewDimension));
             return { std::move(texture), std::move(view) };
         }
         catch (...)

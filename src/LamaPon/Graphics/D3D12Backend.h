@@ -347,6 +347,15 @@ namespace LamaPon
                 const GraphicsTexture2DDescription& faceDescription,
                 std::span<const GraphicsTextureSubresourceData>
                     subresources);
+        // DDSの2D array／cube arrayを正しいSRV次元で作ります。
+        // arraySizeはcubeArray=falseならslice数、trueならcube数です。
+        [[nodiscard]] std::pair<GraphicsTextureHandle, GraphicsViewHandle>
+            CreateTextureArray(
+                const GraphicsTexture2DDescription& description,
+                std::uint32_t arraySize,
+                bool cubeArray,
+                std::span<const GraphicsTextureSubresourceData>
+                    subresources);
         // IBLの事前畳み込み先です。Compute Shaderがミップごとの6面UAV
         // （Texture2DArray）へ書き、描画ではTextureCubeとして読みます。
         struct ComputeCubeTarget final

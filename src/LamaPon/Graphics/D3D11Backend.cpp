@@ -1908,19 +1908,41 @@ namespace LamaPon
 
         Microsoft::WRL::ComPtr<ID3D11Resource> resource;
         view->GetResource(resource.ReleaseAndGetAddressOf());
-        Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
-        ThrowIfFailed(
-            resource.As(&texture),
-            "ImportShaderResourceView(texture2D)");
-        D3D11_TEXTURE2D_DESC description{};
-        texture->GetDesc(&description);
-
-        auto textureHandle =
-            Detail::GraphicsResourceHandleAccess::MakeTexture(
-                std::make_shared<D3D11TexturePayload>(
-                    m_resourceDomain,
-                    std::move(texture),
-                    description));
+        D3D11_RESOURCE_DIMENSION dimension{};
+        resource->GetType(&dimension);
+        GraphicsTextureHandle textureHandle;
+        if (dimension == D3D11_RESOURCE_DIMENSION_TEXTURE3D)
+        {
+            // DirectXTKが読んだDDSのvolume textureも、2Dと同じく
+            // texture handleとviewの組で公開します。
+            Microsoft::WRL::ComPtr<ID3D11Texture3D> volume;
+            ThrowIfFailed(
+                resource.As(&volume),
+                "ImportShaderResourceView(texture3D)");
+            D3D11_TEXTURE3D_DESC description{};
+            volume->GetDesc(&description);
+            textureHandle =
+                Detail::GraphicsResourceHandleAccess::MakeTexture(
+                    std::make_shared<D3D11Texture3DPayload>(
+                        m_resourceDomain,
+                        std::move(volume),
+                        description));
+        }
+        else
+        {
+            Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+            ThrowIfFailed(
+                resource.As(&texture),
+                "ImportShaderResourceView(texture2D)");
+            D3D11_TEXTURE2D_DESC description{};
+            texture->GetDesc(&description);
+            textureHandle =
+                Detail::GraphicsResourceHandleAccess::MakeTexture(
+                    std::make_shared<D3D11TexturePayload>(
+                        m_resourceDomain,
+                        std::move(texture),
+                        description));
+        }
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> ownedView = view;
         auto viewHandle =
             Detail::GraphicsResourceHandleAccess::MakeView(

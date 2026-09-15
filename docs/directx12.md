@@ -39,15 +39,14 @@ DirectX 11として読み込みます。
 |---|---|---|
 | Auto | DirectX 11 | DirectX 11 |
 | DirectX 11 | DirectX 11 | DirectX 11 |
-| DirectX 12 Experimental | DirectX 12。初期化失敗時はDirectX 11 | DirectX 11 |
+| DirectX 12 Experimental | DirectX 12。初期化失敗時はDirectX 11 | DirectX 12。初期化失敗時はDirectX 11 |
 
-DirectX 12を選んだゲームでDevice、SwapChainなどの初期化に失敗した場合は、
-DirectX 12の資源を解放してDirectX 11へ自動的にフォールバックします。
+DirectX 12を選んだゲーム、エディター、CLIでDevice、SwapChainなどの初期化に失敗した
+場合は、DirectX 12の資源を解放してDirectX 11へ自動的にフォールバックします。
 フォールバックした理由はログへ出力されます。
 
-エディターとCLIは、Dear ImGuiやモデルプレビューを含む完全なエディター描画経路が
-DirectX 12へ移植されるまでDirectX 11で起動します。プロジェクトの設定値は失われず、
-書き出したゲームの起動時に使用されます。
+エディターでは、Dear ImGui、Viewport／アセットのテクスチャ表示、モデルプレビュー、
+gridやgizmoのデバッグライン、GPU ProfilerもDirectX 12で描画します。
 
 ## 現在の対応範囲
 
@@ -58,7 +57,7 @@ DirectX 12の書き出しゲームでは、次の主要機能を実際に描画�
 - Directional／Spot／Point Lightの影
 - glTF／GLB／FBX／CMO／SDKMESH／VBO Model
 - スキニング、アニメーション、LOD、静的ModelとMeshのインスタンス描画
-- PNG／JPEG、RGBA8／BGRA8／BC1／BC3／BC5の2D DDS、DDS cubemap、mip列
+- PNG／JPEG、RGBA8／BGRA8／BC1／BC3／BC5のDDS（2D、2D array、cubemap、cube array、volume）とmip列
 - Sky、太陽円盤、IBL、Reflection Probe、照度ボリューム、Fog
 - ParticleSystem、Sprite、Text、Imageなどの2D／UI
 - HDR、SSAO、SSR、TAA、Volumetric Light、Depth of Field、Motion Blur
@@ -78,11 +77,11 @@ WARPによるD3D11／D3D12の画素比較とdebug layerを使った回帰テス�
 
 ただし、まだ「完全なD3D11互換」とは表記していません。残っている差は次のとおりです。
 
-- エディターGUIとモデルプレビューはDirectX 11で動作します。
 - D3D11の即時Contextを前提にした一部の低レベル描画入口は、D3D12のゲーム描画経路では
   使用せず、Backend固有の描画サービスへ置き換えています。すべての低レベル入口が
   一対一で利用できる状態ではありません。
-- DDSのarray／volumeなど、一部のtexture種別と形式にはAPI間の対応差があります。
+- DDSはRGBA8／BGRA8／BC1／BC3／BC5に対応します。DirectX 11のDirectXTKが読める
+  それ以外の形式には、API間の対応差があります。
 - GPU、driver、浮動小数点精度の違いにより、両APIの画素が常に完全一致するとは限りません。
 - 回帰テストは主要経路を検証しますが、すべてのGPUとSceneの組み合わせを保証するものでは
   ありません。

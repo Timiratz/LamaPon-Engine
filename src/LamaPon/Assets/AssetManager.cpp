@@ -329,6 +329,129 @@ namespace
         return subresources;
     }
 
+    [[nodiscard]] LamaPon::GraphicsTexture2DDescription
+        MakeDdsFaceDescription(
+            const LamaPon::TextureLoader::PreparedDdsTextureData& data)
+    {
+        return {
+            data.width,
+            data.height,
+            data.mipLevels,
+            ToGraphicsTextureFormat(data.format)
+        };
+    }
+
+    [[nodiscard]] std::vector<LamaPon::GraphicsTextureSubresourceData>
+        MakeDdsSubresources(
+            const LamaPon::TextureLoader::PreparedDdsTextureData& data)
+    {
+        std::vector<LamaPon::GraphicsTextureSubresourceData> subresources;
+        subresources.reserve(data.subresources.size());
+        for (std::size_t index{}; index < data.subresources.size(); ++index)
+        {
+            const auto& source = data.subresources[index];
+            if (source.bytes.size()
+                > std::numeric_limits<std::uint32_t>::max())
+            {
+                throw std::overflow_error(
+                    "A prepared DDS subresource is too large.");
+            }
+            std::size_t slicePitch = source.bytes.size();
+            if (data.dimension
+                == LamaPon::TextureLoader::
+                    PreparedDdsTextureDimension::Texture3D)
+            {
+                const auto depth = std::max(
+                    data.depth >> static_cast<std::uint32_t>(index),
+                    1u);
+                if (source.bytes.size() % depth != 0u)
+                {
+                    throw std::invalid_argument(
+                        "A prepared DDS volume has an invalid slice pitch.");
+                }
+                slicePitch = source.bytes.size() / depth;
+            }
+            if (slicePitch > std::numeric_limits<std::uint32_t>::max())
+            {
+                throw std::overflow_error(
+                    "A prepared DDS slice is too large.");
+            }
+            subresources.push_back({
+                std::as_bytes(std::span{ source.bytes }),
+                source.rowPitch,
+                static_cast<std::uint32_t>(slicePitch)
+            });
+        }
+        return subresources;
+    }
+
+    struct D3D12DdsResource final
+    {
+        LamaPon::GraphicsTextureHandle texture;
+        LamaPon::GraphicsViewHandle view;
+        bool cube{};
+    };
+
+    [[nodiscard]] D3D12DdsResource CreateD3D12DdsResource(
+        LamaPon::D3D12Backend& backend,
+        const LamaPon::TextureLoader::PreparedDdsTextureData& data)
+    {
+        const auto subresources = MakeDdsSubresources(data);
+        const auto faceDescription = MakeDdsFaceDescription(data);
+        using Dimension =
+            LamaPon::TextureLoader::PreparedDdsTextureDimension;
+        switch (data.dimension)
+        {
+        case Dimension::Texture2D:
+        {
+            auto texture = backend.CreateTexture2D(
+                faceDescription,
+                subresources);
+            auto view = backend.CreateShaderResourceView(
+                texture,
+                { 0u, data.mipLevels });
+            return { std::move(texture), std::move(view), false };
+        }
+        case Dimension::Texture2DArray:
+        {
+            auto [texture, view] = backend.CreateTextureArray(
+                faceDescription,
+                data.arraySize,
+                false,
+                subresources);
+            return { std::move(texture), std::move(view), false };
+        }
+        case Dimension::TextureCube:
+        case Dimension::TextureCubeArray:
+        {
+            auto [texture, view] = backend.CreateTextureArray(
+                faceDescription,
+                data.arraySize,
+                true,
+                subresources);
+            return { std::move(texture), std::move(view), true };
+        }
+        case Dimension::Texture3D:
+        {
+            LamaPon::GraphicsTexture3DDescription description{
+                data.width,
+                data.height,
+                data.depth,
+                data.mipLevels,
+                ToGraphicsTextureFormat(data.format)
+            };
+            auto texture = backend.CreateTexture3D(
+                description,
+                subresources);
+            auto view = backend.CreateShaderResourceView(
+                texture,
+                { 0u, data.mipLevels });
+            return { std::move(texture), std::move(view), false };
+        }
+        }
+        throw std::invalid_argument("The DDS resource dimension is invalid.");
+    }
+
     [[nodiscard]] Microsoft::WRL::ComPtr<
         ID3D11ShaderResourceView> ResolveCompatibilityView(
             LamaPon::GraphicsBackend* const backend,
@@ -1303,21 +1426,17 @@ namespace LamaPon
         {
             return {};
         }
-        if (isDds && TextureLoader::IsDdsCubeTexture(bytes))
+        if (isDds)
         {
             if (auto* const d3d12 = dynamic_cast<D3D12Backend*>(m_backend))
             {
-                const auto prepared =
-                    TextureLoader::PrepareDdsCubeTextureData(bytes);
-                constexpr std::size_t FaceCount = 6u;
-                auto description = MakeTextureDescription(prepared);
-                description.mipLevels = static_cast<std::uint32_t>(
-                    prepared.levels.size() / FaceCount);
-                const auto subresources = MakeTextureSubresources(prepared);
-                return d3d12->CreateTextureCube(
-                    description,
-                    subresources).second;
+                return CreateD3D12DdsResource(
+                    *d3d12,
+                    TextureLoader::PrepareDdsResourceData(bytes)).view;
             }
+        }
+        if (isDds && TextureLoader::IsDdsCubeTexture(bytes))
+        {
             if (auto* const d3d11 = AsD3D11Backend(m_backend))
             {
                 auto nativeView = CreateTextureViewFromMemory(
@@ -1391,44 +1510,21 @@ namespace LamaPon
                     std::move(viewHandle));
             }
             else if (auto* const d3d12 = dynamic_cast<D3D12Backend*>(
-                    m_backend);
-                d3d12 != nullptr && TextureLoader::IsDdsCubeTexture(bytes))
+                    m_backend))
             {
-                // Skyのcubemapなど6面のDDSは、D3D12だけが持つcube texture
-                // 入口へ渡します。levelsは面ごとに全ミップが並びます。
+                // D3D12でもDDSの2D／array／cube／cube array／volume次元を
+                // 保ち、正しいnative resourceとSRVを公開します。
                 const auto prepared =
-                    TextureLoader::PrepareDdsCubeTextureData(bytes);
-                constexpr std::size_t FaceCount = 6u;
-                auto description = MakeTextureDescription(prepared);
-                description.mipLevels = static_cast<std::uint32_t>(
-                    prepared.levels.size() / FaceCount);
-                const auto subresources =
-                    MakeTextureSubresources(prepared);
-                auto [textureHandle, viewHandle] =
-                    d3d12->CreateTextureCube(description, subresources);
-                texture->width = description.width;
-                texture->height = description.height;
-                texture->isCube = true;
+                    TextureLoader::PrepareDdsResourceData(bytes);
+                auto resource = CreateD3D12DdsResource(*d3d12, prepared);
+                texture->width = prepared.width;
+                texture->height = prepared.height;
+                texture->isCube = resource.cube;
                 PublishTextureResources(
                     *texture,
                     m_backend,
-                    std::move(textureHandle),
-                    std::move(viewHandle));
-            }
-            else if (m_backend != nullptr)
-            {
-                // D3D12はDevice非依存のDDSパーサーから共通upload契約へ
-                // 渡します。対応外の配列・cube・formatは例外となり、
-                // 壊れた2D textureとして公開しません。
-                const auto prepared =
-                    TextureLoader::PrepareDdsTextureData(bytes);
-                texture->width = prepared.levels.front().width;
-                texture->height = prepared.levels.front().height;
-                texture->isCube = false;
-                CreatePreparedTextureResources(
-                    *texture,
-                    *m_backend,
-                    prepared);
+                    std::move(resource.texture),
+                    std::move(resource.view));
             }
             else
             {
@@ -1602,17 +1698,33 @@ namespace LamaPon
             Microsoft::WRL::ComPtr<ID3D11Resource> resource;
             compatibilityView->GetResource(
                 resource.ReleaseAndGetAddressOf());
+            D3D11_RESOURCE_DIMENSION dimension{};
+            resource->GetType(&dimension);
+            if (dimension == D3D11_RESOURCE_DIMENSION_TEXTURE3D)
+            {
+                // DDSのvolume textureは、D3D12と同じく幅と高さを控えます。
+                Microsoft::WRL::ComPtr<ID3D11Texture3D> texture3D;
+                ThrowIfFailed(resource.As(&texture3D), resolvedPath);
 
-            Microsoft::WRL::ComPtr<ID3D11Texture2D> texture2D;
-            ThrowIfFailed(resource.As(&texture2D), resolvedPath);
+                D3D11_TEXTURE3D_DESC description{};
+                texture3D->GetDesc(&description);
+                texture->width = description.Width;
+                texture->height = description.Height;
+                texture->isCube = false;
+            }
+            else
+            {
+                Microsoft::WRL::ComPtr<ID3D11Texture2D> texture2D;
+                ThrowIfFailed(resource.As(&texture2D), resolvedPath);
 
-            D3D11_TEXTURE2D_DESC description{};
-            texture2D->GetDesc(&description);
-            texture->width = description.Width;
-            texture->height = description.Height;
-            texture->isCube =
-                (description.MiscFlags
-                    & D3D11_RESOURCE_MISC_TEXTURECUBE) != 0;
+                D3D11_TEXTURE2D_DESC description{};
+                texture2D->GetDesc(&description);
+                texture->width = description.Width;
+                texture->height = description.Height;
+                texture->isCube =
+                    (description.MiscFlags
+                        & D3D11_RESOURCE_MISC_TEXTURECUBE) != 0;
+            }
         }
         return texture;
     }
