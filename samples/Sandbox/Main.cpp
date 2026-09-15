@@ -393,7 +393,7 @@ int WINAPI wWinMain(
             LamaPon::GraphicsDevice::SetPreferWarpAdapter(true);
         }
 
-        // --d3ddebug: D3D11のデバッグレイヤーを有効にします。
+        // --d3ddebug: 選択中Direct3D APIのデバッグレイヤーを有効にします。
         // 不正な描画は、これが無いと警告も出ずにドライバーへ渡り、
         // WARPではプロセスごと落ちます。落ちる場所を突き止め
         // たいときに付けてください（普段は重いので既定は無効）。

@@ -4,6 +4,7 @@
 
 ### 描画API設定
 
+- CLIのruntime／screenshot描画もプロジェクトのDirectX 12 Experimental設定を使用し、D3D12初期化失敗時だけD3D11へフォールバックするように変更。Project Settingsのフォールバック表示も実際の起動結果に合わせた。
 - DirectX 12へtimestamp queryとpipeline statistics queryによるGPU Profiler backendを追加。Editor／Debug Overlayでフレーム・入れ子区間・GPU投入頂点やshader invocationを表示し、スクリーンショット等でcommand listを途中送信するフレームも安全に処理する。
 - DirectX 12 ExperimentalでLamaPon Editorを起動できるようにし、Dear ImGui、Viewport／アセットのテクスチャ表示、モデルプレビュー、grid／bounds／light gizmoのデバッグラインをD3D12へ対応。D3D12初期化に失敗した場合は従来どおりD3D11へ安全にフォールバックする。
 - DirectX 12 Experimentalの有効化、起動時の選択、対応範囲、D3D11互換の考え方、既知の差、フォールバックと切り分け手順をまとめた利用者向けガイドを追加。
