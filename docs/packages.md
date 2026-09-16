@@ -26,6 +26,7 @@ C++スクリプト、Prefab、アセットをパッケージとしてまとめ�
 | パッケージ | 内容 |
 |---|---|
 | **Easing & Tween**（`easing-tween`） | 動きに緩急をつけるイージング関数28種と、位置・回転・拡縮を時間をかけて動かす「Tween」コンポーネント。`Easing.h`をincludeすれば自分のScriptからも使えます |
+| **Discord Rich Presence (Social SDK)**（`discord-presence-sdk`） | [Discord Rich Presence](online-services.md#discord-rich-presence)を実際にDiscordへ表示するためのアダプター。ライセンス上SDK本体は同梱できないので、Discordから入手して`sdk/`へ置く形です（手順はパッケージのREADME）。Discordログインとは無関係で、ログインしなくても使えます |
 
 導入すると`assets/packages/<名前>/`へ入り、Game Moduleが自動ビルドされて「コンポーネントを追加」から使えるようになります。
 中身は`.cpp`のままなので、開いて読んだり改造したりできます。
@@ -124,6 +125,9 @@ assets/packages/my-sdk/
 パッケージのREADMEに従って配置してください:
   - my-sdk: .../assets/packages/my-sdk/sdk/lib/my_sdk.lib
 ```
+
+公式パッケージの`discord-presence-sdk`がこの形です。実物を見たい
+ときは`packages/src/discord-presence-sdk/`を読んでください。
 
 ### 書けないこと
 

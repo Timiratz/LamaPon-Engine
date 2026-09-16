@@ -859,6 +859,10 @@ if(BUILD_TESTING)
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/WebExportToolTests.py")
     add_test(NAME EditorWebExport
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/EditorWebExportTests.py")
+    # 配布パッケージ一覧とZipの検証です。Discord SDKのように同梱できない
+    # ものが紛れ込んでいないかもここで止めます。
+    add_test(NAME PackageIndex
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/PackageIndexTests.py")
     add_executable(LamaPonGameExportDialogTests tests/GameExportDialogTests.cpp)
     target_link_libraries(LamaPonGameExportDialogTests PRIVATE LamaPonEditor DearImGui)
     target_compile_options(LamaPonGameExportDialogTests PRIVATE
