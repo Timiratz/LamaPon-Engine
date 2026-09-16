@@ -1,7 +1,6 @@
 #include "LamaPon/Editor/PackageNativeDependencies.h"
 
 #include "LamaPon/Core/PathUtils.h"
-#include "LamaPon/Editor/PackageManager.h"
 
 #include <nlohmann/json.hpp>
 
@@ -38,6 +37,28 @@ namespace
         L"msvcp140_2.dll",
         L"lamaponeditor.dll"
     };
+
+    // assets/packages/ の下でパッケージとして扱うフォルダー名です。
+    // 規則の正本は PackageManager.h の IsPackageNameSafe ですが、
+    // ここで参照するとGame Moduleビルドの単体テストまでパッケージ
+    // ダウンロード一式を引き込むため、同じ規則を持ちます。
+    [[nodiscard]] bool IsPackageFolderName(
+        const std::string_view name) noexcept
+    {
+        if (name.empty() || name.size() > 64u)
+        {
+            return false;
+        }
+        return std::ranges::all_of(
+            name,
+            [](const char character) noexcept
+            {
+                return (character >= 'a' && character <= 'z')
+                    || (character >= '0' && character <= '9')
+                    || character == '-'
+                    || character == '_';
+            });
+    }
 
     [[nodiscard]] std::wstring ToLowerAscii(std::wstring value)
     {
@@ -438,7 +459,7 @@ namespace LamaPon
         for (const auto& directory : directories)
         {
             const auto name = PathToUtf8(directory.filename());
-            if (!IsPackageNameSafe(name))
+            if (!IsPackageFolderName(name))
             {
                 continue;
             }

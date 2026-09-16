@@ -1393,10 +1393,13 @@ if(BUILD_TESTING)
     add_executable(LamaPonPackageNativeDependencyTests
         tests/PackageNativeDependencyTests.cpp
     )
+    # PackageNativeDependenciesはEditor側のソースです
+    # （LamaPonRuntime.dllからは公開していません）。
+    # LamaPonPackageManagerTestsと同じく静的ライブラリへリンクします。
     target_link_libraries(
         LamaPonPackageNativeDependencyTests
         PRIVATE
-            LamaPonRuntime
+            LamaPonEditor
     )
     target_compile_options(
         LamaPonPackageNativeDependencyTests PRIVATE
@@ -1846,6 +1849,9 @@ if(BUILD_TESTING)
         tests/GameModuleBuilderTests.cpp
         src/LamaPon/Editor/GameModuleBuilder.cpp
         src/LamaPon/Editor/GameModuleBuilder.h
+        # ビルドコマンドの組み立てがパッケージのnative設定を読むため。
+        src/LamaPon/Editor/PackageNativeDependencies.cpp
+        src/LamaPon/Editor/PackageNativeDependencies.h
         tools/LamaPonCli/BuildDiagnostics.h
     )
     target_include_directories(LamaPonGameModuleBuilderTests PRIVATE
