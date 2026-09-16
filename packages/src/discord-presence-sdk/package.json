@@ -1,0 +1,14 @@
+{
+  "name": "discord-presence-sdk",
+  "displayName": "Discord Rich Presence (Social SDK)",
+  "description": "LamaPonのDiscord Rich Presenceを、Discord公式のSocial SDKで実際に表示できるようにするアダプターです。ライセンス上SDK本体は同梱できないため、Discord Developer Portalから入手してsdkフォルダーへ置いてください。置き場所はREADMEに書いてあります。Discordログインとは独立していて、ログインしなくても使えます。",
+  "author": "LamaPon",
+  "version": "1.0.0",
+  "minimumEngineVersion": "0.1.0",
+  "native": {
+    "includeDirectories": [ "sdk/include" ],
+    "libraries": [ "sdk/lib/discord_partner_sdk.lib" ],
+    "runtimeFiles": [ "sdk/bin/discord_partner_sdk.dll" ],
+    "defines": [ "LAMAPON_DISCORD_SOCIAL_SDK" ]
+  }
+}

@@ -445,6 +445,28 @@ Discordへ実際に表示するには、
 各自でDiscordから入手し、`DiscordPresenceBackend`を実装したアダプターを
 登録します。Discord固有の型はこのアダプターの内側だけに閉じ込めます。
 
+#### いちばん簡単な方法：公式パッケージを入れる
+
+アダプターを自分で書かなくても、エディターの**拡張機能**から
+**Discord Rich Presence (Social SDK)**（`discord-presence-sdk`）を
+入れれば済みます。やることは3つです。
+
+1. 拡張機能からパッケージを導入する
+2. Discord Developer PortalからSocial SDKを入手し、
+   `assets/packages/discord-presence-sdk/sdk/`へ置く
+   （`include/discordpp.h`、`lib/discord_partner_sdk.lib`、
+   `bin/discord_partner_sdk.dll`の3つ。手順はパッケージのREADME）
+3. プロジェクト設定でApplication IDを入れる
+
+アダプターはGame Moduleの読み込み時に自動登録されるので、
+`SetDiscordPresenceBackendFactory()`をゲーム側から呼ぶ必要はありません。
+あとは`SetDiscordActivity()`を呼ぶだけです。
+
+SDKの置き忘れは、リンカーのエラーではなく「どのパッケージの何が
+足りないか」を名指しした案内で止まります。
+
+以下は、自分でアダプターを書く場合の説明です。
+
 ```text
 Game / Script
   ↓
