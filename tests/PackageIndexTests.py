@@ -7,8 +7,6 @@ SDK本体がZipへ紛れ込んでいないことも確認します。
 """
 from __future__ import annotations
 
-import hashlib
-import importlib.util
 import json
 import re
 import unittest
@@ -50,13 +48,15 @@ def load_index() -> dict:
     return json.loads(INDEX_PATH.read_text(encoding="utf-8"))
 
 
-def load_build_script():
-    path = SOURCE_ROOT / "build_package.py"
-    spec = importlib.util.spec_from_file_location("lamapon_build_package", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def package_source_files(source_directory: Path) -> list[Path]:
+    """Zipへ入るファイルだけを返します（.meta と生成物は除きます）。"""
+    return [
+        path
+        for path in sorted(source_directory.rglob("*"))
+        if path.is_file()
+        and path.suffix != ".meta"
+        and "__pycache__" not in path.parts
+    ]
 
 
 class PackageIndexTests(unittest.TestCase):
@@ -133,27 +133,63 @@ class PackageIndexTests(unittest.TestCase):
                         self.assertNotIn(":", name, name)
 
     def test_shipped_archive_matches_its_source(self):
-        # packages/src へソースがあるものは、そこから作り直して
-        # 同じZipになることを確かめます。手で差し替えたZipを配って
-        # しまわないためです。
-        build = load_build_script()
+        # packages/src へソースがあるものは、Zipの中身がそのソースと
+        # 一致することを確かめます。手で差し替えたZipを配ってしまわない
+        # ためです。
+        #
+        # Zipのバイト列ではなく展開後の中身を比べます。deflateの出力は
+        # zlibの版で変わり得るので、バイト比較にすると環境差で落ちます。
         for entry in self.packages:
             name = entry["name"]
-            if not (SOURCE_ROOT / name).is_dir():
+            source_directory = SOURCE_ROOT / name
+            if not source_directory.is_dir():
                 continue
             with self.subTest(package=name):
                 archive_path = PACKAGES_ROOT / f"{name}-{entry['version']}.zip"
-                before = hashlib.sha256(archive_path.read_bytes()).hexdigest()
-                rebuilt = build.build(name)
-                after = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+                expected = {
+                    path.relative_to(source_directory).as_posix(): path.read_bytes()
+                    for path in package_source_files(source_directory)
+                }
+                with zipfile.ZipFile(archive_path) as archive:
+                    shipped = {
+                        shipped_name: archive.read(shipped_name)
+                        for shipped_name in archive.namelist()
+                        if not shipped_name.endswith(".meta")
+                    }
                 self.assertEqual(
-                    before,
-                    after,
-                    "packages/src の内容とZipが食い違っています。"
+                    sorted(shipped),
+                    sorted(expected),
+                    "Zipの中身とpackages/srcのファイル一覧が違います。"
                     " build_package.py で作り直してください。",
                 )
-                self.assertEqual(rebuilt["sizeBytes"], entry["sizeBytes"])
-                self.assertEqual(rebuilt["downloadUrl"], entry["downloadUrl"])
+                for shipped_name, content in sorted(shipped.items()):
+                    with self.subTest(entry=shipped_name):
+                        self.assertEqual(
+                            content,
+                            expected[shipped_name],
+                            f"{shipped_name} の中身がpackages/srcと違います。"
+                            " build_package.py で作り直してください。"
+                            " 改行が変換されていないかも確認してください"
+                            "（.gitattributesでLFに固定しています）。",
+                        )
+
+    def test_package_sources_use_unix_line_endings(self):
+        # Zipへそのまま入るので、CRLFが混ざるとOSによって利用者が
+        # 受け取る中身が変わります。.gitattributes で固定していますが、
+        # 設定漏れに気付けるようにここでも確かめます。
+        for entry in self.packages:
+            source_directory = SOURCE_ROOT / entry["name"]
+            if not source_directory.is_dir():
+                continue
+            for path in package_source_files(source_directory):
+                relative = path.relative_to(SOURCE_ROOT).as_posix()
+                with self.subTest(file=relative):
+                    self.assertNotIn(
+                        b"\r\n",
+                        path.read_bytes(),
+                        f"{relative} にCRLFが混ざっています。"
+                        " .gitattributes の設定を確認してください。",
+                    )
 
 
 class DiscordPresencePackageTests(unittest.TestCase):

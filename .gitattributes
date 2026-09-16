@@ -2,3 +2,14 @@
 *.yml text eol=lf
 *.yaml text eol=lf
 *.py text eol=lf
+
+# 配布パッケージのソースは、どのOSでチェックアウトしても同じ内容に
+# なるよう改行をLFで固定します。Zipへそのまま入るので、CRLFへ変換
+# されると利用者が受け取る中身がOSによって変わってしまいます
+# （tests/PackageIndexTests.py が突き合わせます）。
+packages/src/** text eol=lf
+# 利用者が自分で置いたSDKのバイナリを誤って壊さないための保険です。
+packages/src/**/*.lib binary
+packages/src/**/*.dll binary
+# 配布Zipはバイト列そのものです。
+packages/*.zip binary
