@@ -357,7 +357,6 @@ namespace
             unsafeRejected,
             "unsafe package names must be rejected");
     }
-}
 
     // ネイティブ依存の宣言は、assets/へ入る前に検証します。
     void TestNativeManifestIsValidatedOnInstall()
@@ -458,7 +457,8 @@ namespace
                     == std::vector<std::string>{
                         "MY_SDK_ENABLED" }
                 && scan.packages.front().runtimeFiles.front()
-                    == installed / "sdk" / "bin" / "my_sdk.dll",
+                    == (installed / "sdk" / "bin" / "my_sdk.dll")
+                        .lexically_normal(),
             "an installed native package must be discoverable");
     }
 }
