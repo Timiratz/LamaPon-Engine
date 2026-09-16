@@ -16,6 +16,7 @@ namespace LamaPon
 {
     class GameModuleHost;
     class InputSystem;
+    class OnlineServices;
     class PlayerPrefs;
     class SaveDataStore;
     class Scene;
@@ -54,6 +55,7 @@ namespace LamaPon
         [[nodiscard]] LAMAPON_API PlayerPrefs&
             Preferences() const;
         [[nodiscard]] LAMAPON_API SaveDataStore& Saves() const;
+        [[nodiscard]] LAMAPON_API OnlineServices& Online() const;
         [[nodiscard]] const DirectX::Keyboard::State&
             KeyboardState() const;
 
@@ -78,6 +80,7 @@ namespace LamaPon
         std::unique_ptr<GameModuleHost> m_gameModule;
         std::unique_ptr<PlayerPrefs> m_playerPrefs;
         std::unique_ptr<SaveDataStore> m_saveData;
+        std::unique_ptr<OnlineServices> m_onlineServices;
         std::string m_persistenceName;
         bool m_startupSplashScreenEnabled{};
         // 直前に知らせた描画エラー。同じ内容は繰り返し出しません。

@@ -1,7 +1,9 @@
 #include "LamaPon/Core/PlayerPrefs.h"
 
 #include "LamaPon/Core/DocumentMigration.h"
+#include "LamaPon/Core/LocalPersistenceDocuments.h"
 #include "LamaPon/Core/PathUtils.h"
+#include "LamaPon/Online/CloudSave.h"
 
 #include <Windows.h>
 #include <nlohmann/json.hpp>
@@ -11,6 +13,7 @@
 #include <fstream>
 #include <map>
 #include <stdexcept>
+#include <system_error>
 #include <variant>
 
 namespace
@@ -20,6 +23,10 @@ namespace
         double,
         bool,
         std::string>;
+    using ValueMap = std::map<
+        std::string,
+        Value,
+        std::less<>>;
 
     void ValidateKey(const std::string_view key)
     {
@@ -38,37 +45,132 @@ namespace
         const std::filesystem::path& path,
         const std::string_view text)
     {
-        if (!path.parent_path().empty())
+        LamaPon::Detail::DurablePublishLocalDocument(path, text);
+    }
+
+    ValueMap ReadValues(
+        const std::filesystem::path& filePath)
+    {
+        ValueMap values;
+        std::error_code statusError;
+        const auto status = std::filesystem::symlink_status(
+            filePath,
+            statusError);
+        if (status.type() == std::filesystem::file_type::not_found
+            || statusError
+                == std::errc::no_such_file_or_directory
+            || statusError.value() == ERROR_FILE_NOT_FOUND
+            || statusError.value() == ERROR_PATH_NOT_FOUND)
         {
-            std::filesystem::create_directories(
-                path.parent_path());
+            return values;
         }
-        auto temporary = path;
-        temporary += L".tmp";
-        std::ofstream output(
-            temporary,
-            std::ios::binary | std::ios::trunc);
-        if (!output)
+        if (statusError)
         {
             throw std::runtime_error(
-                "Could not create temporary save file: "
-                + LamaPon::PathToUtf8(temporary));
+                "Could not inspect PlayerPrefs file: "
+                + LamaPon::PathToUtf8(filePath));
         }
-        output << text;
-        output.close();
-        if (!output
-            || !MoveFileExW(
-                temporary.c_str(),
-                path.c_str(),
-                MOVEFILE_REPLACE_EXISTING
-                    | MOVEFILE_WRITE_THROUGH))
+        if (!std::filesystem::is_regular_file(status))
         {
-            std::error_code error;
-            std::filesystem::remove(temporary, error);
             throw std::runtime_error(
-                "Could not replace save file: "
-                + LamaPon::PathToUtf8(path));
+                "PlayerPrefs path is not a regular file: "
+                + LamaPon::PathToUtf8(filePath));
         }
+
+        std::ifstream input(filePath, std::ios::binary);
+        if (!input)
+        {
+            throw std::runtime_error(
+                "Could not open PlayerPrefs file: "
+                + LamaPon::PathToUtf8(filePath));
+        }
+
+        nlohmann::json document;
+        input >> document;
+        static_cast<void>(
+            LamaPon::MigrateSerializedDocument(
+                document,
+                LamaPon::SerializedDocumentKind::PlayerPrefs));
+        if (!document.contains("values")
+            || !document["values"].is_object())
+        {
+            throw std::runtime_error(
+                "Unsupported PlayerPrefs file: "
+                + LamaPon::PathToUtf8(filePath));
+        }
+        for (const auto& [key, entry] :
+            document["values"].items())
+        {
+            ValidateKey(key);
+            const auto type =
+                entry.value("type", std::string{});
+            if (type == "integer")
+            {
+                values[key] =
+                    entry.at("value").get<std::int64_t>();
+            }
+            else if (type == "number")
+            {
+                const double value =
+                    entry.at("value").get<double>();
+                if (!std::isfinite(value))
+                {
+                    throw std::runtime_error(
+                        "PlayerPrefs contains a non-finite number.");
+                }
+                values[key] = value;
+            }
+            else if (type == "boolean")
+            {
+                values[key] = entry.at("value").get<bool>();
+            }
+            else if (type == "string")
+            {
+                values[key] =
+                    entry.at("value").get<std::string>();
+            }
+            else
+            {
+                throw std::runtime_error(
+                    "PlayerPrefs contains an unknown value type.");
+            }
+        }
+        return values;
+    }
+
+    ValueMap ReadStrictValues(const std::string_view text)
+    {
+        LamaPon::Detail::ValidatePlayerPrefsFullDocument(text);
+        const auto document = nlohmann::json::parse(text);
+        ValueMap values;
+        for (const auto& [key, entry] : document.at("values").items())
+        {
+            ValidateKey(key);
+            const auto type = entry.at("type").get<std::string>();
+            if (type == "integer")
+            {
+                values[key] = entry.at("value").get<std::int64_t>();
+            }
+            else if (type == "number")
+            {
+                const auto value = entry.at("value").get<double>();
+                if (!std::isfinite(value))
+                {
+                    throw std::runtime_error(
+                        "PlayerPrefs contains a non-finite number.");
+                }
+                values[key] = value;
+            }
+            else if (type == "boolean")
+            {
+                values[key] = entry.at("value").get<bool>();
+            }
+            else
+            {
+                values[key] = entry.at("value").get<std::string>();
+            }
+        }
+        return values;
     }
 
     std::wstring SafeDirectoryName(
@@ -114,9 +216,10 @@ namespace LamaPon
     struct PlayerPrefs::Implementation final
     {
         std::filesystem::path filePath;
-        std::map<std::string, Value, std::less<>>
-            values;
+        ValueMap values;
+        const void* bindingLeaseOwner{};
         bool dirty{};
+        bool loadFailure{};
     };
 
     PlayerPrefs::PlayerPrefs(
@@ -132,70 +235,170 @@ namespace LamaPon
 
     void PlayerPrefs::Load()
     {
-        auto& implementation = *m_implementation;
-        implementation.values.clear();
-        implementation.dirty = false;
-        std::ifstream input(
-            implementation.filePath,
-            std::ios::binary);
-        if (!input)
+        Reload();
+    }
+
+    void PlayerPrefs::Reload()
+    {
+        if (m_implementation->loadFailure)
+        {
+            throw std::logic_error(
+                "PlayerPrefs is blocked after a load failure; use an explicit recovery operation.");
+        }
+
+        auto replacement =
+            std::make_unique<Implementation>();
+        replacement->filePath =
+            m_implementation->filePath;
+        replacement->bindingLeaseOwner =
+            m_implementation->bindingLeaseOwner;
+        try
+        {
+            replacement->values =
+                ReadValues(replacement->filePath);
+        }
+        catch (...)
+        {
+            m_implementation->loadFailure = true;
+            throw;
+        }
+        m_implementation.swap(replacement);
+    }
+
+    bool PlayerPrefs::HasLoadFailure() const noexcept
+    {
+        return m_implementation->loadFailure;
+    }
+
+    void PlayerPrefs::RecoverAfterLoadFailure()
+    {
+        if (!m_implementation->loadFailure)
+        {
+            throw std::logic_error(
+                "PlayerPrefs does not have a load failure to recover.");
+        }
+
+        auto replacement =
+            std::make_unique<Implementation>();
+        replacement->filePath =
+            m_implementation->filePath;
+        replacement->bindingLeaseOwner =
+            m_implementation->bindingLeaseOwner;
+        replacement->values =
+            ReadValues(replacement->filePath);
+        m_implementation.swap(replacement);
+    }
+
+    void PlayerPrefs::ResetAfterLoadFailure()
+    {
+        if (!m_implementation->loadFailure)
+        {
+            throw std::logic_error(
+                "PlayerPrefs does not have a load failure to reset.");
+        }
+        m_implementation->values.clear();
+        m_implementation->dirty = true;
+        m_implementation->loadFailure = false;
+    }
+
+    void PlayerPrefs::Rebind(
+        std::filesystem::path filePath)
+    {
+        if (m_implementation->bindingLeaseOwner)
+        {
+            throw std::logic_error(
+                "PlayerPrefs binding is owned by online persistence.");
+        }
+        if (filePath == m_implementation->filePath)
         {
             return;
         }
-        nlohmann::json document;
-        input >> document;
-        static_cast<void>(
-            MigrateSerializedDocument(
-                document,
-                SerializedDocumentKind::PlayerPrefs));
-        if (!document.contains("values")
-            || !document["values"].is_object())
+        if (m_implementation->dirty)
         {
-            throw std::runtime_error(
-                "Unsupported PlayerPrefs file: "
-                + PathToUtf8(
-                    implementation.filePath));
+            throw std::logic_error(
+                "PlayerPrefs must be saved or reloaded before rebinding.");
         }
-        for (const auto& [key, entry] :
-            document["values"].items())
+
+        auto replacement =
+            std::make_unique<Implementation>();
+        replacement->filePath = std::move(filePath);
+        replacement->values =
+            ReadValues(replacement->filePath);
+        m_implementation.swap(replacement);
+    }
+
+    void PlayerPrefs::RelocateBinding(
+        std::filesystem::path filePath) noexcept
+    {
+        if (m_implementation->bindingLeaseOwner)
         {
-            ValidateKey(key);
-            const auto type =
-                entry.value("type", std::string{});
-            if (type == "integer")
+            return;
+        }
+        m_implementation->filePath.swap(filePath);
+    }
+
+    void PlayerPrefs::SwapLoadedState(
+        PlayerPrefs& other) noexcept
+    {
+        m_implementation.swap(other.m_implementation);
+    }
+
+    bool PlayerPrefs::AcquireBindingLease(
+        const void* const owner) noexcept
+    {
+        if (!owner || m_implementation->bindingLeaseOwner)
+        {
+            return false;
+        }
+        m_implementation->bindingLeaseOwner = owner;
+        return true;
+    }
+
+    bool PlayerPrefs::ReleaseBindingLease(
+        const void* const owner) noexcept
+    {
+        if (!owner
+            || m_implementation->bindingLeaseOwner != owner)
+        {
+            return false;
+        }
+        m_implementation->bindingLeaseOwner = nullptr;
+        return true;
+    }
+
+    bool PlayerPrefs::IsBindingLeased() const noexcept
+    {
+        return m_implementation->bindingLeaseOwner != nullptr;
+    }
+
+    bool PlayerPrefs::BindingLeaseOwnedBy(
+        const void* const owner) const noexcept
+    {
+        return owner
+            && m_implementation->bindingLeaseOwner == owner;
+    }
+
+    void PlayerPrefs::LoadValidatedSnapshot(
+        const std::string_view fullDocument,
+        const bool missing)
+    {
+        auto replacement = std::make_unique<Implementation>();
+        replacement->filePath = m_implementation->filePath;
+        replacement->bindingLeaseOwner =
+            m_implementation->bindingLeaseOwner;
+        if (missing)
+        {
+            if (!fullDocument.empty())
             {
-                implementation.values[key] =
-                    entry.at("value").
-                        get<std::int64_t>();
-            }
-            else if (type == "number")
-            {
-                const double value =
-                    entry.at("value").get<double>();
-                if (!std::isfinite(value))
-                {
-                    throw std::runtime_error(
-                        "PlayerPrefs contains a non-finite number.");
-                }
-                implementation.values[key] = value;
-            }
-            else if (type == "boolean")
-            {
-                implementation.values[key] =
-                    entry.at("value").get<bool>();
-            }
-            else if (type == "string")
-            {
-                implementation.values[key] =
-                    entry.at("value").
-                        get<std::string>();
-            }
-            else
-            {
-                throw std::runtime_error(
-                    "PlayerPrefs contains an unknown value type.");
+                throw std::invalid_argument(
+                    "A missing PlayerPrefs snapshot must not contain bytes.");
             }
         }
+        else
+        {
+            replacement->values = ReadStrictValues(fullDocument);
+        }
+        m_implementation.swap(replacement);
     }
 
     std::string PlayerPrefs::SerializeToJson() const
@@ -245,10 +448,90 @@ namespace LamaPon
 
     void PlayerPrefs::Save()
     {
+        if (m_implementation->loadFailure)
+        {
+            throw std::logic_error(
+                "PlayerPrefs cannot be saved after a load failure without explicit recovery.");
+        }
+        const Detail::LocalPersistenceCommitEvent event{
+            Detail::LocalPersistenceResourceKind::PlayerPrefs,
+            this,
+            &m_implementation->filePath,
+            {},
+            false
+        };
         WriteAtomically(
             m_implementation->filePath,
             SerializeToJson());
         m_implementation->dirty = false;
+        Detail::NotifyLocalPersistenceCommit(event);
+    }
+
+    void PlayerPrefs::ApplyRemoteDocumentAtomically(
+        const std::string_view fullDocument)
+    {
+        auto replacement = std::make_unique<Implementation>();
+        replacement->filePath = m_implementation->filePath;
+        replacement->bindingLeaseOwner =
+            m_implementation->bindingLeaseOwner;
+        replacement->values = ReadStrictValues(fullDocument);
+        WriteAtomically(replacement->filePath, fullDocument);
+        m_implementation.swap(replacement);
+    }
+
+    void PlayerPrefs::DeleteRemoteDocumentAtomically()
+    {
+        auto replacement = std::make_unique<Implementation>();
+        replacement->filePath = m_implementation->filePath;
+        replacement->bindingLeaseOwner =
+            m_implementation->bindingLeaseOwner;
+        (void)Detail::DurableDeleteLocalDocument(replacement->filePath);
+        m_implementation.swap(replacement);
+    }
+
+    bool PlayerPrefs::ApplyRemoteDocumentAtomicallyIfUnchanged(
+        const std::string_view fullDocument,
+        const Detail::LocalPersistenceDocument& observed)
+    {
+        auto replacement = std::make_unique<Implementation>();
+        replacement->filePath = m_implementation->filePath;
+        replacement->bindingLeaseOwner =
+            m_implementation->bindingLeaseOwner;
+        replacement->values = ReadStrictValues(fullDocument);
+        const auto result =
+            Detail::DurablePublishLocalDocumentIfUnchanged(
+                replacement->filePath,
+                observed,
+                fullDocument,
+                CloudPreferencesMaxBytes);
+        if (result
+            == Detail::LocalPersistenceConditionalApplyResult::LocalChanged)
+        {
+            return false;
+        }
+        m_implementation.swap(replacement);
+        return true;
+    }
+
+    bool PlayerPrefs::DeleteRemoteDocumentAtomicallyIfUnchanged(
+        const Detail::LocalPersistenceDocument& observed)
+    {
+        auto replacement = std::make_unique<Implementation>();
+        replacement->filePath = m_implementation->filePath;
+        replacement->bindingLeaseOwner =
+            m_implementation->bindingLeaseOwner;
+        const auto result =
+            Detail::DurableDeleteLocalDocumentIfUnchanged(
+                replacement->filePath,
+                observed,
+                CloudPreferencesMaxBytes);
+        if (result
+            == Detail::LocalPersistenceConditionalApplyResult::LocalChanged)
+        {
+            return false;
+        }
+        m_implementation.swap(replacement);
+        return true;
     }
 
     bool PlayerPrefs::IsDirty() const noexcept

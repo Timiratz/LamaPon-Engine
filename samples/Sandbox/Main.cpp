@@ -1,5 +1,6 @@
 #include "LamaPon/LamaPon.h"
 #include "LamaPon/Editor/Editor.h"
+#include "LamaPon/Editor/PackageNativeDependencies.h"
 // セーフモードで、覚えているシェーダーの失敗を捨てるため。
 #include "LamaPon/Graphics/ShaderCompiler.h"
 
@@ -411,6 +412,44 @@ int WINAPI wWinMain(
             projectSettings.gameName);
 
         application.Initialize(instance);
+        // セーフモードと自動UI検証では、保存済みセッションの復元を含む
+        // 外部通信を開始しません。通常のEditor起動だけで有効化します。
+        if (!safeMode
+            && !unattended
+            && projectSettings.online.enabled)
+        {
+            LamaPon::OnlineServiceConfiguration online;
+            online.serviceBaseUrl =
+                projectSettings.online.serviceBaseUrl;
+            online.allowInsecureLoopback =
+                projectSettings.online.allowInsecureLoopback;
+            online.gameId = projectSettings.online.gameId;
+            online.environmentId =
+                projectSettings.online.environmentId;
+            online.openAuthorizationBrowser =
+                projectSettings.online.openAuthorizationBrowser;
+            application.Online().Configure(std::move(online));
+        }
+        // Rich Presenceはアカウント連携と独立しています。ログイン設定
+        // （online.enabled）に関係なく、Presenceの設定だけで有効化します。
+        if (!safeMode
+            && !unattended
+            && projectSettings.online.discordPresence.enabled)
+        {
+            LamaPon::DiscordPresenceConfiguration presence;
+            presence.enabled = true;
+            presence.applicationId =
+                projectSettings.online.discordPresence
+                    .applicationId;
+            presence.defaultLargeImageKey =
+                projectSettings.online.discordPresence
+                    .defaultLargeImageKey;
+            presence.defaultLargeImageText =
+                projectSettings.online.discordPresence
+                    .defaultLargeImageText;
+            application.Online().ConfigureDiscordPresence(
+                std::move(presence));
+        }
         application.Graphics().SetGraphicsSettings(
             projectSettings.graphics);
         application.Input().SetActions(
@@ -434,6 +473,13 @@ int WINAPI wWinMain(
         }
         else
         {
+            // パッケージが持ち込むSDKのDLLを、Game Moduleが解決
+            // できるようにします（assets/packages/<名前>/ の下に
+            // あるため、既定のDLL探索順では見つかりません）。
+            application.GameModule().SetNativeSearchDirectories(
+                LamaPon::PackageNativeSearchDirectories(
+                    LamaPon::ScanPackageNativeDependencies(
+                        assetRoot).packages));
             static_cast<void>(application.GameModule().Load(
                 projectRoot
                     / L".lamapon"

@@ -246,6 +246,8 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Core/VersionCompare.h
     src/LamaPon/Core/Log.cpp
     src/LamaPon/Core/Log.h
+    src/LamaPon/Core/LocalPersistenceDocuments.cpp
+    src/LamaPon/Core/LocalPersistenceDocuments.h
     src/LamaPon/Core/Noise.h
     src/LamaPon/Core/Profiler.cpp
     src/LamaPon/Core/Profiler.h
@@ -257,14 +259,39 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Core/ProjectMigration.h
     src/LamaPon/Core/PlayerPrefs.cpp
     src/LamaPon/Core/PlayerPrefs.h
+    src/LamaPon/Core/PersistenceProfiles.cpp
+    src/LamaPon/Core/PersistenceProfiles.h
     src/LamaPon/Core/SaveData.cpp
     src/LamaPon/Core/SaveData.h
+    src/LamaPon/Core/SaveSlotValidation.cpp
+    src/LamaPon/Core/SaveSlotValidation.h
     src/LamaPon/Core/ProjectSettings.cpp
     src/LamaPon/Core/ProjectSettings.h
     src/LamaPon/Core/Time.cpp
     src/LamaPon/Core/Time.h
     src/LamaPon/Core/Window.cpp
     src/LamaPon/Core/Window.h
+    src/LamaPon/Online/DiscordAuth.cpp
+    src/LamaPon/Online/DiscordAuth.h
+    src/LamaPon/Online/CloudSaveClient.cpp
+    src/LamaPon/Online/CloudSaveClient.h
+    src/LamaPon/Online/CloudSave.h
+    src/LamaPon/Online/CloudSaveJournal.cpp
+    src/LamaPon/Online/CloudSaveJournal.h
+    src/LamaPon/Online/CloudSaveSynchronizer.cpp
+    src/LamaPon/Online/CloudSaveSynchronizer.h
+    src/LamaPon/Online/DiscordPresence.cpp
+    src/LamaPon/Online/DiscordPresence.h
+    src/LamaPon/Online/DiscordPresenceTesting.h
+    src/LamaPon/Online/OnlineHttpValidation.cpp
+    src/LamaPon/Online/OnlineHttpValidation.h
+    src/LamaPon/Online/OnlinePersistenceCoordinator.cpp
+    src/LamaPon/Online/OnlinePersistenceCoordinator.h
+    src/LamaPon/Online/OnlineServices.cpp
+    src/LamaPon/Online/OnlineServices.h
+    src/LamaPon/Online/OnlineServicesTesting.h
+    src/LamaPon/Online/WindowsOnlinePlatform.cpp
+    src/LamaPon/Online/WindowsOnlinePlatform.h
     src/LamaPon/Graphics/GpuProfiler.cpp
     src/LamaPon/Graphics/GpuProfiler.h
     src/LamaPon/Graphics/GraphicsDevice.cpp
@@ -431,6 +458,7 @@ set(LAMAPON_EDITOR_SOURCES
     src/LamaPon/Editor/EditorExtensionRegistry.h
     src/LamaPon/Editor/EditorLayer.cpp
     src/LamaPon/Editor/EditorLayer.h
+    src/LamaPon/Editor/PersistencePanelState.h
     src/LamaPon/Editor/EditorLayerAnimationTools.cpp
     src/LamaPon/Editor/EditorLayerAssets.cpp
     src/LamaPon/Editor/EditorLayerExtensions.cpp
@@ -457,6 +485,8 @@ set(LAMAPON_EDITOR_SOURCES
     src/LamaPon/Editor/GameModuleBuilder.h
     src/LamaPon/Editor/PackageManager.cpp
     src/LamaPon/Editor/PackageManager.h
+    src/LamaPon/Editor/PackageNativeDependencies.cpp
+    src/LamaPon/Editor/PackageNativeDependencies.h
     src/LamaPon/Editor/ScriptEditorDetection.cpp
     src/LamaPon/Editor/ScriptEditorDetection.h
     src/LamaPon/Editor/ShaderProperties.cpp
@@ -508,7 +538,9 @@ target_link_libraries(LamaPonRuntime
         Ufbx
     PRIVATE
         LamaPon::DirectXTKAudio
+        advapi32
         bcrypt
+        crypt32
         dbghelp
         d3d11
         d3dcompiler
@@ -517,6 +549,7 @@ target_link_libraries(LamaPonRuntime
         d2d1
         dwrite
         ole32
+        shell32
         windowscodecs
         winhttp
 )
@@ -1199,6 +1232,258 @@ if(BUILD_TESTING)
         COMMAND LamaPonPersistenceTests
     )
 
+    add_executable(LamaPonLocalPersistenceDocumentsTests
+        tests/LocalPersistenceDocumentsTests.cpp
+    )
+    target_link_libraries(
+        LamaPonLocalPersistenceDocumentsTests
+        PRIVATE
+            LamaPonRuntime
+    )
+    target_compile_options(LamaPonLocalPersistenceDocumentsTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_test(
+        NAME LocalPersistenceDocuments
+        COMMAND LamaPonLocalPersistenceDocumentsTests
+    )
+    set_tests_properties(
+        LocalPersistenceDocuments
+        PROPERTIES LABELS "persistence;cloud-save;durability"
+    )
+
+    add_executable(LamaPonPersistenceProfileTests
+        tests/PersistenceProfilesTests.cpp
+    )
+    target_link_libraries(
+        LamaPonPersistenceProfileTests
+        PRIVATE
+            LamaPonRuntime
+    )
+    target_compile_options(LamaPonPersistenceProfileTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_test(
+        NAME AccountPersistenceProfiles
+        COMMAND LamaPonPersistenceProfileTests
+    )
+    set_tests_properties(
+        AccountPersistenceProfiles
+        PROPERTIES LABELS "persistence;online;profiles"
+    )
+
+    add_executable(LamaPonOnlineAuthTests
+        tests/OnlineAuthTests.cpp
+    )
+    target_link_libraries(
+        LamaPonOnlineAuthTests
+        PRIVATE
+            LamaPonRuntime
+            ws2_32
+    )
+    target_compile_options(LamaPonOnlineAuthTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_test(
+        NAME OnlineAuthenticationProtocol
+        COMMAND LamaPonOnlineAuthTests
+    )
+    set_tests_properties(
+        OnlineAuthenticationProtocol
+        PROPERTIES LABELS "online;authentication"
+    )
+
+    add_executable(LamaPonCloudSaveClientTests
+        tests/CloudSaveClientTests.cpp
+    )
+    target_link_libraries(
+        LamaPonCloudSaveClientTests
+        PRIVATE
+            LamaPonRuntime
+    )
+    target_compile_options(LamaPonCloudSaveClientTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_test(
+        NAME CloudSaveWireProtocol
+        COMMAND LamaPonCloudSaveClientTests
+    )
+    set_tests_properties(
+        CloudSaveWireProtocol
+        PROPERTIES LABELS "online;cloud-save;protocol"
+    )
+
+    add_executable(LamaPonCloudSaveJournalTests
+        tests/CloudSaveJournalTests.cpp
+    )
+    target_link_libraries(
+        LamaPonCloudSaveJournalTests
+        PRIVATE
+            LamaPonRuntime
+            advapi32
+            bcrypt
+    )
+    target_compile_options(LamaPonCloudSaveJournalTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_test(
+        NAME CloudSaveJournalDurability
+        COMMAND LamaPonCloudSaveJournalTests
+    )
+    set_tests_properties(
+        CloudSaveJournalDurability
+        PROPERTIES LABELS "online;cloud-save;journal;durability"
+    )
+
+    add_executable(LamaPonCloudSaveSynchronizerTests
+        tests/CloudSaveSynchronizerTests.cpp
+    )
+    target_link_libraries(
+        LamaPonCloudSaveSynchronizerTests
+        PRIVATE
+            LamaPonRuntime
+            bcrypt
+    )
+    target_compile_options(LamaPonCloudSaveSynchronizerTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_test(
+        NAME CloudSaveSynchronization
+        COMMAND LamaPonCloudSaveSynchronizerTests
+    )
+    set_tests_properties(
+        CloudSaveSynchronization
+        PROPERTIES LABELS "online;cloud-save;synchronization"
+    )
+
+    add_executable(LamaPonOnlineServicesTests
+        tests/OnlineServicesTests.cpp
+    )
+    target_link_libraries(
+        LamaPonOnlineServicesTests
+        PRIVATE
+            LamaPonRuntime
+    )
+    target_compile_options(LamaPonOnlineServicesTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_test(
+        NAME OnlineServicesStateMachine
+        COMMAND LamaPonOnlineServicesTests
+    )
+    set_tests_properties(
+        OnlineServicesStateMachine
+        PROPERTIES LABELS "online;state-machine"
+    )
+
+    add_executable(LamaPonPackageNativeDependencyTests
+        tests/PackageNativeDependencyTests.cpp
+    )
+    # PackageNativeDependenciesはEditor側のソースです
+    # （LamaPonRuntime.dllからは公開していません）。
+    # LamaPonPackageManagerTestsと同じく静的ライブラリへリンクします。
+    target_link_libraries(
+        LamaPonPackageNativeDependencyTests
+        PRIVATE
+            LamaPonEditor
+    )
+    target_compile_options(
+        LamaPonPackageNativeDependencyTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_test(
+        NAME PackageNativeDependencies
+        COMMAND LamaPonPackageNativeDependencyTests
+    )
+    set_tests_properties(
+        PackageNativeDependencies
+        PROPERTIES LABELS "packages;native"
+    )
+
+    add_executable(LamaPonDiscordPresenceTests
+        tests/DiscordPresenceTests.cpp
+    )
+    target_link_libraries(
+        LamaPonDiscordPresenceTests
+        PRIVATE
+            LamaPonRuntime
+    )
+    target_compile_options(LamaPonDiscordPresenceTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    # Discordクライアントを必要としません。Fake backendだけで
+    # 動かすため、CIの必須テストに含められます。
+    add_test(
+        NAME DiscordRichPresence
+        COMMAND LamaPonDiscordPresenceTests
+    )
+    set_tests_properties(
+        DiscordRichPresence
+        PROPERTIES LABELS "online;discord;presence"
+    )
+
+    add_executable(LamaPonOnlinePersistenceCoordinatorTests
+        tests/OnlinePersistenceCoordinatorTests.cpp
+    )
+    target_link_libraries(
+        LamaPonOnlinePersistenceCoordinatorTests
+        PRIVATE
+            LamaPonRuntime
+    )
+    target_compile_options(LamaPonOnlinePersistenceCoordinatorTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_test(
+        NAME OnlinePersistenceActivation
+        COMMAND LamaPonOnlinePersistenceCoordinatorTests
+    )
+    set_tests_properties(
+        OnlinePersistenceActivation
+        PROPERTIES LABELS "online;persistence;profiles;cloud-save"
+    )
+
+    add_executable(LamaPonWindowsOnlinePlatformTests
+        tests/WindowsOnlinePlatformTests.cpp
+    )
+    target_link_libraries(
+        LamaPonWindowsOnlinePlatformTests
+        PRIVATE
+            LamaPonRuntime
+    )
+    target_compile_options(LamaPonWindowsOnlinePlatformTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_test(
+        NAME WindowsOnlineCredentials
+        COMMAND LamaPonWindowsOnlinePlatformTests
+    )
+    set_tests_properties(
+        WindowsOnlineCredentials
+        PROPERTIES LABELS "online;credentials;windows"
+    )
+
     add_executable(LamaPonDocumentMigrationTests
         tests/DocumentMigrationTests.cpp
     )
@@ -1564,6 +1849,9 @@ if(BUILD_TESTING)
         tests/GameModuleBuilderTests.cpp
         src/LamaPon/Editor/GameModuleBuilder.cpp
         src/LamaPon/Editor/GameModuleBuilder.h
+        # ビルドコマンドの組み立てがパッケージのnative設定を読むため。
+        src/LamaPon/Editor/PackageNativeDependencies.cpp
+        src/LamaPon/Editor/PackageNativeDependencies.h
         tools/LamaPonCli/BuildDiagnostics.h
     )
     target_include_directories(LamaPonGameModuleBuilderTests PRIVATE
@@ -1719,11 +2007,15 @@ install(
     DESTINATION "."
 )
 # assetsはエンジンが実行時に参照する組み込みアセットだけを
-# 同梱します（shaders/materialsはHub::CreateProjectが新規プロジェクト
+# 同梱します（shadersとEngineロゴはHub::CreateProjectが新規プロジェクト
 # へコピー、icons/filetypesはエディターのAsset Browser種別アイコン）。
 install(
     DIRECTORY assets/shaders
     DESTINATION assets
+)
+install(
+    FILES assets/textures/LamaPonEngineLogo.png
+    DESTINATION assets/textures
 )
 install(
     DIRECTORY assets/icons/filetypes
@@ -1746,6 +2038,17 @@ install(
         PATTERN "Crypto.h" EXCLUDE
         PATTERN "AssetPacker.h" EXCLUDE
         PATTERN "AssetArchive.h" EXCLUDE
+        PATTERN "DiscordAuth.h" EXCLUDE
+        PATTERN "CloudSave.h" EXCLUDE
+        PATTERN "CloudSaveClient.h" EXCLUDE
+        PATTERN "CloudSaveJournal.h" EXCLUDE
+        PATTERN "CloudSaveSynchronizer.h" EXCLUDE
+        PATTERN "LocalPersistenceDocuments.h" EXCLUDE
+        PATTERN "OnlineHttpValidation.h" EXCLUDE
+        PATTERN "OnlinePersistenceCoordinator.h" EXCLUDE
+        PATTERN "SaveSlotValidation.h" EXCLUDE
+        PATTERN "OnlineServicesTesting.h" EXCLUDE
+        PATTERN "WindowsOnlinePlatform.h" EXCLUDE
 )
 install(
     FILES

@@ -1,4 +1,7 @@
 #include "LamaPon/Editor/PackageManager.h"
+#include "LamaPon/Editor/PackageNativeDependencies.h"
+
+#include <nlohmann/json.hpp>
 
 #include <cstdlib>
 #include <filesystem>
@@ -354,6 +357,110 @@ namespace
             unsafeRejected,
             "unsafe package names must be rejected");
     }
+
+    // ネイティブ依存の宣言は、assets/へ入る前に検証します。
+    void TestNativeManifestIsValidatedOnInstall()
+    {
+        const auto root =
+            std::filesystem::current_path()
+            / "test-output"
+            / "package-manager-native";
+        std::filesystem::remove_all(root);
+        const auto assetRoot = root / "assets";
+        std::filesystem::create_directories(assetRoot);
+
+        LamaPon::PackageInfo package;
+        package.name = "my-sdk";
+        package.displayName = "My SDK";
+        package.version = "1.0";
+        package.minimumEngineVersion = "2026.7.31";
+
+        const auto install =
+            [&assetRoot, &package, &root](
+                const std::string& manifest,
+                const char* const folder)
+        {
+            const auto source = root / folder;
+            std::filesystem::remove_all(source);
+            WriteFile(source / "Adapter.cpp", "// adapter");
+            WriteFile(source / "package.json", manifest);
+            LamaPon::InstallPackage(
+                assetRoot,
+                package,
+                ZipDirectory(
+                    source,
+                    root / (std::string{ folder } + ".zip")));
+        };
+
+        bool rejected = false;
+        try
+        {
+            install(
+                R"({"name":"my-sdk","version":"1.0","native":{)"
+                R"("libraries":["../../escape.lib"]}})",
+                "escaping");
+        }
+        catch (const std::exception&)
+        {
+            rejected = true;
+        }
+        Require(
+            rejected,
+            "a package that points outside its own folder must"
+            " not install");
+        Require(
+            !std::filesystem::exists(
+                LamaPon::PackageInstallDirectory(
+                    assetRoot,
+                    package.name)),
+            "a rejected package must leave nothing behind");
+
+        install(
+            R"({"name":"my-sdk","version":"1.0","native":{)"
+            R"("includeDirectories":["sdk/include"],)"
+            R"("libraries":["sdk/lib/my_sdk.lib"],)"
+            R"("runtimeFiles":["sdk/bin/my_sdk.dll"],)"
+            R"("defines":["MY_SDK_ENABLED"]}})",
+            "valid");
+        const auto installed =
+            LamaPon::PackageInstallDirectory(
+                assetRoot,
+                package.name);
+        Require(
+            std::filesystem::is_regular_file(
+                installed / "package.json"),
+            "a valid native package must install");
+
+        // 作者が書いたnativeは、パッケージを作り直しても残します。
+        static_cast<void>(
+            LamaPon::BuildPackage(
+                assetRoot,
+                package,
+                root / "dist"));
+        const auto manifest = nlohmann::json::parse(
+            ReadFile(installed / "package.json"));
+        Require(
+            manifest.contains("native")
+                && manifest.at("native").at("libraries")
+                    .at(0).get<std::string>()
+                    == "sdk/lib/my_sdk.lib"
+                && manifest.at("version").get<std::string>()
+                    == package.version,
+            "rebuilding a package must keep its native block");
+
+        const auto scan =
+            LamaPon::ScanPackageNativeDependencies(assetRoot);
+        Require(
+            scan.errors.empty()
+                && scan.packages.size() == 1
+                && scan.packages.front().defines
+                    == std::vector<std::string>{
+                        "MY_SDK_ENABLED" }
+                && scan.packages.front().runtimeFiles.front()
+                    == (installed / "sdk" / "bin" / "my_sdk.dll")
+                        .lexically_normal(),
+            "an installed native package must be discoverable");
+    }
 }
 
 int main()
@@ -363,6 +470,7 @@ int main()
         TestParsing();
         TestValidation();
         TestInstallRoundTrip();
+        TestNativeManifestIsValidatedOnInstall();
         std::cout << "Package manager tests passed.\n";
         return 0;
     }

@@ -43,6 +43,7 @@
 #include <fstream>
 #include <optional>
 #include <stdexcept>
+#include <system_error>
 #include <utility>
 
 using namespace LamaPon::EditorDetail;
@@ -3747,6 +3748,49 @@ namespace LamaPon
                 return false;
             }
 
+            const bool deletingStartupScene =
+                IsSameAssetReference(
+                    deletedAsset,
+                    m_projectSettings.startupScene);
+            const auto previousStartupScene =
+                m_projectSettings.startupScene;
+            if (deletingStartupScene)
+            {
+                const auto replacementStartupScene =
+                    m_scenePath.lexically_relative(root);
+                if (replacementStartupScene.empty()
+                    || replacementStartupScene.is_absolute()
+                    || !std::filesystem::is_regular_file(
+                        root / replacementStartupScene))
+                {
+                    std::filesystem::rename(
+                        stagingPath,
+                        source,
+                        error);
+                    m_assetFileDialogError =
+                        "起動シーンを削除する前に、別の保存済みシーンを"
+                        "開いてください。";
+                    return false;
+                }
+
+                try
+                {
+                    m_projectSettings.startupScene =
+                        replacementStartupScene;
+                    SaveProjectConfiguration();
+                }
+                catch (...)
+                {
+                    m_projectSettings.startupScene =
+                        previousStartupScene;
+                    std::filesystem::rename(
+                        stagingPath,
+                        source,
+                        error);
+                    throw;
+                }
+            }
+
             if (!std::filesystem::remove(stagingPath, error) || error)
             {
                 std::error_code rollbackError;
@@ -3754,6 +3798,20 @@ namespace LamaPon
                     stagingPath,
                     source,
                     rollbackError);
+                if (deletingStartupScene)
+                {
+                    m_projectSettings.startupScene =
+                        previousStartupScene;
+                    try
+                    {
+                        SaveProjectConfiguration();
+                    }
+                    catch (...)
+                    {
+                        rollbackError = std::make_error_code(
+                            std::errc::io_error);
+                    }
+                }
                 m_graphics.Assets().Clear();
                 m_assetFileDialogError =
                     rollbackError

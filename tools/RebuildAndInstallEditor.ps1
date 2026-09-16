@@ -159,6 +159,47 @@ if ($LASTEXITCODE -ne 0) {
     Fail "インストールに失敗しました。上のログを確認してください。"
 }
 
+# CMakeが成功を返しても、Windows側で以前の実行ファイルが残ると、
+# EXEとRuntime DLLの世代が食い違って「エントリ ポイントが
+# 見つかりません」になる。起動に使うバイナリはビルド成果物との
+# ハッシュを照合し、違っていれば明示的に同期する。
+$runtimeFiles = @(
+    "LamaPonRuntime.dll",
+    "LamaPonRuntime.lib",
+    "LamaPonEditor.exe",
+    "LamaPonHub.exe",
+    "LamaPonGame.exe",
+    "LamaPonCli.exe"
+)
+foreach ($fileName in $runtimeFiles) {
+    $source = Join-Path $buildDir $fileName
+    $destination = Join-Path $installDir $fileName
+    if (-not (Test-Path $source)) {
+        Fail "ビルド成果物が見つかりません: $source"
+    }
+
+    $sourceHash = (Get-FileHash -Algorithm SHA256 $source).Hash
+    $destinationHash = if (Test-Path $destination) {
+        (Get-FileHash -Algorithm SHA256 $destination).Hash
+    }
+    else {
+        ""
+    }
+    if ($sourceHash -ne $destinationHash) {
+        try {
+            Copy-Item -LiteralPath $source -Destination $destination -Force
+        }
+        catch {
+            Fail "実行ファイルを同期できません: $destination`n$($_.Exception.Message)"
+        }
+    }
+
+    $installedHash = (Get-FileHash -Algorithm SHA256 $destination).Hash
+    if ($sourceHash -ne $installedHash) {
+        Fail "インストール後の実行ファイルが一致しません: $destination"
+    }
+}
+
 Write-Host ""
 Write-Host "[3/3] 完了しました。LamaPon Hub を起動します..."
 Start-Process (Join-Path $installDir "LamaPonHub.exe")
