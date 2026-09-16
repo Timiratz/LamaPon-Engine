@@ -1,7 +1,9 @@
 #include "LamaPon/Core/SaveData.h"
 
 #include "LamaPon/Core/DocumentMigration.h"
+#include "LamaPon/Core/LocalPersistenceDocuments.h"
 #include "LamaPon/Core/PathUtils.h"
+#include "LamaPon/Core/SaveSlotValidation.h"
 
 #include <Windows.h>
 #include <nlohmann/json.hpp>
@@ -16,34 +18,7 @@ namespace
         const std::filesystem::path& path,
         const std::string_view text)
     {
-        std::filesystem::create_directories(
-            path.parent_path());
-        auto temporary = path;
-        temporary += L".tmp";
-        std::ofstream output(
-            temporary,
-            std::ios::binary | std::ios::trunc);
-        if (!output)
-        {
-            throw std::runtime_error(
-                "Could not create temporary save slot: "
-                + LamaPon::PathToUtf8(temporary));
-        }
-        output << text;
-        output.close();
-        if (!output
-            || !MoveFileExW(
-                temporary.c_str(),
-                path.c_str(),
-                MOVEFILE_REPLACE_EXISTING
-                    | MOVEFILE_WRITE_THROUGH))
-        {
-            std::error_code error;
-            std::filesystem::remove(temporary, error);
-            throw std::runtime_error(
-                "Could not replace save slot: "
-                + LamaPon::PathToUtf8(path));
-        }
+        LamaPon::Detail::DurablePublishLocalDocument(path, text);
     }
 }
 
@@ -55,30 +30,64 @@ namespace LamaPon
     {
     }
 
-    void SaveDataStore::ValidateSlot(
-        const std::string_view slot)
+    void SaveDataStore::Rebind(
+        std::filesystem::path directory) noexcept
     {
-        if (slot.empty()
-            || slot.size() > 64
-            || slot == "."
-            || slot == ".."
-            || slot.find_first_of("<>:\"/\\|?*")
-                != std::string_view::npos
-            || slot.find_first_not_of(" \t\r\n.")
-                == std::string_view::npos
-            || slot.back() == ' '
-            || slot.back() == '.'
-            || Utf8ToWide(slot).empty())
+        if (m_bindingLeaseOwner)
         {
-            throw std::invalid_argument(
-                "Save slot must be valid UTF-8 filename text with 1 to 64 bytes.");
+            return;
         }
+        m_directory.swap(directory);
+    }
+
+    bool SaveDataStore::AcquireBindingLease(
+        const void* const owner) noexcept
+    {
+        if (!owner || m_bindingLeaseOwner)
+        {
+            return false;
+        }
+        m_bindingLeaseOwner = owner;
+        return true;
+    }
+
+    bool SaveDataStore::ReleaseBindingLease(
+        const void* const owner) noexcept
+    {
+        if (!owner || m_bindingLeaseOwner != owner)
+        {
+            return false;
+        }
+        m_bindingLeaseOwner = nullptr;
+        return true;
+    }
+
+    bool SaveDataStore::IsBindingLeased() const noexcept
+    {
+        return m_bindingLeaseOwner != nullptr;
+    }
+
+    bool SaveDataStore::BindingLeaseOwnedBy(
+        const void* const owner) const noexcept
+    {
+        return owner && m_bindingLeaseOwner == owner;
+    }
+
+    void SaveDataStore::RelocateBinding(
+        std::filesystem::path directory,
+        const void* const owner) noexcept
+    {
+        if (!BindingLeaseOwnedBy(owner))
+        {
+            return;
+        }
+        m_directory.swap(directory);
     }
 
     std::filesystem::path SaveDataStore::SlotPath(
         const std::string_view slot) const
     {
-        ValidateSlot(slot);
+        Detail::ValidateSaveSlotName(slot);
         return m_directory
             / (PathFromUtf8(slot).wstring()
                 + L".save.json");
@@ -96,9 +105,18 @@ namespace LamaPon
             { "slot", slot },
             { "data", payload }
         };
+        const auto path = SlotPath(slot);
+        const Detail::LocalPersistenceCommitEvent event{
+            Detail::LocalPersistenceResourceKind::SaveData,
+            this,
+            &path,
+            slot,
+            false
+        };
         WriteAtomically(
-            SlotPath(slot),
+            path,
             document.dump(2) + '\n');
+        Detail::NotifyLocalPersistenceCommit(event);
     }
 
     std::optional<std::string>
@@ -123,6 +141,16 @@ namespace LamaPon
                 "Unsupported save slot: "
                 + PathToUtf8(path));
         }
+        if (!document.contains("slot")
+            || !document["slot"].is_string()
+            || !Detail::EquivalentSaveSlotNames(
+                document["slot"].get<std::string>(),
+                slot))
+        {
+            throw std::runtime_error(
+                "Save slot identity does not match its filename: "
+                + PathToUtf8(path));
+        }
         return document["data"].dump();
     }
 
@@ -136,16 +164,22 @@ namespace LamaPon
     bool SaveDataStore::DeleteSlot(
         const std::string_view slot)
     {
-        std::error_code error;
-        const bool removed =
-            std::filesystem::remove(
-                SlotPath(slot),
-                error);
-        if (error)
+        const auto path = SlotPath(slot);
+        const Detail::LocalPersistenceCommitEvent event{
+            Detail::LocalPersistenceResourceKind::SaveData,
+            this,
+            &path,
+            slot,
+            true
+        };
+        if (!Detail::PrepareLocalPersistenceDelete(event))
         {
-            throw std::runtime_error(
-                "Could not delete save slot: "
-                + error.message());
+            return false;
+        }
+        const bool removed = Detail::DurableDeleteLocalDocument(path);
+        if (removed)
+        {
+            Detail::NotifyLocalPersistenceCommit(event);
         }
         return removed;
     }

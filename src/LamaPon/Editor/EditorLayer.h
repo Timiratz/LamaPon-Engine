@@ -9,6 +9,7 @@
 #include "LamaPon/Core/Log.h"
 #include "LamaPon/Animation/AnimationClip.h"
 #include "LamaPon/Editor/PackageManager.h"
+#include "LamaPon/Editor/PersistencePanelState.h"
 #include "LamaPon/Editor/ScriptEditorDetection.h"
 #include "LamaPon/Editor/ShaderProperties.h"
 #include "LamaPon/Graphics/RenderTarget.h"
@@ -40,6 +41,7 @@ namespace LamaPon
     class BgmLoopPanel;
     class GameExportDialog;
     class GraphicsDevice;
+    class OnlineServices;
     class PlayerPrefs;
     class SaveDataStore;
     class Scene;
@@ -72,6 +74,7 @@ namespace LamaPon
             Scene& scene,
             PlayerPrefs& playerPrefs,
             SaveDataStore& saveData,
+            OnlineServices& onlineServices,
             std::filesystem::path scenePath,
             std::filesystem::path engineRoot,
             std::string buildConfiguration);
@@ -513,6 +516,8 @@ namespace LamaPon
         void DrawProjectSettingsInputSection();
         void DrawProjectSettingsScriptingSection();
         void DrawProjectSettingsBuildSection();
+        void DrawProjectSettingsOnlineSection();
+        void DrawProjectSettingsDiscordPresenceSection();
         [[nodiscard]] bool SaveProjectSettingsDraft();
         void BrowseForScriptEditor();
         [[nodiscard]] std::filesystem::path ProjectSettingsPath() const;
@@ -706,6 +711,8 @@ namespace LamaPon
         Scene& m_scene;
         PlayerPrefs& m_playerPrefs;
         SaveDataStore& m_saveData;
+        OnlineServices& m_onlineServices;
+        Detail::PersistencePanelState m_persistencePanelState;
         std::filesystem::path m_scenePath;
         std::filesystem::path m_engineRoot;
         std::string m_buildConfiguration;
@@ -759,6 +766,24 @@ namespace LamaPon
         std::array<char, 512> m_projectGameIconBuffer{};
         std::array<int, 2> m_projectWindowSize{ 1280, 720 };
         bool m_projectSplashScreenDraft{ true };
+        OnlineProjectSettings m_projectOnlineDraft;
+        std::array<char, 2049>
+            m_projectOnlineServiceBaseUrlBuffer{};
+        std::array<char, 129> m_projectOnlineGameIdBuffer{};
+        std::array<char, 65>
+            m_projectOnlineEnvironmentIdBuffer{};
+        std::array<char, 33>
+            m_projectDiscordPresenceApplicationIdBuffer{};
+        std::array<char, 257>
+            m_projectDiscordPresenceImageKeyBuffer{};
+        std::array<char, 129>
+            m_projectDiscordPresenceImageTextBuffer{};
+        // Rich Presenceの動作確認用。project.jsonへは保存しません。
+        std::array<char, 129>
+            m_projectDiscordPresenceTestDetailsBuffer{};
+        std::array<char, 129>
+            m_projectDiscordPresenceTestStateBuffer{};
+        std::string m_projectDiscordPresenceTestMessage;
         // プロジェクト設定で選択中のカテゴリー（0=ゲーム）。
         int m_projectSettingsCategory{};
         std::optional<GameExportTarget>
@@ -807,15 +832,6 @@ namespace LamaPon
         std::string m_packageBuildError;
         std::string m_packageBuildIndexEntry;
         std::array<char, 96> m_editorPresetNameBuffer{};
-        std::array<char, 128> m_playerPrefKeyBuffer{};
-        std::array<char, 512> m_playerPrefValueBuffer{};
-        std::array<char, 128> m_saveSlotBuffer{};
-        std::array<char, 4096> m_saveJsonBuffer{
-            '{', '}', '\0'
-        };
-        std::string m_selectedSaveSlot;
-        int m_playerPrefType{};
-        bool m_playerPrefBoolean{};
         std::string m_assetFolderDialogError;
         std::string m_assetFileDialogError;
         std::string m_assetDeleteScanError;

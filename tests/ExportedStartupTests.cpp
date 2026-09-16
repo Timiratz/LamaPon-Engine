@@ -60,6 +60,13 @@ int main()
         settings.startupScene = "scenes/Main.scene.json";
         settings.splashScreenEnabled = false;
         settings.stripShaderSourceOnExport = false;
+        // --validate-startupは、オンライン設定が有効な配布物でも外部へ
+        // 接続せず、ローカルの起動検証だけで完了しなければなりません。
+        settings.online.enabled = true;
+        settings.online.serviceBaseUrl =
+            "https://online.example.test";
+        settings.online.gameId = "com.example.startup-test";
+        settings.online.environmentId = "production";
         {
             std::ofstream scene(assets / settings.startupScene);
             scene << R"({"format":"LamaPonScene","objects":[

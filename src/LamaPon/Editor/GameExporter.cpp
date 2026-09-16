@@ -8,6 +8,7 @@
 #include "LamaPon/Core/ProjectSettings.h"
 #include "LamaPon/Editor/ExeIconTool.h"
 #include "LamaPon/Editor/GameModuleBuilder.h"
+#include "LamaPon/Editor/PackageNativeDependencies.h"
 #include "LamaPon/Graphics/ShaderCompiler.h"
 
 #include <nlohmann/json.hpp>
@@ -695,7 +696,31 @@ namespace LamaPon
                 "Export directory cannot contain the runtime directory",
                 outputDirectory);
         }
-        ValidateProjectSettings(options.projectSettings);
+        // 開発用HTTP loopback許可を含むオンライン設定は、配布物を
+        // 作り始める前に拒否します。staging作成後まで遅らせると、
+        // 長いシェーダー処理を終えてから失敗してしまいます。
+        ValidateProjectSettings(
+            options.projectSettings,
+            ProjectSettingsFileType::GamePackage);
+
+        // パッケージが宣言したネイティブDLLは、実行ファイルの隣へ
+        // 同梱します。壊れた宣言・配置忘れ・名前の衝突は、書き出しの
+        // 作業を始める前に止めます。
+        const auto packageScan =
+            ScanPackageNativeDependencies(assetDirectory);
+        if (!packageScan.errors.empty())
+        {
+            std::string message =
+                "パッケージのnative設定を読めません:";
+            for (const auto& failure : packageScan.errors)
+            {
+                message += "\n  - " + failure;
+            }
+            throw std::runtime_error(message);
+        }
+        RequirePackageNativeFiles(packageScan.packages);
+        const auto packageRuntimeFiles =
+            CollectPackageRuntimeFiles(packageScan.packages);
 
         const auto gameExecutable =
             runtimeDirectory / L"LamaPonGame.exe";
@@ -929,6 +954,28 @@ namespace LamaPon
                             destination);
                     }
                 }
+            }
+
+            // パッケージが宣言したネイティブDLLも実行ファイルの隣へ
+            // 置きます（assets/packages/<名前>/ のままでは、Windows
+            // ローダーが見つけられません）。
+            for (const auto& runtimeFile : packageRuntimeFiles)
+            {
+                const auto destination =
+                    stagingDirectory / runtimeFile.fileName;
+                if (std::filesystem::exists(destination))
+                {
+                    throw std::runtime_error(
+                        "パッケージ " + runtimeFile.packageName
+                        + " が同梱するDLLと同じ名前のファイルが"
+                          "すでにあります: "
+                        + LamaPon::PathToUtf8(
+                            std::filesystem::path{
+                                runtimeFile.fileName }));
+                }
+                std::filesystem::copy_file(
+                    runtimeFile.source,
+                    destination);
             }
             // HLSLソースを外す設定なら、アーカイブから除きます。
             // .hlsliも同じ（#include専用なので単体では使えませんが、

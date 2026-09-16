@@ -1,6 +1,7 @@
 #include "LamaPon/Editor/PackageManager.h"
 
 #include "LamaPon/Core/PathUtils.h"
+#include "LamaPon/Editor/PackageNativeDependencies.h"
 
 #include <Windows.h>
 
@@ -10,6 +11,7 @@
 #include <cctype>
 #include <chrono>
 #include <fstream>
+#include <iterator>
 #include <stdexcept>
 #include <system_error>
 #include <vector>
@@ -379,6 +381,24 @@ namespace LamaPon
                 output << manifest.dump(2) << '\n';
             }
 
+            // ネイティブ依存の宣言は、assets/へ入る前に検証します。
+            // 不正な指定はビルドと書き出しの両方へ効くため、
+            // インストール時点で止めます。
+            {
+                std::ifstream manifestInput(
+                    manifestPath,
+                    std::ios::binary);
+                const std::string manifestText(
+                    std::istreambuf_iterator<char>{
+                        manifestInput },
+                    std::istreambuf_iterator<char>{});
+                static_cast<void>(
+                    ParsePackageNativeDependency(
+                        manifestText,
+                        staging,
+                        package.name));
+            }
+
             // 完成したステージングで既存を置き換えます。
             //
             // 既存パッケージを先に退避し、新版の配置に失敗した場合は
@@ -635,8 +655,43 @@ namespace LamaPon
                 + PathToUtf8(source));
         }
 
+        // 手で書いたnativeの宣言は、作り直しても残します
+        // （作者がSDKの置き場所を書き込む唯一の場所です）。
+        const auto manifestPath =
+            source / L"package.json";
+        nlohmann::json nativeSection;
+        if (std::filesystem::is_regular_file(manifestPath))
+        {
+            std::ifstream input(
+                manifestPath,
+                std::ios::binary);
+            const std::string manifestText(
+                std::istreambuf_iterator<char>{ input },
+                std::istreambuf_iterator<char>{});
+            // 不正なnativeを配布物へ載せないよう、ここで検証します。
+            static_cast<void>(
+                ParsePackageNativeDependency(
+                    manifestText,
+                    source,
+                    package.name));
+            try
+            {
+                const auto previous =
+                    nlohmann::json::parse(manifestText);
+                if (previous.is_object()
+                    && previous.contains("native"))
+                {
+                    nativeSection = previous.at("native");
+                }
+            }
+            catch (const std::exception&)
+            {
+                // 読めないpackage.jsonは作り直します。
+            }
+        }
+
         // フォルダー内のpackage.jsonを最新の内容で作り直します。
-        const nlohmann::json manifest{
+        nlohmann::json manifest{
             { "name", package.name },
             {
                 "displayName",
@@ -652,8 +707,10 @@ namespace LamaPon
                 package.minimumEngineVersion
             }
         };
-        const auto manifestPath =
-            source / L"package.json";
+        if (!nativeSection.is_null())
+        {
+            manifest["native"] = std::move(nativeSection);
+        }
         {
             std::ofstream output(
                 manifestPath,
@@ -693,6 +750,9 @@ namespace LamaPon
         // 一覧へ載せる場合のひな形。配布先は作者が自分で決めるため
         // URLはプレースホルダーにしています。
         nlohmann::json indexEntry = manifest;
+        // 一覧はパッケージを選ぶための情報だけを載せます。ビルド用の
+        // nativeはZip内のpackage.jsonが正本です。
+        indexEntry.erase("native");
         indexEntry["downloadUrl"] =
             "https://example.com/packages/"
             + PathToUtf8(zipPath.filename());

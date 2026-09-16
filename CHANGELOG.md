@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### パッケージのネイティブライブラリ対応
+
+- `package.json`へ`native`（`includeDirectories` / `libraries` / `runtimeFiles` / `defines`）を書けるようにし、外部SDKを含むパッケージを配れるようにした。Game Moduleのビルド、編集中のプレイ、ゲームの書き出しへ自動で反映される。
+- 指定できるのはこの4項目だけで、コンパイル／リンクオプションは渡せない。パッケージフォルダーの外を指すパス、拡張子違い、未知のキー、不正なマクロ名はインストール時に拒否する。
+- エンジン自身のDLLと同じ名前、および複数パッケージで重複するDLL名は同梱できない。
+- SDKの配置忘れは、リンカーのエラーではなく「どのパッケージの何が無いか」を名指しする案内で止める。
+- 「パッケージを作成...」で`package.json`を作り直しても、手で書いた`native`は残る。
+
+### Discord Rich Presence
+
+- プレイ中の状況をDiscordへ表示する汎用APIを追加。`DiscordActivity`の`details`、`state`、大小の画像、開始／終了タイムスタンプをゲーム制作者が自由に設定でき、ジャンルを前提にしない。
+- Rich PresenceはDiscordアカウント連携・クラウドセーブから完全に独立。ログインなしでも使え、ログインしていてもRich Presenceだけを切れる。
+- Discord固有APIを`DiscordPresenceBackend`アダプターへ閉じ込め、ゲーム側コードからDiscord SDKの型を使わせない。LamaPonはSDKを同梱しないため、アダプター未登録・Discord未起動でも警告ログだけを出してゲームは通常どおり動く。
+- プロジェクト設定「オンライン」にRich Presence設定（Application ID、既定の大画像キーとテキスト）とエディターからの動作確認を追加。`project.json`の`online.discordPresence`へ公開情報だけを保存し、`discordPresence`が無い古いプロジェクトは無効として読み込む。
+- C++ ScriptへDiscord Rich Presence APIを追加したため、Game Module APIを23へ更新。
+
+### オンラインアカウントとクラウドセーブ
+
+- Windows x64ゲームに、自前バックエンドを経由するDiscordログイン、保護したセッション復元、ログアウトを追加。
+- PlayerPrefsとJSONセーブスロットを内部プレイヤーIDごとに分離し、オフライン対応の永続ジャーナル、クラウド同期、ETag競合解決、強制終了後の復旧操作を追加。
+- プロジェクトのオンライン設定、エディターのアカウント／同期／復旧UI、C++ Script API、通信契約と安全な運用ガイドを追加。Game Module APIを22へ更新。
+
 ### ファイル名の統一
 
 - サンプルのアニメーションとPrefabを英語ファイル名へ変更し、`.meta`のGUIDを維持して参照を更新。

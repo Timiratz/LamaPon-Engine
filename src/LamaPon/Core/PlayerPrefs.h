@@ -9,6 +9,14 @@
 
 namespace LamaPon
 {
+    class PersistenceProfiles;
+    namespace Detail
+    {
+        struct LocalPersistenceDocument;
+        class LocalPersistenceDocuments;
+        class OnlinePersistenceCoordinator;
+    }
+
     enum class PlayerPrefType
     {
         Integer,
@@ -26,7 +34,26 @@ namespace LamaPon
         PlayerPrefs(const PlayerPrefs&) = delete;
         PlayerPrefs& operator=(const PlayerPrefs&) = delete;
 
+        // 現在のファイルを読み直します。読み込みに失敗した場合は、
+        // ファイルパス・値・dirty状態を保ち、load failureだけを記録
+        // して元ファイルを保護します。
         void Load();
+        void Reload();
+
+        // Load/Reloadで現在のファイルを読めなかった後は、破損・未来
+        // version・ACLエラー等の元ファイルを自動保存で上書きしない
+        // ようSave()をfail-closedにします。外部でファイルを修復した
+        // 後はRecoverAfterLoadFailure()、内容を明示的に破棄するときは
+        // ResetAfterLoadFailure()を呼んで解除してください。
+        [[nodiscard]] bool HasLoadFailure() const noexcept;
+        void RecoverAfterLoadFailure();
+        void ResetAfterLoadFailure();
+
+        // 保存先を切り替え、新しいファイルの値を読み込みます。
+        // 未保存の変更がある間は切り替えを拒否します。先にSave()か
+        // Reload()を明示的に呼んでください。読み込み失敗時は現在の
+        // プロファイルを保つため、アカウント切り替えにも使えます。
+        void Rebind(std::filesystem::path filePath);
         void Save();
         [[nodiscard]] bool IsDirty() const noexcept;
         [[nodiscard]] const std::filesystem::path&
@@ -58,6 +85,35 @@ namespace LamaPon
         [[nodiscard]] std::string SerializeToJson() const;
 
     private:
+        friend class PersistenceProfiles;
+        friend class Detail::LocalPersistenceDocuments;
+        friend class Detail::OnlinePersistenceCoordinator;
+
+        // PersistenceProfilesが、検証済みの状態をfinal rename後に
+        // 例外なしで公開するための内部トランザクション操作です。
+        void RelocateBinding(
+            std::filesystem::path filePath) noexcept;
+        void SwapLoadedState(PlayerPrefs& other) noexcept;
+        [[nodiscard]] bool AcquireBindingLease(
+            const void* owner) noexcept;
+        [[nodiscard]] bool ReleaseBindingLease(
+            const void* owner) noexcept;
+        [[nodiscard]] bool IsBindingLeased() const noexcept;
+        [[nodiscard]] bool BindingLeaseOwnedBy(
+            const void* owner) const noexcept;
+        // LocalPersistenceDocumentsがsecure/strict readerの同一snapshotを
+        // disk再openなしでprepared stateへ変換する内部seamです。
+        void LoadValidatedSnapshot(
+            std::string_view fullDocument,
+            bool missing);
+        void ApplyRemoteDocumentAtomically(std::string_view fullDocument);
+        void DeleteRemoteDocumentAtomically();
+        [[nodiscard]] bool ApplyRemoteDocumentAtomicallyIfUnchanged(
+            std::string_view fullDocument,
+            const Detail::LocalPersistenceDocument& observed);
+        [[nodiscard]] bool DeleteRemoteDocumentAtomicallyIfUnchanged(
+            const Detail::LocalPersistenceDocument& observed);
+
         struct Implementation;
         std::unique_ptr<Implementation> m_implementation;
     };

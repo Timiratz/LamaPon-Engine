@@ -10,6 +10,8 @@
 #include "LamaPon/Core/SaveData.h"
 #include "LamaPon/Core/Time.h"
 #include "LamaPon/Input/InputSystem.h"
+#include "LamaPon/Online/OnlinePersistenceCoordinator.h"
+#include "LamaPon/Online/OnlineServices.h"
 #include "LamaPon/Scene/Scene.h"
 #include "LamaPon/Scene/SceneManager.h"
 #include "LamaPon/Scripting/GameModuleHost.h"
@@ -97,7 +99,36 @@ namespace LamaPon
             "LamaPonを終了します。");
         // 先に登録を外します。破棄済みのPlayerPrefsへScriptが
         // 触れないようにするためです。
-        SetActivePlayerPrefs(nullptr);
+        if (m_onlineServices
+            && ActiveOnlineServices() == m_onlineServices.get())
+        {
+            SetActiveOnlineServices(nullptr);
+        }
+        if (m_playerPrefs
+            && ActivePlayerPrefs() == m_playerPrefs.get())
+        {
+            SetActivePlayerPrefs(nullptr);
+        }
+        if (m_onlineServices)
+        {
+            static_cast<void>(
+                Detail::OnlinePersistenceAccess::Detach(
+                    *m_onlineServices));
+            // account Save失敗でguestへ即時復帰した場合も、破棄前に
+            // quarantineを少なくとも一度再試行します。
+            Detail::OnlinePersistenceAccess::EndFrame(
+                *m_onlineServices);
+            const auto* const persistence =
+                Detail::OnlinePersistenceAccess::Coordinator(
+                    *m_onlineServices);
+            if (persistence
+                && persistence->HasPendingRecovery())
+            {
+                Logger::Instance().Error(
+                    "アカウントのPlayerPrefsを終了前に保存できませんでした。"
+                    "ゲストデータへは安全に復帰しています。");
+            }
+        }
         if (m_playerPrefs
             && m_playerPrefs->IsDirty())
         {
@@ -119,6 +150,7 @@ namespace LamaPon
         m_layer.reset();
         m_scene.reset();
         m_gameModule.reset();
+        m_onlineServices.reset();
         m_saveData.reset();
         m_playerPrefs.reset();
         m_graphics.Shutdown();
@@ -196,22 +228,29 @@ namespace LamaPon
         m_saveData =
             std::make_unique<SaveDataStore>(
                 userData / L"Saves");
-        // C++ Scriptから設定値を読み書きできるように登録します
-        // （Scriptはここを通してハイスコア等を保存します）。
-        SetActivePlayerPrefs(m_playerPrefs.get());
         try
         {
             m_playerPrefs->Load();
         }
         catch (const std::exception& exception)
         {
-            m_playerPrefs->DeleteAll();
             Logger::Instance().Warning(
                 std::string(
                     "PlayerPrefsを読み込めないため、"
-                    "空の設定を使用します: ")
-                + exception.what());
+                    "元ファイルを変更せず空の設定を使用します: ")
+                    + exception.what());
         }
+
+        m_onlineServices = std::make_unique<OnlineServices>();
+        Detail::OnlinePersistenceAccess::Attach(
+            *m_onlineServices,
+            *m_playerPrefs,
+            *m_saveData,
+            userData);
+        // C++ Scriptから設定値を読み書きできるように登録します
+        // （Scriptはここを通してハイスコア等を保存します）。
+        SetActivePlayerPrefs(m_playerPrefs.get());
+        SetActiveOnlineServices(m_onlineServices.get());
 
         m_gameModule =
             std::make_unique<GameModuleHost>();
@@ -304,6 +343,13 @@ namespace LamaPon
                     Logger::Instance().Warning(
                         std::string{ "音声の更新に失敗しました: " }
                         + exception.what());
+                }
+            }
+            {
+                LAMAPON_PROFILE_SCOPE("Online");
+                if (m_onlineServices)
+                {
+                    m_onlineServices->Update(rawDeltaTime);
                 }
             }
             {
@@ -426,6 +472,14 @@ namespace LamaPon
                 m_graphics.EndFrame();
             }
 
+            // Simulation/Scriptがこのframeでcommitしたlocal saveを、
+            // 次のnetwork dispatchより前にonline同期層へ渡します。
+            if (m_onlineServices)
+            {
+                Detail::OnlinePersistenceAccess::EndFrame(
+                    *m_onlineServices);
+            }
+
             const auto cpuEnd =
                 std::chrono::steady_clock::now();
             const float cpuMilliseconds =
@@ -472,6 +526,16 @@ namespace LamaPon
                 "Application has not been initialized.");
         }
         return *m_saveData;
+    }
+
+    OnlineServices& Application::Online() const
+    {
+        if (!m_onlineServices)
+        {
+            throw std::logic_error(
+                "Application has not been initialized.");
+        }
+        return *m_onlineServices;
     }
 
     InputSystem& Application::Input() const

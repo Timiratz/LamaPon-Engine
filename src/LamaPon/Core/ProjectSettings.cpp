@@ -2,6 +2,8 @@
 
 #include "LamaPon/Core/DocumentMigration.h"
 #include "LamaPon/Core/PathUtils.h"
+#include "LamaPon/Online/DiscordPresence.h"
+#include "LamaPon/Online/OnlineHttpValidation.h"
 
 #include <nlohmann/json.hpp>
 
@@ -9,6 +11,7 @@
 #include <fstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace
@@ -28,6 +31,65 @@ namespace
             }
         }
         return true;
+    }
+
+    [[nodiscard]] bool HasControlCharacter(
+        const std::string_view value) noexcept
+    {
+        for (const char character : value)
+        {
+            const auto code =
+                static_cast<unsigned char>(character);
+            if (code < 0x20u || code == 0x7Fu)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Rich Presence設定は公開情報だけです。Application IDへ
+    // client_secretやtokenを貼り付けてしまった場合に気付けるよう、
+    // ASCII数字だけを受け付けます。
+    void ValidateDiscordPresenceSettings(
+        const LamaPon::DiscordPresenceProjectSettings& presence)
+    {
+        if (!presence.applicationId.empty())
+        {
+            if (presence.applicationId.size()
+                > LamaPon::DiscordApplicationIdMaxBytes)
+            {
+                throw std::invalid_argument(
+                    "Discord application ID must be 1 to 32 ASCII digits.");
+            }
+            for (const char character : presence.applicationId)
+            {
+                if (character < '0' || character > '9')
+                {
+                    throw std::invalid_argument(
+                        "Discord application ID must be 1 to 32 ASCII digits.");
+                }
+            }
+        }
+        if (presence.defaultLargeImageKey.size()
+                > LamaPon::DiscordActivityImageKeyMaxBytes
+            || HasControlCharacter(
+                presence.defaultLargeImageKey))
+        {
+            throw std::invalid_argument(
+                "Discord default large image key must be at most 256 printable bytes.");
+        }
+        if (!presence.defaultLargeImageText.empty()
+            && (presence.defaultLargeImageText.size()
+                    < LamaPon::DiscordActivityTextMinBytes
+                || presence.defaultLargeImageText.size()
+                    > LamaPon::DiscordActivityTextMaxBytes
+                || HasControlCharacter(
+                    presence.defaultLargeImageText)))
+        {
+            throw std::invalid_argument(
+                "Discord default large image text must be 2 to 128 printable bytes.");
+        }
     }
 }
 
@@ -189,6 +251,54 @@ namespace LamaPon
             }
         }
         ValidateInputActions(settings.inputActions);
+
+        if (!settings.online.serviceBaseUrl.empty())
+        {
+            static_cast<void>(
+                Detail::NormalizeOnlineServiceBaseUrl(
+                    settings.online.serviceBaseUrl,
+                    settings.online.allowInsecureLoopback));
+        }
+        if (!settings.online.gameId.empty()
+            && !Detail::IsSafeOnlineNamespaceId(
+                settings.online.gameId,
+                128))
+        {
+            throw std::invalid_argument(
+                "Online game ID must use 1 to 128 ASCII letters, digits, '.', '_', or '-'.");
+        }
+        if (!settings.online.environmentId.empty()
+            && !Detail::IsSafeOnlineNamespaceId(
+                settings.online.environmentId,
+                64))
+        {
+            throw std::invalid_argument(
+                "Online environment ID must use 1 to 64 ASCII letters, digits, '.', '_', or '-'.");
+        }
+        if (settings.online.enabled
+            && (settings.online.serviceBaseUrl.empty()
+                || settings.online.gameId.empty()
+                || settings.online.environmentId.empty()))
+        {
+            throw std::invalid_argument(
+                "Enabled online services require a service URL, game ID, and environment ID.");
+        }
+        ValidateDiscordPresenceSettings(
+            settings.online.discordPresence);
+    }
+
+    void ValidateProjectSettings(
+        const ProjectSettings& settings,
+        const ProjectSettingsFileType fileType)
+    {
+        ValidateProjectSettings(settings);
+        if (fileType == ProjectSettingsFileType::GamePackage
+            && settings.online.enabled
+            && settings.online.allowInsecureLoopback)
+        {
+            throw std::invalid_argument(
+                "An exported game cannot enable online services while allowing insecure loopback HTTP.");
+        }
     }
 
     ProjectSettings LoadProjectSettings(
@@ -250,6 +360,58 @@ namespace LamaPon
             document.value(
                 "inspectorDecimals",
                 settings.inspectorDecimals);
+        if (const auto online = document.find("online");
+            online != document.end())
+        {
+            if (!online->is_object())
+            {
+                throw std::runtime_error(
+                    "Online settings must be a JSON object.");
+            }
+            settings.online.enabled = online->value(
+                "enabled",
+                settings.online.enabled);
+            settings.online.serviceBaseUrl = online->value(
+                "serviceBaseUrl",
+                settings.online.serviceBaseUrl);
+            settings.online.gameId = online->value(
+                "gameId",
+                settings.online.gameId);
+            settings.online.environmentId = online->value(
+                "environmentId",
+                settings.online.environmentId);
+            settings.online.allowInsecureLoopback = online->value(
+                "allowInsecureLoopback",
+                settings.online.allowInsecureLoopback);
+            settings.online.openAuthorizationBrowser = online->value(
+                "openAuthorizationBrowser",
+                settings.online.openAuthorizationBrowser);
+            // discordPresenceを持たない古いproject.jsonでは、
+            // Rich Presenceは無効のままにします。
+            if (const auto presence =
+                    online->find("discordPresence");
+                presence != online->end())
+            {
+                if (!presence->is_object())
+                {
+                    throw std::runtime_error(
+                        "Discord presence settings must be a JSON object.");
+                }
+                auto& target = settings.online.discordPresence;
+                target.enabled = presence->value(
+                    "enabled",
+                    target.enabled);
+                target.applicationId = presence->value(
+                    "applicationId",
+                    target.applicationId);
+                target.defaultLargeImageKey = presence->value(
+                    "defaultLargeImageKey",
+                    target.defaultLargeImageKey);
+                target.defaultLargeImageText = presence->value(
+                    "defaultLargeImageText",
+                    target.defaultLargeImageText);
+            }
+        }
         if (const auto graphics = document.find("graphics");
             graphics != document.end()
             && graphics->is_object())
@@ -532,7 +694,12 @@ namespace LamaPon
                     std::move(action));
             }
         }
-        ValidateProjectSettings(settings);
+        const auto fileType = document.value(
+            "format",
+            std::string{}) == "LamaPonGame"
+            ? ProjectSettingsFileType::GamePackage
+            : ProjectSettingsFileType::Project;
+        ValidateProjectSettings(settings, fileType);
         return settings;
     }
 
@@ -541,7 +708,7 @@ namespace LamaPon
         const ProjectSettings& settings,
         const ProjectSettingsFileType fileType)
     {
-        ValidateProjectSettings(settings);
+        ValidateProjectSettings(settings, fileType);
         if (!path.parent_path().empty())
         {
             std::filesystem::create_directories(
@@ -613,6 +780,54 @@ namespace LamaPon
             {
                 "splashScreenEnabled",
                 settings.splashScreenEnabled
+            },
+            {
+                "online",
+                {
+                    { "enabled", settings.online.enabled },
+                    {
+                        "serviceBaseUrl",
+                        settings.online.serviceBaseUrl
+                    },
+                    { "gameId", settings.online.gameId },
+                    {
+                        "environmentId",
+                        settings.online.environmentId
+                    },
+                    {
+                        "allowInsecureLoopback",
+                        settings.online.allowInsecureLoopback
+                    },
+                    {
+                        "openAuthorizationBrowser",
+                        settings.online.openAuthorizationBrowser
+                    },
+                    {
+                        "discordPresence",
+                        {
+                            {
+                                "enabled",
+                                settings.online.discordPresence
+                                    .enabled
+                            },
+                            {
+                                "applicationId",
+                                settings.online.discordPresence
+                                    .applicationId
+                            },
+                            {
+                                "defaultLargeImageKey",
+                                settings.online.discordPresence
+                                    .defaultLargeImageKey
+                            },
+                            {
+                                "defaultLargeImageText",
+                                settings.online.discordPresence
+                                    .defaultLargeImageText
+                            }
+                        }
+                    }
+                }
             },
             {
                 "graphics",

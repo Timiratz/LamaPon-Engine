@@ -40,6 +40,14 @@ namespace LamaPon
         bool Reload();
         void PollHotReload(float deltaTime);
 
+        // Game Moduleが依存するネイティブDLL（パッケージが持ち込む
+        // SDK）の探索先です。Load()より前に設定します。設定しなければ
+        // 従来どおり、実行ファイルの隣とシステムフォルダーだけを
+        // 探します。書き出したゲームではDLLが実行ファイルの隣に
+        // 置かれるため、設定は必要ありません。
+        void SetNativeSearchDirectories(
+            std::vector<std::filesystem::path> directories);
+
         [[nodiscard]] bool IsLoaded() const noexcept
         {
             return m_moduleHandle != nullptr;
@@ -97,6 +105,8 @@ namespace LamaPon
         void ReleaseLoadedModule() noexcept;
         void CleanupShadowCopy(
             const std::filesystem::path& path) noexcept;
+        void ApplyNativeSearchDirectories();
+        void ReleaseNativeSearchDirectories() noexcept;
 
         static GameModuleHost* s_current;
 
@@ -110,6 +120,10 @@ namespace LamaPon
         std::vector<RegisteredNativeScript> m_registeredComponents;
         std::vector<RegisteredDataAssetType> m_registeredDataAssets;
         std::vector<NativeScriptComponent*> m_instances;
+        std::vector<std::filesystem::path> m_nativeSearchDirectories;
+        // AddDllDirectoryが返すcookieです。モジュールを読み込んで
+        // いる間は保持し、依存DLLの解決に使わせます。
+        std::vector<void*> m_nativeSearchCookies;
         float m_pollAccumulator{};
     };
 }
