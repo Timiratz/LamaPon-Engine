@@ -1458,6 +1458,35 @@ namespace
         }
     }
 
+    // Windowsは新規オブジェクトの所有者にtokenの既定所有者(TokenOwner)を
+    // 設定します。管理者アカウントではこれがBuiltin Administrators群に
+    // なるため、TokenUserだけを見るとjournalの所有者が自分と一致せず、
+    // 正常に作成したファイルを拒否してしまいます。自分が所属するgroupが
+    // 所有している場合も自分の所有として扱い、第三者が所有している
+    // 場合は従来どおり拒否します。
+    bool OwnerSidIsTrusted(
+        const PSID owner,
+        const PSID currentUserSid,
+        const PSID systemSid) noexcept
+    {
+        if (owner == nullptr)
+        {
+            return false;
+        }
+        if (currentUserSid != nullptr
+            && EqualSid(owner, currentUserSid) != FALSE)
+        {
+            return true;
+        }
+        if (systemSid != nullptr && EqualSid(owner, systemSid) != FALSE)
+        {
+            return true;
+        }
+        BOOL isMember = FALSE;
+        return CheckTokenMembership(nullptr, owner, &isMember) != FALSE
+            && isMember != FALSE;
+    }
+
     bool VerifyRestrictedAcl(
         const std::filesystem::path& path,
         const bool directory,
@@ -1498,9 +1527,7 @@ namespace
                 sizeof(information),
                 AclSizeInformation) != FALSE
             && information.AceCount == 2u
-            && owner != nullptr
-            && (EqualSid(owner, currentUserSid) != FALSE
-                || EqualSid(owner, systemSid) != FALSE);
+            && OwnerSidIsTrusted(owner, currentUserSid, systemSid);
         bool currentUserSeen{};
         bool systemSeen{};
         const auto expectedInheritance = static_cast<BYTE>(directory
@@ -1561,9 +1588,7 @@ namespace
             &descriptor);
         const bool allowed = result == ERROR_SUCCESS
             && descriptor != nullptr
-            && owner != nullptr
-            && (EqualSid(owner, currentUserSid) != FALSE
-                || EqualSid(owner, systemSid) != FALSE);
+            && OwnerSidIsTrusted(owner, currentUserSid, systemSid);
         if (descriptor != nullptr)
         {
             LocalFree(descriptor);
@@ -1589,9 +1614,7 @@ namespace
             &descriptor);
         const bool allowed = result == ERROR_SUCCESS
             && descriptor != nullptr
-            && owner != nullptr
-            && (EqualSid(owner, currentUserSid) != FALSE
-                || EqualSid(owner, systemSid) != FALSE);
+            && OwnerSidIsTrusted(owner, currentUserSid, systemSid);
         if (descriptor != nullptr)
         {
             LocalFree(descriptor);
@@ -1672,9 +1695,7 @@ namespace
                 sizeof(information),
                 AclSizeInformation) != FALSE
             && information.AceCount == 2u
-            && owner != nullptr
-            && (EqualSid(owner, currentUserSid) != FALSE
-                || EqualSid(owner, systemSid) != FALSE);
+            && OwnerSidIsTrusted(owner, currentUserSid, systemSid);
         bool currentUserSeen{};
         bool systemSeen{};
         const auto expectedInheritance = static_cast<BYTE>(directory

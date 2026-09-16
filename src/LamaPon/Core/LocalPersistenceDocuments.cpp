@@ -291,6 +291,35 @@ namespace
         return result;
     }
 
+    // Windowsは新規オブジェクトの所有者にtokenの既定所有者(TokenOwner)を
+    // 設定します。管理者アカウントではこれがBuiltin Administrators群に
+    // なるため、TokenUserだけを見るとファイルの所有者が自分と一致せず、
+    // 正常に作成した保存先を拒否してしまいます。自分が所属するgroupが
+    // 所有している場合も自分の所有として扱い、第三者が所有している
+    // 場合は従来どおり拒否します。
+    bool OwnerSidIsTrusted(
+        const PSID owner,
+        const PSID currentUserSid,
+        const PSID systemSid) noexcept
+    {
+        if (owner == nullptr)
+        {
+            return false;
+        }
+        if (currentUserSid != nullptr
+            && EqualSid(owner, currentUserSid) != FALSE)
+        {
+            return true;
+        }
+        if (systemSid != nullptr && EqualSid(owner, systemSid) != FALSE)
+        {
+            return true;
+        }
+        BOOL isMember = FALSE;
+        return CheckTokenMembership(nullptr, owner, &isMember) != FALSE
+            && isMember != FALSE;
+    }
+
     bool OwnerIsAllowed(
         const HANDLE file,
         const RestrictedSecurity& security)
@@ -308,9 +337,10 @@ namespace
             &descriptor);
         const bool allowed = result == ERROR_SUCCESS
             && descriptor != nullptr
-            && owner != nullptr
-            && (EqualSid(owner, security.CurrentUserSid()) != FALSE
-                || EqualSid(owner, security.systemSid) != FALSE);
+            && OwnerSidIsTrusted(
+                owner,
+                security.CurrentUserSid(),
+                security.systemSid);
         if (descriptor != nullptr)
         {
             LocalFree(descriptor);
@@ -465,8 +495,10 @@ namespace
                 sizeof(information),
                 AclSizeInformation) != FALSE
             && information.AceCount == 2u
-            && (EqualSid(owner, security.CurrentUserSid()) != FALSE
-                || EqualSid(owner, security.systemSid) != FALSE);
+            && OwnerSidIsTrusted(
+                owner,
+                security.CurrentUserSid(),
+                security.systemSid);
         bool currentSeen{};
         bool systemSeen{};
         for (DWORD index = 0u; valid && index < information.AceCount; ++index)
