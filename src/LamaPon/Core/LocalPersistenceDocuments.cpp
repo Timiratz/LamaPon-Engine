@@ -19,6 +19,7 @@
 #include <optional>
 #include <ranges>
 #include <stdexcept>
+#include <source_location>
 #include <string>
 #include <unordered_set>
 #include <utility>
@@ -247,9 +248,23 @@ namespace
         }
     };
 
-    [[noreturn]] void ThrowPersistenceFailure()
+    // 43箇所から同じ文言で投げていたため、CIのログからどの操作が
+    // 失敗したのか特定できませんでした。呼び出し元の行と、直前の
+    // Win32エラーを添えます（Win32呼び出し以外の検証で失敗した場合、
+    // エラー番号は直前の呼び出しのものになり得ます）。
+    [[noreturn]] void ThrowPersistenceFailure(
+        const std::source_location& location =
+            std::source_location::current())
     {
-        throw std::runtime_error("Local persistence operation failed.");
+        const DWORD error = GetLastError();
+        throw std::runtime_error(
+            "Local persistence operation failed at "
+            + std::string(location.function_name())
+            + ":"
+            + std::to_string(location.line())
+            + " (Win32 error "
+            + std::to_string(error)
+            + ").");
     }
 
     class PersistenceLockBusy final : public std::runtime_error
