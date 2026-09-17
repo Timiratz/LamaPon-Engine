@@ -933,7 +933,9 @@ namespace
 
     void TestImmediateDetachCheckpointsBaselineLessDelete()
     {
-        const auto root = CaseRoot("detach-delete-checkpoint");
+        // CTestの深いbuild-directoryからでもatomic publish用suffixを含めて
+        // legacy MAX_PATH内に収まる短いfixture名を使います。
+        const auto root = CaseRoot("detach-cp");
         const LamaPon::PersistenceProfiles profiles(
             root,
             "coordinator-game",
