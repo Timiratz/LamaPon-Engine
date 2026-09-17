@@ -3,14 +3,22 @@
 #include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Core/VersionCompare.h"
 
+#include <Windows.h>
+
 #include <nlohmann/json.hpp>
 
 #include <fstream>
 #include <iterator>
+#include <mutex>
 #include <system_error>
 
 namespace
 {
+    std::mutex g_backendPackageMutex;
+    std::filesystem::path g_backendPackageAssetRoot;
+    HMODULE g_backendPackageModule{};
+    std::filesystem::path g_loadedBackendLibrary;
+
     bool IsSafeRelativePath(const std::filesystem::path& path)
     {
         if (path.empty() || path.is_absolute()
@@ -190,5 +198,101 @@ namespace LamaPon
                 GraphicsBackendPackageState::InvalidManifest,
                 "DirectX 12バックエンドのpackage.jsonが不正です。");
         }
+    }
+
+    void SetGraphicsBackendPackageAssetRoot(
+        std::filesystem::path assetRoot)
+    {
+        std::scoped_lock lock(g_backendPackageMutex);
+        g_backendPackageAssetRoot = std::move(assetRoot);
+    }
+
+    GraphicsBackendPackageInspection ActivateGraphicsBackendPackage(
+        const RenderingApi api,
+        const std::string_view currentEngineVersion)
+    {
+        std::scoped_lock lock(g_backendPackageMutex);
+        if (g_backendPackageAssetRoot.empty())
+        {
+            return Failure(
+                GraphicsBackendPackageState::Missing,
+                "描画バックエンドのパッケージルートが未指定です。");
+        }
+        auto inspection = InspectGraphicsBackendPackage(
+            g_backendPackageAssetRoot,
+            api,
+            currentEngineVersion);
+        if (inspection.state != GraphicsBackendPackageState::Ready)
+        {
+            return inspection;
+        }
+
+        std::error_code error;
+        const auto requestedLibrary = std::filesystem::weakly_canonical(
+            inspection.descriptor.runtimeLibrary,
+            error);
+        if (error)
+        {
+            inspection.state = GraphicsBackendPackageState::RuntimeMissing;
+            inspection.message =
+                "DirectX 12バックエンドDLLを解決できません。";
+            return inspection;
+        }
+        if (g_backendPackageModule != nullptr)
+        {
+            if (requestedLibrary == g_loadedBackendLibrary)
+            {
+                return inspection;
+            }
+            inspection.state = GraphicsBackendPackageState::InvalidManifest;
+            inspection.message =
+                "別の描画バックエンドDLLが既にロードされています。";
+            return inspection;
+        }
+
+        const HMODULE module = LoadLibraryExW(
+            requestedLibrary.c_str(),
+            nullptr,
+            LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
+                | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+        if (module == nullptr)
+        {
+            inspection.state = GraphicsBackendPackageState::RuntimeMissing;
+            inspection.message =
+                "DirectX 12バックエンドDLLをロードできません。";
+            return inspection;
+        }
+
+        using AbiVersionFunction = std::uint32_t (*)();
+        using ApiNameFunction = const char* (*)();
+        const auto abiVersionFunction = reinterpret_cast<
+            AbiVersionFunction>(GetProcAddress(
+                module,
+                "LamaPonGraphicsBackendAbiVersion"));
+        const auto apiNameFunction = reinterpret_cast<ApiNameFunction>(
+            GetProcAddress(module, "LamaPonGraphicsBackendApi"));
+        if (abiVersionFunction == nullptr || apiNameFunction == nullptr)
+        {
+            FreeLibrary(module);
+            inspection.state = GraphicsBackendPackageState::IncompatibleAbi;
+            inspection.message =
+                "DirectX 12バックエンドのABI entry pointがありません。";
+            return inspection;
+        }
+        const char* const apiName = apiNameFunction();
+        if (abiVersionFunction() != GraphicsBackendPackageAbiVersion
+            || apiName == nullptr
+            || std::string_view{ apiName } != "DirectX12Experimental")
+        {
+            FreeLibrary(module);
+            inspection.state = GraphicsBackendPackageState::IncompatibleAbi;
+            inspection.message =
+                "DirectX 12バックエンドDLLのABIが一致しません。";
+            return inspection;
+        }
+
+        g_backendPackageModule = module;
+        g_loadedBackendLibrary = requestedLibrary;
+        return inspection;
     }
 }

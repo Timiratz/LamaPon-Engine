@@ -5,8 +5,10 @@
 #include "LamaPon/Audio/AudioSystem.h"
 #include "LamaPon/Core/Log.h"
 #include "LamaPon/Core/RuntimeServices.h"
+#include "LamaPon/Core/Version.h"
 #include "LamaPon/Graphics/ClusteredLights.h"
 #include "LamaPon/Graphics/DebugRenderer.h"
+#include "LamaPon/Graphics/GraphicsBackendPackage.h"
 #include "LamaPon/Graphics/GraphicsDeviceApiResources.h"
 #include "LamaPon/Graphics/RenderTarget.h"
 #include "LamaPon/Input/InputSystem.h"
@@ -496,9 +498,44 @@ namespace LamaPon
             }
         };
 
-        const auto selection = SelectGraphicsBackend(
+        auto selection = SelectGraphicsBackend(
             requestedApi,
             profile);
+        if (selection.activeApi
+            == RenderingApi::DirectX12Experimental)
+        {
+            const auto package = ActivateGraphicsBackendPackage(
+                selection.activeApi,
+                VersionString);
+            if (package.state == GraphicsBackendPackageState::Ready)
+            {
+                Logger::Instance().Info(
+                    "DirectX 12バックエンドパッケージをロードしました: "
+                    + package.descriptor.version);
+            }
+            else if (package.state
+                == GraphicsBackendPackageState::Missing)
+            {
+                // 物理分離の移行期間は既存プロジェクトを壊さないため、
+                // パッケージ未導入時だけ組み込み実装を継続利用します。
+                Logger::Instance().Warning(
+                    "DirectX 12バックエンドパッケージが未導入のため、"
+                    "移行用の組み込み実装を使用します。");
+            }
+            else
+            {
+                Logger::Instance().Warning(
+                    "DirectX 12バックエンドパッケージを使用できないため、"
+                    "DirectX 11へフォールバックします: "
+                    + package.message);
+                selection.activeApi = RenderingApi::DirectX11;
+                selection.fallbackReason =
+                    package.state
+                            == GraphicsBackendPackageState::IncompatibleAbi
+                        ? RenderingApiFallbackReason::NotImplemented
+                        : RenderingApiFallbackReason::Unsupported;
+            }
+        }
         try
         {
             initializeCandidate(selection);

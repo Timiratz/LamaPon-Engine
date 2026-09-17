@@ -55,4 +55,17 @@ namespace LamaPon
             const std::filesystem::path& assetRoot,
             RenderingApi api,
             std::string_view currentEngineVersion);
+
+    // GraphicsDevice初期化より前にプロジェクトのassetsを指定します。
+    // 未指定なら従来どおり組み込みBackendを使用します。
+    void SetGraphicsBackendPackageAssetRoot(
+        std::filesystem::path assetRoot);
+
+    // manifestとABI entry pointを検証し、プロセス終了までDLLを保持します。
+    // パッケージが無い場合はMissingを返し、移行期間中の組み込みD3D12を
+    // 継続利用できます。存在するのに壊れている場合はReadyになりません。
+    [[nodiscard]] GraphicsBackendPackageInspection
+        ActivateGraphicsBackendPackage(
+            RenderingApi api,
+            std::string_view currentEngineVersion);
 }

@@ -2,6 +2,7 @@
 
 #include "LamaPon/Graphics/GraphicsResource.h"
 #include "LamaPon/Graphics/ReflectionProbeEnvironment.h"
+#include "LamaPon/Graphics/ShaderRenderState.h"
 
 #include <DirectXMath.h>
 
@@ -269,6 +270,9 @@ namespace LamaPon
         // Model Rendererのワイヤーフレーム表示です。DirectXTKの
         // CommonStates::Wireframeと同じく、カリングせず辺だけを描きます。
         bool wireframe{};
+        // 捨てる面です。BackはD3D11のCommonStates::CullCounterClockwise、
+        // FrontはCullClockwiseと同じ向きです。wireframeでは使いません。
+        ShaderCullMode cull{ ShaderCullMode::None };
         // 空でなければ、D3D11のLamaPonLit.hlslのVSInstancedMainと同じく、
         // 各instanceのworldと色で一度に描きます（worldは単位行列にします）。
         std::span<const PrimitiveInstanceData> instances;

@@ -650,6 +650,38 @@ target_link_libraries(LamaPonRuntime
 )
 lamapon_enable_release_symbols(LamaPonRuntime)
 
+# 任意配布するD3D12 Backendの安定ABIプロバイダー。現段階では
+# capability/ABIの検証を担い、描画実装はLamaPonRuntimeへ委譲します。
+add_library(LamaPonGraphicsD3D12 SHARED
+    src/LamaPon/Graphics/D3D12BackendProvider.cpp
+)
+target_include_directories(LamaPonGraphicsD3D12 PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_compile_options(LamaPonGraphicsD3D12 PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/W4>
+    $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+    $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+)
+set_target_properties(LamaPonGraphicsD3D12 PROPERTIES
+    OUTPUT_NAME "LamaPonGraphicsD3D12"
+)
+lamapon_enable_release_symbols(LamaPonGraphicsD3D12)
+add_custom_command(TARGET LamaPonGraphicsD3D12 POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        "$<TARGET_FILE_DIR:LamaPonGraphicsD3D12>/packages/directx12-renderer/runtime"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:LamaPonGraphicsD3D12>"
+        "$<TARGET_FILE_DIR:LamaPonGraphicsD3D12>/packages/directx12-renderer/runtime/"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/packages/src/directx12-renderer/package.json"
+        "$<TARGET_FILE_DIR:LamaPonGraphicsD3D12>/packages/directx12-renderer/"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/packages/src/directx12-renderer/README.md"
+        "$<TARGET_FILE_DIR:LamaPonGraphicsD3D12>/packages/directx12-renderer/"
+    COMMENT "Staging the optional DirectX 12 backend package"
+)
+
 add_custom_command(TARGET LamaPonRuntime POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${LAMAPON_XAUDIO2_REDIST_DLL}"
@@ -1154,6 +1186,10 @@ if(BUILD_TESTING)
         tests/PackageManagerTests.cpp
     )
     target_link_libraries(LamaPonPackageManagerTests PRIVATE LamaPonEditor)
+    add_dependencies(LamaPonPackageManagerTests LamaPonGraphicsD3D12)
+    target_compile_definitions(LamaPonPackageManagerTests PRIVATE
+        LAMAPON_D3D12_PROVIDER_PATH="$<TARGET_FILE:LamaPonGraphicsD3D12>"
+    )
     target_compile_options(LamaPonPackageManagerTests PRIVATE
         $<$<CXX_COMPILER_ID:MSVC>:/W4>
         $<$<CXX_COMPILER_ID:MSVC>:/permissive->

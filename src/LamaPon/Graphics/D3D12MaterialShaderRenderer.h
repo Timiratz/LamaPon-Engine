@@ -91,7 +91,6 @@ namespace LamaPon::Detail
             std::uint8_t cull{};
             bool depthOnly{};
             bool pointSampler{};
-            bool shadowBias{};
             bool skinned{};
             // VSInstancedMainとslot 1のworld／colorを使います。
             bool instanced{};

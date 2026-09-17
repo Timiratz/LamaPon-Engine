@@ -66,6 +66,8 @@ int WINAPI wWinMain(
             settings.windowHeight,
             settings.gameName);
 
+        LamaPon::SetGraphicsBackendPackageAssetRoot(
+            LamaPon::ExecutableDirectory() / L"assets");
         // 描画APIはデバイス初期化時にだけ選択し、実行中は切り替えません。
         // D3D12を作れない環境ではD3D11へ安全にフォールバックします。
         application.Initialize(

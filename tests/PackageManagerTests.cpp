@@ -593,6 +593,37 @@ namespace
                 "1.0.0").state
                 == LamaPon::GraphicsBackendPackageState::IncompatibleAbi,
             "an incompatible backend ABI must be rejected");
+
+        const auto activationRoot = root / "activation" / "assets";
+        const auto activationPackage = activationRoot / "packages"
+            / LamaPon::DirectX12BackendPackageName;
+        WriteFile(
+            activationPackage / "package.json",
+            R"({
+                "name":"directx12-renderer",
+                "version":"1.0.0",
+                "minimumEngineVersion":"0.1.0",
+                "activation":"Restart",
+                "graphicsBackend":{
+                    "api":"DirectX12Experimental",
+                    "abiVersion":1,
+                    "runtimeLibrary":"runtime/LamaPonGraphicsD3D12.dll"
+                }
+            })");
+        std::filesystem::create_directories(
+            activationPackage / "runtime");
+        std::filesystem::copy_file(
+            std::filesystem::path{ LAMAPON_D3D12_PROVIDER_PATH },
+            activationPackage / "runtime" / "LamaPonGraphicsD3D12.dll",
+            std::filesystem::copy_options::overwrite_existing);
+        LamaPon::SetGraphicsBackendPackageAssetRoot(activationRoot);
+        const auto activated = LamaPon::ActivateGraphicsBackendPackage(
+            LamaPon::RenderingApi::DirectX12Experimental,
+            "1.0.0");
+        Require(
+            activated.state
+                == LamaPon::GraphicsBackendPackageState::Ready,
+            "the packaged D3D12 ABI provider must load successfully");
     }
 }
 
