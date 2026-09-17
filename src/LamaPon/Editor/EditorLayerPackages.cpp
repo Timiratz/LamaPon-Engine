@@ -6,6 +6,7 @@
 #include "LamaPon/Core/Version.h"
 #include "LamaPon/Core/VersionCompare.h"
 #include "LamaPon/Editor/PackageManager.h"
+#include "LamaPon/Graphics/GraphicsBackendPackage.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 
 #include <imgui.h>
@@ -98,6 +99,21 @@ namespace LamaPon
             }
             return "。反映するにはエディターまたはゲームを"
                 "再起動してください";
+        }
+
+        const char* RenderingApiDisplayName(
+            const RenderingApi api) noexcept
+        {
+            switch (api)
+            {
+            case RenderingApi::Auto:
+                return "Auto";
+            case RenderingApi::DirectX12Experimental:
+                return "DirectX 12 Experimental";
+            case RenderingApi::DirectX11:
+            default:
+                return "DirectX 11";
+            }
         }
     }
 
@@ -656,6 +672,29 @@ namespace LamaPon
             ImGui::TextDisabled(
                 "%d件のパッケージ",
                 static_cast<int>(m_packages.size()));
+        }
+
+        const auto d3d12PackageDirectory =
+            PackageInstallDirectory(
+                m_graphics.Assets().AssetRoot(),
+                DirectX12BackendPackageName);
+        if (std::filesystem::is_directory(
+                d3d12PackageDirectory))
+        {
+            ImGui::Spacing();
+            ImGui::SeparatorText("描画API");
+            ImGui::Text(
+                "現在の設定: %s",
+                RenderingApiDisplayName(
+                    m_projectSettings.graphics.renderingApi));
+            ImGui::TextWrapped(
+                "DirectX 12 Rendererを使用するには、プロジェクトの"
+                "描画APIを選択してエディターを再起動してください。");
+            if (ImGui::Button("描画APIを選択..."))
+            {
+                m_projectSettingsCategory = 1;
+                OpenProjectSettingsDialog();
+            }
         }
 
         if (m_packageListState == PackageListState::Failed)

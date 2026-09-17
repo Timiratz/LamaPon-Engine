@@ -2144,10 +2144,12 @@ namespace LamaPon
     {
         constexpr const char* popupName =
             "プロジェクト設定とビルド##ProjectSettings";
+        bool resetContentScroll = false;
         if (m_projectSettingsDialogRequested)
         {
             ImGui::OpenPopup(popupName);
             m_projectSettingsDialogRequested = false;
+            resetContentScroll = true;
         }
 
         ImGui::SetNextWindowSize(
@@ -2164,7 +2166,7 @@ namespace LamaPon
         // 左のカテゴリー一覧と右の内容ペインへ分割します。
         constexpr std::array<const char*, 9> categories{
             "ゲーム",
-            "グラフィック",
+            "グラフィック（描画API）",
             "ビューポート設定",
             "物理",
             "タグ",
@@ -2186,6 +2188,9 @@ namespace LamaPon
                 m_projectSettingsCategory
                     == static_cast<int>(index)))
             {
+                resetContentScroll =
+                    m_projectSettingsCategory
+                    != static_cast<int>(index);
                 m_projectSettingsCategory =
                     static_cast<int>(index);
             }
@@ -2195,6 +2200,10 @@ namespace LamaPon
         ImGui::BeginChild(
             "ProjectSettingsContent",
             ImVec2{ 0.0f, -96.0f });
+        if (resetContentScroll)
+        {
+            ImGui::SetScrollY(0.0f);
+        }
         // スクリーンショットモードの「:bottom」指定。設定の下の方
         // （衝突マトリクス等）を撮るため、末尾へスクロールし続けます。
         if (m_screenshotScrollToBottom
