@@ -100,6 +100,57 @@ namespace LamaPon::TextureLoader
         }
     };
 
+    enum class PreparedDdsTextureDimension : std::uint8_t
+    {
+        Texture2D,
+        Texture2DArray,
+        TextureCube,
+        TextureCubeArray,
+        Texture3D
+    };
+
+    // DDSが持つresource次元を保った、D3D11／D3D12共通の転送表現です。
+    // 2D系のsubresourcesはarray sliceごとに全mip、3Dはmipごとに
+    // 全depth sliceを1要素へまとめます。
+    struct PreparedDdsTextureData final
+    {
+        DXGI_FORMAT format{ DXGI_FORMAT_R8G8B8A8_UNORM };
+        PreparedDdsTextureDimension dimension{
+            PreparedDdsTextureDimension::Texture2D };
+        std::uint32_t width{};
+        std::uint32_t height{};
+        std::uint32_t depth{ 1 };
+        // Texture2DArrayはslice数、TextureCubeArrayはcube数です。
+        std::uint32_t arraySize{ 1 };
+        std::uint32_t mipLevels{ 1 };
+        std::vector<PreparedTextureLevel> subresources;
+    };
+
+    // 2D／array／cube／cube array／volumeをresource次元付きで展開します。
+    [[nodiscard]] PreparedDdsTextureData PrepareDdsResourceData(
+        std::span<const std::uint8_t> bytes);
+
+    // 2D DDSのヘッダーとミップ列をAPI非依存な転送データへ展開します。
+    // 共通Backendが直接uploadできるUNORM／SNORM／sRGB、BC、float、
+    // packed形式、typeless storageの既定viewとDirectXTK互換のlegacy
+    // headerに対応し、
+    // 配列・キューブ・volumeや未対応formatは誤ったtextureとして作らず
+    // 例外にします。
+    [[nodiscard]] PreparedTextureData PrepareDdsTextureData(
+        std::span<const std::uint8_t> bytes);
+
+    // 6面を持つcube DDSかをヘッダーだけで判定します。壊れたヘッダーは
+    // falseで、読み込み時にPrepare側が理由付きで拒否します。
+    [[nodiscard]] bool IsDdsCubeTexture(
+        std::span<const std::uint8_t> bytes) noexcept;
+
+    // cube DDSを面ごと・ミップごとの転送データへ展開します。levelsは
+    // +X、-X、+Y、-Y、+Z、-Zの順に各面の全ミップを並べ（面数×ミップ数）、
+    // 対応formatは2D DDSと同じです。cubeの配列、欠けた面、正方形でない
+    // 面は例外にします。
+    [[nodiscard]] PreparedTextureData PrepareDdsCubeTextureData(
+        std::span<const std::uint8_t> bytes);
+
     // ミップ列を段階アップロード用の転送データへ変換します
     // （CPU側のBC圧縮もここで行います）。ワーカースレッド可。
     [[nodiscard]] PreparedTextureData PrepareTextureData(

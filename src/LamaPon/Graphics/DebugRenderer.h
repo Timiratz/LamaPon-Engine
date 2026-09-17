@@ -7,28 +7,38 @@
 #include <memory>
 #include <span>
 
-struct ID3D11Device;
-struct ID3D11DeviceContext;
-struct ID3D11InputLayout;
-
-namespace DirectX
-{
-    inline namespace DX11
-    {
-        class BasicEffect;
-        class CommonStates;
-        template<typename TVertex>
-        class PrimitiveBatch;
-        struct VertexPositionColor;
-    }
-}
-
 namespace LamaPon
 {
+    struct DebugLine final
+    {
+        DirectX::XMFLOAT3 start{};
+        DirectX::XMFLOAT3 end{};
+        DirectX::XMFLOAT4 color{};
+    };
+
+    // 形状から生成済みの線分を実効描画APIへ送る同期sinkです。
+    // spanと行列は呼び出し中だけ有効で、Backend側は保持しません。
+    class DebugDrawingBackend
+    {
+    public:
+        virtual ~DebugDrawingBackend() = default;
+
+        DebugDrawingBackend() = default;
+        DebugDrawingBackend(const DebugDrawingBackend&) = delete;
+        DebugDrawingBackend& operator=(
+            const DebugDrawingBackend&) = delete;
+
+        virtual void DrawLines(
+            std::span<const DebugLine> lines,
+            const DirectX::XMFLOAT4X4& view,
+            const DirectX::XMFLOAT4X4& projection) = 0;
+    };
+
     class DebugRenderer final
     {
     public:
-        DebugRenderer(ID3D11Device* device, ID3D11DeviceContext* context);
+        explicit DebugRenderer(
+            std::unique_ptr<DebugDrawingBackend> backend);
         ~DebugRenderer();
 
         DebugRenderer(const DebugRenderer&) = delete;
@@ -89,15 +99,11 @@ namespace LamaPon
             DirectX::CXMMATRIX projection);
 
     private:
-        void Prepare(
+        void Submit(
+            std::span<const DebugLine> lines,
             DirectX::FXMMATRIX view,
             DirectX::CXMMATRIX projection);
 
-        ID3D11DeviceContext* m_context{};
-        std::unique_ptr<DirectX::BasicEffect> m_effect;
-        std::unique_ptr<DirectX::CommonStates> m_states;
-        std::unique_ptr<DirectX::PrimitiveBatch<DirectX::VertexPositionColor>> m_batch;
-        struct InputLayoutHolder;
-        std::unique_ptr<InputLayoutHolder> m_inputLayout;
+        std::unique_ptr<DebugDrawingBackend> m_backend;
     };
 }

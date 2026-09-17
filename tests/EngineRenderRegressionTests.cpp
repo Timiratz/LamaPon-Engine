@@ -7,11 +7,21 @@
 
 // レンダーテクスチャの解像度を確認するため、RenderTargetの実体が必要です
 // （LamaPon.hはGraphicsDevice経由の前方宣言しか持ちません）。
+#include "LamaPon/Assets/GltfImporter.h"
+#include "LamaPon/Graphics/ClusteredLights.h"
 #include "LamaPon/Graphics/EnvironmentCache.h"
+#include "LamaPon/Graphics/DebugRenderer.h"
+#include "LamaPon/Graphics/D3D11Backend.h"
+#include "LamaPon/Graphics/GraphicsDeviceD3D11Resources.h"
+#include "LamaPon/Graphics/GraphicsDeviceD3D11Access.h"
+#include "LamaPon/Graphics/GraphicsRenderServices.h"
+#include "LamaPon/Graphics/LitEffect.h"
 #include "LamaPon/Graphics/PngWriter.h"
 #include "LamaPon/Graphics/RenderPipeline.h"
 #include "LamaPon/Graphics/RenderTarget.h"
 #include "LamaPon/Graphics/ShaderCompiler.h"
+#include "LamaPon/Graphics/ShadowMap.h"
+#include "LamaPon/Graphics/SkeletalModel.h"
 
 #include <Windows.h>
 #include <objbase.h>
@@ -20,19 +30,63 @@
 #include <wrl/client.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
+#include <memory>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <type_traits>
 #include <vector>
 
 namespace
 {
+    using D3D11Access =
+        LamaPon::Detail::GraphicsDeviceD3D11Access;
+
+    template <typename T>
+    concept HasPublicDepthCopyShaderResourceView = requires(
+        const T& target)
+    {
+        target.DepthCopyShaderResourceView();
+    };
+
+    template <typename T>
+    concept HasPublicReflectionDepthPyramidMipTarget = requires(
+        const T& target,
+        const std::uint32_t mip)
+    {
+        target.ReflectionDepthPyramidMipTarget(mip);
+    };
+
+    template <typename T>
+    concept HasPublicReflectionDepthPyramidMipView = requires(
+        const T& target,
+        const std::uint32_t mip)
+    {
+        target.ReflectionDepthPyramidMipView(mip);
+    };
+
+    template <typename T>
+    concept HasPublicDisplayUnorderedAccessView = requires(
+        const T& target)
+    {
+        target.DisplayUnorderedAccessView();
+    };
+
+    template <typename T>
+    concept HasPublicDisplayTexture = requires(const T& target)
+    {
+        target.DisplayTexture();
+    };
+
     constexpr std::uint32_t Width = 320;
     constexpr std::uint32_t Height = 180;
 
@@ -45,6 +99,273 @@ namespace
             throw std::runtime_error(message);
         }
     }
+
+    [[nodiscard]] LamaPon::GraphicsViewHandle CreateSolidView(
+        LamaPon::GraphicsDevice& graphics,
+        const std::array<std::uint8_t, 4>& color)
+    {
+        const std::array initialData{
+            LamaPon::GraphicsTextureSubresourceData{
+                std::as_bytes(std::span{ color }),
+                static_cast<std::uint32_t>(color.size()),
+                static_cast<std::uint32_t>(color.size())
+            }
+        };
+        const auto texture = graphics.CreateTexture2D(
+            LamaPon::GraphicsTexture2DDescription{
+                1,
+                1,
+                1,
+                LamaPon::GraphicsTextureFormat::Rgba8Unorm,
+                LamaPon::GraphicsTextureUpdateMode::Immutable
+            },
+            initialData);
+        return graphics.CreateShaderResourceView(
+            texture,
+            LamaPon::GraphicsTextureViewDescription{ 0, 1 });
+    }
+
+    [[nodiscard]] Microsoft::WRL::ComPtr<
+        ID3D11ShaderResourceView> CapturePixelShaderView(
+            LamaPon::GraphicsDevice& graphics,
+            const UINT slot)
+    {
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> result;
+        D3D11Access::Context(graphics)->PSGetShaderResources(
+            slot,
+            1,
+            result.ReleaseAndGetAddressOf());
+        return result;
+    }
+
+    struct PrefilterPipelineState final
+    {
+        std::array<
+            Microsoft::WRL::ComPtr<ID3D11RenderTargetView>,
+            D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT> targets;
+        Microsoft::WRL::ComPtr<ID3D11DepthStencilView> depth;
+        std::array<
+            D3D11_VIEWPORT,
+            D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE>
+            viewports{};
+        UINT viewportCount{};
+        Microsoft::WRL::ComPtr<ID3D11DepthStencilState> depthState;
+        UINT stencilReference{};
+        Microsoft::WRL::ComPtr<ID3D11RasterizerState> rasterizer;
+        Microsoft::WRL::ComPtr<ID3D11InputLayout> inputLayout;
+        D3D11_PRIMITIVE_TOPOLOGY topology{
+            D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED
+        };
+        Microsoft::WRL::ComPtr<ID3D11VertexShader> vertexShader;
+        std::array<
+            Microsoft::WRL::ComPtr<ID3D11ClassInstance>,
+            D3D11_SHADER_MAX_INTERFACES> vertexInstances;
+        UINT vertexInstanceCount{};
+        Microsoft::WRL::ComPtr<ID3D11PixelShader> pixelShader;
+        std::array<
+            Microsoft::WRL::ComPtr<ID3D11ClassInstance>,
+            D3D11_SHADER_MAX_INTERFACES> pixelInstances;
+        UINT pixelInstanceCount{};
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> pixelResource;
+        Microsoft::WRL::ComPtr<ID3D11SamplerState> pixelSampler;
+        Microsoft::WRL::ComPtr<ID3D11Buffer> pixelBuffer;
+
+        [[nodiscard]] static PrefilterPipelineState Capture(
+            ID3D11DeviceContext* const context)
+        {
+            PrefilterPipelineState state;
+            std::array<
+                ID3D11RenderTargetView*,
+                D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT> rawTargets{};
+            context->OMGetRenderTargets(
+                static_cast<UINT>(rawTargets.size()),
+                rawTargets.data(),
+                state.depth.ReleaseAndGetAddressOf());
+            for (std::size_t index{}; index < rawTargets.size(); ++index)
+            {
+                state.targets[index].Attach(rawTargets[index]);
+            }
+
+            state.viewportCount = static_cast<UINT>(
+                state.viewports.size());
+            context->RSGetViewports(
+                &state.viewportCount,
+                state.viewports.data());
+            context->OMGetDepthStencilState(
+                state.depthState.ReleaseAndGetAddressOf(),
+                &state.stencilReference);
+            context->RSGetState(
+                state.rasterizer.ReleaseAndGetAddressOf());
+            context->IAGetInputLayout(
+                state.inputLayout.ReleaseAndGetAddressOf());
+            context->IAGetPrimitiveTopology(&state.topology);
+
+            std::array<
+                ID3D11ClassInstance*,
+                D3D11_SHADER_MAX_INTERFACES> rawVertexInstances{};
+            state.vertexInstanceCount = static_cast<UINT>(
+                rawVertexInstances.size());
+            context->VSGetShader(
+                state.vertexShader.ReleaseAndGetAddressOf(),
+                rawVertexInstances.data(),
+                &state.vertexInstanceCount);
+            for (UINT index{}; index < state.vertexInstanceCount; ++index)
+            {
+                state.vertexInstances[index].Attach(
+                    rawVertexInstances[index]);
+            }
+
+            std::array<
+                ID3D11ClassInstance*,
+                D3D11_SHADER_MAX_INTERFACES> rawPixelInstances{};
+            state.pixelInstanceCount = static_cast<UINT>(
+                rawPixelInstances.size());
+            context->PSGetShader(
+                state.pixelShader.ReleaseAndGetAddressOf(),
+                rawPixelInstances.data(),
+                &state.pixelInstanceCount);
+            for (UINT index{}; index < state.pixelInstanceCount; ++index)
+            {
+                state.pixelInstances[index].Attach(
+                    rawPixelInstances[index]);
+            }
+
+            context->PSGetShaderResources(
+                1,
+                1,
+                state.pixelResource.ReleaseAndGetAddressOf());
+            context->PSGetSamplers(
+                0,
+                1,
+                state.pixelSampler.ReleaseAndGetAddressOf());
+            context->PSGetConstantBuffers(
+                3,
+                1,
+                state.pixelBuffer.ReleaseAndGetAddressOf());
+            return state;
+        }
+
+        void Restore(ID3D11DeviceContext* const context) const noexcept
+        {
+            std::array<
+                ID3D11RenderTargetView*,
+                D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT> rawTargets{};
+            for (std::size_t index{}; index < rawTargets.size(); ++index)
+            {
+                rawTargets[index] = targets[index].Get();
+            }
+            context->OMSetRenderTargets(
+                static_cast<UINT>(rawTargets.size()),
+                rawTargets.data(),
+                depth.Get());
+            context->RSSetViewports(
+                viewportCount,
+                viewportCount != 0 ? viewports.data() : nullptr);
+            context->OMSetDepthStencilState(
+                depthState.Get(),
+                stencilReference);
+            context->RSSetState(rasterizer.Get());
+            context->IASetInputLayout(inputLayout.Get());
+            context->IASetPrimitiveTopology(topology);
+
+            std::array<
+                ID3D11ClassInstance*,
+                D3D11_SHADER_MAX_INTERFACES> rawVertexInstances{};
+            for (UINT index{}; index < vertexInstanceCount; ++index)
+            {
+                rawVertexInstances[index] = vertexInstances[index].Get();
+            }
+            context->VSSetShader(
+                vertexShader.Get(),
+                vertexInstanceCount != 0
+                    ? rawVertexInstances.data()
+                    : nullptr,
+                vertexInstanceCount);
+
+            std::array<
+                ID3D11ClassInstance*,
+                D3D11_SHADER_MAX_INTERFACES> rawPixelInstances{};
+            for (UINT index{}; index < pixelInstanceCount; ++index)
+            {
+                rawPixelInstances[index] = pixelInstances[index].Get();
+            }
+            context->PSSetShader(
+                pixelShader.Get(),
+                pixelInstanceCount != 0
+                    ? rawPixelInstances.data()
+                    : nullptr,
+                pixelInstanceCount);
+            ID3D11ShaderResourceView* resources[]{
+                pixelResource.Get()
+            };
+            context->PSSetShaderResources(1, 1, resources);
+            ID3D11SamplerState* samplers[]{ pixelSampler.Get() };
+            context->PSSetSamplers(0, 1, samplers);
+            ID3D11Buffer* buffers[]{ pixelBuffer.Get() };
+            context->PSSetConstantBuffers(3, 1, buffers);
+        }
+
+        [[nodiscard]] bool Matches(
+            ID3D11DeviceContext* const context) const
+        {
+            const auto current = Capture(context);
+            if (viewportCount != current.viewportCount
+                || depth.Get() != current.depth.Get()
+                || depthState.Get() != current.depthState.Get()
+                || stencilReference != current.stencilReference
+                || rasterizer.Get() != current.rasterizer.Get()
+                || inputLayout.Get() != current.inputLayout.Get()
+                || topology != current.topology
+                || vertexShader.Get() != current.vertexShader.Get()
+                || vertexInstanceCount != current.vertexInstanceCount
+                || pixelShader.Get() != current.pixelShader.Get()
+                || pixelInstanceCount != current.pixelInstanceCount
+                || pixelResource.Get() != current.pixelResource.Get()
+                || pixelSampler.Get() != current.pixelSampler.Get()
+                || pixelBuffer.Get() != current.pixelBuffer.Get())
+            {
+                return false;
+            }
+            for (std::size_t index{}; index < targets.size(); ++index)
+            {
+                if (targets[index].Get() != current.targets[index].Get())
+                {
+                    return false;
+                }
+            }
+            for (UINT index{}; index < viewportCount; ++index)
+            {
+                const auto& left = viewports[index];
+                const auto& right = current.viewports[index];
+                if (left.TopLeftX != right.TopLeftX
+                    || left.TopLeftY != right.TopLeftY
+                    || left.Width != right.Width
+                    || left.Height != right.Height
+                    || left.MinDepth != right.MinDepth
+                    || left.MaxDepth != right.MaxDepth)
+                {
+                    return false;
+                }
+            }
+            for (UINT index{}; index < vertexInstanceCount; ++index)
+            {
+                if (vertexInstances[index].Get()
+                    != current.vertexInstances[index].Get())
+                {
+                    return false;
+                }
+            }
+            for (UINT index{}; index < pixelInstanceCount; ++index)
+            {
+                if (pixelInstances[index].Get()
+                    != current.pixelInstances[index].Get())
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+    };
 
     // 失敗時にどこまで進んだかCTestログで分かるようにします。
     void Stage(const char* name)
@@ -62,9 +383,12 @@ namespace
             GetModuleHandleW(nullptr);
         windowClass.lpszClassName =
             L"LamaPonRenderTests";
-        Require(
-            RegisterClassExW(&windowClass) != 0,
-            "RegisterClassExW failed.");
+        if (RegisterClassExW(&windowClass) == 0)
+        {
+            Require(
+                GetLastError() == ERROR_CLASS_ALREADY_EXISTS,
+                "RegisterClassExW failed.");
+        }
 
         const HWND window = CreateWindowExW(
             0,
@@ -344,16 +668,3739 @@ int main(const int argumentCount, char** arguments)
         }
         LamaPon::GraphicsDevice graphics;
         Stage("initialize");
-        graphics.Initialize(window, Width, Height);
+        // この回帰テストはD3D11固有の公開互換入口も検証するため、
+        // D3D11を明示して起動します。D3D12は専用の画素比較suiteで
+        // 同じユーザー向け描画経路を検証します。
+        graphics.Initialize(
+            window,
+            Width,
+            Height,
+            LamaPon::RenderingApi::DirectX11);
+        Require(
+            graphics.StartupRenderingApi()
+                == LamaPon::RenderingApi::DirectX11,
+            "The startup API must retain the DirectX 11 request.");
+        Require(
+            graphics.ActiveRenderingApi()
+                == LamaPon::RenderingApi::DirectX11,
+            "The DirectX 11 regression must use the DirectX 11 backend.");
+        Require(
+            graphics.RenderingApiFallback()
+                == LamaPon::RenderingApiFallbackReason::None,
+            "The DirectX 11 regression unexpectedly reported a fallback.");
+        Require(
+            D3D11Access::Device(graphics) != nullptr
+                && D3D11Access::Context(graphics) != nullptr,
+            "The DirectX 11 renderer must expose a valid device and context.");
+        Stage("skeletal-legacy-export");
+        constexpr char LegacySkeletalDrawSymbol[] =
+            "?Draw@SkeletalModel@LamaPon@@QEBAX"
+            "PEAUID3D11DeviceContext@@"
+            "AEAVCommonStates@DX11@DirectX@@"
+            "AEBULightingState@2@UXMMATRIX@6@AEBU86@4"
+            "PEBUSkeletalAnimationClip@2@M_N"
+            "PEBVLitMaterial@2@"
+            "PEAUID3D11ShaderResourceView@@8"
+            "PEBUPbrTextures@2@5MM"
+            "PEBV?$vector@USkeletalPoseSample@LamaPon@@"
+            "V?$allocator@USkeletalPoseSample@LamaPon@@@std@@@std@@"
+            "_KPEAVLitEffect@2@PEAUID3D11InputLayout@@6"
+            "PEBV?$vector@UXMFLOAT4X4@DirectX@@"
+            "V?$allocator@UXMFLOAT4X4@DirectX@@@std@@@std@@M@Z";
+        constexpr char LegacyBakedGiUploadSymbol[] =
+            "?UploadBakedGlobalIllumination@GraphicsDevice@LamaPon@@"
+            "QEBA?AV?$array@V?$ComPtr@UID3D11ShaderResourceView@@@"
+            "WRL@Microsoft@@$02@std@@IIIV?$span@$$CBG$0?0@4@@Z";
+        constexpr char LegacyLitLightingSymbol[] =
+            "?SetLighting@LitEffect@LamaPon@@"
+            "QEAAXAEBULightingState@2@@Z";
+        constexpr char LegacyAmbientOcclusionViewSymbol[] =
+            "?AmbientOcclusionShaderResourceView@RenderTarget@LamaPon@@"
+            "QEBAPEAUID3D11ShaderResourceView@@XZ";
+        constexpr char LegacyColorHistoryViewSymbol[] =
+            "?ColorHistoryShaderResourceView@RenderTarget@LamaPon@@"
+            "QEBAPEAUID3D11ShaderResourceView@@XZ";
+        constexpr char LegacyReflectionDepthViewSymbol[] =
+            "?ReflectionDepthPyramidShaderResourceView@RenderTarget@LamaPon@@"
+            "QEBAPEAUID3D11ShaderResourceView@@XZ";
+        constexpr char LegacyRenderTargetDepthViewSymbol[] =
+            "?DepthShaderResourceView@RenderTarget@LamaPon@@"
+            "QEBAPEAUID3D11ShaderResourceView@@XZ";
+        constexpr char LegacyShadowMapViewSymbol[] =
+            "?ShaderResourceView@ShadowMap@LamaPon@@"
+            "QEBAPEAUID3D11ShaderResourceView@@XZ";
+        constexpr char LegacyClusteredLightsConstructorSymbol[] =
+            "??0ClusteredLights@LamaPon@@QEAA@"
+            "PEAUID3D11Device@@AEAVAssetManager@1@"
+            "AEBVpath@filesystem@std@@@Z";
+        constexpr char LegacyClustersAccessorSymbol[] =
+            "?Clusters@GraphicsDevice@LamaPon@@"
+            "QEBAAEAVClusteredLights@2@XZ";
+        constexpr char LegacyPrefilteredEnvironmentSymbol[] =
+            "?GetPrefilteredEnvironment@EnvironmentRenderer@LamaPon@@"
+            "QEAA?AUPrefilteredEnvironment@12@"
+            "PEAUID3D11ShaderResourceView@@_K@Z";
+        constexpr char LegacyCachedEnvironmentSymbol[] =
+            "?TryLoadCachedEnvironment@GraphicsDevice@LamaPon@@"
+            "QEBA?AUOwnedPrefilteredEnvironment@EnvironmentRenderer@2@"
+            "_K@Z";
+        constexpr char LegacyPrepareProbeBakeSymbol[] =
+            "?PrepareProbeBake@EnvironmentRenderer@LamaPon@@QEAAXXZ";
+        constexpr char LegacyBakeReflectionProbeSymbol[] =
+            "?BakeReflectionProbe@EnvironmentRenderer@LamaPon@@"
+            "QEAA?AUOwnedPrefilteredEnvironment@12@"
+            "AEBV?$function@$$A6AXI@Z@std@@"
+            "V?$optional@_K@5@@Z";
+        constexpr char LegacyEnvironmentOverrideSymbol[] =
+            "?SetEnvironmentOverride@LitEffect@LamaPon@@"
+            "QEAAXAEBUReflectionProbeEnvironment@2@@Z";
+        constexpr char LegacySkyDrawSymbol[] =
+            "?DrawSky@EnvironmentRenderer@LamaPon@@"
+            "QEAAXUXMMATRIX@DirectX@@AEBU34@"
+            "AEBUSkySettings@2@PEAUID3D11ShaderResourceView@@"
+            "PEBUSkySun@12@@Z";
+        constexpr char LegacyReflectionDepthBuildSymbol[] =
+            "?BuildReflectionDepthPyramid@EnvironmentRenderer@LamaPon@@"
+            "QEAAXAEAVRenderTarget@2@MM@Z";
+        constexpr char LegacyIrradianceProbeBakeSymbol[] =
+            "?BakeIrradianceProbe@EnvironmentRenderer@LamaPon@@"
+            "QEAA?AV?$optional@V?$array@M$0M@@std@@@std@@"
+            "AEBV?$function@$$A6AXI@Z@4@@Z";
+        constexpr char LegacyEnvironmentAccessorSymbol[] =
+            "?Environment@GraphicsDevice@LamaPon@@"
+            "QEBAAEAVEnvironmentRenderer@2@XZ";
+        constexpr char LegacyCurrentColorViewSymbol[] =
+            "?ShaderResourceView@RenderTarget@LamaPon@@"
+            "QEBAPEAUID3D11ShaderResourceView@@XZ";
+        constexpr char LegacyDisplayViewSymbol[] =
+            "?DisplayShaderResourceView@RenderTarget@LamaPon@@"
+            "QEBAPEAUID3D11ShaderResourceView@@XZ";
+        static constexpr char LegacyRenderTargetDepthCopyViewSymbol[] =
+            "?DepthCopyShaderResourceView@RenderTarget@LamaPon@@"
+            "QEBAPEAUID3D11ShaderResourceView@@XZ";
+        static constexpr char LegacyRenderTargetReflectionMipTargetSymbol[] =
+            "?ReflectionDepthPyramidMipTarget@RenderTarget@LamaPon@@"
+            "QEBAPEAUID3D11RenderTargetView@@I@Z";
+        static constexpr char LegacyRenderTargetReflectionMipViewSymbol[] =
+            "?ReflectionDepthPyramidMipView@RenderTarget@LamaPon@@"
+            "QEBAPEAUID3D11ShaderResourceView@@I@Z";
+        static constexpr char LegacyRenderTargetDisplayUavSymbol[] =
+            "?DisplayUnorderedAccessView@RenderTarget@LamaPon@@"
+            "QEBAPEAUID3D11UnorderedAccessView@@XZ";
+        static constexpr char LegacyRenderTargetDisplayTextureSymbol[] =
+            "?DisplayTexture@RenderTarget@LamaPon@@"
+            "QEBAPEAUID3D11Texture2D@@XZ";
+        constexpr std::array LegacyRenderTargetPostProcessSymbols{
+            "?ApplyBloom@RenderTarget@LamaPon@@"
+            "QEAAXAEAVEnvironmentRenderer@2@AEBUBloomSettings@2@@Z",
+            "?ApplyDepthOfField@RenderTarget@LamaPon@@"
+            "QEAAXAEAVEnvironmentRenderer@2@"
+            "AEBUDepthOfFieldSettings@2@AEBUXMFLOAT4X4@DirectX@@I@Z",
+            "?ApplyFXAA@RenderTarget@LamaPon@@"
+            "QEAAXAEAVEnvironmentRenderer@2@@Z",
+            "?ApplyMotionBlur@RenderTarget@LamaPon@@"
+            "QEAAXAEAVEnvironmentRenderer@2@AEBUMotionBlurSettings@2@"
+            "AEBUXMFLOAT4X4@DirectX@@2I@Z",
+            "?ApplyScreenEffect@RenderTarget@LamaPon@@"
+            "QEAAXAEAVScreenEffect@2@"
+            "AEBV?$array@PEAUID3D11ShaderResourceView@@$01@std@@"
+            "AEBUXMFLOAT4@DirectX@@2"
+            "AEBV?$array@UXMFLOAT4@DirectX@@$07@5@@Z",
+            "?ApplyScreenOutline@RenderTarget@LamaPon@@"
+            "QEAAXAEAVEnvironmentRenderer@2@"
+            "AEBUScreenOutlineSettings@2@AEBUXMFLOAT4X4@DirectX@@@Z",
+            "?ApplyScreenSpaceLensFlare@RenderTarget@LamaPon@@"
+            "QEAAXAEAVEnvironmentRenderer@2@"
+            "AEBUScreenSpaceLensFlareSettings@2@@Z",
+            "?ApplyTemporalAntiAliasing@RenderTarget@LamaPon@@"
+            "QEAAXAEAVEnvironmentRenderer@2@"
+            "AEBUTemporalAntiAliasingSettings@2@"
+            "AEBUTemporalInputs@32@@Z",
+            "?ApplyToneMapping@RenderTarget@LamaPon@@"
+            "QEAAXAEAVEnvironmentRenderer@2@"
+            "AEBUColorGradingSettings@2@@Z",
+            "?ApplyVolumetricLight@RenderTarget@LamaPon@@"
+            "QEAAXAEAVEnvironmentRenderer@2@"
+            "AEBUVolumetricLightSettings@2@"
+            "AEBUVolumetricInputs@32@@Z",
+            "?ResolveAmbientOcclusion@RenderTarget@LamaPon@@"
+            "QEAA_NAEAVEnvironmentRenderer@2@"
+            "AEBUAmbientOcclusionSettings@2@"
+            "AEBUXMFLOAT4X4@DirectX@@I@Z"
+        };
+        constexpr std::array Api63RenderTargetSymbols{
+            "??0RenderTarget@LamaPon@@QEAA@XZ",
+            "??1RenderTarget@LamaPon@@QEAA@XZ",
+            "?AdaptedLuminance@RenderTarget@LamaPon@@QEBAMXZ",
+            "?AutoExposureStops@RenderTarget@LamaPon@@QEBAMXZ",
+            "?AmbientOcclusionViewHandle@RenderTarget@LamaPon@@"
+                "QEBA?AVGraphicsViewHandle@2@XZ",
+            "?CurrentColorViewHandle@RenderTarget@LamaPon@@"
+                "QEBA?AVGraphicsViewHandle@2@XZ",
+            "?ColorHistoryViewHandle@RenderTarget@LamaPon@@"
+                "QEBA?AVGraphicsViewHandle@2@XZ",
+            "?TemporalHistoryViewHandle@RenderTarget@LamaPon@@"
+                "QEBA?AVGraphicsViewHandle@2@XZ",
+            "?DepthViewHandle@RenderTarget@LamaPon@@"
+                "QEBA?AVGraphicsViewHandle@2@XZ",
+            "?ReflectionDepthPyramidViewHandle@RenderTarget@LamaPon@@"
+                "QEBA?AVGraphicsViewHandle@2@XZ",
+            "?DisplayViewHandle@RenderTarget@LamaPon@@"
+                "QEBA?AVGraphicsViewHandle@2@XZ",
+            "?ColorHistoryViewProjection@RenderTarget@LamaPon@@"
+                "QEBAAEBUXMFLOAT4X4@DirectX@@XZ",
+            LegacyRenderTargetDepthCopyViewSymbol,
+            "?ReflectionDepthPyramidMipCount@RenderTarget@LamaPon@@"
+                "QEBAIXZ",
+            LegacyRenderTargetReflectionMipTargetSymbol,
+            LegacyRenderTargetReflectionMipViewSymbol,
+            "?SetComputeWritable@RenderTarget@LamaPon@@QEAAX_N@Z",
+            LegacyRenderTargetDisplayUavSymbol,
+            LegacyRenderTargetDisplayTextureSymbol,
+            "?Width@RenderTarget@LamaPon@@QEBAIXZ",
+            "?Height@RenderTarget@LamaPon@@QEBAIXZ",
+            "?AspectRatio@RenderTarget@LamaPon@@QEBAMXZ",
+            "?IsValid@RenderTarget@LamaPon@@QEBA_NXZ"
+        };
+        constexpr std::array Api64GraphicsDeviceSymbols{
+            "?DepthPass@GraphicsDevice@LamaPon@@"
+                "QEBA?AW4DepthPassKind@2@XZ",
+            "?FrameStats@GraphicsDevice@LamaPon@@"
+                "QEBAAEBUFrameStatistics@2@XZ",
+            "?Gpu@GraphicsDevice@LamaPon@@"
+                "QEAAAEAVGpuProfiler@2@XZ",
+            "?Height@GraphicsDevice@LamaPon@@QEBAIXZ",
+            "?IsAsyncShaderCompilationEnabled@GraphicsDevice@LamaPon@@"
+                "QEBA_NXZ",
+            "?IsDepthOnlyPass@GraphicsDevice@LamaPon@@QEBA_NXZ",
+            "?Lighting@GraphicsDevice@LamaPon@@"
+                "QEBAAEBULightingState@2@XZ",
+            "?MemoryStats@GraphicsDevice@LamaPon@@"
+                "QEBAAEBUGraphicsMemoryStatistics@2@XZ",
+            "?RenderingApiFallback@GraphicsDevice@LamaPon@@"
+                "QEBA?AW4RenderingApiFallbackReason@2@XZ",
+            "?ResetShaderFallbackDraws@GraphicsDevice@LamaPon@@QEAAXXZ",
+            "?SceneCompositionTarget@GraphicsDevice@LamaPon@@"
+                "QEBAPEAVRenderTarget@2@XZ",
+            "?SceneProjection@GraphicsDevice@LamaPon@@"
+                "QEBAAEBUXMFLOAT4X4@DirectX@@XZ",
+            "?SetAsyncShaderCompilationEnabled@GraphicsDevice@LamaPon@@"
+                "QEAAX_N@Z",
+            "?SetDepthPass@GraphicsDevice@LamaPon@@"
+                "QEAAXW4DepthPassKind@2@@Z",
+            "?SetLightingState@GraphicsDevice@LamaPon@@"
+                "QEAAXAEBULightingState@2@@Z",
+            "?SetSceneProjection@GraphicsDevice@LamaPon@@"
+                "QEAAXAEBUXMFLOAT4X4@DirectX@@@Z",
+            "?SetUIViewportSize@GraphicsDevice@LamaPon@@QEAAXII@Z",
+            "?Settings@GraphicsDevice@LamaPon@@"
+                "QEBAAEBUGraphicsSettings@2@XZ",
+            "?StartupRenderingApi@GraphicsDevice@LamaPon@@"
+                "QEBA?AW4RenderingApi@2@XZ",
+            "?UIHeight@GraphicsDevice@LamaPon@@QEBAIXZ",
+            "?UIWidth@GraphicsDevice@LamaPon@@QEBAIXZ",
+            "?WhiteTextureHandle@GraphicsDevice@LamaPon@@"
+                "QEBA?AVGraphicsTextureHandle@2@XZ",
+            "?WhiteTextureViewHandle@GraphicsDevice@LamaPon@@"
+                "QEBA?AVGraphicsViewHandle@2@XZ",
+            "?Width@GraphicsDevice@LamaPon@@QEBAIXZ"
+        };
+        constexpr std::array Api65LegacyD3D11AccessSymbols{
+            "?Device@GraphicsDevice@LamaPon@@"
+                "QEBAPEAUID3D11Device@@XZ",
+            "?Context@GraphicsDevice@LamaPon@@"
+                "QEBAPEAUID3D11DeviceContext@@XZ",
+            "?States@GraphicsDevice@LamaPon@@"
+                "QEBAAEAVCommonStates@DX11@DirectX@@XZ",
+            "?AdditiveBlendPreservingAlpha@GraphicsDevice@LamaPon@@"
+                "QEBAPEAUID3D11BlendState@@XZ",
+            "?TryResolveD3D11ShaderResourceView@GraphicsDevice@LamaPon@@"
+                "QEBAPEAUID3D11ShaderResourceView@@"
+                "AEBVGraphicsViewHandle@2@@Z",
+            "?TryResolveD3D11ShaderResourceView@GraphicsDevice@LamaPon@@"
+                "QEBAPEAUID3D11ShaderResourceView@@"
+                "AEBUTextureResourceSnapshot@2@@Z"
+        };
+        constexpr std::array Api66ShadowMapSymbols{
+            "??0ShadowMap@LamaPon@@QEAA@XZ",
+            "??1ShadowMap@LamaPon@@QEAA@XZ",
+            "?ViewHandle@ShadowMap@LamaPon@@"
+                "QEBA?AVGraphicsViewHandle@2@XZ",
+            "?Resolution@ShadowMap@LamaPon@@QEBAIXZ",
+            "?CascadeCount@ShadowMap@LamaPon@@QEBAIXZ",
+            "?IsValid@ShadowMap@LamaPon@@QEBA_NXZ"
+        };
+        constexpr std::array Api67ClusteredLightsSymbols{
+            "??0ClusteredLights@LamaPon@@QEAA@XZ",
+            "??1ClusteredLights@LamaPon@@QEAA@XZ"
+        };
+        const auto runtimeModule = GetModuleHandleW(
+            L"LamaPonRuntime.dll");
+        const auto legacyShadowMapViewAddress = GetProcAddress(
+            runtimeModule,
+            LegacyShadowMapViewSymbol);
+        const auto legacyClustersAccessorAddress = GetProcAddress(
+            runtimeModule,
+            LegacyClustersAccessorSymbol);
+        const auto legacyClusteredLightsConstructorAddress = GetProcAddress(
+            runtimeModule,
+            LegacyClusteredLightsConstructorSymbol);
+        const auto legacyRenderTargetDepthCopyViewAddress = GetProcAddress(
+            runtimeModule,
+            LegacyRenderTargetDepthCopyViewSymbol);
+        const auto legacyRenderTargetReflectionMipTargetAddress =
+            GetProcAddress(
+                runtimeModule,
+                LegacyRenderTargetReflectionMipTargetSymbol);
+        const auto legacyRenderTargetReflectionMipViewAddress =
+            GetProcAddress(
+                runtimeModule,
+                LegacyRenderTargetReflectionMipViewSymbol);
+        const auto legacyRenderTargetDisplayUavAddress = GetProcAddress(
+            runtimeModule,
+            LegacyRenderTargetDisplayUavSymbol);
+        const auto legacyRenderTargetDisplayTextureAddress = GetProcAddress(
+            runtimeModule,
+            LegacyRenderTargetDisplayTextureSymbol);
+        Require(
+            runtimeModule != nullptr
+                && GetProcAddress(
+                    runtimeModule,
+                    LegacySkeletalDrawSymbol) != nullptr,
+            "The API 49 SkeletalModel::Draw export alias is missing");
+        Require(
+            GetProcAddress(
+                runtimeModule,
+                LegacyBakedGiUploadSymbol) != nullptr,
+            "The API 52 Baked GI upload export alias is missing");
+        Require(
+            GetProcAddress(
+                runtimeModule,
+                LegacyLitLightingSymbol) != nullptr,
+            "The API 52 LitEffect lighting export alias is missing");
+        Require(
+            GetProcAddress(
+                runtimeModule,
+                LegacyAmbientOcclusionViewSymbol) != nullptr
+                && GetProcAddress(
+                    runtimeModule,
+                    LegacyColorHistoryViewSymbol) != nullptr
+                && GetProcAddress(
+                    runtimeModule,
+                    LegacyReflectionDepthViewSymbol) != nullptr,
+            "An API 54 RenderTarget screen-space export alias is missing");
+        Require(
+            GetProcAddress(
+                runtimeModule,
+                LegacyRenderTargetDepthViewSymbol) != nullptr
+                && legacyShadowMapViewAddress != nullptr,
+            "An API 55 shadow or depth-view export alias is missing");
+        Require(
+            GetProcAddress(
+                runtimeModule,
+                LegacyPrefilteredEnvironmentSymbol) != nullptr,
+            "The API 56 prefiltered-environment export alias is missing");
+        Require(
+            GetProcAddress(
+                runtimeModule,
+                LegacyCachedEnvironmentSymbol) != nullptr
+                && GetProcAddress(
+                    runtimeModule,
+                    LegacyPrepareProbeBakeSymbol) != nullptr
+                && GetProcAddress(
+                    runtimeModule,
+                    LegacyBakeReflectionProbeSymbol) != nullptr
+                && GetProcAddress(
+                    runtimeModule,
+                    LegacyEnvironmentOverrideSymbol) != nullptr,
+            "An API 57 Reflection Probe export alias is missing");
+        Require(
+            GetProcAddress(
+                runtimeModule,
+                LegacySkyDrawSymbol) != nullptr
+                && GetProcAddress(
+                    runtimeModule,
+                    LegacyReflectionDepthBuildSymbol) != nullptr
+                && GetProcAddress(
+                    runtimeModule,
+                    LegacyIrradianceProbeBakeSymbol) != nullptr,
+            "An API 60 EnvironmentRenderer export alias is missing");
+        const auto legacyEnvironmentAccessorAddress =
+            GetProcAddress(
+                runtimeModule,
+                LegacyEnvironmentAccessorSymbol);
+        Require(
+            legacyEnvironmentAccessorAddress != nullptr,
+            "The API 61 Environment accessor export alias is missing");
+        for (const auto* const symbol :
+            LegacyRenderTargetPostProcessSymbols)
+        {
+            Require(
+                GetProcAddress(runtimeModule, symbol) != nullptr,
+                "An API 61 RenderTarget post-process export alias is missing");
+        }
+        Require(
+            GetProcAddress(
+                runtimeModule,
+                LegacyCurrentColorViewSymbol) != nullptr
+                && GetProcAddress(
+                    runtimeModule,
+                    LegacyDisplayViewSymbol) != nullptr,
+            "An API 62 RenderTarget color-view export alias is missing");
+        for (const auto* const symbol : Api63RenderTargetSymbols)
+        {
+            Require(
+                GetProcAddress(runtimeModule, symbol) != nullptr,
+                "An API 63 opaque RenderTarget export is missing");
+        }
+        for (const auto* const symbol : Api64GraphicsDeviceSymbols)
+        {
+            Require(
+                GetProcAddress(runtimeModule, symbol) != nullptr,
+                "An API 64 opaque GraphicsDevice export is missing");
+        }
+        for (const auto* const symbol : Api65LegacyD3D11AccessSymbols)
+        {
+            Require(
+                GetProcAddress(runtimeModule, symbol) != nullptr,
+                "An API 65 D3D11 compatibility export alias is missing");
+        }
+        for (const auto* const symbol : Api66ShadowMapSymbols)
+        {
+            Require(
+                GetProcAddress(runtimeModule, symbol) != nullptr,
+                "An API 66 opaque ShadowMap export is missing");
+        }
+        Require(
+            legacyClusteredLightsConstructorAddress != nullptr
+                && legacyClustersAccessorAddress != nullptr,
+            "An API 66 ClusteredLights compatibility export is missing");
+        for (const auto* const symbol : Api67ClusteredLightsSymbols)
+        {
+            Require(
+                GetProcAddress(runtimeModule, symbol) != nullptr,
+                "An API 67 opaque ClusteredLights export is missing");
+        }
+        Require(
+            legacyRenderTargetDepthCopyViewAddress != nullptr
+                && legacyRenderTargetReflectionMipTargetAddress != nullptr
+                && legacyRenderTargetReflectionMipViewAddress != nullptr
+                && legacyRenderTargetDisplayUavAddress != nullptr
+                && legacyRenderTargetDisplayTextureAddress != nullptr,
+            "An API 68 RenderTarget compatibility export is missing");
+        using LegacyEnvironmentAccessor =
+            LamaPon::EnvironmentRenderer* (__fastcall*)(
+                const LamaPon::GraphicsDevice*);
+        const auto legacyEnvironmentAccessor =
+            reinterpret_cast<LegacyEnvironmentAccessor>(
+                legacyEnvironmentAccessorAddress);
+        using LegacyShadowMapViewAccessor =
+            ID3D11ShaderResourceView* (__fastcall*)(
+                const LamaPon::ShadowMap*);
+        const auto legacyShadowMapView =
+            reinterpret_cast<LegacyShadowMapViewAccessor>(
+                legacyShadowMapViewAddress);
+        using LegacyClustersAccessor =
+            LamaPon::ClusteredLights* (__fastcall*)(
+                const LamaPon::GraphicsDevice*);
+        const auto legacyClustersAccessor =
+            reinterpret_cast<LegacyClustersAccessor>(
+                legacyClustersAccessorAddress);
+        using LegacyClusteredLightsConstructor =
+            void* (__fastcall*)(void*, void*, void*, const void*);
+        const auto legacyClusteredLightsConstructor =
+            reinterpret_cast<LegacyClusteredLightsConstructor>(
+                legacyClusteredLightsConstructorAddress);
+        using LegacyRenderTargetDepthCopyViewAccessor =
+            ID3D11ShaderResourceView* (__fastcall*)(
+                const LamaPon::RenderTarget*);
+        const auto legacyRenderTargetDepthCopyView =
+            reinterpret_cast<LegacyRenderTargetDepthCopyViewAccessor>(
+                legacyRenderTargetDepthCopyViewAddress);
+        using LegacyRenderTargetReflectionMipTargetAccessor =
+            ID3D11RenderTargetView* (__fastcall*)(
+                const LamaPon::RenderTarget*,
+                std::uint32_t);
+        const auto legacyRenderTargetReflectionMipTarget =
+            reinterpret_cast<
+                LegacyRenderTargetReflectionMipTargetAccessor>(
+                    legacyRenderTargetReflectionMipTargetAddress);
+        using LegacyRenderTargetReflectionMipViewAccessor =
+            ID3D11ShaderResourceView* (__fastcall*)(
+                const LamaPon::RenderTarget*,
+                std::uint32_t);
+        const auto legacyRenderTargetReflectionMipView =
+            reinterpret_cast<LegacyRenderTargetReflectionMipViewAccessor>(
+                legacyRenderTargetReflectionMipViewAddress);
+        using LegacyRenderTargetDisplayUavAccessor =
+            ID3D11UnorderedAccessView* (__fastcall*)(
+                const LamaPon::RenderTarget*);
+        const auto legacyRenderTargetDisplayUav =
+            reinterpret_cast<LegacyRenderTargetDisplayUavAccessor>(
+                legacyRenderTargetDisplayUavAddress);
+        using LegacyRenderTargetDisplayTextureAccessor =
+            ID3D11Texture2D* (__fastcall*)(
+                const LamaPon::RenderTarget*);
+        const auto legacyRenderTargetDisplayTexture =
+            reinterpret_cast<LegacyRenderTargetDisplayTextureAccessor>(
+                legacyRenderTargetDisplayTextureAddress);
+
+        // API 66のinline destructorが安全に空の旧layoutを破棄できるよう、
+        // loader互換constructorは旧storage全体を初期化します。
+        constexpr auto LegacyClusteredLightsSize =
+            10u * sizeof(void*)
+            + 3u * sizeof(LamaPon::GraphicsViewHandle);
+        alignas(void*) std::array<
+            unsigned char,
+            LegacyClusteredLightsSize> legacyClusteredLightsStorage;
+        legacyClusteredLightsStorage.fill(0xA5u);
+        Require(
+            legacyClusteredLightsConstructor(
+                legacyClusteredLightsStorage.data(),
+                nullptr,
+                nullptr,
+                nullptr) == legacyClusteredLightsStorage.data()
+                && std::ranges::all_of(
+                    legacyClusteredLightsStorage,
+                    [](const unsigned char value)
+                    {
+                        return value == 0u;
+                    }),
+            "The API 66 ClusteredLights loader shim left unsafe storage");
+
+        static_assert(
+            std::is_nothrow_default_constructible_v<
+                LamaPon::ClusteredLights>);
+        static_assert(
+            std::is_nothrow_destructible_v<LamaPon::ClusteredLights>);
+        static_assert(
+            !std::is_copy_constructible_v<LamaPon::ClusteredLights>);
+        static_assert(
+            !std::is_copy_assignable_v<LamaPon::ClusteredLights>);
+        static_assert(
+            !std::is_move_constructible_v<LamaPon::ClusteredLights>);
+        static_assert(
+            !std::is_move_assignable_v<LamaPon::ClusteredLights>);
+        static_assert(
+            sizeof(LamaPon::ClusteredLights) <= 16,
+            "ClusteredLights leaked native backend state into its public "
+            "layout");
+
+        static_assert(
+            std::is_nothrow_default_constructible_v<
+                LamaPon::ShadowMap>);
+        static_assert(
+            std::is_nothrow_destructible_v<LamaPon::ShadowMap>);
+        static_assert(!std::is_copy_constructible_v<LamaPon::ShadowMap>);
+        static_assert(!std::is_move_constructible_v<LamaPon::ShadowMap>);
+        static_assert(
+            sizeof(LamaPon::ShadowMap) <= 16,
+            "ShadowMap leaked native backend state into its public layout");
+        Stage("shadow-map-opaque-state");
+        {
+            LamaPon::ShadowMap opaqueShadowMap;
+            Require(
+                !opaqueShadowMap.IsValid()
+                    && !opaqueShadowMap.ViewHandle()
+                    && opaqueShadowMap.Resolution() == 0u
+                    && opaqueShadowMap.CascadeCount() == 0u
+                    && legacyShadowMapView(&opaqueShadowMap) == nullptr,
+                "A default opaque ShadowMap changed its empty semantics");
+        }
+
+        static_assert(
+            std::is_nothrow_default_constructible_v<
+                LamaPon::RenderTarget>);
+        static_assert(
+            std::is_nothrow_destructible_v<LamaPon::RenderTarget>);
+        static_assert(!std::is_copy_constructible_v<LamaPon::RenderTarget>);
+        static_assert(!std::is_copy_assignable_v<LamaPon::RenderTarget>);
+        static_assert(!std::is_move_constructible_v<LamaPon::RenderTarget>);
+        static_assert(!std::is_move_assignable_v<LamaPon::RenderTarget>);
+        static_assert(
+            !HasPublicDepthCopyShaderResourceView<LamaPon::RenderTarget>);
+        static_assert(
+            !HasPublicReflectionDepthPyramidMipTarget<
+                LamaPon::RenderTarget>);
+        static_assert(
+            !HasPublicReflectionDepthPyramidMipView<
+                LamaPon::RenderTarget>);
+        static_assert(
+            !HasPublicDisplayUnorderedAccessView<LamaPon::RenderTarget>);
+        static_assert(!HasPublicDisplayTexture<LamaPon::RenderTarget>);
+        static_assert(
+            LamaPon::GameModuleApiVersion == 74,
+            "The extended DDS texture formats require Game Module API 74");
+        static_assert(
+            sizeof(LamaPon::RenderTarget) <= 128,
+            "RenderTarget leaked native backend state into its public layout");
+        Stage("render-target-api70-facade");
+        {
+            LamaPon::RenderTarget opaqueTarget;
+            const auto* const historyProjectionAddress =
+                &opaqueTarget.ColorHistoryViewProjection();
+            opaqueTarget.SetComputeWritable(true);
+            Require(
+                !opaqueTarget.IsValid()
+                    && opaqueTarget.Width() == 0u
+                    && opaqueTarget.Height() == 0u
+                    && opaqueTarget.AspectRatio() == 0.0f
+                    && !opaqueTarget.CurrentColorViewHandle()
+                    && !opaqueTarget.DisplayViewHandle()
+                    && !opaqueTarget.DepthViewHandle()
+                    && !opaqueTarget.AmbientOcclusionViewHandle()
+                    && !opaqueTarget.ColorHistoryViewHandle()
+                    && !opaqueTarget.TemporalHistoryViewHandle()
+                    && !opaqueTarget
+                        .ReflectionDepthPyramidViewHandle()
+                    && opaqueTarget.ReflectionDepthPyramidMipCount()
+                        == 0u
+                    && opaqueTarget.AdaptedLuminance() == 0.0f
+                    && opaqueTarget.AutoExposureStops() == 0.0f
+                    && legacyRenderTargetDepthCopyView(&opaqueTarget)
+                        == nullptr
+                    && legacyRenderTargetReflectionMipTarget(
+                        &opaqueTarget,
+                        0u)
+                        == nullptr
+                    && legacyRenderTargetReflectionMipView(
+                        &opaqueTarget,
+                        0u)
+                        == nullptr
+                    && legacyRenderTargetDisplayUav(&opaqueTarget)
+                        == nullptr
+                    && legacyRenderTargetDisplayTexture(&opaqueTarget)
+                        == nullptr
+                    && historyProjectionAddress
+                        == &opaqueTarget.ColorHistoryViewProjection(),
+                "A default opaque RenderTarget changed its empty semantics");
+
+            bool initialResizeRejected{};
+            try
+            {
+                graphics.ResizeOffscreenTarget(
+                    opaqueTarget,
+                    D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION + 1u,
+                    1u);
+            }
+            catch (const std::exception&)
+            {
+                initialResizeRejected = true;
+            }
+            Require(
+                initialResizeRejected
+                    && !opaqueTarget.IsValid()
+                    && opaqueTarget.Width() == 0u
+                    && opaqueTarget.Height() == 0u
+                    && !opaqueTarget.CurrentColorViewHandle()
+                    && !opaqueTarget.DisplayViewHandle()
+                    && legacyRenderTargetDepthCopyView(&opaqueTarget)
+                        == nullptr
+                    && legacyRenderTargetReflectionMipTarget(
+                        &opaqueTarget,
+                        0u) == nullptr
+                    && legacyRenderTargetReflectionMipView(
+                        &opaqueTarget,
+                        0u) == nullptr
+                    && legacyRenderTargetDisplayUav(&opaqueTarget)
+                        == nullptr
+                    && legacyRenderTargetDisplayTexture(&opaqueTarget)
+                        == nullptr
+                    && historyProjectionAddress
+                        == &opaqueTarget.ColorHistoryViewProjection(),
+                "A failed first resize published a partial backend state");
+
+            graphics.ResizeOffscreenTarget(opaqueTarget, 4u, 4u);
+            DirectX::XMFLOAT4X4 opaqueHistory{};
+            opaqueHistory._11 = 2.0f;
+            opaqueHistory._22 = 3.0f;
+            opaqueHistory._33 = 4.0f;
+            opaqueHistory._44 = 1.0f;
+            graphics.CaptureOffscreenTargetColorHistory(
+                opaqueTarget,
+                opaqueHistory);
+            const auto opaqueMipCount =
+                opaqueTarget.ReflectionDepthPyramidMipCount();
+            auto* const opaqueDepthCopyView =
+                legacyRenderTargetDepthCopyView(&opaqueTarget);
+            auto* const opaqueReflectionMipTarget =
+                legacyRenderTargetReflectionMipTarget(
+                    &opaqueTarget,
+                    0u);
+            auto* const opaqueReflectionMipView =
+                legacyRenderTargetReflectionMipView(
+                    &opaqueTarget,
+                    0u);
+            auto* const opaqueDisplayUav =
+                legacyRenderTargetDisplayUav(&opaqueTarget);
+            auto* const opaqueDisplayTexture =
+                legacyRenderTargetDisplayTexture(&opaqueTarget);
+            Require(
+                opaqueTarget.IsValid()
+                    && opaqueTarget.Width() == 4u
+                    && opaqueTarget.Height() == 4u
+                    && opaqueTarget.CurrentColorViewHandle()
+                    && opaqueTarget.DisplayViewHandle()
+                    && opaqueMipCount > 0u
+                    && opaqueDepthCopyView != nullptr
+                    && opaqueReflectionMipTarget != nullptr
+                    && opaqueReflectionMipView != nullptr
+                    && legacyRenderTargetReflectionMipTarget(
+                        &opaqueTarget,
+                        opaqueMipCount) == nullptr
+                    && legacyRenderTargetReflectionMipView(
+                        &opaqueTarget,
+                        opaqueMipCount) == nullptr
+                    && opaqueDisplayUav != nullptr
+                    && opaqueDisplayTexture != nullptr
+                    && opaqueTarget.ColorHistoryViewHandle()
+                    && historyProjectionAddress
+                        == &opaqueTarget.ColorHistoryViewProjection()
+                    && historyProjectionAddress->_11 == 2.0f
+                    && historyProjectionAddress->_22 == 3.0f
+                    && historyProjectionAddress->_33 == 4.0f
+                    && historyProjectionAddress->_44 == 1.0f,
+                "A committed D3D11 state lost pre-resize options or the "
+                "stable history projection reference");
+            const auto opaqueCurrentView =
+                opaqueTarget.CurrentColorViewHandle();
+            const auto opaqueDisplayView =
+                opaqueTarget.DisplayViewHandle();
+            const auto opaqueHistoryView =
+                opaqueTarget.ColorHistoryViewHandle();
+            bool replacementResizeRejected{};
+            try
+            {
+                graphics.ResizeOffscreenTarget(
+                    opaqueTarget,
+                    D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION + 1u,
+                    1u);
+            }
+            catch (const std::exception&)
+            {
+                replacementResizeRejected = true;
+            }
+            Require(
+                replacementResizeRejected
+                    && opaqueTarget.IsValid()
+                    && opaqueTarget.Width() == 4u
+                    && opaqueTarget.Height() == 4u
+                    && opaqueTarget.CurrentColorViewHandle()
+                        == opaqueCurrentView
+                    && opaqueTarget.DisplayViewHandle()
+                        == opaqueDisplayView
+                    && opaqueTarget.ColorHistoryViewHandle()
+                        == opaqueHistoryView
+                    && opaqueTarget.ReflectionDepthPyramidMipCount()
+                        == opaqueMipCount
+                    && legacyRenderTargetDepthCopyView(&opaqueTarget)
+                        == opaqueDepthCopyView
+                    && legacyRenderTargetReflectionMipTarget(
+                        &opaqueTarget,
+                        0u) == opaqueReflectionMipTarget
+                    && legacyRenderTargetReflectionMipView(
+                        &opaqueTarget,
+                        0u) == opaqueReflectionMipView
+                    && legacyRenderTargetDisplayUav(&opaqueTarget)
+                        == opaqueDisplayUav
+                    && legacyRenderTargetDisplayTexture(&opaqueTarget)
+                        == opaqueDisplayTexture
+                    && historyProjectionAddress->_11 == 2.0f
+                    && historyProjectionAddress->_22 == 3.0f
+                    && historyProjectionAddress->_33 == 4.0f
+                    && historyProjectionAddress->_44 == 1.0f,
+                "A failed replacement changed the last complete opaque "
+                "state or its history");
+            graphics.ResizeOffscreenTarget(opaqueTarget, 8u, 8u);
+            Require(
+                opaqueTarget.IsValid()
+                    && opaqueTarget.Width() == 8u
+                    && opaqueTarget.Height() == 8u
+                    && !opaqueTarget.ColorHistoryViewHandle()
+                    && legacyRenderTargetDepthCopyView(&opaqueTarget)
+                        != nullptr
+                    && legacyRenderTargetReflectionMipTarget(
+                        &opaqueTarget,
+                        0u) != nullptr
+                    && legacyRenderTargetReflectionMipView(
+                        &opaqueTarget,
+                        0u) != nullptr
+                    && legacyRenderTargetDisplayUav(&opaqueTarget)
+                        != nullptr
+                    && legacyRenderTargetDisplayTexture(&opaqueTarget)
+                        != nullptr
+                    && historyProjectionAddress
+                        == &opaqueTarget.ColorHistoryViewProjection()
+                    && historyProjectionAddress->_11 == 2.0f
+                    && historyProjectionAddress->_22 == 3.0f
+                    && historyProjectionAddress->_33 == 4.0f
+                    && historyProjectionAddress->_44 == 1.0f,
+                "Replacing an opaque backend state invalidated the stable "
+                "history projection reference or pre-resize options");
+        }
         Stage("asset-root");
         graphics.Assets().SetAssetRoot(
             LAMAPON_TEST_ASSET_DIR);
+
+        // runtimeのAssetManagerを通ったglTF/FBX primitiveは、従来の
+        // DirectXTK11 viewと同じ内容をBackend世代付きhandleでも
+        // 保持します。Importer単体のraw互換経路とはここで区別します。
+        Stage("skeletal-neutral-textures");
+        const auto skeletalAsset = graphics.Assets().LoadModel(
+            std::filesystem::path{ "models" }
+                / "TexturedRiggedSimple.gltf");
+        Require(
+            skeletalAsset != nullptr
+                && skeletalAsset->skeletalModel != nullptr
+                && !skeletalAsset->skeletalModel->primitives.empty(),
+            "The skeletal neutral-texture fixture could not be loaded");
+        bool foundSkeletalTexture{};
+        for (const auto& primitive :
+            skeletalAsset->skeletalModel->primitives)
+        {
+            const std::array<ID3D11ShaderResourceView*, 6> nativeViews{
+                primitive.texture.Get(),
+                primitive.normalTexture.Get(),
+                primitive.roughnessTexture.Get(),
+                primitive.metallicTexture.Get(),
+                primitive.occlusionTexture.Get(),
+                primitive.emissiveTexture.Get()
+            };
+            const std::array<const LamaPon::GraphicsViewHandle*, 6>
+                neutralViews{
+                    &primitive.embeddedTextures.albedo,
+                    &primitive.embeddedTextures.normal,
+                    &primitive.embeddedTextures.roughness,
+                    &primitive.embeddedTextures.metallic,
+                    &primitive.embeddedTextures.occlusion,
+                    &primitive.embeddedTextures.emissive
+                };
+            for (std::size_t index{};
+                index < nativeViews.size();
+                ++index)
+            {
+                Require(
+                    static_cast<bool>(*neutralViews[index])
+                        == (nativeViews[index] != nullptr),
+                    "A skeletal embedded texture lost its neutral mirror");
+                if (nativeViews[index] != nullptr)
+                {
+                    foundSkeletalTexture = true;
+                    Require(
+                        D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                            *neutralViews[index])
+                            == nativeViews[index],
+                        "A skeletal neutral texture resolved to another view");
+                }
+            }
+            Require(
+                primitive.embeddedTextures.occlusionStrength
+                    == primitive.occlusionStrength
+                    && primitive.embeddedTextures.emissiveFactor.x
+                        == primitive.emissiveFactor.x
+                    && primitive.embeddedTextures.emissiveFactor.y
+                        == primitive.emissiveFactor.y
+                    && primitive.embeddedTextures.emissiveFactor.z
+                        == primitive.emissiveFactor.z,
+                "Skeletal embedded texture metadata was not mirrored");
+        }
+        Require(
+            foundSkeletalTexture,
+            "The skeletal neutral-texture fixture has no texture to test");
+
+        // Meshが使うneutral Lit texture requestの全slot対応と、Effectを
+        // 再利用したときのclear、別Backend世代の拒否を直接固定します。
+        Stage("lit-texture-request");
+        std::array<LamaPon::GraphicsViewHandle, 10> litViews;
+        for (std::size_t index{}; index < litViews.size(); ++index)
+        {
+            litViews[index] = CreateSolidView(
+                graphics,
+                {
+                    static_cast<std::uint8_t>(16u + index * 19u),
+                    static_cast<std::uint8_t>(31u + index * 13u),
+                    static_cast<std::uint8_t>(47u + index * 7u),
+                    255u
+                });
+        }
+        LamaPon::LitTextureRequest litTextures;
+        litTextures.albedo = litViews[0];
+        litTextures.normal = litViews[1];
+        litTextures.roughness = litViews[2];
+        litTextures.metallic = litViews[3];
+        litTextures.occlusion = litViews[4];
+        litTextures.emissive = litViews[5];
+        std::copy_n(
+            litViews.begin() + 6,
+            litTextures.customTextures.size(),
+            litTextures.customTextures.begin());
+
+        auto& litEffect = graphics.Lit();
+        const auto identity = DirectX::XMMatrixIdentity();
+        litEffect.SetMatrices(identity, identity, identity);
+        litEffect.SetMaterial(LamaPon::LitMaterial{});
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                graphics.Lighting()),
+            "A valid neutral Lit lighting state was rejected");
+        Require(
+            graphics.TrySetLitEffectTextures(
+                litEffect,
+                litTextures),
+            "A valid neutral Lit texture request was rejected");
+        litEffect.Apply(D3D11Access::Context(graphics));
+        constexpr std::array<UINT, 10> LitTextureSlots{
+            0u, 1u, 11u, 12u, 13u, 14u, 7u, 8u, 9u, 10u
+        };
+        for (std::size_t index{}; index < litViews.size(); ++index)
+        {
+            Require(
+                CapturePixelShaderView(
+                    graphics,
+                    LitTextureSlots[index]).Get()
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        litViews[index]),
+                "A neutral Lit texture was bound to the wrong slot");
+        }
+        const auto disabledAmbientOcclusionView =
+            CapturePixelShaderView(graphics, 15u);
+        Require(
+            disabledAmbientOcclusionView != nullptr,
+            "Disabled SSAO did not bind the Lit white fallback");
+
+        // 3種類の影mapはShadowMapがneutral handleを所有し、Lit bridgeが
+        // array/cube形状とメタデータをまとめて検証します。
+        Stage("lit-neutral-shadow-lighting");
+        const auto directionalShadowView =
+            graphics.Shadows().ViewHandle();
+        const auto spotShadowView =
+            graphics.SpotShadows().ViewHandle();
+        const auto pointShadowView =
+            graphics.PointShadows().ViewHandle();
+        Require(
+            graphics.Shadows().IsValid()
+                && graphics.SpotShadows().IsValid()
+                && graphics.PointShadows().IsValid()
+                && directionalShadowView
+                && spotShadowView
+                && pointShadowView,
+            "Shadow maps did not publish their neutral views");
+
+        LamaPon::LightingState shadowLighting;
+        shadowLighting.directionalLightCount = 1;
+        shadowLighting.spotLightCount = 1;
+        shadowLighting.pointLightCount = 1;
+        auto& directionalShadow = shadowLighting.directionalShadow;
+        directionalShadow.texture = directionalShadowView;
+        directionalShadow.lightIndex = 0;
+        directionalShadow.cascadeCount =
+            graphics.Shadows().CascadeCount();
+        directionalShadow.enabled = true;
+        auto& spotShadow = shadowLighting.spotShadows[0];
+        spotShadow.lightIndex = 0;
+        spotShadow.enabled = true;
+        shadowLighting.spotShadowTexture = spotShadowView;
+        auto& pointShadow = shadowLighting.pointShadow;
+        pointShadow.texture = pointShadowView;
+        pointShadow.lightIndex = 0;
+        pointShadow.enabled = true;
+        shadowLighting.directionalShadowResolution =
+            static_cast<float>(graphics.Shadows().Resolution());
+        shadowLighting.localShadowResolution =
+            static_cast<float>(graphics.SpotShadows().Resolution());
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                shadowLighting),
+            "Valid neutral shadow lighting was rejected");
+        litEffect.Apply(D3D11Access::Context(graphics));
+        Require(
+            CapturePixelShaderView(graphics, 2u).Get()
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        directionalShadowView)
+                && CapturePixelShaderView(graphics, 4u).Get()
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        spotShadowView)
+                && CapturePixelShaderView(graphics, 5u).Get()
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        pointShadowView),
+            "Neutral shadow views were bound to the wrong slots");
+
+        auto incompleteShadowLighting = shadowLighting;
+        incompleteShadowLighting.directionalShadow.texture.Reset();
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                incompleteShadowLighting),
+            "An enabled shadow with no neutral view was accepted");
+        auto wrongPointShadowShape = shadowLighting;
+        wrongPointShadowShape.pointShadow.texture = spotShadowView;
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                wrongPointShadowShape),
+            "A Texture2DArray was accepted as a point-shadow cube");
+        auto invalidSpotShadowIndex = shadowLighting;
+        invalidSpotShadowIndex.spotShadows[0].lightIndex = 1;
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                invalidSpotShadowIndex),
+            "A spot shadow with an invalid light index was accepted");
+        auto wrongShadowResolution = shadowLighting;
+        wrongShadowResolution.localShadowResolution += 1.0f;
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                wrongShadowResolution),
+            "Shadow views with mismatched resolution were accepted");
+        litEffect.Apply(D3D11Access::Context(graphics));
+        Require(
+            CapturePixelShaderView(graphics, 2u).Get()
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        directionalShadowView)
+                && CapturePixelShaderView(graphics, 4u).Get()
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        spotShadowView)
+                && CapturePixelShaderView(graphics, 5u).Get()
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        pointShadowView),
+            "Rejected neutral shadow lighting partially changed the Effect");
+
+        auto disabledShadowLighting = shadowLighting;
+        disabledShadowLighting.directionalShadow.enabled = false;
+        disabledShadowLighting.spotShadows[0].enabled = false;
+        disabledShadowLighting.pointShadow.enabled = false;
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                disabledShadowLighting),
+            "Disabled neutral shadow lighting was rejected");
+        litEffect.Apply(D3D11Access::Context(graphics));
+        Require(
+            CapturePixelShaderView(graphics, 2u) == nullptr
+                && CapturePixelShaderView(graphics, 4u) == nullptr
+                && CapturePixelShaderView(graphics, 5u) == nullptr,
+            "Disabling shadow lighting retained previous bindings");
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                shadowLighting),
+            "The neutral shadow baseline could not be restored");
+
+        // 共通Sky IBLはsourceと畳み込み済みpairをneutral handleで運び、
+        // 同じsource/keyではhandle wrapperも再利用します。
+        Stage("neutral-sky-ibl");
+        Require(
+            graphics.IsSampleableCubeView(pointShadowView)
+                && !graphics.IsSampleableCubeView({})
+                && !graphics.IsSampleableCubeView(litViews[0]),
+            "Sky cube validation accepted an empty or Texture2D view");
+
+        LamaPon::SkySettings neutralSkySettings;
+        neutralSkySettings.enabled = true;
+        neutralSkySettings.topColor = { 0.13f, 0.37f, 0.71f };
+        neutralSkySettings.horizonColor = { 0.13f, 0.37f, 0.71f };
+        neutralSkySettings.groundColor = { 0.13f, 0.37f, 0.71f };
+        LamaPon::SkySunDescription neutralSkySun;
+        neutralSkySun.directionToSun = { 0.0f, 1.0f, 0.0f };
+        neutralSkySun.color = { 0.9f, 0.8f, 0.7f };
+        constexpr float neutralSkyClear[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+        const auto captureNeutralSky =
+            [&graphics,
+             &identity,
+             &neutralSkySettings,
+             &neutralSkySun,
+             &neutralSkyClear](
+                const LamaPon::GraphicsViewHandle& cubemap)
+        {
+            graphics.BeginFrame(neutralSkyClear);
+            graphics.DrawSky(
+                identity,
+                identity,
+                neutralSkySettings,
+                cubemap,
+                &neutralSkySun);
+            std::uint32_t width{};
+            std::uint32_t height{};
+            auto pixels = graphics.CaptureBackBuffer(width, height);
+            graphics.EndFrame();
+            Require(
+                width == Width
+                    && height == Height
+                    && pixels.size()
+                        == static_cast<std::size_t>(Width)
+                            * Height * 4u,
+                "The neutral Sky facade produced an invalid frame");
+            return pixels;
+        };
+        static_cast<void>(captureNeutralSky(pointShadowView));
+        const auto emptyNeutralSky = captureNeutralSky({});
+        const auto twoDimensionalNeutralSky =
+            captureNeutralSky(litViews[0]);
+        Require(
+            twoDimensionalNeutralSky == emptyNeutralSky,
+            "A Texture2D did not fall back to the procedural Sky");
+
+        const auto baselinePrefilterPipeline =
+            PrefilterPipelineState::Capture(D3D11Access::Context(graphics));
+        D3D11_TEXTURE2D_DESC sentinelTargetDescription{};
+        sentinelTargetDescription.Width = Width;
+        sentinelTargetDescription.Height = Height;
+        sentinelTargetDescription.MipLevels = 1;
+        sentinelTargetDescription.ArraySize = 1;
+        sentinelTargetDescription.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        sentinelTargetDescription.SampleDesc.Count = 1;
+        sentinelTargetDescription.Usage = D3D11_USAGE_DEFAULT;
+        sentinelTargetDescription.BindFlags = D3D11_BIND_RENDER_TARGET;
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> sentinelTargetTexture;
+        Require(
+            SUCCEEDED(D3D11Access::Device(graphics)->CreateTexture2D(
+                &sentinelTargetDescription,
+                nullptr,
+                sentinelTargetTexture.ReleaseAndGetAddressOf())),
+            "The IBL pipeline-state sentinel texture could not be created");
+        Microsoft::WRL::ComPtr<ID3D11RenderTargetView> sentinelTarget;
+        Require(
+            SUCCEEDED(D3D11Access::Device(graphics)->CreateRenderTargetView(
+                sentinelTargetTexture.Get(),
+                nullptr,
+                sentinelTarget.ReleaseAndGetAddressOf())),
+            "The IBL pipeline-state sentinel RTV could not be created");
+        ID3D11RenderTargetView* sentinelTargets[]{
+            baselinePrefilterPipeline.targets[0].Get(),
+            sentinelTarget.Get()
+        };
+        D3D11Access::Context(graphics)->OMSetRenderTargets(
+            static_cast<UINT>(std::size(sentinelTargets)),
+            sentinelTargets,
+            baselinePrefilterPipeline.depth.Get());
+        const D3D11_VIEWPORT sentinelViewports[]{
+            baselinePrefilterPipeline.viewportCount != 0
+                ? baselinePrefilterPipeline.viewports[0]
+                : D3D11_VIEWPORT{
+                    0.0f,
+                    0.0f,
+                    static_cast<float>(Width),
+                    static_cast<float>(Height),
+                    0.0f,
+                    1.0f },
+            D3D11_VIEWPORT{
+                5.0f,
+                7.0f,
+                37.0f,
+                23.0f,
+                0.1f,
+                0.9f }
+        };
+        D3D11Access::Context(graphics)->RSSetViewports(
+            static_cast<UINT>(std::size(sentinelViewports)),
+            sentinelViewports);
+        D3D11Access::Context(graphics)->IASetPrimitiveTopology(
+            D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
+        const auto sentinelPrefilterPipeline =
+            PrefilterPipelineState::Capture(D3D11Access::Context(graphics));
+        const auto prefilteredEnvironment =
+            graphics.TryGetPrefilteredEnvironmentViews(
+                pointShadowView);
+        const bool retainedPrefilterPipeline =
+            sentinelPrefilterPipeline.Matches(D3D11Access::Context(graphics));
+        baselinePrefilterPipeline.Restore(D3D11Access::Context(graphics));
+        Require(
+            retainedPrefilterPipeline,
+            "Sky IBL prefiltering did not restore the D3D11 pipeline state");
+        Require(
+            prefilteredEnvironment.IsValid()
+                && prefilteredEnvironment.specularMaximumMip
+                    == static_cast<float>(
+                        LamaPon::EnvironmentRenderer::
+                            PrefilteredSpecularMipLevels - 1),
+            "A sampleable cube could not produce neutral IBL views");
+        const auto repeatedPrefilteredEnvironment =
+            graphics.TryGetPrefilteredEnvironmentViews(
+                pointShadowView);
+        Require(
+            repeatedPrefilteredEnvironment.specular
+                    == prefilteredEnvironment.specular
+                && repeatedPrefilteredEnvironment.irradiance
+                    == prefilteredEnvironment.irradiance,
+            "Repeated Sky IBL lookup rebuilt neutral view handles");
+        const auto emptyPrefilteredEnvironment =
+            graphics.TryGetPrefilteredEnvironmentViews({});
+        const auto twoDimensionalPrefilteredEnvironment =
+            graphics.TryGetPrefilteredEnvironmentViews(litViews[0]);
+        Require(
+            !emptyPrefilteredEnvironment.IsValid()
+                && !twoDimensionalPrefilteredEnvironment.IsValid()
+                && graphics.TryGetPrefilteredEnvironmentViews(
+                    pointShadowView).specular
+                    == prefilteredEnvironment.specular,
+            "Invalid IBL sources changed the cached neutral pair");
+
+        const auto requirePrefilteredCube = [&graphics](
+            const LamaPon::GraphicsViewHandle& handle,
+            const std::uint32_t size,
+            const std::uint32_t mipLevels)
+        {
+            auto* const view =
+                D3D11Access::TryResolveD3D11ShaderResourceView(graphics, handle);
+            Require(
+                view != nullptr,
+                "A neutral IBL view could not be resolved");
+            D3D11_SHADER_RESOURCE_VIEW_DESC viewDescription{};
+            view->GetDesc(&viewDescription);
+            Microsoft::WRL::ComPtr<ID3D11Resource> resource;
+            view->GetResource(resource.ReleaseAndGetAddressOf());
+            Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+            Require(
+                resource != nullptr
+                    && SUCCEEDED(resource.As(&texture)),
+                "A neutral IBL view did not own Texture2D storage");
+            D3D11_TEXTURE2D_DESC description{};
+            texture->GetDesc(&description);
+            Require(
+                viewDescription.Format
+                        == DXGI_FORMAT_R16G16B16A16_FLOAT
+                    && viewDescription.ViewDimension
+                        == D3D11_SRV_DIMENSION_TEXTURECUBE
+                    && viewDescription.TextureCube.MostDetailedMip == 0
+                    && viewDescription.TextureCube.MipLevels == mipLevels
+                    && description.Width == size
+                    && description.Height == size
+                    && description.MipLevels == mipLevels
+                    && description.ArraySize == 6
+                    && description.Format
+                        == DXGI_FORMAT_R16G16B16A16_FLOAT
+                    && (description.MiscFlags
+                        & D3D11_RESOURCE_MISC_TEXTURECUBE) != 0,
+                "A neutral IBL view had the wrong cube shape");
+        };
+        requirePrefilteredCube(
+            prefilteredEnvironment.specular,
+            LamaPon::EnvironmentRenderer::PrefilteredSpecularSize,
+            LamaPon::EnvironmentRenderer::PrefilteredSpecularMipLevels);
+        requirePrefilteredCube(
+            prefilteredEnvironment.irradiance,
+            LamaPon::EnvironmentRenderer::PrefilteredIrradianceSize,
+            LamaPon::EnvironmentRenderer::PrefilteredIrradianceMipLevels);
+
+        LamaPon::LightingState environmentLighting;
+        auto& environment = environmentLighting.environment;
+        environment.texture = prefilteredEnvironment.specular;
+        environment.intensity = 1.0f;
+        environment.enabled = true;
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                environmentLighting),
+            "A source-only neutral environment was rejected");
+        litEffect.Apply(D3D11Access::Context(graphics));
+        Require(
+            CapturePixelShaderView(graphics, 3u).Get()
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        prefilteredEnvironment.specular)
+                && CapturePixelShaderView(graphics, 6u) == nullptr,
+            "A source-only environment did not use its cube fallback");
+
+        environment.specular = prefilteredEnvironment.specular;
+        environment.irradiance = prefilteredEnvironment.irradiance;
+        environment.specularMaximumMip =
+            prefilteredEnvironment.specularMaximumMip;
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                environmentLighting),
+            "A valid neutral prefiltered environment was rejected");
+        litEffect.Apply(D3D11Access::Context(graphics));
+        Require(
+            CapturePixelShaderView(graphics, 3u).Get()
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        prefilteredEnvironment.specular)
+                && CapturePixelShaderView(graphics, 6u).Get()
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        prefilteredEnvironment.irradiance),
+            "Neutral IBL views were bound to the wrong slots");
+
+        auto incompleteEnvironment = environmentLighting;
+        incompleteEnvironment.environment.irradiance.Reset();
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                incompleteEnvironment),
+            "An incomplete prefiltered environment pair was accepted");
+        auto swappedEnvironment = environmentLighting;
+        std::swap(
+            swappedEnvironment.environment.specular,
+            swappedEnvironment.environment.irradiance);
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                swappedEnvironment),
+            "Prefiltered environment views with swapped shapes were accepted");
+        auto invalidEnvironmentSource = environmentLighting;
+        invalidEnvironmentSource.environment.texture = litViews[0];
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                invalidEnvironmentSource),
+            "A Texture2D was accepted as an environment cube");
+        auto depthEnvironmentSource = environmentLighting;
+        depthEnvironmentSource.environment.texture = pointShadowView;
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                depthEnvironmentSource),
+            "A depth-stencil cube was accepted as an environment map");
+        auto invalidEnvironmentMip = environmentLighting;
+        invalidEnvironmentMip.environment.specularMaximumMip += 1.0f;
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                invalidEnvironmentMip),
+            "An invalid prefiltered maximum mip was accepted");
+        auto nonFiniteEnvironment = environmentLighting;
+        nonFiniteEnvironment.environment.intensity =
+            std::numeric_limits<float>::quiet_NaN();
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                nonFiniteEnvironment),
+            "A non-finite environment intensity was accepted");
+        auto clampedEnvironment = environmentLighting;
+        clampedEnvironment.environment.intensity = -1.0f;
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                clampedEnvironment),
+            "A finite negative environment intensity was not clamped");
+
+        // 失敗した要求は、直前に反映済みのvalid pairを部分変更しません。
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                environmentLighting),
+            "The neutral environment baseline could not be restored");
+        litEffect.Apply(D3D11Access::Context(graphics));
+        static_cast<void>(graphics.TrySetLitEffectLighting(
+            litEffect,
+            incompleteEnvironment));
+        litEffect.Apply(D3D11Access::Context(graphics));
+        Require(
+            CapturePixelShaderView(graphics, 3u).Get()
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        prefilteredEnvironment.specular)
+                && CapturePixelShaderView(graphics, 6u).Get()
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        prefilteredEnvironment.irradiance),
+            "Rejected neutral IBL lighting partially changed the Effect");
+
+        auto disabledEnvironment = nonFiniteEnvironment;
+        disabledEnvironment.environment.enabled = false;
+        disabledEnvironment.environment.texture = litViews[0];
+        disabledEnvironment.environment.irradiance.Reset();
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                disabledEnvironment),
+            "Disabled environment state resolved stale resource handles");
+        litEffect.Apply(D3D11Access::Context(graphics));
+        Require(
+            CapturePixelShaderView(graphics, 3u) == nullptr
+                && CapturePixelShaderView(graphics, 6u) == nullptr,
+            "Disabling neutral IBL retained previous bindings");
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                environmentLighting),
+            "The neutral environment baseline could not be restored");
+
+        // Reflection Probeもprimary/secondaryの4本をneutral handleで
+        // 運び、全pairを検証した後だけオブジェクト単位のIBLへ差し替えます。
+        Stage("lit-neutral-reflection-probe");
+        Require(
+            graphics.IsGraphicsViewCurrent(
+                prefilteredEnvironment.specular)
+                && graphics.IsGraphicsViewCurrent(
+                    prefilteredEnvironment.irradiance),
+            "Fresh neutral IBL views were not current for their backend");
+        LamaPon::ReflectionProbeEnvironment reflectionProbe;
+        reflectionProbe.specular = prefilteredEnvironment.specular;
+        reflectionProbe.irradiance = prefilteredEnvironment.irradiance;
+        reflectionProbe.specularMaximumMip =
+            prefilteredEnvironment.specularMaximumMip;
+        reflectionProbe.intensity = 0.75f;
+        reflectionProbe.boxCenter = { 1.0f, 2.0f, 3.0f };
+        reflectionProbe.boxExtents = { 4.0f, 5.0f, 6.0f };
+        Require(
+            graphics.TrySetLitEffectReflectionProbe(
+                litEffect,
+                reflectionProbe),
+            "A valid neutral Reflection Probe was rejected");
+        litEffect.Apply(D3D11Access::Context(graphics));
+        Require(
+            CapturePixelShaderView(graphics, 3u).Get()
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        prefilteredEnvironment.specular)
+                && CapturePixelShaderView(graphics, 6u).Get()
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        prefilteredEnvironment.irradiance)
+                && CapturePixelShaderView(graphics, 19u) == nullptr
+                && CapturePixelShaderView(graphics, 20u) == nullptr,
+            "A neutral Reflection Probe bound the wrong primary views");
+
+        auto blendedReflectionProbe = reflectionProbe;
+        blendedReflectionProbe.secondarySpecular =
+            prefilteredEnvironment.specular;
+        blendedReflectionProbe.secondaryIrradiance =
+            prefilteredEnvironment.irradiance;
+        blendedReflectionProbe.secondarySpecularMaximumMip =
+            prefilteredEnvironment.specularMaximumMip;
+        blendedReflectionProbe.secondaryBoxCenter =
+            { -1.0f, -2.0f, -3.0f };
+        blendedReflectionProbe.secondaryBoxExtents =
+            { 7.0f, 8.0f, 9.0f };
+        blendedReflectionProbe.secondaryWeight = 0.5f;
+        Require(
+            graphics.TrySetLitEffectReflectionProbe(
+                litEffect,
+                blendedReflectionProbe),
+            "A valid blended neutral Reflection Probe was rejected");
+        litEffect.Apply(D3D11Access::Context(graphics));
+        Require(
+            CapturePixelShaderView(graphics, 19u).Get()
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        prefilteredEnvironment.specular)
+                && CapturePixelShaderView(graphics, 20u).Get()
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        prefilteredEnvironment.irradiance),
+            "Neutral secondary Reflection Probe views used the wrong slots");
+
+        auto incompleteReflectionProbe = reflectionProbe;
+        incompleteReflectionProbe.irradiance.Reset();
+        Require(
+            !graphics.TrySetLitEffectReflectionProbe(
+                litEffect,
+                incompleteReflectionProbe),
+            "An incomplete primary Reflection Probe pair was accepted");
+        auto swappedReflectionProbe = reflectionProbe;
+        std::swap(
+            swappedReflectionProbe.specular,
+            swappedReflectionProbe.irradiance);
+        Require(
+            !graphics.TrySetLitEffectReflectionProbe(
+                litEffect,
+                swappedReflectionProbe),
+            "Reflection Probe views with swapped shapes were accepted");
+        auto invalidReflectionProbeMip = reflectionProbe;
+        invalidReflectionProbeMip.specularMaximumMip += 1.0f;
+        Require(
+            !graphics.TrySetLitEffectReflectionProbe(
+                litEffect,
+                invalidReflectionProbeMip),
+            "A Reflection Probe with invalid mip metadata was accepted");
+        auto nonFiniteReflectionProbe = reflectionProbe;
+        nonFiniteReflectionProbe.intensity =
+            std::numeric_limits<float>::quiet_NaN();
+        Require(
+            !graphics.TrySetLitEffectReflectionProbe(
+                litEffect,
+                nonFiniteReflectionProbe),
+            "A non-finite Reflection Probe was accepted");
+        litEffect.Apply(D3D11Access::Context(graphics));
+        Require(
+            CapturePixelShaderView(graphics, 19u).Get()
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        prefilteredEnvironment.specular)
+                && CapturePixelShaderView(graphics, 20u).Get()
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        prefilteredEnvironment.irradiance),
+            "A rejected Reflection Probe partially changed the Effect");
+
+        auto disabledSecondaryProbe = blendedReflectionProbe;
+        disabledSecondaryProbe.secondaryWeight = 0.0f;
+        disabledSecondaryProbe.secondarySpecular = litViews[0];
+        disabledSecondaryProbe.secondaryIrradiance.Reset();
+        Require(
+            graphics.TrySetLitEffectReflectionProbe(
+                litEffect,
+                disabledSecondaryProbe),
+            "Disabled secondary Probe handles were unnecessarily resolved");
+        litEffect.Apply(D3D11Access::Context(graphics));
+        Require(
+            CapturePixelShaderView(graphics, 19u) == nullptr
+                && CapturePixelShaderView(graphics, 20u) == nullptr,
+            "Disabling a secondary Reflection Probe retained old bindings");
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                environmentLighting),
+            "The Sky IBL baseline could not be restored after Probe tests");
+
+        // ボリューメトリック光のmain depthとcascade shadowもhandleで
+        // 運び、検証に失敗した場合はping-pong先へ切り替えません。
+        Stage("volumetric-neutral-depth-and-shadow");
+        LamaPon::RenderTarget volumetricTarget;
+        graphics.ResizeOffscreenTarget(
+            volumetricTarget,
+            Width,
+            Height);
+        Require(
+            static_cast<bool>(volumetricTarget.DepthViewHandle()),
+            "RenderTarget did not publish its neutral depth view");
+        LamaPon::VolumetricLightSettings volumetricSettings;
+        volumetricSettings.enabled = true;
+        LamaPon::VolumetricLightInputs volumetricInputs;
+        volumetricInputs.cascadeShadow = directionalShadowView;
+        volumetricInputs.cascadeCount =
+            static_cast<std::uint32_t>(
+                directionalShadow.cascadeCount);
+        volumetricInputs.shadowResolution =
+            shadowLighting.directionalShadowResolution;
+        const auto volumetricSource =
+            volumetricTarget.CurrentColorViewHandle();
+        const auto volumetricDisplay =
+            volumetricTarget.DisplayViewHandle();
+        auto* const volumetricNativeSource =
+            D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                volumetricSource);
+        auto* const volumetricNativeDisplay =
+            D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                volumetricDisplay);
+        Require(
+            volumetricSource
+                && volumetricDisplay
+                && graphics.IsGraphicsViewCurrent(volumetricSource)
+                && graphics.IsGraphicsViewCurrent(volumetricDisplay)
+                && volumetricNativeSource != nullptr
+                && volumetricNativeDisplay != nullptr
+                && volumetricNativeSource != volumetricNativeDisplay,
+            "RenderTarget did not publish distinct current and display "
+            "color views");
+        graphics.ApplyOffscreenTargetVolumetricLight(
+            volumetricTarget,
+            volumetricSettings,
+            volumetricInputs);
+        Require(
+            volumetricTarget.CurrentColorViewHandle()
+                    != volumetricSource
+                && volumetricTarget.DisplayViewHandle()
+                    == volumetricDisplay
+                && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                    volumetricTarget.CurrentColorViewHandle())
+                    != volumetricNativeSource
+                && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                    volumetricTarget.DisplayViewHandle())
+                    == volumetricNativeDisplay,
+            "Valid neutral volumetric inputs did not swap only the current "
+            "color view");
+        auto invalidVolumetricInputs = volumetricInputs;
+        invalidVolumetricInputs.cascadeShadow.Reset();
+        const auto resolvedVolumetricSource =
+            volumetricTarget.CurrentColorViewHandle();
+        graphics.ApplyOffscreenTargetVolumetricLight(
+            volumetricTarget,
+            volumetricSettings,
+            invalidVolumetricInputs);
+        Require(
+            volumetricTarget.CurrentColorViewHandle()
+                == resolvedVolumetricSource,
+            "Invalid neutral volumetric inputs changed the target");
+        graphics.ApplyOffscreenTargetFXAA(volumetricTarget);
+        Require(
+            volumetricTarget.CurrentColorViewHandle()
+                    == volumetricSource
+                && volumetricTarget.DisplayViewHandle()
+                    == volumetricDisplay,
+            "Two post-process swaps did not restore the original current "
+            "color identity while preserving the display view");
+
+        // TAAの履歴と深度もRenderTargetがneutral handleで所有し、
+        // D3D11描画島が同じBackend世代・期待形式・画面寸法をまとめて
+        // 検証した後にだけ解決します。
+        Stage("temporal-neutral-history-and-depth");
+        LamaPon::RenderTarget temporalTarget;
+        graphics.ResizeOffscreenTarget(
+            temporalTarget,
+            Width,
+            Height);
+        Require(
+            temporalTarget.DepthViewHandle()
+                && !temporalTarget.TemporalHistoryViewHandle(),
+            "A fresh RenderTarget published an invalid temporal history state");
+        DirectX::XMFLOAT4X4 temporalIdentity{};
+        DirectX::XMStoreFloat4x4(
+            &temporalIdentity,
+            DirectX::XMMatrixIdentity());
+        graphics.CaptureOffscreenTargetTemporalHistory(
+            temporalTarget,
+            temporalIdentity);
+        const auto temporalHistoryView =
+            temporalTarget.TemporalHistoryViewHandle();
+        const auto temporalDepthView =
+            temporalTarget.DepthViewHandle();
+        Require(
+            temporalHistoryView
+                && temporalDepthView
+                && graphics.IsGraphicsViewCurrent(
+                    temporalHistoryView)
+                && graphics.IsGraphicsViewCurrent(
+                    temporalDepthView)
+                && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                    temporalHistoryView) != nullptr
+                && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                    temporalDepthView) != nullptr,
+            "RenderTarget did not publish current neutral TAA views");
+
+        LamaPon::TemporalAntiAliasingSettings temporalSettings;
+        temporalSettings.enabled = true;
+        LamaPon::TemporalAntiAliasingInputs temporalInputs;
+        temporalInputs.inverseViewProjection = temporalIdentity;
+        temporalInputs.viewProjection = temporalIdentity;
+        const auto temporalSource =
+            temporalTarget.CurrentColorViewHandle();
+        graphics.ApplyOffscreenTargetTemporalAntiAliasing(
+            temporalTarget,
+            temporalSettings,
+            temporalInputs);
+        Require(
+            temporalTarget.CurrentColorViewHandle() != temporalSource,
+            "Valid neutral TAA inputs were not applied by RenderTarget");
+
+        D3D11_TEXTURE2D_DESC temporalOutputDescription{};
+        temporalOutputDescription.Width = Width;
+        temporalOutputDescription.Height = Height;
+        temporalOutputDescription.MipLevels = 1;
+        temporalOutputDescription.ArraySize = 1;
+        temporalOutputDescription.Format =
+            DXGI_FORMAT_R16G16B16A16_FLOAT;
+        temporalOutputDescription.SampleDesc.Count = 1;
+        temporalOutputDescription.Usage = D3D11_USAGE_DEFAULT;
+        temporalOutputDescription.BindFlags =
+            D3D11_BIND_RENDER_TARGET;
+        Microsoft::WRL::ComPtr<ID3D11Texture2D>
+            temporalOutputTexture;
+        Microsoft::WRL::ComPtr<ID3D11RenderTargetView>
+            temporalOutputTarget;
+        Require(
+            SUCCEEDED(D3D11Access::Device(graphics)->CreateTexture2D(
+                &temporalOutputDescription,
+                nullptr,
+                temporalOutputTexture.ReleaseAndGetAddressOf()))
+                && SUCCEEDED(D3D11Access::Device(graphics)->CreateRenderTargetView(
+                    temporalOutputTexture.Get(),
+                    nullptr,
+                    temporalOutputTarget.ReleaseAndGetAddressOf())),
+            "The neutral TAA validation target could not be created");
+
+        LamaPon::EnvironmentRenderer::TemporalInputs
+            directTemporalInputs;
+        directTemporalInputs.inverseViewProjection =
+            temporalInputs.inverseViewProjection;
+        directTemporalInputs.viewProjection =
+            temporalInputs.viewProjection;
+        directTemporalInputs.history = temporalHistoryView;
+        directTemporalInputs.depth = temporalDepthView;
+        directTemporalInputs.previousViewProjection =
+            temporalIdentity;
+        directTemporalInputs.previousValid = true;
+        auto temporalOutputState = graphics.CaptureOutputState();
+        Require(
+            temporalOutputState != nullptr,
+            "The TAA renderer output state could not be captured");
+        auto* const legacyEnvironment =
+            legacyEnvironmentAccessor(&graphics);
+        Require(
+            legacyEnvironment != nullptr,
+            "The legacy Environment accessor returned null");
+        auto* const temporalNativeSource =
+            D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                temporalTarget.CurrentColorViewHandle());
+        Require(
+            temporalNativeSource != nullptr,
+            "The neutral current color view did not resolve for the D3D11 "
+            "compatibility renderer");
+        Require(
+            legacyEnvironment->ApplyTemporalAntiAliasing(
+                temporalNativeSource,
+                temporalOutputTarget.Get(),
+                Width,
+                Height,
+                temporalSettings,
+                directTemporalInputs),
+            "The TAA renderer rejected valid neutral history and depth views");
+        graphics.RestoreOutputState(*temporalOutputState);
+
+        auto incompleteTemporalInputs = directTemporalInputs;
+        incompleteTemporalInputs.history.Reset();
+        Require(
+            !legacyEnvironment->ApplyTemporalAntiAliasing(
+                temporalNativeSource,
+                temporalOutputTarget.Get(),
+                Width,
+                Height,
+                temporalSettings,
+                incompleteTemporalInputs),
+            "The TAA renderer accepted a missing neutral history view");
+        auto invalidTemporalHistory = directTemporalInputs;
+        invalidTemporalHistory.history = litViews[0];
+        Require(
+            !legacyEnvironment->ApplyTemporalAntiAliasing(
+                temporalNativeSource,
+                temporalOutputTarget.Get(),
+                Width,
+                Height,
+                temporalSettings,
+                invalidTemporalHistory),
+            "The TAA renderer accepted an RGBA8 history view");
+        auto invalidTemporalDepth = directTemporalInputs;
+        invalidTemporalDepth.depth = temporalHistoryView;
+        Require(
+            !legacyEnvironment->ApplyTemporalAntiAliasing(
+                temporalNativeSource,
+                temporalOutputTarget.Get(),
+                Width,
+                Height,
+                temporalSettings,
+                invalidTemporalDepth),
+            "The TAA renderer accepted a color view as depth");
+
+        // SSAOとSSRもRenderTargetがneutral handleを所有し、Effectへ
+        // 反映する直前に3本まとめて同じBackend世代へ解決します。
+        Stage("lit-neutral-screen-space-lighting");
+        LamaPon::RenderTarget screenLightingTarget;
+        graphics.ResizeOffscreenTarget(
+            screenLightingTarget,
+            Width,
+            Height);
+        Require(
+            screenLightingTarget.AmbientOcclusionViewHandle()
+                && screenLightingTarget
+                    .ReflectionDepthPyramidViewHandle()
+                && !screenLightingTarget.ColorHistoryViewHandle(),
+            "RenderTarget did not publish its neutral screen-space views");
+        DirectX::XMFLOAT4X4 screenHistoryTransform{};
+        DirectX::XMStoreFloat4x4(
+            &screenHistoryTransform,
+            DirectX::XMMatrixIdentity());
+        graphics.CaptureOffscreenTargetColorHistory(
+            screenLightingTarget,
+            screenHistoryTransform);
+        const auto ambientOcclusionView =
+            screenLightingTarget.AmbientOcclusionViewHandle();
+        const auto colorHistoryView =
+            screenLightingTarget.ColorHistoryViewHandle();
+        const auto reflectionDepthView =
+            screenLightingTarget.ReflectionDepthPyramidViewHandle();
+        Require(
+            colorHistoryView
+                && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                    ambientOcclusionView) != nullptr
+                && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                    colorHistoryView) != nullptr
+                && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                    reflectionDepthView) != nullptr,
+            "A RenderTarget screen-space view could not be resolved");
+
+        LamaPon::LightingState screenLighting;
+        auto& ambientOcclusion =
+            screenLighting.screenAmbientOcclusion;
+        ambientOcclusion.enabled = true;
+        ambientOcclusion.texture = ambientOcclusionView;
+        ambientOcclusion.inverseWidth =
+            1.0f / static_cast<float>(Width);
+        ambientOcclusion.inverseHeight =
+            1.0f / static_cast<float>(Height);
+        auto& screenReflection =
+            screenLighting.screenSpaceReflection;
+        screenReflection.enabled = true;
+        screenReflection.texture = colorHistoryView;
+        screenReflection.depth = reflectionDepthView;
+        screenReflection.previousViewProjection =
+            screenHistoryTransform;
+        screenReflection.inverseWidth =
+            1.0f / static_cast<float>(Width);
+        screenReflection.inverseHeight =
+            1.0f / static_cast<float>(Height);
+        screenReflection.depthPyramidMaximumMip =
+            screenLightingTarget.ReflectionDepthPyramidMipCount() - 1;
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                screenLighting),
+            "Valid neutral screen-space lighting was rejected");
+        litEffect.Apply(D3D11Access::Context(graphics));
+        Require(
+            CapturePixelShaderView(graphics, 15u).Get()
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        ambientOcclusionView)
+                && CapturePixelShaderView(graphics, 21u).Get()
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        colorHistoryView)
+                && CapturePixelShaderView(graphics, 22u).Get()
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        reflectionDepthView),
+            "Neutral screen-space lighting was bound to the wrong slot");
+
+        auto incompleteScreenLighting = screenLighting;
+        incompleteScreenLighting.screenSpaceReflection.depth.Reset();
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                incompleteScreenLighting),
+            "An incomplete neutral SSR pair was accepted");
+        auto wrongAmbientOcclusionView = screenLighting;
+        wrongAmbientOcclusionView.screenAmbientOcclusion.texture =
+            litViews[0];
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                wrongAmbientOcclusionView),
+            "An RGBA texture was accepted as neutral SSAO");
+        auto wrongScreenMetadata = screenLighting;
+        wrongScreenMetadata.screenSpaceReflection
+            .depthPyramidMaximumMip = 0;
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                wrongScreenMetadata),
+            "SSR with an incomplete mip-chain declaration was accepted");
+        auto wrongAmbientOcclusionSize = screenLighting;
+        wrongAmbientOcclusionSize.screenAmbientOcclusion.inverseWidth =
+            1.0f / static_cast<float>(Width + 2u);
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                wrongAmbientOcclusionSize),
+            "SSAO with mismatched dimensions was accepted");
+        litEffect.Apply(D3D11Access::Context(graphics));
+        Require(
+            CapturePixelShaderView(graphics, 15u).Get()
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        ambientOcclusionView)
+                && CapturePixelShaderView(graphics, 21u).Get()
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        colorHistoryView)
+                && CapturePixelShaderView(graphics, 22u).Get()
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        reflectionDepthView),
+            "Rejected screen-space lighting partially changed the Effect");
+
+        auto disabledScreenLighting = screenLighting;
+        disabledScreenLighting.screenAmbientOcclusion.enabled = false;
+        disabledScreenLighting.screenSpaceReflection.enabled = false;
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                disabledScreenLighting),
+            "Disabled neutral screen-space lighting was rejected");
+        litEffect.Apply(D3D11Access::Context(graphics));
+        Require(
+            CapturePixelShaderView(graphics, 15u).Get()
+                    == disabledAmbientOcclusionView.Get()
+                && CapturePixelShaderView(graphics, 21u) == nullptr
+                && CapturePixelShaderView(graphics, 22u) == nullptr,
+            "Disabling screen-space lighting retained previous bindings");
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                screenLighting),
+            "The neutral screen-space baseline could not be restored");
+
+        // Forward+の3本のStructuredBufferもLightingStateがneutral
+        // handleで強所有し、Effect反映前にall-or-noneで解決します。
+        Stage("lit-neutral-clustered-lighting");
+        LamaPon::LightingState clusteredLighting;
+        clusteredLighting.clusteredLights.emplace_back();
+        const auto clusteredView = DirectX::XMMatrixIdentity();
+        const auto clusteredProjection =
+            DirectX::XMMatrixPerspectiveFovRH(
+                DirectX::XM_PIDIV4,
+                static_cast<float>(Width)
+                    / static_cast<float>(Height),
+                0.1f,
+                100.0f);
+        DirectX::XMFLOAT4X4 clusteredViewValues{};
+        DirectX::XMFLOAT4X4 clusteredProjectionValues{};
+        DirectX::XMStoreFloat4x4(
+            &clusteredViewValues,
+            clusteredView);
+        DirectX::XMStoreFloat4x4(
+            &clusteredProjectionValues,
+            clusteredProjection);
+        graphics.UpdateClusteredLights(
+            clusteredLighting,
+            clusteredView,
+            clusteredProjection,
+            Width,
+            Height);
+        auto& clustered = clusteredLighting.clustered;
+        const std::array clusteredViews{
+            clustered.lights,
+            clustered.lightIndices,
+            clustered.clusterCounts
+        };
+        Require(
+            clustered.enabled
+                && clustered.lightCount == 1u
+                && clusteredViews[0]
+                && clusteredViews[1]
+                && clusteredViews[2],
+            "Clustered lighting did not publish three neutral views");
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                clusteredLighting),
+            "Valid neutral clustered lighting was rejected");
+        litEffect.Apply(D3D11Access::Context(graphics));
+        for (std::size_t index{};
+            index < clusteredViews.size();
+            ++index)
+        {
+            Require(
+                CapturePixelShaderView(
+                    graphics,
+                    static_cast<UINT>(16u + index)).Get()
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        clusteredViews[index]),
+                "A neutral clustered-lighting view was bound to the wrong slot");
+        }
+
+        graphics.UpdateClusteredLights(
+            clusteredLighting,
+            clusteredView,
+            clusteredProjection,
+            Width,
+            Height);
+        Require(
+            clusteredLighting.clustered.lights
+                    == clusteredViews[0]
+                && clusteredLighting.clustered.lightIndices
+                    == clusteredViews[1]
+                && clusteredLighting.clustered.clusterCounts
+                    == clusteredViews[2],
+            "Clustered lighting rebuilt neutral wrappers every frame");
+
+        auto incompleteClusteredLighting = clusteredLighting;
+        incompleteClusteredLighting.clustered.clusterCounts.Reset();
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                incompleteClusteredLighting),
+            "An incomplete clustered-lighting view set was accepted");
+        auto wrongDimensionClusteredLighting = clusteredLighting;
+        wrongDimensionClusteredLighting.clustered.lightIndices =
+            litViews[0];
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                wrongDimensionClusteredLighting),
+            "A Texture2D was accepted as a clustered-lighting buffer");
+        auto invalidClusteredMetadata = clusteredLighting;
+        invalidClusteredMetadata.clustered.lightCount = 0;
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                invalidClusteredMetadata),
+            "Invalid clustered-lighting metadata was accepted");
+        litEffect.Apply(D3D11Access::Context(graphics));
+        for (std::size_t index{};
+            index < clusteredViews.size();
+            ++index)
+        {
+            Require(
+                CapturePixelShaderView(
+                    graphics,
+                    static_cast<UINT>(16u + index)).Get()
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        clusteredViews[index]),
+                "Rejected clustered lighting partially changed the Effect");
+        }
+
+        auto disabledClusteredLighting = clusteredLighting;
+        disabledClusteredLighting.clustered.enabled = false;
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                disabledClusteredLighting),
+            "Disabled neutral clustered lighting was rejected");
+        litEffect.Apply(D3D11Access::Context(graphics));
+        Require(
+            CapturePixelShaderView(graphics, 16u) == nullptr
+                && CapturePixelShaderView(graphics, 17u) == nullptr
+                && CapturePixelShaderView(graphics, 18u) == nullptr,
+            "Disabling clustered lighting retained previous bindings");
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                clusteredLighting),
+            "The neutral clustered-lighting baseline could not be restored");
+
+        // Baked GIはLightingStateでも3枚のneutral handleを強所有し、
+        // D3D11への解決はEffect反映直前にtransactionalに行います。
+        Stage("lit-neutral-baked-gi");
+        const std::array<std::uint16_t, 12> bakedGiCoefficients{
+            0x0000u, 0x0001u, 0x0002u, 0x0003u,
+            0x0010u, 0x0011u, 0x0012u, 0x0013u,
+            0x0020u, 0x0021u, 0x0022u, 0x0023u
+        };
+        const auto bakedGiViews =
+            graphics.UploadBakedGlobalIlluminationViews(
+                1,
+                1,
+                1,
+                bakedGiCoefficients);
+        LamaPon::LightingState bakedGiLighting = graphics.Lighting();
+        auto& bakedGi = bakedGiLighting.bakedGlobalIllumination;
+        bakedGi.enabled = true;
+        bakedGi.redCoefficients = bakedGiViews[0];
+        bakedGi.greenCoefficients = bakedGiViews[1];
+        bakedGi.blueCoefficients = bakedGiViews[2];
+        bakedGi.volumeMinimum = { -1.0f, -2.0f, -3.0f };
+        bakedGi.volumeSize = { 2.0f, 4.0f, 6.0f };
+        bakedGi.resolution = { 1.0f, 1.0f, 1.0f };
+        bakedGi.intensity = 0.75f;
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                bakedGiLighting),
+            "A valid neutral Baked GI triplet was rejected");
+        litEffect.Apply(D3D11Access::Context(graphics));
+        for (std::size_t index{}; index < bakedGiViews.size(); ++index)
+        {
+            Require(
+                CapturePixelShaderView(
+                    graphics,
+                    static_cast<UINT>(23u + index)).Get()
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        bakedGiViews[index]),
+                "A neutral Baked GI view was bound to the wrong slot");
+        }
+
+        auto incompleteBakedGiLighting = bakedGiLighting;
+        incompleteBakedGiLighting.bakedGlobalIllumination
+            .blueCoefficients.Reset();
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                incompleteBakedGiLighting),
+            "An incomplete neutral Baked GI triplet was accepted");
+        auto wrongDimensionBakedGiLighting = bakedGiLighting;
+        wrongDimensionBakedGiLighting.bakedGlobalIllumination
+            .blueCoefficients = litViews[0];
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                wrongDimensionBakedGiLighting),
+            "A Texture2D was accepted as a Baked GI volume");
+        auto wrongResolutionBakedGiLighting = bakedGiLighting;
+        wrongResolutionBakedGiLighting.bakedGlobalIllumination
+            .resolution.x = 2.0f;
+        Require(
+            !graphics.TrySetLitEffectLighting(
+                litEffect,
+                wrongResolutionBakedGiLighting),
+            "A Baked GI volume with mismatched resolution was accepted");
+        litEffect.Apply(D3D11Access::Context(graphics));
+        for (std::size_t index{}; index < bakedGiViews.size(); ++index)
+        {
+            Require(
+                CapturePixelShaderView(
+                    graphics,
+                    static_cast<UINT>(23u + index)).Get()
+                    == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        bakedGiViews[index]),
+                "A rejected Baked GI triplet partially changed the Effect");
+        }
+
+        auto disabledBakedGiLighting = bakedGiLighting;
+        disabledBakedGiLighting.bakedGlobalIllumination.enabled = false;
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                disabledBakedGiLighting),
+            "A disabled neutral Baked GI state was rejected");
+        litEffect.Apply(D3D11Access::Context(graphics));
+        Require(
+            CapturePixelShaderView(graphics, 23u) == nullptr
+                && CapturePixelShaderView(graphics, 24u) == nullptr
+                && CapturePixelShaderView(graphics, 25u) == nullptr,
+            "Disabling Baked GI retained a previous volume binding");
+        Require(
+            graphics.TrySetLitEffectLighting(
+                litEffect,
+                bakedGiLighting),
+            "The neutral Baked GI baseline could not be restored");
+
+        LamaPon::LitTextureRequest emptyLitTextures;
+        Require(
+            graphics.TrySetLitEffectTextures(
+                litEffect,
+                emptyLitTextures),
+            "An empty neutral Lit texture request was rejected");
+        litEffect.Apply(D3D11Access::Context(graphics));
+        const auto litWhite = CapturePixelShaderView(graphics, 0u);
+        const auto litFlatNormal =
+            CapturePixelShaderView(graphics, 1u);
+        Require(
+            litWhite != nullptr
+                && litFlatNormal != nullptr
+                && litFlatNormal.Get() != litWhite.Get(),
+            "Neutral Lit defaults did not bind white and flat normal views");
+        constexpr std::array<UINT, 8> LitWhiteSlots{
+            7u, 8u, 9u, 10u, 11u, 12u, 13u, 14u
+        };
+        for (const auto slot : LitWhiteSlots)
+        {
+            Require(
+                CapturePixelShaderView(graphics, slot).Get()
+                    == litWhite.Get(),
+                "An empty neutral Lit slot retained a previous texture");
+        }
+
+        // 失敗時にEffectが部分更新されないことを、valid requestを
+        // baselineへ戻してからforeign handleで確認します。
+        Require(
+            graphics.TrySetLitEffectTextures(
+                litEffect,
+                litTextures),
+            "The valid neutral Lit baseline could not be restored");
+        const HWND foreignWindow = CreateHiddenWindow();
+        std::unique_ptr<LamaPon::RenderTarget>
+            retainedBackendLifetimeTarget;
+        LamaPon::GraphicsViewHandle retainedBackendLifetimeView;
+        ID3D11Texture2D* retainedBackendLifetimeTexture{};
+        {
+            LamaPon::D3D11Backend foreignBackend;
+            const LamaPon::GraphicsBackendCreateInfo
+                foreignBackendCreateInfo{
+                foreignWindow,
+                Width,
+                Height,
+                true,
+                false
+            };
+            foreignBackend.Initialize(foreignBackendCreateInfo);
+
+            // ClusteredLightsはdefault facadeを安全な未設定として扱い、
+            // native資源と3本のviewは完成後にだけ一括公開します。
+            Stage("clustered-lights-backend-state");
+            const auto clusteredResultIsClear =
+                [](const LamaPon::LightingState& state)
+                {
+                    return !state.clustered.enabled
+                        && state.clustered.lightCount == 0u
+                        && !state.clustered.lights
+                        && !state.clustered.lightIndices
+                        && !state.clustered.clusterCounts;
+                };
+            const auto clusteredShaderPath =
+                graphics.Assets().ResolvePath(
+                    "shaders/LamaPonLightCulling.hlsl");
+            const auto missingClusteredShaderPath =
+                graphics.Assets().ResolvePath(
+                    "shaders/Api67MissingLightCulling.hlsl");
+            LamaPon::ClusteredLights transactionalClusteredLights;
+            auto defaultClusteredLighting = clusteredLighting;
+            foreignBackend.UpdateClusteredLights(
+                transactionalClusteredLights,
+                defaultClusteredLighting,
+                clusteredViewValues,
+                clusteredProjectionValues,
+                Width,
+                Height);
+            Require(
+                clusteredResultIsClear(defaultClusteredLighting),
+                "A default ClusteredLights facade retained an old result");
+
+            bool initialClusteredCreationRejected{};
+            try
+            {
+                foreignBackend.InitializeClusteredLights(
+                    transactionalClusteredLights,
+                    graphics.Assets(),
+                    missingClusteredShaderPath);
+            }
+            catch (const std::runtime_error&)
+            {
+                initialClusteredCreationRejected = true;
+            }
+            auto failedInitialClusteredLighting = clusteredLighting;
+            foreignBackend.UpdateClusteredLights(
+                transactionalClusteredLights,
+                failedInitialClusteredLighting,
+                clusteredViewValues,
+                clusteredProjectionValues,
+                Width,
+                Height);
+            Require(
+                initialClusteredCreationRejected
+                    && clusteredResultIsClear(
+                        failedInitialClusteredLighting),
+                "A failed first ClusteredLights initialization published "
+                "partial state");
+
+            foreignBackend.InitializeClusteredLights(
+                transactionalClusteredLights,
+                graphics.Assets(),
+                clusteredShaderPath);
+            auto transactionalClusteredLighting = clusteredLighting;
+            foreignBackend.UpdateClusteredLights(
+                transactionalClusteredLights,
+                transactionalClusteredLighting,
+                clusteredViewValues,
+                clusteredProjectionValues,
+                Width,
+                Height);
+            const std::array transactionalClusteredViews{
+                transactionalClusteredLighting.clustered.lights,
+                transactionalClusteredLighting.clustered.lightIndices,
+                transactionalClusteredLighting.clustered.clusterCounts
+            };
+            Require(
+                transactionalClusteredLighting.clustered.enabled
+                    && transactionalClusteredLighting.clustered.lightCount
+                        == 1u
+                    && std::ranges::all_of(
+                        transactionalClusteredViews,
+                        [&foreignBackend](const auto& clusteredViewHandle)
+                        {
+                            return foreignBackend.IsViewCurrent(
+                                clusteredViewHandle);
+                        }),
+                "ClusteredLights did not publish one complete backend state");
+
+            bool replacementClusteredCreationRejected{};
+            try
+            {
+                foreignBackend.InitializeClusteredLights(
+                    transactionalClusteredLights,
+                    graphics.Assets(),
+                    missingClusteredShaderPath);
+            }
+            catch (const std::runtime_error&)
+            {
+                replacementClusteredCreationRejected = true;
+            }
+            auto preservedClusteredLighting = clusteredLighting;
+            foreignBackend.UpdateClusteredLights(
+                transactionalClusteredLights,
+                preservedClusteredLighting,
+                clusteredViewValues,
+                clusteredProjectionValues,
+                Width,
+                Height);
+            Require(
+                replacementClusteredCreationRejected
+                    && preservedClusteredLighting.clustered.lights
+                        == transactionalClusteredViews[0]
+                    && preservedClusteredLighting.clustered.lightIndices
+                        == transactionalClusteredViews[1]
+                    && preservedClusteredLighting.clustered.clusterCounts
+                        == transactionalClusteredViews[2],
+                "A failed ClusteredLights replacement changed the last "
+                "complete state");
+
+            // 別Backendのstateはnative contextへ渡さず、出力だけを安全な
+            // fallbackへ戻します。旧Clusters symbolも実際に転送確認します。
+            auto* const primaryClusteredLights =
+                legacyClustersAccessor(&graphics);
+            Require(
+                primaryClusteredLights != nullptr,
+                "The legacy GraphicsDevice::Clusters alias returned null");
+            auto foreignClusteredLighting = clusteredLighting;
+            foreignBackend.UpdateClusteredLights(
+                *primaryClusteredLights,
+                foreignClusteredLighting,
+                clusteredViewValues,
+                clusteredProjectionValues,
+                Width,
+                Height);
+            Require(
+                clusteredResultIsClear(foreignClusteredLighting)
+                    && std::ranges::all_of(
+                        clusteredViews,
+                        [&graphics](const auto& clusteredViewHandle)
+                        {
+                            return graphics.IsGraphicsViewCurrent(
+                                clusteredViewHandle);
+                        }),
+                "A foreign ClusteredLights state reached the native context "
+                "or changed its owner");
+
+            // ShadowMapのnative stateは完成した単位でのみ差し替えます。
+            // 初回作成と置換のどちらが失敗しても、部分的なstateを
+            // 公開せず、Begin中の旧stateは元の描画先へ戻せます。
+            const auto verifyShadowMapTransactionalState = [&]
+            {
+                Stage("shadow-map-transactional-state");
+                LamaPon::ShadowMap transactionalShadowMap;
+                bool initialShadowCreationRejected{};
+                try
+                {
+                    foreignBackend.InitializeShadowMap(
+                        transactionalShadowMap,
+                        D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION + 1u, 1u, false);
+                }
+                catch (const std::invalid_argument&)
+                {
+                    initialShadowCreationRejected = true;
+                }
+                Require(initialShadowCreationRejected,
+                        "An oversized first ShadowMap creation was accepted");
+                Require(!transactionalShadowMap.IsValid() &&
+                            !transactionalShadowMap.ViewHandle() &&
+                            transactionalShadowMap.Resolution() == 0u &&
+                            transactionalShadowMap.CascadeCount() == 0u,
+                        "A failed first ShadowMap creation published partial "
+                        "state");
+
+                foreignBackend.InitializeShadowMap(transactionalShadowMap, 0u,
+                                                   0u, false);
+                const auto firstTransactionalShadowView =
+                    transactionalShadowMap.ViewHandle();
+                auto* const firstTransactionalNativeView =
+                    foreignBackend.ResolveShaderResourceView(
+                        firstTransactionalShadowView);
+                Require(firstTransactionalNativeView != nullptr,
+                        "The opaque ShadowMap did not publish a native view");
+                Require(legacyShadowMapView(&transactionalShadowMap) ==
+                            firstTransactionalNativeView,
+                        "The legacy ShadowMap view alias did not reach the "
+                        "opaque D3D11 state");
+                D3D11_SHADER_RESOURCE_VIEW_DESC firstShadowDescription{};
+                firstTransactionalNativeView->GetDesc(&firstShadowDescription);
+                Require(transactionalShadowMap.IsValid() &&
+                            firstTransactionalShadowView &&
+                            firstTransactionalShadowView.Kind() ==
+                                LamaPon::GraphicsViewKind::ShaderResource &&
+                            transactionalShadowMap.Resolution() == 1u &&
+                            transactionalShadowMap.CascadeCount() == 1u &&
+                            firstShadowDescription.ViewDimension ==
+                                D3D11_SRV_DIMENSION_TEXTURE2DARRAY &&
+                            firstShadowDescription.Texture2DArray.ArraySize ==
+                                1u,
+                        "The opaque ShadowMap did not publish its clamped "
+                        "metadata");
+
+                foreignBackend.BindBackBuffer();
+                auto transactionalOutput =
+                    PrefilterPipelineState::Capture(foreignBackend.Context());
+                foreignBackend.BeginShadowMap(transactionalShadowMap, 0u);
+                Microsoft::WRL::ComPtr<ID3D11RenderTargetView>
+                    activeShadowColor;
+                Microsoft::WRL::ComPtr<ID3D11DepthStencilView>
+                    activeShadowDepth;
+                foreignBackend.Context()->OMGetRenderTargets(
+                    1, activeShadowColor.ReleaseAndGetAddressOf(),
+                    activeShadowDepth.ReleaseAndGetAddressOf());
+                D3D11_VIEWPORT activeShadowViewport{};
+                UINT activeShadowViewportCount = 1;
+                foreignBackend.Context()->RSGetViewports(
+                    &activeShadowViewportCount, &activeShadowViewport);
+                Require(activeShadowColor == nullptr &&
+                            activeShadowDepth != nullptr &&
+                            activeShadowViewportCount == 1u &&
+                            activeShadowViewport.Width == 1.0f &&
+                            activeShadowViewport.Height == 1.0f,
+                        "Beginning an opaque ShadowMap did not bind its depth "
+                        "slice");
+
+                foreignBackend.InitializeShadowMap(transactionalShadowMap, 4u,
+                                                   8u, false);
+                const auto replacementShadowView =
+                    transactionalShadowMap.ViewHandle();
+                Require(
+                    transactionalOutput.Matches(foreignBackend.Context()) &&
+                        transactionalShadowMap.IsValid() &&
+                        transactionalShadowMap.Resolution() == 4u &&
+                        transactionalShadowMap.CascadeCount() == 4u &&
+                        replacementShadowView &&
+                        replacementShadowView != firstTransactionalShadowView &&
+                        foreignBackend.IsViewCurrent(
+                            firstTransactionalShadowView) &&
+                        foreignBackend.IsViewCurrent(replacementShadowView) &&
+                        foreignBackend.ResolveShaderResourceView(
+                            firstTransactionalShadowView) != nullptr,
+                    "Replacing an active ShadowMap did not restore output or "
+                    "publish one complete state");
+
+                foreignBackend.BeginShadowMap(transactionalShadowMap, 3u);
+                bool replacementShadowCreationRejected{};
+                try
+                {
+                    foreignBackend.InitializeShadowMap(
+                        transactionalShadowMap,
+                        D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION + 1u, 1u, false);
+                }
+                catch (const std::invalid_argument&)
+                {
+                    replacementShadowCreationRejected = true;
+                }
+                const bool failedReplacementPreservedState =
+                    transactionalShadowMap.IsValid() &&
+                    transactionalShadowMap.Resolution() == 4u &&
+                    transactionalShadowMap.CascadeCount() == 4u &&
+                    transactionalShadowMap.ViewHandle() ==
+                        replacementShadowView;
+                foreignBackend.EndShadowMap(transactionalShadowMap);
+                Require(
+                    replacementShadowCreationRejected &&
+                        failedReplacementPreservedState &&
+                        transactionalOutput.Matches(foreignBackend.Context()),
+                    "A failed active ShadowMap replacement changed its state "
+                    "or lost the saved output");
+                // 後段で同じHWNDのswap chainを再作成するため、back bufferを
+                // 強参照するsnapshotは検証直後に解放します。
+                transactionalOutput = {};
+
+                // 別Backendが描画中のstateは、そのBackendのcontextでEndする
+                // 必要があります。所有していないcontextへsaved viewを渡さず、
+                // 元stateを保持したまま明示的に拒否します。
+                auto& primaryActiveShadowMap = graphics.Shadows();
+                const auto primaryActiveShadowView =
+                    primaryActiveShadowMap.ViewHandle();
+                const auto primaryActiveShadowResolution =
+                    primaryActiveShadowMap.Resolution();
+                const auto primaryActiveShadowCascades =
+                    primaryActiveShadowMap.CascadeCount();
+                const auto primaryOutput = PrefilterPipelineState::Capture(
+                    D3D11Access::Context(graphics));
+                graphics.BeginShadowMap(primaryActiveShadowMap, 0u);
+                bool foreignActiveReplacementRejected{};
+                bool foreignActiveReplacementWrongException{};
+                try
+                {
+                    foreignBackend.InitializeShadowMap(primaryActiveShadowMap,
+                                                       2u, 2u, false);
+                }
+                catch (const std::logic_error&)
+                {
+                    foreignActiveReplacementRejected = true;
+                }
+                catch (...)
+                {
+                    foreignActiveReplacementWrongException = true;
+                }
+                const bool foreignReplacementPreservedState =
+                    primaryActiveShadowMap.IsValid() &&
+                    primaryActiveShadowMap.ViewHandle() ==
+                        primaryActiveShadowView &&
+                    primaryActiveShadowMap.Resolution() ==
+                        primaryActiveShadowResolution &&
+                    primaryActiveShadowMap.CascadeCount() ==
+                        primaryActiveShadowCascades &&
+                    graphics.IsGraphicsViewCurrent(primaryActiveShadowView) &&
+                    !foreignBackend.IsViewCurrent(primaryActiveShadowView);
+                graphics.EndShadowMap(primaryActiveShadowMap);
+                Require(
+                    foreignActiveReplacementRejected &&
+                        !foreignActiveReplacementWrongException &&
+                        foreignReplacementPreservedState &&
+                        primaryOutput.Matches(D3D11Access::Context(graphics)),
+                    "A foreign Backend replaced an active ShadowMap or "
+                    "restored it through the wrong context");
+            };
+
+            auto invalidLitTextures = litTextures;
+            const auto foreignTexture =
+                foreignBackend.CreateSolidRgba8Texture(
+                    { 1u, 2u, 3u, 255u });
+            invalidLitTextures.albedo = CreateSolidView(
+                graphics,
+                { 201u, 202u, 203u, 255u });
+            invalidLitTextures.customTextures.back() =
+                foreignBackend.CreateShaderResourceView(
+                    foreignTexture);
+            Require(
+                !graphics.TrySetLitEffectTextures(
+                    litEffect,
+                    invalidLitTextures),
+                "A foreign Lit texture view was accepted");
+            litEffect.Apply(D3D11Access::Context(graphics));
+            for (std::size_t index{};
+                index < litViews.size();
+                ++index)
+            {
+                Require(
+                    CapturePixelShaderView(
+                        graphics,
+                        LitTextureSlots[index]).Get()
+                        == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                            litViews[index]),
+                    "A rejected Lit request partially changed the Effect");
+            }
+            LamaPon::LitEffect foreignEffect(
+                foreignBackend.Device(),
+                foreignBackend.Context(),
+                graphics.Assets(),
+                graphics.Assets().ResolvePath(
+                    "shaders/LamaPonLit.hlsl"));
+            Require(
+                !graphics.TrySetLitEffectTextures(
+                    foreignEffect,
+                    litTextures),
+                "A LitEffect owned by another GraphicsDevice was accepted");
+
+            const std::array<std::uint16_t, 4> foreignBakedGiVoxel{
+                0x3000u, 0x3001u, 0x3002u, 0x3003u
+            };
+            const std::array foreignBakedGiInitialData{
+                LamaPon::GraphicsTextureSubresourceData{
+                    std::as_bytes(std::span{ foreignBakedGiVoxel }),
+                    8,
+                    8
+                }
+            };
+            const auto foreignBakedGiTexture =
+                foreignBackend.CreateTexture3D(
+                    LamaPon::GraphicsTexture3DDescription{
+                        1,
+                        1,
+                        1,
+                        1,
+                        LamaPon::GraphicsTextureFormat::Rgba16Float
+                    },
+                    foreignBakedGiInitialData);
+            const auto foreignBakedGiView =
+                foreignBackend.CreateShaderResourceView(
+                    foreignBakedGiTexture);
+            auto mixedBakedGiLighting = bakedGiLighting;
+            mixedBakedGiLighting.bakedGlobalIllumination
+                .greenCoefficients = foreignBakedGiView;
+            Require(
+                !graphics.TrySetLitEffectLighting(
+                    litEffect,
+                    mixedBakedGiLighting),
+                "A mixed-generation Baked GI triplet was accepted");
+            litEffect.Apply(D3D11Access::Context(graphics));
+            for (std::size_t index{};
+                index < bakedGiViews.size();
+                ++index)
+            {
+                Require(
+                    CapturePixelShaderView(
+                        graphics,
+                        static_cast<UINT>(23u + index)).Get()
+                        == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                            bakedGiViews[index]),
+                    "A rejected mixed Baked GI triplet changed the Effect");
+            }
+            Require(
+                !graphics.TrySetLitEffectLighting(
+                    foreignEffect,
+                    bakedGiLighting),
+                "Baked GI lighting accepted an Effect from another device");
+
+            Require(
+                graphics.TrySetLitEffectLighting(
+                    litEffect,
+                    clusteredLighting),
+                "The clustered-lighting baseline could not be restored");
+            litEffect.Apply(D3D11Access::Context(graphics));
+            auto mixedClusteredLighting = clusteredLighting;
+            mixedClusteredLighting.clustered.lightIndices =
+                invalidLitTextures.customTextures.back();
+            Require(
+                !graphics.TrySetLitEffectLighting(
+                    litEffect,
+                    mixedClusteredLighting),
+                "A mixed-generation clustered-lighting set was accepted");
+            litEffect.Apply(D3D11Access::Context(graphics));
+            for (std::size_t index{};
+                index < clusteredViews.size();
+                ++index)
+            {
+                Require(
+                    CapturePixelShaderView(
+                        graphics,
+                        static_cast<UINT>(16u + index)).Get()
+                        == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                            clusteredViews[index]),
+                    "Rejected mixed clustered lighting changed the Effect");
+            }
+
+            Require(
+                graphics.TrySetLitEffectLighting(
+                    litEffect,
+                    screenLighting),
+                "The screen-space lighting baseline could not be restored");
+            litEffect.Apply(D3D11Access::Context(graphics));
+
+            // Resizeだけが別Backendのtargetを引き取れる境界です。それ以外の
+            // 操作はforeign native資源をcontextへ渡す前に全て拒否します。
+            const auto ownedTargetCurrent =
+                screenLightingTarget.CurrentColorViewHandle();
+            const auto ownedTargetDisplay =
+                screenLightingTarget.DisplayViewHandle();
+            const auto ownedTargetDepth =
+                screenLightingTarget.DepthViewHandle();
+            const auto ownedTargetHistory =
+                screenLightingTarget.ColorHistoryViewHandle();
+            const auto ownedHistoryProjection =
+                screenLightingTarget.ColorHistoryViewProjection();
+            const auto requireForeignTargetRejected =
+                [&](auto&& operation, const char* const message)
+                {
+                    bool rejected{};
+                    try
+                    {
+                        operation();
+                    }
+                    catch (const std::invalid_argument&)
+                    {
+                        rejected = true;
+                    }
+                    const auto& projection =
+                        screenLightingTarget
+                            .ColorHistoryViewProjection();
+                    Require(
+                        rejected
+                            && screenLightingTarget
+                                .CurrentColorViewHandle()
+                                == ownedTargetCurrent
+                            && screenLightingTarget.DisplayViewHandle()
+                                == ownedTargetDisplay
+                            && screenLightingTarget.DepthViewHandle()
+                                == ownedTargetDepth
+                            && screenLightingTarget
+                                .ColorHistoryViewHandle()
+                                == ownedTargetHistory
+                            && projection._11
+                                == ownedHistoryProjection._11
+                            && projection._22
+                                == ownedHistoryProjection._22
+                            && projection._33
+                                == ownedHistoryProjection._33
+                            && projection._44
+                                == ownedHistoryProjection._44,
+                        message);
+                };
+            const float foreignClearColor[4]{};
+            requireForeignTargetRejected(
+                [&]
+                {
+                    foreignBackend.BeginOffscreenTarget(
+                        screenLightingTarget,
+                        foreignClearColor);
+                },
+                "BeginOffscreenTarget accepted a foreign target");
+            requireForeignTargetRejected(
+                [&]
+                {
+                    foreignBackend.BindOffscreenTarget(
+                        screenLightingTarget);
+                },
+                "BindOffscreenTarget accepted a foreign target");
+            requireForeignTargetRejected(
+                [&]
+                {
+                    foreignBackend.PublishOffscreenTarget(
+                        screenLightingTarget);
+                },
+                "PublishOffscreenTarget accepted a foreign target");
+            requireForeignTargetRejected(
+                [&]
+                {
+                    foreignBackend.BindOffscreenTargetDepthOnly(
+                        screenLightingTarget);
+                },
+                "BindOffscreenTargetDepthOnly accepted a foreign target");
+            requireForeignTargetRejected(
+                [&]
+                {
+                    foreignBackend.CaptureOffscreenTargetDepth(
+                        screenLightingTarget);
+                },
+                "CaptureOffscreenTargetDepth accepted a foreign target");
+            requireForeignTargetRejected(
+                [&]
+                {
+                    foreignBackend.CaptureOffscreenTargetColorHistory(
+                        screenLightingTarget,
+                        temporalIdentity);
+                },
+                "Color-history capture accepted a foreign target");
+            requireForeignTargetRejected(
+                [&]
+                {
+                    foreignBackend.CaptureOffscreenTargetTemporalHistory(
+                        screenLightingTarget,
+                        temporalIdentity);
+                },
+                "Temporal-history capture accepted a foreign target");
+            requireForeignTargetRejected(
+                [&]
+                {
+                    static_cast<void>(
+                        foreignBackend
+                            .TryReadOffscreenTargetLuminance(
+                                screenLightingTarget));
+                },
+                "Luminance readback accepted a foreign target");
+            requireForeignTargetRejected(
+                [&]
+                {
+                    foreignBackend.CaptureOffscreenTargetLuminance(
+                        screenLightingTarget);
+                },
+                "Luminance capture accepted a foreign target");
+            requireForeignTargetRejected(
+                [&]
+                {
+                    static_cast<void>(
+                        foreignBackend.CreateOffscreenDisplayView(
+                            screenLightingTarget));
+                },
+                "Display-view creation accepted a foreign target");
+
+            LamaPon::RenderTarget foreignScreenTarget;
+            foreignBackend.ResizeOffscreenTarget(
+                foreignScreenTarget,
+                Width,
+                Height);
+            foreignBackend.CaptureOffscreenTargetColorHistory(
+                foreignScreenTarget,
+                screenHistoryTransform);
+            foreignBackend.CaptureOffscreenTargetTemporalHistory(
+                foreignScreenTarget,
+                temporalIdentity);
+            const auto foreignAmbientOcclusionView =
+                foreignScreenTarget.AmbientOcclusionViewHandle();
+            const auto foreignColorHistoryView =
+                foreignScreenTarget.ColorHistoryViewHandle();
+            const auto foreignTemporalHistoryView =
+                foreignScreenTarget.TemporalHistoryViewHandle();
+            const auto foreignReflectionDepthView =
+                foreignScreenTarget.ReflectionDepthPyramidViewHandle();
+            const auto foreignDepthView =
+                foreignScreenTarget.DepthViewHandle();
+            Require(
+                foreignTemporalHistoryView
+                    && foreignBackend.ResolveShaderResourceView(
+                        foreignTemporalHistoryView) != nullptr,
+                "A foreign RenderTarget did not publish its TAA history view");
+            LamaPon::BloomSettings foreignTargetBloom;
+            foreignTargetBloom.enabled = true;
+            const auto foreignTargetSource =
+                foreignScreenTarget.CurrentColorViewHandle();
+            const auto foreignTargetDisplay =
+                foreignScreenTarget.DisplayViewHandle();
+            bool foreignPublishRejected{};
+            try
+            {
+                graphics.PublishOffscreenTarget(
+                    foreignScreenTarget);
+            }
+            catch (const std::invalid_argument&)
+            {
+                foreignPublishRejected = true;
+            }
+            Require(
+                foreignPublishRejected
+                    && foreignScreenTarget.CurrentColorViewHandle()
+                        == foreignTargetSource
+                    && foreignScreenTarget.DisplayViewHandle()
+                        == foreignTargetDisplay,
+                "PublishOffscreenTarget accepted or changed a foreign "
+                "RenderTarget");
+            bool foreignTargetRejected{};
+            try
+            {
+                graphics.ApplyOffscreenTargetBloom(
+                    foreignScreenTarget,
+                    foreignTargetBloom);
+            }
+            catch (const std::invalid_argument&)
+            {
+                foreignTargetRejected = true;
+            }
+            Require(
+                foreignTargetRejected
+                    && foreignScreenTarget.CurrentColorViewHandle()
+                        == foreignTargetSource,
+                "The post-process facade accepted a foreign RenderTarget");
+            auto mixedTemporalInputs = directTemporalInputs;
+            mixedTemporalInputs.history = foreignTemporalHistoryView;
+            Require(
+                !legacyEnvironment->ApplyTemporalAntiAliasing(
+                    temporalNativeSource,
+                    temporalOutputTarget.Get(),
+                    Width,
+                    Height,
+                    temporalSettings,
+                    mixedTemporalInputs),
+                "The TAA renderer accepted a foreign history view");
+            auto mixedScreenLighting = screenLighting;
+            mixedScreenLighting.screenSpaceReflection.texture =
+                foreignColorHistoryView;
+            Require(
+                !graphics.TrySetLitEffectLighting(
+                    litEffect,
+                    mixedScreenLighting),
+                "A mixed-generation screen-space view set was accepted");
+            litEffect.Apply(D3D11Access::Context(graphics));
+            Require(
+                CapturePixelShaderView(graphics, 15u).Get()
+                        == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                            ambientOcclusionView)
+                    && CapturePixelShaderView(graphics, 21u).Get()
+                        == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                            colorHistoryView)
+                    && CapturePixelShaderView(graphics, 22u).Get()
+                        == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                            reflectionDepthView),
+                "Rejected mixed screen-space lighting changed the Effect");
+            graphics.ResizeOffscreenTarget(
+                foreignScreenTarget,
+                Width,
+                Height);
+            Require(
+                foreignScreenTarget.AmbientOcclusionViewHandle()
+                        != foreignAmbientOcclusionView
+                    && foreignScreenTarget
+                        .ReflectionDepthPyramidViewHandle()
+                        != foreignReflectionDepthView
+                    && foreignScreenTarget.DepthViewHandle()
+                        != foreignDepthView
+                    && !foreignScreenTarget.ColorHistoryViewHandle()
+                    && !foreignScreenTarget.TemporalHistoryViewHandle()
+                    && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        foreignScreenTarget
+                            .AmbientOcclusionViewHandle()) != nullptr
+                    && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        foreignScreenTarget
+                            .ReflectionDepthPyramidViewHandle()) != nullptr
+                    && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        foreignScreenTarget.DepthViewHandle()) != nullptr
+                    && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        foreignColorHistoryView) == nullptr
+                    && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        foreignDepthView) == nullptr,
+                "A same-size RenderTarget kept resources from another device");
+            graphics.CaptureOffscreenTargetTemporalHistory(
+                foreignScreenTarget,
+                temporalIdentity);
+            const auto replacementTemporalHistoryView =
+                foreignScreenTarget.TemporalHistoryViewHandle();
+            Require(
+                replacementTemporalHistoryView
+                    && replacementTemporalHistoryView
+                        != foreignTemporalHistoryView
+                    && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        replacementTemporalHistoryView) != nullptr
+                    && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        foreignTemporalHistoryView) == nullptr,
+                "RenderTarget did not replace its foreign TAA history view");
+
+            LamaPon::ShadowMap foreignShadowMap;
+            foreignBackend.InitializeShadowMap(
+                foreignShadowMap,
+                1,
+                1,
+                false);
+            Require(
+                foreignShadowMap.IsValid()
+                    && foreignBackend.ResolveShaderResourceView(
+                        foreignShadowMap.ViewHandle()) != nullptr,
+                "A foreign shadow map did not publish a neutral view");
+            LamaPon::ShadowMap foreignSkyCube;
+            foreignBackend.InitializeShadowMap(
+                foreignSkyCube,
+                1,
+                1,
+                true);
+            Require(
+                foreignSkyCube.IsValid()
+                    && foreignBackend.ResolveShaderResourceView(
+                        foreignSkyCube.ViewHandle()) != nullptr
+                    && !graphics.IsSampleableCubeView(
+                        foreignSkyCube.ViewHandle()),
+                "A foreign cube was accepted by the Sky facade");
+            Require(
+                captureNeutralSky(foreignSkyCube.ViewHandle())
+                    == emptyNeutralSky,
+                "A foreign cube did not fall back to the procedural Sky");
+            graphics.BeginShadowMap(foreignShadowMap, 0);
+            graphics.EndShadowMap(foreignShadowMap);
+            Require(
+                graphics.TrySetLitEffectLighting(
+                    litEffect,
+                    shadowLighting),
+                "The neutral shadow baseline could not be restored");
+            litEffect.Apply(D3D11Access::Context(graphics));
+            auto mixedShadowLighting = shadowLighting;
+            mixedShadowLighting.directionalShadow.texture =
+                foreignShadowMap.ViewHandle();
+            Require(
+                !graphics.TrySetLitEffectLighting(
+                    litEffect,
+                    mixedShadowLighting),
+                "A foreign-generation shadow view was accepted");
+            litEffect.Apply(D3D11Access::Context(graphics));
+            Require(
+                CapturePixelShaderView(graphics, 2u).Get()
+                        == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                            directionalShadowView)
+                    && CapturePixelShaderView(graphics, 4u).Get()
+                        == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                            spotShadowView)
+                    && CapturePixelShaderView(graphics, 5u).Get()
+                        == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                            pointShadowView),
+                "Rejected foreign shadow lighting changed the Effect");
+
+            auto foreignVolumetricInputs = volumetricInputs;
+            foreignVolumetricInputs.cascadeShadow =
+                foreignShadowMap.ViewHandle();
+            const auto foreignVolumetricSource =
+                volumetricTarget.CurrentColorViewHandle();
+            graphics.ApplyOffscreenTargetVolumetricLight(
+                volumetricTarget,
+                volumetricSettings,
+                foreignVolumetricInputs);
+            Require(
+                volumetricTarget.CurrentColorViewHandle()
+                    == foreignVolumetricSource,
+                "Foreign neutral volumetric inputs changed the target");
+
+            const auto foreignPrefilteredEnvironment =
+                graphics.TryGetPrefilteredEnvironmentViews(
+                    foreignShadowMap.ViewHandle());
+            Require(
+                !foreignPrefilteredEnvironment.IsValid()
+                    && !foreignPrefilteredEnvironment.specular
+                    && !foreignPrefilteredEnvironment.irradiance,
+                "A foreign cube produced primary-backend IBL handles");
+            const auto retainedPrefilteredEnvironment =
+                graphics.TryGetPrefilteredEnvironmentViews(
+                    pointShadowView);
+            Require(
+                retainedPrefilteredEnvironment.specular
+                        == prefilteredEnvironment.specular
+                    && retainedPrefilteredEnvironment.irradiance
+                        == prefilteredEnvironment.irradiance,
+                "Rejected foreign IBL input corrupted the cached pair");
+
+            Require(
+                graphics.TrySetLitEffectLighting(
+                    litEffect,
+                    environmentLighting),
+                "The neutral environment baseline could not be restored");
+            litEffect.Apply(D3D11Access::Context(graphics));
+            auto mixedEnvironment = environmentLighting;
+            mixedEnvironment.environment.texture =
+                foreignShadowMap.ViewHandle();
+            Require(
+                !graphics.TrySetLitEffectLighting(
+                    litEffect,
+                    mixedEnvironment),
+                "A foreign-generation environment source was accepted");
+            litEffect.Apply(D3D11Access::Context(graphics));
+            Require(
+                CapturePixelShaderView(graphics, 3u).Get()
+                        == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                            prefilteredEnvironment.specular)
+                    && CapturePixelShaderView(graphics, 6u).Get()
+                        == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                            prefilteredEnvironment.irradiance),
+                "Rejected foreign environment changed the Effect");
+            auto disabledForeignEnvironment = mixedEnvironment;
+            disabledForeignEnvironment.environment.enabled = false;
+            disabledForeignEnvironment.environment.specular =
+                foreignShadowMap.ViewHandle();
+            disabledForeignEnvironment.environment.irradiance.Reset();
+            Require(
+                graphics.TrySetLitEffectLighting(
+                    litEffect,
+                    disabledForeignEnvironment),
+                "Disabled foreign environment handles were resolved");
+            litEffect.Apply(D3D11Access::Context(graphics));
+            Require(
+                CapturePixelShaderView(graphics, 3u) == nullptr
+                    && CapturePixelShaderView(graphics, 6u) == nullptr,
+                "Disabled foreign environment retained IBL bindings");
+
+            Require(
+                !graphics.IsGraphicsViewCurrent(
+                    foreignShadowMap.ViewHandle()),
+                "A foreign view was reported as current for this backend");
+            Require(
+                graphics.TrySetLitEffectLighting(
+                    litEffect,
+                    environmentLighting)
+                    && graphics.TrySetLitEffectReflectionProbe(
+                        litEffect,
+                        reflectionProbe),
+                "The Reflection Probe baseline could not be restored");
+            litEffect.Apply(D3D11Access::Context(graphics));
+            auto mixedReflectionProbe = reflectionProbe;
+            mixedReflectionProbe.specular =
+                foreignShadowMap.ViewHandle();
+            Require(
+                !graphics.TrySetLitEffectReflectionProbe(
+                    litEffect,
+                    mixedReflectionProbe),
+                "A foreign-generation Reflection Probe was accepted");
+            litEffect.Apply(D3D11Access::Context(graphics));
+            Require(
+                CapturePixelShaderView(graphics, 3u).Get()
+                        == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                            prefilteredEnvironment.specular)
+                    && CapturePixelShaderView(graphics, 6u).Get()
+                        == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                            prefilteredEnvironment.irradiance),
+                "A rejected foreign Reflection Probe changed the Effect");
+            Require(
+                !graphics.TrySetLitEffectReflectionProbe(
+                    foreignEffect,
+                    reflectionProbe),
+                "A Reflection Probe accepted an Effect from another device");
+
+            Require(
+                graphics.TrySetLitEffectLighting(
+                    litEffect,
+                    environmentLighting),
+                "The Sky baseline could not be restored for an empty Probe");
+            LamaPon::ReflectionProbeEnvironment emptyReflectionProbe;
+            emptyReflectionProbe.secondarySpecular =
+                foreignShadowMap.ViewHandle();
+            emptyReflectionProbe.secondaryWeight = 1.0f;
+            Require(
+                graphics.TrySetLitEffectReflectionProbe(
+                    litEffect,
+                    emptyReflectionProbe),
+                "An empty Probe resolved stale secondary handles");
+            litEffect.Apply(D3D11Access::Context(graphics));
+            Require(
+                CapturePixelShaderView(graphics, 3u).Get()
+                        == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                            prefilteredEnvironment.specular)
+                    && CapturePixelShaderView(graphics, 6u).Get()
+                        == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                            prefilteredEnvironment.irradiance)
+                    && CapturePixelShaderView(graphics, 19u) == nullptr
+                    && CapturePixelShaderView(graphics, 20u) == nullptr,
+                "An empty Probe did not preserve the shared Sky IBL");
+            Require(
+                graphics.TrySetLitEffectLighting(
+                    litEffect,
+                    clusteredLighting),
+                "The clustered-lighting baseline could not be restored");
+            litEffect.Apply(D3D11Access::Context(graphics));
+
+            // LightingStateのproducerをneutral handleへ移す前提として、
+            // Texture2D以外の既存D3D11 SRVも同じ世代・所有契約へ載せます。
+            Stage("d3d11-generic-view-import");
+            constexpr std::array structuredValues{
+                DirectX::XMFLOAT4{ 1.0f, 2.0f, 3.0f, 4.0f },
+                DirectX::XMFLOAT4{ 5.0f, 6.0f, 7.0f, 8.0f }
+            };
+            D3D11_BUFFER_DESC structuredDescription{};
+            structuredDescription.ByteWidth =
+                static_cast<UINT>(sizeof(structuredValues));
+            structuredDescription.Usage = D3D11_USAGE_IMMUTABLE;
+            structuredDescription.BindFlags =
+                D3D11_BIND_SHADER_RESOURCE;
+            structuredDescription.MiscFlags =
+                D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+            structuredDescription.StructureByteStride =
+                static_cast<UINT>(sizeof(DirectX::XMFLOAT4));
+            D3D11_SUBRESOURCE_DATA structuredInitialData{};
+            structuredInitialData.pSysMem = structuredValues.data();
+            Microsoft::WRL::ComPtr<ID3D11Buffer> structuredBuffer;
+            Require(
+                SUCCEEDED(foreignBackend.Device()->CreateBuffer(
+                    &structuredDescription,
+                    &structuredInitialData,
+                    structuredBuffer.ReleaseAndGetAddressOf())),
+                "The structured-buffer import fixture could not be created");
+            D3D11_SHADER_RESOURCE_VIEW_DESC structuredViewDescription{};
+            structuredViewDescription.Format = DXGI_FORMAT_UNKNOWN;
+            structuredViewDescription.ViewDimension =
+                D3D11_SRV_DIMENSION_BUFFER;
+            structuredViewDescription.Buffer.FirstElement = 0;
+            structuredViewDescription.Buffer.NumElements =
+                static_cast<UINT>(structuredValues.size());
+            Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
+                structuredView;
+            Require(
+                SUCCEEDED(foreignBackend.Device()->CreateShaderResourceView(
+                    structuredBuffer.Get(),
+                    &structuredViewDescription,
+                    structuredView.ReleaseAndGetAddressOf())),
+                "The structured-buffer SRV fixture could not be created");
+
+            constexpr std::array<std::uint32_t, 8> volumePixels{
+                0xff0000ffu, 0xff00ff00u,
+                0xffff0000u, 0xffffffffu,
+                0xff808080u, 0xff00ffffu,
+                0xffff00ffu, 0xffffff00u
+            };
+            D3D11_TEXTURE3D_DESC volumeDescription{};
+            volumeDescription.Width = 2;
+            volumeDescription.Height = 2;
+            volumeDescription.Depth = 2;
+            volumeDescription.MipLevels = 1;
+            volumeDescription.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            volumeDescription.Usage = D3D11_USAGE_IMMUTABLE;
+            volumeDescription.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            D3D11_SUBRESOURCE_DATA volumeInitialData{};
+            volumeInitialData.pSysMem = volumePixels.data();
+            volumeInitialData.SysMemPitch =
+                volumeDescription.Width
+                * static_cast<UINT>(sizeof(std::uint32_t));
+            volumeInitialData.SysMemSlicePitch =
+                volumeInitialData.SysMemPitch * volumeDescription.Height;
+            Microsoft::WRL::ComPtr<ID3D11Texture3D> volumeTexture;
+            Require(
+                SUCCEEDED(foreignBackend.Device()->CreateTexture3D(
+                    &volumeDescription,
+                    &volumeInitialData,
+                    volumeTexture.ReleaseAndGetAddressOf())),
+                "The Texture3D import fixture could not be created");
+            D3D11_SHADER_RESOURCE_VIEW_DESC volumeViewDescription{};
+            volumeViewDescription.Format = volumeDescription.Format;
+            volumeViewDescription.ViewDimension =
+                D3D11_SRV_DIMENSION_TEXTURE3D;
+            volumeViewDescription.Texture3D.MostDetailedMip = 0;
+            volumeViewDescription.Texture3D.MipLevels = 1;
+            Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> volumeView;
+            Require(
+                SUCCEEDED(foreignBackend.Device()->CreateShaderResourceView(
+                    volumeTexture.Get(),
+                    &volumeViewDescription,
+                    volumeView.ReleaseAndGetAddressOf())),
+                "The Texture3D SRV fixture could not be created");
+
+            auto* const structuredViewIdentity = structuredView.Get();
+            auto* const volumeViewIdentity = volumeView.Get();
+            const auto structuredHandle =
+                foreignBackend.ImportShaderResourceViewHandle(
+                    structuredView.Get());
+            const auto volumeHandle =
+                foreignBackend.ImportShaderResourceViewHandle(
+                    volumeView.Get());
+            auto* const nativeTexture2DView =
+                foreignBackend.ResolveShaderResourceView(
+                    invalidLitTextures.customTextures.back());
+            const auto texture2DHandle =
+                foreignBackend.ImportShaderResourceViewHandle(
+                    nativeTexture2DView);
+            Require(
+                structuredHandle.Kind()
+                        == LamaPon::GraphicsViewKind::ShaderResource
+                    && volumeHandle.Kind()
+                        == LamaPon::GraphicsViewKind::ShaderResource
+                    && texture2DHandle.Kind()
+                        == LamaPon::GraphicsViewKind::ShaderResource
+                    && LamaPon::Detail::GraphicsResourceHandleAccess::
+                        BufferResource(structuredHandle) != nullptr
+                    && LamaPon::Detail::GraphicsResourceHandleAccess::
+                        TextureResource(structuredHandle) == nullptr
+                    && LamaPon::Detail::GraphicsResourceHandleAccess::
+                        TextureResource(volumeHandle) != nullptr
+                    && LamaPon::Detail::GraphicsResourceHandleAccess::
+                        BufferResource(volumeHandle) == nullptr
+                    && LamaPon::Detail::GraphicsResourceHandleAccess::
+                        TextureResource(texture2DHandle) != nullptr
+                    && LamaPon::Detail::GraphicsResourceHandleAccess::
+                        BufferResource(texture2DHandle) == nullptr,
+                "Generic SRV imports did not retain their resource kinds");
+
+            bool nullViewRejected{};
+            try
+            {
+                static_cast<void>(
+                    foreignBackend.ImportShaderResourceViewHandle(nullptr));
+            }
+            catch (const std::invalid_argument&)
+            {
+                nullViewRejected = true;
+            }
+            Require(
+                nullViewRejected,
+                "A null native shader-resource view was imported");
+
+            structuredView.Reset();
+            structuredBuffer.Reset();
+            volumeView.Reset();
+            volumeTexture.Reset();
+            Require(
+                foreignBackend.ResolveShaderResourceView(
+                    structuredHandle) == structuredViewIdentity
+                    && foreignBackend.ResolveShaderResourceView(
+                        volumeHandle) == volumeViewIdentity
+                    && foreignBackend.ResolveShaderResourceView(
+                        texture2DHandle) == nativeTexture2DView,
+                "Imported SRV handles did not keep their native views alive");
+
+            constexpr UINT GenericViewSlot =
+                D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT - 2;
+            const std::array importedViews{
+                structuredHandle,
+                volumeHandle
+            };
+            Require(
+                foreignBackend.TryBindPixelShaderResources(
+                    GenericViewSlot,
+                    importedViews,
+                    {}),
+                "Generic SRV handles could not be bound");
+            Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
+                boundStructuredView;
+            Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
+                boundVolumeView;
+            foreignBackend.Context()->PSGetShaderResources(
+                GenericViewSlot,
+                1,
+                boundStructuredView.ReleaseAndGetAddressOf());
+            foreignBackend.Context()->PSGetShaderResources(
+                GenericViewSlot + 1,
+                1,
+                boundVolumeView.ReleaseAndGetAddressOf());
+            Require(
+                boundStructuredView.Get() == structuredViewIdentity
+                    && boundVolumeView.Get() == volumeViewIdentity,
+                "Generic SRV handles were bound to the wrong native views");
+            const std::array<LamaPon::GraphicsViewHandle, 2>
+                emptyImportedViews{};
+            Require(
+                foreignBackend.TryBindPixelShaderResources(
+                    GenericViewSlot,
+                    emptyImportedViews,
+                    {}),
+                "Generic SRV cleanup was rejected");
+            boundStructuredView.Reset();
+            boundVolumeView.Reset();
+
+            // Texture1Dはまだ共通resource契約が無いため、安全に拒否します。
+            D3D11_TEXTURE1D_DESC unsupportedDescription{};
+            unsupportedDescription.Width = 1;
+            unsupportedDescription.MipLevels = 1;
+            unsupportedDescription.ArraySize = 1;
+            unsupportedDescription.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            unsupportedDescription.Usage = D3D11_USAGE_DEFAULT;
+            unsupportedDescription.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            Microsoft::WRL::ComPtr<ID3D11Texture1D> unsupportedTexture;
+            Require(
+                SUCCEEDED(foreignBackend.Device()->CreateTexture1D(
+                    &unsupportedDescription,
+                    nullptr,
+                    unsupportedTexture.ReleaseAndGetAddressOf())),
+                "The unsupported SRV fixture could not be created");
+            Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
+                unsupportedView;
+            Require(
+                SUCCEEDED(foreignBackend.Device()->CreateShaderResourceView(
+                    unsupportedTexture.Get(),
+                    nullptr,
+                    unsupportedView.ReleaseAndGetAddressOf())),
+                "The unsupported Texture1D SRV could not be created");
+            bool unsupportedRejected{};
+            try
+            {
+                static_cast<void>(
+                    foreignBackend.ImportShaderResourceViewHandle(
+                        unsupportedView.Get()));
+            }
+            catch (const std::invalid_argument&)
+            {
+                unsupportedRejected = true;
+            }
+            Require(
+                unsupportedRejected,
+                "An unsupported Texture1D SRV was imported");
+
+            // 再初期化後もhandleの破棄は安全ですが、古い世代のnative
+            // viewとして解決・再取り込みすることはできません。
+            Microsoft::WRL::ComPtr<ID3D11Device> importedViewDevice =
+                foreignBackend.Device();
+            foreignBackend.Initialize(foreignBackendCreateInfo);
+
+            // 同じBackend instanceを再初期化しても旧世代のcluster stateは
+            // native contextへ渡さず、明示的な再初期化後に回復します。
+            auto staleClusteredLighting = clusteredLighting;
+            foreignBackend.UpdateClusteredLights(
+                transactionalClusteredLights,
+                staleClusteredLighting,
+                clusteredViewValues,
+                clusteredProjectionValues,
+                Width,
+                Height);
+            Require(
+                clusteredResultIsClear(staleClusteredLighting)
+                    && std::ranges::none_of(
+                        transactionalClusteredViews,
+                        [&foreignBackend](const auto& clusteredViewHandle)
+                        {
+                            return foreignBackend.IsViewCurrent(
+                                clusteredViewHandle);
+                        }),
+                "A stale ClusteredLights state survived backend "
+                "reinitialization");
+
+            foreignBackend.InitializeClusteredLights(
+                transactionalClusteredLights,
+                graphics.Assets(),
+                clusteredShaderPath);
+            auto recoveredClusteredLighting = clusteredLighting;
+            foreignBackend.UpdateClusteredLights(
+                transactionalClusteredLights,
+                recoveredClusteredLighting,
+                clusteredViewValues,
+                clusteredProjectionValues,
+                Width,
+                Height);
+            const std::array recoveredClusteredViews{
+                recoveredClusteredLighting.clustered.lights,
+                recoveredClusteredLighting.clustered.lightIndices,
+                recoveredClusteredLighting.clustered.clusterCounts
+            };
+            Require(
+                recoveredClusteredLighting.clustered.enabled
+                    && recoveredClusteredLighting.clustered.lightCount == 1u
+                    && std::ranges::all_of(
+                        recoveredClusteredViews,
+                        [&foreignBackend](const auto& clusteredViewHandle)
+                        {
+                            return foreignBackend.IsViewCurrent(
+                                clusteredViewHandle);
+                        })
+                    && recoveredClusteredViews[0]
+                        != transactionalClusteredViews[0]
+                    && recoveredClusteredViews[1]
+                        != transactionalClusteredViews[1]
+                    && recoveredClusteredViews[2]
+                        != transactionalClusteredViews[2],
+                "ClusteredLights did not recover on the new backend "
+                "generation");
+            bool staleHandleRejected{};
+            try
+            {
+                static_cast<void>(
+                    foreignBackend.ResolveShaderResourceView(
+                        structuredHandle));
+            }
+            catch (const std::invalid_argument&)
+            {
+                staleHandleRejected = true;
+            }
+            bool staleNativeViewRejected{};
+            try
+            {
+                static_cast<void>(
+                    foreignBackend.ImportShaderResourceViewHandle(
+                        structuredViewIdentity));
+            }
+            catch (const std::invalid_argument&)
+            {
+                staleNativeViewRejected = true;
+            }
+            Require(
+                importedViewDevice.Get() != foreignBackend.Device()
+                    && staleHandleRejected
+                    && staleNativeViewRejected
+                    && !foreignBackend.IsViewCurrent(structuredHandle),
+                "A stale generic SRV crossed a backend generation boundary");
+
+            verifyShadowMapTransactionalState();
+
+            // ParticleSystemから分離した共通serviceがneutral handleだけで
+            // D3D11へ描画し、従来と同じ主要stateへ戻すことを固定します。
+            Stage("particle-render-service");
+            auto particleService =
+                LamaPon::Detail::CreateD3D11GraphicsRenderServices(
+                    foreignBackend.Device(),
+                    foreignBackend.Context(),
+                    foreignBackend);
+            const auto particleTexture =
+                foreignBackend.CreateSolidRgba8Texture(
+                    { 255u, 255u, 255u, 255u });
+            const auto particleTextureView =
+                foreignBackend.CreateShaderResourceView(
+                    particleTexture);
+            constexpr std::array particleVertices{
+                LamaPon::ParticleRenderVertex{
+                    { -0.5f, -0.5f, 0.0f },
+                    { 0.0f, 1.0f, 0.0f, 1.0f },
+                    { 0.0f, 1.0f } },
+                LamaPon::ParticleRenderVertex{
+                    { 0.5f, -0.5f, 0.0f },
+                    { 0.0f, 1.0f, 0.0f, 1.0f },
+                    { 1.0f, 1.0f } },
+                LamaPon::ParticleRenderVertex{
+                    { 0.5f, 0.5f, 0.0f },
+                    { 0.0f, 1.0f, 0.0f, 1.0f },
+                    { 1.0f, 0.0f } },
+                LamaPon::ParticleRenderVertex{
+                    { -0.5f, 0.5f, 0.0f },
+                    { 0.0f, 1.0f, 0.0f, 1.0f },
+                    { 0.0f, 0.0f } }
+            };
+            LamaPon::ParticleDrawRequest particleRequest;
+            particleRequest.vertices = particleVertices;
+            DirectX::XMStoreFloat4x4(
+                &particleRequest.view,
+                DirectX::XMMatrixIdentity());
+            DirectX::XMStoreFloat4x4(
+                &particleRequest.projection,
+                DirectX::XMMatrixIdentity());
+            particleRequest.fallbackTexture = particleTextureView;
+            particleRequest.additive = false;
+            std::uint32_t customShaderAttempts{};
+            particleRequest.applyCustomPixelShader =
+                [&customShaderAttempts]
+            {
+                ++customShaderAttempts;
+                return false;
+            };
+            constexpr float particleClear[]{
+                0.0f, 0.0f, 0.0f, 1.0f
+            };
+            foreignBackend.BindAndClearBackBuffer(particleClear);
+            Require(
+                particleService->DrawParticles(particleRequest)
+                    && customShaderAttempts == 1u,
+                "The neutral particle render service rejected a valid quad");
+            std::uint32_t particleWidth{};
+            std::uint32_t particleHeight{};
+            const auto particlePixels =
+                foreignBackend.CaptureBackBuffer(
+                    particleWidth,
+                    particleHeight);
+            const auto particleCenter = At(
+                particlePixels,
+                Width / 2,
+                Height / 2);
+            Require(
+                particleWidth == Width
+                    && particleHeight == Height
+                    && particleCenter.green
+                        > particleCenter.red + 120
+                    && particleCenter.green
+                        > particleCenter.blue + 120,
+                "The neutral particle render service did not rasterize its quad");
+
+            Microsoft::WRL::ComPtr<ID3D11BlendState> restoredBlend;
+            float restoredBlendFactor[4]{};
+            UINT restoredSampleMask{};
+            foreignBackend.Context()->OMGetBlendState(
+                restoredBlend.ReleaseAndGetAddressOf(),
+                restoredBlendFactor,
+                &restoredSampleMask);
+            D3D11_BLEND_DESC restoredBlendDescription{};
+            restoredBlend->GetDesc(&restoredBlendDescription);
+            Require(
+                !restoredBlendDescription.RenderTarget[0].BlendEnable
+                    && restoredSampleMask == 0xffffffffu,
+                "Particle rendering did not restore opaque blending");
+
+            Microsoft::WRL::ComPtr<ID3D11DepthStencilState> restoredDepth;
+            UINT restoredStencilReference{};
+            foreignBackend.Context()->OMGetDepthStencilState(
+                restoredDepth.ReleaseAndGetAddressOf(),
+                &restoredStencilReference);
+            D3D11_DEPTH_STENCIL_DESC restoredDepthDescription{};
+            restoredDepth->GetDesc(&restoredDepthDescription);
+            Require(
+                restoredDepthDescription.DepthEnable
+                    && restoredDepthDescription.DepthWriteMask
+                        == D3D11_DEPTH_WRITE_MASK_ALL
+                    && restoredStencilReference == 0u,
+                "Particle rendering did not restore writable depth testing");
+
+            Microsoft::WRL::ComPtr<ID3D11RasterizerState> restoredRasterizer;
+            foreignBackend.Context()->RSGetState(
+                restoredRasterizer.ReleaseAndGetAddressOf());
+            D3D11_RASTERIZER_DESC restoredRasterizerDescription{};
+            restoredRasterizer->GetDesc(
+                &restoredRasterizerDescription);
+            Require(
+                restoredRasterizerDescription.CullMode
+                        == D3D11_CULL_BACK
+                    && !restoredRasterizerDescription.FrontCounterClockwise,
+                "Particle rendering did not restore counter-clockwise culling");
+
+            // custom shaderが有効な経路ではt0/t1を使い、終了後に両方を
+            // 外します。callback自身はこのテストでは既定PSを維持します。
+            particleRequest.texture = particleTextureView;
+            particleRequest.auxiliaryTexture = particleTextureView;
+            particleRequest.additive = true;
+            particleRequest.applyCustomPixelShader = []
+            {
+                return true;
+            };
+            foreignBackend.BindAndClearBackBuffer(particleClear);
+            Require(
+                particleService->DrawParticles(particleRequest),
+                "The particle custom-shader branch rejected a valid quad");
+            Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
+                releasedParticleView0;
+            Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
+                releasedParticleView1;
+            foreignBackend.Context()->PSGetShaderResources(
+                0,
+                1,
+                releasedParticleView0.ReleaseAndGetAddressOf());
+            foreignBackend.Context()->PSGetShaderResources(
+                1,
+                1,
+                releasedParticleView1.ReleaseAndGetAddressOf());
+            Require(
+                releasedParticleView0 == nullptr
+                    && releasedParticleView1 == nullptr,
+                "Particle custom-shader resources remained bound");
+            const auto staleGenerationView =
+                particleTextureView;
+            Require(
+                foreignBackend.IsViewCurrent(staleGenerationView),
+                "A live backend rejected its own neutral view");
+
+            retainedBackendLifetimeTarget =
+                std::make_unique<LamaPon::RenderTarget>();
+            foreignBackend.ResizeOffscreenTarget(
+                *retainedBackendLifetimeTarget,
+                4u,
+                4u);
+            retainedBackendLifetimeView =
+                retainedBackendLifetimeTarget->DisplayViewHandle();
+            retainedBackendLifetimeTexture =
+                legacyRenderTargetDisplayTexture(
+                    retainedBackendLifetimeTarget.get());
+            Require(
+                retainedBackendLifetimeTarget->IsValid()
+                    && retainedBackendLifetimeView
+                    && retainedBackendLifetimeTexture != nullptr,
+                "The backend-lifetime RenderTarget was not initialized");
+        }
+        Require(
+            retainedBackendLifetimeTarget != nullptr
+                && retainedBackendLifetimeTarget->IsValid()
+                && retainedBackendLifetimeTarget->DisplayViewHandle()
+                    == retainedBackendLifetimeView
+                && legacyRenderTargetDisplayTexture(
+                    retainedBackendLifetimeTarget.get())
+                    == retainedBackendLifetimeTexture,
+            "Destroying a backend invalidated an independently owned "
+            "RenderTarget state");
+        retainedBackendLifetimeTarget.reset();
+        DestroyWindow(foreignWindow);
+
+        // AssetManager::LoadModelを経由せず公開Importerを直接使う旧経路も、
+        // 初回の中立Drawでraw viewをBackend handleへ同期します。外部
+        // materialのempty albedo/normalは内蔵を継承し、empty PBRはclear
+        // されるmerge規則まで実際のDraw後のslotで固定します。
+        Stage("skeletal-direct-import-compatibility");
+        const auto directSkeletal = LamaPon::GltfImporter::Load(
+            D3D11Access::Device(graphics),
+            D3D11Access::Context(graphics),
+            graphics.Assets(),
+            std::filesystem::path{ LAMAPON_TEST_ASSET_DIR }
+                / "models"
+                / "TexturedRiggedSimple.gltf");
+        Require(
+            directSkeletal != nullptr
+                && !directSkeletal->primitives.empty()
+                && directSkeletal->primitives.front().texture != nullptr
+                && !directSkeletal->primitives.front()
+                    .embeddedTextures.albedo,
+            "The direct skeletal importer did not expose the legacy-only fixture");
+        auto& directPrimitive = directSkeletal->primitives.front();
+        directPrimitive.normalTexture =
+            D3D11Access::TryResolveD3D11ShaderResourceView(graphics, litViews[1]);
+        directPrimitive.roughnessTexture =
+            D3D11Access::TryResolveD3D11ShaderResourceView(graphics, litViews[2]);
+        directPrimitive.metallicTexture =
+            D3D11Access::TryResolveD3D11ShaderResourceView(graphics, litViews[3]);
+        directPrimitive.occlusionTexture =
+            D3D11Access::TryResolveD3D11ShaderResourceView(graphics, litViews[4]);
+        directPrimitive.emissiveTexture =
+            D3D11Access::TryResolveD3D11ShaderResourceView(graphics, litViews[5]);
+        const auto drawDirectSkeletal =
+            [&](const LamaPon::LitMaterial* const material,
+                const LamaPon::LitTextureRequest* const textureRequest)
+        {
+            directSkeletal->Draw(
+                graphics,
+                graphics.Lighting(),
+                identity,
+                identity,
+                identity,
+                nullptr,
+                0.0f,
+                false,
+                material,
+                textureRequest,
+                nullptr,
+                0.0f,
+                0.0f,
+                nullptr,
+                std::numeric_limits<std::size_t>::max(),
+                &litEffect);
+        };
+        drawDirectSkeletal(nullptr, nullptr);
+        const std::array<ID3D11ShaderResourceView*, 6>
+            directNativeViews{
+                directPrimitive.texture.Get(),
+                directPrimitive.normalTexture.Get(),
+                directPrimitive.roughnessTexture.Get(),
+                directPrimitive.metallicTexture.Get(),
+                directPrimitive.occlusionTexture.Get(),
+                directPrimitive.emissiveTexture.Get()
+            };
+        const std::array<const LamaPon::GraphicsViewHandle*, 6>
+            directNeutralViews{
+                &directPrimitive.embeddedTextures.albedo,
+                &directPrimitive.embeddedTextures.normal,
+                &directPrimitive.embeddedTextures.roughness,
+                &directPrimitive.embeddedTextures.metallic,
+                &directPrimitive.embeddedTextures.occlusion,
+                &directPrimitive.embeddedTextures.emissive
+            };
+        for (std::size_t index{};
+            index < directNativeViews.size();
+            ++index)
+        {
+            Require(
+                *directNeutralViews[index]
+                    && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                        *directNeutralViews[index])
+                        == directNativeViews[index],
+                "Direct skeletal Draw did not synchronize a legacy texture");
+        }
+        Require(
+            CapturePixelShaderView(graphics, 0u).Get()
+                    == directNativeViews[0]
+                && CapturePixelShaderView(graphics, 1u).Get()
+                    == directNativeViews[1],
+            "Direct skeletal Draw lost inherited albedo or normal texture");
+
+        directPrimitive.roughnessTexture.Reset();
+        drawDirectSkeletal(nullptr, nullptr);
+        Require(
+            !directPrimitive.embeddedTextures.roughness
+                && CapturePixelShaderView(graphics, 11u).Get()
+                    == litWhite.Get(),
+            "Resetting a legacy skeletal texture did not clear its neutral cache");
+
+        LamaPon::LitMaterial skeletalOverrideMaterial;
+        LamaPon::LitTextureRequest skeletalOverrideTextures;
+        skeletalOverrideTextures.customTextures.front() = litViews[6];
+        drawDirectSkeletal(
+            &skeletalOverrideMaterial,
+            &skeletalOverrideTextures);
+        Require(
+            CapturePixelShaderView(graphics, 0u).Get()
+                    == directNativeViews[0]
+                && CapturePixelShaderView(graphics, 1u).Get()
+                    == directNativeViews[1],
+            "Empty skeletal albedo/normal overrides did not inherit embedded textures");
+        for (const auto slot : { 11u, 12u, 13u, 14u })
+        {
+            Require(
+                CapturePixelShaderView(graphics, slot).Get()
+                    == litWhite.Get(),
+                "Empty skeletal PBR override retained an embedded texture");
+        }
+        Require(
+            CapturePixelShaderView(graphics, 7u).Get()
+                == D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                    litViews[6]),
+            "Skeletal custom texture override was not bound");
+
         graphics.RefreshMemoryStatistics(true);
         Require(
             graphics.MemoryStats().processWorkingSetBytes > 0
                 && graphics.MemoryStats().processPrivateBytes > 0
                 && graphics.MemoryStats().systemPhysicalTotalBytes > 0,
             "runtime RAM statistics must be available");
+
+        // 共通DebugRendererが生成した線分を、実効D3D11 Backendの
+        // sinkがバックバッファへ送れることをWARPの実画素で確認します。
+        Stage("debug-drawing-backend");
+        constexpr float debugClear[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+        constexpr std::array debugLine{
+            DirectX::XMFLOAT3{ -0.75f, 0.0f, 0.0f },
+            DirectX::XMFLOAT3{ 0.75f, 0.0f, 0.0f }
+        };
+        Require(
+            graphics.Gpu().IsSupported(),
+            "The D3D11 backend must attach its GPU profiler driver");
+        const auto drawProfiledDebugLine = [&]
+        {
+            LamaPon::GpuProfiler::SectionScope outerSection{
+                graphics.Gpu(),
+                "D3D11 profiler outer"
+            };
+            LamaPon::GpuProfiler::SectionScope innerSection{
+                graphics.Gpu(),
+                "D3D11 profiler inner"
+            };
+            graphics.Debug().DrawLines(
+                debugLine,
+                DirectX::XMVectorSet(1.0f, 0.0f, 0.0f, 1.0f),
+                DirectX::XMMatrixIdentity(),
+                DirectX::XMMatrixIdentity());
+        };
+        graphics.BeginFrame(debugClear);
+        drawProfiledDebugLine();
+        std::uint32_t debugWidth{};
+        std::uint32_t debugHeight{};
+        const auto debugPixels = graphics.CaptureBackBuffer(
+            debugWidth,
+            debugHeight);
+        graphics.EndFrame();
+        std::size_t redLinePixels{};
+        for (std::size_t offset = 0;
+            offset + 2u < debugPixels.size();
+            offset += 4u)
+        {
+            if (debugPixels[offset] > 180u
+                && debugPixels[offset + 1u] < 60u
+                && debugPixels[offset + 2u] < 60u)
+            {
+                ++redLinePixels;
+            }
+        }
+        Require(
+            debugWidth == Width
+                && debugHeight == Height
+                && redLinePixels > Width / 4u,
+            "Debug drawing backend must rasterize the submitted line");
+
+        // 2フレーム目のblocking captureが前フレームのGPU完了を待つため、
+        // そのEndFrameでring bufferからquery結果を決定的に回収できます。
+        graphics.BeginFrame(debugClear);
+        drawProfiledDebugLine();
+        std::uint32_t profilerProbeWidth{};
+        std::uint32_t profilerProbeHeight{};
+        static_cast<void>(graphics.CaptureBackBuffer(
+            profilerProbeWidth,
+            profilerProbeHeight));
+        graphics.EndFrame();
+        bool foundOuterSection{};
+        bool foundInnerSection{};
+        for (const auto& section : graphics.Gpu().LatestSections())
+        {
+            Require(
+                std::isfinite(section.milliseconds)
+                    && section.milliseconds >= 0.0f,
+                "D3D11 profiler sections must report finite durations");
+            foundOuterSection = foundOuterSection
+                || (section.name == "D3D11 profiler outer"
+                    && section.depth == 0u);
+            foundInnerSection = foundInnerSection
+                || (section.name == "D3D11 profiler inner"
+                    && section.depth == 1u);
+        }
+        Require(
+            foundOuterSection
+                && foundInnerSection
+                && std::isfinite(
+                    graphics.Gpu().LatestFrameMilliseconds())
+                && graphics.Gpu().LatestFrameMilliseconds() >= 0.0f,
+            "D3D11 profiler backend must resolve nested timestamp queries");
 
         // 検証を単純にするため後処理と垂直同期を切ります。
         auto settings = graphics.Settings();
@@ -368,7 +4415,25 @@ int main(const int argumentCount, char** arguments)
         settings.shadowResolution = 512;
         settings.shadowCascadeLimit = 1;
         Stage("settings");
+        graphics.SetLightingState(shadowLighting);
         graphics.SetGraphicsSettings(settings);
+        Require(
+            graphics.Shadows().ViewHandle()
+                    != directionalShadowView
+                && graphics.SpotShadows().ViewHandle()
+                    != spotShadowView
+                && graphics.PointShadows().ViewHandle()
+                    != pointShadowView
+                && graphics.Shadows().IsValid()
+                && graphics.SpotShadows().IsValid()
+                && graphics.PointShadows().IsValid()
+                && !graphics.Lighting().directionalShadow.enabled
+                && !graphics.Lighting().directionalShadow.texture
+                && !graphics.Lighting().spotShadows[0].enabled
+                && !graphics.Lighting().spotShadowTexture
+                && !graphics.Lighting().pointShadow.enabled
+                && !graphics.Lighting().pointShadow.texture,
+            "Shadow recreation retained old neutral handles or lighting state");
         // このテストは1段につき1フレームしか描かないので、非同期
         // コンパイルを入れたままだと「まだ焼けていないので標準Lit」
         // の絵を撮ってしまいます。オフラインの決め打ち描画では
@@ -436,6 +4501,44 @@ int main(const int argumentCount, char** arguments)
             return pixels;
         };
 
+        // Component側はAPI固有資源を持たず、CPUで生成したquadを共有service
+        // へ渡します。Scene統合経路でも中央に緑のparticleが描けること。
+        subject.SetEnabled(false);
+        auto& particleObject =
+            scene.CreateGameObject("ParticleServiceProbe");
+        auto& particleSystem = particleObject.AddComponent<
+            LamaPon::ParticleSystemComponent>(
+                1,
+                0.0f,
+                DirectX::XMFLOAT2{ 10.0f, 10.0f },
+                DirectX::XMFLOAT2{},
+                DirectX::XMFLOAT2{ 2.0f, 2.0f },
+                DirectX::XMFLOAT4{ 0.0f, 1.0f, 0.0f, 1.0f },
+                DirectX::XMFLOAT4{ 0.0f, 1.0f, 0.0f, 1.0f });
+        particleSystem.SetPlayOnStart(false);
+        particleSystem.SetAdditive(false);
+        particleSystem.EmitParticle(
+            {},
+            {},
+            10.0f,
+            2.0f);
+        Stage("frame-particle-render-service");
+        const auto particleFrame = renderFrame();
+        const auto sceneParticleCenter = At(
+            particleFrame,
+            Width / 2,
+            Height / 2);
+        Require(
+            sceneParticleCenter.green
+                    > sceneParticleCenter.red + 120
+                && sceneParticleCenter.green
+                    > sceneParticleCenter.blue + 120,
+            "ParticleSystem did not reach the shared render service");
+        Require(
+            scene.DestroyGameObject(particleObject),
+            "The particle service probe could not be destroyed");
+        subject.SetEnabled(true);
+
         // (1) クリアカラーと環境光のみの被写体
         Stage("frame-ambient");
         const auto ambientFrame = renderFrame();
@@ -493,7 +4596,7 @@ int main(const int argumentCount, char** arguments)
             { 2.5f, 0.0f, 0.0f };
         clone.GetTransform().scale =
             { 1.5f, 1.5f, 1.5f };
-        clone.AddComponent<
+        auto& cloneRenderer = clone.AddComponent<
             LamaPon::MeshRendererComponent>(
             LamaPon::PrimitiveShape::Cube,
             DirectX::XMFLOAT4{
@@ -531,6 +4634,39 @@ int main(const int argumentCount, char** arguments)
                 Height / 2 + 6,
                 background),
             "Center must return to the clear color.");
+        Require(
+            scene.VisibilityStats().meshInstanceBatchCount == 1u
+                && scene.VisibilityStats()
+                    .meshInstancedRendererCount == 2u,
+            "Matching Mesh materials must share one instance batch.");
+
+        // 代表Meshのmaterialが全instanceへ適用されるため、Lit requestの
+        // 非instance値が違う2体は個別描画へ戻さなければなりません。
+        cloneRenderer.SetOcclusionStrength(0.25f);
+        Stage("frame-instance-material-split");
+        const auto splitMaterialFrame = renderFrame();
+        Require(
+            scene.VisibilityStats().meshInstanceBatchCount == 0u
+                && scene.VisibilityStats()
+                    .meshInstancedRendererCount == 0u,
+            "Different Lit requests were merged into one instance batch.");
+        Require(
+            RegionHasForeground(
+                splitMaterialFrame,
+                Width / 8,
+                Width / 2 - 20,
+                Height / 2 - 20,
+                Height / 2 + 20,
+                background)
+                && RegionHasForeground(
+                    splitMaterialFrame,
+                    Width / 2 + 20,
+                    Width - Width / 8,
+                    Height / 2 - 20,
+                    Height / 2 + 20,
+                    background),
+            "Splitting a material batch must keep both Meshes visible.");
+        cloneRenderer.SetOcclusionStrength(1.0f);
 
         // インスタンシングはGameObject::Render3Dを迂回するため、
         // 無効オブジェクトをバッチへ混ぜると通常経路と違って描画
@@ -932,6 +5068,9 @@ int main(const int argumentCount, char** arguments)
                 / "broken-shader.hlsl");
             const auto broken =
                 sampleSprite("sprite-error-broken");
+            Require(
+                !maskedSprite.ShaderError().empty(),
+                "The neutral custom sprite pass did not publish its shader error.");
             maskedSprite.SetShaderPath({});
             const auto repaired =
                 sampleSprite("sprite-error-repaired");
@@ -1041,10 +5180,6 @@ int main(const int argumentCount, char** arguments)
         Stage("frame-render-texture");
         const auto renderTextureFrame = renderFrame();
         DumpFrame("render-texture", renderTextureFrame);
-        Require(
-            graphics.RenderTextureView("minimap")
-                != nullptr,
-            "The named render texture must exist after a frame.");
         const auto* minimapTarget =
             graphics.FindRenderTexture("minimap");
         Require(
@@ -1054,6 +5189,100 @@ int main(const int argumentCount, char** arguments)
                 && minimapTarget->Height()
                     == RenderTextureSize,
             "The render texture must use the requested resolution.");
+        const auto minimapViewHandle =
+            graphics.RenderTextureViewHandle("minimap");
+        Require(
+            static_cast<bool>(minimapViewHandle),
+            "The named render texture must expose a neutral display handle.");
+        Require(
+            minimapViewHandle.Kind()
+                == LamaPon::GraphicsViewKind::ShaderResource,
+            "The render texture display handle must be a shader-resource view.");
+        auto* const minimapRawView =
+            D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                minimapTarget->DisplayViewHandle());
+        Require(
+            minimapViewHandle == minimapTarget->DisplayViewHandle()
+                && minimapRawView != nullptr,
+            "The named render texture must expose the target's neutral "
+            "display view directly.");
+        auto& sameSizeMinimap =
+            graphics.AcquireRenderTexture(
+                "minimap",
+                RenderTextureSize,
+                RenderTextureSize);
+        Require(
+            &sameSizeMinimap == minimapTarget
+                && graphics.RenderTextureViewHandle("minimap")
+                    == minimapViewHandle,
+            "Reacquiring the same render texture size must preserve handle identity.");
+        const auto minimapCurrentViewHandle =
+            sameSizeMinimap.CurrentColorViewHandle();
+        const auto minimapDepthViewHandle =
+            sameSizeMinimap.DepthViewHandle();
+        const auto minimapAmbientOcclusionViewHandle =
+            sameSizeMinimap.AmbientOcclusionViewHandle();
+        const auto minimapReflectionDepthViewHandle =
+            sameSizeMinimap.ReflectionDepthPyramidViewHandle();
+        const auto minimapMipCount =
+            sameSizeMinimap.ReflectionDepthPyramidMipCount();
+        bool oversizedResizeRejected = false;
+        try
+        {
+            graphics.ResizeOffscreenTarget(
+                sameSizeMinimap,
+                D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION + 1u,
+                1u);
+        }
+        catch (const std::exception&)
+        {
+            oversizedResizeRejected = true;
+        }
+        Require(
+            oversizedResizeRejected
+                && graphics.FindRenderTexture("minimap")
+                    == &sameSizeMinimap
+                && sameSizeMinimap.IsValid()
+                && sameSizeMinimap.Width() == RenderTextureSize
+                && sameSizeMinimap.Height() == RenderTextureSize
+                && sameSizeMinimap.CurrentColorViewHandle()
+                    == minimapCurrentViewHandle
+                && sameSizeMinimap.DisplayViewHandle()
+                    == minimapViewHandle
+                && sameSizeMinimap.DepthViewHandle()
+                    == minimapDepthViewHandle
+                && sameSizeMinimap.AmbientOcclusionViewHandle()
+                    == minimapAmbientOcclusionViewHandle
+                && sameSizeMinimap.ReflectionDepthPyramidViewHandle()
+                    == minimapReflectionDepthViewHandle
+                && sameSizeMinimap.ReflectionDepthPyramidMipCount()
+                    == minimapMipCount
+                && graphics.RenderTextureViewHandle("minimap")
+                    == minimapViewHandle,
+            "A failed named target resize must preserve the last complete "
+            "backend state and every published view.");
+        auto& recoveredMinimap =
+            graphics.AcquireRenderTexture(
+                "minimap",
+                RenderTextureSize,
+                RenderTextureSize);
+        const auto recoveredMinimapViewHandle =
+            graphics.RenderTextureViewHandle("minimap");
+        auto* const recoveredMinimapRawView =
+            D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                recoveredMinimap.DisplayViewHandle());
+        Require(
+            &recoveredMinimap == &sameSizeMinimap
+                && recoveredMinimap.IsValid()
+                && recoveredMinimapViewHandle
+                && recoveredMinimapViewHandle
+                    == recoveredMinimap.DisplayViewHandle()
+                && recoveredMinimapViewHandle == minimapViewHandle
+                && recoveredMinimapRawView != nullptr
+                && recoveredMinimap.CurrentColorViewHandle()
+                    == minimapCurrentViewHandle,
+            "A same-size acquire after a failed resize must keep the last "
+            "complete backend state.");
         // レンダーテクスチャにもスカイとシーンのカラーグレーディング
         // （トーンマップ・ビネット）がかかるため、サブカメラの
         // クリア色がそのままピクセルへ出てくるわけではありません。
@@ -1095,11 +5324,104 @@ int main(const int argumentCount, char** arguments)
         Require(
             graphics.RenderTextureNames().size() == 1,
             "Only the requested render texture should exist.");
+        constexpr std::uint32_t ResizedRenderTextureSize =
+            RenderTextureSize / 2;
+        graphics.ResizeOffscreenTarget(
+            sameSizeMinimap,
+            ResizedRenderTextureSize,
+            ResizedRenderTextureSize);
+        const auto resizedMinimapViewHandle =
+            graphics.RenderTextureViewHandle("minimap");
+        auto* const resizedMinimapRawView =
+            D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                sameSizeMinimap.DisplayViewHandle());
+        Require(
+            sameSizeMinimap.Width() == ResizedRenderTextureSize
+                && sameSizeMinimap.Height()
+                    == ResizedRenderTextureSize
+                && resizedMinimapViewHandle
+                && resizedMinimapViewHandle
+                    == sameSizeMinimap.DisplayViewHandle()
+                && resizedMinimapViewHandle
+                    != recoveredMinimapViewHandle
+                && resizedMinimapRawView != nullptr
+                && sameSizeMinimap.CurrentColorViewHandle(),
+            "Resizing a named target directly must refresh its display handle.");
         Require(
             graphics.ReleaseRenderTexture("minimap")
-                && graphics.RenderTextureView("minimap")
-                    == nullptr,
+                && graphics.FindRenderTexture("minimap")
+                    == nullptr
+                && !graphics.RenderTextureViewHandle(
+                    "minimap"),
             "Releasing a render texture must remove it.");
+        Require(
+            minimapViewHandle.Kind()
+                    == LamaPon::GraphicsViewKind::ShaderResource
+                && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                    minimapViewHandle)
+                    == minimapRawView
+                && resizedMinimapViewHandle.Kind()
+                    == LamaPon::GraphicsViewKind::ShaderResource
+                && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                    resizedMinimapViewHandle)
+                    == resizedMinimapRawView,
+            "A retained display handle must remain safe after registry release.");
+
+        auto& computeDisplayTarget =
+            graphics.AcquireComputeTexture(
+                "neutral-compute-display",
+                16u,
+                16u);
+        const auto computeDisplayHandle =
+            graphics.RenderTextureViewHandle(
+                "neutral-compute-display");
+        Require(
+            computeDisplayTarget.IsValid()
+                && legacyRenderTargetDisplayUav(&computeDisplayTarget)
+                    != nullptr
+                && computeDisplayHandle.Kind()
+                    == LamaPon::GraphicsViewKind::ShaderResource
+                && computeDisplayHandle
+                    == computeDisplayTarget.DisplayViewHandle()
+                && D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
+                    computeDisplayHandle) != nullptr,
+            "A compute output must expose its display surface through the "
+            "neutral handle registry.");
+        const auto computeCurrentHandle =
+            computeDisplayTarget.CurrentColorViewHandle();
+        auto* const computeDisplayUav =
+            legacyRenderTargetDisplayUav(&computeDisplayTarget);
+        bool oversizedComputeResizeRejected{};
+        try
+        {
+            graphics.ResizeOffscreenTarget(
+                computeDisplayTarget,
+                D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION + 1u,
+                1u);
+        }
+        catch (const std::exception&)
+        {
+            oversizedComputeResizeRejected = true;
+        }
+        Require(
+            oversizedComputeResizeRejected
+                && computeDisplayTarget.IsValid()
+                && computeDisplayTarget.Width() == 16u
+                && computeDisplayTarget.Height() == 16u
+                && computeDisplayTarget.CurrentColorViewHandle()
+                    == computeCurrentHandle
+                && computeDisplayTarget.DisplayViewHandle()
+                    == computeDisplayHandle
+                && legacyRenderTargetDisplayUav(&computeDisplayTarget)
+                    == computeDisplayUav,
+            "A failed compute-target resize must preserve the last complete "
+            "output state and unordered-access view.");
+        Require(
+            graphics.ReleaseRenderTexture(
+                "neutral-compute-display")
+                && !graphics.RenderTextureViewHandle(
+                    "neutral-compute-display"),
+            "Releasing a compute output must remove its neutral view.");
 
         // GIの保存→読み込み検証をテストの最後で行うための受け渡し
         // （ベイクする節と検証する節が離れているため、両方から
@@ -3813,10 +8135,13 @@ int main(const int argumentCount, char** arguments)
                 const auto* computeTarget =
                     graphics.FindRenderTexture(
                         "computeProbe");
+                auto* const computeOutputTexture =
+                    computeTarget != nullptr
+                    ? legacyRenderTargetDisplayTexture(computeTarget)
+                    : nullptr;
                 Require(
                     computeTarget != nullptr
-                        && computeTarget->DisplayTexture()
-                            != nullptr,
+                        && computeOutputTexture != nullptr,
                     "The compute output texture must exist.");
                 std::cout
                     << "compute effect: output "
@@ -3825,8 +8150,7 @@ int main(const int argumentCount, char** arguments)
                     << std::endl;
 
                 D3D11_TEXTURE2D_DESC outputDescription{};
-                computeTarget->DisplayTexture()->GetDesc(
-                    &outputDescription);
+                computeOutputTexture->GetDesc(&outputDescription);
                 outputDescription.Usage =
                     D3D11_USAGE_STAGING;
                 outputDescription.BindFlags = 0;
@@ -3836,19 +8160,19 @@ int main(const int argumentCount, char** arguments)
                 Microsoft::WRL::ComPtr<ID3D11Texture2D>
                     staging;
                 Require(
-                    SUCCEEDED(graphics.Device()
+                    SUCCEEDED(D3D11Access::Device(graphics)
                         ->CreateTexture2D(
                             &outputDescription,
                             nullptr,
                             staging.GetAddressOf())),
                     "The staging copy of the compute output"
                     " must be created.");
-                graphics.Context()->CopyResource(
+                D3D11Access::Context(graphics)->CopyResource(
                     staging.Get(),
-                    computeTarget->DisplayTexture());
+                    computeOutputTexture);
                 D3D11_MAPPED_SUBRESOURCE mapped{};
                 Require(
-                    SUCCEEDED(graphics.Context()->Map(
+                    SUCCEEDED(D3D11Access::Context(graphics)->Map(
                         staging.Get(),
                         0,
                         D3D11_MAP_READ,
@@ -3894,7 +8218,7 @@ int main(const int argumentCount, char** arguments)
                     << " right top g=" << rightTop.y
                     << " right bottom g=" << rightBottom.y
                     << std::endl;
-                graphics.Context()->Unmap(staging.Get(), 0);
+                D3D11Access::Context(graphics)->Unmap(staging.Get(), 0);
 
                 Require(
                     std::abs(left.x - computeRed) < 0.01f
@@ -4053,6 +8377,24 @@ int main(const int argumentCount, char** arguments)
                         *probeObject.GetComponent<
                             LamaPon::
                                 ReflectionProbeComponent>();
+                    const auto& bakedEnvironment =
+                        probeComponent.BakedEnvironment();
+                    Require(
+                        bakedEnvironment.IsValid()
+                            && graphics.IsGraphicsViewCurrent(
+                                bakedEnvironment.specular)
+                            && graphics.IsGraphicsViewCurrent(
+                                bakedEnvironment.irradiance)
+                            && D3D11Access::
+                                TryResolveD3D11ShaderResourceView(
+                                    graphics,
+                                    bakedEnvironment.specular) != nullptr
+                            && D3D11Access::
+                                TryResolveD3D11ShaderResourceView(
+                                    graphics,
+                                    bakedEnvironment.irradiance) != nullptr,
+                        "Reflection Probe baking did not publish current"
+                        " neutral views");
                     std::cout
                         << "probe baked: "
                         << (probeComponent.IsBaked()
@@ -6956,15 +11298,15 @@ int main(const int argumentCount, char** arguments)
                 D3D11_QUERY_DESC queryDescription{};
                 queryDescription.Query = D3D11_QUERY_EVENT;
                 Require(
-                    SUCCEEDED(graphics.Device()->CreateQuery(
+                    SUCCEEDED(D3D11Access::Device(graphics)->CreateQuery(
                         &queryDescription,
                         fence.ReleaseAndGetAddressOf())),
                     "bench query creation must succeed");
                 const auto waitForGpu = [&]
                 {
-                    graphics.Context()->End(fence.Get());
+                    D3D11Access::Context(graphics)->End(fence.Get());
                     BOOL done = FALSE;
-                    while (graphics.Context()->GetData(
+                    while (D3D11Access::Context(graphics)->GetData(
                             fence.Get(),
                             &done,
                             sizeof(done),
@@ -6997,18 +11339,18 @@ int main(const int argumentCount, char** arguments)
                 pipelineDescription.Query =
                     D3D11_QUERY_PIPELINE_STATISTICS;
                 Require(
-                    SUCCEEDED(graphics.Device()->CreateQuery(
+                    SUCCEEDED(D3D11Access::Device(graphics)->CreateQuery(
                         &disjointDescription,
                         disjointQuery.ReleaseAndGetAddressOf()))
-                        && SUCCEEDED(graphics.Device()->CreateQuery(
+                        && SUCCEEDED(D3D11Access::Device(graphics)->CreateQuery(
                             &timestampDescription,
                             timestampBeginQuery
                                 .ReleaseAndGetAddressOf()))
-                        && SUCCEEDED(graphics.Device()->CreateQuery(
+                        && SUCCEEDED(D3D11Access::Device(graphics)->CreateQuery(
                             &timestampDescription,
                             timestampEndQuery
                                 .ReleaseAndGetAddressOf()))
-                        && SUCCEEDED(graphics.Device()->CreateQuery(
+                        && SUCCEEDED(D3D11Access::Device(graphics)->CreateQuery(
                             &pipelineDescription,
                             pipelineStatisticsQuery
                                 .ReleaseAndGetAddressOf())),
@@ -7031,8 +11373,8 @@ int main(const int argumentCount, char** arguments)
                         const int batch,
                         const int sampleCount)
                 {
-                    benchTarget.Resize(
-                        graphics.Device(),
+                    graphics.ResizeOffscreenTarget(
+                        benchTarget,
                         width,
                         height);
                     constexpr float benchClear[]{
@@ -7042,9 +11384,8 @@ int main(const int argumentCount, char** arguments)
                         graphics.SetUIViewportSize(
                             width,
                             height);
-                        benchTarget.Bind(graphics.Context());
-                        benchTarget.Clear(
-                            graphics.Context(),
+                        graphics.BeginOffscreenTarget(
+                            benchTarget,
                             benchClear);
                         if (gamePath)
                         {
@@ -7069,8 +11410,8 @@ int main(const int argumentCount, char** arguments)
                             benchTarget,
                             scene.PostProcessFrameData());
                         scene.Render2D();
-                        benchTarget.CopyToDisplay(
-                            graphics.Context());
+                        graphics.PublishOffscreenTarget(
+                            benchTarget);
                     };
 
                     // 1周目はシェーダーのバリアント切り替え等で
@@ -7086,11 +11427,11 @@ int main(const int argumentCount, char** arguments)
                         sample < sampleCount;
                         ++sample)
                     {
-                        graphics.Context()->Begin(
+                        D3D11Access::Context(graphics)->Begin(
                             disjointQuery.Get());
-                        graphics.Context()->Begin(
+                        D3D11Access::Context(graphics)->Begin(
                             pipelineStatisticsQuery.Get());
-                        graphics.Context()->End(
+                        D3D11Access::Context(graphics)->End(
                             timestampBeginQuery.Get());
                         const auto cpuBegin =
                             std::chrono::steady_clock::now();
@@ -7102,16 +11443,16 @@ int main(const int argumentCount, char** arguments)
                         }
                         const auto cpuEnd =
                             std::chrono::steady_clock::now();
-                        graphics.Context()->End(
+                        D3D11Access::Context(graphics)->End(
                             timestampEndQuery.Get());
-                        graphics.Context()->End(
+                        D3D11Access::Context(graphics)->End(
                             pipelineStatisticsQuery.Get());
-                        graphics.Context()->End(
+                        D3D11Access::Context(graphics)->End(
                             disjointQuery.Get());
 
                         D3D11_QUERY_DATA_TIMESTAMP_DISJOINT
                             disjointData{};
-                        while (graphics.Context()->GetData(
+                        while (D3D11Access::Context(graphics)->GetData(
                                 disjointQuery.Get(),
                                 &disjointData,
                                 sizeof(disjointData),
@@ -7121,12 +11462,12 @@ int main(const int argumentCount, char** arguments)
                         }
                         std::uint64_t gpuBegin{};
                         std::uint64_t gpuEnd{};
-                        while (graphics.Context()->GetData(
+                        while (D3D11Access::Context(graphics)->GetData(
                                 timestampBeginQuery.Get(),
                                 &gpuBegin,
                                 sizeof(gpuBegin),
                                 0) != S_OK
-                            || graphics.Context()->GetData(
+                            || D3D11Access::Context(graphics)->GetData(
                                 timestampEndQuery.Get(),
                                 &gpuEnd,
                                 sizeof(gpuEnd),
@@ -7134,7 +11475,7 @@ int main(const int argumentCount, char** arguments)
                         {
                             std::this_thread::yield();
                         }
-                        while (graphics.Context()->GetData(
+                        while (D3D11Access::Context(graphics)->GetData(
                                 pipelineStatisticsQuery.Get(),
                                 &pipelineStatistics,
                                 sizeof(pipelineStatistics),
@@ -7497,7 +11838,7 @@ int main(const int argumentCount, char** arguments)
                             index * 2654435761u);
                     Microsoft::WRL::ComPtr<ID3D11Texture2D>
                         texture;
-                    if (FAILED(graphics.Device()->CreateTexture2D(
+                    if (FAILED(D3D11Access::Device(graphics)->CreateTexture2D(
                             &textureDescription,
                             &initialTextureData,
                             texture.ReleaseAndGetAddressOf())))
@@ -7506,7 +11847,7 @@ int main(const int argumentCount, char** arguments)
                     }
                     Microsoft::WRL::ComPtr<
                         ID3D11ShaderResourceView> view;
-                    if (FAILED(graphics.Device()->
+                    if (FAILED(D3D11Access::Device(graphics)->
                             CreateShaderResourceView(
                                 texture.Get(),
                                 nullptr,
@@ -7526,14 +11867,14 @@ int main(const int argumentCount, char** arguments)
                     textureDescription;
                 residencyProbeDescription.Usage = D3D11_USAGE_DEFAULT;
                 Require(
-                    SUCCEEDED(graphics.Device()->CreateTexture2D(
+                    SUCCEEDED(D3D11Access::Device(graphics)->CreateTexture2D(
                         &residencyProbeDescription,
                         nullptr,
                         textureResidencyProbe.ReleaseAndGetAddressOf())),
                     "texture memory benchmark residency probe creation must succeed");
                 for (const auto& texture : stressTextures)
                 {
-                    graphics.Context()->CopyResource(
+                    D3D11Access::Context(graphics)->CopyResource(
                         textureResidencyProbe.Get(),
                         texture.Get());
                 }
@@ -7705,13 +12046,25 @@ int main(const int argumentCount, char** arguments)
                     compressedNormalPath,
                     LamaPon::TextureLoader::TextureUsage::
                         NormalMap);
+            const auto compressedResources =
+                compressedAsset != nullptr
+                    ? compressedAsset->resources.Acquire()
+                    : nullptr;
+            auto* const compressedView =
+                compressedResources != nullptr
+                    ? D3D11Access::
+                        TryResolveD3D11ShaderResourceView(
+                            graphics,
+                            *compressedResources)
+                    : nullptr;
             Require(
                 compressedAsset != nullptr
-                    && compressedAsset->view != nullptr,
+                    && compressedResources != nullptr
+                    && compressedView != nullptr,
                 "the compressed normal map must load");
             Microsoft::WRL::ComPtr<ID3D11Resource>
                 compressedResource;
-            compressedAsset->view->GetResource(
+            compressedView->GetResource(
                 compressedResource.GetAddressOf());
             Microsoft::WRL::ComPtr<ID3D11Texture2D>
                 compressedTexture;

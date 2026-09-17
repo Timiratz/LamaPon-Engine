@@ -9,6 +9,7 @@
 #include <stb_vorbis.c>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -16,10 +17,35 @@
 #include <cwctype>
 #include <limits>
 #include <stdexcept>
+#include <string_view>
+#include <thread>
 #include <vector>
 
 namespace
 {
+    [[nodiscard]] std::unique_ptr<DirectX::AudioEngine> CreateAudioEngine()
+    {
+        try
+        {
+            return std::make_unique<DirectX::AudioEngine>(
+                DirectX::AudioEngine_Default);
+        }
+        catch (const std::runtime_error& error)
+        {
+            // XAudio2 Redistは直前のAudioEngineを破棄した直後、voiceの終了を
+            // 待つ短い間だけ新しいengineを`AudioEngine`で拒否することが
+            // あります。GraphicsDeviceの再生成を安定させるため、この既知の
+            // 一時エラーだけを一度待って再試行します。
+            if (std::string_view(error.what()) != "AudioEngine")
+            {
+                throw;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            return std::make_unique<DirectX::AudioEngine>(
+                DirectX::AudioEngine_Default);
+        }
+    }
+
     // 帯域レベルメーターの調整値。ここを触るのはメーターの見え方を
     // 変えたいときだけで、再生そのものには影響しません。
     constexpr float LevelPi = 3.14159265358979323846f;
@@ -210,9 +236,7 @@ namespace
 namespace LamaPon
 {
     AudioSystem::AudioSystem()
-        : m_engine(
-            std::make_unique<DirectX::AudioEngine>(
-                DirectX::AudioEngine_Default))
+        : m_engine(CreateAudioEngine())
     {
     }
 

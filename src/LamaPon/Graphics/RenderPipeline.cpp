@@ -7,29 +7,6 @@
 
 namespace
 {
-    // GPU区間のRAII。途中でreturnしても閉じ忘れないようにします。
-    struct GpuSectionScope final
-    {
-        LamaPon::GraphicsDevice& graphics;
-
-        GpuSectionScope(
-            LamaPon::GraphicsDevice& device,
-            const char* const name) noexcept
-            : graphics(device)
-        {
-            graphics.Gpu().BeginSection(name);
-        }
-
-        ~GpuSectionScope() noexcept
-        {
-            graphics.Gpu().EndSection();
-        }
-
-        GpuSectionScope(const GpuSectionScope&) = delete;
-        GpuSectionScope& operator=(
-            const GpuSectionScope&) = delete;
-    };
-
     // 深度専用パスのRAII。例外が出ても必ず元へ戻します。
     struct DepthPassScope final
     {
@@ -128,15 +105,17 @@ namespace LamaPon
         // 深度だけを描画先にして、不透明ジオメトリをもう1回描きます。
         // ピクセルシェーダーが外れるので、自作Shaderのオブジェクトも
         // そのまま安全に深度へ載ります。
-        graphics.Gpu().BeginSection("深度プリパス");
-        target.BindDepthOnly(graphics.Context());
         {
+            GpuProfiler::SectionScope section{
+                graphics.Gpu(),
+                "深度プリパス"
+            };
+            graphics.BindOffscreenTargetDepthOnly(target);
             const DepthPassScope depthScope{
                 graphics,
                 DepthPassKind::Prepass };
             drawDepthOnly();
         }
-        graphics.Gpu().EndSection();
         result.depthAvailable = true;
 
         if (!occlusionWanted)
@@ -147,14 +126,18 @@ namespace LamaPon
 
         // 深度から遮蔽を求めます（半解像度＋深度を見るブラー）。
         // 結果はtargetの中に残り、カラーには触りません。
-        graphics.Gpu().BeginSection("SSAO");
-        result.ambientOcclusionResolved =
-            target.ResolveAmbientOcclusion(
-                graphics.Environment(),
-                ambientOcclusion,
-                projection,
-                settings.ambientOcclusionSampleCount);
-        graphics.Gpu().EndSection();
+        {
+            GpuProfiler::SectionScope section{
+                graphics.Gpu(),
+                "SSAO"
+            };
+            result.ambientOcclusionResolved =
+                graphics.ResolveOffscreenTargetAmbientOcclusion(
+                    target,
+                    ambientOcclusion,
+                    projection,
+                    settings.ambientOcclusionSampleCount);
+        }
         return result;
     }
 
@@ -168,11 +151,12 @@ namespace LamaPon
         {
             return;
         }
-
+        // DirectX 11とDirectX 12は、同じ順序のpassと同じ差し込み地点を
+        // 通ります（SSAOとSSRはLit描画の前に済んでいます）。
         // 5つの描画経路が通る位置で計測し、エディタービューポートの
         // Bloom、トーンマップ、FXAAもGPU時間の内訳へ含めます。
-        const GpuSectionScope postScope{
-            graphics,
+        const GpuProfiler::SectionScope postScope{
+            graphics.Gpu(),
             "ポスト処理" };
 
         const auto& settings = graphics.Settings();
@@ -197,17 +181,26 @@ namespace LamaPon
         // 完成した色を前提にしているので、混ぜるのは素の絵のうちに
         // 済ませます。Bloomの後で混ぜると、前フレームのBloomが
         // さらに滲んで輪郭が二重になります。
-        target.ApplyTemporalAntiAliasing(
-            graphics.Environment(),
-            graphics.Context(),
+        graphics.ApplyOffscreenTargetTemporalAntiAliasing(
+            target,
             frame.temporal.settings,
             frame.temporal.inputs);
+        // 最初のフレームは混ぜる履歴が無くても、次のフレーム用の
+        // 履歴は作る必要があります。そのため適用結果ではなく設定の
+        // enabledだけで判定します。また、後続のHDR処理が乗る前の
+        // この位置で控え、TAAが解決した色だけを履歴に残します。
+        if (frame.temporal.settings.enabled)
+        {
+            graphics.CaptureOffscreenTargetTemporalHistory(
+                target,
+                frame.temporal.inputs.viewProjection);
+        }
 
         // ボリュメトリックライト（光の筋）は、深度と影を読むうえに
         // 光を足す処理なので、Bloomより前・HDRのうちにかけます。
         // これで明るい筋がBloomで滲み、トーンマップも通ります。
-        target.ApplyVolumetricLight(
-            graphics.Environment(),
+        graphics.ApplyOffscreenTargetVolumetricLight(
+            target,
             frame.volumetric.settings,
             frame.volumetric.inputs);
 
@@ -221,8 +214,8 @@ namespace LamaPon
         effectiveDepthOfField.enabled =
             effectiveDepthOfField.enabled
             && settings.depthOfFieldEnabled;
-        target.ApplyDepthOfField(
-            graphics.Environment(),
+        graphics.ApplyOffscreenTargetDepthOfField(
+            target,
             effectiveDepthOfField,
             frame.depthOfField.projection,
             settings.depthOfFieldSampleCount);
@@ -235,8 +228,8 @@ namespace LamaPon
         effectiveMotionBlur.enabled =
             effectiveMotionBlur.enabled
             && settings.motionBlurEnabled;
-        target.ApplyMotionBlur(
-            graphics.Environment(),
+        graphics.ApplyOffscreenTargetMotionBlur(
+            target,
             effectiveMotionBlur,
             frame.motionBlur.inverseViewProjection,
             frame.motionBlur.viewProjection,
@@ -249,8 +242,8 @@ namespace LamaPon
         effectiveBloom.enabled =
             effectiveBloom.enabled
             && settings.bloomEnabled;
-        target.ApplyBloom(
-            graphics.Environment(),
+        graphics.ApplyOffscreenTargetBloom(
+            target,
             effectiveBloom);
 
         // Screen Space Lens FlareはBloom後のHDRへかけます。Bloomの
@@ -260,8 +253,8 @@ namespace LamaPon
         effectiveLensFlare.enabled =
             effectiveLensFlare.enabled
             && settings.screenSpaceLensFlareEnabled;
-        target.ApplyScreenSpaceLensFlare(
-            graphics.Environment(),
+        graphics.ApplyOffscreenTargetScreenSpaceLensFlare(
+            target,
             effectiveLensFlare);
 
         // トーンマップの手前。まだHDRなので、ここで足した明るさも
@@ -281,21 +274,20 @@ namespace LamaPon
             && settings.autoExposureEnabled;
         auto effectiveColorGrading = frame.colorGrading;
         effectiveColorGrading.autoExposureStops =
-            target.UpdateAutoExposure(
-                graphics.Environment(),
-                graphics.Context(),
+            graphics.UpdateOffscreenTargetAutoExposure(
+                target,
                 effectiveAutoExposure,
                 frame.autoExposure.deltaSeconds);
 
-        target.ApplyToneMapping(
-            graphics.Environment(),
+        graphics.ApplyOffscreenTargetToneMapping(
+            target,
             effectiveColorGrading);
 
         // トーンマップ後の画面へ輪郭を重ねます。深度だけを読むので、
         // UIが合成される前に置けば3Dだけへ適用できます。FXAAは最後に
         // かかるため、輪郭線の階段も一緒に平滑化されます。
-        target.ApplyScreenOutline(
-            graphics.Environment(),
+        graphics.ApplyOffscreenTargetScreenOutline(
+            target,
             frame.screenOutline.settings,
             frame.screenOutline.projection);
 
@@ -305,8 +297,7 @@ namespace LamaPon
         // FXAAは輪郭を見て平すので、色が確定した最後にかけます。
         if (settings.antiAliasingEnabled)
         {
-            target.ApplyFXAA(
-                graphics.Environment());
+            graphics.ApplyOffscreenTargetFXAA(target);
         }
     }
 }

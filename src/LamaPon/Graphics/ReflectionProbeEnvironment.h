@@ -1,7 +1,8 @@
 #pragma once
 
+#include "LamaPon/Graphics/GraphicsResource.h"
+
 #include <DirectXMath.h>
-#include <d3d11.h>
 
 namespace LamaPon
 {
@@ -14,10 +15,10 @@ namespace LamaPon
     // Scene側（ReflectionProbeEnvironmentAt）に置いています。
     struct ReflectionProbeEnvironment final
     {
-        // 主のプローブ。specularがnullptrなら「プローブ無し」で、
+        // 主のプローブ。specularがemptyなら「プローブ無し」で、
         // シーン共通のSky IBLがそのまま使われます。
-        ID3D11ShaderResourceView* specular{};
-        ID3D11ShaderResourceView* irradiance{};
+        GraphicsViewHandle specular;
+        GraphicsViewHandle irradiance;
         float specularMaximumMip{};
         float intensity{ 1.0f };
         // ボックス射影の箱（中心＝プローブの位置）。半径が3軸すべて
@@ -25,9 +26,9 @@ namespace LamaPon
         DirectX::XMFLOAT3 boxCenter{};
         DirectX::XMFLOAT3 boxExtents{};
 
-        // 混ぜる相手。secondarySpecularがnullptrなら混ぜません。
-        ID3D11ShaderResourceView* secondarySpecular{};
-        ID3D11ShaderResourceView* secondaryIrradiance{};
+        // 混ぜる相手。secondarySpecularがemptyなら混ぜません。
+        GraphicsViewHandle secondarySpecular;
+        GraphicsViewHandle secondaryIrradiance;
         float secondarySpecularMaximumMip{};
         DirectX::XMFLOAT3 secondaryBoxCenter{};
         DirectX::XMFLOAT3 secondaryBoxExtents{};
@@ -38,13 +39,12 @@ namespace LamaPon
         // 空のキューブを読んで拡散か反射が真っ黒になります。
         [[nodiscard]] bool IsValid() const noexcept
         {
-            return specular != nullptr
-                && irradiance != nullptr;
+            return specular && irradiance;
         }
         [[nodiscard]] bool IsBlended() const noexcept
         {
-            return secondarySpecular != nullptr
-                && secondaryIrradiance != nullptr
+            return secondarySpecular
+                && secondaryIrradiance
                 && secondaryWeight > 0.0f;
         }
     };

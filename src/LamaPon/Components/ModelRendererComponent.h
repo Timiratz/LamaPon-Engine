@@ -37,6 +37,7 @@ namespace LamaPon
 
     class AssetManager;
     class LitEffect;
+    struct LitTextureRequest;
     class SkeletalModel;
     struct ModelAsset;
     struct TextureAsset;
@@ -419,11 +420,21 @@ namespace LamaPon
         // Shaderが宣言した描画状態（合成・深度・カリング）を適用します。
         void ApplyShaderRenderState(
             const ShaderRenderState& state) const;
-        // 追加テクスチャのSRVを、未設定はnullptrで並べて返します。
-        [[nodiscard]] std::array<
-            ID3D11ShaderResourceView*,
-            LitMaterial::CustomTextureCount>
-            ResolveCustomTextureViews() const noexcept;
+        // 外部マテリアルの全textureをBackend-neutralな1要求へまとめます。
+        [[nodiscard]] LitTextureRequest
+            BuildLitTextureRequest() const noexcept;
+        // occludedOnlyはD3D11のDrawCommonLit(…, true)と同じく、CMO／SDKMESH／
+        // VBOのMaterial custom shaderの遮蔽表示だけを描きます。
+        void DrawD3D12Model(
+            DirectX::FXMMATRIX view,
+            DirectX::CXMMATRIX projection,
+            bool occludedOnly = false);
+        // D3D11のRenderInstancedBatchと同じまとめ方で、DirectX 12の組み込み
+        // Litへinstance描画します。
+        [[nodiscard]] bool RenderD3D12InstancedBatch(
+            const std::vector<ModelRendererComponent*>& batch,
+            DirectX::FXMMATRIX view,
+            DirectX::CXMMATRIX projection);
         struct CommonLitResources;
 
         void ReloadModel();

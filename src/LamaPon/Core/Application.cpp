@@ -164,6 +164,36 @@ namespace LamaPon
 
     void Application::Initialize(const HINSTANCE instance)
     {
+        Initialize(instance, RenderingApi::DirectX11);
+    }
+
+    void Application::Initialize(
+        const HINSTANCE instance,
+        const RenderingApi requestedApi)
+    {
+        Initialize(
+            instance,
+            requestedApi,
+            GraphicsStartupProfile::FullRenderer);
+    }
+
+    void Application::Initialize(
+        const HINSTANCE instance,
+        const RenderingApi requestedApi,
+        const GraphicsStartupProfile startupProfile)
+    {
+        const auto executableDirectory = ExecutableDirectory();
+        if (executableDirectory.empty())
+        {
+            throw std::runtime_error("GetModuleFileNameW failed.");
+        }
+        // GraphicsDeviceの初期化警告（D3D12初期化失敗時のfallback等）も
+        // 起動ログへ残るよう、デバイス作成より先に出力先を開きます。
+        static_cast<void>(
+            Logger::Instance().SetFilePath(
+                executableDirectory
+                    / L"LamaPon.log"));
+
         // エディターが使うフォルダー選択などのシェルダイアログは、呼び出し元の
         // スレッドがシングルスレッドアパートメントであることを前提とします。
         // COINIT_MULTITHREADEDではSHBrowseForFolderWが応答しなくなります。
@@ -199,12 +229,9 @@ namespace LamaPon
         m_graphics.Initialize(
             m_window.Handle(),
             m_window.ClientWidth(),
-            m_window.ClientHeight());
-        const auto executableDirectory = ExecutableDirectory();
-        if (executableDirectory.empty())
-        {
-            throw std::runtime_error("GetModuleFileNameW failed.");
-        }
+            m_window.ClientHeight(),
+            requestedApi,
+            startupProfile);
         m_graphics.Assets().SetAssetRoot(
             executableDirectory / L"assets");
         // 書き出し時に同梱した事前コンパイル済みシェーダー。これが
@@ -213,10 +240,6 @@ namespace LamaPon
         // %LOCALAPPDATA%側のキャッシュが効きます）。
         AddShaderCacheSearchDirectory(
             executableDirectory / L"shader-cache");
-        static_cast<void>(
-            Logger::Instance().SetFilePath(
-                executableDirectory
-                    / L"LamaPon.log"));
         Logger::Instance().Info(
             "LamaPonを初期化しました。");
 
@@ -309,7 +332,6 @@ namespace LamaPon
 
         MSG message{};
         auto previousTime = std::chrono::steady_clock::now();
-
         while (message.message != WM_QUIT)
         {
             if (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
@@ -429,15 +451,16 @@ namespace LamaPon
                     {
                         m_graphics.BeginSceneComposition(
                             m_clearColor);
-                        // 3DだけをHDRターゲットへ描き、UIは色変換後に
-                        // 重ねる。ターゲットを渡すのは、深度プリパスと
-                        // SSAOをライティングより前に走らせるためです。
+                        // 3DだけをScene用ターゲットへ描き、UIは
+                        // 合成後に重ねます。D3D11はHDR/post-process、
+                        // D3D12 Experimentalは現時点のLDR合成経路です。
                         m_scene->RenderMainCamera(
                             m_graphics.AspectRatio(),
                             false,
                             m_graphics.SceneCompositionTarget());
                         m_graphics.EndSceneComposition(
                             m_scene->PostProcessFrameData());
+                        // UIは両APIとも3Dの後へ重ねます。
                         m_scene->Render2D();
                         const auto& scenes =
                             m_scene->Scenes();

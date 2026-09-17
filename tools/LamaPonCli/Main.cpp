@@ -2040,8 +2040,17 @@ namespace
         LamaPon::GraphicsDevice::SetEnableDebugLayer(
             request.value("d3dDebug", false));
         const HWND window = CreateHiddenWindow(width, height);
+        static_cast<void>(
+            LamaPon::Logger::Instance().SetFilePath(
+                directory / L"runtime.log"));
         LamaPon::GraphicsDevice graphics;
-        graphics.Initialize(window, width, height);
+        graphics.Initialize(
+            window,
+            width,
+            height,
+            settings.graphics.renderingApi,
+            LamaPon::GraphicsStartupProfile::
+                AllowD3D12ExperimentalRenderer);
         graphics.Assets().SetAssetRoot(projectRoot / L"assets");
         auto graphicsSettings = settings.graphics;
         graphicsSettings.vSyncEnabled = false;
@@ -2049,9 +2058,6 @@ namespace
         graphics.SetAsyncShaderCompilationEnabled(false);
         graphics.Input().SetActions(settings.inputActions);
         LamaPon::SetActivePhysicsSettings(settings.physics);
-        static_cast<void>(
-            LamaPon::Logger::Instance().SetFilePath(
-                directory / L"runtime.log"));
 
         LamaPon::GameModuleHost gameModule;
         const auto gameModulePath = projectRoot
@@ -4319,7 +4325,13 @@ namespace
         const HWND window =
             CreateHiddenWindow(width, height);
         LamaPon::GraphicsDevice graphics;
-        graphics.Initialize(window, width, height);
+        graphics.Initialize(
+            window,
+            width,
+            height,
+            settings.graphics.renderingApi,
+            LamaPon::GraphicsStartupProfile::
+                AllowD3D12ExperimentalRenderer);
         graphics.Assets().SetAssetRoot(
             projectRoot / L"assets");
 
@@ -5600,7 +5612,7 @@ namespace
             "                    (for example:"
             " --input \"Jump@0.5:0.2,Fire@1.0\")\n"
             "  --warp            render on the CPU (WARP)\n"
-            "  --d3ddebug        enable the D3D11 debug"
+            "  --d3ddebug        enable the Direct3D debug"
             " layer\n"
             "\n"
             "new options:\n"
@@ -5698,7 +5710,7 @@ namespace
             "  --width/--height <n> window size (start only)\n"
             "  --fps <n>           target frame rate (default: 60)\n"
             "  --warp              use the CPU WARP renderer\n"
-            "  --d3ddebug          enable the D3D11 debug layer\n"
+            "  --d3ddebug          enable the Direct3D debug layer\n"
             "  --deterministic     use a fixed simulation timestep\n"
             "  --fixed-delta <s>   fixed timestep in seconds\n"
             "  --render-every <n>  draw every N simulation frames\n"

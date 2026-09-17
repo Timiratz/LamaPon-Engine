@@ -34,6 +34,7 @@ LamaPonのプロジェクト作成、C++スクリプト、エディター操作�
 | ページ | 内容 |
 |---|---|
 | [グラフィックス](graphics.md) | 3Dモデル、ライティング、マテリアル、Skybox、LOD |
+| [DirectX 12 Experimental](directx12.md) | Windows書き出しゲームでの有効化、対応範囲、D3D11互換、フォールバック |
 | [カスタムShader](shaders.md) | HLSLでマテリアル・2D・ポストエフェクトを拡張。宣言でInspectorに名前付きUI、テクスチャ追加、半透明・加算の指定 |
 | [物理と衝突判定](physics.md) | Rigidbody、Collider、Raycast、物理マテリアル |
 | [UIと2D機能](ui-2d.md) | UI Canvas、ウィジェット、2Dエフェクト、Tilemap、日本語テキスト |

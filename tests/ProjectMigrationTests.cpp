@@ -316,10 +316,20 @@ int main()
             before["gameName"] = "VersionKeepTest";
             before["engineVersion"] = "2026.8.5";
             before["somethingElseEntirely"] = 42;
+            // renderingApiが無い旧設定でも、従来通り
+            // DirectX 11を選びます。
+            before["graphics"] = {
+                { "preset", "High" }
+            };
             WriteFile(settingsFile, before.dump(2));
 
             const auto loaded =
                 LamaPon::LoadProjectSettings(settingsFile);
+            Require(
+                loaded.graphics.renderingApi
+                    == LamaPon::RenderingApi::DirectX11,
+                "project settings without a rendering API must"
+                " default to DirectX 11");
             LamaPon::SaveProjectSettings(
                 settingsFile,
                 loaded,
@@ -337,6 +347,113 @@ int main()
                     == 42,
                 "saving project settings must keep keys it"
                 " does not own");
+        }
+
+        // 描画APIのJSON名と保存往復。起動中のBackend状態とは分離し、
+        // 設定値として安全に保存・再読み込みできる必要があります。
+        {
+            Require(
+                LamaPon::RenderingApiName(
+                    LamaPon::RenderingApi::Auto) == "Auto"
+                    && LamaPon::RenderingApiName(
+                        LamaPon::RenderingApi::DirectX11)
+                        == "DirectX11"
+                    && LamaPon::RenderingApiName(
+                        LamaPon::RenderingApi::
+                            DirectX12Experimental)
+                        == "DirectX12Experimental",
+                "rendering API names must match their JSON values");
+            Require(
+                LamaPon::RenderingApiFromName("Auto")
+                        == LamaPon::RenderingApi::Auto
+                    && LamaPon::RenderingApiFromName("DirectX11")
+                        == LamaPon::RenderingApi::DirectX11
+                    && LamaPon::RenderingApiFromName(
+                        "DirectX12Experimental")
+                        == LamaPon::RenderingApi::
+                            DirectX12Experimental,
+                "rendering API JSON values must parse");
+            Require(
+                LamaPon::RenderingApiFromName("FutureApi")
+                    == LamaPon::RenderingApi::DirectX11,
+                "an unknown rendering API name must fall back to"
+                " DirectX 11");
+            Require(
+                LamaPon::RenderingApiName(
+                    static_cast<LamaPon::RenderingApi>(-1))
+                    == "DirectX11",
+                "an invalid rendering API value must have a safe"
+                " JSON name");
+
+            LamaPon::GraphicsSettings invalidGraphics;
+            invalidGraphics.renderingApi =
+                static_cast<LamaPon::RenderingApi>(-1);
+            Require(
+                LamaPon::ClampGraphicsSettings(invalidGraphics)
+                        .renderingApi
+                    == LamaPon::RenderingApi::DirectX11,
+                "an invalid rendering API value must clamp to"
+                " DirectX 11");
+
+            struct RenderingApiCase final
+            {
+                LamaPon::RenderingApi api;
+                const char* name;
+            };
+            constexpr RenderingApiCase cases[]{
+                { LamaPon::RenderingApi::DirectX11, "DirectX11" },
+                { LamaPon::RenderingApi::Auto, "Auto" },
+                {
+                    LamaPon::RenderingApi::DirectX12Experimental,
+                    "DirectX12Experimental"
+                }
+            };
+            const auto settingsFile =
+                projectRoot / ".lamapon" / "rendering-api.json";
+            for (const auto fileType : {
+                    LamaPon::ProjectSettingsFileType::Project,
+                    LamaPon::ProjectSettingsFileType::GamePackage })
+            {
+                for (const auto& testCase : cases)
+                {
+                    LamaPon::ProjectSettings settings;
+                    settings.graphics.renderingApi = testCase.api;
+                    LamaPon::SaveProjectSettings(
+                        settingsFile,
+                        settings,
+                        fileType);
+
+                    const auto saved = nlohmann::json::parse(
+                        ReadFile(settingsFile));
+                    Require(
+                        saved.at("graphics")
+                                .at("renderingApi")
+                                .get<std::string>()
+                            == testCase.name,
+                        "the rendering API JSON value was not saved");
+                    Require(
+                        LamaPon::LoadProjectSettings(settingsFile)
+                                .graphics.renderingApi
+                            == testCase.api,
+                        "the rendering API did not survive the"
+                        " project settings round trip");
+                }
+            }
+
+            nlohmann::json unknown;
+            unknown["format"] = "LamaPonProject";
+            unknown["version"] = 1;
+            unknown["graphics"] = {
+                { "renderingApi", "FutureApi" }
+            };
+            WriteFile(settingsFile, unknown.dump(2));
+            Require(
+                LamaPon::LoadProjectSettings(settingsFile)
+                        .graphics.renderingApi
+                    == LamaPon::RenderingApi::DirectX11,
+                "an unknown project rendering API must load as"
+                " DirectX 11");
+            std::filesystem::remove(settingsFile);
         }
 
         // Discord連携に必要なのは公開可能なバックエンド接続情報だけです。

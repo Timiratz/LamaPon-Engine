@@ -1,6 +1,7 @@
 #pragma once
 
 #include "LamaPon/Graphics/EnvironmentSettings.h"
+#include "LamaPon/Graphics/GraphicsResource.h"
 
 #include <DirectXMath.h>
 
@@ -8,8 +9,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <vector>
-
-struct ID3D11ShaderResourceView;
 
 namespace DirectX
 {
@@ -69,7 +68,7 @@ namespace LamaPon
         std::array<
             float,
             MaximumShadowCascades> cascadeSplits{};
-        ID3D11ShaderResourceView* texture{};
+        GraphicsViewHandle texture;
         std::size_t lightIndex{};
         std::size_t cascadeCount{};
         float bias{ 0.0015f };
@@ -94,7 +93,7 @@ namespace LamaPon
 
     struct PointShadowData final
     {
-        ID3D11ShaderResourceView* texture{};
+        GraphicsViewHandle texture;
         // pointLights配列の添字。負なら影なし。
         std::ptrdiff_t lightIndex{ -1 };
         float bias{ 0.002f };
@@ -105,12 +104,12 @@ namespace LamaPon
     // キューブマップ環境光（IBL）。
     struct EnvironmentMapData final
     {
-        ID3D11ShaderResourceView* texture{};
+        GraphicsViewHandle texture;
         // 事前フィルタ済みスペキュラ／放射照度キューブ
         // （EnvironmentRendererが生成。nullならtextureへ
         // フォールバックします）。
-        ID3D11ShaderResourceView* specular{};
-        ID3D11ShaderResourceView* irradiance{};
+        GraphicsViewHandle specular;
+        GraphicsViewHandle irradiance;
         float specularMaximumMip{};
         float intensity{ 1.0f };
         bool enabled{};
@@ -141,9 +140,9 @@ namespace LamaPon
     // ClusteredLights::Updateが書き込みます。
     struct ClusteredLightingData final
     {
-        ID3D11ShaderResourceView* lights{};
-        ID3D11ShaderResourceView* lightIndices{};
-        ID3D11ShaderResourceView* clusterCounts{};
+        GraphicsViewHandle lights;
+        GraphicsViewHandle lightIndices;
+        GraphicsViewHandle clusterCounts;
         float nearPlane{ 0.1f };
         float farPlane{ 1000.0f };
         // ピクセル座標からクラスタの縦横を求めるための1/幅・1/高さ。
@@ -158,7 +157,7 @@ namespace LamaPon
     // 違って、環境光／IBL項だけを暗くできます。
     struct ScreenAmbientOcclusionData final
     {
-        ID3D11ShaderResourceView* texture{};
+        GraphicsViewHandle texture;
         // SV_PositionからUVを作るための1/幅・1/高さ。
         float inverseWidth{};
         float inverseHeight{};
@@ -172,8 +171,8 @@ namespace LamaPon
     // 位置がずれないようにするため）。
     struct ScreenSpaceReflectionData final
     {
-        ID3D11ShaderResourceView* texture{};
-        ID3D11ShaderResourceView* depth{};
+        GraphicsViewHandle texture;
+        GraphicsViewHandle depth;
         DirectX::XMFLOAT4X4 previousViewProjection{};
         float inverseWidth{};
         float inverseHeight{};
@@ -200,9 +199,9 @@ namespace LamaPon
     // シェーダーは dot(float4(法線,1), texel) で環境光を得ます）。
     struct BakedGlobalIlluminationData final
     {
-        ID3D11ShaderResourceView* redCoefficients{};
-        ID3D11ShaderResourceView* greenCoefficients{};
-        ID3D11ShaderResourceView* blueCoefficients{};
+        GraphicsViewHandle redCoefficients;
+        GraphicsViewHandle greenCoefficients;
+        GraphicsViewHandle blueCoefficients;
         DirectX::XMFLOAT3 volumeMinimum{};
         DirectX::XMFLOAT3 volumeSize{ 1.0f, 1.0f, 1.0f };
         DirectX::XMFLOAT3 resolution{ 1.0f, 1.0f, 1.0f };
@@ -230,7 +229,7 @@ namespace LamaPon
         std::array<
             SpotShadowData,
             MaximumSpotShadows> spotShadows{};
-        ID3D11ShaderResourceView* spotShadowTexture{};
+        GraphicsViewHandle spotShadowTexture;
         PointShadowData pointShadow;
         EnvironmentMapData environment;
         FogSettings fog;

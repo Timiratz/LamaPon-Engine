@@ -1,4 +1,5 @@
 #include "LamaPon/Assets/TextureLoader.h"
+#include "LamaPon/Graphics/DxgiTextureLayout.h"
 
 #include <objbase.h>
 #include <wincodec.h>
@@ -9,9 +10,81 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace
 {
+    constexpr std::uint32_t MakeFourCc(
+        const char a,
+        const char b,
+        const char c,
+        const char d) noexcept
+    {
+        return static_cast<std::uint8_t>(a)
+            | static_cast<std::uint32_t>(
+                static_cast<std::uint8_t>(b)) << 8u
+            | static_cast<std::uint32_t>(
+                static_cast<std::uint8_t>(c)) << 16u
+            | static_cast<std::uint32_t>(
+                static_cast<std::uint8_t>(d)) << 24u;
+    }
+
+    struct DdsPixelFormat final
+    {
+        std::uint32_t size{};
+        std::uint32_t flags{};
+        std::uint32_t fourCc{};
+        std::uint32_t rgbBitCount{};
+        std::uint32_t redMask{};
+        std::uint32_t greenMask{};
+        std::uint32_t blueMask{};
+        std::uint32_t alphaMask{};
+    };
+
+    struct DdsHeader final
+    {
+        std::uint32_t size{};
+        std::uint32_t flags{};
+        std::uint32_t height{};
+        std::uint32_t width{};
+        std::uint32_t pitchOrLinearSize{};
+        std::uint32_t depth{};
+        std::uint32_t mipMapCount{};
+        std::array<std::uint32_t, 11> reserved{};
+        DdsPixelFormat pixelFormat{};
+        std::uint32_t caps{};
+        std::uint32_t caps2{};
+        std::uint32_t caps3{};
+        std::uint32_t caps4{};
+        std::uint32_t reserved2{};
+    };
+
+    struct DdsHeaderDx10 final
+    {
+        std::uint32_t format{};
+        std::uint32_t resourceDimension{};
+        std::uint32_t miscFlag{};
+        std::uint32_t arraySize{};
+        std::uint32_t miscFlags2{};
+    };
+
+    static_assert(sizeof(DdsPixelFormat) == 32u);
+    static_assert(sizeof(DdsHeader) == 124u);
+    static_assert(sizeof(DdsHeaderDx10) == 20u);
+
+    [[nodiscard]] std::pair<std::uint32_t, std::uint32_t>
+        DdsLevelLayout(
+            const DXGI_FORMAT format,
+            const std::uint32_t width,
+            const std::uint32_t height)
+    {
+        const auto layout = LamaPon::Detail::RequiredTextureLayout(
+            format,
+            width,
+            height);
+        return { layout.minimumRowBytes, layout.rowCount };
+    }
+
     void ThrowIfFailed(
         const HRESULT result,
         const char* operation)
@@ -269,10 +342,676 @@ namespace
     {
         return std::max((size + 3) / 4, 1u);
     }
+
+    constexpr std::uint32_t DdsMagic = MakeFourCc('D', 'D', 'S', ' ');
+    constexpr std::uint32_t PixelFormatFourCc = 0x4u;
+    // caps2のDDSCAPS2_CUBEMAPと6面すべての印です。
+    constexpr std::uint32_t Caps2CubeMapMask = 0xfe00u;
+    constexpr std::uint32_t ResourceMiscTextureCube = 0x4u;
+
+    // DDSのresource次元を保ち、D3D11／D3D12のsubresource順へ展開します。
+    [[nodiscard]] LamaPon::TextureLoader::PreparedDdsTextureData
+        ParseDdsResourceData(const std::span<const std::uint8_t> bytes)
+    {
+        constexpr std::uint32_t PixelFormatRgb = 0x40u;
+        constexpr std::uint32_t PixelFormatLuminance = 0x20000u;
+        constexpr std::uint32_t PixelFormatAlpha = 0x2u;
+        constexpr std::uint32_t PixelFormatBumpDuDv = 0x80000u;
+        constexpr std::uint32_t Caps2Volume = 0x200000u;
+        constexpr std::uint32_t ResourceDimensionTexture2D = 3u;
+        constexpr std::uint32_t ResourceDimensionTexture3D = 4u;
+        constexpr std::uint32_t MaximumTextureDimension = 16384u;
+
+        if (bytes.size() < sizeof(std::uint32_t) + sizeof(DdsHeader))
+        {
+            throw std::invalid_argument("The DDS header is incomplete.");
+        }
+        std::uint32_t magic{};
+        DdsHeader header{};
+        std::memcpy(&magic, bytes.data(), sizeof(magic));
+        std::memcpy(
+            &header,
+            bytes.data() + sizeof(magic),
+            sizeof(header));
+        if (magic != DdsMagic
+            || header.size != sizeof(DdsHeader)
+            || header.pixelFormat.size != sizeof(DdsPixelFormat)
+            || header.width == 0u
+            || header.height == 0u
+            || header.width > MaximumTextureDimension
+            || header.height > MaximumTextureDimension)
+        {
+            throw std::invalid_argument("The DDS header is invalid.");
+        }
+        // 古い形式のcubeはcaps2へDDSCAPS2_CUBEMAPと6面の印を持ちます。
+        // 面が欠けたcubeはD3D11のDirectXTKと同じく読みません。
+        bool fileCube = (header.caps2 & Caps2CubeMapMask) != 0u;
+        bool fileVolume = (header.caps2 & Caps2Volume) != 0u;
+        std::uint32_t arraySize = 1u;
+        if (fileCube
+            && (header.caps2 & Caps2CubeMapMask) != Caps2CubeMapMask)
+        {
+            throw std::invalid_argument(
+                "DDS cubes without all six faces are not supported.");
+        }
+
+        std::size_t payloadOffset = sizeof(magic) + sizeof(header);
+        DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+        if ((header.pixelFormat.flags & PixelFormatFourCc) != 0u)
+        {
+            switch (header.pixelFormat.fourCc)
+            {
+            case MakeFourCc('D', 'X', 'T', '1'):
+                format = DXGI_FORMAT_BC1_UNORM;
+                break;
+            case MakeFourCc('D', 'X', 'T', '2'):
+            case MakeFourCc('D', 'X', 'T', '3'):
+                format = DXGI_FORMAT_BC2_UNORM;
+                break;
+            case MakeFourCc('D', 'X', 'T', '4'):
+            case MakeFourCc('D', 'X', 'T', '5'):
+                format = DXGI_FORMAT_BC3_UNORM;
+                break;
+            case MakeFourCc('A', 'T', 'I', '1'):
+            case MakeFourCc('B', 'C', '4', 'U'):
+                format = DXGI_FORMAT_BC4_UNORM;
+                break;
+            case MakeFourCc('B', 'C', '4', 'S'):
+                format = DXGI_FORMAT_BC4_SNORM;
+                break;
+            case MakeFourCc('A', 'T', 'I', '2'):
+            case MakeFourCc('B', 'C', '5', 'U'):
+                format = DXGI_FORMAT_BC5_UNORM;
+                break;
+            case MakeFourCc('B', 'C', '5', 'S'):
+                format = DXGI_FORMAT_BC5_SNORM;
+                break;
+            case MakeFourCc('R', 'G', 'B', 'G'):
+                format = DXGI_FORMAT_R8G8_B8G8_UNORM;
+                break;
+            case MakeFourCc('G', 'R', 'G', 'B'):
+                format = DXGI_FORMAT_G8R8_G8B8_UNORM;
+                break;
+            case MakeFourCc('Y', 'U', 'Y', '2'):
+                format = DXGI_FORMAT_YUY2;
+                break;
+            // D3D9のD3DFORMAT値をFourCC欄へ直接保存する旧DDSです。
+            case 36u:
+                format = DXGI_FORMAT_R16G16B16A16_UNORM;
+                break;
+            case 110u:
+                format = DXGI_FORMAT_R16G16B16A16_SNORM;
+                break;
+            case 111u:
+                format = DXGI_FORMAT_R16_FLOAT;
+                break;
+            case 112u:
+                format = DXGI_FORMAT_R16G16_FLOAT;
+                break;
+            case 113u:
+                format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+                break;
+            case 114u:
+                format = DXGI_FORMAT_R32_FLOAT;
+                break;
+            case 115u:
+                format = DXGI_FORMAT_R32G32_FLOAT;
+                break;
+            case 116u:
+                format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+                break;
+            case MakeFourCc('D', 'X', '1', '0'):
+            {
+                if (bytes.size() < payloadOffset + sizeof(DdsHeaderDx10))
+                {
+                    throw std::invalid_argument(
+                        "The DDS DX10 header is incomplete.");
+                }
+                DdsHeaderDx10 dx10{};
+                std::memcpy(
+                    &dx10,
+                    bytes.data() + payloadOffset,
+                    sizeof(dx10));
+                payloadOffset += sizeof(dx10);
+                if (dx10.arraySize == 0u
+                    || (dx10.resourceDimension
+                            != ResourceDimensionTexture2D
+                        && dx10.resourceDimension
+                            != ResourceDimensionTexture3D))
+                {
+                    throw std::invalid_argument(
+                        "The DDS resource dimension is not supported.");
+                }
+                fileVolume = dx10.resourceDimension
+                    == ResourceDimensionTexture3D;
+                if (fileVolume && dx10.arraySize != 1u)
+                {
+                    throw std::invalid_argument(
+                        "DDS volume texture arrays are invalid.");
+                }
+                arraySize = dx10.arraySize;
+                if ((dx10.miscFlag & ResourceMiscTextureCube) != 0u)
+                {
+                    if (fileVolume)
+                    {
+                        throw std::invalid_argument(
+                            "A DDS volume cannot also be a cube texture.");
+                    }
+                    fileCube = true;
+                }
+                format = static_cast<DXGI_FORMAT>(dx10.format);
+                break;
+            }
+            default:
+                break;
+            }
+        }
+        else if ((header.pixelFormat.flags & PixelFormatRgb) != 0u)
+        {
+            if (header.pixelFormat.rgbBitCount == 32u)
+            {
+                if (header.pixelFormat.redMask == 0x000000ffu
+                    && header.pixelFormat.greenMask == 0x0000ff00u
+                    && header.pixelFormat.blueMask == 0x00ff0000u
+                    && header.pixelFormat.alphaMask == 0xff000000u)
+                {
+                    format = DXGI_FORMAT_R8G8B8A8_UNORM;
+                }
+                else if (header.pixelFormat.redMask == 0x00ff0000u
+                    && header.pixelFormat.greenMask == 0x0000ff00u
+                    && header.pixelFormat.blueMask == 0x000000ffu)
+                {
+                    format = header.pixelFormat.alphaMask == 0xff000000u
+                        ? DXGI_FORMAT_B8G8R8A8_UNORM
+                        : header.pixelFormat.alphaMask == 0u
+                            ? DXGI_FORMAT_B8G8R8X8_UNORM
+                            : DXGI_FORMAT_UNKNOWN;
+                }
+                else if (header.pixelFormat.redMask == 0x3ff00000u
+                    && header.pixelFormat.greenMask == 0x000ffc00u
+                    && header.pixelFormat.blueMask == 0x000003ffu
+                    && header.pixelFormat.alphaMask == 0xc0000000u)
+                {
+                    format = DXGI_FORMAT_R10G10B10A2_UNORM;
+                }
+                else if (header.pixelFormat.redMask == 0x0000ffffu
+                    && header.pixelFormat.greenMask == 0xffff0000u
+                    && header.pixelFormat.blueMask == 0u
+                    && header.pixelFormat.alphaMask == 0u)
+                {
+                    format = DXGI_FORMAT_R16G16_UNORM;
+                }
+                else if (header.pixelFormat.redMask == 0xffffffffu
+                    && header.pixelFormat.greenMask == 0u
+                    && header.pixelFormat.blueMask == 0u
+                    && header.pixelFormat.alphaMask == 0u)
+                {
+                    format = DXGI_FORMAT_R32_FLOAT;
+                }
+            }
+            else if (header.pixelFormat.rgbBitCount == 16u)
+            {
+                if (header.pixelFormat.redMask == 0x7c00u
+                    && header.pixelFormat.greenMask == 0x03e0u
+                    && header.pixelFormat.blueMask == 0x001fu
+                    && header.pixelFormat.alphaMask == 0x8000u)
+                {
+                    format = DXGI_FORMAT_B5G5R5A1_UNORM;
+                }
+                else if (header.pixelFormat.redMask == 0xf800u
+                    && header.pixelFormat.greenMask == 0x07e0u
+                    && header.pixelFormat.blueMask == 0x001fu
+                    && header.pixelFormat.alphaMask == 0u)
+                {
+                    format = DXGI_FORMAT_B5G6R5_UNORM;
+                }
+                else if (header.pixelFormat.redMask == 0x0f00u
+                    && header.pixelFormat.greenMask == 0x00f0u
+                    && header.pixelFormat.blueMask == 0x000fu
+                    && header.pixelFormat.alphaMask == 0xf000u)
+                {
+                    format = DXGI_FORMAT_B4G4R4A4_UNORM;
+                }
+                else if (header.pixelFormat.redMask == 0x00ffu
+                    && header.pixelFormat.greenMask == 0u
+                    && header.pixelFormat.blueMask == 0u
+                    && header.pixelFormat.alphaMask == 0xff00u)
+                {
+                    format = DXGI_FORMAT_R8G8_UNORM;
+                }
+                else if (header.pixelFormat.redMask == 0xffffu
+                    && header.pixelFormat.greenMask == 0u
+                    && header.pixelFormat.blueMask == 0u
+                    && header.pixelFormat.alphaMask == 0u)
+                {
+                    format = DXGI_FORMAT_R16_UNORM;
+                }
+            }
+            else if (header.pixelFormat.rgbBitCount == 8u
+                && header.pixelFormat.redMask == 0xffu
+                && header.pixelFormat.greenMask == 0u
+                && header.pixelFormat.blueMask == 0u
+                && header.pixelFormat.alphaMask == 0u)
+            {
+                format = DXGI_FORMAT_R8_UNORM;
+            }
+        }
+        else if ((header.pixelFormat.flags & PixelFormatLuminance) != 0u)
+        {
+            if (header.pixelFormat.rgbBitCount == 8u
+                && header.pixelFormat.redMask == 0xffu)
+            {
+                format = DXGI_FORMAT_R8_UNORM;
+            }
+            else if (header.pixelFormat.rgbBitCount == 16u
+                && header.pixelFormat.redMask == 0xffffu
+                && header.pixelFormat.alphaMask == 0u)
+            {
+                format = DXGI_FORMAT_R16_UNORM;
+            }
+            else if ((header.pixelFormat.rgbBitCount == 16u
+                    || header.pixelFormat.rgbBitCount == 8u)
+                && header.pixelFormat.redMask == 0x00ffu
+                && header.pixelFormat.alphaMask == 0xff00u)
+            {
+                format = DXGI_FORMAT_R8G8_UNORM;
+            }
+        }
+        else if ((header.pixelFormat.flags & PixelFormatAlpha) != 0u
+            && header.pixelFormat.rgbBitCount == 8u)
+        {
+            format = DXGI_FORMAT_A8_UNORM;
+        }
+        else if ((header.pixelFormat.flags & PixelFormatBumpDuDv) != 0u)
+        {
+            if (header.pixelFormat.rgbBitCount == 16u
+                && header.pixelFormat.redMask == 0x00ffu
+                && header.pixelFormat.greenMask == 0xff00u)
+            {
+                format = DXGI_FORMAT_R8G8_SNORM;
+            }
+            else if (header.pixelFormat.rgbBitCount == 32u
+                && header.pixelFormat.redMask == 0x000000ffu
+                && header.pixelFormat.greenMask == 0x0000ff00u
+                && header.pixelFormat.blueMask == 0x00ff0000u
+                && header.pixelFormat.alphaMask == 0xff000000u)
+            {
+                format = DXGI_FORMAT_R8G8B8A8_SNORM;
+            }
+            else if (header.pixelFormat.rgbBitCount == 32u
+                && header.pixelFormat.redMask == 0x0000ffffu
+                && header.pixelFormat.greenMask == 0xffff0000u
+                && header.pixelFormat.blueMask == 0u
+                && header.pixelFormat.alphaMask == 0u)
+            {
+                format = DXGI_FORMAT_R16G16_SNORM;
+            }
+        }
+        // DirectXTKのEnsureNotTypelessと同じく、DDSのtypeless storageを
+        // shaderから読める既定のtyped viewへ確定します。resourceとSRVに
+        // typeless formatをそのまま渡すとD3D12ではview生成に失敗します。
+        switch (format)
+        {
+        case DXGI_FORMAT_R32G32B32A32_TYPELESS:
+            format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+            break;
+        case DXGI_FORMAT_R16G16B16A16_TYPELESS:
+            format = DXGI_FORMAT_R16G16B16A16_UNORM;
+            break;
+        case DXGI_FORMAT_R32G32_TYPELESS:
+            format = DXGI_FORMAT_R32G32_FLOAT;
+            break;
+        case DXGI_FORMAT_R10G10B10A2_TYPELESS:
+            format = DXGI_FORMAT_R10G10B10A2_UNORM;
+            break;
+        case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+            format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            break;
+        case DXGI_FORMAT_R16G16_TYPELESS:
+            format = DXGI_FORMAT_R16G16_UNORM;
+            break;
+        case DXGI_FORMAT_R32_TYPELESS:
+            format = DXGI_FORMAT_R32_FLOAT;
+            break;
+        case DXGI_FORMAT_R8G8_TYPELESS:
+            format = DXGI_FORMAT_R8G8_UNORM;
+            break;
+        case DXGI_FORMAT_R16_TYPELESS:
+            format = DXGI_FORMAT_R16_UNORM;
+            break;
+        case DXGI_FORMAT_R8_TYPELESS:
+            format = DXGI_FORMAT_R8_UNORM;
+            break;
+        case DXGI_FORMAT_BC1_TYPELESS:
+            format = DXGI_FORMAT_BC1_UNORM;
+            break;
+        case DXGI_FORMAT_BC2_TYPELESS:
+            format = DXGI_FORMAT_BC2_UNORM;
+            break;
+        case DXGI_FORMAT_BC3_TYPELESS:
+            format = DXGI_FORMAT_BC3_UNORM;
+            break;
+        case DXGI_FORMAT_BC4_TYPELESS:
+            format = DXGI_FORMAT_BC4_UNORM;
+            break;
+        case DXGI_FORMAT_BC5_TYPELESS:
+            format = DXGI_FORMAT_BC5_UNORM;
+            break;
+        case DXGI_FORMAT_BC6H_TYPELESS:
+            format = DXGI_FORMAT_BC6H_UF16;
+            break;
+        case DXGI_FORMAT_BC7_TYPELESS:
+            format = DXGI_FORMAT_BC7_UNORM;
+            break;
+        case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+            format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            break;
+        case DXGI_FORMAT_B8G8R8X8_TYPELESS:
+            format = DXGI_FORMAT_B8G8R8X8_UNORM;
+            break;
+        default:
+            break;
+        }
+        switch (format)
+        {
+        case DXGI_FORMAT_R8_UNORM:
+        case DXGI_FORMAT_R8G8_UNORM:
+        case DXGI_FORMAT_R8G8B8A8_UNORM:
+        case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+        case DXGI_FORMAT_B8G8R8A8_UNORM:
+        case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+        case DXGI_FORMAT_B8G8R8X8_UNORM:
+        case DXGI_FORMAT_B8G8R8X8_UNORM_SRGB:
+        case DXGI_FORMAT_BC1_UNORM:
+        case DXGI_FORMAT_BC1_UNORM_SRGB:
+        case DXGI_FORMAT_BC2_UNORM:
+        case DXGI_FORMAT_BC2_UNORM_SRGB:
+        case DXGI_FORMAT_BC3_UNORM:
+        case DXGI_FORMAT_BC3_UNORM_SRGB:
+        case DXGI_FORMAT_BC4_UNORM:
+        case DXGI_FORMAT_BC4_SNORM:
+        case DXGI_FORMAT_BC5_UNORM:
+        case DXGI_FORMAT_BC5_SNORM:
+        case DXGI_FORMAT_BC6H_UF16:
+        case DXGI_FORMAT_BC6H_SF16:
+        case DXGI_FORMAT_BC7_UNORM:
+        case DXGI_FORMAT_BC7_UNORM_SRGB:
+        case DXGI_FORMAT_R16_FLOAT:
+        case DXGI_FORMAT_R16G16_FLOAT:
+        case DXGI_FORMAT_R16G16B16A16_FLOAT:
+        case DXGI_FORMAT_R32_FLOAT:
+        case DXGI_FORMAT_R32G32_FLOAT:
+        case DXGI_FORMAT_R32G32B32A32_FLOAT:
+        case DXGI_FORMAT_R10G10B10A2_UNORM:
+        case DXGI_FORMAT_R16G16_UNORM:
+        case DXGI_FORMAT_B5G5R5A1_UNORM:
+        case DXGI_FORMAT_B5G6R5_UNORM:
+        case DXGI_FORMAT_B4G4R4A4_UNORM:
+        case DXGI_FORMAT_R16_UNORM:
+        case DXGI_FORMAT_A8_UNORM:
+        case DXGI_FORMAT_R8G8_SNORM:
+        case DXGI_FORMAT_R8G8B8A8_SNORM:
+        case DXGI_FORMAT_R16G16_SNORM:
+        case DXGI_FORMAT_R16G16B16A16_UNORM:
+        case DXGI_FORMAT_R16G16B16A16_SNORM:
+        case DXGI_FORMAT_R8G8_B8G8_UNORM:
+        case DXGI_FORMAT_G8R8_G8B8_UNORM:
+        case DXGI_FORMAT_R8_SNORM:
+        case DXGI_FORMAT_R16_SNORM:
+        case DXGI_FORMAT_R11G11B10_FLOAT:
+        case DXGI_FORMAT_R9G9B9E5_SHAREDEXP:
+        case DXGI_FORMAT_YUY2:
+            break;
+        default:
+            throw std::invalid_argument(
+                "The DDS texture format is not supported by the active "
+                "graphics backends.");
+        }
+        if (fileVolume && (header.depth == 0u
+            || header.depth > MaximumTextureDimension))
+        {
+            throw std::invalid_argument(
+                "The DDS volume depth is invalid.");
+        }
+        if (fileCube && header.width != header.height)
+        {
+            throw std::invalid_argument(
+                "The DDS cube faces must be square.");
+        }
+
+        const std::uint32_t mipCount = std::max(header.mipMapCount, 1u);
+        std::uint32_t maximumMipCount = 1u;
+        for (std::uint32_t size = std::max({
+                header.width,
+                header.height,
+                fileVolume ? header.depth : 1u });
+            size > 1u;
+            size >>= 1u)
+        {
+            ++maximumMipCount;
+        }
+        if (mipCount > maximumMipCount)
+        {
+            throw std::invalid_argument(
+                "The DDS texture has too many mip levels.");
+        }
+
+        if ((!fileCube && arraySize > 2048u)
+            || (fileCube && arraySize > 2048u / 6u))
+        {
+            throw std::invalid_argument(
+                "The DDS texture has too many array slices.");
+        }
+        const std::uint32_t sliceCount = fileVolume
+            ? 1u
+            : fileCube
+                ? arraySize * 6u
+                : arraySize;
+        if (sliceCount == 0u || sliceCount > 2048u)
+        {
+            throw std::invalid_argument(
+                "The DDS texture has too many array slices.");
+        }
+        const auto sourceFormat = format;
+        const bool convertYuy2 = sourceFormat == DXGI_FORMAT_YUY2;
+        LamaPon::TextureLoader::PreparedDdsTextureData result;
+        // D3D12 WARP and a number of hardware drivers do not accept YUY2 as a
+        // general shader texture. Decode it once on the CPU so both backends
+        // get an ordinary, portable color texture.
+        result.format = convertYuy2
+            ? DXGI_FORMAT_R8G8B8A8_UNORM
+            : sourceFormat;
+        result.dimension = fileVolume
+            ? LamaPon::TextureLoader::PreparedDdsTextureDimension::Texture3D
+            : fileCube
+                ? arraySize == 1u
+                    ? LamaPon::TextureLoader::PreparedDdsTextureDimension::
+                        TextureCube
+                    : LamaPon::TextureLoader::PreparedDdsTextureDimension::
+                        TextureCubeArray
+                : arraySize == 1u
+                    ? LamaPon::TextureLoader::PreparedDdsTextureDimension::
+                        Texture2D
+                    : LamaPon::TextureLoader::PreparedDdsTextureDimension::
+                        Texture2DArray;
+        result.width = header.width;
+        result.height = header.height;
+        result.depth = fileVolume ? header.depth : 1u;
+        result.arraySize = arraySize;
+        result.mipLevels = mipCount;
+        result.subresources.reserve(
+            static_cast<std::size_t>(mipCount) * sliceCount);
+        std::size_t offset = payloadOffset;
+        for (std::uint32_t slice{}; slice < sliceCount; ++slice)
+        {
+            for (std::uint32_t mip{}; mip < mipCount; ++mip)
+            {
+                const auto width = std::max(header.width >> mip, 1u);
+                const auto height = std::max(header.height >> mip, 1u);
+                const auto [rowPitch, rowCount] =
+                    DdsLevelLayout(sourceFormat, width, height);
+                const auto depth = fileVolume
+                    ? std::max(header.depth >> mip, 1u)
+                    : 1u;
+                const std::uint64_t levelBytes64 =
+                    static_cast<std::uint64_t>(rowPitch) * rowCount * depth;
+                if (offset > bytes.size()
+                    || levelBytes64 > std::numeric_limits<std::size_t>::max()
+                    || levelBytes64 > bytes.size() - offset)
+                {
+                    throw std::invalid_argument(
+                        "The DDS mip data is incomplete.");
+                }
+                const auto levelBytes =
+                    static_cast<std::size_t>(levelBytes64);
+                LamaPon::TextureLoader::PreparedTextureLevel level;
+                level.width = width;
+                level.height = height;
+                if (convertYuy2)
+                {
+                    level.rowPitch = width * 4u;
+                    level.bytes.resize(
+                        static_cast<std::size_t>(level.rowPitch)
+                            * height * depth);
+                    const auto clampByte = [](const int value) noexcept
+                    {
+                        return static_cast<std::uint8_t>(
+                            std::clamp(value, 0, 255));
+                    };
+                    const auto writePixel = [&clampByte](
+                        std::uint8_t* const destination,
+                        const int y,
+                        const int u,
+                        const int v)
+                    {
+                        const int c = std::max(y - 16, 0);
+                        const int d = u - 128;
+                        const int e = v - 128;
+                        destination[0] = clampByte(
+                            (298 * c + 409 * e + 128) >> 8);
+                        destination[1] = clampByte(
+                            (298 * c - 100 * d - 208 * e + 128) >> 8);
+                        destination[2] = clampByte(
+                            (298 * c + 516 * d + 128) >> 8);
+                        destination[3] = 255u;
+                    };
+                    const auto* const sourceBase = bytes.data() + offset;
+                    for (std::uint32_t z{}; z < depth; ++z)
+                    {
+                        for (std::uint32_t y{}; y < height; ++y)
+                        {
+                            const auto* source = sourceBase
+                                + (static_cast<std::size_t>(z) * rowCount + y)
+                                    * rowPitch;
+                            auto* destination = level.bytes.data()
+                                + (static_cast<std::size_t>(z) * height + y)
+                                    * level.rowPitch;
+                            for (std::uint32_t x{}; x < width; x += 2u)
+                            {
+                                writePixel(
+                                    destination + x * 4u,
+                                    source[0],
+                                    source[1],
+                                    source[3]);
+                                if (x + 1u < width)
+                                {
+                                    writePixel(
+                                        destination + (x + 1u) * 4u,
+                                        source[2],
+                                        source[1],
+                                        source[3]);
+                                }
+                                source += 4u;
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    level.rowPitch = rowPitch;
+                    level.bytes.assign(
+                        bytes.begin() + static_cast<std::ptrdiff_t>(offset),
+                        bytes.begin()
+                            + static_cast<std::ptrdiff_t>(offset + levelBytes));
+                }
+                result.subresources.push_back(std::move(level));
+                offset += levelBytes;
+            }
+        }
+        return result;
+    }
 }
 
 namespace LamaPon::TextureLoader
 {
+    PreparedDdsTextureData PrepareDdsResourceData(
+        const std::span<const std::uint8_t> bytes)
+    {
+        return ParseDdsResourceData(bytes);
+    }
+
+    PreparedTextureData PrepareDdsTextureData(
+        const std::span<const std::uint8_t> bytes)
+    {
+        auto resource = ParseDdsResourceData(bytes);
+        if (resource.dimension != PreparedDdsTextureDimension::Texture2D)
+        {
+            throw std::invalid_argument(
+                "The DDS is not a single two-dimensional texture.");
+        }
+        return { resource.format, std::move(resource.subresources) };
+    }
+
+    bool IsDdsCubeTexture(
+        const std::span<const std::uint8_t> bytes) noexcept
+    {
+        const std::size_t headerOffset = sizeof(std::uint32_t);
+        if (bytes.size() < headerOffset + sizeof(DdsHeader))
+        {
+            return false;
+        }
+        std::uint32_t magic{};
+        DdsHeader header{};
+        std::memcpy(&magic, bytes.data(), sizeof(magic));
+        std::memcpy(
+            &header,
+            bytes.data() + headerOffset,
+            sizeof(header));
+        if (magic != DdsMagic || header.size != sizeof(DdsHeader))
+        {
+            return false;
+        }
+        if ((header.caps2 & Caps2CubeMapMask) != 0u)
+        {
+            return true;
+        }
+        const std::size_t extendedOffset = headerOffset + sizeof(header);
+        if ((header.pixelFormat.flags & PixelFormatFourCc) == 0u
+            || header.pixelFormat.fourCc != MakeFourCc('D', 'X', '1', '0')
+            || bytes.size() < extendedOffset + sizeof(DdsHeaderDx10))
+        {
+            return false;
+        }
+        DdsHeaderDx10 dx10{};
+        std::memcpy(
+            &dx10,
+            bytes.data() + extendedOffset,
+            sizeof(dx10));
+        return (dx10.miscFlag & ResourceMiscTextureCube) != 0u;
+    }
+
+    PreparedTextureData PrepareDdsCubeTextureData(
+        const std::span<const std::uint8_t> bytes)
+    {
+        auto resource = ParseDdsResourceData(bytes);
+        if (resource.dimension != PreparedDdsTextureDimension::TextureCube)
+        {
+            throw std::invalid_argument(
+                "The DDS is not a single cube texture.");
+        }
+        return { resource.format, std::move(resource.subresources) };
+    }
+
     CpuImage DecodeImageBytes(
         const std::span<const std::uint8_t> bytes)
     {

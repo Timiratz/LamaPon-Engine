@@ -2,6 +2,7 @@
 
 #include "LamaPon/Assets/AssetDatabase.h"
 #include "LamaPon/Assets/TextureLoader.h"
+#include "LamaPon/Graphics/GraphicsResource.h"
 #include "LamaPon/Graphics/TextLayout.h"
 #include "LamaPon/Physics/CollisionTypes.h"
 
@@ -46,11 +47,54 @@ namespace LamaPon
     class AnimatorController;
     class AssetArchive;
     class DataAsset;
+    class GraphicsBackend;
     class SkeletalModel;
+
+    namespace Detail
+    {
+        class TextureResourceSlot;
+    }
+
+    // Textureとそのviewは必ず同じ世代の組として公開します。取得側は
+    // shared_ptrを描画完了まで保持し、段階uploadやBackend再生成と競合しても
+    // 途中でresourceが破棄されないようにします。
+    struct TextureResourceSnapshot final
+    {
+        GraphicsTextureHandle texture;
+        GraphicsViewHandle shaderResourceView;
+        // Backendを経由しない既存tool/test向けの移行用mirrorです。
+        // shaderResourceViewが空でない場合はhandle側を正とします。
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
+            d3d11ShaderResourceView;
+    };
+
+    // copy後も同じ公開slotを参照するcopyable pimplです。atomicの実装詳細を
+    // Game Module向け公開ABIへ露出させません。
+    class TextureResourceBinding final
+    {
+    public:
+        TextureResourceBinding();
+        ~TextureResourceBinding();
+        TextureResourceBinding(
+            const TextureResourceBinding&) noexcept;
+        TextureResourceBinding(
+            TextureResourceBinding&&) noexcept;
+        TextureResourceBinding& operator=(
+            const TextureResourceBinding&) noexcept;
+        TextureResourceBinding& operator=(
+            TextureResourceBinding&&) noexcept;
+
+        [[nodiscard]] std::shared_ptr<
+            const TextureResourceSnapshot> Acquire() const noexcept;
+        void Publish(TextureResourceSnapshot snapshot);
+
+    private:
+        std::shared_ptr<Detail::TextureResourceSlot> m_slot;
+    };
 
     struct TextureAsset final
     {
-        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view;
+        TextureResourceBinding resources;
         std::uint32_t width{};
         std::uint32_t height{};
         std::filesystem::path sourcePath;
@@ -75,7 +119,7 @@ namespace LamaPon
 
     struct TextTextureAsset final
     {
-        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view;
+        TextureResourceBinding resources;
         std::uint32_t width{};
         std::uint32_t height{};
     };
@@ -103,7 +147,15 @@ namespace LamaPon
     class AssetManager final
     {
     public:
-        AssetManager(ID3D11Device* device, ID3D11DeviceContext* context);
+        AssetManager(
+            ID3D11Device* device,
+            ID3D11DeviceContext* context);
+        // backendは借用です。AssetManagerより長く、初期化済みのまま存続
+        // させ、backendのShutdown/再初期化前にAssetManagerを破棄します。
+        AssetManager(
+            ID3D11Device* device,
+            ID3D11DeviceContext* context,
+            GraphicsBackend& backend);
         ~AssetManager();
 
         AssetManager(const AssetManager&) = delete;
@@ -156,6 +208,17 @@ namespace LamaPon
         [[nodiscard]]
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
             CreateTextureViewFromMemory(
+                std::span<const std::uint8_t> bytes,
+                bool isDds,
+                TextureLoader::TextureUsage usage
+                    = TextureLoader::TextureUsage::Color);
+
+        // エンコード済みWIC画像または対応DDS（2D / TextureCube）をdisk
+        // cacheやD3D11互換viewを介さず、現在のBackend世代へ直接
+        // 取り込みます。モデルImporterなど、元画像をメモリ上に持つ内部
+        // 経路向けです。
+        [[nodiscard]] GraphicsViewHandle
+            CreateTextureViewHandleFromMemory(
                 std::span<const std::uint8_t> bytes,
                 bool isDds,
                 TextureLoader::TextureUsage usage
@@ -232,6 +295,11 @@ namespace LamaPon
                 std::memory_order_relaxed);
         }
 
+        // Backendを停止する前に、Deviceを借用している現在のモデル準備
+        // workerとその結果を回収中の呼び出しを完了させます。この呼び出し
+        // 以降は新しいモデル準備を受け付けない、破棄専用の終端操作です。
+        void QuiesceGraphicsWork() noexcept;
+
         // usageは圧縮フォーマットの選択に使います。法線マップを
         // 既定のColorで読むとBC1（RGB565）に落ちて陰影に帯が出るので、
         // マテリアルのスロットに合わせて渡してください。
@@ -264,7 +332,7 @@ namespace LamaPon
         [[nodiscard]] std::shared_ptr<const AnimatorController>
             ReloadAnimatorController(
                 const std::filesystem::path& path);
-        // 文字テクスチャは白で生成し、描画時にSpriteBatchの色を乗算します。
+        // 文字テクスチャは白で生成し、描画時にSprite requestの色を乗算します。
         // キャッシュキーに色を含めないため、同じ文字列では色が異なっても
         // 1枚のテクスチャを共有します。色の変化やフェードでもテクスチャを
         // 作り直す必要はありません。
@@ -345,6 +413,11 @@ namespace LamaPon
         }
 
     private:
+        AssetManager(
+            ID3D11Device* device,
+            ID3D11DeviceContext* context,
+            GraphicsBackend* backend);
+
         // 文字テクスチャ1枚ぶんのキャッシュ項目。lastUsedはLRUの
         // 判定用、bytesは予算計算用（幅×高さ×4）です。
         struct TextCacheEntry final
@@ -352,6 +425,19 @@ namespace LamaPon
             std::shared_ptr<TextTextureAsset> asset;
             std::uint64_t lastUsed{};
             std::size_t bytes{};
+        };
+
+        // 段階アップロード待ちの1テクスチャ分。ミップは末尾
+        // （最小）から先に転送し、揃った範囲だけを見るSRVへ
+        // 差し替えていきます。
+        struct PendingTextureUpload final
+        {
+            std::shared_ptr<TextureAsset> asset;
+            Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+            GraphicsTextureHandle textureHandle;
+            TextureLoader::PreparedTextureData data;
+            // 次に転送するミップ（負になったら完了）。
+            std::ptrdiff_t nextLevel{};
         };
 
         void TrimTextCache() noexcept;
@@ -364,17 +450,25 @@ namespace LamaPon
         [[nodiscard]] std::shared_ptr<TextureAsset>
             LoadTextureUncached(
                 const std::filesystem::path& resolvedPath,
-                TextureLoader::TextureUsage usage
-                    = TextureLoader::TextureUsage::Color);
+                TextureLoader::TextureUsage usage,
+                std::optional<PendingTextureUpload>& pendingUpload);
         [[nodiscard]] std::shared_ptr<ModelAsset> LoadModelUncached(
             const std::filesystem::path& resolvedPath,
             ID3D11DeviceContext* context);
+        [[nodiscard]] std::shared_ptr<const ModelAsset> LoadModelImpl(
+            const std::filesystem::path& path);
+        [[nodiscard]] bool TryBeginGraphicsWork() noexcept;
+        void EndGraphicsWork() noexcept;
         void WaitForModelPreparation() noexcept;
         void EndModelUploadPreparation() noexcept;
         void DisableModelUploadThrottle() noexcept;
 
         ID3D11Device* m_device{};
         ID3D11DeviceContext* m_context{};
+        // Runtime経路では必ず設定され、resourceの生成・更新を共通契約へ
+        // 委譲します。直接ctorを使う既存tool/testだけはnullptrで従来の
+        // D3D11 loader経路を利用できます。
+        GraphicsBackend* m_backend{};
         std::filesystem::path m_assetRoot;
         std::unique_ptr<AssetArchive> m_archive;
         AssetDatabase m_database;
@@ -389,6 +483,10 @@ namespace LamaPon
         };
         std::optional<PendingModelPreparation>
             m_pendingModelPreparation;
+        mutable std::mutex m_graphicsWorkMutex;
+        std::condition_variable m_graphicsWorkCondition;
+        std::size_t m_activeGraphicsWork{};
+        bool m_acceptingGraphicsWork{ true };
         mutable std::mutex m_modelMutex;
         std::uint64_t m_modelGeneration{};
         mutable std::mutex m_modelUploadMutex;
@@ -427,18 +525,12 @@ namespace LamaPon
         // m_textureCacheはシーンロードワーカーとメインスレッドの
         // 両方から使われるため専用mutexで保護します。
         mutable std::mutex m_textureMutex;
+        // Clearはepoch、個別Invalidateはpath generationを進めます。
+        // lock外で生成中だった旧結果が後からcacheへ復活するのを防ぎます。
+        std::uint64_t m_textureEpoch{};
+        std::unordered_map<std::wstring, std::uint64_t>
+            m_texturePathGenerations;
         std::atomic<bool> m_runtimeTextureCompression{};
-        // 段階アップロード待ちの1テクスチャ分。ミップは末尾
-        // （最小）から先に転送し、揃った範囲だけを見るSRVへ
-        // 差し替えていきます。
-        struct PendingTextureUpload final
-        {
-            std::shared_ptr<TextureAsset> asset;
-            Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
-            TextureLoader::PreparedTextureData data;
-            // 次に転送するミップ（負になったら完了）。
-            std::ptrdiff_t nextLevel{};
-        };
         std::deque<PendingTextureUpload> m_pendingUploads;
         mutable std::mutex m_uploadMutex;
         std::atomic<std::size_t> m_progressiveUploadThreshold{
@@ -452,6 +544,10 @@ namespace LamaPon
             m_prefetchedBytes;
         mutable std::size_t
             m_prefetchedByteCount{};
+        // ClearPrefetchedFiles中にlock外で読んでいた古いbytesが後から
+        // cacheへ戻るのを防ぐ世代です。textureのepoch/path generationと
+        // 合わせてPrefetchFilesのcommit時に検証します。
+        std::uint64_t m_prefetchEpoch{};
         Microsoft::WRL::ComPtr<ID2D1Factory> m_d2dFactory;
         Microsoft::WRL::ComPtr<IDWriteFactory> m_dwriteFactory;
         Microsoft::WRL::ComPtr<IWICImagingFactory> m_wicFactory;

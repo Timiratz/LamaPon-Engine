@@ -4812,7 +4812,8 @@ namespace LamaPon
                     bakedResolution != bakedGi->end()
                     && bakedResolution->is_array()
                     && bakedResolution->size() == 3
-                    && bakedGi->contains("data"))
+                    && bakedGi->contains("data")
+                    && bakedGi->at("data").is_string())
                 {
                     BakedGlobalIlluminationSettings shape =
                         settings;
@@ -4835,18 +4836,43 @@ namespace LamaPon
                         shape.size = ReadFloat3(
                             bakedGi->at("bakedSize"));
                     }
-                    const auto bytes = DecodeBase64(
-                        bakedGi->at("data")
-                            .get<std::string>());
-                    std::vector<std::uint16_t> payload(
-                        bytes.size() / 2);
-                    std::memcpy(
-                        payload.data(),
-                        bytes.data(),
-                        payload.size() * 2);
-                    RestoreBakedGlobalIllumination(
-                        shape,
-                        std::move(payload));
+                    const auto probeCount =
+                        BakedGlobalIlluminationProbeCount(
+                            shape.resolutionX,
+                            shape.resolutionY,
+                            shape.resolutionZ);
+                    if (probeCount.has_value())
+                    {
+                        const std::size_t coefficientCount =
+                            *probeCount
+                            * BakedGlobalIlluminationCoefficientsPerProbe;
+                        const std::size_t expectedByteCount =
+                            coefficientCount
+                            * sizeof(std::uint16_t);
+                        const std::size_t expectedTextLength =
+                            (expectedByteCount + 2) / 3 * 4;
+                        const auto& encoded =
+                            bakedGi->at("data")
+                                .get_ref<const std::string&>();
+                        // 形から決まる上限をDecodeBase64より先に確認し、
+                        // 壊れたJSONで巨大な一時領域を確保しません。
+                        if (encoded.size() == expectedTextLength)
+                        {
+                            const auto bytes = DecodeBase64(encoded);
+                            if (bytes.size() == expectedByteCount)
+                            {
+                                std::vector<std::uint16_t> payload(
+                                    coefficientCount);
+                                std::memcpy(
+                                    payload.data(),
+                                    bytes.data(),
+                                    expectedByteCount);
+                                RestoreBakedGlobalIllumination(
+                                    shape,
+                                    std::move(payload));
+                            }
+                        }
+                    }
                 }
             }
             if (const auto volumetric =

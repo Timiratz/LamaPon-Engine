@@ -35,6 +35,15 @@ namespace LamaPon
         Application& operator=(const Application&) = delete;
 
         LAMAPON_API void Initialize(HINSTANCE instance);
+        LAMAPON_API void Initialize(
+            HINSTANCE instance,
+            RenderingApi requestedApi);
+        // bootstrap期とのソース互換用overloadです。現在はprofileに
+        // かかわらずrequestedApiを起動します。
+        LAMAPON_API void Initialize(
+            HINSTANCE instance,
+            RenderingApi requestedApi,
+            GraphicsStartupProfile startupProfile);
         LAMAPON_API void AttachLayer(
             std::unique_ptr<ApplicationLayer> layer);
         // 最初のシーンを読み込み終えるまで起動ロゴを表示します。

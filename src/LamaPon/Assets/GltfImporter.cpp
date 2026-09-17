@@ -453,6 +453,54 @@ namespace
         return texture;
     }
 
+    // LoadImageと同じ規則で画像のbyte列だけを取り出します。D3D11 SRVと
+    // model cacheを介さないBackend-neutralなtexture作成で使います。
+    [[nodiscard]] std::vector<std::uint8_t> ReadImageBytes(
+        LamaPon::AssetManager& assets,
+        const std::filesystem::path& modelPath,
+        const cgltf_image& image)
+    {
+        if (image.buffer_view != nullptr)
+        {
+            const auto& view = *image.buffer_view;
+            const auto* const bytes = view.data != nullptr
+                ? static_cast<const std::uint8_t*>(view.data)
+                : view.buffer != nullptr && view.buffer->data != nullptr
+                    ? static_cast<const std::uint8_t*>(
+                        view.buffer->data) + view.offset
+                    : nullptr;
+            if (bytes == nullptr || view.size == 0)
+            {
+                return {};
+            }
+            return { bytes, bytes + view.size };
+        }
+        if (image.uri == nullptr)
+        {
+            return {};
+        }
+
+        const std::string_view uri(image.uri);
+        if (uri.starts_with("data:"))
+        {
+            const auto comma = uri.find(',');
+            if (comma == std::string_view::npos
+                || uri.substr(0, comma).find(";base64")
+                    == std::string_view::npos)
+            {
+                throw std::runtime_error(
+                    "Only base64 data URI images are supported.");
+            }
+            return DecodeBase64(uri.substr(comma + 1));
+        }
+        std::string decodedUri(uri);
+        decodedUri.resize(
+            cgltf_decode_uri(decodedUri.data()));
+        return assets.ReadFileBytes(
+            modelPath.parent_path()
+            / LamaPon::PathFromUtf8(decodedUri));
+    }
+
     void CreateBuffer(
         ID3D11Device* device,
         LamaPon::AssetManager& assets,
@@ -461,6 +509,10 @@ namespace
         const UINT bindFlags,
         ID3D11Buffer** output)
     {
+        if (device == nullptr)
+        {
+            return;
+        }
         if (byteCount > std::numeric_limits<UINT>::max())
         {
             throw std::runtime_error(
@@ -709,24 +761,21 @@ namespace LamaPon
         AssetManager& assets,
         const std::filesystem::path& path)
     {
-        if (device == nullptr)
-        {
-            throw std::invalid_argument(
-                "GltfImporter requires a Direct3D 11 device.");
-        }
-
         // インポートキャッシュ。本体・外部の.bin・外部テクスチャが
         // 前回と同じなら、パースと組み立てを全部飛ばします。
         const auto sourceBytes = assets.ReadFileBytes(path);
         const std::uint64_t cacheKey =
             ModelCache::ComputeKey(sourceBytes, 2);
-        if (auto cached = ModelCache::TryLoad(
-                device,
-                context,
-                assets,
-                cacheKey))
+        if (device != nullptr)
         {
-            return cached;
+            if (auto cached = ModelCache::TryLoad(
+                    device,
+                    context,
+                    assets,
+                    cacheKey))
+            {
+                return cached;
+            }
         }
         ModelCache::Recorder recorder;
 
@@ -905,6 +954,12 @@ namespace LamaPon
                 {
                     return {};
                 }
+                // D3D12ではD3D11 SRVを作らず、下のresolveGraphicsImageが
+                // 同じ画像をBackend世代付きhandleとして取り込みます。
+                if (device == nullptr)
+                {
+                    return {};
+                }
                 const auto* image = view.texture->image;
                 const auto key = std::make_pair(image, usage);
                 if (const auto existing = imageCache.find(key);
@@ -919,6 +974,44 @@ namespace LamaPon
                     usage,
                     recorder);
                 imageCache.emplace(key, loaded);
+                return loaded;
+            };
+
+        std::map<
+            std::pair<
+                const cgltf_image*,
+                LamaPon::TextureLoader::TextureUsage>,
+            GraphicsViewHandle> graphicsImageCache;
+        // D3D11以外のBackendでは、同じ画像を現在のBackend世代のhandleとして
+        // 取り込みます。D3D11はAssetManagerが上のSRVからmirrorを作るため
+        // 空を返します。
+        const auto resolveGraphicsImage =
+            [&](const cgltf_texture_view& view,
+                const LamaPon::TextureLoader::TextureUsage usage)
+            -> GraphicsViewHandle
+            {
+                if (device != nullptr
+                    || view.texture == nullptr
+                    || view.texture->image == nullptr)
+                {
+                    return {};
+                }
+                const auto* image = view.texture->image;
+                const auto key = std::make_pair(image, usage);
+                if (const auto existing = graphicsImageCache.find(key);
+                    existing != graphicsImageCache.end())
+                {
+                    return existing->second;
+                }
+                const auto imageBytes = ReadImageBytes(
+                    assets,
+                    path,
+                    *image);
+                auto loaded = assets.CreateTextureViewHandleFromMemory(
+                    imageBytes,
+                    IsDdsImage(*image),
+                    usage);
+                graphicsImageCache.emplace(key, loaded);
                 return loaded;
             };
 
@@ -1131,6 +1224,14 @@ namespace LamaPon
                     sizeof(Vertex),
                     indices.data(),
                     indices.size());
+                const auto* vertexBytes =
+                    reinterpret_cast<const std::uint8_t*>(
+                        vertices.data());
+                primitive.cpuVertexData.assign(
+                    vertexBytes,
+                    vertexBytes + vertices.size() * sizeof(Vertex));
+                primitive.cpuVertexStride = sizeof(Vertex);
+                primitive.cpuIndices = indices;
                 CreateBuffer(
                     device,
                     assets,
@@ -1162,6 +1263,8 @@ namespace LamaPon
                         {
                             continue;
                         }
+                        primitive.cpuLodIndices[level] =
+                            lodLevels[level];
                         CreateBuffer(
                             device,
                             assets,
@@ -1177,24 +1280,27 @@ namespace LamaPon
                     }
                 }
 
-                primitive.effect =
-                    std::make_shared<DirectX::SkinnedEffect>(
-                        device);
-                primitive.effect->SetWeightsPerVertex(4);
-                const void* shaderBytecode{};
-                std::size_t shaderBytecodeSize{};
-                primitive.effect->GetVertexShaderBytecode(
-                    &shaderBytecode,
-                    &shaderBytecodeSize);
-                ThrowIfFailed(
-                    device->CreateInputLayout(
-                        Vertex::InputElements,
-                        Vertex::InputElementCount,
-                        shaderBytecode,
-                        shaderBytecodeSize,
-                        primitive.inputLayout.
-                            ReleaseAndGetAddressOf()),
-                    "Creating glTF input layout");
+                if (device != nullptr)
+                {
+                    primitive.effect =
+                        std::make_shared<DirectX::SkinnedEffect>(
+                            device);
+                    primitive.effect->SetWeightsPerVertex(4);
+                    const void* shaderBytecode{};
+                    std::size_t shaderBytecodeSize{};
+                    primitive.effect->GetVertexShaderBytecode(
+                        &shaderBytecode,
+                        &shaderBytecodeSize);
+                    ThrowIfFailed(
+                        device->CreateInputLayout(
+                            Vertex::InputElements,
+                            Vertex::InputElementCount,
+                            shaderBytecode,
+                            shaderBytecodeSize,
+                            primitive.inputLayout.
+                                ReleaseAndGetAddressOf()),
+                        "Creating glTF input layout");
+                }
 
                 if (source.material != nullptr)
                 {
@@ -1224,6 +1330,11 @@ namespace LamaPon
                             pbr.base_color_texture,
                             LamaPon::TextureLoader::
                                 TextureUsage::Color);
+                        primitive.embeddedTextures.albedo =
+                            resolveGraphicsImage(
+                                pbr.base_color_texture,
+                                LamaPon::TextureLoader::
+                                    TextureUsage::Color);
                         // glTFのmetallicRoughnessTextureは1枚に
                         // G=粗さ・B=金属度が入っているので、同じ
                         // 画像を両方の枠へ渡します（シェーダー側で
@@ -1236,6 +1347,15 @@ namespace LamaPon
                             metallicRoughness;
                         primitive.metallicTexture =
                             std::move(metallicRoughness);
+                        auto graphicsMetallicRoughness =
+                            resolveGraphicsImage(
+                                pbr.metallic_roughness_texture,
+                                LamaPon::TextureLoader::
+                                    TextureUsage::DataMap);
+                        primitive.embeddedTextures.roughness =
+                            graphicsMetallicRoughness;
+                        primitive.embeddedTextures.metallic =
+                            std::move(graphicsMetallicRoughness);
                     }
                     // 法線マップと遮蔽マップはpbrMetallicRoughnessの
                     // 外側にあるので、has_pbr_metallic_roughnessに
@@ -1244,11 +1364,22 @@ namespace LamaPon
                         material.normal_texture,
                         LamaPon::TextureLoader::
                             TextureUsage::NormalMap);
+                    primitive.embeddedTextures.normal =
+                        resolveGraphicsImage(
+                            material.normal_texture,
+                            LamaPon::TextureLoader::
+                                TextureUsage::NormalMap);
                     primitive.occlusionTexture = resolveImage(
                         material.occlusion_texture,
                         LamaPon::TextureLoader::
                             TextureUsage::DataMap);
-                    if (primitive.occlusionTexture)
+                    primitive.embeddedTextures.occlusion =
+                        resolveGraphicsImage(
+                            material.occlusion_texture,
+                            LamaPon::TextureLoader::
+                                TextureUsage::DataMap);
+                    if (primitive.occlusionTexture
+                        || primitive.embeddedTextures.occlusion)
                     {
                         // scaleがocclusionTextureのstrengthです。
                         primitive.occlusionStrength = std::clamp(
@@ -1261,6 +1392,11 @@ namespace LamaPon
                         material.emissive_texture,
                         LamaPon::TextureLoader::
                             TextureUsage::Color);
+                    primitive.embeddedTextures.emissive =
+                        resolveGraphicsImage(
+                            material.emissive_texture,
+                            LamaPon::TextureLoader::
+                                TextureUsage::Color);
                     // KHR_materials_emissive_strengthがあれば、
                     // 1を超える発光もそのまま反映します（Bloomが
                     // 拾えるように、ここでは飽和させません）。
@@ -1282,6 +1418,10 @@ namespace LamaPon
                             material.emissive_factor[2], 0.0f)
                             * emissiveStrength
                     };
+                    primitive.embeddedTextures.occlusionStrength =
+                        primitive.occlusionStrength;
+                    primitive.embeddedTextures.emissiveFactor =
+                        primitive.emissiveFactor;
                 }
                 model->primitives.emplace_back(
                     std::move(primitive));
@@ -1364,7 +1504,10 @@ namespace LamaPon
         }
 
         // 次回のためにインポート結果を保存します（失敗しても無害）。
-        ModelCache::Store(cacheKey, *model, recorder);
+        if (device != nullptr)
+        {
+            ModelCache::Store(cacheKey, *model, recorder);
+        }
         return model;
     }
 }

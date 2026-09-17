@@ -53,9 +53,7 @@
 // 自動露出の順応に実時間（timeScale非依存）が要ります。
 #include "LamaPon/Core/Time.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
-#include "LamaPon/Graphics/ClusteredLights.h"
 #include "LamaPon/Graphics/EnvironmentCache.h"
-#include "LamaPon/Graphics/EnvironmentRenderer.h"
 #include "LamaPon/Graphics/RenderPipeline.h"
 #include "LamaPon/Graphics/TemporalJitter.h"
 #include "LamaPon/Graphics/RenderTarget.h"
@@ -96,7 +94,17 @@ namespace
 
         ~BooleanStateScope()
         {
+            Restore();
+        }
+
+        void Restore() noexcept
+        {
+            if (!m_active)
+            {
+                return;
+            }
             m_target = m_previous;
+            m_active = false;
         }
 
         BooleanStateScope(
@@ -107,6 +115,86 @@ namespace
     private:
         bool& m_target;
         bool m_previous;
+        bool m_active{ true };
+    };
+
+    class GraphicsOutputStateScope final
+    {
+    public:
+        explicit GraphicsOutputStateScope(
+            LamaPon::GraphicsDevice& graphics)
+            : m_graphics(graphics)
+            , m_state(graphics.CaptureOutputState())
+        {
+        }
+
+        ~GraphicsOutputStateScope() noexcept
+        {
+            try
+            {
+                Restore();
+            }
+            catch (...)
+            {
+                // 例外処理中は元の描画失敗を優先します。
+            }
+        }
+
+        void Restore()
+        {
+            if (!m_state)
+            {
+                return;
+            }
+            m_graphics.RestoreOutputState(*m_state);
+            m_state.reset();
+        }
+
+        GraphicsOutputStateScope(
+            const GraphicsOutputStateScope&) = delete;
+        GraphicsOutputStateScope& operator=(
+            const GraphicsOutputStateScope&) = delete;
+
+    private:
+        LamaPon::GraphicsDevice& m_graphics;
+        std::unique_ptr<LamaPon::GraphicsOutputState> m_state;
+    };
+
+    class UIViewportSizeScope final
+    {
+    public:
+        explicit UIViewportSizeScope(
+            LamaPon::GraphicsDevice& graphics) noexcept
+            : m_graphics(graphics)
+            , m_width(graphics.UIWidth())
+            , m_height(graphics.UIHeight())
+        {
+        }
+
+        ~UIViewportSizeScope()
+        {
+            Restore();
+        }
+
+        void Restore() noexcept
+        {
+            if (!m_active)
+            {
+                return;
+            }
+            m_graphics.SetUIViewportSize(m_width, m_height);
+            m_active = false;
+        }
+
+        UIViewportSizeScope(const UIViewportSizeScope&) = delete;
+        UIViewportSizeScope& operator=(
+            const UIViewportSizeScope&) = delete;
+
+    private:
+        LamaPon::GraphicsDevice& m_graphics;
+        std::uint32_t m_width{};
+        std::uint32_t m_height{};
+        bool m_active{ true };
     };
 
     struct Contact final
@@ -1174,10 +1262,10 @@ namespace
     void RenderSprites2D(
         const std::vector<std::unique_ptr<LamaPon::GameObject>>&
             gameObjects,
-        LamaPon::GraphicsDevice& graphics,
-        DirectX::SpriteBatch& spriteBatch,
-        ID3D11ShaderResourceView* whiteTexture)
+        LamaPon::GraphicsDevice& graphics)
     {
+        auto defaultPass = graphics.BeginSpritePass();
+        auto sprites = defaultPass.Context();
         std::vector<LamaPon::GameObject*> ordered;
         ordered.reserve(gameObjects.size());
         for (const auto& gameObject : gameObjects)
@@ -1254,7 +1342,7 @@ namespace
         for (auto* gameObject : ordered)
         {
             // SpriteRenderer にカスタムシェーダーが指定されている場合は、
-            // そのオブジェクトの描画だけ SpriteBatch の PS を差し替えます。
+            // そのオブジェクトの描画だけSprite passを差し替えます。
             // パラメーターはオブジェクトごとに異なるため、カスタム描画の
             // 手前で一度バッチを確定させます（ScrollViewのクリッピングは
             // 通常バッチのみ対象で、切替時にシザーを畳んで整合させます）。
@@ -1269,17 +1357,18 @@ namespace
                 {
                     if (activeScrollView != nullptr)
                     {
-                        graphics.PopUIScissor();
+                        static_cast<void>(sprites.PopScissor());
                         activeScrollView = nullptr;
                     }
-                    graphics.EndSprites();
-                    sprite->BeginRenderBatch(graphics);
+                    defaultPass.End();
+                    auto customPass =
+                        sprite->BeginRenderPass(graphics);
                     gameObject->Render2D(
                         graphics,
-                        spriteBatch,
-                        whiteTexture);
-                    graphics.EndSprites();
-                    graphics.BeginSprites();
+                        customPass.Context());
+                    customPass.End();
+                    defaultPass = graphics.BeginSpritePass();
+                    sprites = defaultPass.Context();
                     continue;
                 }
             }
@@ -1349,19 +1438,22 @@ namespace
 
                     if (activeScrollView != nullptr)
                     {
-                        graphics.PopUIScissor();
+                        static_cast<void>(sprites.PopScissor());
                         activeScrollView = nullptr;
                     }
-                    graphics.EndSprites();
-                    graphics.BeginSprites(
-                        SpriteMaskShaderPath,
-                        parameters);
+                    defaultPass.End();
+                    LamaPon::SpritePassDescription maskDescription;
+                    maskDescription.pixelShader =
+                        SpriteMaskShaderPath;
+                    maskDescription.customParameters = parameters;
+                    auto maskPass = graphics.BeginSpritePass(
+                        maskDescription);
                     gameObject->Render2D(
                         graphics,
-                        spriteBatch,
-                        whiteTexture);
-                    graphics.EndSprites();
-                    graphics.BeginSprites();
+                        maskPass.Context());
+                    maskPass.End();
+                    defaultPass = graphics.BeginSpritePass();
+                    sprites = defaultPass.Context();
                     continue;
                 }
             }
@@ -1397,24 +1489,25 @@ namespace
                 {
                     if (activeScrollView != nullptr)
                     {
-                        graphics.PopUIScissor();
+                        static_cast<void>(sprites.PopScissor());
                         activeScrollView = nullptr;
                     }
-                    graphics.EndSprites();
+                    defaultPass.End();
                     // 色とUVは頂点から受け取るので、この経路では
                     // CustomParametersを使いません（灯りはb1）。
-                    graphics.BeginSprites(
-                        SpriteLit2DShaderPath,
-                        std::array<DirectX::XMFLOAT4, 8>{},
-                        nullptr,
-                        nullptr,
-                        isUI ? &uiLighting : &worldLighting);
+                    LamaPon::SpritePassDescription litDescription;
+                    litDescription.pixelShader =
+                        SpriteLit2DShaderPath;
+                    litDescription.lighting =
+                        isUI ? uiLighting : worldLighting;
+                    auto litPass = graphics.BeginSpritePass(
+                        litDescription);
                     gameObject->Render2D(
                         graphics,
-                        spriteBatch,
-                        whiteTexture);
-                    graphics.EndSprites();
-                    graphics.BeginSprites();
+                        litPass.Context());
+                    litPass.End();
+                    defaultPass = graphics.BeginSpritePass();
+                    sprites = defaultPass.Context();
                     continue;
                 }
             }
@@ -1424,7 +1517,7 @@ namespace
             {
                 if (activeScrollView != nullptr)
                 {
-                    graphics.PopUIScissor();
+                    static_cast<void>(sprites.PopScissor());
                 }
                 activeScrollView = scrollView;
                 if (activeScrollView != nullptr)
@@ -1432,198 +1525,37 @@ namespace
                     const auto viewRect =
                         activeScrollView->ViewRect(
                             graphics);
-                    graphics.PushUIScissor(
+                    static_cast<void>(sprites.PushScissor({
                         viewRect.minimum.x,
                         viewRect.minimum.y,
                         viewRect.maximum.x,
-                        viewRect.maximum.y);
+                        viewRect.maximum.y }));
                 }
             }
             gameObject->Render2D(
                 graphics,
-                spriteBatch,
-                whiteTexture);
+                sprites);
         }
         if (activeScrollView != nullptr)
         {
-            graphics.PopUIScissor();
+            static_cast<void>(sprites.PopScissor());
         }
+        defaultPass.End();
     }
 }
 
 namespace LamaPon
 {
-    Scene::Scene(GraphicsDevice& graphics) noexcept
+    Scene::Scene(GraphicsDevice& graphics)
         : m_graphics(graphics)
+        , m_graphicsResourceLease(
+            graphics.AcquireResourceLease())
         , m_sceneManager(
             std::make_unique<SceneManager>(
                 *this,
                 graphics))
     {
     }
-
-    // リフレクションプローブのベイクに使う共有リソースです。
-    // 各プローブを同じキューブへ描画し、事前フィルターで個別の結果を
-    // 生成するため、キューブ本体は1組を共有します。
-    struct Scene::ReflectionProbeBakeResources final
-    {
-        static constexpr std::uint32_t FaceSize = 128;
-
-        Microsoft::WRL::ComPtr<ID3D11Texture2D>
-            cubeTexture;
-        std::array<
-            Microsoft::WRL::ComPtr<
-                ID3D11RenderTargetView>,
-            6> faceTargets;
-        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
-            cubeShaderResourceView;
-        Microsoft::WRL::ComPtr<ID3D11Texture2D>
-            depthTexture;
-        Microsoft::WRL::ComPtr<ID3D11DepthStencilView>
-            depthView;
-        // 面ごとの描画先（2D）。エンジンの右手系のまま描き、
-        // キューブ面へは左右反転コピーで書き込みます（射影行列で
-        // 鏡像にすると巻き方向が反転してカリングが崩れるため）。
-        Microsoft::WRL::ComPtr<ID3D11Texture2D>
-            scratchTexture;
-        Microsoft::WRL::ComPtr<ID3D11RenderTargetView>
-            scratchTarget;
-        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
-            scratchShaderResourceView;
-
-        explicit ReflectionProbeBakeResources(
-            ID3D11Device* const device)
-        {
-            const auto throwIfFailed =
-                [](const HRESULT result,
-                    const char* operation)
-                {
-                    if (FAILED(result))
-                    {
-                        throw std::runtime_error(
-                            std::string(operation)
-                            + " failed");
-                    }
-                };
-
-            D3D11_TEXTURE2D_DESC cubeDescription{};
-            cubeDescription.Width = FaceSize;
-            cubeDescription.Height = FaceSize;
-            cubeDescription.MipLevels = 1;
-            cubeDescription.ArraySize = 6;
-            cubeDescription.Format =
-                DXGI_FORMAT_R16G16B16A16_FLOAT;
-            cubeDescription.SampleDesc.Count = 1;
-            cubeDescription.Usage = D3D11_USAGE_DEFAULT;
-            cubeDescription.BindFlags =
-                D3D11_BIND_SHADER_RESOURCE
-                | D3D11_BIND_RENDER_TARGET;
-            cubeDescription.MiscFlags =
-                D3D11_RESOURCE_MISC_TEXTURECUBE;
-            throwIfFailed(
-                device->CreateTexture2D(
-                    &cubeDescription,
-                    nullptr,
-                    cubeTexture.ReleaseAndGetAddressOf()),
-                "CreateTexture2D(probe cube)");
-
-            for (std::uint32_t face = 0; face < 6; ++face)
-            {
-                D3D11_RENDER_TARGET_VIEW_DESC
-                    targetDescription{};
-                targetDescription.Format =
-                    cubeDescription.Format;
-                targetDescription.ViewDimension =
-                    D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
-                targetDescription.Texture2DArray
-                    .FirstArraySlice = face;
-                targetDescription.Texture2DArray
-                    .ArraySize = 1;
-                throwIfFailed(
-                    device->CreateRenderTargetView(
-                        cubeTexture.Get(),
-                        &targetDescription,
-                        faceTargets[face]
-                            .ReleaseAndGetAddressOf()),
-                    "CreateRenderTargetView(probe face)");
-            }
-
-            D3D11_SHADER_RESOURCE_VIEW_DESC
-                viewDescription{};
-            viewDescription.Format =
-                cubeDescription.Format;
-            viewDescription.ViewDimension =
-                D3D11_SRV_DIMENSION_TEXTURECUBE;
-            viewDescription.TextureCube.MipLevels = 1;
-            throwIfFailed(
-                device->CreateShaderResourceView(
-                    cubeTexture.Get(),
-                    &viewDescription,
-                    cubeShaderResourceView
-                        .ReleaseAndGetAddressOf()),
-                "CreateShaderResourceView(probe cube)");
-
-            D3D11_TEXTURE2D_DESC depthDescription{};
-            depthDescription.Width = FaceSize;
-            depthDescription.Height = FaceSize;
-            depthDescription.MipLevels = 1;
-            depthDescription.ArraySize = 1;
-            depthDescription.Format =
-                DXGI_FORMAT_D24_UNORM_S8_UINT;
-            depthDescription.SampleDesc.Count = 1;
-            depthDescription.Usage = D3D11_USAGE_DEFAULT;
-            depthDescription.BindFlags =
-                D3D11_BIND_DEPTH_STENCIL;
-            throwIfFailed(
-                device->CreateTexture2D(
-                    &depthDescription,
-                    nullptr,
-                    depthTexture
-                        .ReleaseAndGetAddressOf()),
-                "CreateTexture2D(probe depth)");
-            throwIfFailed(
-                device->CreateDepthStencilView(
-                    depthTexture.Get(),
-                    nullptr,
-                    depthView.ReleaseAndGetAddressOf()),
-                "CreateDepthStencilView(probe depth)");
-
-            D3D11_TEXTURE2D_DESC scratchDescription{};
-            scratchDescription.Width = FaceSize;
-            scratchDescription.Height = FaceSize;
-            scratchDescription.MipLevels = 1;
-            scratchDescription.ArraySize = 1;
-            scratchDescription.Format =
-                DXGI_FORMAT_R16G16B16A16_FLOAT;
-            scratchDescription.SampleDesc.Count = 1;
-            scratchDescription.Usage =
-                D3D11_USAGE_DEFAULT;
-            scratchDescription.BindFlags =
-                D3D11_BIND_SHADER_RESOURCE
-                | D3D11_BIND_RENDER_TARGET;
-            throwIfFailed(
-                device->CreateTexture2D(
-                    &scratchDescription,
-                    nullptr,
-                    scratchTexture
-                        .ReleaseAndGetAddressOf()),
-                "CreateTexture2D(probe scratch)");
-            throwIfFailed(
-                device->CreateRenderTargetView(
-                    scratchTexture.Get(),
-                    nullptr,
-                    scratchTarget
-                        .ReleaseAndGetAddressOf()),
-                "CreateRenderTargetView(probe scratch)");
-            throwIfFailed(
-                device->CreateShaderResourceView(
-                    scratchTexture.Get(),
-                    nullptr,
-                    scratchShaderResourceView
-                        .ReleaseAndGetAddressOf()),
-                "CreateShaderResourceView(probe scratch)");
-        }
-    };
 
     Scene::~Scene() = default;
 
@@ -3846,6 +3778,7 @@ namespace LamaPon
         m_renderSpatialIndex.Clear();
         m_frameReflectionProbes.clear();
         m_skyPrefilterKeyPath.clear();
+        m_skyPrefilterKeySourceView.Reset();
         m_skyPrefilterKey = 0;
     }
 
@@ -6117,27 +6050,12 @@ namespace LamaPon
         // 描画先とUI基準サイズを書き換えるので、元の値へ戻します。
         // 復元を忘れると、この後のメインカメラの描画が最後の
         // レンダーテクスチャへ流れ込みます。
-        const std::uint32_t previousUIWidth =
-            m_graphics.UIWidth();
-        const std::uint32_t previousUIHeight =
-            m_graphics.UIHeight();
-        auto* context = m_graphics.Context();
-        Microsoft::WRL::ComPtr<
-            ID3D11RenderTargetView> previousTargetView;
-        Microsoft::WRL::ComPtr<
-            ID3D11DepthStencilView> previousDepthView;
-        context->OMGetRenderTargets(
-            1,
-            previousTargetView.GetAddressOf(),
-            previousDepthView.GetAddressOf());
-        UINT previousViewportCount = 1;
-        D3D11_VIEWPORT previousViewport{};
-        context->RSGetViewports(
-            &previousViewportCount,
-            &previousViewport);
-
-        m_graphics.Gpu().BeginSection(
-            "レンダーテクスチャ");
+        GraphicsOutputStateScope outputStateScope{ m_graphics };
+        UIViewportSizeScope uiViewportScope{ m_graphics };
+        GpuProfiler::SectionScope gpuSectionScope{
+            m_graphics.Gpu(),
+            "レンダーテクスチャ"
+        };
         for (auto* camera : targetCameras)
         {
             auto& target =
@@ -6156,7 +6074,6 @@ namespace LamaPon
             m_graphics.SetUIViewportSize(
                 target.Width(),
                 target.Height());
-            target.Bind(m_graphics.Context());
             const auto& clearColor =
                 camera->TargetClearColor();
             const float clear[4]{
@@ -6165,8 +6082,8 @@ namespace LamaPon
                 clearColor.z,
                 clearColor.w
             };
-            target.Clear(
-                m_graphics.Context(),
+            m_graphics.BeginOffscreenTarget(
+                target,
                 clear);
             RenderWithMatrices(
                 camera->ViewMatrix(),
@@ -6182,24 +6099,11 @@ namespace LamaPon
                 PostProcessFrameData());
             // ポスト処理でテクスチャを入れ替えるため、表示用へ
             // コピーしてから参照側に渡します。
-            target.CopyToDisplay(
-                m_graphics.Context());
+            m_graphics.PublishOffscreenTarget(target);
         }
-        m_graphics.Gpu().EndSection();
-
-        m_graphics.SetUIViewportSize(
-            previousUIWidth,
-            previousUIHeight);
-        context->OMSetRenderTargets(
-            1,
-            previousTargetView.GetAddressOf(),
-            previousDepthView.Get());
-        if (previousViewportCount > 0)
-        {
-            context->RSSetViewports(
-                1,
-                &previousViewport);
-        }
+        gpuSectionScope.End();
+        uiViewportScope.Restore();
+        outputStateScope.Restore();
     }
 
     void Scene::RenderMainCamera(
@@ -6243,15 +6147,13 @@ namespace LamaPon
             m_renderingInterpolatedTransforms,
             true
         };
-        m_graphics.Gpu().BeginSection("2D／UI");
-        auto& spriteBatch = m_graphics.BeginSprites();
+        GpuProfiler::SectionScope gpuSectionScope{
+            m_graphics.Gpu(),
+            "2D／UI"
+        };
         RenderSprites2D(
             m_gameObjects,
-            m_graphics,
-            spriteBatch,
-            m_graphics.WhiteTexture());
-        m_graphics.EndSprites();
-        m_graphics.Gpu().EndSection();
+            m_graphics);
     }
 
     void Scene::RenderWithMatrices(
@@ -6394,19 +6296,19 @@ namespace LamaPon
         struct DepthOnlyPassScope final
         {
             GraphicsDevice& graphics;
+            GpuProfiler::SectionScope gpuSection;
             DepthOnlyPassScope(
                 GraphicsDevice& device,
-                const char* gpuSectionName) noexcept
+                const char* gpuSectionName)
                 : graphics(device)
+                , gpuSection(device.Gpu(), gpuSectionName)
             {
                 graphics.SetDepthPass(
                     DepthPassKind::Shadow);
-                graphics.Gpu().BeginSection(
-                    gpuSectionName);
             }
             ~DepthOnlyPassScope() noexcept
             {
-                graphics.Gpu().EndSection();
+                gpuSection.End();
                 graphics.SetDepthPass(
                     DepthPassKind::None);
             }
@@ -6442,8 +6344,7 @@ namespace LamaPon
             auto shadowPassLighting = lighting;
             shadowPassLighting.directionalShadow.enabled =
                 false;
-            shadowPassLighting.directionalShadow.texture =
-                nullptr;
+            shadowPassLighting.directionalShadow.texture.Reset();
             m_graphics.SetLightingState(
                 shadowPassLighting);
 
@@ -6459,8 +6360,8 @@ namespace LamaPon
                         cascade.view,
                         cascade.projection,
                         visibility.lodHidden);
-                shadowMap.Begin(
-                    m_graphics.Context(),
+                m_graphics.BeginShadowMap(
+                    shadowMap,
                     static_cast<std::uint32_t>(
                         cascadeIndex));
                 try
@@ -6482,10 +6383,10 @@ namespace LamaPon
                 }
                 catch (...)
                 {
-                    shadowMap.End(m_graphics.Context());
+                    m_graphics.EndShadowMap(shadowMap);
                     throw;
                 }
-                shadowMap.End(m_graphics.Context());
+                m_graphics.EndShadowMap(shadowMap);
             }
 
             auto& shadow =
@@ -6507,7 +6408,7 @@ namespace LamaPon
                     cascade.splitDistance;
             }
             shadow.texture =
-                shadowMap.ShaderResourceView();
+                shadowMap.ViewHandle();
             shadow.lightIndex = shadowLightIndex;
             shadow.bias = shadowLight->ShadowBias();
             shadow.normalBias =
@@ -6682,8 +6583,8 @@ namespace LamaPon
                             shadowProjection,
                             visibility.lodHidden);
 
-                    spotShadowMap.Begin(
-                        m_graphics.Context(),
+                    m_graphics.BeginShadowMap(
+                        spotShadowMap,
                         static_cast<std::uint32_t>(slot));
                     try
                     {
@@ -6706,12 +6607,12 @@ namespace LamaPon
                     }
                     catch (...)
                     {
-                        spotShadowMap.End(
-                            m_graphics.Context());
+                        m_graphics.EndShadowMap(
+                            spotShadowMap);
                         throw;
                     }
-                    spotShadowMap.End(
-                        m_graphics.Context());
+                    m_graphics.EndShadowMap(
+                        spotShadowMap);
 
                     auto& destination =
                         lighting.spotShadows[slot];
@@ -6730,7 +6631,7 @@ namespace LamaPon
                     destination.enabled = true;
                 }
                 lighting.spotShadowTexture =
-                    spotShadowMap.ShaderResourceView();
+                    spotShadowMap.ViewHandle();
             }
         }
 
@@ -6827,8 +6728,8 @@ namespace LamaPon
                             faceView,
                             faceProjection,
                             visibility.lodHidden);
-                    pointShadowMap.Begin(
-                        m_graphics.Context(),
+                    m_graphics.BeginShadowMap(
+                        pointShadowMap,
                         face);
                     try
                     {
@@ -6851,16 +6752,16 @@ namespace LamaPon
                     }
                     catch (...)
                     {
-                        pointShadowMap.End(
-                            m_graphics.Context());
+                        m_graphics.EndShadowMap(
+                            pointShadowMap);
                         throw;
                     }
-                    pointShadowMap.End(
-                        m_graphics.Context());
+                    m_graphics.EndShadowMap(
+                        pointShadowMap);
                 }
                 auto& destination = lighting.pointShadow;
                 destination.texture =
-                    pointShadowMap.ShaderResourceView();
+                    pointShadowMap.ViewHandle();
                 destination.lightIndex =
                     static_cast<std::ptrdiff_t>(
                         pointShadowIndex);
@@ -6909,7 +6810,7 @@ namespace LamaPon
                     lighting.screenAmbientOcclusion;
                 occlusion.texture =
                     target->
-                        AmbientOcclusionShaderResourceView();
+                        AmbientOcclusionViewHandle();
                 occlusion.inverseWidth = 1.0f
                     / static_cast<float>(
                         std::max(target->Width(), 1u));
@@ -6925,72 +6826,80 @@ namespace LamaPon
                 && m_screenSpaceReflection.enabled
                 && !m_bakingReflectionProbes)
             {
-                auto* const history =
-                    target->ColorHistoryShaderResourceView();
-                if (history != nullptr)
+                const auto history =
+                    target->ColorHistoryViewHandle();
+                if (history)
                 {
                     auto& reflection =
                         lighting.screenSpaceReflection;
                     reflection.texture = history;
                     // 深度はコピーを読みます（本体はDSVとして
                     // 刺さっているためSRVにできません）。
-                    target->CaptureDepthForReflections(
-                        m_graphics.Context());
+                    m_graphics.CaptureOffscreenTargetDepth(
+                        *target);
                     // Hi-Z: 深度を「距離のminミップピラミッド」へ
                     // 直します。シェーダーはこれを読んで、何も無い
                     // 空間を大股で飛びます。
-                    m_graphics.Environment()
-                        .BuildReflectionDepthPyramid(
-                            *target,
-                            storedProjection._33,
-                            storedProjection._43);
-                    reflection.depth =
-                        target->
-                            ReflectionDepthPyramidShaderResourceView();
-                    reflection.depthPyramidMaximumMip =
-                        target->ReflectionDepthPyramidMipCount()
-                            > 0
-                        ? target
-                            ->ReflectionDepthPyramidMipCount()
-                            - 1
-                        : 0;
-                    reflection.previousViewProjection =
-                        target->
-                            ColorHistoryViewProjection();
-                    reflection.inverseWidth = 1.0f
-                        / static_cast<float>(
-                            std::max(target->Width(), 1u));
-                    reflection.inverseHeight = 1.0f
-                        / static_cast<float>(
-                            std::max(
-                                target->Height(), 1u));
-                    // 深度をビュー空間のZへ戻すための値。
-                    reflection.projectionZ =
-                        storedProjection._33;
-                    reflection.projectionW =
-                        storedProjection._43;
-                    reflection.intensity =
-                        m_screenSpaceReflection.intensity;
-                    reflection.maximumDistance =
-                        m_screenSpaceReflection
-                            .maximumDistance;
-                    reflection.thickness =
-                        m_screenSpaceReflection.thickness;
-                    reflection.roughnessCutoff =
-                        m_screenSpaceReflection
-                            .roughnessCutoff;
-                    reflection.stepCount =
-                        m_screenSpaceReflection.stepCount;
-                    reflection.enabled = true;
+                    if (m_graphics
+                            .TryBuildReflectionDepthPyramid(
+                                *target,
+                                storedProjection._33,
+                                storedProjection._43))
+                    {
+                        reflection.depth =
+                            target->
+                                ReflectionDepthPyramidViewHandle();
+                        reflection.depthPyramidMaximumMip =
+                            target->ReflectionDepthPyramidMipCount()
+                                > 0
+                            ? target
+                                ->ReflectionDepthPyramidMipCount()
+                                - 1
+                            : 0;
+                        reflection.previousViewProjection =
+                            target->
+                                ColorHistoryViewProjection();
+                        reflection.inverseWidth = 1.0f
+                            / static_cast<float>(
+                                std::max(target->Width(), 1u));
+                        reflection.inverseHeight = 1.0f
+                            / static_cast<float>(
+                                std::max(
+                                    target->Height(), 1u));
+                        // 深度をビュー空間のZへ戻すための値。
+                        reflection.projectionZ =
+                            storedProjection._33;
+                        reflection.projectionW =
+                            storedProjection._43;
+                        reflection.intensity =
+                            m_screenSpaceReflection.intensity;
+                        reflection.maximumDistance =
+                            m_screenSpaceReflection
+                                .maximumDistance;
+                        reflection.thickness =
+                            m_screenSpaceReflection.thickness;
+                        reflection.roughnessCutoff =
+                            m_screenSpaceReflection
+                                .roughnessCutoff;
+                        reflection.stepCount =
+                            m_screenSpaceReflection.stepCount;
+                        reflection.enabled = true;
+                    }
+                    else
+                    {
+                        // stale / 別BackendのRenderTargetはこのフレームの
+                        // SSRを無効にし、native viewを誤bindしません。
+                        reflection = {};
+                    }
                 }
             }
             // プリパスとSSAOで描画先が変わっているので、カラーへ
             // 戻します（深度は消さずにそのまま使います）。
-            target->Bind(m_graphics.Context());
+            m_graphics.BindOffscreenTarget(*target);
         }
 
         // キューブマップスカイとIBL（環境反射）。
-        ID3D11ShaderResourceView* skyCubemap{};
+        GraphicsViewHandle skyCubemapView;
         if (m_sky.enabled
             && !m_sky.cubemapPath.empty()
             && m_graphics.IsInitialized())
@@ -7002,27 +6911,36 @@ namespace LamaPon
                             m_sky.cubemapPath);
                     texture != nullptr && texture->isCube)
                 {
-                    skyCubemap = texture->view.Get();
+                    const auto skyResources =
+                        texture->resources.Acquire();
+                    if (skyResources != nullptr)
+                    {
+                        skyCubemapView =
+                            skyResources->shaderResourceView;
+                    }
                 }
             }
             catch (...)
             {
             }
         }
-        lighting.environment.texture = skyCubemap;
+        lighting.environment.texture = skyCubemapView;
         lighting.environment.intensity =
             m_sky.iblIntensity;
         lighting.environment.enabled =
-            skyCubemap != nullptr
+            m_graphics.IsSampleableCubeView(
+                skyCubemapView)
             && m_sky.iblIntensity > 0.0f;
         if (lighting.environment.enabled)
         {
             // ディスクキャッシュの鍵（キューブマップの内容ハッシュ）。
-            // パスが変わったときだけ読み直して計算します。読めない
-            // ときは0＝キャッシュなしで、従来どおり毎回生成します。
-            if (m_sky.cubemapPath != m_skyPrefilterKeyPath)
+            // パスまたはAssetのview世代が変わったときに読み直します。
+            // 同じパスの再importでも古い内容hashを使い回しません。
+            if (m_sky.cubemapPath != m_skyPrefilterKeyPath
+                || skyCubemapView != m_skyPrefilterKeySourceView)
             {
                 m_skyPrefilterKeyPath = m_sky.cubemapPath;
+                m_skyPrefilterKeySourceView = skyCubemapView;
                 m_skyPrefilterKey = 0;
                 try
                 {
@@ -7039,22 +6957,18 @@ namespace LamaPon
             }
             // GGX事前畳み込み（初回のみ生成、以降はキャッシュ）。
             // 失敗時はソース直接サンプリングへフォールバック。
-            try
+            const auto prefiltered = m_graphics
+                .TryGetPrefilteredEnvironmentViews(
+                    skyCubemapView,
+                    m_skyPrefilterKey);
+            if (prefiltered.IsValid())
             {
-                const auto prefiltered =
-                    m_graphics.Environment()
-                        .GetPrefilteredEnvironment(
-                            skyCubemap,
-                            m_skyPrefilterKey);
                 lighting.environment.specular =
                     prefiltered.specular;
                 lighting.environment.irradiance =
                     prefiltered.irradiance;
                 lighting.environment.specularMaximumMip =
                     prefiltered.specularMaximumMip;
-            }
-            catch (const std::exception&)
-            {
             }
         }
 
@@ -7069,19 +6983,19 @@ namespace LamaPon
             const bool bakedGiActive =
                 m_bakedGiSettings.enabled
                 && !m_bakingReflectionProbes
-                && m_bakedGiViews[0] != nullptr
-                && m_bakedGiViews[1] != nullptr
-                && m_bakedGiViews[2] != nullptr;
+                && m_bakedGiViews[0]
+                && m_bakedGiViews[1]
+                && m_bakedGiViews[2];
             bakedGi.enabled = bakedGiActive;
             if (bakedGiActive)
             {
                 const auto& shape = m_bakedGiBakedShape;
                 bakedGi.redCoefficients =
-                    m_bakedGiViews[0].Get();
+                    m_bakedGiViews[0];
                 bakedGi.greenCoefficients =
-                    m_bakedGiViews[1].Get();
+                    m_bakedGiViews[1];
                 bakedGi.blueCoefficients =
-                    m_bakedGiViews[2].Get();
+                    m_bakedGiViews[2];
                 bakedGi.volumeMinimum = {
                     shape.center.x - shape.size.x * 0.5f,
                     shape.center.y - shape.size.y * 0.5f,
@@ -7109,7 +7023,7 @@ namespace LamaPon
         // へ落ちます。Compute Shaderのディスパッチごと省けます。
         const bool clusteredRequested =
             m_graphics.Settings().renderingPath
-            == RenderingPath::ForwardPlus;
+                == RenderingPath::ForwardPlus;
         if (clusteredRequested
             && !lighting.clusteredLights.empty()
             && !m_clusteredLightingUnavailable)
@@ -7145,10 +7059,11 @@ namespace LamaPon
 
             try
             {
-                m_graphics.Gpu().BeginSection(
-                    "ライトカリング");
-                m_graphics.Clusters().Update(
-                    m_graphics.Context(),
+                GpuProfiler::SectionScope gpuSectionScope{
+                    m_graphics.Gpu(),
+                    "ライトカリング"
+                };
+                m_graphics.UpdateClusteredLights(
                     lighting,
                     view,
                     projection,
@@ -7158,11 +7073,9 @@ namespace LamaPon
                     target != nullptr
                         ? target->Height()
                         : m_graphics.RenderHeight());
-                m_graphics.Gpu().EndSection();
             }
             catch (const std::exception& exception)
             {
-                m_graphics.Gpu().EndSection();
                 // シェーダーを使用できない環境では16灯までの描画経路へ
                 // 切り替え、同じ初期化を毎フレーム再試行しません。
                 m_clusteredLightingUnavailable = true;
@@ -7177,22 +7090,29 @@ namespace LamaPon
         }
 
         m_graphics.SetLightingState(lighting);
-        m_graphics.Gpu().BeginSection("スカイ");
-        EnvironmentRenderer::SkySun skySun{};
-        const bool hasSkySun =
-            m_sky.sunDriven
-            && ResolveSkySun(
-                skySun.directionToSun,
-                skySun.color,
-                skySun.angularRadius);
-        m_graphics.Environment().DrawSky(
-            view,
-            projection,
-            ResolvedSky(),
-            skyCubemap,
-            hasSkySun ? &skySun : nullptr);
-        m_graphics.Gpu().EndSection();
-        m_graphics.Gpu().BeginSection("3D描画");
+        {
+            GpuProfiler::SectionScope gpuSectionScope{
+                m_graphics.Gpu(),
+                "スカイ"
+            };
+            SkySunDescription skySun{};
+            const bool hasSkySun =
+                m_sky.sunDriven
+                && ResolveSkySun(
+                    skySun.directionToSun,
+                    skySun.color,
+                    skySun.angularRadius);
+            m_graphics.DrawSky(
+                view,
+                projection,
+                ResolvedSky(),
+                skyCubemapView,
+                hasSkySun ? &skySun : nullptr);
+        }
+        GpuProfiler::SectionScope renderSectionScope{
+            m_graphics.Gpu(),
+            "3D描画"
+        };
 
         m_visibilityStats.modelInstanceBatchCount = 0;
         m_visibilityStats.modelInstancedRendererCount = 0;
@@ -7402,7 +7322,7 @@ namespace LamaPon
                 gameObject->RenderDebug3D(m_graphics, view, projection);
             }
         }
-        m_graphics.Gpu().EndSection();
+        renderSectionScope.End();
 
         // TAAへ渡す行列。ワールド復元にはずらし込みの逆行列を使い
         // （深度と噛み合わせるため）、次フレームの参照用にはずらしを
@@ -7473,8 +7393,8 @@ namespace LamaPon
             DirectX::XMStoreFloat4x4(
                 &storedViewProjection,
                 view * projection);
-            target->CaptureColorHistory(
-                m_graphics.Context(),
+            m_graphics.CaptureOffscreenTargetColorHistory(
+                *target,
                 storedViewProjection);
         }
 
@@ -7597,13 +7517,12 @@ namespace LamaPon
         // まだ焼けていないプローブは無いものとして扱います。
         // 空のキューブを「有効」として渡すと、Shaderがnullを読んで
         // 反射が真っ黒になります（ベイク前の1フレームで出ます）。
-        if (baked.specular == nullptr
-            || baked.irradiance == nullptr)
+        if (!baked.IsValid())
         {
             return result;
         }
-        result.specular = baked.specular.Get();
-        result.irradiance = baked.irradiance.Get();
+        result.specular = baked.specular;
+        result.irradiance = baked.irradiance;
         result.specularMaximumMip =
             baked.specularMaximumMip;
         result.intensity = primary->Intensity();
@@ -7630,15 +7549,14 @@ namespace LamaPon
         }
         const auto& secondaryBaked =
             secondary->BakedEnvironment();
-        if (secondaryBaked.specular == nullptr
-            || secondaryBaked.irradiance == nullptr)
+        if (!secondaryBaked.IsValid())
         {
             return result;
         }
         result.secondarySpecular =
-            secondaryBaked.specular.Get();
+            secondaryBaked.specular;
         result.secondaryIrradiance =
-            secondaryBaked.irradiance.Get();
+            secondaryBaked.irradiance;
         result.secondarySpecularMaximumMip =
             secondaryBaked.specularMaximumMip;
         result.secondaryBoxCenter =
@@ -7715,8 +7633,21 @@ namespace LamaPon
             auto* probe = gameObject->GetComponent<
                 ReflectionProbeComponent>();
             if (probe == nullptr
-                || !probe->IsEnabled()
-                || !probe->IsBakeRequested())
+                || !probe->IsEnabled())
+            {
+                continue;
+            }
+            // Graphics Backend再初期化後は旧resource domainのhandleを
+            // bindせず、次の描画で新しい世代へベイクし直します。
+            const auto& baked = probe->BakedEnvironment();
+            if (baked.IsValid()
+                && (!m_graphics.IsGraphicsViewCurrent(baked.specular)
+                    || !m_graphics.IsGraphicsViewCurrent(
+                        baked.irradiance)))
+            {
+                probe->RequestBake();
+            }
+            if (!probe->IsBakeRequested())
             {
                 continue;
             }
@@ -7729,16 +7660,15 @@ namespace LamaPon
                 && !probe->RestoreAttempted())
             {
                 probe->MarkRestoreAttempted();
-                auto restored = EnvironmentCache::TryLoad(
-                    m_graphics.Device(),
-                    ProbeEnvironmentCacheKey(
-                        m_sceneManager != nullptr
-                            ? m_sceneManager
-                                ->CurrentScenePath()
-                            : std::filesystem::path{},
-                        *probe,
-                        ReflectionProbeBakeResources::
-                            FaceSize));
+                auto restored =
+                    m_graphics.TryLoadCachedEnvironmentViews(
+                        ProbeEnvironmentCacheKey(
+                            m_sceneManager != nullptr
+                                ? m_sceneManager
+                                    ->CurrentScenePath()
+                                : std::filesystem::path{},
+                            *probe,
+                            EnvironmentProbeBakeFaceSize));
                 if (restored.IsValid())
                 {
                     probe->SetBakedEnvironment(
@@ -7755,12 +7685,7 @@ namespace LamaPon
 
         try
         {
-            if (!m_probeBakeResources)
-            {
-                m_probeBakeResources = std::make_unique<
-                    ReflectionProbeBakeResources>(
-                    m_graphics.Device());
-            }
+            m_graphics.PrepareEnvironmentProbeBake();
         }
         catch (const std::exception& exception)
         {
@@ -7778,22 +7703,8 @@ namespace LamaPon
             return;
         }
 
-        auto* const context = m_graphics.Context();
-
         // 現在の描画先を退避します（フレーム途中で呼ばれるため）。
-        Microsoft::WRL::ComPtr<ID3D11RenderTargetView>
-            previousTarget;
-        Microsoft::WRL::ComPtr<ID3D11DepthStencilView>
-            previousDepth;
-        context->OMGetRenderTargets(
-            1,
-            previousTarget.ReleaseAndGetAddressOf(),
-            previousDepth.ReleaseAndGetAddressOf());
-        D3D11_VIEWPORT previousViewport{};
-        UINT previousViewportCount = 1;
-        context->RSGetViewports(
-            &previousViewportCount,
-            &previousViewport);
+        GraphicsOutputStateScope outputStateScope{ m_graphics };
 
         // D3D標準のキューブ面向き（左手系）。ポイント影と同じ
         // 並びで、ワールド方向ベクトルでのサンプリングと一致します。
@@ -7815,8 +7726,14 @@ namespace LamaPon
             { 0.0f, 1.0f, 0.0f }
         };
 
-        m_graphics.Gpu().BeginSection("プローブベイク");
-        m_bakingReflectionProbes = true;
+        GpuProfiler::SectionScope gpuSectionScope{
+            m_graphics.Gpu(),
+            "プローブベイク"
+        };
+        BooleanStateScope bakingScope{
+            m_bakingReflectionProbes,
+            true
+        };
         try
         {
             for (auto* probe : pending)
@@ -7838,119 +7755,52 @@ namespace LamaPon
                             probe->Range() * 4.0f,
                             100.0f));
 
-                D3D11_VIEWPORT viewport{};
-                viewport.Width = static_cast<float>(
-                    ReflectionProbeBakeResources::
-                        FaceSize);
-                viewport.Height = viewport.Width;
-                viewport.MaxDepth = 1.0f;
-
-                for (std::uint32_t face = 0;
-                    face < 6u;
-                    ++face)
-                {
-                    ID3D11RenderTargetView* targets[]{
-                        m_probeBakeResources
-                            ->scratchTarget.Get()
-                    };
-                    context->OMSetRenderTargets(
-                        1,
-                        targets,
-                        m_probeBakeResources
-                            ->depthView.Get());
-                    context->RSSetViewports(
-                        1, &viewport);
-                    constexpr float clearColor[4]{};
-                    context->ClearRenderTargetView(
-                        targets[0], clearColor);
-                    context->ClearDepthStencilView(
-                        m_probeBakeResources
-                            ->depthView.Get(),
-                        D3D11_CLEAR_DEPTH
-                            | D3D11_CLEAR_STENCIL,
-                        1.0f,
-                        0);
-
-                    const auto faceView =
-                        DirectX::XMMatrixLookToRH(
-                            DirectX::XMLoadFloat3(&eye),
-                            DirectX::XMLoadFloat3(
-                                &FaceDirections[face]),
-                            DirectX::XMLoadFloat3(
-                                &FaceUps[face]));
-                    // ポスト処理なしのHDRリニアで焼きます
-                    // （IBLはトーンマップ前の値が正）。
-                    RenderWithMatrices(
-                        faceView,
-                        faceProjection,
-                        false,
-                        false);
-
-                    // 左右反転してキューブ面へ書き込みます。
-                    m_graphics.Environment().CopyMirroredX(
-                        m_probeBakeResources
-                            ->scratchShaderResourceView
-                            .Get(),
-                        m_probeBakeResources
-                            ->faceTargets[face].Get(),
-                        ReflectionProbeBakeResources::
-                            FaceSize,
-                        ReflectionProbeBakeResources::
-                            FaceSize);
-                }
-
-                // 事前フィルタはこのキューブをSRV（t1）として読む
-                // ので、先に描画先から外します。最後の面のRTVが
-                // 着いたままだと、同じリソースのRTV/SRV同時バインド
-                // をD3D11が検出してSRVをnullにし、積分結果が黒く
-                // なるためです。
-                context->OMSetRenderTargets(
-                    0, nullptr, nullptr);
-                auto baked = m_graphics.Environment()
-                    .CreatePrefilteredEnvironment(
-                        m_probeBakeResources
-                            ->cubeShaderResourceView
-                            .Get());
                 // シーン由来のプローブは結果をディスクへ残し、
                 // 次にシーンを開いたとき復元できるようにします。
-                if (probe->IsLoadedFromScene())
-                {
-                    EnvironmentCache::Store(
+                const auto cacheKey = probe->IsLoadedFromScene()
+                    ? std::optional<std::uint64_t>{
                         ProbeEnvironmentCacheKey(
                             m_sceneManager != nullptr
                                 ? m_sceneManager
                                     ->CurrentScenePath()
                                 : std::filesystem::path{},
                             *probe,
-                            ReflectionProbeBakeResources::
-                                FaceSize),
-                        m_graphics.Device(),
-                        context,
-                        baked);
-                }
+                            EnvironmentProbeBakeFaceSize) }
+                    : std::nullopt;
+                auto baked = m_graphics
+                    .BakeReflectionProbeViews(
+                        [this,
+                         &eye,
+                         &faceProjection](const std::uint32_t face)
+                        {
+                            const auto faceView =
+                                DirectX::XMMatrixLookToRH(
+                                    DirectX::XMLoadFloat3(&eye),
+                                    DirectX::XMLoadFloat3(
+                                        &FaceDirections[face]),
+                                    DirectX::XMLoadFloat3(
+                                        &FaceUps[face]));
+                            // ポスト処理なしのHDRリニアで焼きます
+                            // （IBLはトーンマップ前の値が正）。
+                            RenderWithMatrices(
+                                faceView,
+                                faceProjection,
+                                false,
+                                false);
+                        },
+                        cacheKey);
                 probe->SetBakedEnvironment(
                     std::move(baked));
             }
         }
         catch (...)
         {
-            m_bakingReflectionProbes = false;
-            m_graphics.Gpu().EndSection();
+            // 描画先・計測区間・再入フラグはscope guardが戻します。
             throw;
         }
-        m_bakingReflectionProbes = false;
-        m_graphics.Gpu().EndSection();
-
-        // 描画先を戻します。
-        context->OMSetRenderTargets(
-            1,
-            previousTarget.GetAddressOf(),
-            previousDepth.Get());
-        if (previousViewportCount > 0)
-        {
-            context->RSSetViewports(
-                1, &previousViewport);
-        }
+        bakingScope.Restore();
+        gpuSectionScope.End();
+        outputStateScope.Restore();
     }
 
 
@@ -7968,16 +7818,22 @@ namespace LamaPon
         // 各軸64まで・合計32768点まで。上限が無いと、桁を1つ
         // 打ち間違えただけでベイクが何時間も終わらなくなります。
         m_bakedGiSettings.resolutionX = std::clamp(
-            m_bakedGiSettings.resolutionX, 1u, 64u);
+            m_bakedGiSettings.resolutionX,
+            1u,
+            BakedGlobalIlluminationMaximumAxisResolution);
         m_bakedGiSettings.resolutionY = std::clamp(
-            m_bakedGiSettings.resolutionY, 1u, 64u);
+            m_bakedGiSettings.resolutionY,
+            1u,
+            BakedGlobalIlluminationMaximumAxisResolution);
         m_bakedGiSettings.resolutionZ = std::clamp(
-            m_bakedGiSettings.resolutionZ, 1u, 64u);
+            m_bakedGiSettings.resolutionZ,
+            1u,
+            BakedGlobalIlluminationMaximumAxisResolution);
         while (static_cast<std::uint64_t>(
                 m_bakedGiSettings.resolutionX)
             * m_bakedGiSettings.resolutionY
             * m_bakedGiSettings.resolutionZ
-            > 32768u)
+            > BakedGlobalIlluminationMaximumProbeCount)
         {
             // どれか一番大きい軸を半分にして上限へ収めます。
             auto* largest = &m_bakedGiSettings.resolutionX;
@@ -8011,7 +7867,10 @@ namespace LamaPon
         }
         try
         {
-            m_bakedGiWorking.assign(total * 12, 0.0f);
+            m_bakedGiWorking.assign(
+                total
+                    * BakedGlobalIlluminationCoefficientsPerProbe,
+                0.0f);
         }
         catch (...)
         {
@@ -8028,11 +7887,15 @@ namespace LamaPon
         // シーン読み込みからの復元。サイズが形と合わないデータは
         // 受け取りません（壊れたファイルより「GIなし」のほうが
         // ましです）。
-        const std::size_t total =
-            static_cast<std::size_t>(shape.resolutionX)
-            * shape.resolutionY
-            * shape.resolutionZ;
-        if (total == 0 || payload.size() != total * 12)
+        const auto probeCount =
+            BakedGlobalIlluminationProbeCount(
+                shape.resolutionX,
+                shape.resolutionY,
+                shape.resolutionZ);
+        if (!probeCount.has_value()
+            || payload.size()
+                != *probeCount
+                    * BakedGlobalIlluminationCoefficientsPerProbe)
         {
             return;
         }
@@ -8064,185 +7927,6 @@ namespace LamaPon
             / static_cast<float>(total);
     }
 
-    namespace
-    {
-        // 16pxの照度キューブを読み戻してL1球面調和へ射影します。
-        // 出力は12個のfloat（RGB各チャンネルの x,y,z,定数項）。
-        //
-        // 係数は「関数の当てはめ」です。E(方向)をY00とY1mへ射影し、
-        // そのまま再構成すると
-        //   定数項 = (1/4π)ΣE・ω、軸の項 = (3/4π)ΣE・軸・ω
-        // になります（一様なEなら定数項=E、軸の項=0になるのが
-        // 検算です）。
-        [[nodiscard]] bool ProjectIrradianceToSh(
-            ID3D11Device* const device,
-            ID3D11DeviceContext* const context,
-            ID3D11ShaderResourceView* const irradiance,
-            float* const outCoefficients)
-        {
-            using Microsoft::WRL::ComPtr;
-            if (irradiance == nullptr)
-            {
-                return false;
-            }
-            ComPtr<ID3D11Resource> resource;
-            irradiance->GetResource(
-                resource.ReleaseAndGetAddressOf());
-            ComPtr<ID3D11Texture2D> texture;
-            if (FAILED(resource.As(&texture)))
-            {
-                return false;
-            }
-            D3D11_TEXTURE2D_DESC description{};
-            texture->GetDesc(&description);
-            if (description.Format
-                    != DXGI_FORMAT_R16G16B16A16_FLOAT
-                || description.ArraySize != 6)
-            {
-                return false;
-            }
-            D3D11_TEXTURE2D_DESC staging = description;
-            staging.Usage = D3D11_USAGE_STAGING;
-            staging.BindFlags = 0;
-            staging.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-            staging.MiscFlags = 0;
-            ComPtr<ID3D11Texture2D> copy;
-            if (FAILED(device->CreateTexture2D(
-                &staging,
-                nullptr,
-                copy.ReleaseAndGetAddressOf())))
-            {
-                return false;
-            }
-            context->CopyResource(copy.Get(), texture.Get());
-
-            const std::uint32_t edge = description.Width;
-            double sums[12]{};
-            for (std::uint32_t face = 0; face < 6; ++face)
-            {
-                const UINT subresource = D3D11CalcSubresource(
-                    0, face, description.MipLevels);
-                D3D11_MAPPED_SUBRESOURCE mapped{};
-                if (FAILED(context->Map(
-                    copy.Get(),
-                    subresource,
-                    D3D11_MAP_READ,
-                    0,
-                    &mapped)))
-                {
-                    return false;
-                }
-                for (std::uint32_t y = 0; y < edge; ++y)
-                {
-                    const auto* row =
-                        reinterpret_cast<
-                            const DirectX::PackedVector::
-                                HALF*>(
-                            static_cast<const std::uint8_t*>(
-                                mapped.pData)
-                            + y * mapped.RowPitch);
-                    for (std::uint32_t x = 0;
-                        x < edge;
-                        ++x)
-                    {
-                        // テクセル中心の方向。シェーダーの
-                        // CubeDirection（LamaPonEnvironment.hlsl）と
-                        // 同じ式です。ここが食い違うと間接光の
-                        // 向きが狂います。
-                        const float uc =
-                            (static_cast<float>(x) + 0.5f)
-                                / edge * 2.0f
-                            - 1.0f;
-                        const float vc =
-                            (static_cast<float>(y) + 0.5f)
-                                / edge * 2.0f
-                            - 1.0f;
-                        DirectX::XMFLOAT3 direction{};
-                        switch (face)
-                        {
-                        case 0:
-                            direction = { 1.0f, -vc, -uc };
-                            break;
-                        case 1:
-                            direction = { -1.0f, -vc, uc };
-                            break;
-                        case 2:
-                            direction = { uc, 1.0f, vc };
-                            break;
-                        case 3:
-                            direction = { uc, -1.0f, -vc };
-                            break;
-                        case 4:
-                            direction = { uc, -vc, 1.0f };
-                            break;
-                        default:
-                            direction = { -uc, -vc, -1.0f };
-                            break;
-                        }
-                        const float lengthSquared =
-                            direction.x * direction.x
-                            + direction.y * direction.y
-                            + direction.z * direction.z;
-                        const float length =
-                            std::sqrt(lengthSquared);
-                        // キューブ1テクセルの立体角。面上の面積
-                        // (2/N)^2 を距離の3乗で割ったものです。
-                        const float solidAngle =
-                            4.0f / (edge * edge)
-                            / (lengthSquared * length);
-                        const float nx =
-                            direction.x / length;
-                        const float ny =
-                            direction.y / length;
-                        const float nz =
-                            direction.z / length;
-                        for (int channel = 0;
-                            channel < 3;
-                            ++channel)
-                        {
-                            const float value =
-                                DirectX::PackedVector::
-                                    XMConvertHalfToFloat(
-                                        row[x * 4
-                                            + channel]);
-                            const double weighted =
-                                static_cast<double>(value)
-                                * solidAngle;
-                            double* base =
-                                sums + channel * 4;
-                            base[0] += weighted * nx;
-                            base[1] += weighted * ny;
-                            base[2] += weighted * nz;
-                            base[3] += weighted;
-                        }
-                    }
-                }
-                context->Unmap(copy.Get(), subresource);
-            }
-            constexpr double AxisScale =
-                3.0 / (4.0 * 3.14159265358979323846);
-            constexpr double ConstantScale =
-                1.0 / (4.0 * 3.14159265358979323846);
-            for (int channel = 0; channel < 3; ++channel)
-            {
-                outCoefficients[channel * 4 + 0] =
-                    static_cast<float>(
-                        sums[channel * 4 + 0] * AxisScale);
-                outCoefficients[channel * 4 + 1] =
-                    static_cast<float>(
-                        sums[channel * 4 + 1] * AxisScale);
-                outCoefficients[channel * 4 + 2] =
-                    static_cast<float>(
-                        sums[channel * 4 + 2] * AxisScale);
-                outCoefficients[channel * 4 + 3] =
-                    static_cast<float>(
-                        sums[channel * 4 + 3]
-                        * ConstantScale);
-            }
-            return true;
-        }
-    }
-
     void Scene::ProcessBakedGlobalIlluminationBake()
     {
         if (!m_bakedGiBaking
@@ -8265,12 +7949,7 @@ namespace LamaPon
 
         try
         {
-            if (!m_probeBakeResources)
-            {
-                m_probeBakeResources = std::make_unique<
-                    ReflectionProbeBakeResources>(
-                    m_graphics.Device());
-            }
+            m_graphics.PrepareEnvironmentProbeBake();
         }
         catch (const std::exception& exception)
         {
@@ -8282,22 +7961,8 @@ namespace LamaPon
             return;
         }
 
-        auto* const context = m_graphics.Context();
-
         // 現在の描画先を退避します（フレーム途中で呼ばれるため）。
-        Microsoft::WRL::ComPtr<ID3D11RenderTargetView>
-            previousTarget;
-        Microsoft::WRL::ComPtr<ID3D11DepthStencilView>
-            previousDepth;
-        context->OMGetRenderTargets(
-            1,
-            previousTarget.ReleaseAndGetAddressOf(),
-            previousDepth.ReleaseAndGetAddressOf());
-        D3D11_VIEWPORT previousViewport{};
-        UINT previousViewportCount = 1;
-        context->RSGetViewports(
-            &previousViewportCount,
-            &previousViewport);
+        GraphicsOutputStateScope outputStateScope{ m_graphics };
 
         // プローブベイクと同じ面の並び（D3D標準のキューブ面）。
         static constexpr DirectX::XMFLOAT3 FaceDirections[6]{
@@ -8322,11 +7987,17 @@ namespace LamaPon
         // 上限の目安です）。
         constexpr std::size_t ProbesPerFrame = 8;
 
-        m_graphics.Gpu().BeginSection("GIベイク");
+        GpuProfiler::SectionScope gpuSectionScope{
+            m_graphics.Gpu(),
+            "GIベイク"
+        };
         // ベイク中の描画が自分（焼きかけのGI）やプローブを読まない
         // よう、プローブベイクと同じ再入ガードを立てます。焼き込みは
         // 常に「GIなしの絵」から作られる＝1バウンスで確定します。
-        m_bakingReflectionProbes = true;
+        BooleanStateScope bakingScope{
+            m_bakingReflectionProbes,
+            true
+        };
         try
         {
             const float farPlane = std::max(
@@ -8342,12 +8013,6 @@ namespace LamaPon
                     1.0f,
                     0.1f,
                     farPlane);
-
-            D3D11_VIEWPORT viewport{};
-            viewport.Width = static_cast<float>(
-                ReflectionProbeBakeResources::FaceSize);
-            viewport.Height = viewport.Width;
-            viewport.MaxDepth = 1.0f;
 
             const std::size_t endProbe = std::min(
                 m_bakedGiNextProbe + ProbesPerFrame,
@@ -8400,111 +8065,58 @@ namespace LamaPon
                                 shape.resolutionZ)
                 };
 
-                for (std::uint32_t face = 0;
-                    face < 6u;
-                    ++face)
-                {
-                    ID3D11RenderTargetView* targets[]{
-                        m_probeBakeResources
-                            ->scratchTarget.Get()
-                    };
-                    context->OMSetRenderTargets(
-                        1,
-                        targets,
-                        m_probeBakeResources
-                            ->depthView.Get());
-                    context->RSSetViewports(1, &viewport);
-                    constexpr float clearColor[4]{};
-                    context->ClearRenderTargetView(
-                        targets[0], clearColor);
-                    context->ClearDepthStencilView(
-                        m_probeBakeResources
-                            ->depthView.Get(),
-                        D3D11_CLEAR_DEPTH
-                            | D3D11_CLEAR_STENCIL,
-                        1.0f,
-                        0);
-                    const auto faceView =
-                        DirectX::XMMatrixLookToRH(
-                            DirectX::XMLoadFloat3(&eye),
-                            DirectX::XMLoadFloat3(
-                                &FaceDirections[face]),
-                            DirectX::XMLoadFloat3(
-                                &FaceUps[face]));
-                    // プローブベイクと同じくポスト処理なしの
-                    // HDRリニアで焼きます。
-                    RenderWithMatrices(
-                        faceView,
-                        faceProjection,
-                        false,
-                        false);
-                    m_graphics.Environment().CopyMirroredX(
-                        m_probeBakeResources
-                            ->scratchShaderResourceView
-                            .Get(),
-                        m_probeBakeResources
-                            ->faceTargets[face].Get(),
-                        ReflectionProbeBakeResources::
-                            FaceSize,
-                        ReflectionProbeBakeResources::
-                            FaceSize);
-                }
-                // 畳み込みはこのキューブをSRVとして読むので、
-                // 先に描画先から外します（プローブベイクと同じ罠）。
-                context->OMSetRenderTargets(
-                    0, nullptr, nullptr);
-                // スペキュラは使わないので照度だけ畳み込みます。
-                auto irradianceOnly =
-                    m_graphics.Environment()
-                        .CreatePrefilteredEnvironment(
-                            m_probeBakeResources
-                                ->cubeShaderResourceView
-                                .Get(),
-                            false);
-                if (irradianceOnly.irradiance == nullptr
-                    || !ProjectIrradianceToSh(
-                        m_graphics.Device(),
-                        context,
-                        irradianceOnly.irradiance.Get(),
-                        m_bakedGiWorking.data()
-                            + index * 12))
+                const auto coefficients =
+                    m_graphics.BakeIrradianceProbe(
+                        [this,
+                         &eye,
+                         &faceProjection](
+                            const std::uint32_t face)
+                        {
+                            const auto faceView =
+                                DirectX::XMMatrixLookToRH(
+                                    DirectX::XMLoadFloat3(
+                                        &eye),
+                                    DirectX::XMLoadFloat3(
+                                        &FaceDirections[face]),
+                                    DirectX::XMLoadFloat3(
+                                        &FaceUps[face]));
+                            // プローブベイクと同じくポスト処理なしの
+                            // HDRリニアで焼きます。
+                            RenderWithMatrices(
+                                faceView,
+                                faceProjection,
+                                false,
+                                false);
+                        });
+                if (!coefficients)
                 {
                     throw std::runtime_error(
                         "GI probe readback failed.");
                 }
+                std::copy(
+                    coefficients->begin(),
+                    coefficients->end(),
+                    m_bakedGiWorking.data() + index * 12);
             }
         }
         catch (const std::exception& exception)
         {
-            m_bakingReflectionProbes = false;
-            m_graphics.Gpu().EndSection();
             m_bakedGiBaking = false;
             Logger::Instance().Warning(
                 std::string{ "GIベイクに失敗しました: " }
                 + exception.what());
-            context->OMSetRenderTargets(
-                1,
-                previousTarget.GetAddressOf(),
-                previousDepth.Get());
-            if (previousViewportCount > 0)
-            {
-                context->RSSetViewports(
-                    1, &previousViewport);
-            }
             return;
         }
-        m_bakingReflectionProbes = false;
-        m_graphics.Gpu().EndSection();
-
-        // 描画先を戻します。
-        context->OMSetRenderTargets(
-            1,
-            previousTarget.GetAddressOf(),
-            previousDepth.Get());
-        if (previousViewportCount > 0)
+        catch (...)
         {
-            context->RSSetViewports(1, &previousViewport);
+            m_bakedGiBaking = false;
+            Logger::Instance().Warning(
+                "GIベイクに失敗しました: 不明な描画エラー");
+            return;
         }
+        bakingScope.Restore();
+        gpuSectionScope.End();
+        outputStateScope.Restore();
 
         if (m_bakedGiNextProbe < total)
         {
@@ -8556,57 +8168,12 @@ namespace LamaPon
         m_bakedGiTexturesDirty = false;
         m_bakedGiViews = {};
         const auto& shape = m_bakedGiBakedShape;
-        const std::size_t total =
-            static_cast<std::size_t>(shape.resolutionX)
-            * shape.resolutionY
-            * shape.resolutionZ;
-        if (total == 0 || m_bakedGiData.size() != total * 12)
-        {
-            return;
-        }
-        auto* const device = m_graphics.Device();
-        for (int channel = 0; channel < 3; ++channel)
-        {
-            D3D11_TEXTURE3D_DESC description{};
-            description.Width = shape.resolutionX;
-            description.Height = shape.resolutionY;
-            description.Depth = shape.resolutionZ;
-            description.MipLevels = 1;
-            description.Format =
-                DXGI_FORMAT_R16G16B16A16_FLOAT;
-            description.Usage = D3D11_USAGE_IMMUTABLE;
-            description.BindFlags =
-                D3D11_BIND_SHADER_RESOURCE;
-            D3D11_SUBRESOURCE_DATA initialData{};
-            initialData.pSysMem =
-                m_bakedGiData.data()
-                + static_cast<std::size_t>(channel)
-                    * total * 4;
-            initialData.SysMemPitch =
-                shape.resolutionX * 8;
-            initialData.SysMemSlicePitch =
-                shape.resolutionX
-                * shape.resolutionY * 8;
-            Microsoft::WRL::ComPtr<ID3D11Texture3D> texture;
-            if (FAILED(device->CreateTexture3D(
-                &description,
-                &initialData,
-                texture.ReleaseAndGetAddressOf())))
-            {
-                m_bakedGiViews = {};
-                return;
-            }
-            if (FAILED(device->CreateShaderResourceView(
-                texture.Get(),
-                nullptr,
-                m_bakedGiViews[
-                    static_cast<std::size_t>(channel)]
-                    .ReleaseAndGetAddressOf())))
-            {
-                m_bakedGiViews = {};
-                return;
-            }
-        }
+        m_bakedGiViews =
+            m_graphics.UploadBakedGlobalIlluminationViews(
+                shape.resolutionX,
+                shape.resolutionY,
+                shape.resolutionZ,
+                m_bakedGiData);
     }
 
     LightingState Scene::BuildLightingState() const noexcept

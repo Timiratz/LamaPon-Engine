@@ -1,6 +1,8 @@
 #pragma once
 
 #include "LamaPon/Graphics/EnvironmentSettings.h"
+#include "LamaPon/Graphics/GraphicsResource.h"
+#include "LamaPon/Graphics/PrefilteredEnvironment.h"
 
 #include <DirectXMath.h>
 #include <d3d11.h>
@@ -9,20 +11,25 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
+#include <memory>
+#include <optional>
 
 namespace LamaPon
 {
     class AssetManager;
+    class D3D11Backend;
+    class GraphicsDevice;
     class RenderTarget;
 
     class EnvironmentRenderer final
     {
     public:
-        EnvironmentRenderer(
-            ID3D11Device* device,
-            ID3D11DeviceContext* context,
-            AssetManager& assets,
-            const std::filesystem::path& shaderPath);
+        ~EnvironmentRenderer();
+
+        EnvironmentRenderer(const EnvironmentRenderer&) = delete;
+        EnvironmentRenderer& operator=(
+            const EnvironmentRenderer&) = delete;
 
         // 空に描く太陽。朝昼夜モード（SkySettings::sunDriven）の
         // ときにSceneが渡します。
@@ -36,12 +43,17 @@ namespace LamaPon
             float angularRadius{ 0.004625f };
         };
 
+    private:
+        // API 59以前のraw Sky入口はbinary互換shimとして残し、
+        // 新しいcallerはGraphicsDeviceのneutral facadeを通します。
         void DrawSky(
             DirectX::FXMMATRIX view,
             DirectX::CXMMATRIX projection,
             const SkySettings& settings,
             ID3D11ShaderResourceView* cubemap = nullptr,
             const SkySun* sun = nullptr);
+
+    public:
         void ApplyBloom(
             ID3D11ShaderResourceView* source,
             ID3D11RenderTargetView* destination,
@@ -121,8 +133,8 @@ namespace LamaPon
         // 戻り値がtrueなら描画先を入れ替えています。
         struct VolumetricInputs final
         {
-            ID3D11ShaderResourceView* depth{};
-            ID3D11ShaderResourceView* cascadeShadow{};
+            GraphicsViewHandle depth;
+            GraphicsViewHandle cascadeShadow;
             DirectX::XMFLOAT4X4 inverseViewProjection{};
             DirectX::XMFLOAT3 cameraPosition{};
             // 光源から出る向き。
@@ -137,8 +149,11 @@ namespace LamaPon
         // TAA（時間的アンチエイリアス）の解決に必要な入力。
         struct TemporalInputs final
         {
-            ID3D11ShaderResourceView* history{};
-            ID3D11ShaderResourceView* depth{};
+            // RenderTargetが所有する前フレームの解決済みカラーと深度です。
+            // native SRVはD3D11描画島の中で、同じBackend世代・期待形状を
+            // 検証した後にだけ解決します。
+            GraphicsViewHandle history;
+            GraphicsViewHandle depth;
             // 今のフレームの逆ビュー射影。ずらしを含まないもの
             // を渡してください。ずらし込みで復元すると履歴を読む
             // 位置が毎フレーム動き、輪郭がちらつきます。
@@ -249,15 +264,15 @@ namespace LamaPon
             ID3D11RenderTargetView* destination,
             std::uint32_t destinationWidth,
             std::uint32_t destinationHeight);
-        // 左右反転コピー（リフレクションプローブのベイク用。
-        // 理由はLamaPonEnvironment.hlslのPSCopyMirrorXを参照）。
-        void CopyMirroredX(
-            ID3D11ShaderResourceView* source,
-            ID3D11RenderTargetView* destination,
-            std::uint32_t destinationWidth,
-            std::uint32_t destinationHeight);
-
+        // 呼び出し側が設定済みの描画先とviewportを変えずにコピーします。
+        void CopyToBoundRenderTarget(
+            ID3D11ShaderResourceView* source);
         // IBLの事前フィルタ結果（split-sum近似）。
+        static constexpr std::uint32_t PrefilteredSpecularSize = 128;
+        static constexpr std::uint32_t PrefilteredSpecularMipLevels = 8;
+        static constexpr std::uint32_t PrefilteredIrradianceSize = 16;
+        static constexpr std::uint32_t PrefilteredIrradianceMipLevels = 1;
+
         struct PrefilteredEnvironment final
         {
             // ミップごとに粗さを上げてGGX畳み込みした
@@ -268,16 +283,6 @@ namespace LamaPon
             // specularの最終ミップ番号（粗さ→ミップ変換用）。
             float specularMaximumMip{};
         };
-
-        // ソースキューブマップの事前フィルタ結果を返します。
-        // 同じソースなら生成済みを再利用します（生成は1回だけ）。
-        // cacheKeyが0以外なら、生成のかわりにディスクの環境
-        // キャッシュを引き、外れたら生成して保存します（鍵は
-        // 呼ぶ側がソースの内容から作ります）。
-        [[nodiscard]] PrefilteredEnvironment
-            GetPrefilteredEnvironment(
-                ID3D11ShaderResourceView* source,
-                std::uint64_t cacheKey = 0);
 
         // 呼び出し側が所有する事前フィルタ結果。リフレクション
         // プローブのように「プローブごとに1組」を持ちたい場合に
@@ -296,13 +301,21 @@ namespace LamaPon
                     && irradiance != nullptr;
             }
         };
-        // includeSpecular=falseでスペキュラの畳み込みを飛ばします
-        // （照度しか使わないGIベイク用。resultのspecularは空になり、
-        // IsValid()は偽になるので、irradianceだけを見てください）。
-        [[nodiscard]] OwnedPrefilteredEnvironment
-            CreatePrefilteredEnvironment(
-                ID3D11ShaderResourceView* source,
-                bool includeSpecular = true);
+        // リフレクションプローブとGIが共有するキューブ面ベイクです。
+        // callbackは0..5の各面について同期的に1回ずつ呼ばれ、その間は
+        // HDRの面描画だけを行ってください。同じrendererへのBake再入は
+        // logic_errorになります。描画先の作成・clear・左右反転コピー・
+        // 畳み込み・readbackはこのD3D11描画島の内部で完結します。
+        static constexpr std::uint32_t ProbeBakeFaceSize =
+            EnvironmentProbeBakeFaceSize;
+        using ProbeFaceRenderer = EnvironmentProbeFaceRenderer;
+
+    private:
+        // SceneからD3D11描画島を隠すGraphicsDevice facadeが呼びます。
+        // 旧public symbolは.defでこのprivate実装へaliasします。
+        [[nodiscard]] std::optional<std::array<float, 12>>
+            BakeIrradianceProbe(
+                const ProbeFaceRenderer& renderFace);
 
         // SSRのHi-Z用の深度ピラミッドを作ります（ミップ0で深度→
         // ビュー距離、以降は2x2の最小値）。RenderTargetが持っている
@@ -314,6 +327,58 @@ namespace LamaPon
             float projectionW);
 
     private:
+        friend class GraphicsDevice;
+
+        // 公開constructorから生成するとneutral viewの解決先を安全に
+        // 関連付けられないため、GraphicsDeviceだけが構築します。
+        EnvironmentRenderer(
+            ID3D11Device* device,
+            ID3D11DeviceContext* context,
+            AssetManager& assets,
+            const std::filesystem::path& shaderPath);
+
+        // EnvironmentRendererはまだD3D11 islandですが、既存constructorの
+        // ABIを変えずにneutral inputの解決先だけを受け取ります。
+        void AttachD3D11Backend(D3D11Backend* backend) noexcept
+        {
+            m_backend = backend;
+        }
+
+        // 旧raw公開APIのbinary symbolはAPI 56以前のGame Moduleが
+        // API不一致案内へ到達できるようprivate shimとして残します。
+        // sourceとcacheKeyが同じ間だけ生成済み結果を再利用します。
+        [[nodiscard]] PrefilteredEnvironment
+            GetPrefilteredEnvironment(
+                ID3D11ShaderResourceView* source,
+                std::uint64_t cacheKey = 0);
+
+        // API 57以前のraw Reflection Probe入口はbinary互換shimとして
+        // privateに残し、新しいSceneはGraphicsDevice facadeを通ります。
+        void PrepareProbeBake();
+        [[nodiscard]] OwnedPrefilteredEnvironment
+            BakeReflectionProbe(
+                const ProbeFaceRenderer& renderFace,
+                std::optional<std::uint64_t> cacheKey =
+                    std::nullopt);
+
+        // includeSpecular=falseでスペキュラの畳み込みを飛ばします
+        // （照度しか使わないGIベイク用）。
+        [[nodiscard]] OwnedPrefilteredEnvironment
+            CreatePrefilteredEnvironment(
+                ID3D11ShaderResourceView* source,
+                bool includeSpecular = true);
+        void RenderProbeCube(
+            const ProbeFaceRenderer& renderFace);
+        [[nodiscard]] bool ProjectIrradianceToSh(
+            ID3D11ShaderResourceView* irradiance,
+            std::array<float, 12>& coefficients);
+        // 左右反転コピー（理由はLamaPonEnvironment.hlslの
+        // PSCopyMirrorXを参照）。
+        void CopyMirroredX(
+            ID3D11ShaderResourceView* source,
+            ID3D11RenderTargetView* destination,
+            std::uint32_t destinationWidth,
+            std::uint32_t destinationHeight);
         void BuildPrefilteredEnvironment(
             ID3D11ShaderResourceView* source,
             std::uint64_t cacheKey);
@@ -480,9 +545,14 @@ namespace LamaPon
 
         ID3D11Device* m_device{};
         ID3D11DeviceContext* m_context{};
-        // 事前フィルタのキャッシュ（ソースが変わったら再生成）。
+        D3D11Backend* m_backend{};
+        struct ProbeBakeResources;
+        std::unique_ptr<ProbeBakeResources> m_probeBakeResources;
+        bool m_probeBakeActive{};
+        // 事前フィルタのキャッシュ（sourceまたはcacheKeyで識別）。
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
             m_prefilterSource;
+        std::uint64_t m_prefilterCacheKey{};
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
             m_prefilteredSpecular;
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>

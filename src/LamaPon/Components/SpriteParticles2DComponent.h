@@ -10,14 +10,6 @@
 #include <string_view>
 #include <vector>
 
-namespace DirectX
-{
-    inline namespace DX11
-    {
-        class SpriteBatch;
-    }
-}
-
 namespace LamaPon
 {
     class AssetManager;
@@ -25,7 +17,7 @@ namespace LamaPon
     struct TextureAsset;
 
     // ワールド空間で小規模な2Dバーストを生成します。SpriteRendererと
-    // 同じSpriteBatch経路を使うため、専用のパーティクルシェーダーや
+    // 同じAPI非依存Sprite passを使うため、専用のパーティクルShaderや
     // テクスチャは不要で、1x1の白いテクスチャだけで描画できます。
     class SpriteParticles2DComponent final : public Component
     {
@@ -131,8 +123,7 @@ namespace LamaPon
         void OnInitialize(GraphicsDevice& graphics) override;
         void OnUpdate(float deltaTime) override;
         void OnRender2D(
-            DirectX::SpriteBatch& spriteBatch,
-            ID3D11ShaderResourceView* whiteTexture) override;
+            const SpriteDrawContext& sprites) override;
 
     private:
         struct Particle final

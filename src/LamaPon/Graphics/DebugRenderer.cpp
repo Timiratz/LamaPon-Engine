@@ -1,79 +1,42 @@
 #include "LamaPon/Graphics/DebugRenderer.h"
 
-#include <CommonStates.h>
-#include <Effects.h>
-#include <PrimitiveBatch.h>
-#include <VertexTypes.h>
-
-#include <d3d11.h>
-#include <wrl/client.h>
-
-#include <array>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 namespace LamaPon
 {
-    struct DebugRenderer::InputLayoutHolder final
-    {
-        Microsoft::WRL::ComPtr<ID3D11InputLayout> value;
-    };
-
     DebugRenderer::DebugRenderer(
-        ID3D11Device* device,
-        ID3D11DeviceContext* context)
-        : m_context(context)
-        , m_effect(std::make_unique<DirectX::BasicEffect>(device))
-        , m_states(std::make_unique<DirectX::CommonStates>(device))
-        , m_batch(std::make_unique<
-            DirectX::PrimitiveBatch<DirectX::VertexPositionColor>>(context))
-        , m_inputLayout(std::make_unique<InputLayoutHolder>())
+        std::unique_ptr<DebugDrawingBackend> backend)
+        : m_backend(std::move(backend))
     {
-        m_effect->SetVertexColorEnabled(true);
-
-        const void* shaderByteCode{};
-        std::size_t byteCodeLength{};
-        m_effect->GetVertexShaderBytecode(&shaderByteCode, &byteCodeLength);
-
-        const HRESULT result = device->CreateInputLayout(
-            DirectX::VertexPositionColor::InputElements,
-            DirectX::VertexPositionColor::InputElementCount,
-            shaderByteCode,
-            byteCodeLength,
-            m_inputLayout->value.ReleaseAndGetAddressOf());
-        if (FAILED(result))
+        if (!m_backend)
         {
-            throw std::runtime_error("Failed to create debug renderer input layout.");
+            throw std::invalid_argument(
+                "DebugRenderer requires a drawing backend.");
         }
     }
 
     DebugRenderer::~DebugRenderer() = default;
 
-    void DebugRenderer::Prepare(
+    void DebugRenderer::Submit(
+        const std::span<const DebugLine> lines,
         DirectX::FXMMATRIX view,
         DirectX::CXMMATRIX projection)
     {
-        // 直前に走ったパス（2D/UIのシザー矩形付きラスタライザー等）の
-        // 状態を引き継ぐと補助線が描画されないことがあるため、
-        // 必要なステートを毎回明示的に設定します。深度テストは無効にし、
-        // グリッドやコライダー枠が地面や自分の形状表面と同じ深度で
-        // Zファイティングして消えないよう、常に手前へ描きます。
-        m_context->OMSetBlendState(
-            m_states->NonPremultiplied(),
-            nullptr,
-            0xFFFFFFFF);
-        m_context->OMSetDepthStencilState(
-            m_states->DepthNone(),
-            0);
-        m_context->RSSetState(m_states->CullNone());
-
-        m_effect->SetWorld(DirectX::XMMatrixIdentity());
-        m_effect->SetView(view);
-        m_effect->SetProjection(projection);
-        m_effect->Apply(m_context);
-        m_context->IASetInputLayout(m_inputLayout->value.Get());
+        DirectX::XMFLOAT4X4 storedView{};
+        DirectX::XMFLOAT4X4 storedProjection{};
+        DirectX::XMStoreFloat4x4(&storedView, view);
+        DirectX::XMStoreFloat4x4(
+            &storedProjection,
+            projection);
+        m_backend->DrawLines(
+            lines,
+            storedView,
+            storedProjection);
     }
 
     void DebugRenderer::DrawBounds(
@@ -82,31 +45,31 @@ namespace LamaPon
         DirectX::FXMMATRIX view,
         DirectX::CXMMATRIX projection)
     {
-        Prepare(view, projection);
-
-        const DirectX::VertexPositionColor bottomLeft{
-            { bounds.minimum.x, bounds.minimum.y, 0.0f },
-            color
+        DirectX::XMFLOAT4 storedColor{};
+        DirectX::XMStoreFloat4(&storedColor, color);
+        const DirectX::XMFLOAT3 bottomLeft{
+            bounds.minimum.x,
+            bounds.minimum.y,
+            0.0f };
+        const DirectX::XMFLOAT3 bottomRight{
+            bounds.maximum.x,
+            bounds.minimum.y,
+            0.0f };
+        const DirectX::XMFLOAT3 topRight{
+            bounds.maximum.x,
+            bounds.maximum.y,
+            0.0f };
+        const DirectX::XMFLOAT3 topLeft{
+            bounds.minimum.x,
+            bounds.maximum.y,
+            0.0f };
+        const std::array lines{
+            DebugLine{ bottomLeft, bottomRight, storedColor },
+            DebugLine{ bottomRight, topRight, storedColor },
+            DebugLine{ topRight, topLeft, storedColor },
+            DebugLine{ topLeft, bottomLeft, storedColor }
         };
-        const DirectX::VertexPositionColor bottomRight{
-            { bounds.maximum.x, bounds.minimum.y, 0.0f },
-            color
-        };
-        const DirectX::VertexPositionColor topRight{
-            { bounds.maximum.x, bounds.maximum.y, 0.0f },
-            color
-        };
-        const DirectX::VertexPositionColor topLeft{
-            { bounds.minimum.x, bounds.maximum.y, 0.0f },
-            color
-        };
-
-        m_batch->Begin();
-        m_batch->DrawLine(bottomLeft, bottomRight);
-        m_batch->DrawLine(bottomRight, topRight);
-        m_batch->DrawLine(topRight, topLeft);
-        m_batch->DrawLine(topLeft, bottomLeft);
-        m_batch->End();
+        Submit(lines, view, projection);
     }
 
     void DebugRenderer::DrawBounds(
@@ -115,25 +78,25 @@ namespace LamaPon
         DirectX::FXMMATRIX view,
         DirectX::CXMMATRIX projection)
     {
-        Prepare(view, projection);
-
-        const std::array<DirectX::VertexPositionColor, 8> vertices{
-            DirectX::VertexPositionColor{
-                { bounds.minimum.x, bounds.minimum.y, bounds.minimum.z }, color },
-            DirectX::VertexPositionColor{
-                { bounds.maximum.x, bounds.minimum.y, bounds.minimum.z }, color },
-            DirectX::VertexPositionColor{
-                { bounds.maximum.x, bounds.maximum.y, bounds.minimum.z }, color },
-            DirectX::VertexPositionColor{
-                { bounds.minimum.x, bounds.maximum.y, bounds.minimum.z }, color },
-            DirectX::VertexPositionColor{
-                { bounds.minimum.x, bounds.minimum.y, bounds.maximum.z }, color },
-            DirectX::VertexPositionColor{
-                { bounds.maximum.x, bounds.minimum.y, bounds.maximum.z }, color },
-            DirectX::VertexPositionColor{
-                { bounds.maximum.x, bounds.maximum.y, bounds.maximum.z }, color },
-            DirectX::VertexPositionColor{
-                { bounds.minimum.x, bounds.maximum.y, bounds.maximum.z }, color }
+        DirectX::XMFLOAT4 storedColor{};
+        DirectX::XMStoreFloat4(&storedColor, color);
+        const std::array<DirectX::XMFLOAT3, 8> vertices{
+            DirectX::XMFLOAT3{
+                bounds.minimum.x, bounds.minimum.y, bounds.minimum.z },
+            DirectX::XMFLOAT3{
+                bounds.maximum.x, bounds.minimum.y, bounds.minimum.z },
+            DirectX::XMFLOAT3{
+                bounds.maximum.x, bounds.maximum.y, bounds.minimum.z },
+            DirectX::XMFLOAT3{
+                bounds.minimum.x, bounds.maximum.y, bounds.minimum.z },
+            DirectX::XMFLOAT3{
+                bounds.minimum.x, bounds.minimum.y, bounds.maximum.z },
+            DirectX::XMFLOAT3{
+                bounds.maximum.x, bounds.minimum.y, bounds.maximum.z },
+            DirectX::XMFLOAT3{
+                bounds.maximum.x, bounds.maximum.y, bounds.maximum.z },
+            DirectX::XMFLOAT3{
+                bounds.minimum.x, bounds.maximum.y, bounds.maximum.z }
         };
         constexpr std::array edges{
             std::pair{ 0, 1 }, std::pair{ 1, 2 },
@@ -144,12 +107,18 @@ namespace LamaPon
             std::pair{ 2, 6 }, std::pair{ 3, 7 }
         };
 
-        m_batch->Begin();
-        for (const auto [start, end] : edges)
+        std::array<DebugLine, edges.size()> lines{};
+        for (std::size_t index = 0;
+            index < edges.size();
+            ++index)
         {
-            m_batch->DrawLine(vertices[start], vertices[end]);
+            const auto [start, end] = edges[index];
+            lines[index] = DebugLine{
+                vertices[start],
+                vertices[end],
+                storedColor };
         }
-        m_batch->End();
+        Submit(lines, view, projection);
     }
 
     void DebugRenderer::DrawGridXZ(
@@ -163,23 +132,23 @@ namespace LamaPon
             return;
         }
 
-        Prepare(view, projection);
-
         const int lineCount = std::clamp(
             static_cast<int>(std::ceil(halfExtent / spacing)),
             1,
             200);
         const float extent = spacing * static_cast<float>(lineCount);
-        const auto minorColor =
-            DirectX::XMVectorSet(0.22f, 0.25f, 0.30f, 0.48f);
-        const auto majorColor =
-            DirectX::XMVectorSet(0.34f, 0.38f, 0.45f, 0.65f);
-        const auto xAxisColor =
-            DirectX::XMVectorSet(0.85f, 0.20f, 0.20f, 0.90f);
-        const auto zAxisColor =
-            DirectX::XMVectorSet(0.20f, 0.42f, 0.90f, 0.90f);
+        constexpr DirectX::XMFLOAT4 minorColor{
+            0.22f, 0.25f, 0.30f, 0.48f };
+        constexpr DirectX::XMFLOAT4 majorColor{
+            0.34f, 0.38f, 0.45f, 0.65f };
+        constexpr DirectX::XMFLOAT4 xAxisColor{
+            0.85f, 0.20f, 0.20f, 0.90f };
+        constexpr DirectX::XMFLOAT4 zAxisColor{
+            0.20f, 0.42f, 0.90f, 0.90f };
 
-        m_batch->Begin();
+        std::vector<DebugLine> lines;
+        lines.reserve(static_cast<std::size_t>(
+            (lineCount * 2 + 1) * 2));
         for (int index = -lineCount; index <= lineCount; ++index)
         {
             const float coordinate = spacing * static_cast<float>(index);
@@ -190,26 +159,16 @@ namespace LamaPon
                 ? xAxisColor
                 : (index % 5 == 0 ? majorColor : minorColor);
 
-            m_batch->DrawLine(
-                DirectX::VertexPositionColor{
-                    { -extent, 0.0f, coordinate },
-                    xLineColor
-                },
-                DirectX::VertexPositionColor{
-                    { extent, 0.0f, coordinate },
-                    xLineColor
-                });
-            m_batch->DrawLine(
-                DirectX::VertexPositionColor{
-                    { coordinate, 0.0f, -extent },
-                    zLineColor
-                },
-                DirectX::VertexPositionColor{
-                    { coordinate, 0.0f, extent },
-                    zLineColor
-                });
+            lines.push_back(DebugLine{
+                { -extent, 0.0f, coordinate },
+                { extent, 0.0f, coordinate },
+                xLineColor });
+            lines.push_back(DebugLine{
+                { coordinate, 0.0f, -extent },
+                { coordinate, 0.0f, extent },
+                zLineColor });
         }
-        m_batch->End();
+        Submit(lines, view, projection);
     }
 
     void DebugRenderer::DrawGridXY(
@@ -223,23 +182,23 @@ namespace LamaPon
             return;
         }
 
-        Prepare(view, projection);
-
         const int lineCount = std::clamp(
             static_cast<int>(std::ceil(halfExtent / spacing)),
             1,
             200);
         const float extent = spacing * static_cast<float>(lineCount);
-        const auto minorColor =
-            DirectX::XMVectorSet(0.22f, 0.25f, 0.30f, 0.48f);
-        const auto majorColor =
-            DirectX::XMVectorSet(0.34f, 0.38f, 0.45f, 0.65f);
-        const auto xAxisColor =
-            DirectX::XMVectorSet(0.85f, 0.20f, 0.20f, 0.90f);
-        const auto yAxisColor =
-            DirectX::XMVectorSet(0.20f, 0.78f, 0.28f, 0.90f);
+        constexpr DirectX::XMFLOAT4 minorColor{
+            0.22f, 0.25f, 0.30f, 0.48f };
+        constexpr DirectX::XMFLOAT4 majorColor{
+            0.34f, 0.38f, 0.45f, 0.65f };
+        constexpr DirectX::XMFLOAT4 xAxisColor{
+            0.85f, 0.20f, 0.20f, 0.90f };
+        constexpr DirectX::XMFLOAT4 yAxisColor{
+            0.20f, 0.78f, 0.28f, 0.90f };
 
-        m_batch->Begin();
+        std::vector<DebugLine> lines;
+        lines.reserve(static_cast<std::size_t>(
+            (lineCount * 2 + 1) * 2));
         for (int index = -lineCount; index <= lineCount; ++index)
         {
             const float coordinate = spacing * static_cast<float>(index);
@@ -250,26 +209,16 @@ namespace LamaPon
                 ? yAxisColor
                 : (index % 5 == 0 ? majorColor : minorColor);
 
-            m_batch->DrawLine(
-                DirectX::VertexPositionColor{
-                    { -extent, coordinate, 0.0f },
-                    horizontalColor
-                },
-                DirectX::VertexPositionColor{
-                    { extent, coordinate, 0.0f },
-                    horizontalColor
-                });
-            m_batch->DrawLine(
-                DirectX::VertexPositionColor{
-                    { coordinate, -extent, 0.0f },
-                    verticalColor
-                },
-                DirectX::VertexPositionColor{
-                    { coordinate, extent, 0.0f },
-                    verticalColor
-                });
+            lines.push_back(DebugLine{
+                { -extent, coordinate, 0.0f },
+                { extent, coordinate, 0.0f },
+                horizontalColor });
+            lines.push_back(DebugLine{
+                { coordinate, -extent, 0.0f },
+                { coordinate, extent, 0.0f },
+                verticalColor });
         }
-        m_batch->End();
+        Submit(lines, view, projection);
     }
 
     void DebugRenderer::DrawLines(
@@ -284,23 +233,20 @@ namespace LamaPon
             return;
         }
 
-        Prepare(view, projection);
-        m_batch->Begin();
+        DirectX::XMFLOAT4 storedColor{};
+        DirectX::XMStoreFloat4(&storedColor, color);
+        std::vector<DebugLine> lines;
+        lines.reserve(points.size() / 2);
         for (std::size_t index = 1;
             index < points.size();
             index += 2)
         {
-            m_batch->DrawLine(
-                DirectX::VertexPositionColor(
-                    DirectX::XMLoadFloat3(
-                        &points[index - 1]),
-                    color),
-                DirectX::VertexPositionColor(
-                    DirectX::XMLoadFloat3(
-                        &points[index]),
-                    color));
+            lines.push_back(DebugLine{
+                points[index - 1],
+                points[index],
+                storedColor });
         }
-        m_batch->End();
+        Submit(lines, view, projection);
     }
 
     void DebugRenderer::DrawFrustum(
@@ -335,15 +281,14 @@ namespace LamaPon
             DirectX::XMFLOAT3{ -farHalfWidth, farHalfHeight, -safeFar }
         };
 
-        std::array<DirectX::VertexPositionColor, 8> vertices{};
+        std::array<DirectX::XMFLOAT3, 8> vertices{};
         for (std::size_t index = 0; index < localCorners.size(); ++index)
         {
             DirectX::XMStoreFloat3(
-                &vertices[index].position,
+                &vertices[index],
                 DirectX::XMVector3Transform(
                     DirectX::XMLoadFloat3(&localCorners[index]),
                     cameraWorld));
-            vertices[index].color = storedColor;
         }
 
         DirectX::XMFLOAT3 origin{};
@@ -352,10 +297,6 @@ namespace LamaPon
             DirectX::XMVector3Transform(
                 DirectX::XMVectorZero(),
                 cameraWorld));
-        const DirectX::VertexPositionColor cameraOrigin{
-            origin,
-            storedColor
-        };
 
         constexpr std::array edges{
             std::pair{ 0, 1 }, std::pair{ 1, 2 },
@@ -366,17 +307,23 @@ namespace LamaPon
             std::pair{ 2, 6 }, std::pair{ 3, 7 }
         };
 
-        Prepare(view, projection);
-        m_batch->Begin();
+        std::array<DebugLine, edges.size() + 4> lines{};
+        std::size_t lineIndex{};
         for (const auto [start, end] : edges)
         {
-            m_batch->DrawLine(vertices[start], vertices[end]);
+            lines[lineIndex++] = DebugLine{
+                vertices[start],
+                vertices[end],
+                storedColor };
         }
         for (std::size_t corner = 4; corner < vertices.size(); ++corner)
         {
-            m_batch->DrawLine(cameraOrigin, vertices[corner]);
+            lines[lineIndex++] = DebugLine{
+                origin,
+                vertices[corner],
+                storedColor };
         }
-        m_batch->End();
+        Submit(lines, view, projection);
     }
 
     void DebugRenderer::DrawDirectionalLight(
@@ -420,43 +367,50 @@ namespace LamaPon
 
         XMFLOAT4 storedColor{};
         XMStoreFloat4(&storedColor, color);
-        const auto vertex =
-            [&storedColor](FXMVECTOR position)
+        const auto storePosition =
+            [](FXMVECTOR position)
             {
-                VertexPositionColor result{};
-                XMStoreFloat3(&result.position, position);
-                result.color = storedColor;
+                XMFLOAT3 result{};
+                XMStoreFloat3(&result, position);
                 return result;
             };
 
-        Prepare(view, projection);
-        m_batch->Begin();
-        m_batch->DrawLine(vertex(origin), vertex(end));
-        m_batch->DrawLine(
-            vertex(end),
-            vertex(XMVectorMultiplyAdd(
-                XMVectorReplicate(0.22f),
-                right,
-                arrowBase)));
-        m_batch->DrawLine(
-            vertex(end),
-            vertex(XMVectorMultiplyAdd(
-                XMVectorReplicate(-0.22f),
-                right,
-                arrowBase)));
-        m_batch->DrawLine(
-            vertex(end),
-            vertex(XMVectorMultiplyAdd(
-                XMVectorReplicate(0.22f),
-                up,
-                arrowBase)));
-        m_batch->DrawLine(
-            vertex(end),
-            vertex(XMVectorMultiplyAdd(
-                XMVectorReplicate(-0.22f),
-                up,
-                arrowBase)));
-        m_batch->End();
+        const XMFLOAT3 storedEnd = storePosition(end);
+        const std::array lines{
+            DebugLine{
+                storePosition(origin),
+                storedEnd,
+                storedColor },
+            DebugLine{
+                storedEnd,
+                storePosition(XMVectorMultiplyAdd(
+                    XMVectorReplicate(0.22f),
+                    right,
+                    arrowBase)),
+                storedColor },
+            DebugLine{
+                storedEnd,
+                storePosition(XMVectorMultiplyAdd(
+                    XMVectorReplicate(-0.22f),
+                    right,
+                    arrowBase)),
+                storedColor },
+            DebugLine{
+                storedEnd,
+                storePosition(XMVectorMultiplyAdd(
+                    XMVectorReplicate(0.22f),
+                    up,
+                    arrowBase)),
+                storedColor },
+            DebugLine{
+                storedEnd,
+                storePosition(XMVectorMultiplyAdd(
+                    XMVectorReplicate(-0.22f),
+                    up,
+                    arrowBase)),
+                storedColor }
+        };
+        Submit(lines, view, projection);
     }
 
     void DebugRenderer::DrawPointLight(
@@ -478,8 +432,8 @@ namespace LamaPon
         XMFLOAT4 storedColor{};
         XMStoreFloat4(&storedColor, color);
 
-        const auto makeVertex =
-            [&center, &storedColor, displayRadius](
+        const auto makePosition =
+            [&center, displayRadius](
                 const float first,
                 const float second,
                 const int plane)
@@ -500,11 +454,11 @@ namespace LamaPon
                     position.y += first * displayRadius;
                     position.z += second * displayRadius;
                 }
-                return VertexPositionColor{ position, storedColor };
+                return position;
             };
 
-        Prepare(view, projection);
-        m_batch->Begin();
+        std::vector<DebugLine> lines;
+        lines.reserve(SegmentCount * 3);
         for (int plane = 0; plane < 3; ++plane)
         {
             for (std::size_t segment = 0;
@@ -519,18 +473,19 @@ namespace LamaPon
                     XM_2PI
                     * static_cast<float>(segment + 1)
                     / static_cast<float>(SegmentCount);
-                m_batch->DrawLine(
-                    makeVertex(
+                lines.push_back(DebugLine{
+                    makePosition(
                         std::cos(firstAngle),
                         std::sin(firstAngle),
                         plane),
-                    makeVertex(
+                    makePosition(
                         std::cos(secondAngle),
                         std::sin(secondAngle),
-                        plane));
+                        plane),
+                    storedColor });
             }
         }
-        m_batch->End();
+        Submit(lines, view, projection);
     }
 
     void DebugRenderer::DrawSpotLight(
@@ -567,17 +522,14 @@ namespace LamaPon
 
         XMFLOAT4 storedColor{};
         XMStoreFloat4(&storedColor, color);
-        const auto vertex =
-            [&storedColor](FXMVECTOR position)
+        const auto storePosition =
+            [](FXMVECTOR position)
             {
-                VertexPositionColor result{};
-                XMStoreFloat3(&result.position, position);
-                result.color = storedColor;
+                XMFLOAT3 result{};
+                XMStoreFloat3(&result, position);
                 return result;
             };
 
-        Prepare(view, projection);
-        m_batch->Begin();
         std::array<XMVECTOR, SegmentCount> ring{};
         for (std::size_t segment = 0;
             segment < SegmentCount;
@@ -597,22 +549,26 @@ namespace LamaPon
                         up,
                         std::sin(angle) * coneRadius)));
         }
+        std::array<DebugLine, SegmentCount + 4> lines{};
+        std::size_t lineIndex{};
         for (std::size_t segment = 0;
             segment < SegmentCount;
             ++segment)
         {
-            m_batch->DrawLine(
-                vertex(ring[segment]),
-                vertex(ring[(segment + 1) % SegmentCount]));
+            lines[lineIndex++] = DebugLine{
+                storePosition(ring[segment]),
+                storePosition(ring[(segment + 1) % SegmentCount]),
+                storedColor };
         }
         for (const std::size_t corner :
             { std::size_t{ 0 }, std::size_t{ 6 },
               std::size_t{ 12 }, std::size_t{ 18 } })
         {
-            m_batch->DrawLine(
-                vertex(origin),
-                vertex(ring[corner]));
+            lines[lineIndex++] = DebugLine{
+                storePosition(origin),
+                storePosition(ring[corner]),
+                storedColor };
         }
-        m_batch->End();
+        Submit(lines, view, projection);
     }
 }

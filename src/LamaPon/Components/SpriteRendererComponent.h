@@ -1,5 +1,6 @@
 #pragma once
 
+#include "LamaPon/Graphics/SpriteRendering.h"
 #include "LamaPon/Scene/Component.h"
 
 #include <DirectXMath.h>
@@ -149,7 +150,7 @@ namespace LamaPon
         {
             return m_shaderGeneration;
         }
-        DirectX::SpriteBatch& BeginRenderBatch(
+        [[nodiscard]] SpriteRenderPass BeginRenderPass(
             GraphicsDevice& graphics);
         [[nodiscard]] std::string_view TypeName() const noexcept override { return "SpriteRenderer"; }
         [[nodiscard]] int RenderSortOrder() const noexcept override
@@ -160,8 +161,7 @@ namespace LamaPon
     protected:
         void OnInitialize(GraphicsDevice& graphics) override;
         void OnRender2D(
-            DirectX::SpriteBatch& spriteBatch,
-            ID3D11ShaderResourceView* whiteTexture) override;
+            const SpriteDrawContext& sprites) override;
 
     private:
         DirectX::XMFLOAT2 m_size;

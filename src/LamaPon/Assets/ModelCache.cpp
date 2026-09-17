@@ -965,6 +965,10 @@ namespace LamaPon::ModelCache
                     cpuVertices.data(),
                     reader.data + reader.offset,
                     vertexBytes);
+                primitive.cpuVertexData.assign(
+                    reader.data + reader.offset,
+                    reader.data + reader.offset + vertexBytes);
+                primitive.cpuVertexStride = sizeof(ModelVertex);
                 CreateBuffer(
                     device,
                     assets,
@@ -1038,6 +1042,7 @@ namespace LamaPon::ModelCache
                             .ReleaseAndGetAddressOf());
                     reader.offset += indexBytes;
                 }
+                primitive.cpuIndices = cpuIndices;
 
                 if (primitive.skin < 0
                     && primitive.hasLocalBounds)
@@ -1055,6 +1060,8 @@ namespace LamaPon::ModelCache
                         {
                             continue;
                         }
+                        primitive.cpuLodIndices[level] =
+                            lodLevels[level];
                         CreateBuffer(
                             device,
                             assets,

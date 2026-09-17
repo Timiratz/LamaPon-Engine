@@ -2,15 +2,14 @@
 
 #include "LamaPon/Assets/AssetManager.h"
 #include "LamaPon/Core/PathUtils.h"
+#include "LamaPon/Editor/EditorGuiRenderer.h"
 #include "LamaPon/Editor/EditorLayerShared.h"
+#include "LamaPon/Editor/EditorModelPreviewRenderer.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Graphics/LitMaterial.h"
 #include "LamaPon/Graphics/RenderTarget.h"
-#include "LamaPon/Graphics/SkeletalModel.h"
 
 #include <Windows.h>
-#include <Effects.h>
-#include <Model.h>
 #include <imgui.h>
 #include <nlohmann/json.hpp>
 
@@ -239,6 +238,8 @@ namespace LamaPon
     }
 
     void VehicleParametersPanel::Draw(
+        EditorGuiRenderer& guiRenderer,
+        EditorModelPreviewRenderer& modelPreviewRenderer,
         const std::string& title,
         bool& open,
         const std::function<void()>& onSaved)
@@ -556,12 +557,12 @@ namespace LamaPon
                         std::round(
                             static_cast<float>(previewTargetWidth)
                             / previewAspect)));
-                m_topPreview->Resize(
-                    m_graphics.Device(),
+                m_graphics.ResizeOffscreenTarget(
+                    *m_topPreview,
                     previewTargetWidth,
                     previewTargetHeight);
-                m_sidePreview->Resize(
-                    m_graphics.Device(),
+                m_graphics.ResizeOffscreenTarget(
+                    *m_sidePreview,
                     previewTargetWidth,
                     previewTargetHeight);
 
@@ -586,7 +587,9 @@ namespace LamaPon
                     std::max({ sizeX, sizeY, sizeZ }) * 3.0f
                     + 1.0f;
 
-                const auto renderWireframe = [this](
+                const auto renderWireframe = [
+                    this,
+                    &modelPreviewRenderer](
                     RenderTarget& target,
                     const DirectX::XMMATRIX& view,
                     const DirectX::XMMATRIX& projection)
@@ -594,8 +597,9 @@ namespace LamaPon
                     constexpr float clear[]{
                         0.035f, 0.045f, 0.06f, 1.0f
                     };
-                    target.Bind(m_graphics.Context());
-                    target.Clear(m_graphics.Context(), clear);
+                    m_graphics.BeginOffscreenTarget(
+                        target,
+                        clear);
                     const LitMaterial material{
                         DirectX::XMFLOAT4{
                             0.15f, 0.82f, 1.0f, 1.0f
@@ -604,48 +608,14 @@ namespace LamaPon
                         {},
                         0.8f
                     };
-                    if (m_state.previewModel->skeletalModel)
-                    {
-                        m_state.previewModel->skeletalModel->Draw(
-                            m_graphics.Context(),
-                            m_graphics.States(),
-                            m_graphics.Lighting(),
-                            DirectX::XMMatrixIdentity(),
-                            view,
-                            projection,
-                            nullptr,
-                            0.0f,
-                            true,
-                            &material);
-                    }
-                    else if (m_state.previewModel->model)
-                    {
-                        m_state.previewModel->model->UpdateEffects(
-                            [](DirectX::IEffect* effect)
-                            {
-                                if (auto* const basic =
-                                        dynamic_cast<
-                                            DirectX::BasicEffect*>(
-                                                effect))
-                                {
-                                    basic->SetTextureEnabled(false);
-                                    basic->SetDiffuseColor(
-                                        DirectX::XMVectorSet(
-                                            0.15f,
-                                            0.82f,
-                                            1.0f,
-                                            1.0f));
-                                }
-                            });
-                        m_state.previewModel->model->Draw(
-                            m_graphics.Context(),
-                            m_graphics.States(),
-                            DirectX::XMMatrixIdentity(),
-                            view,
-                            projection,
-                            true);
-                    }
-                    target.CopyToDisplay(m_graphics.Context());
+                    modelPreviewRenderer.DrawModel(
+                        *m_state.previewModel,
+                        DirectX::XMMatrixIdentity(),
+                        view,
+                        projection,
+                        material,
+                        true);
+                    m_graphics.PublishOffscreenTarget(target);
                 };
 
                 const auto focus = DirectX::XMLoadFloat3(&center3);
@@ -707,18 +677,16 @@ namespace LamaPon
                         distance * 2.0f));
 
                 draw->AddImage(
-                    MakeTextureReference(
-                        m_topPreview
-                            ->DisplayShaderResourceView()),
+                    guiRenderer.DisplayTextureReference(
+                        *m_topPreview),
                     ImVec2{ origin.x, origin.y + 25.0f },
                     ImVec2{
                         origin.x + previewWidth,
                         origin.y + 25.0f + previewHeight
                     });
                 draw->AddImage(
-                    MakeTextureReference(
-                        m_sidePreview
-                            ->DisplayShaderResourceView()),
+                    guiRenderer.DisplayTextureReference(
+                        *m_sidePreview),
                     ImVec2{
                         origin.x + area.x - previewWidth,
                         origin.y + 25.0f

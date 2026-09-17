@@ -83,8 +83,7 @@ namespace LamaPon
     protected:
         void OnInitialize(GraphicsDevice& graphics) override;
         void OnRender2D(
-            DirectX::SpriteBatch& spriteBatch,
-            ID3D11ShaderResourceView* whiteTexture) override;
+            const SpriteDrawContext& sprites) override;
 
     private:
         void RefreshTexture();

@@ -19,6 +19,7 @@
 
 #include "LamaPon/LamaPon.h"
 
+#include "LamaPon/Graphics/GraphicsDeviceD3D11Access.h"
 #include "LamaPon/Graphics/ShaderCompiler.h"
 
 #include <Windows.h>
@@ -32,9 +33,13 @@
 #include <string>
 #include <system_error>
 #include <thread>
+#include <wrl/client.h>
 
 namespace
 {
+    using D3D11Access =
+        LamaPon::Detail::GraphicsDeviceD3D11Access;
+
     constexpr std::uint32_t Width = 64;
     constexpr std::uint32_t Height = 64;
 
@@ -109,6 +114,95 @@ namespace
         std::filesystem::path m_path;
     };
 
+    class ThrowOnceRenderComponent final
+        : public LamaPon::Component
+    {
+    public:
+        enum class Failure
+        {
+            None,
+            Standard,
+            NonStandard
+        };
+
+        void FailNext(const Failure failure) noexcept
+        {
+            m_failure = failure;
+        }
+
+    protected:
+        void OnRender3D(
+            DirectX::FXMMATRIX,
+            DirectX::CXMMATRIX) override
+        {
+            const auto failure = m_failure;
+            m_failure = Failure::None;
+            if (failure == Failure::Standard)
+            {
+                throw std::runtime_error(
+                    "Injected probe render failure.");
+            }
+            if (failure == Failure::NonStandard)
+            {
+                throw 42;
+            }
+        }
+
+    private:
+        Failure m_failure{};
+    };
+
+    struct OutputBindingSnapshot final
+    {
+        Microsoft::WRL::ComPtr<ID3D11RenderTargetView> color;
+        Microsoft::WRL::ComPtr<ID3D11DepthStencilView> depth;
+        D3D11_VIEWPORT viewport{};
+        bool hasViewport{};
+    };
+
+    [[nodiscard]] OutputBindingSnapshot CaptureOutputBinding(
+        ID3D11DeviceContext* const context)
+    {
+        OutputBindingSnapshot snapshot;
+        context->OMGetRenderTargets(
+            1,
+            snapshot.color.ReleaseAndGetAddressOf(),
+            snapshot.depth.ReleaseAndGetAddressOf());
+        UINT viewportCount = 1;
+        context->RSGetViewports(
+            &viewportCount,
+            &snapshot.viewport);
+        snapshot.hasViewport = viewportCount > 0;
+        return snapshot;
+    }
+
+    void RequireSameOutputBinding(
+        const OutputBindingSnapshot& expected,
+        const OutputBindingSnapshot& actual,
+        const char* const message)
+    {
+        const bool sameViewport =
+            expected.hasViewport == actual.hasViewport
+            && (!expected.hasViewport
+                || (expected.viewport.TopLeftX
+                        == actual.viewport.TopLeftX
+                    && expected.viewport.TopLeftY
+                        == actual.viewport.TopLeftY
+                    && expected.viewport.Width
+                        == actual.viewport.Width
+                    && expected.viewport.Height
+                        == actual.viewport.Height
+                    && expected.viewport.MinDepth
+                        == actual.viewport.MinDepth
+                    && expected.viewport.MaxDepth
+                        == actual.viewport.MaxDepth));
+        Require(
+            expected.color.Get() == actual.color.Get()
+                && expected.depth.Get() == actual.depth.Get()
+                && sameViewport,
+            message);
+    }
+
     void WriteFile(
         const std::filesystem::path& path,
         const std::string& contents)
@@ -175,11 +269,19 @@ int main()
         Stage("initialize");
         graphics.Initialize(window, Width, Height);
         graphics.Assets().SetAssetRoot(root.Path());
+        const auto initializeEnvironment = [&graphics]
+        {
+            const auto identity = DirectX::XMMatrixIdentity();
+            graphics.DrawSky(
+                identity,
+                identity,
+                LamaPon::SkySettings{});
+        };
 
         Stage("first-failure");
         LamaPon::ResetShaderCompileStatistics();
         const auto first =
-            FailureOf([&] { static_cast<void>(graphics.Environment()); });
+            FailureOf(initializeEnvironment);
         Require(
             !first.empty(),
             "a broken built-in shader must still throw");
@@ -195,7 +297,7 @@ int main()
         for (int frame = 0; frame < 5; ++frame)
         {
             const auto repeated =
-                FailureOf([&] { static_cast<void>(graphics.Environment()); });
+                FailureOf(initializeEnvironment);
             Require(
                 repeated == first,
                 "the remembered failure must be returned as-is");
@@ -255,10 +357,169 @@ int main()
         std::this_thread::sleep_for(
             std::chrono::milliseconds(2500));
         const auto recovered =
-            FailureOf([&] { static_cast<void>(graphics.Environment()); });
+            FailureOf(initializeEnvironment);
         Require(
             recovered.empty(),
             "fixing the shader must bring rendering back");
+
+        // ベイク中のScene描画が例外で止まっても、フレームのprimary
+        // outputと再入フラグを残しません。標準例外はreflection経路、
+        // 非標準例外はfail-softなGI経路をそれぞれ通します。
+        Stage("probe-output-recovery");
+        constexpr float clearColor[]{
+            0.01f, 0.02f, 0.03f, 1.0f
+        };
+        graphics.BeginFrame(clearColor);
+        const auto primaryOutput =
+            CaptureOutputBinding(D3D11Access::Context(graphics));
+
+        LamaPon::Scene probeScene(graphics);
+        auto& probeObject =
+            probeScene.CreateGameObject("Failure probe");
+        auto& probe = probeObject.AddComponent<
+            LamaPon::ReflectionProbeComponent>();
+        auto& throwObject =
+            probeScene.CreateGameObject("Throw once");
+        auto& thrower = throwObject.AddComponent<
+            ThrowOnceRenderComponent>();
+
+        thrower.FailNext(
+            ThrowOnceRenderComponent::Failure::Standard);
+        const auto reflectionFailure = FailureOf(
+            [&]
+            {
+                probeScene.RenderMainCamera(
+                    graphics.AspectRatio(),
+                    false);
+            });
+        Require(
+            reflectionFailure
+                    == "Injected probe render failure."
+                && probe.IsBakeRequested(),
+            "reflection probe failure must propagate and remain retryable");
+        RequireSameOutputBinding(
+            primaryOutput,
+            CaptureOutputBinding(D3D11Access::Context(graphics)),
+            "reflection probe failure leaked its output binding");
+
+        const auto reflectionRetry = FailureOf(
+            [&]
+            {
+                probeScene.RenderMainCamera(
+                    graphics.AspectRatio(),
+                    false);
+            });
+        Require(
+            reflectionRetry.empty() && probe.IsBaked(),
+            "reflection probe failure left the bake guard active");
+
+        auto gi = probeScene.BakedGlobalIllumination();
+        gi.enabled = true;
+        gi.resolutionX = 1;
+        gi.resolutionY = 1;
+        gi.resolutionZ = 1;
+        probeScene.SetBakedGlobalIlluminationSettings(gi);
+        probeScene.RequestBakedGlobalIlluminationBake();
+        thrower.FailNext(
+            ThrowOnceRenderComponent::Failure::NonStandard);
+        bool giFailureEscaped{};
+        try
+        {
+            probeScene.RenderMainCamera(
+                graphics.AspectRatio(),
+                false);
+        }
+        catch (...)
+        {
+            giFailureEscaped = true;
+        }
+        Require(
+            !giFailureEscaped
+                && probeScene
+                    .BakedGlobalIlluminationBakeProgress() < 0.0f,
+            "GI bake must fail softly for a non-standard render error");
+        RequireSameOutputBinding(
+            primaryOutput,
+            CaptureOutputBinding(D3D11Access::Context(graphics)),
+            "GI probe failure leaked its output binding");
+
+        probeScene.RequestBakedGlobalIlluminationBake();
+        const auto giRetry = FailureOf(
+            [&]
+            {
+                probeScene.RenderMainCamera(
+                    graphics.AspectRatio(),
+                    false);
+            });
+        Require(
+            giRetry.empty()
+                && probeScene.HasBakedGlobalIllumination(),
+            "GI probe failure left the shared bake guard active");
+        RequireSameOutputBinding(
+            primaryOutput,
+            CaptureOutputBinding(D3D11Access::Context(graphics)),
+            "successful probe retry did not restore its output binding");
+
+        // レンダーテクスチャも描画先とUI基準サイズを一時変更します。
+        // 途中で失敗した後、同じSceneを即座に再試行できるところまで
+        // 確認し、再入フラグの取り残しも検出します。
+        Stage("render-target-output-recovery");
+        const auto primaryUIWidth = graphics.UIWidth();
+        const auto primaryUIHeight = graphics.UIHeight();
+        LamaPon::Scene targetScene(graphics);
+        auto& cameraObject =
+            targetScene.CreateGameObject("Target camera");
+        auto& targetCamera = cameraObject.AddComponent<
+            LamaPon::CameraComponent>();
+        targetCamera.SetTargetTexture("failure-target");
+        targetCamera.SetTargetTextureSize(17, 19);
+        auto& targetThrowObject =
+            targetScene.CreateGameObject("Target throw once");
+        auto& targetThrower = targetThrowObject.AddComponent<
+            ThrowOnceRenderComponent>();
+        targetThrower.FailNext(
+            ThrowOnceRenderComponent::Failure::Standard);
+
+        const auto targetFailure = FailureOf(
+            [&] { targetScene.RenderTargetTextures(); });
+        Require(
+            targetFailure == "Injected probe render failure.",
+            "render target failure must propagate");
+        RequireSameOutputBinding(
+            primaryOutput,
+            CaptureOutputBinding(D3D11Access::Context(graphics)),
+            "render target failure leaked its output binding");
+        Require(
+            graphics.UIWidth() == primaryUIWidth
+                && graphics.UIHeight() == primaryUIHeight,
+            "render target failure leaked its UI viewport size");
+
+        const auto targetRetry = FailureOf(
+            [&] { targetScene.RenderTargetTextures(); });
+        Require(
+            targetRetry.empty(),
+            "render target failure left its re-entry guard active");
+        RequireSameOutputBinding(
+            primaryOutput,
+            CaptureOutputBinding(D3D11Access::Context(graphics)),
+            "render target retry did not restore its output binding");
+        Require(
+            graphics.UIWidth() == primaryUIWidth
+                && graphics.UIHeight() == primaryUIHeight,
+            "render target retry did not restore its UI viewport size");
+
+        // 失敗した内側のsectionまで閉じた後、新しい区間をdepth 0で
+        // 開けることも同じフレーム内で確認します。
+        {
+            LamaPon::GpuProfiler::SectionScope marker{
+                graphics.Gpu(),
+                "probe failure recovery marker"
+            };
+            Require(
+                marker.InitialDepth() == 0,
+                "probe failure leaked a nested GPU profiler section");
+        }
+        graphics.EndFrame();
 
         std::cout << "Render failure checks passed."
                   << std::endl;

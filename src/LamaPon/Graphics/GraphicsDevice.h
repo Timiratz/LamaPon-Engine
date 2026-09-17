@@ -1,12 +1,15 @@
 #pragma once
 
+#include "LamaPon/Graphics/EnvironmentRenderer.h"
 #include "LamaPon/Graphics/GpuProfiler.h"
+#include "LamaPon/Graphics/GraphicsBackend.h"
+#include "LamaPon/Graphics/GraphicsDeviceResourceLease.h"
 #include "LamaPon/Graphics/Lighting.h"
 #include "LamaPon/Graphics/GraphicsQuality.h"
 #include "LamaPon/Graphics/ShaderVariants.h"
+#include "LamaPon/Graphics/SpriteRendering.h"
 
 #include <d3d11.h>
-#include <d3d11sdklayers.h>
 #include <DirectXMath.h>
 #include <wrl/client.h>
 
@@ -14,8 +17,11 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <future>
 #include <memory>
+#include <optional>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -31,6 +37,16 @@ namespace DirectX
 
 namespace LamaPon
 {
+    namespace Detail
+    {
+        class GraphicsDeviceApiResources;
+        class GraphicsDeviceD3D11Access;
+        class GraphicsDeviceD3D12Access;
+        struct GraphicsDeviceD3D11Resources;
+        struct MaterialShaderDrawRequest;
+        struct MaterialShaderPasses;
+    }
+
     struct FrameStatistics final
     {
         float framesPerSecond{};
@@ -75,18 +91,35 @@ namespace LamaPon
     class AudioSystem;
     class ClusteredLights;
     class DebugRenderer;
-    class EnvironmentRenderer;
     class InputSystem;
     class LitEffect;
+    class ModelRendererComponent;
+    class MeshRendererComponent;
+    class ParticleSystemComponent;
+    class D3D12EditorModelPreviewRenderer;
+    struct LitTextureRequest;
+    struct ReflectionProbeEnvironment;
+    struct ParticleDrawRequest;
+    struct PrimitiveDrawRequest;
+    struct ShaderRenderState;
     class SpriteEffect;
     class ShadowMap;
     class RenderTarget;
     class ScreenEffect;
     class ComputeEffect;
+    struct TextureResourceSnapshot;
+    struct AutoExposureSettings;
+    struct AmbientOcclusionSettings;
     struct BloomSettings;
+    struct ScreenOutlineSettings;
     struct ScreenSpaceLensFlareSettings;
+    struct TemporalAntiAliasingSettings;
+    struct TemporalAntiAliasingInputs;
+    struct VolumetricLightSettings;
+    struct VolumetricLightInputs;
+    struct DepthOfFieldSettings;
+    struct MotionBlurSettings;
     struct ColorGradingSettings;
-    struct Sprite2DLighting;
     struct SceneLoadingScreenSettings;
     struct VolumetricLightFrame;
     struct TemporalAntiAliasingFrame;
@@ -172,7 +205,30 @@ namespace LamaPon
         GraphicsDevice(const GraphicsDevice&) = delete;
         GraphicsDevice& operator=(const GraphicsDevice&) = delete;
 
+        // このDeviceから作られたresourceを外部で保持する期間のleaseです。
+        // Sceneは自動で保持します。独自renderer等も、再初期化を安全に
+        // 拒否させる必要がある場合はresourceより長く保持してください。
+        [[nodiscard]] GraphicsDeviceResourceLease
+            AcquireResourceLease();
+
         void Initialize(HWND window, std::uint32_t width, std::uint32_t height);
+        // 同じインスタンスの再初期化はGraphicsDevice自身が所有するGPU
+        // 資源を作り直します。SceneやComponent等が外部に保持する旧Device
+        // 資源は呼び出し前に破棄してください。実行中のAPI切り替えを提供する
+        // ものではありません。
+        void Initialize(
+            HWND window,
+            std::uint32_t width,
+            std::uint32_t height,
+            RenderingApi requestedApi);
+        // bootstrap期とのソース互換用overloadです。現在はprofileに
+        // かかわらずrequestedApiを起動します。
+        void Initialize(
+            HWND window,
+            std::uint32_t width,
+            std::uint32_t height,
+            RenderingApi requestedApi,
+            GraphicsStartupProfile profile);
         void Resize(std::uint32_t width, std::uint32_t height);
 
         // Initialize前に呼ぶと、GPUの代わりにWARP（CPUラスタライザ）
@@ -207,51 +263,37 @@ namespace LamaPon
                 std::uint32_t& height) const;
 
         void BeginFrame(const float clearColor[4]);
-        DirectX::SpriteBatch& BeginSprites();
-        // lightingを渡すと、組み込みの2D照明Shaderが読む灯り一覧を
-        // b1の専用バッファへ載せます。CustomParameters（8本しかなく、
-        // 自作Shaderの持ち物）を使わないので16灯まで扱えます。
-        // nullptrのときは空の一覧を載せます（前の描画の灯りが残って
-        // 「消したのにまだ光る」状態になるのを防ぐため）。
-        DirectX::SpriteBatch& BeginSprites(
-            const std::filesystem::path& shaderPath,
-            const std::array<DirectX::XMFLOAT4, 8>&
-                customParameters,
-            std::uint64_t* generation = nullptr,
-            std::string* error = nullptr,
-            const Sprite2DLighting* lighting = nullptr);
-        void EndSprites();
-        // 2D/UIスプライトパス中にクリッピング矩形を適用します
-        // （UIピクセル座標）。入れ子は交差矩形になります。
-        void PushUIScissor(
-            float minimumX,
-            float minimumY,
-            float maximumX,
-            float maximumY);
-        void PopUIScissor();
-        // インスタンス描画用の共有ダイナミック頂点バッファへ
-        // データを書き込み、そのバッファを返します（スロット1用）。
-        [[nodiscard]] ID3D11Buffer* AcquireInstanceBuffer(
-            const void* data,
-            std::size_t bytes);
+        // API非依存のSprite描画scopeです。passが生きている間はDeviceの
+        // 再初期化をleaseで拒否し、destructorで描画終了を試みます。
+        [[nodiscard]] SpriteRenderPass BeginSpritePass(
+            const SpritePassDescription& description = {});
+        // インスタンス描画用の共有ダイナミック頂点バッファを
+        // 更新し、API非依存handleで返します。copyして保持できますが、
+        // 再初期化前のhandleは新しいBackendではnative解決できません。
+        [[nodiscard]] GraphicsBufferHandle AcquireInstanceBufferHandle(
+            std::span<const std::byte> data);
+        // handleのAPI固有実体を公開せず、vertex bufferとして
+        // 指定slotへbindします。empty / stale handleは拒否します。
+        void BindVertexBuffer(
+            const GraphicsBufferHandle& buffer,
+            std::uint32_t slot,
+            std::uint32_t stride,
+            std::uint32_t offset = 0);
+        // API非依存viewをpixel shaderへbindします。empty / stale /
+        // 異種viewはentryごとにfallbackへ倒し、範囲不正や未初期化では
+        // pipeline stateを変更せずfalseを返します。
+        [[nodiscard]] bool TryBindPixelShaderResources(
+            std::uint32_t firstSlot,
+            std::span<const GraphicsViewHandle> resources,
+            const GraphicsViewHandle& fallback = {}) noexcept;
         // 深度だけを書くパスに切り替えます。レンダラーはライティングと
         // ピクセルシェーダーを省いた描画を行います。
         // 種別を分けているのは、メインビューの深度プリパスだけは
         // 「メインパスとまったく同じ深度を書けるもの」に限る必要が
         // あるためです（詳細はDepthPassKind）。
-        void SetDepthPass(const DepthPassKind kind) noexcept
-        {
-            m_depthPass = kind;
-        }
-        [[nodiscard]] DepthPassKind
-            DepthPass() const noexcept
-        {
-            return m_depthPass;
-        }
-        [[nodiscard]] bool IsDepthOnlyPass() const noexcept
-        {
-            return m_depthPass != DepthPassKind::None;
-        }
+        void SetDepthPass(DepthPassKind kind) noexcept;
+        [[nodiscard]] DepthPassKind DepthPass() const noexcept;
+        [[nodiscard]] bool IsDepthOnlyPass() const noexcept;
         void EndFrame();
         void BeginSceneComposition(const float clearColor[4]);
         void EndSceneComposition(
@@ -283,22 +325,13 @@ namespace LamaPon
         // とEndSceneCompositionの間だけ有効です。深度プリパスを
         // 走らせるためにScene側へ渡します。
         [[nodiscard]] RenderTarget*
-            SceneCompositionTarget() const noexcept
-        {
-            return m_sceneCompositionTarget.get();
-        }
+            SceneCompositionTarget() const noexcept;
         // 直前に3Dを描いたときの射影行列。SSAOが深度をビュー空間へ
         // 戻すのに使います（Scene側の描画が毎回設定します）。
         void SetSceneProjection(
-            const DirectX::XMFLOAT4X4& projection) noexcept
-        {
-            m_sceneProjection = projection;
-        }
+            const DirectX::XMFLOAT4X4& projection) noexcept;
         [[nodiscard]] const DirectX::XMFLOAT4X4&
-            SceneProjection() const noexcept
-        {
-            return m_sceneProjection;
-        }
+            SceneProjection() const noexcept;
         void DrawLoadingScreen(
             float progress,
             const SceneLoadingScreenSettings& settings,
@@ -314,20 +347,29 @@ namespace LamaPon
         void ApplyQualityPreset(
             GraphicsQualityPreset preset);
         [[nodiscard]] const GraphicsSettings&
-            Settings() const noexcept
+            Settings() const noexcept;
+        // 実際に生成されたBackendの描画APIです。要求された設定は
+        // Settings().renderingApi に保持します。
+        [[nodiscard]] RenderingApi
+            ActiveRenderingApi() const noexcept;
+        // Initialize時に選択された設定です。実行中の設定変更では
+        // 書き換えず、再起動が必要かどうかの判定に使います。
+        [[nodiscard]] RenderingApi
+            StartupRenderingApi() const noexcept;
+        // 起動時の要求と生成されたBackendが異なる理由です。
+        [[nodiscard]] RenderingApiFallbackReason
+            RenderingApiFallback() const noexcept;
+        // 旧名はGame Moduleのソース互換用です。trueならD3D12
+        // Experimental rendererが実際に起動しています。
+        [[nodiscard]] bool IsD3D12ExperimentalBootstrap() const noexcept;
+        [[nodiscard]] bool IsD3D12ExperimentalRenderer() const noexcept
         {
-            return m_graphicsSettings;
+            return IsD3D12ExperimentalBootstrap();
         }
         [[nodiscard]] const FrameStatistics&
-            FrameStats() const noexcept
-        {
-            return m_frameStatistics;
-        }
+            FrameStats() const noexcept;
         [[nodiscard]] const GraphicsMemoryStatistics&
-            MemoryStats() const noexcept
-        {
-            return m_memoryStatistics;
-        }
+            MemoryStats() const noexcept;
         // 通常はBeginFrameが低頻度で更新します。ベンチマークで
         // リソース確保直後を測る場合だけforce=trueを指定します。
         void RefreshMemoryStatistics(
@@ -338,43 +380,235 @@ namespace LamaPon
         // 代役シェーダーの使用回数を0へ戻します。「この1フレームで
         // 代役が使われたか」を測りたいときに、そのフレームを描く
         // 直前で呼びます（FrameStatisticsのコメントを参照）。
-        void ResetShaderFallbackDraws() noexcept
-        {
-            m_frameStatistics.shaderFallbackDraws = 0;
-        }
+        void ResetShaderFallbackDraws() noexcept;
         // falseの場合はVSyncを無効にしてもFPSがモニターの
         // リフレッシュレートを超えないため、統計へ表示します。
-        [[nodiscard]] bool TearingAllowed() const noexcept
-        {
-            return m_tearingAllowed;
-        }
+        [[nodiscard]] bool TearingAllowed() const noexcept;
 
-        [[nodiscard]] bool IsInitialized() const noexcept { return m_device != nullptr; }
-        [[nodiscard]] ID3D11Device* Device() const noexcept { return m_device.Get(); }
-        [[nodiscard]] ID3D11DeviceContext* Context() const noexcept { return m_context.Get(); }
-        [[nodiscard]] ID3D11ShaderResourceView* WhiteTexture() const noexcept { return m_whiteTexture.Get(); }
+        [[nodiscard]] bool IsInitialized() const noexcept;
+        // API固有のDevice / Contextを呼び出し側へ渡さず、オフスクリーン
+        // 描画先を操作するための共通境界です。RenderTargetの具象資源は
+        // この境界の内側でactive Backendに対応するopaque stateへ
+        // 生成・差し替えられます。
+        void ResizeOffscreenTarget(
+            RenderTarget& target,
+            std::uint32_t width,
+            std::uint32_t height);
+        // targetを描画先へ設定してから、色と深度をclearColorで初期化
+        // します。UIの基準サイズやGPU計測区間は変更しません。
+        void BeginOffscreenTarget(
+            RenderTarget& target,
+            const float clearColor[4]);
+        // clearせずにtargetを描画先へ戻します。ポスト処理後に補助表示を
+        // 重ねる場合など、完成途中の内容を保ったまま再開するために使います。
+        void BindOffscreenTarget(RenderTarget& target);
+        // 完成画像を表示専用資源へ確定します。targetのunbindや
+        // バックバッファへの復帰は行わず、呼び出し側の描画順を保ちます。
+        void PublishOffscreenTarget(RenderTarget& target);
+        // カラーを割り当てず、targetの深度だけを描画先にします。
+        // 深度はclearせず、描画先の復元も行いません。
+        void BindOffscreenTargetDepthOnly(RenderTarget& target);
+        // 現在の深度をtarget内のshader-readableなコピーへ控えます。
+        // 描画先のbind状態は変更しません。
+        void CaptureOffscreenTargetDepth(RenderTarget& target);
+        // 現在のHDRカラーと行列をSSRの次フレーム用履歴へ控えます。
+        // 現在フレームが旧履歴を読み終えた後に呼んでください。
+        void CaptureOffscreenTargetColorHistory(
+            RenderTarget& target,
+            const DirectX::XMFLOAT4X4& viewProjection);
+        // TAAで解決した現在のカラーと、ずらし無しの行列を
+        // 次フレーム用履歴へ控えます。
+        void CaptureOffscreenTargetTemporalHistory(
+            RenderTarget& target,
+            const DirectX::XMFLOAT4X4& viewProjection);
+        // ポスト処理のD3D11 rendererを公開せず、RenderTargetとneutral
+        // frame入力をactive Backendの描画島へ渡す移行境界です。
+        [[nodiscard]] bool ResolveOffscreenTargetAmbientOcclusion(
+            RenderTarget& target,
+            const AmbientOcclusionSettings& settings,
+            const DirectX::XMFLOAT4X4& projection,
+            std::uint32_t sampleCount);
+        void ApplyOffscreenTargetTemporalAntiAliasing(
+            RenderTarget& target,
+            const TemporalAntiAliasingSettings& settings,
+            const TemporalAntiAliasingInputs& inputs);
+        void ApplyOffscreenTargetVolumetricLight(
+            RenderTarget& target,
+            const VolumetricLightSettings& settings,
+            const VolumetricLightInputs& inputs);
+        void ApplyOffscreenTargetDepthOfField(
+            RenderTarget& target,
+            const DepthOfFieldSettings& settings,
+            const DirectX::XMFLOAT4X4& projection,
+            std::uint32_t sampleCount);
+        void ApplyOffscreenTargetMotionBlur(
+            RenderTarget& target,
+            const MotionBlurSettings& settings,
+            const DirectX::XMFLOAT4X4& inverseViewProjection,
+            const DirectX::XMFLOAT4X4& viewProjection,
+            std::uint32_t sampleCount);
+        void ApplyOffscreenTargetBloom(
+            RenderTarget& target,
+            const BloomSettings& settings);
+        void ApplyOffscreenTargetScreenSpaceLensFlare(
+            RenderTarget& target,
+            const ScreenSpaceLensFlareSettings& settings);
+        void ApplyOffscreenTargetToneMapping(
+            RenderTarget& target,
+            const ColorGradingSettings& settings);
+        void ApplyOffscreenTargetScreenOutline(
+            RenderTarget& target,
+            const ScreenOutlineSettings& settings,
+            const DirectX::XMFLOAT4X4& projection);
+        void ApplyOffscreenTargetFXAA(RenderTarget& target);
+        // トーンマップ前のHDRから画面全体の明るさを測り、露出への
+        // 補正（段数）を返します。前フレームの非同期readback、CPU側の
+        // 順応、現在フレームの測定と次回用転送をこの順で行います。
+        [[nodiscard]] float UpdateOffscreenTargetAutoExposure(
+            RenderTarget& target,
+            const AutoExposureSettings& settings,
+            float deltaSeconds);
+        // 影マップの指定スライスへ描画を開始し、終了時に元の描画先へ
+        // 戻します。無効な影、範囲外、再入、Begin前のEndは何もしません。
+        void BeginShadowMap(
+            ShadowMap& shadowMap,
+            std::uint32_t cascadeIndex);
+        void EndShadowMap(ShadowMap& shadowMap);
+        // Forward+のライトカリングを実効Backendへ委譲します。
+        // width/heightは描画先のピクセルサイズです。
+        void UpdateClusteredLights(
+            LightingState& lighting,
+            DirectX::FXMMATRIX view,
+            DirectX::CXMMATRIX projection,
+            std::uint32_t width,
+            std::uint32_t height);
+        // 一時描画の前にprimary output bindingを控え、同じ描画区間で
+        // 復元します。tokenは取得元のGraphicsDeviceだけで使えます。
+        [[nodiscard]] std::unique_ptr<GraphicsOutputState>
+            CaptureOutputState();
+        void RestoreOutputState(
+            const GraphicsOutputState& state);
+
+        // 値で返し、再初期化で内部handleが差し替わっても取得時点のresource
+        // snapshotを安全に保持できるようにします。
+        [[nodiscard]] GraphicsTextureHandle
+            WhiteTextureHandle() const noexcept;
+        [[nodiscard]] GraphicsViewHandle
+            WhiteTextureViewHandle() const noexcept;
+        // API非依存resource操作をactive Backendへ転送します。
+        [[nodiscard]] GraphicsTextureHandle CreateTexture2D(
+            const GraphicsTexture2DDescription& description,
+            std::span<const GraphicsTextureSubresourceData>
+                initialData);
+        [[nodiscard]] GraphicsTextureHandle CreateTexture3D(
+            const GraphicsTexture3DDescription& description,
+            std::span<const GraphicsTextureSubresourceData>
+                initialData);
+        void UpdateTexture2D(
+            const GraphicsTextureHandle& texture,
+            std::uint32_t mipLevel,
+            const GraphicsTextureSubresourceData& data);
+        [[nodiscard]] GraphicsViewHandle CreateShaderResourceView(
+            const GraphicsTextureHandle& texture,
+            const GraphicsTextureViewDescription& description);
+        [[nodiscard]] bool IsGraphicsViewCurrent(
+            const GraphicsViewHandle& view) const noexcept;
         [[nodiscard]] AssetManager& Assets() const;
         [[nodiscard]] AssetManager* TryAssets() const noexcept;
         [[nodiscard]] AudioSystem& Audio() const;
         [[nodiscard]] InputSystem& Input() const;
-        [[nodiscard]] DirectX::CommonStates& States() const;
-        // 宣言blend:additive用の純加算ブレンド（RGB: One+One）。
-        // DirectXTKのAdditive（SrcAlpha加重）と違い、書き込み先の
-        // アルファを一切汚さない（Alpha: Zero+One）。シーンバッファの
-        // アルファは後段（被写界深度のCoC等）が意味を持って読むため、
-        // 加算描画がdstA += srcAで積み上げると後段が黒く巻き込まれる。
-        [[nodiscard]] ID3D11BlendState* AdditiveBlendPreservingAlpha() const;
         [[nodiscard]] DebugRenderer& Debug() const;
         // GPU区間計測（タイムスタンプクエリ）。フレームの
         // 開始/終了はBeginFrame/EndFrameが自動で行います。
-        [[nodiscard]] GpuProfiler& Gpu() noexcept
-        {
-            return m_gpuProfiler;
-        }
-        [[nodiscard]] EnvironmentRenderer& Environment() const;
-        // クラスタライトカリング（Forward+）。初回アクセス時に
-        // Compute Shaderをコンパイルして作ります。
-        [[nodiscard]] ClusteredLights& Clusters() const;
+        [[nodiscard]] GpuProfiler& Gpu() noexcept;
+        // Sky cubemapをnative SRVへ公開せず、現在のBackend世代に
+        // 属するsampleableなTextureCubeかを確認します。
+        [[nodiscard]] bool IsSampleableCubeView(
+            const GraphicsViewHandle& cubemap) const noexcept;
+        // empty / stale / foreign / TextureCube以外のcubemapはグラデーション
+        // Skyへ安全にフォールバックします。
+        void DrawSky(
+            DirectX::FXMMATRIX view,
+            DirectX::CXMMATRIX projection,
+            const SkySettings& settings,
+            const GraphicsViewHandle& cubemap = {},
+            const SkySunDescription* sun = nullptr) const;
+        // SSRのHi-Z深度ピラミッドを、RenderTargetのnative viewを
+        // Sceneへ公開せずに生成します。
+        [[nodiscard]] bool TryBuildReflectionDepthPyramid(
+            RenderTarget& target,
+            float projectionZ,
+            float projectionW) const noexcept;
+        // GI probeの6面描画とSH readbackをD3D11描画島に閉じ込めます。
+        [[nodiscard]] std::optional<std::array<float, 12>>
+            BakeIrradianceProbe(
+                const EnvironmentProbeFaceRenderer& renderFace) const;
+        // 共通Sky IBLをneutral viewへ変換する境界です。同じsource/key
+        // ならhandleを再利用し、生成・取込のどこかで失敗した場合は
+        // 片方だけを公開せず全emptyを返します。
+        [[nodiscard]] PrefilteredEnvironmentViews
+            TryGetPrefilteredEnvironmentViews(
+                const GraphicsViewHandle& source,
+                std::uint64_t cacheKey = 0) const noexcept;
+        // Reflection Probeの共有ベイク資源と結果をneutral境界から
+        // 扱います。Bake中のScene描画失敗は従来どおり呼び出し元へ
+        // 伝え、cache missだけはempty resultとして安全に扱います。
+        void PrepareEnvironmentProbeBake() const;
+        [[nodiscard]] PrefilteredEnvironmentViews
+            BakeReflectionProbeViews(
+                const EnvironmentProbeFaceRenderer& renderFace,
+                std::optional<std::uint64_t> cacheKey =
+                    std::nullopt) const;
+        [[nodiscard]] PrefilteredEnvironmentViews
+            TryLoadCachedEnvironmentViews(
+                std::uint64_t key) const noexcept;
+        // [R, G, B] x probe x RGBAのfp16係数から、RGB別のRGBA16F
+        // Texture3DをAPI非依存handleで3枚作ります。失敗時は全emptyです。
+        [[nodiscard]] std::array<GraphicsViewHandle, 3>
+            UploadBakedGlobalIlluminationViews(
+                std::uint32_t width,
+                std::uint32_t height,
+                std::uint32_t depth,
+                std::span<const std::uint16_t> coefficients)
+                    const noexcept;
+        // RendererがAPI固有SRVへ触れずにLitEffectへtextureを設定する
+        // 移行用bridgeです。requestは直後の描画が終わるまで保持します。
+        // 別DeviceのEffectまたは不正なnon-empty viewは、Effectを変更せず
+        // falseで拒否します。empty viewは正常な未指定として扱います。
+        [[nodiscard]] bool TrySetLitEffectTextures(
+            LitEffect& effect,
+            const LitTextureRequest& request) const noexcept;
+        bool TrySetLitEffectTextures(
+            LitEffect& effect,
+            LitTextureRequest&& request) const = delete;
+        bool TrySetLitEffectTextures(
+            LitEffect& effect,
+            const LitTextureRequest&& request) const = delete;
+        // LightingState内のneutral viewを描画API固有viewへすべて
+        // 解決・検証してからEffectへ一括反映します。lightingは直後の
+        // 描画が終わるまで各viewを保持してください。不正な組み合わせや
+        // 別DeviceのEffectでは何も変更せずfalseを返します。
+        [[nodiscard]] bool TrySetLitEffectLighting(
+            LitEffect& effect,
+            const LightingState& lighting) const noexcept;
+        bool TrySetLitEffectLighting(
+            LitEffect& effect,
+            LightingState&& lighting) const = delete;
+        bool TrySetLitEffectLighting(
+            LitEffect& effect,
+            const LightingState&& lighting) const = delete;
+        // オブジェクト単位のReflection Probeを同世代・正しいcube形状
+        // へ全解決してから、LitEffectへprimary/secondaryを一括反映します。
+        // probeまたは元Componentは直後のDraw完了までhandleを保持します。
+        [[nodiscard]] bool TrySetLitEffectReflectionProbe(
+            LitEffect& effect,
+            const ReflectionProbeEnvironment& probe) const noexcept;
+        bool TrySetLitEffectReflectionProbe(
+            LitEffect& effect,
+            ReflectionProbeEnvironment&& probe) const = delete;
+        bool TrySetLitEffectReflectionProbe(
+            LitEffect& effect,
+            const ReflectionProbeEnvironment&& probe) const = delete;
         [[nodiscard]] LitEffect& Lit() const;
         // スキニングモデル（glTF/FBX）用のLamaPon Lit。
         // カスタムShader未指定のモデルはSkinnedLitで描画します。
@@ -384,9 +618,6 @@ namespace LamaPon
         // いない古いプロジェクトを開いた場合など）。
         [[nodiscard]] LitEffect* ShaderErrorPlaceholder(
             const bool skinned) const;
-        // 2D（スプライト／UI／パーティクル）用の同じもの。
-        [[nodiscard]] SpriteEffect*
-            SpriteErrorPlaceholder() const;
         // keywordsはバリアント（#pragma multi_compile）の選択です。
         // 組み合わせごとに別のLitEffectが作られ、それぞれ別々に
         // キャッシュされます。
@@ -399,15 +630,9 @@ namespace LamaPon
         // 読むときだけで、かつ配布物は全部事前コンパイル済みなので
         // 待ち時間がありません。
         void SetAsyncShaderCompilationEnabled(
-            const bool enabled) noexcept
-        {
-            m_asyncShaderCompilation = enabled;
-        }
+            bool enabled) noexcept;
         [[nodiscard]] bool
-            IsAsyncShaderCompilationEnabled() const noexcept
-        {
-            return m_asyncShaderCompilation;
-        }
+            IsAsyncShaderCompilationEnabled() const noexcept;
         // そのマテリアルのシェーダーが今コンパイル中か
         // （Inspectorの表示用）。
         [[nodiscard]] bool IsShaderCompiling(
@@ -435,6 +660,28 @@ namespace LamaPon
             const ShaderKeywordSet& keywords = {}) const;
         void InvalidateMaterialShader(
             const std::filesystem::path& shaderPath) const;
+        // DirectX 12 ExperimentalのMesh Rendererで、Material custom shaderを
+        // D3D11のLitEffectと同じ定数・texture枠・描画状態で描きます。
+        // compileに失敗したときはerrorへ説明を入れ、D3D11と同じマゼンタの
+        // 代替表示で描きます。DirectX 12以外ではfalseを返します。
+        [[nodiscard]] bool DrawMaterialShaderPrimitive(
+            const PrimitiveDrawRequest& request,
+            const Detail::MaterialShaderDrawRequest& material,
+            std::uint64_t& generation,
+            std::string& error);
+        // DirectX 12で描いたMaterial custom shaderの描画状態です。まだ
+        // 使えるShaderを用意していないときはfalseを返します。
+        [[nodiscard]] bool TryGetMaterialShaderRenderState(
+            const std::filesystem::path& shaderPath,
+            const ShaderKeywordSet& keywords,
+            ShaderRenderState& state) const;
+        // DirectX 12で、Material custom shaderがD3D11のLitEffectと同じ輪郭
+        // （VSOutline／PSOutline）と遮蔽表示（PSOccluded）の入口を持つかです。
+        // まだ用意していないShaderはここでcompileします。DirectX 12以外では
+        // どちらもfalseです。
+        [[nodiscard]] Detail::MaterialShaderPasses PrepareMaterialShaderPasses(
+            const std::filesystem::path& shaderPath,
+            const ShaderKeywordSet& keywords);
         void InvalidateSpriteShader(
             const std::filesystem::path& shaderPath) const;
         // Sprite/Particle 共通のピクセルシェーダー経路です。
@@ -469,33 +716,17 @@ namespace LamaPon
         [[nodiscard]] ShadowMap& Shadows() const;
         [[nodiscard]] ShadowMap& SpotShadows() const;
         [[nodiscard]] ShadowMap& PointShadows() const;
-        void SetLightingState(const LightingState& lighting) noexcept
-        {
-            m_lightingState = lighting;
-        }
-        [[nodiscard]] const LightingState& Lighting() const noexcept
-        {
-            return m_lightingState;
-        }
-        [[nodiscard]] std::uint32_t Width() const noexcept { return m_width; }
-        [[nodiscard]] std::uint32_t Height() const noexcept { return m_height; }
+        void SetLightingState(const LightingState& lighting) noexcept;
+        [[nodiscard]] const LightingState& Lighting() const noexcept;
+        [[nodiscard]] std::uint32_t Width() const noexcept;
+        [[nodiscard]] std::uint32_t Height() const noexcept;
         void SetUIViewportSize(
             std::uint32_t width,
-            std::uint32_t height) noexcept
-        {
-            m_uiWidth = width == 0 ? 1 : width;
-            m_uiHeight = height == 0 ? 1 : height;
-        }
+            std::uint32_t height) noexcept;
         [[nodiscard]] std::uint32_t
-            UIWidth() const noexcept
-        {
-            return m_uiWidth;
-        }
+            UIWidth() const noexcept;
         [[nodiscard]] std::uint32_t
-            UIHeight() const noexcept
-        {
-            return m_uiHeight;
-        }
+            UIHeight() const noexcept;
         void SetSprite2DOffset(
             const DirectX::XMFLOAT2& offset) noexcept;
         [[nodiscard]] const DirectX::XMFLOAT2&
@@ -523,9 +754,9 @@ namespace LamaPon
             std::uint32_t height);
         [[nodiscard]] const RenderTarget* FindRenderTexture(
             const std::string& name) const noexcept;
-        // 表示用SRV（描画完了後のコピー）。未作成ならnullptr。
-        [[nodiscard]] ID3D11ShaderResourceView*
-            RenderTextureView(
+        // 表示用resourceを強所有するAPI非依存handleです。未作成ならempty。
+        [[nodiscard]] GraphicsViewHandle
+            RenderTextureViewHandle(
                 const std::string& name) const noexcept;
         bool ReleaseRenderTexture(
             const std::string& name);
@@ -536,6 +767,46 @@ namespace LamaPon
 
     private:
         friend class Application;
+        friend class ModelRendererComponent;
+        friend class MeshRendererComponent;
+        friend class ParticleSystemComponent;
+        friend class D3D12EditorModelPreviewRenderer;
+        friend class SkeletalModel;
+        friend class Detail::GraphicsDeviceD3D11Access;
+        friend class Detail::GraphicsDeviceD3D12Access;
+        friend struct Detail::GraphicsDeviceD3D11Resources;
+        friend class Detail::SpriteRenderPassState;
+
+        // API 64以前のGame Moduleが旧public名を解決してAPI不一致案内へ
+        // 到達できるよう、D3D11 native accessorの実装をprivate shimとして
+        // 維持します。engine内のD3D11描画島はSDK非公開access bridgeを
+        // 使用し、新しい公開コードはAPI-neutral handle/facadeを使用します。
+        [[nodiscard]] ID3D11Device* Device() const noexcept;
+        [[nodiscard]] ID3D11DeviceContext* Context() const noexcept;
+        [[nodiscard]] DirectX::CommonStates& States() const;
+        // 宣言blend:additive用の純加算ブレンド（RGB: One+One、
+        // Alpha: Zero+One）です。
+        [[nodiscard]] ID3D11BlendState*
+            AdditiveBlendPreservingAlpha() const;
+        // empty/stale/別Backendのhandleは例外を外へ出さずnullptrへ倒し、
+        // 旧Device resourceのbindを防ぎます。
+        [[nodiscard]] ID3D11ShaderResourceView*
+            TryResolveD3D11ShaderResourceView(
+                const GraphicsViewHandle& view) const noexcept;
+        // neutral handleがあるsnapshotではhandle側を正とし、stale handle
+        // からlegacy raw pointerへはfallbackしません。
+        [[nodiscard]] ID3D11ShaderResourceView*
+            TryResolveD3D11ShaderResourceView(
+                const TextureResourceSnapshot& resources)
+                const noexcept;
+
+        // API 60以前のraw renderer取得口はbinary互換shimとして残し、
+        // engine内部のneutral facadeだけが使用します。
+        [[nodiscard]] EnvironmentRenderer& Environment() const;
+        // Scene compositionの現在カラーを既定出力へ転送します。native
+        // view解決とD3D11 copy shaderは実装側の描画島に閉じ込めます。
+        void CopyOffscreenTargetToBackBuffer(
+            const RenderTarget& target);
 
         // 組み込みシェーダーの組み立てに失敗した時刻とエラーを保持します。
         struct BuiltInFailure final
@@ -554,11 +825,145 @@ namespace LamaPon
             Factory&& factory) const;
 
         void Shutdown() noexcept;
-        void CreateSizeDependentResources();
+        [[nodiscard]] static std::shared_ptr<
+            Detail::GraphicsDeviceResourceLeaseState>
+            CreateResourceLeaseState(GraphicsDevice* owner);
+        void BeginResourceTransition();
+        void EndResourceTransition() noexcept;
+        void CloseResourceLeaseGate() noexcept;
+        void QuiesceResourceWork() noexcept;
+        void ReleaseResources(bool preserveAudio) noexcept;
+        void InitializeResources(
+            HWND window,
+            std::uint32_t width,
+            std::uint32_t height,
+            RenderingApi requestedApi,
+            GraphicsStartupProfile profile);
+        void CreateApiResources(RenderingApi activeApi);
+        void ResetApiResources() noexcept;
+        [[nodiscard]] std::function<void()>
+            PrepareD3D11SpriteShader(
+                const SpritePassDescription& description,
+                SpriteShaderStatus& status);
+        // API 41のGame ModuleをLoadLibraryして明確なAPI不一致を
+        // 案内するためだけにbinary symbolを1互換期間残すprivate
+        // shimです。新規コードはBeginSpritePassを使用します。
+        DirectX::SpriteBatch& BeginSprites();
+        [[nodiscard]] ID3D11ShaderResourceView*
+            PinD3D11TextureForSpriteBatch(
+                std::shared_ptr<const TextureResourceSnapshot>
+                    resources);
+        DirectX::SpriteBatch& BeginSprites(
+            const std::filesystem::path& shaderPath,
+            const std::array<DirectX::XMFLOAT4, 8>&
+                customParameters,
+            std::uint64_t* generation = nullptr,
+            std::string* error = nullptr,
+            const Sprite2DLighting* lighting = nullptr);
+        void EndSprites();
+        void PushUIScissor(
+            float minimumX,
+            float minimumY,
+            float maximumX,
+            float maximumY);
+        void PopUIScissor();
+        // API 42のGame Moduleが旧公開名を解決してからAPI不一致を
+        // 案内できるよう、binary symbolだけを1互換期間残す
+        // private shimです。新規コードはRenderTextureViewHandleを
+        // 使用します。
+        [[nodiscard]] ID3D11ShaderResourceView*
+            RenderTextureView(
+                const std::string& name) const noexcept;
+        // API 43のGame Moduleが旧公開名を解決してからAPI不一致を
+        // 案内できるよう、raw buffer入口のシンボルだけを
+        // 1互換期間残すprivate shimです。
+        [[nodiscard]] ID3D11Buffer* AcquireInstanceBuffer(
+            const void* data,
+            std::size_t bytes);
+        [[nodiscard]] ID3D11Buffer* ResolveD3D11Buffer(
+            const GraphicsBufferHandle& buffer) const;
+        // API 44のGame Moduleが旧公開名を解決してからAPI不一致を
+        // 案内できるよう、raw white texture viewのシンボルだけを
+        // 1互換期間残すprivate shimです。
+        [[nodiscard]] ID3D11ShaderResourceView*
+            WhiteTexture() const noexcept;
+        // API 45のGame Moduleが旧公開名を解決してからAPI不一致を
+        // 案内できるよう、throwing raw view resolverのシンボルだけを
+        // 1互換期間残すprivate shimです。
+        [[nodiscard]] ID3D11ShaderResourceView*
+            ResolveD3D11ShaderResourceView(
+                const GraphicsViewHandle& view) const;
+        // API 52のGame Moduleが旧公開名を解決してからAPI不一致を
+        // 案内できるよう、raw Baked GI uploadのシンボルだけを
+        // 1互換期間残すprivate shimです。
+        [[nodiscard]] std::array<Microsoft::WRL::ComPtr<
+            ID3D11ShaderResourceView>, 3>
+            UploadBakedGlobalIllumination(
+                std::uint32_t width,
+                std::uint32_t height,
+                std::uint32_t depth,
+                std::span<const std::uint16_t> coefficients)
+                    const noexcept;
+        // API 57のGame Moduleが旧raw cache復元名を解決してからAPI
+        // 不一致を案内できるよう、binary symbolだけを残すprivate shim。
+        [[nodiscard]] EnvironmentRenderer::OwnedPrefilteredEnvironment
+            TryLoadCachedEnvironment(std::uint64_t key) const;
+        // 移行途中のnative D3D11 viewを、共通描画経路が保持できる
+        // Backend世代付きhandleへ変換するprivate shimです。
+        // nullは正常な未設定としてempty handleを返します。
+        [[nodiscard]] GraphicsViewHandle
+            ImportD3D11ShaderResourceView(
+                ID3D11ShaderResourceView* view);
+        // ParticleSystemが生成したquadを実効APIの共有serviceへ送ります。
+        // custom shader cacheはGraphicsDeviceに残し、Componentへ
+        // Device / Context / Effectを公開しません。
+        [[nodiscard]] bool DrawParticles(
+            const ParticleDrawRequest& request,
+            const std::filesystem::path& shaderPath,
+            const std::array<DirectX::XMFLOAT4, 8>& customParameters,
+            std::uint64_t* shaderGeneration,
+            std::string* shaderError);
+        [[nodiscard]] bool DrawPrimitive(
+            const PrimitiveDrawRequest& request);
+        // API 46のGame Moduleが旧公開名を解決してからAPI不一致を
+        // 案内できるよう、外部callerのないD3D11具象facadeも
+        // 1互換期間だけprivate shimとして残します。
+        [[nodiscard]] ClusteredLights& Clusters() const;
+        [[nodiscard]] SpriteEffect*
+            SpriteErrorPlaceholder() const;
+        // DirectX 12でParticleSystemのcustom pixel shaderを描きます。Shaderも
+        // 代替表示も使えないときはfalseを返し、既定のpipelineへ任せます。
+        [[nodiscard]] bool DrawD3D12CustomParticles(
+            const ParticleDrawRequest& request,
+            const std::filesystem::path& shaderPath,
+            const std::array<DirectX::XMFLOAT4, 8>& customParameters,
+            std::uint64_t* shaderGeneration,
+            std::string* shaderError);
+        [[nodiscard]] std::uint64_t BeginD3D11SpritePass(
+            const SpritePassDescription& description,
+            bool neutralOwner,
+            SpriteShaderStatus* status,
+            std::uint64_t* generation,
+            std::string* error);
+        [[nodiscard]] bool DrawD3D11Sprite(
+            std::uint64_t token,
+            const SpriteDrawRequest& request);
+        [[nodiscard]] bool PushD3D11SpriteScissor(
+            std::uint64_t token,
+            const SpriteClipRectangle& rectangle);
+        [[nodiscard]] bool PopD3D11SpriteScissor(
+            std::uint64_t token);
+        void EndD3D11SpritePass(std::uint64_t token);
+        void AbortD3D11SpritePass(
+            std::uint64_t token) noexcept;
+        void AbortActiveD3D11SpritePass() noexcept;
+        [[nodiscard]] Detail::GraphicsDeviceD3D11Resources*
+            TryD3D11ApiResources() const noexcept;
+        [[nodiscard]] Detail::GraphicsDeviceD3D11Resources&
+            RequireD3D11ApiResources();
+        [[nodiscard]] const Detail::GraphicsDeviceD3D11Resources&
+            RequireD3D11ApiResources() const;
         void CreateWhiteTexture();
-        // 起動時に選ばれたアダプター名をログへ出します
-        // （WARPかどうかが分かるように）。
-        void LogSelectedAdapter() const;
         // 積まれた画面エフェクトを順に適用して待ち行列を空にします。
         // ポスト処理の並びはRunPostProcessが持っているので、その
         // トーンマップ後のフックから画面エフェクトを適用します。
@@ -568,137 +973,19 @@ namespace LamaPon
             RenderTarget& target,
             ScreenEffectPoint point);
 
-        Microsoft::WRL::ComPtr<ID3D11Device> m_device;
-        Microsoft::WRL::ComPtr<ID3D11DeviceContext> m_context;
-        Microsoft::WRL::ComPtr<IDXGISwapChain> m_swapChain;
-        Microsoft::WRL::ComPtr<ID3D11RenderTargetView> m_renderTargetView;
-        Microsoft::WRL::ComPtr<ID3D11Texture2D> m_depthTexture;
-        Microsoft::WRL::ComPtr<ID3D11DepthStencilView> m_depthStencilView;
-        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_whiteTexture;
-        std::unique_ptr<DirectX::SpriteBatch> m_spriteBatch;
-        std::unique_ptr<DirectX::CommonStates> m_commonStates;
-        mutable Microsoft::WRL::ComPtr<ID3D11BlendState>
-            m_additiveBlendPreservingAlpha;
-        Microsoft::WRL::ComPtr<ID3D11RasterizerState>
-            m_uiScissorRasterizer;
-        std::vector<D3D11_RECT> m_uiScissorStack;
-        Microsoft::WRL::ComPtr<ID3D11Buffer>
-            m_instanceBuffer;
-        std::size_t m_instanceBufferCapacity{};
-        DepthPassKind m_depthPass{ DepthPassKind::None };
-        // ティアリング許可（可変リフレッシュ／リフレッシュレート超え）。
-        // 無効な場合はVSyncを切ってもFPSがモニターの
-        // リフレッシュレートを超えません。
-        bool m_tearingAllowed{};
-        GpuProfiler m_gpuProfiler;
         // WARP強制フラグ（Initialize前にテスト等から設定）。
         // 定義はGraphicsDevice.cpp（DLLの中に1つだけ）。
         static bool s_preferWarpAdapter;
         static bool s_enableDebugLayer;
-
-        // デバッグレイヤーが出したメッセージをログへ流します。
-        // OutputDebugStringはデバッガーを繋いでいないと読めないため、
-        // --d3ddebug指定時の診断をエンジンログで確認可能にします。
-        void DrainDebugMessages();
-        Microsoft::WRL::ComPtr<ID3D11InfoQueue> m_infoQueue;
-        std::uint64_t m_debugMessagesLogged{};
-        // 既存のAssets/Audio/Input APIを保ち、サービスの寿命管理は
-        // 専用の所有者へ委譲します。D3Dデバイスより先に終了します。
-        std::unique_ptr<RuntimeServices> m_services;
-        std::unique_ptr<DebugRenderer> m_debugRenderer;
-        mutable std::unique_ptr<EnvironmentRenderer>
-            m_environmentRenderer;
-        mutable std::unique_ptr<ClusteredLights>
-            m_clusteredLights;
-        std::unique_ptr<RenderTarget> m_sceneCompositionTarget;
-        DirectX::XMFLOAT4X4 m_sceneProjection{
-            1.0f, 0.0f, 0.0f, 0.0f,
-            0.0f, 1.0f, 0.0f, 0.0f,
-            0.0f, 0.0f, 1.0f, 0.0f,
-            0.0f, 0.0f, 0.0f, 1.0f
-        };
-        // 名前付きレンダーテクスチャ。RenderTargetはコピー禁止
-        // なのでunique_ptrで保持します。
-        std::unordered_map<
-            std::string,
-            std::unique_ptr<RenderTarget>>
-            m_renderTextures;
-        mutable std::unique_ptr<LitEffect> m_litEffect;
-        mutable std::unique_ptr<LitEffect> m_skinnedLitEffect;
-        // コンパイル失敗時の代替シェーダーです。作成に失敗した場合は
-        // 毎フレームの再試行による負荷を避けるため再生成しません。
-        mutable std::unique_ptr<LitEffect> m_errorEffect;
-        mutable std::unique_ptr<LitEffect> m_skinnedErrorEffect;
-        mutable std::unique_ptr<SpriteEffect> m_spriteErrorEffect;
-        mutable bool m_errorEffectUnavailable{};
-        mutable bool m_skinnedErrorEffectUnavailable{};
-        mutable bool m_spriteErrorEffectUnavailable{};
-        // 組み込みシェーダーには代替描画経路が無いため、失敗を記録して
-        // 毎フレームの再コンパイルを防ぎます。BuiltInRetrySecondsごとに
-        // 再試行し、成功すると記録を解除します。
-        mutable BuiltInFailure m_litFailure;
-        mutable BuiltInFailure m_skinnedLitFailure;
-        mutable BuiltInFailure m_environmentFailure;
-        mutable BuiltInFailure m_clustersFailure;
         struct MaterialShaderEntry;
         struct SpriteShaderEntry;
         struct ScreenShaderEntry;
-        mutable std::unordered_map<
-            std::filesystem::path,
-            std::unique_ptr<MaterialShaderEntry>>
-            m_materialShaders;
-        mutable std::unordered_map<
-            std::filesystem::path,
-            std::unique_ptr<MaterialShaderEntry>>
-            m_skinnedMaterialShaders;
-        // シェーダーごとのバリアント宣言。書き換えたら
-        // InvalidateMaterialShaderが捨てます。
-        mutable std::unordered_map<
-            std::filesystem::path,
-            ShaderVariantDeclaration>
-            m_shaderVariants;
-        bool m_asyncShaderCompilation{ true };
-        mutable std::uint64_t
-            m_materialShaderGeneration{};
-        mutable std::unordered_map<
-            std::filesystem::path,
-            std::unique_ptr<SpriteShaderEntry>>
-            m_spriteShaders;
-        mutable std::uint64_t
-            m_spriteShaderGeneration{};
-        mutable std::unordered_map<
-            std::filesystem::path,
-            std::unique_ptr<ScreenShaderEntry>>
-            m_screenShaders;
-        mutable std::uint64_t
-            m_screenShaderGeneration{};
         struct QueuedScreenEffect;
-        std::vector<QueuedScreenEffect>
-            m_queuedScreenEffects;
         struct ComputeShaderEntry;
-        mutable std::unordered_map<
-            std::filesystem::path,
-            std::unique_ptr<ComputeShaderEntry>>
-            m_computeShaders;
-        std::unique_ptr<ShadowMap> m_shadowMap;
-        std::unique_ptr<ShadowMap> m_spotShadowMap;
-        std::unique_ptr<ShadowMap> m_pointShadowMap;
-        LightingState m_lightingState;
-        GraphicsSettings m_graphicsSettings =
-            GraphicsSettingsForPreset(
-                GraphicsQualityPreset::High);
-        D3D11_VIEWPORT m_viewport{};
-        std::uint32_t m_width{};
-        std::uint32_t m_height{};
-        std::uint32_t m_uiWidth{};
-        std::uint32_t m_uiHeight{};
-        DirectX::XMFLOAT2 m_sprite2DOffset{};
-        // mutable: shaderFallbackDrawsを数えるShaderErrorPlaceholder /
-        // SpriteErrorPlaceholderがconstメソッドのためです（このクラスの
-        // キャッシュ類と同じ扱い）。
-        mutable FrameStatistics m_frameStatistics;
-        GraphicsMemoryStatistics m_memoryStatistics;
-        std::chrono::steady_clock::time_point
-            m_lastMemoryStatisticsSample{};
+
+        // 全instance stateをSDK非公開の固定storageへ集約します。Stateは
+        // Initialize/Resizeで差し替えず、参照を返す既存APIの住所を保ちます。
+        struct State;
+        const std::unique_ptr<State> m_state;
     };
 }
