@@ -277,6 +277,52 @@ namespace
             return LamaPon::GraphicsTextureFormat::Bc3Unorm;
         case DXGI_FORMAT_BC5_UNORM:
             return LamaPon::GraphicsTextureFormat::Bc5Unorm;
+        case DXGI_FORMAT_R16G16B16A16_FLOAT:
+            return LamaPon::GraphicsTextureFormat::Rgba16Float;
+        case DXGI_FORMAT_R8_UNORM:
+            return LamaPon::GraphicsTextureFormat::R8Unorm;
+        case DXGI_FORMAT_R8G8_UNORM:
+            return LamaPon::GraphicsTextureFormat::Rg8Unorm;
+        case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+            return LamaPon::GraphicsTextureFormat::Rgba8UnormSrgb;
+        case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+            return LamaPon::GraphicsTextureFormat::Bgra8UnormSrgb;
+        case DXGI_FORMAT_B8G8R8X8_UNORM:
+            return LamaPon::GraphicsTextureFormat::Bgrx8Unorm;
+        case DXGI_FORMAT_B8G8R8X8_UNORM_SRGB:
+            return LamaPon::GraphicsTextureFormat::Bgrx8UnormSrgb;
+        case DXGI_FORMAT_BC1_UNORM_SRGB:
+            return LamaPon::GraphicsTextureFormat::Bc1UnormSrgb;
+        case DXGI_FORMAT_BC2_UNORM:
+            return LamaPon::GraphicsTextureFormat::Bc2Unorm;
+        case DXGI_FORMAT_BC2_UNORM_SRGB:
+            return LamaPon::GraphicsTextureFormat::Bc2UnormSrgb;
+        case DXGI_FORMAT_BC3_UNORM_SRGB:
+            return LamaPon::GraphicsTextureFormat::Bc3UnormSrgb;
+        case DXGI_FORMAT_BC4_UNORM:
+            return LamaPon::GraphicsTextureFormat::Bc4Unorm;
+        case DXGI_FORMAT_BC4_SNORM:
+            return LamaPon::GraphicsTextureFormat::Bc4Snorm;
+        case DXGI_FORMAT_BC5_SNORM:
+            return LamaPon::GraphicsTextureFormat::Bc5Snorm;
+        case DXGI_FORMAT_BC6H_UF16:
+            return LamaPon::GraphicsTextureFormat::Bc6hUf16;
+        case DXGI_FORMAT_BC6H_SF16:
+            return LamaPon::GraphicsTextureFormat::Bc6hSf16;
+        case DXGI_FORMAT_BC7_UNORM:
+            return LamaPon::GraphicsTextureFormat::Bc7Unorm;
+        case DXGI_FORMAT_BC7_UNORM_SRGB:
+            return LamaPon::GraphicsTextureFormat::Bc7UnormSrgb;
+        case DXGI_FORMAT_R16_FLOAT:
+            return LamaPon::GraphicsTextureFormat::R16Float;
+        case DXGI_FORMAT_R16G16_FLOAT:
+            return LamaPon::GraphicsTextureFormat::Rg16Float;
+        case DXGI_FORMAT_R32_FLOAT:
+            return LamaPon::GraphicsTextureFormat::R32Float;
+        case DXGI_FORMAT_R32G32_FLOAT:
+            return LamaPon::GraphicsTextureFormat::Rg32Float;
+        case DXGI_FORMAT_R32G32B32A32_FLOAT:
+            return LamaPon::GraphicsTextureFormat::Rgba32Float;
         default:
             throw std::invalid_argument(
                 "The prepared texture format has no graphics backend mapping.");

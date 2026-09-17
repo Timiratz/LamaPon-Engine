@@ -20,7 +20,29 @@ namespace LamaPon
         Bc1Unorm,
         Bc3Unorm,
         Bc5Unorm,
-        Rgba16Float
+        Rgba16Float,
+        R8Unorm,
+        Rg8Unorm,
+        Rgba8UnormSrgb,
+        Bgra8UnormSrgb,
+        Bgrx8Unorm,
+        Bgrx8UnormSrgb,
+        Bc1UnormSrgb,
+        Bc2Unorm,
+        Bc2UnormSrgb,
+        Bc3UnormSrgb,
+        Bc4Unorm,
+        Bc4Snorm,
+        Bc5Snorm,
+        Bc6hUf16,
+        Bc6hSf16,
+        Bc7Unorm,
+        Bc7UnormSrgb,
+        R16Float,
+        Rg16Float,
+        R32Float,
+        Rg32Float,
+        Rgba32Float
     };
 
     // Immutableは全mipの初期dataを生成時に渡す静的texture、PerMipUpdateは

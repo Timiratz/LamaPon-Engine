@@ -3198,6 +3198,69 @@ namespace
         const auto bgraBytes = BuildDx10Dds(
             DXGI_FORMAT_B8G8R8A8_UNORM,
             bgraPixels);
+        struct ExtendedDdsCase final
+        {
+            DXGI_FORMAT format;
+            std::size_t bytes;
+            std::uint32_t rowPitch;
+        };
+        const std::array extendedCases{
+            ExtendedDdsCase{ DXGI_FORMAT_R8_UNORM, 16u, 4u },
+            ExtendedDdsCase{ DXGI_FORMAT_R8G8_UNORM, 32u, 8u },
+            ExtendedDdsCase{ DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, 64u, 16u },
+            ExtendedDdsCase{ DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, 64u, 16u },
+            ExtendedDdsCase{ DXGI_FORMAT_B8G8R8X8_UNORM, 64u, 16u },
+            ExtendedDdsCase{ DXGI_FORMAT_B8G8R8X8_UNORM_SRGB, 64u, 16u },
+            ExtendedDdsCase{ DXGI_FORMAT_BC1_UNORM_SRGB, 8u, 8u },
+            ExtendedDdsCase{ DXGI_FORMAT_BC2_UNORM, 16u, 16u },
+            ExtendedDdsCase{ DXGI_FORMAT_BC2_UNORM_SRGB, 16u, 16u },
+            ExtendedDdsCase{ DXGI_FORMAT_BC3_UNORM_SRGB, 16u, 16u },
+            ExtendedDdsCase{ DXGI_FORMAT_BC4_UNORM, 8u, 8u },
+            ExtendedDdsCase{ DXGI_FORMAT_BC4_SNORM, 8u, 8u },
+            ExtendedDdsCase{ DXGI_FORMAT_BC5_SNORM, 16u, 16u },
+            ExtendedDdsCase{ DXGI_FORMAT_BC6H_UF16, 16u, 16u },
+            ExtendedDdsCase{ DXGI_FORMAT_BC6H_SF16, 16u, 16u },
+            ExtendedDdsCase{ DXGI_FORMAT_BC7_UNORM, 16u, 16u },
+            ExtendedDdsCase{ DXGI_FORMAT_BC7_UNORM_SRGB, 16u, 16u },
+            ExtendedDdsCase{ DXGI_FORMAT_R16_FLOAT, 32u, 8u },
+            ExtendedDdsCase{ DXGI_FORMAT_R16G16_FLOAT, 64u, 16u },
+            ExtendedDdsCase{ DXGI_FORMAT_R16G16B16A16_FLOAT, 128u, 32u },
+            ExtendedDdsCase{ DXGI_FORMAT_R32_FLOAT, 64u, 16u },
+            ExtendedDdsCase{ DXGI_FORMAT_R32G32_FLOAT, 128u, 32u },
+            ExtendedDdsCase{ DXGI_FORMAT_R32G32B32A32_FLOAT, 256u, 64u }
+        };
+        std::vector<std::vector<std::uint8_t>> extendedDdsBytes;
+        extendedDdsBytes.reserve(extendedCases.size());
+        for (const auto& testCase : extendedCases)
+        {
+            extendedDdsBytes.push_back(BuildDx10Dds(
+                testCase.format,
+                std::vector<std::uint8_t>(testCase.bytes)));
+            const auto prepared =
+                LamaPon::TextureLoader::PrepareDdsTextureData(
+                    extendedDdsBytes.back());
+            Require(
+                prepared.format == testCase.format
+                    && prepared.levels.size() == 1u
+                    && prepared.levels.front().rowPitch
+                        == testCase.rowPitch
+                    && prepared.levels.front().bytes.size()
+                        == testCase.bytes,
+                "An extended DX10 DDS format lost its upload layout");
+        }
+
+        const auto bc2Bytes = BuildClassicDds(
+            4u,
+            4u,
+            1u,
+            MakeFourCc('D', 'X', 'T', '3'),
+            std::vector<std::uint8_t>(16u));
+        const auto bc4Bytes = BuildClassicDds(
+            4u,
+            4u,
+            1u,
+            MakeFourCc('A', 'T', 'I', '1'),
+            std::vector<std::uint8_t>(8u));
         Require(
             LamaPon::TextureLoader::PrepareDdsTextureData(bc1Bytes).format
                     == DXGI_FORMAT_BC1_UNORM
@@ -3206,7 +3269,11 @@ namespace
                 && LamaPon::TextureLoader::PrepareDdsTextureData(bc5Bytes)
                         .format == DXGI_FORMAT_BC5_UNORM
                 && LamaPon::TextureLoader::PrepareDdsTextureData(bgraBytes)
-                        .format == DXGI_FORMAT_B8G8R8A8_UNORM,
+                        .format == DXGI_FORMAT_B8G8R8A8_UNORM
+                && LamaPon::TextureLoader::PrepareDdsTextureData(bc2Bytes)
+                        .format == DXGI_FORMAT_BC2_UNORM
+                && LamaPon::TextureLoader::PrepareDdsTextureData(bc4Bytes)
+                        .format == DXGI_FORMAT_BC4_UNORM,
             "The DDS parser did not map classic and DX10 formats");
 
         auto cubeBytes = bc1Bytes;
@@ -3312,6 +3379,16 @@ namespace
                 graphics.IsGraphicsViewCurrent(view),
                 "A parsed DDS view was not created by the DirectX 12 "
                 "backend");
+        }
+        for (const auto& bytes : extendedDdsBytes)
+        {
+            const auto view =
+                graphics.Assets().CreateTextureViewHandleFromMemory(
+                    bytes,
+                    true);
+            Require(
+                view && graphics.IsGraphicsViewCurrent(view),
+                "An extended DDS format did not create a DirectX 12 view");
         }
         const auto arrayView =
             graphics.Assets().CreateTextureViewHandleFromMemory(

@@ -1,4 +1,5 @@
 #include "LamaPon/Assets/TextureLoader.h"
+#include "LamaPon/Graphics/DxgiTextureLayout.h"
 
 #include <objbase.h>
 #include <wincodec.h>
@@ -77,25 +78,11 @@ namespace
             const std::uint32_t width,
             const std::uint32_t height)
     {
-        if (format == DXGI_FORMAT_BC1_UNORM)
-        {
-            return {
-                std::max((width + 3u) / 4u, 1u) * 8u,
-                std::max((height + 3u) / 4u, 1u) };
-        }
-        if (format == DXGI_FORMAT_BC3_UNORM
-            || format == DXGI_FORMAT_BC5_UNORM)
-        {
-            return {
-                std::max((width + 3u) / 4u, 1u) * 16u,
-                std::max((height + 3u) / 4u, 1u) };
-        }
-        if (width > std::numeric_limits<std::uint32_t>::max() / 4u)
-        {
-            throw std::invalid_argument(
-                "The DDS texture row pitch cannot be represented.");
-        }
-        return { width * 4u, height };
+        const auto layout = LamaPon::Detail::RequiredTextureLayout(
+            format,
+            width,
+            height);
+        return { layout.minimumRowBytes, layout.rowCount };
     }
 
     void ThrowIfFailed(
@@ -367,6 +354,7 @@ namespace
         ParseDdsResourceData(const std::span<const std::uint8_t> bytes)
     {
         constexpr std::uint32_t PixelFormatRgb = 0x40u;
+        constexpr std::uint32_t PixelFormatLuminance = 0x20000u;
         constexpr std::uint32_t Caps2Volume = 0x200000u;
         constexpr std::uint32_t ResourceDimensionTexture2D = 3u;
         constexpr std::uint32_t ResourceDimensionTexture3D = 4u;
@@ -414,12 +402,46 @@ namespace
             case MakeFourCc('D', 'X', 'T', '1'):
                 format = DXGI_FORMAT_BC1_UNORM;
                 break;
+            case MakeFourCc('D', 'X', 'T', '2'):
+            case MakeFourCc('D', 'X', 'T', '3'):
+                format = DXGI_FORMAT_BC2_UNORM;
+                break;
+            case MakeFourCc('D', 'X', 'T', '4'):
             case MakeFourCc('D', 'X', 'T', '5'):
                 format = DXGI_FORMAT_BC3_UNORM;
+                break;
+            case MakeFourCc('A', 'T', 'I', '1'):
+            case MakeFourCc('B', 'C', '4', 'U'):
+                format = DXGI_FORMAT_BC4_UNORM;
+                break;
+            case MakeFourCc('B', 'C', '4', 'S'):
+                format = DXGI_FORMAT_BC4_SNORM;
                 break;
             case MakeFourCc('A', 'T', 'I', '2'):
             case MakeFourCc('B', 'C', '5', 'U'):
                 format = DXGI_FORMAT_BC5_UNORM;
+                break;
+            case MakeFourCc('B', 'C', '5', 'S'):
+                format = DXGI_FORMAT_BC5_SNORM;
+                break;
+            // D3D9のD3DFORMAT値をFourCC欄へ直接保存する旧DDSです。
+            case 111u:
+                format = DXGI_FORMAT_R16_FLOAT;
+                break;
+            case 112u:
+                format = DXGI_FORMAT_R16G16_FLOAT;
+                break;
+            case 113u:
+                format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+                break;
+            case 114u:
+                format = DXGI_FORMAT_R32_FLOAT;
+                break;
+            case 115u:
+                format = DXGI_FORMAT_R32G32_FLOAT;
+                break;
+            case 116u:
+                format = DXGI_FORMAT_R32G32B32A32_FLOAT;
                 break;
             case MakeFourCc('D', 'X', '1', '0'):
             {
@@ -469,27 +491,68 @@ namespace
         }
         else if ((header.pixelFormat.flags & PixelFormatRgb) != 0u
             && header.pixelFormat.rgbBitCount == 32u
-            && header.pixelFormat.alphaMask == 0xff000000u
             && header.pixelFormat.greenMask == 0x0000ff00u)
         {
             if (header.pixelFormat.redMask == 0x000000ffu
-                && header.pixelFormat.blueMask == 0x00ff0000u)
+                && header.pixelFormat.blueMask == 0x00ff0000u
+                && header.pixelFormat.alphaMask == 0xff000000u)
             {
                 format = DXGI_FORMAT_R8G8B8A8_UNORM;
             }
             else if (header.pixelFormat.redMask == 0x00ff0000u
                 && header.pixelFormat.blueMask == 0x000000ffu)
             {
-                format = DXGI_FORMAT_B8G8R8A8_UNORM;
+                format = header.pixelFormat.alphaMask == 0xff000000u
+                    ? DXGI_FORMAT_B8G8R8A8_UNORM
+                    : header.pixelFormat.alphaMask == 0u
+                        ? DXGI_FORMAT_B8G8R8X8_UNORM
+                        : DXGI_FORMAT_UNKNOWN;
+            }
+        }
+        else if ((header.pixelFormat.flags & PixelFormatLuminance) != 0u)
+        {
+            if (header.pixelFormat.rgbBitCount == 8u
+                && header.pixelFormat.redMask == 0xffu)
+            {
+                format = DXGI_FORMAT_R8_UNORM;
+            }
+            else if (header.pixelFormat.rgbBitCount == 16u
+                && header.pixelFormat.redMask == 0x00ffu
+                && header.pixelFormat.alphaMask == 0xff00u)
+            {
+                format = DXGI_FORMAT_R8G8_UNORM;
             }
         }
         switch (format)
         {
+        case DXGI_FORMAT_R8_UNORM:
+        case DXGI_FORMAT_R8G8_UNORM:
         case DXGI_FORMAT_R8G8B8A8_UNORM:
+        case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
         case DXGI_FORMAT_B8G8R8A8_UNORM:
+        case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+        case DXGI_FORMAT_B8G8R8X8_UNORM:
+        case DXGI_FORMAT_B8G8R8X8_UNORM_SRGB:
         case DXGI_FORMAT_BC1_UNORM:
+        case DXGI_FORMAT_BC1_UNORM_SRGB:
+        case DXGI_FORMAT_BC2_UNORM:
+        case DXGI_FORMAT_BC2_UNORM_SRGB:
         case DXGI_FORMAT_BC3_UNORM:
+        case DXGI_FORMAT_BC3_UNORM_SRGB:
+        case DXGI_FORMAT_BC4_UNORM:
+        case DXGI_FORMAT_BC4_SNORM:
         case DXGI_FORMAT_BC5_UNORM:
+        case DXGI_FORMAT_BC5_SNORM:
+        case DXGI_FORMAT_BC6H_UF16:
+        case DXGI_FORMAT_BC6H_SF16:
+        case DXGI_FORMAT_BC7_UNORM:
+        case DXGI_FORMAT_BC7_UNORM_SRGB:
+        case DXGI_FORMAT_R16_FLOAT:
+        case DXGI_FORMAT_R16G16_FLOAT:
+        case DXGI_FORMAT_R16G16B16A16_FLOAT:
+        case DXGI_FORMAT_R32_FLOAT:
+        case DXGI_FORMAT_R32G32_FLOAT:
+        case DXGI_FORMAT_R32G32B32A32_FLOAT:
             break;
         default:
             throw std::invalid_argument(
@@ -510,7 +573,10 @@ namespace
 
         const std::uint32_t mipCount = std::max(header.mipMapCount, 1u);
         std::uint32_t maximumMipCount = 1u;
-        for (std::uint32_t size = std::max(header.width, header.height);
+        for (std::uint32_t size = std::max({
+                header.width,
+                header.height,
+                fileVolume ? header.depth : 1u });
             size > 1u;
             size >>= 1u)
         {

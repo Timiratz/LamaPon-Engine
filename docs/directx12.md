@@ -57,7 +57,9 @@ DirectX 12の書き出しゲームでは、次の主要機能を実際に描画�
 - Directional／Spot／Point Lightの影
 - glTF／GLB／FBX／CMO／SDKMESH／VBO Model
 - スキニング、アニメーション、LOD、静的ModelとMeshのインスタンス描画
-- PNG／JPEG、RGBA8／BGRA8／BC1／BC3／BC5のDDS（2D、2D array、cubemap、cube array、volume）とmip列
+- PNG／JPEG、RGBA8／BGRA8／BGRX8、R8／RG8、16／32-bit float、
+  BC1～BC7（sRGB・signed形式を含む）のDDS
+  （2D、2D array、cubemap、cube array、volume）とmip列
 - Sky、太陽円盤、IBL、Reflection Probe、照度ボリューム、Fog
 - ParticleSystem、Sprite、Text、Imageなどの2D／UI
 - HDR、SSAO、SSR、TAA、Volumetric Light、Depth of Field、Motion Blur
@@ -82,8 +84,9 @@ WARPによるD3D11／D3D12の画素比較とdebug layerを使った回帰テス�
   Backend固有の描画サービスからbindする設計へ置き換えており、一対一の低レベル入口では
   ありません。ユーザー向けのMaterial、Sprite、Particle、post-process、custom shaderは
   いずれもこのD3D12専用経路を使用します。
-- DDSはRGBA8／BGRA8／BC1／BC3／BC5に対応します。DirectX 11のDirectXTKが読める
-  それ以外の形式には、API間の対応差があります。
+- DDSは一般的なUNORM／sRGB、BC1～BC7、signed BC4／BC5、BC6H、
+  16／32-bit floatを両APIで読みます。DirectXTKが変換対応する古いpalettized形式など、
+  現在のGPUへ直接載せられない一部のlegacy DDSには対応差があります。
 - GPU、driver、浮動小数点精度の違いにより、両APIの画素が常に完全一致するとは限りません。
 - 回帰テストは主要経路を検証しますが、すべてのGPUとSceneの組み合わせを保証するものでは
   ありません。
