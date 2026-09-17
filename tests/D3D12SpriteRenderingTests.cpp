@@ -104,6 +104,32 @@ namespace
         return bytes;
     }
 
+    [[nodiscard]] std::vector<std::uint8_t> BuildLegacyDds(
+        const std::uint32_t flags,
+        const std::uint32_t bitCount,
+        const std::uint32_t redMask,
+        const std::uint32_t greenMask,
+        const std::uint32_t blueMask,
+        const std::uint32_t alphaMask,
+        const std::vector<std::uint8_t>& payload)
+    {
+        std::vector<std::uint8_t> bytes(128u);
+        WriteLittleEndian32(bytes, 0u, MakeFourCc('D', 'D', 'S', ' '));
+        WriteLittleEndian32(bytes, 4u, 124u);
+        WriteLittleEndian32(bytes, 12u, 4u);
+        WriteLittleEndian32(bytes, 16u, 4u);
+        WriteLittleEndian32(bytes, 28u, 1u);
+        WriteLittleEndian32(bytes, 76u, 32u);
+        WriteLittleEndian32(bytes, 80u, flags);
+        WriteLittleEndian32(bytes, 88u, bitCount);
+        WriteLittleEndian32(bytes, 92u, redMask);
+        WriteLittleEndian32(bytes, 96u, greenMask);
+        WriteLittleEndian32(bytes, 100u, blueMask);
+        WriteLittleEndian32(bytes, 104u, alphaMask);
+        bytes.insert(bytes.end(), payload.begin(), payload.end());
+        return bytes;
+    }
+
     [[nodiscard]] std::vector<std::uint8_t> BuildRgbaDds()
     {
         std::vector<std::uint8_t> bytes(128u);
@@ -3227,7 +3253,21 @@ namespace
             ExtendedDdsCase{ DXGI_FORMAT_R16G16B16A16_FLOAT, 128u, 32u },
             ExtendedDdsCase{ DXGI_FORMAT_R32_FLOAT, 64u, 16u },
             ExtendedDdsCase{ DXGI_FORMAT_R32G32_FLOAT, 128u, 32u },
-            ExtendedDdsCase{ DXGI_FORMAT_R32G32B32A32_FLOAT, 256u, 64u }
+            ExtendedDdsCase{ DXGI_FORMAT_R32G32B32A32_FLOAT, 256u, 64u },
+            ExtendedDdsCase{ DXGI_FORMAT_R10G10B10A2_UNORM, 64u, 16u },
+            ExtendedDdsCase{ DXGI_FORMAT_R16G16_UNORM, 64u, 16u },
+            ExtendedDdsCase{ DXGI_FORMAT_B5G5R5A1_UNORM, 32u, 8u },
+            ExtendedDdsCase{ DXGI_FORMAT_B5G6R5_UNORM, 32u, 8u },
+            ExtendedDdsCase{ DXGI_FORMAT_B4G4R4A4_UNORM, 32u, 8u },
+            ExtendedDdsCase{ DXGI_FORMAT_R16_UNORM, 32u, 8u },
+            ExtendedDdsCase{ DXGI_FORMAT_A8_UNORM, 16u, 4u },
+            ExtendedDdsCase{ DXGI_FORMAT_R8G8_SNORM, 32u, 8u },
+            ExtendedDdsCase{ DXGI_FORMAT_R8G8B8A8_SNORM, 64u, 16u },
+            ExtendedDdsCase{ DXGI_FORMAT_R16G16_SNORM, 64u, 16u },
+            ExtendedDdsCase{ DXGI_FORMAT_R16G16B16A16_UNORM, 128u, 32u },
+            ExtendedDdsCase{ DXGI_FORMAT_R16G16B16A16_SNORM, 128u, 32u },
+            ExtendedDdsCase{ DXGI_FORMAT_R8G8_B8G8_UNORM, 32u, 8u },
+            ExtendedDdsCase{ DXGI_FORMAT_G8R8_G8B8_UNORM, 32u, 8u }
         };
         std::vector<std::vector<std::uint8_t>> extendedDdsBytes;
         extendedDdsBytes.reserve(extendedCases.size());
@@ -3248,6 +3288,29 @@ namespace
                         == testCase.bytes,
                 "An extended DX10 DDS format lost its upload layout");
         }
+        std::vector<std::uint8_t> yuy2Payload;
+        for (std::size_t pair{}; pair < 8u; ++pair)
+        {
+            yuy2Payload.insert(yuy2Payload.end(), { 81u, 90u, 145u, 240u });
+        }
+        auto yuy2Bytes = BuildDx10Dds(DXGI_FORMAT_YUY2, yuy2Payload);
+        const auto yuy2Prepared =
+            LamaPon::TextureLoader::PrepareDdsTextureData(yuy2Bytes);
+        Require(
+            yuy2Prepared.format == DXGI_FORMAT_R8G8B8A8_UNORM
+                && yuy2Prepared.levels.front().rowPitch == 16u
+                && yuy2Prepared.levels.front().bytes.size() == 64u
+                && yuy2Prepared.levels.front().bytes[0] >= 253u
+                && yuy2Prepared.levels.front().bytes[1] == 0u
+                && yuy2Prepared.levels.front().bytes[2] == 0u
+                && yuy2Prepared.levels.front().bytes[3] == 255u
+                && yuy2Prepared.levels.front().bytes[4] == 255u
+                && yuy2Prepared.levels.front().bytes[5] >= 72u
+                && yuy2Prepared.levels.front().bytes[5] <= 76u
+                && yuy2Prepared.levels.front().bytes[6] >= 71u
+                && yuy2Prepared.levels.front().bytes[6] <= 75u,
+            "YUY2 DDS data was not converted to portable RGBA8 data");
+        extendedDdsBytes.push_back(std::move(yuy2Bytes));
 
         const auto bc2Bytes = BuildClassicDds(
             4u,
@@ -3261,6 +3324,67 @@ namespace
             1u,
             MakeFourCc('A', 'T', 'I', '1'),
             std::vector<std::uint8_t>(8u));
+        const std::vector<std::pair<std::vector<std::uint8_t>, DXGI_FORMAT>>
+            legacyCases{
+                { BuildLegacyDds(0x41u, 32u, 0x3ff00000u, 0x000ffc00u,
+                    0x000003ffu, 0xc0000000u,
+                    std::vector<std::uint8_t>(64u)),
+                    DXGI_FORMAT_R10G10B10A2_UNORM },
+                { BuildLegacyDds(0x40u, 32u, 0x0000ffffu, 0xffff0000u,
+                    0u, 0u, std::vector<std::uint8_t>(64u)),
+                    DXGI_FORMAT_R16G16_UNORM },
+                { BuildLegacyDds(0x41u, 16u, 0x7c00u, 0x03e0u,
+                    0x001fu, 0x8000u, std::vector<std::uint8_t>(32u)),
+                    DXGI_FORMAT_B5G5R5A1_UNORM },
+                { BuildLegacyDds(0x40u, 16u, 0xf800u, 0x07e0u,
+                    0x001fu, 0u, std::vector<std::uint8_t>(32u)),
+                    DXGI_FORMAT_B5G6R5_UNORM },
+                { BuildLegacyDds(0x41u, 16u, 0x0f00u, 0x00f0u,
+                    0x000fu, 0xf000u, std::vector<std::uint8_t>(32u)),
+                    DXGI_FORMAT_B4G4R4A4_UNORM },
+                { BuildLegacyDds(0x20000u, 16u, 0xffffu, 0u,
+                    0u, 0u, std::vector<std::uint8_t>(32u)),
+                    DXGI_FORMAT_R16_UNORM },
+                { BuildLegacyDds(0x2u, 8u, 0u, 0u,
+                    0u, 0xffu, std::vector<std::uint8_t>(16u)),
+                    DXGI_FORMAT_A8_UNORM },
+                { BuildLegacyDds(0x80000u, 16u, 0x00ffu, 0xff00u,
+                    0u, 0u, std::vector<std::uint8_t>(32u)),
+                    DXGI_FORMAT_R8G8_SNORM },
+                { BuildLegacyDds(0x80000u, 32u, 0x000000ffu,
+                    0x0000ff00u, 0x00ff0000u, 0xff000000u,
+                    std::vector<std::uint8_t>(64u)),
+                    DXGI_FORMAT_R8G8B8A8_SNORM },
+                { BuildLegacyDds(0x80000u, 32u, 0x0000ffffu,
+                    0xffff0000u, 0u, 0u,
+                    std::vector<std::uint8_t>(64u)),
+                    DXGI_FORMAT_R16G16_SNORM },
+                { BuildClassicDds(4u, 4u, 1u, 36u,
+                    std::vector<std::uint8_t>(128u)),
+                    DXGI_FORMAT_R16G16B16A16_UNORM },
+                { BuildClassicDds(4u, 4u, 1u, 110u,
+                    std::vector<std::uint8_t>(128u)),
+                    DXGI_FORMAT_R16G16B16A16_SNORM },
+                { BuildClassicDds(4u, 4u, 1u,
+                    MakeFourCc('R', 'G', 'B', 'G'),
+                    std::vector<std::uint8_t>(32u)),
+                    DXGI_FORMAT_R8G8_B8G8_UNORM },
+                { BuildClassicDds(4u, 4u, 1u,
+                    MakeFourCc('G', 'R', 'G', 'B'),
+                    std::vector<std::uint8_t>(32u)),
+                    DXGI_FORMAT_G8R8_G8B8_UNORM },
+                { BuildClassicDds(4u, 4u, 1u,
+                    MakeFourCc('Y', 'U', 'Y', '2'),
+                    std::vector<std::uint8_t>(32u)),
+                    DXGI_FORMAT_R8G8B8A8_UNORM }
+            };
+        for (const auto& [bytes, expectedFormat] : legacyCases)
+        {
+            Require(
+                LamaPon::TextureLoader::PrepareDdsTextureData(bytes).format
+                    == expectedFormat,
+                "A DirectXTK-compatible legacy DDS format was not mapped");
+        }
         Require(
             LamaPon::TextureLoader::PrepareDdsTextureData(bc1Bytes).format
                     == DXGI_FORMAT_BC1_UNORM
@@ -3350,6 +3474,24 @@ namespace
             "dimensions");
 
         HiddenWindow window{ CanvasWidth, CanvasHeight };
+        {
+            LamaPon::GraphicsDevice d3d11Graphics;
+            d3d11Graphics.Initialize(
+                window.Get(),
+                CanvasWidth,
+                CanvasHeight,
+                LamaPon::RenderingApi::DirectX11);
+            for (const auto& bytes : extendedDdsBytes)
+            {
+                const auto view =
+                    d3d11Graphics.Assets().CreateTextureViewHandleFromMemory(
+                        bytes,
+                        true);
+                Require(
+                    view && d3d11Graphics.IsGraphicsViewCurrent(view),
+                    "An extended DDS format did not create a DirectX 11 view");
+            }
+        }
         LamaPon::GraphicsDevice graphics;
         graphics.Initialize(
             window.Get(),
@@ -3382,13 +3524,25 @@ namespace
         }
         for (const auto& bytes : extendedDdsBytes)
         {
-            const auto view =
-                graphics.Assets().CreateTextureViewHandleFromMemory(
-                    bytes,
-                    true);
-            Require(
-                view && graphics.IsGraphicsViewCurrent(view),
-                "An extended DDS format did not create a DirectX 12 view");
+            const auto prepared =
+                LamaPon::TextureLoader::PrepareDdsTextureData(bytes);
+            try
+            {
+                const auto view =
+                    graphics.Assets().CreateTextureViewHandleFromMemory(
+                        bytes,
+                        true);
+                Require(
+                    view && graphics.IsGraphicsViewCurrent(view),
+                    "An extended DDS format did not create a DirectX 12 view");
+            }
+            catch (const std::exception& exception)
+            {
+                throw std::runtime_error(
+                    "DirectX 12 DDS format "
+                    + std::to_string(static_cast<unsigned>(prepared.format))
+                    + " failed native creation: " + exception.what());
+            }
         }
         const auto arrayView =
             graphics.Assets().CreateTextureViewHandleFromMemory(

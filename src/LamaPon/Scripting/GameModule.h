@@ -13,9 +13,9 @@ namespace LamaPon
     // Game ModuleとRuntimeのABIを識別します。公開構造体のレイアウトや
     // 公開関数のシグネチャを変更した場合は、この値も更新してください。
     // GameModuleHostは完全一致を要求し、互換性のないDLLを読み込みません。
-    // API 72ではGraphicsTextureFormatへDDS互換形式を末尾追加しました。
+    // API 73ではGraphicsTextureFormatへlegacy DDS互換形式を末尾追加しました。
     // ゲーム用DLLの再ビルドが必要です。
-    inline constexpr std::uint32_t GameModuleApiVersion = 72;
+    inline constexpr std::uint32_t GameModuleApiVersion = 73;
 
     using NativeScriptCreateFunction = void* (*)(
         GameObject* owner,

@@ -89,9 +89,11 @@ WARPによるD3D11／D3D12の画素比較とdebug layerを使った回帰テス�
   Backend固有の描画サービスからbindする設計へ置き換えており、一対一の低レベル入口では
   ありません。ユーザー向けのMaterial、Sprite、Particle、post-process、custom shaderは
   いずれもこのD3D12専用経路を使用します。
-- DDSは一般的なUNORM／sRGB、BC1～BC7、signed BC4／BC5、BC6H、
-  16／32-bit floatを両APIで読みます。DirectXTKが変換対応する古いpalettized形式など、
-  現在のGPUへ直接載せられない一部のlegacy DDSには対応差があります。
+- DDSはUNORM／SNORM／sRGB、BC1～BC7、BC6H、16／32-bit float、
+  packed RGB／YUY2と、DirectXTK11が認識するlegacy headerを両APIで読みます。
+  YUY2はD3D12 driver間の対応差を避けるため、読み込み時にRGBA8へ変換します。
+  24-bit RGBやpalettized形式などDirectXTK11自体が拒否する形式は、両APIとも
+  事前に`texconv`等で現在のDXGI形式へ変換する必要があります。
 - GPU、driver、浮動小数点精度の違いにより、両APIの画素が常に完全一致するとは限りません。
 - 回帰テストは主要経路を検証しますが、すべてのGPUとSceneの組み合わせを保証するものでは
   ありません。

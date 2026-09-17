@@ -42,7 +42,21 @@ namespace LamaPon
         Rg16Float,
         R32Float,
         Rg32Float,
-        Rgba32Float
+        Rgba32Float,
+        R10g10b10a2Unorm,
+        Rg16Unorm,
+        B5g5r5a1Unorm,
+        B5g6r5Unorm,
+        B4g4r4a4Unorm,
+        R16Unorm,
+        A8Unorm,
+        Rg8Snorm,
+        Rgba8Snorm,
+        Rg16Snorm,
+        Rgba16Unorm,
+        Rgba16Snorm,
+        R8g8B8g8Unorm,
+        G8r8G8b8Unorm
     };
 
     // Immutableは全mipの初期dataを生成時に渡す静的texture、PerMipUpdateは

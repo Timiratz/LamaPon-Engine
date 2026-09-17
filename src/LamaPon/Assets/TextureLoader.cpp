@@ -355,6 +355,8 @@ namespace
     {
         constexpr std::uint32_t PixelFormatRgb = 0x40u;
         constexpr std::uint32_t PixelFormatLuminance = 0x20000u;
+        constexpr std::uint32_t PixelFormatAlpha = 0x2u;
+        constexpr std::uint32_t PixelFormatBumpDuDv = 0x80000u;
         constexpr std::uint32_t Caps2Volume = 0x200000u;
         constexpr std::uint32_t ResourceDimensionTexture2D = 3u;
         constexpr std::uint32_t ResourceDimensionTexture3D = 4u;
@@ -424,7 +426,22 @@ namespace
             case MakeFourCc('B', 'C', '5', 'S'):
                 format = DXGI_FORMAT_BC5_SNORM;
                 break;
+            case MakeFourCc('R', 'G', 'B', 'G'):
+                format = DXGI_FORMAT_R8G8_B8G8_UNORM;
+                break;
+            case MakeFourCc('G', 'R', 'G', 'B'):
+                format = DXGI_FORMAT_G8R8_G8B8_UNORM;
+                break;
+            case MakeFourCc('Y', 'U', 'Y', '2'):
+                format = DXGI_FORMAT_YUY2;
+                break;
             // D3D9のD3DFORMAT値をFourCC欄へ直接保存する旧DDSです。
+            case 36u:
+                format = DXGI_FORMAT_R16G16B16A16_UNORM;
+                break;
+            case 110u:
+                format = DXGI_FORMAT_R16G16B16A16_SNORM;
+                break;
             case 111u:
                 format = DXGI_FORMAT_R16_FLOAT;
                 break;
@@ -489,24 +506,94 @@ namespace
                 break;
             }
         }
-        else if ((header.pixelFormat.flags & PixelFormatRgb) != 0u
-            && header.pixelFormat.rgbBitCount == 32u
-            && header.pixelFormat.greenMask == 0x0000ff00u)
+        else if ((header.pixelFormat.flags & PixelFormatRgb) != 0u)
         {
-            if (header.pixelFormat.redMask == 0x000000ffu
-                && header.pixelFormat.blueMask == 0x00ff0000u
-                && header.pixelFormat.alphaMask == 0xff000000u)
+            if (header.pixelFormat.rgbBitCount == 32u)
             {
-                format = DXGI_FORMAT_R8G8B8A8_UNORM;
+                if (header.pixelFormat.redMask == 0x000000ffu
+                    && header.pixelFormat.greenMask == 0x0000ff00u
+                    && header.pixelFormat.blueMask == 0x00ff0000u
+                    && header.pixelFormat.alphaMask == 0xff000000u)
+                {
+                    format = DXGI_FORMAT_R8G8B8A8_UNORM;
+                }
+                else if (header.pixelFormat.redMask == 0x00ff0000u
+                    && header.pixelFormat.greenMask == 0x0000ff00u
+                    && header.pixelFormat.blueMask == 0x000000ffu)
+                {
+                    format = header.pixelFormat.alphaMask == 0xff000000u
+                        ? DXGI_FORMAT_B8G8R8A8_UNORM
+                        : header.pixelFormat.alphaMask == 0u
+                            ? DXGI_FORMAT_B8G8R8X8_UNORM
+                            : DXGI_FORMAT_UNKNOWN;
+                }
+                else if (header.pixelFormat.redMask == 0x3ff00000u
+                    && header.pixelFormat.greenMask == 0x000ffc00u
+                    && header.pixelFormat.blueMask == 0x000003ffu
+                    && header.pixelFormat.alphaMask == 0xc0000000u)
+                {
+                    format = DXGI_FORMAT_R10G10B10A2_UNORM;
+                }
+                else if (header.pixelFormat.redMask == 0x0000ffffu
+                    && header.pixelFormat.greenMask == 0xffff0000u
+                    && header.pixelFormat.blueMask == 0u
+                    && header.pixelFormat.alphaMask == 0u)
+                {
+                    format = DXGI_FORMAT_R16G16_UNORM;
+                }
+                else if (header.pixelFormat.redMask == 0xffffffffu
+                    && header.pixelFormat.greenMask == 0u
+                    && header.pixelFormat.blueMask == 0u
+                    && header.pixelFormat.alphaMask == 0u)
+                {
+                    format = DXGI_FORMAT_R32_FLOAT;
+                }
             }
-            else if (header.pixelFormat.redMask == 0x00ff0000u
-                && header.pixelFormat.blueMask == 0x000000ffu)
+            else if (header.pixelFormat.rgbBitCount == 16u)
             {
-                format = header.pixelFormat.alphaMask == 0xff000000u
-                    ? DXGI_FORMAT_B8G8R8A8_UNORM
-                    : header.pixelFormat.alphaMask == 0u
-                        ? DXGI_FORMAT_B8G8R8X8_UNORM
-                        : DXGI_FORMAT_UNKNOWN;
+                if (header.pixelFormat.redMask == 0x7c00u
+                    && header.pixelFormat.greenMask == 0x03e0u
+                    && header.pixelFormat.blueMask == 0x001fu
+                    && header.pixelFormat.alphaMask == 0x8000u)
+                {
+                    format = DXGI_FORMAT_B5G5R5A1_UNORM;
+                }
+                else if (header.pixelFormat.redMask == 0xf800u
+                    && header.pixelFormat.greenMask == 0x07e0u
+                    && header.pixelFormat.blueMask == 0x001fu
+                    && header.pixelFormat.alphaMask == 0u)
+                {
+                    format = DXGI_FORMAT_B5G6R5_UNORM;
+                }
+                else if (header.pixelFormat.redMask == 0x0f00u
+                    && header.pixelFormat.greenMask == 0x00f0u
+                    && header.pixelFormat.blueMask == 0x000fu
+                    && header.pixelFormat.alphaMask == 0xf000u)
+                {
+                    format = DXGI_FORMAT_B4G4R4A4_UNORM;
+                }
+                else if (header.pixelFormat.redMask == 0x00ffu
+                    && header.pixelFormat.greenMask == 0u
+                    && header.pixelFormat.blueMask == 0u
+                    && header.pixelFormat.alphaMask == 0xff00u)
+                {
+                    format = DXGI_FORMAT_R8G8_UNORM;
+                }
+                else if (header.pixelFormat.redMask == 0xffffu
+                    && header.pixelFormat.greenMask == 0u
+                    && header.pixelFormat.blueMask == 0u
+                    && header.pixelFormat.alphaMask == 0u)
+                {
+                    format = DXGI_FORMAT_R16_UNORM;
+                }
+            }
+            else if (header.pixelFormat.rgbBitCount == 8u
+                && header.pixelFormat.redMask == 0xffu
+                && header.pixelFormat.greenMask == 0u
+                && header.pixelFormat.blueMask == 0u
+                && header.pixelFormat.alphaMask == 0u)
+            {
+                format = DXGI_FORMAT_R8_UNORM;
             }
         }
         else if ((header.pixelFormat.flags & PixelFormatLuminance) != 0u)
@@ -517,10 +604,47 @@ namespace
                 format = DXGI_FORMAT_R8_UNORM;
             }
             else if (header.pixelFormat.rgbBitCount == 16u
+                && header.pixelFormat.redMask == 0xffffu
+                && header.pixelFormat.alphaMask == 0u)
+            {
+                format = DXGI_FORMAT_R16_UNORM;
+            }
+            else if ((header.pixelFormat.rgbBitCount == 16u
+                    || header.pixelFormat.rgbBitCount == 8u)
                 && header.pixelFormat.redMask == 0x00ffu
                 && header.pixelFormat.alphaMask == 0xff00u)
             {
                 format = DXGI_FORMAT_R8G8_UNORM;
+            }
+        }
+        else if ((header.pixelFormat.flags & PixelFormatAlpha) != 0u
+            && header.pixelFormat.rgbBitCount == 8u)
+        {
+            format = DXGI_FORMAT_A8_UNORM;
+        }
+        else if ((header.pixelFormat.flags & PixelFormatBumpDuDv) != 0u)
+        {
+            if (header.pixelFormat.rgbBitCount == 16u
+                && header.pixelFormat.redMask == 0x00ffu
+                && header.pixelFormat.greenMask == 0xff00u)
+            {
+                format = DXGI_FORMAT_R8G8_SNORM;
+            }
+            else if (header.pixelFormat.rgbBitCount == 32u
+                && header.pixelFormat.redMask == 0x000000ffu
+                && header.pixelFormat.greenMask == 0x0000ff00u
+                && header.pixelFormat.blueMask == 0x00ff0000u
+                && header.pixelFormat.alphaMask == 0xff000000u)
+            {
+                format = DXGI_FORMAT_R8G8B8A8_SNORM;
+            }
+            else if (header.pixelFormat.rgbBitCount == 32u
+                && header.pixelFormat.redMask == 0x0000ffffu
+                && header.pixelFormat.greenMask == 0xffff0000u
+                && header.pixelFormat.blueMask == 0u
+                && header.pixelFormat.alphaMask == 0u)
+            {
+                format = DXGI_FORMAT_R16G16_SNORM;
             }
         }
         switch (format)
@@ -553,6 +677,21 @@ namespace
         case DXGI_FORMAT_R32_FLOAT:
         case DXGI_FORMAT_R32G32_FLOAT:
         case DXGI_FORMAT_R32G32B32A32_FLOAT:
+        case DXGI_FORMAT_R10G10B10A2_UNORM:
+        case DXGI_FORMAT_R16G16_UNORM:
+        case DXGI_FORMAT_B5G5R5A1_UNORM:
+        case DXGI_FORMAT_B5G6R5_UNORM:
+        case DXGI_FORMAT_B4G4R4A4_UNORM:
+        case DXGI_FORMAT_R16_UNORM:
+        case DXGI_FORMAT_A8_UNORM:
+        case DXGI_FORMAT_R8G8_SNORM:
+        case DXGI_FORMAT_R8G8B8A8_SNORM:
+        case DXGI_FORMAT_R16G16_SNORM:
+        case DXGI_FORMAT_R16G16B16A16_UNORM:
+        case DXGI_FORMAT_R16G16B16A16_SNORM:
+        case DXGI_FORMAT_R8G8_B8G8_UNORM:
+        case DXGI_FORMAT_G8R8_G8B8_UNORM:
+        case DXGI_FORMAT_YUY2:
             break;
         default:
             throw std::invalid_argument(
@@ -604,8 +743,15 @@ namespace
             throw std::invalid_argument(
                 "The DDS texture has too many array slices.");
         }
+        const auto sourceFormat = format;
+        const bool convertYuy2 = sourceFormat == DXGI_FORMAT_YUY2;
         LamaPon::TextureLoader::PreparedDdsTextureData result;
-        result.format = format;
+        // D3D12 WARP and a number of hardware drivers do not accept YUY2 as a
+        // general shader texture. Decode it once on the CPU so both backends
+        // get an ordinary, portable color texture.
+        result.format = convertYuy2
+            ? DXGI_FORMAT_R8G8B8A8_UNORM
+            : sourceFormat;
         result.dimension = fileVolume
             ? LamaPon::TextureLoader::PreparedDdsTextureDimension::Texture3D
             : fileCube
@@ -634,7 +780,7 @@ namespace
                 const auto width = std::max(header.width >> mip, 1u);
                 const auto height = std::max(header.height >> mip, 1u);
                 const auto [rowPitch, rowCount] =
-                    DdsLevelLayout(format, width, height);
+                    DdsLevelLayout(sourceFormat, width, height);
                 const auto depth = fileVolume
                     ? std::max(header.depth >> mip, 1u)
                     : 1u;
@@ -652,11 +798,73 @@ namespace
                 LamaPon::TextureLoader::PreparedTextureLevel level;
                 level.width = width;
                 level.height = height;
-                level.rowPitch = rowPitch;
-                level.bytes.assign(
-                    bytes.begin() + static_cast<std::ptrdiff_t>(offset),
-                    bytes.begin()
-                        + static_cast<std::ptrdiff_t>(offset + levelBytes));
+                if (convertYuy2)
+                {
+                    level.rowPitch = width * 4u;
+                    level.bytes.resize(
+                        static_cast<std::size_t>(level.rowPitch)
+                            * height * depth);
+                    const auto clampByte = [](const int value) noexcept
+                    {
+                        return static_cast<std::uint8_t>(
+                            std::clamp(value, 0, 255));
+                    };
+                    const auto writePixel = [&clampByte](
+                        std::uint8_t* const destination,
+                        const int y,
+                        const int u,
+                        const int v)
+                    {
+                        const int c = std::max(y - 16, 0);
+                        const int d = u - 128;
+                        const int e = v - 128;
+                        destination[0] = clampByte(
+                            (298 * c + 409 * e + 128) >> 8);
+                        destination[1] = clampByte(
+                            (298 * c - 100 * d - 208 * e + 128) >> 8);
+                        destination[2] = clampByte(
+                            (298 * c + 516 * d + 128) >> 8);
+                        destination[3] = 255u;
+                    };
+                    const auto* const sourceBase = bytes.data() + offset;
+                    for (std::uint32_t z{}; z < depth; ++z)
+                    {
+                        for (std::uint32_t y{}; y < height; ++y)
+                        {
+                            const auto* source = sourceBase
+                                + (static_cast<std::size_t>(z) * rowCount + y)
+                                    * rowPitch;
+                            auto* destination = level.bytes.data()
+                                + (static_cast<std::size_t>(z) * height + y)
+                                    * level.rowPitch;
+                            for (std::uint32_t x{}; x < width; x += 2u)
+                            {
+                                writePixel(
+                                    destination + x * 4u,
+                                    source[0],
+                                    source[1],
+                                    source[3]);
+                                if (x + 1u < width)
+                                {
+                                    writePixel(
+                                        destination + (x + 1u) * 4u,
+                                        source[2],
+                                        source[1],
+                                        source[3]);
+                                }
+                                source += 4u;
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    level.rowPitch = rowPitch;
+                    level.bytes.assign(
+                        bytes.begin() + static_cast<std::ptrdiff_t>(offset),
+                        bytes.begin()
+                            + static_cast<std::ptrdiff_t>(offset + levelBytes));
+                }
                 result.subresources.push_back(std::move(level));
                 offset += levelBytes;
             }

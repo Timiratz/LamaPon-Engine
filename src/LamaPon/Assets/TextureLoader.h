@@ -131,7 +131,8 @@ namespace LamaPon::TextureLoader
         std::span<const std::uint8_t> bytes);
 
     // 2D DDSのヘッダーとミップ列をAPI非依存な転送データへ展開します。
-    // 共通Backendが直接uploadできるUNORM／sRGB、BC、float形式に対応し、
+    // 共通Backendが直接uploadできるUNORM／SNORM／sRGB、BC、float、
+    // packed形式とDirectXTK互換のlegacy headerに対応し、
     // 配列・キューブ・volumeや未対応formatは誤ったtextureとして作らず
     // 例外にします。
     [[nodiscard]] PreparedTextureData PrepareDdsTextureData(

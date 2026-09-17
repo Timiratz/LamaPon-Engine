@@ -74,6 +74,34 @@ namespace LamaPon::Detail
             return DXGI_FORMAT_R32G32_FLOAT;
         case GraphicsTextureFormat::Rgba32Float:
             return DXGI_FORMAT_R32G32B32A32_FLOAT;
+        case GraphicsTextureFormat::R10g10b10a2Unorm:
+            return DXGI_FORMAT_R10G10B10A2_UNORM;
+        case GraphicsTextureFormat::Rg16Unorm:
+            return DXGI_FORMAT_R16G16_UNORM;
+        case GraphicsTextureFormat::B5g5r5a1Unorm:
+            return DXGI_FORMAT_B5G5R5A1_UNORM;
+        case GraphicsTextureFormat::B5g6r5Unorm:
+            return DXGI_FORMAT_B5G6R5_UNORM;
+        case GraphicsTextureFormat::B4g4r4a4Unorm:
+            return DXGI_FORMAT_B4G4R4A4_UNORM;
+        case GraphicsTextureFormat::R16Unorm:
+            return DXGI_FORMAT_R16_UNORM;
+        case GraphicsTextureFormat::A8Unorm:
+            return DXGI_FORMAT_A8_UNORM;
+        case GraphicsTextureFormat::Rg8Snorm:
+            return DXGI_FORMAT_R8G8_SNORM;
+        case GraphicsTextureFormat::Rgba8Snorm:
+            return DXGI_FORMAT_R8G8B8A8_SNORM;
+        case GraphicsTextureFormat::Rg16Snorm:
+            return DXGI_FORMAT_R16G16_SNORM;
+        case GraphicsTextureFormat::Rgba16Unorm:
+            return DXGI_FORMAT_R16G16B16A16_UNORM;
+        case GraphicsTextureFormat::Rgba16Snorm:
+            return DXGI_FORMAT_R16G16B16A16_SNORM;
+        case GraphicsTextureFormat::R8g8B8g8Unorm:
+            return DXGI_FORMAT_R8G8_B8G8_UNORM;
+        case GraphicsTextureFormat::G8r8G8b8Unorm:
+            return DXGI_FORMAT_G8R8_G8B8_UNORM;
         default:
             throw std::invalid_argument(
                 "Unsupported graphics texture format.");
@@ -125,9 +153,15 @@ namespace LamaPon::Detail
         switch (format)
         {
         case DXGI_FORMAT_R8_UNORM:
+        case DXGI_FORMAT_A8_UNORM:
             return uncompressed(1u);
         case DXGI_FORMAT_R8G8_UNORM:
+        case DXGI_FORMAT_R8G8_SNORM:
+        case DXGI_FORMAT_R16_UNORM:
         case DXGI_FORMAT_R16_FLOAT:
+        case DXGI_FORMAT_B5G5R5A1_UNORM:
+        case DXGI_FORMAT_B5G6R5_UNORM:
+        case DXGI_FORMAT_B4G4R4A4_UNORM:
             return uncompressed(2u);
         case DXGI_FORMAT_R8G8B8A8_UNORM:
         case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
@@ -136,13 +170,33 @@ namespace LamaPon::Detail
         case DXGI_FORMAT_B8G8R8X8_UNORM:
         case DXGI_FORMAT_B8G8R8X8_UNORM_SRGB:
         case DXGI_FORMAT_R16G16_FLOAT:
+        case DXGI_FORMAT_R10G10B10A2_UNORM:
+        case DXGI_FORMAT_R16G16_UNORM:
+        case DXGI_FORMAT_R8G8B8A8_SNORM:
+        case DXGI_FORMAT_R16G16_SNORM:
         case DXGI_FORMAT_R32_FLOAT:
             return uncompressed(4u);
         case DXGI_FORMAT_R16G16B16A16_FLOAT:
+        case DXGI_FORMAT_R16G16B16A16_UNORM:
+        case DXGI_FORMAT_R16G16B16A16_SNORM:
         case DXGI_FORMAT_R32G32_FLOAT:
             return uncompressed(8u);
         case DXGI_FORMAT_R32G32B32A32_FLOAT:
             return uncompressed(16u);
+        case DXGI_FORMAT_R8G8_B8G8_UNORM:
+        case DXGI_FORMAT_G8R8_G8B8_UNORM:
+        case DXGI_FORMAT_YUY2:
+            if (width > std::numeric_limits<std::uint32_t>::max() - 1u
+                || (width + 1u) / 2u
+                    > std::numeric_limits<std::uint32_t>::max() / 4u)
+            {
+                throw std::invalid_argument(
+                    "The packed texture row pitch cannot be represented.");
+            }
+            return {
+                ((width + 1u) / 2u) * 4u,
+                height
+            };
         case DXGI_FORMAT_BC1_UNORM:
         case DXGI_FORMAT_BC1_UNORM_SRGB:
         case DXGI_FORMAT_BC4_UNORM:
