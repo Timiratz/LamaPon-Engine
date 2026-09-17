@@ -30,14 +30,17 @@ namespace LamaPon
     enum class RenderingApiFallbackReason
     {
         None,
+        // Kept for source and binary compatibility with the bootstrap-era
+        // selection result. Current supported APIs are implemented.
         NotImplemented,
         Unsupported,
         InitializationFailed,
         UnknownApi
     };
 
-    // 起動経路ごとの描画機能要件です。DirectX 12 Experimentalは、
-    // 対応済みのGame／Editor経路だけが明示的に許可します。
+    // D3D12 bootstrap期の起動プロファイルです。現在はどちらを指定しても
+    // 選択したrendererを起動しますが、既存Game Moduleのソース互換のため
+    // 列挙値とoverloadを残します。
     enum class GraphicsStartupProfile : std::uint8_t
     {
         FullRenderer,
@@ -57,14 +60,12 @@ namespace LamaPon
             RenderingApiFallbackReason::None };
     };
 
-    // 設定値から、完全な描画機能を安全に起動できるBackendを選びます。
-    // 既定では未実装のAPIを要求値のままDirectX 11へ倒します。
+    // 設定値から起動するBackendを選びます。Autoは既存互換のためD3D11、
+    // DirectX12ExperimentalはD3D12を選びます。
     [[nodiscard]] GraphicsBackendSelection
         SelectGraphicsBackend(
             RenderingApi requestedApi) noexcept;
-    // D3D12の実験的rendererを明示的に許可する起動経路だけで
-    // DirectX12Experimentalを選びます。未対応の経路はFullRendererを
-    // 指定してD3D11 fallbackを保ちます。
+    // profile付きoverloadはbootstrap期とのソース互換用です。
     [[nodiscard]] GraphicsBackendSelection
         SelectGraphicsBackend(
             RenderingApi requestedApi,
@@ -349,7 +350,7 @@ namespace LamaPon
     };
 
     // 通常起動ではSelectGraphicsBackendで解決済みの値を渡します。
-    // DirectX 12 Experimentalは段階実装中の内部Backendも生成できます。
+    // DirectX 12 Experimentalは実験的なBackendを生成します。
     [[nodiscard]] std::unique_ptr<GraphicsBackend>
         CreateGraphicsBackend(RenderingApi activeApi);
 }

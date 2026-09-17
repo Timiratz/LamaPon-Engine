@@ -125,9 +125,6 @@ namespace LamaPon
     bool GraphicsDevice::IsD3D12ExperimentalBootstrap() const noexcept
     {
         return IsInitialized()
-            && m_state->m_graphicsStartupProfile
-                == GraphicsStartupProfile::
-                    AllowD3D12ExperimentalRenderer
             && ActiveRenderingApi()
                 == RenderingApi::DirectX12Experimental;
     }
@@ -414,7 +411,7 @@ namespace LamaPon
                 break;
             case RenderingApiFallbackReason::NotImplemented:
                 Logger::Instance().Warning(
-                    "DirectX 12 Experimentalの完全なrendererは未実装のため、"
+                    "選択されたRendering APIはこのbuildで未実装のため、"
                     "DirectX 11へフォールバックして起動します。");
                 break;
             case RenderingApiFallbackReason::UnknownApi:
@@ -509,10 +506,7 @@ namespace LamaPon
         catch (const std::runtime_error& exception)
         {
             const bool retryWithD3D11 = selection.activeApi
-                == RenderingApi::DirectX12Experimental
-                && profile
-                    == GraphicsStartupProfile::
-                        AllowD3D12ExperimentalRenderer;
+                == RenderingApi::DirectX12Experimental;
             if (!retryWithD3D11)
             {
                 throw;

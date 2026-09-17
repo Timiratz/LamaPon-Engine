@@ -19,6 +19,11 @@ namespace LamaPon
         const RenderingApi requestedApi,
         const GraphicsStartupProfile profile) noexcept
     {
+        // Startup profiles were introduced while DirectX 12 only exposed a
+        // bootstrap renderer.  Keep accepting them for source compatibility,
+        // but the completed experimental renderer no longer needs an opt-in
+        // path beyond selecting DirectX12Experimental itself.
+        static_cast<void>(profile);
         switch (requestedApi)
         {
         case RenderingApi::Auto:
@@ -34,20 +39,10 @@ namespace LamaPon
                 RenderingApiFallbackReason::None
             };
         case RenderingApi::DirectX12Experimental:
-            if (profile
-                == GraphicsStartupProfile::
-                    AllowD3D12ExperimentalRenderer)
-            {
-                return {
-                    RenderingApi::DirectX12Experimental,
-                    RenderingApi::DirectX12Experimental,
-                    RenderingApiFallbackReason::None
-                };
-            }
             return {
                 RenderingApi::DirectX12Experimental,
-                RenderingApi::DirectX11,
-                RenderingApiFallbackReason::NotImplemented
+                RenderingApi::DirectX12Experimental,
+                RenderingApiFallbackReason::None
             };
         }
         return {

@@ -413,12 +413,9 @@ int WINAPI wWinMain(
 
         application.Initialize(
             instance,
-            projectSettings.graphics.renderingApi,
-            // Editor GUI、モデルプレビュー、grid／gizmoを含む実験的な
-            // D3D12 rendererを許可します。初期化失敗時はGraphicsDeviceが
-            // D3D11へ安全にフォールバックします。
-            LamaPon::GraphicsStartupProfile::
-                AllowD3D12ExperimentalRenderer);
+            // Editor GUI、モデルプレビュー、grid／gizmoを含むD3D12
+            // rendererを起動します。初期化失敗時はD3D11へ戻ります。
+            projectSettings.graphics.renderingApi);
         // セーフモードと自動UI検証では、保存済みセッションの復元を含む
         // 外部通信を開始しません。通常のEditor起動だけで有効化します。
         if (!safeMode

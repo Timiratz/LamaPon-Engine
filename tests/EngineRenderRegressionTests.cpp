@@ -668,30 +668,30 @@ int main(const int argumentCount, char** arguments)
         }
         LamaPon::GraphicsDevice graphics;
         Stage("initialize");
-        // DirectX 12 ExperimentalはまだD3D11へフォールバックします。
-        // この後の全描画検証をその起動経路で通し、設定しただけで
-        // エディター相当の実描画が壊れないことも同時に確認します。
+        // この回帰テストはD3D11固有の公開互換入口も検証するため、
+        // D3D11を明示して起動します。D3D12は専用の画素比較suiteで
+        // 同じユーザー向け描画経路を検証します。
         graphics.Initialize(
             window,
             Width,
             Height,
-            LamaPon::RenderingApi::DirectX12Experimental);
+            LamaPon::RenderingApi::DirectX11);
         Require(
             graphics.StartupRenderingApi()
-                == LamaPon::RenderingApi::DirectX12Experimental,
-            "The startup API must retain the DirectX 12 Experimental request.");
+                == LamaPon::RenderingApi::DirectX11,
+            "The startup API must retain the DirectX 11 request.");
         Require(
             graphics.ActiveRenderingApi()
                 == LamaPon::RenderingApi::DirectX11,
-            "DirectX 12 Experimental must currently run on the DirectX 11 backend.");
+            "The DirectX 11 regression must use the DirectX 11 backend.");
         Require(
             graphics.RenderingApiFallback()
-                == LamaPon::RenderingApiFallbackReason::NotImplemented,
-            "DirectX 12 Experimental must report the not-implemented fallback.");
+                == LamaPon::RenderingApiFallbackReason::None,
+            "The DirectX 11 regression unexpectedly reported a fallback.");
         Require(
             D3D11Access::Device(graphics) != nullptr
                 && D3D11Access::Context(graphics) != nullptr,
-            "The DirectX 11 fallback must expose a valid device and context.");
+            "The DirectX 11 renderer must expose a valid device and context.");
         Stage("skeletal-legacy-export");
         constexpr char LegacySkeletalDrawSymbol[] =
             "?Draw@SkeletalModel@LamaPon@@QEBAX"

@@ -45,6 +45,11 @@ DirectX 12を選んだゲーム、エディター、CLIでDevice、SwapChainな�
 場合は、DirectX 12の資源を解放してDirectX 11へ自動的にフォールバックします。
 フォールバックした理由はログへ出力されます。
 
+エンジンを直接組み込む場合も、`Application::Initialize`または
+`GraphicsDevice::Initialize`へ`RenderingApi::DirectX12Experimental`を渡すだけで
+DirectX 12を起動できます。初期実装時の`GraphicsStartupProfile`付きoverloadは
+ソース互換用に残っていますが、現在は追加のopt-inとして指定する必要はありません。
+
 エディターでは、Dear ImGui、Viewport／アセットのテクスチャ表示、モデルプレビュー、
 gridやgizmoのデバッグライン、GPU ProfilerもDirectX 12で描画します。
 

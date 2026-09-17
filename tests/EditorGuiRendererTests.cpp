@@ -1042,15 +1042,15 @@ namespace
                 window.Get(),
                 Width,
                 Height,
-                LamaPon::RenderingApi::DirectX12Experimental);
+                LamaPon::RenderingApi::DirectX11);
             Require(
                 fallbackGraphics.StartupRenderingApi()
-                        == LamaPon::RenderingApi::DirectX12Experimental
+                        == LamaPon::RenderingApi::DirectX11
                     && fallbackGraphics.ActiveRenderingApi()
                         == LamaPon::RenderingApi::DirectX11
                     && fallbackGraphics.RenderingApiFallback()
-                        == LamaPon::RenderingApiFallbackReason::NotImplemented,
-                "Sprite smoke test requires the DirectX 11 fallback");
+                        == LamaPon::RenderingApiFallbackReason::None,
+                "Sprite smoke test requires the DirectX 11 renderer");
             constexpr float fallbackClearColor[]{
                 0.0f, 0.0f, 0.0f, 1.0f };
             fallbackGraphics.BeginFrame(fallbackClearColor);
@@ -1069,17 +1069,17 @@ namespace
             window.Get(),
             Width,
             Height,
-            LamaPon::RenderingApi::DirectX12Experimental);
+            LamaPon::RenderingApi::DirectX11);
         graphics.Assets().SetAssetRoot(
             std::filesystem::path{ LAMAPON_TEST_ASSET_DIR });
         Require(
             graphics.StartupRenderingApi()
-                    == LamaPon::RenderingApi::DirectX12Experimental
+                    == LamaPon::RenderingApi::DirectX11
                 && graphics.ActiveRenderingApi()
                     == LamaPon::RenderingApi::DirectX11
                 && graphics.RenderingApiFallback()
-                    == LamaPon::RenderingApiFallbackReason::NotImplemented,
-            "Editor GUI smoke test requires the DirectX 11 fallback");
+                    == LamaPon::RenderingApiFallbackReason::None,
+            "Editor GUI smoke test requires the DirectX 11 renderer");
 
         // Backend差し替え前に遅延生成資源も作り、同じGraphicsDeviceを
         // 再初期化した後の描画で旧Device由来の資源が残らないことを
@@ -4044,9 +4044,7 @@ namespace
             window.Get(),
             Width,
             Height,
-            LamaPon::RenderingApi::DirectX12Experimental,
-            LamaPon::GraphicsStartupProfile::
-                AllowD3D12ExperimentalBootstrap);
+            LamaPon::RenderingApi::DirectX12Experimental);
         if (graphics.ActiveRenderingApi()
             != LamaPon::RenderingApi::DirectX12Experimental)
         {

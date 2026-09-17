@@ -4,6 +4,7 @@
 
 ### 描画API設定
 
+- `DirectX12Experimental`を標準の`Application`／`GraphicsDevice`初期化入口から直接起動できるようにし、bootstrap期の`GraphicsStartupProfile`によるopt-in制限を解除。旧profile列挙値とoverloadはGame Moduleのソース互換用に残し、D3D12初期化失敗時だけD3D11へ安全にフォールバックする。
 - D3D11／D3D12共通のDDS読み込みを、sRGB、BGRX8、R8／RG8、BC2／BC4／signed BC4・BC5／BC6H／BC7、16／32-bit floatへ拡張。DX10 headerに加えてDXT2～DXT4、ATI1／BC4、signed BC、D3D9 float FourCCも解釈し、全形式のrow／block layoutとD3D12 native SRV生成をWARPで検証する。公開`GraphicsTextureFormat`の末尾追加に伴いGame Module APIを72へ更新。
 - DirectX 12 BackendでAPI非依存の動的頂点buffer更新と入力assemblerへのbindを実装。D3D11の`WRITE_DISCARD`相当として更新ごとにupload resourceをrenameし、記録済みdrawと旧handleの寿命をGPU完了まで分離する。空更新、slot／offset検証、Backend再初期化後のstale handle拒否をWARPとdebug layerで検証する。D3D11 Effect専用のpixel shader resource直接bindは、D3D12ではroot signature固有の描画サービスを使う設計であることも共通契約とガイドへ明記した。
 - DirectX 12でDDSの2D array、cube array、volume textureを読み込む。D3D11／D3D12共通のDDS解析でresource次元（2D／2D array／cube／cube array／3D）とarray数・depthを保ち、D3D12はTexture2DArray／TextureCubeArray／Texture3Dのnative resourceと同じ次元のSRVで公開する（従来の2Dとcubeの入口も同じ解析を使う）。2D arrayの2枚目、volumeの奥側の層、cube arrayの2個目の+Y面をMaterial custom shaderの自由枠から読んだ画像がD3D11と一致することをWARPで検証する。あわせて、D3D11でDirectXTKが読んだDDSのvolume textureを取り込むときに2D textureとして扱って読み込みに失敗していた問題を修正した。

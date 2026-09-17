@@ -66,19 +66,11 @@ int WINAPI wWinMain(
             settings.windowHeight,
             settings.gameName);
 
-        // D3D12 Experimentalの実シーンrendererを許可します。
-        // 実際にD3D12 backendが作れない環境ではGraphicsDeviceがD3D11へ
-        // フォールバックするため、その場合は従来の完全なゲームを起動します。
-        const auto graphicsStartupProfile =
-            settings.graphics.renderingApi
-                == LamaPon::RenderingApi::DirectX12Experimental
-            ? LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalRenderer
-            : LamaPon::GraphicsStartupProfile::FullRenderer;
         // 描画APIはデバイス初期化時にだけ選択し、実行中は切り替えません。
+        // D3D12を作れない環境ではD3D11へ安全にフォールバックします。
         application.Initialize(
             instance,
-            settings.graphics.renderingApi,
-            graphicsStartupProfile);
+            settings.graphics.renderingApi);
         const bool d3d12ExperimentalRenderer =
             application.Graphics().IsD3D12ExperimentalRenderer();
         // 無人の配布検証では外部サービスへ接続しません。通常起動時だけ、

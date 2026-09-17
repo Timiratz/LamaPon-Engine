@@ -221,9 +221,8 @@ namespace LamaPon
             std::uint32_t width,
             std::uint32_t height,
             RenderingApi requestedApi);
-        // 対応済みの起動経路がD3D12 Experimental rendererを明示的に
-        // 許可する入口です。通常のInitializeは安全側でD3D11へ
-        // フォールバックします。
+        // bootstrap期とのソース互換用overloadです。現在はprofileに
+        // かかわらずrequestedApiを起動します。
         void Initialize(
             HWND window,
             std::uint32_t width,

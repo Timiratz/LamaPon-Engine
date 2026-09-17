@@ -187,7 +187,7 @@ namespace LamaPon
         {
             throw std::runtime_error("GetModuleFileNameW failed.");
         }
-        // GraphicsDeviceの初期化警告（未実装APIからのフォールバック等）も
+        // GraphicsDeviceの初期化警告（D3D12初期化失敗時のfallback等）も
         // 起動ログへ残るよう、デバイス作成より先に出力先を開きます。
         static_cast<void>(
             Logger::Instance().SetFilePath(

@@ -357,14 +357,14 @@ int main()
         CheckSelection(
             LamaPon::RenderingApi::DirectX12Experimental,
             LamaPon::RenderingApi::DirectX12Experimental,
-            LamaPon::RenderingApi::DirectX11,
-            LamaPon::RenderingApiFallbackReason::NotImplemented);
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::RenderingApiFallbackReason::None);
         CheckSelection(
             LamaPon::RenderingApi::DirectX12Experimental,
             LamaPon::GraphicsStartupProfile::FullRenderer,
             LamaPon::RenderingApi::DirectX12Experimental,
-            LamaPon::RenderingApi::DirectX11,
-            LamaPon::RenderingApiFallbackReason::NotImplemented);
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::RenderingApiFallbackReason::None);
         CheckSelection(
             LamaPon::RenderingApi::DirectX12Experimental,
             LamaPon::GraphicsStartupProfile::
@@ -978,11 +978,8 @@ int main()
                 "A DirectX 12 view remained current after shutdown");
         }
 
-        // Gameだけが明示的に許可するD3D12 bootstrapは、D3D11の
-        // native rendererを初期化せず、clear / capture / present / resize、
-        // Sprite用texture、空のscene facadeを安全に提供します。D3D12を
-        // 初期化できない環境では同じprofileでもD3D11へ一度だけ
-        // フォールバックします。
+        // 通常の初期化入口からD3D12 rendererを起動でき、D3D12を
+        // 初期化できない環境ではD3D11へ一度だけフォールバックします。
         {
             constexpr std::uint32_t BootstrapWidth = 53u;
             constexpr std::uint32_t BootstrapHeight = 31u;
@@ -995,9 +992,7 @@ int main()
                 window.Get(),
                 BootstrapWidth,
                 BootstrapHeight,
-                LamaPon::RenderingApi::DirectX12Experimental,
-                LamaPon::GraphicsStartupProfile::
-                    AllowD3D12ExperimentalBootstrap);
+                LamaPon::RenderingApi::DirectX12Experimental);
 
             Require(bootstrapGraphics.IsInitialized(),
                 "The profiled graphics device did not initialize");
