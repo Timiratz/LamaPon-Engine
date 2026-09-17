@@ -1,0 +1,10 @@
+ここへ Discord Social SDK の discord_partner_sdk.lib を置いてください。
+
+    置き場所 : sdk/lib/discord_partner_sdk.lib
+    SDK内の元 : lib/release/discord_partner_sdk.lib
+
+ライセンス上、SDK本体をパッケージへ同梱できません。
+Discord Developer Portal から入手してください。
+くわしくはパッケージの README.md を見てください。
+
+このファイルは消してもかまいません。
