@@ -3267,7 +3267,11 @@ namespace
             ExtendedDdsCase{ DXGI_FORMAT_R16G16B16A16_UNORM, 128u, 32u },
             ExtendedDdsCase{ DXGI_FORMAT_R16G16B16A16_SNORM, 128u, 32u },
             ExtendedDdsCase{ DXGI_FORMAT_R8G8_B8G8_UNORM, 32u, 8u },
-            ExtendedDdsCase{ DXGI_FORMAT_G8R8_G8B8_UNORM, 32u, 8u }
+            ExtendedDdsCase{ DXGI_FORMAT_G8R8_G8B8_UNORM, 32u, 8u },
+            ExtendedDdsCase{ DXGI_FORMAT_R8_SNORM, 16u, 4u },
+            ExtendedDdsCase{ DXGI_FORMAT_R16_SNORM, 32u, 8u },
+            ExtendedDdsCase{ DXGI_FORMAT_R11G11B10_FLOAT, 64u, 16u },
+            ExtendedDdsCase{ DXGI_FORMAT_R9G9B9E5_SHAREDEXP, 64u, 16u }
         };
         std::vector<std::vector<std::uint8_t>> extendedDdsBytes;
         extendedDdsBytes.reserve(extendedCases.size());
@@ -3288,6 +3292,86 @@ namespace
                         == testCase.bytes,
                 "An extended DX10 DDS format lost its upload layout");
         }
+        struct TypelessDdsCase final
+        {
+            DXGI_FORMAT storageFormat;
+            DXGI_FORMAT viewFormat;
+            std::size_t bytes;
+            std::uint32_t rowPitch;
+        };
+        const std::array typelessCases{
+            TypelessDdsCase{ DXGI_FORMAT_R32G32B32A32_TYPELESS,
+                DXGI_FORMAT_R32G32B32A32_FLOAT, 256u, 64u },
+            TypelessDdsCase{ DXGI_FORMAT_R16G16B16A16_TYPELESS,
+                DXGI_FORMAT_R16G16B16A16_UNORM, 128u, 32u },
+            TypelessDdsCase{ DXGI_FORMAT_R32G32_TYPELESS,
+                DXGI_FORMAT_R32G32_FLOAT, 128u, 32u },
+            TypelessDdsCase{ DXGI_FORMAT_R10G10B10A2_TYPELESS,
+                DXGI_FORMAT_R10G10B10A2_UNORM, 64u, 16u },
+            TypelessDdsCase{ DXGI_FORMAT_R8G8B8A8_TYPELESS,
+                DXGI_FORMAT_R8G8B8A8_UNORM, 64u, 16u },
+            TypelessDdsCase{ DXGI_FORMAT_R16G16_TYPELESS,
+                DXGI_FORMAT_R16G16_UNORM, 64u, 16u },
+            TypelessDdsCase{ DXGI_FORMAT_R32_TYPELESS,
+                DXGI_FORMAT_R32_FLOAT, 64u, 16u },
+            TypelessDdsCase{ DXGI_FORMAT_R8G8_TYPELESS,
+                DXGI_FORMAT_R8G8_UNORM, 32u, 8u },
+            TypelessDdsCase{ DXGI_FORMAT_R16_TYPELESS,
+                DXGI_FORMAT_R16_UNORM, 32u, 8u },
+            TypelessDdsCase{ DXGI_FORMAT_R8_TYPELESS,
+                DXGI_FORMAT_R8_UNORM, 16u, 4u },
+            TypelessDdsCase{ DXGI_FORMAT_BC1_TYPELESS,
+                DXGI_FORMAT_BC1_UNORM, 8u, 8u },
+            TypelessDdsCase{ DXGI_FORMAT_BC2_TYPELESS,
+                DXGI_FORMAT_BC2_UNORM, 16u, 16u },
+            TypelessDdsCase{ DXGI_FORMAT_BC3_TYPELESS,
+                DXGI_FORMAT_BC3_UNORM, 16u, 16u },
+            TypelessDdsCase{ DXGI_FORMAT_BC4_TYPELESS,
+                DXGI_FORMAT_BC4_UNORM, 8u, 8u },
+            TypelessDdsCase{ DXGI_FORMAT_BC5_TYPELESS,
+                DXGI_FORMAT_BC5_UNORM, 16u, 16u },
+            TypelessDdsCase{ DXGI_FORMAT_BC6H_TYPELESS,
+                DXGI_FORMAT_BC6H_UF16, 16u, 16u },
+            TypelessDdsCase{ DXGI_FORMAT_BC7_TYPELESS,
+                DXGI_FORMAT_BC7_UNORM, 16u, 16u },
+            TypelessDdsCase{ DXGI_FORMAT_B8G8R8A8_TYPELESS,
+                DXGI_FORMAT_B8G8R8A8_UNORM, 64u, 16u },
+            TypelessDdsCase{ DXGI_FORMAT_B8G8R8X8_TYPELESS,
+                DXGI_FORMAT_B8G8R8X8_UNORM, 64u, 16u }
+        };
+        for (const auto& testCase : typelessCases)
+        {
+            const auto prepared =
+                LamaPon::TextureLoader::PrepareDdsTextureData(
+                    BuildDx10Dds(
+                        testCase.storageFormat,
+                        std::vector<std::uint8_t>(testCase.bytes)));
+            Require(
+                prepared.format == testCase.viewFormat
+                    && prepared.levels.front().rowPitch
+                        == testCase.rowPitch
+                    && prepared.levels.front().bytes.size()
+                        == testCase.bytes,
+                "A typeless DDS format was not normalized to its default "
+                "shader-readable view");
+        }
+        bool rejectedDisplayOnlyFormat{};
+        try
+        {
+            static_cast<void>(
+                LamaPon::TextureLoader::PrepareDdsTextureData(
+                    BuildDx10Dds(
+                        DXGI_FORMAT_R10G10B10_XR_BIAS_A2_UNORM,
+                        std::vector<std::uint8_t>(64u))));
+        }
+        catch (const std::invalid_argument&)
+        {
+            rejectedDisplayOnlyFormat = true;
+        }
+        Require(
+            rejectedDisplayOnlyFormat,
+            "A display-only DDS format without portable SRV support was "
+            "accepted");
         std::vector<std::uint8_t> yuy2Payload;
         for (std::size_t pair{}; pair < 8u; ++pair)
         {
@@ -3483,13 +3567,25 @@ namespace
                 LamaPon::RenderingApi::DirectX11);
             for (const auto& bytes : extendedDdsBytes)
             {
-                const auto view =
-                    d3d11Graphics.Assets().CreateTextureViewHandleFromMemory(
-                        bytes,
-                        true);
-                Require(
-                    view && d3d11Graphics.IsGraphicsViewCurrent(view),
-                    "An extended DDS format did not create a DirectX 11 view");
+                const auto prepared =
+                    LamaPon::TextureLoader::PrepareDdsTextureData(bytes);
+                try
+                {
+                    const auto view = d3d11Graphics.Assets()
+                        .CreateTextureViewHandleFromMemory(bytes, true);
+                    Require(
+                        view && d3d11Graphics.IsGraphicsViewCurrent(view),
+                        "An extended DDS format did not create a DirectX 11 "
+                        "view");
+                }
+                catch (const std::exception& exception)
+                {
+                    throw std::runtime_error(
+                        "DirectX 11 DDS format "
+                        + std::to_string(
+                            static_cast<unsigned>(prepared.format))
+                        + " failed native creation: " + exception.what());
+                }
             }
         }
         LamaPon::GraphicsDevice graphics;

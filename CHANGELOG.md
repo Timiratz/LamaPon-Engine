@@ -4,6 +4,7 @@
 
 ### 描画API設定
 
+- DX10 DDSのtypeless storageをDirectXTK互換のshader-readable viewへ正規化し、R8／R16 SNORM、R11G11B10 float、RGB9E5 shared exponentをD3D11／D3D12共通ローダーへ追加。公開texture formatの末尾追加に伴いGame Module APIを74へ更新。
 - DirectXTK11が認識するlegacy DDS形式（10:10:10:2、16-bit UNORM、B5／B4、alpha、signed bump map、packed RGB／YUY2、D3D9 numeric FourCC）をD3D11／D3D12共通ローダーへ追加。driver依存のYUY2はRGBA8へ安全にCPU変換し、公開texture formatの末尾追加に伴いGame Module APIを73へ更新。
 - `DirectX12Experimental`を標準の`Application`／`GraphicsDevice`初期化入口から直接起動できるようにし、bootstrap期の`GraphicsStartupProfile`によるopt-in制限を解除。旧profile列挙値とoverloadはGame Moduleのソース互換用に残し、D3D12初期化失敗時だけD3D11へ安全にフォールバックする。
 - D3D11／D3D12共通のDDS読み込みを、sRGB、BGRX8、R8／RG8、BC2／BC4／signed BC4・BC5／BC6H／BC7、16／32-bit floatへ拡張。DX10 headerに加えてDXT2～DXT4、ATI1／BC4、signed BC、D3D9 float FourCCも解釈し、全形式のrow／block layoutとD3D12 native SRV生成をWARPで検証する。公開`GraphicsTextureFormat`の末尾追加に伴いGame Module APIを72へ更新。

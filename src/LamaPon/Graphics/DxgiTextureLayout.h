@@ -102,6 +102,14 @@ namespace LamaPon::Detail
             return DXGI_FORMAT_R8G8_B8G8_UNORM;
         case GraphicsTextureFormat::G8r8G8b8Unorm:
             return DXGI_FORMAT_G8R8_G8B8_UNORM;
+        case GraphicsTextureFormat::R8Snorm:
+            return DXGI_FORMAT_R8_SNORM;
+        case GraphicsTextureFormat::R16Snorm:
+            return DXGI_FORMAT_R16_SNORM;
+        case GraphicsTextureFormat::R11g11b10Float:
+            return DXGI_FORMAT_R11G11B10_FLOAT;
+        case GraphicsTextureFormat::R9g9b9e5SharedExp:
+            return DXGI_FORMAT_R9G9B9E5_SHAREDEXP;
         default:
             throw std::invalid_argument(
                 "Unsupported graphics texture format.");
@@ -154,11 +162,13 @@ namespace LamaPon::Detail
         {
         case DXGI_FORMAT_R8_UNORM:
         case DXGI_FORMAT_A8_UNORM:
+        case DXGI_FORMAT_R8_SNORM:
             return uncompressed(1u);
         case DXGI_FORMAT_R8G8_UNORM:
         case DXGI_FORMAT_R8G8_SNORM:
         case DXGI_FORMAT_R16_UNORM:
         case DXGI_FORMAT_R16_FLOAT:
+        case DXGI_FORMAT_R16_SNORM:
         case DXGI_FORMAT_B5G5R5A1_UNORM:
         case DXGI_FORMAT_B5G6R5_UNORM:
         case DXGI_FORMAT_B4G4R4A4_UNORM:
@@ -171,6 +181,8 @@ namespace LamaPon::Detail
         case DXGI_FORMAT_B8G8R8X8_UNORM_SRGB:
         case DXGI_FORMAT_R16G16_FLOAT:
         case DXGI_FORMAT_R10G10B10A2_UNORM:
+        case DXGI_FORMAT_R11G11B10_FLOAT:
+        case DXGI_FORMAT_R9G9B9E5_SHAREDEXP:
         case DXGI_FORMAT_R16G16_UNORM:
         case DXGI_FORMAT_R8G8B8A8_SNORM:
         case DXGI_FORMAT_R16G16_SNORM:

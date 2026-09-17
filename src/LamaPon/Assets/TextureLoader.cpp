@@ -647,6 +647,71 @@ namespace
                 format = DXGI_FORMAT_R16G16_SNORM;
             }
         }
+        // DirectXTKのEnsureNotTypelessと同じく、DDSのtypeless storageを
+        // shaderから読める既定のtyped viewへ確定します。resourceとSRVに
+        // typeless formatをそのまま渡すとD3D12ではview生成に失敗します。
+        switch (format)
+        {
+        case DXGI_FORMAT_R32G32B32A32_TYPELESS:
+            format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+            break;
+        case DXGI_FORMAT_R16G16B16A16_TYPELESS:
+            format = DXGI_FORMAT_R16G16B16A16_UNORM;
+            break;
+        case DXGI_FORMAT_R32G32_TYPELESS:
+            format = DXGI_FORMAT_R32G32_FLOAT;
+            break;
+        case DXGI_FORMAT_R10G10B10A2_TYPELESS:
+            format = DXGI_FORMAT_R10G10B10A2_UNORM;
+            break;
+        case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+            format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            break;
+        case DXGI_FORMAT_R16G16_TYPELESS:
+            format = DXGI_FORMAT_R16G16_UNORM;
+            break;
+        case DXGI_FORMAT_R32_TYPELESS:
+            format = DXGI_FORMAT_R32_FLOAT;
+            break;
+        case DXGI_FORMAT_R8G8_TYPELESS:
+            format = DXGI_FORMAT_R8G8_UNORM;
+            break;
+        case DXGI_FORMAT_R16_TYPELESS:
+            format = DXGI_FORMAT_R16_UNORM;
+            break;
+        case DXGI_FORMAT_R8_TYPELESS:
+            format = DXGI_FORMAT_R8_UNORM;
+            break;
+        case DXGI_FORMAT_BC1_TYPELESS:
+            format = DXGI_FORMAT_BC1_UNORM;
+            break;
+        case DXGI_FORMAT_BC2_TYPELESS:
+            format = DXGI_FORMAT_BC2_UNORM;
+            break;
+        case DXGI_FORMAT_BC3_TYPELESS:
+            format = DXGI_FORMAT_BC3_UNORM;
+            break;
+        case DXGI_FORMAT_BC4_TYPELESS:
+            format = DXGI_FORMAT_BC4_UNORM;
+            break;
+        case DXGI_FORMAT_BC5_TYPELESS:
+            format = DXGI_FORMAT_BC5_UNORM;
+            break;
+        case DXGI_FORMAT_BC6H_TYPELESS:
+            format = DXGI_FORMAT_BC6H_UF16;
+            break;
+        case DXGI_FORMAT_BC7_TYPELESS:
+            format = DXGI_FORMAT_BC7_UNORM;
+            break;
+        case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+            format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            break;
+        case DXGI_FORMAT_B8G8R8X8_TYPELESS:
+            format = DXGI_FORMAT_B8G8R8X8_UNORM;
+            break;
+        default:
+            break;
+        }
         switch (format)
         {
         case DXGI_FORMAT_R8_UNORM:
@@ -691,6 +756,10 @@ namespace
         case DXGI_FORMAT_R16G16B16A16_SNORM:
         case DXGI_FORMAT_R8G8_B8G8_UNORM:
         case DXGI_FORMAT_G8R8_G8B8_UNORM:
+        case DXGI_FORMAT_R8_SNORM:
+        case DXGI_FORMAT_R16_SNORM:
+        case DXGI_FORMAT_R11G11B10_FLOAT:
+        case DXGI_FORMAT_R9G9B9E5_SHAREDEXP:
         case DXGI_FORMAT_YUY2:
             break;
         default:

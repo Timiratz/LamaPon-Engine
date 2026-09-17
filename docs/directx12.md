@@ -90,7 +90,9 @@ WARPによるD3D11／D3D12の画素比較とdebug layerを使った回帰テス�
   ありません。ユーザー向けのMaterial、Sprite、Particle、post-process、custom shaderは
   いずれもこのD3D12専用経路を使用します。
 - DDSはUNORM／SNORM／sRGB、BC1～BC7、BC6H、16／32-bit float、
-  packed RGB／YUY2と、DirectXTK11が認識するlegacy headerを両APIで読みます。
+  R11G11B10／RGB9E5 HDR、packed RGB／YUY2と、DirectXTK11が認識する
+  legacy headerを両APIで読みます。DX10 headerの対応typeless storageは、
+  DirectXTK11と同じ既定のshader-readable形式へ正規化します。
   YUY2はD3D12 driver間の対応差を避けるため、読み込み時にRGBA8へ変換します。
   24-bit RGBやpalettized形式などDirectXTK11自体が拒否する形式は、両APIとも
   事前に`texconv`等で現在のDXGI形式へ変換する必要があります。

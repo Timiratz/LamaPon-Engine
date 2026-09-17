@@ -351,6 +351,14 @@ namespace
             return LamaPon::GraphicsTextureFormat::R8g8B8g8Unorm;
         case DXGI_FORMAT_G8R8_G8B8_UNORM:
             return LamaPon::GraphicsTextureFormat::G8r8G8b8Unorm;
+        case DXGI_FORMAT_R8_SNORM:
+            return LamaPon::GraphicsTextureFormat::R8Snorm;
+        case DXGI_FORMAT_R16_SNORM:
+            return LamaPon::GraphicsTextureFormat::R16Snorm;
+        case DXGI_FORMAT_R11G11B10_FLOAT:
+            return LamaPon::GraphicsTextureFormat::R11g11b10Float;
+        case DXGI_FORMAT_R9G9B9E5_SHAREDEXP:
+            return LamaPon::GraphicsTextureFormat::R9g9b9e5SharedExp;
         default:
             throw std::invalid_argument(
                 "The prepared texture format has no graphics backend mapping.");
