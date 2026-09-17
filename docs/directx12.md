@@ -126,5 +126,36 @@ custom shader、post-process、Editor Viewportを両APIで見比べてくださ�
 
 WARPはCPUで描画するため低速ですが、機能確認や問題の切り分けに利用できます。
 
+## 任意バックエンドパッケージへの移行
+
+将来、D3D12実装本体を通常のエンジン配布から分離して、必要なプロジェクトだけが
+`directx12-renderer`パッケージとして導入できるようにするための互換性境界を用意して
+います。パッケージの`package.json`は次の宣言を持ちます。
+
+```json
+{
+  "name": "directx12-renderer",
+  "version": "1.0.0",
+  "minimumEngineVersion": "0.1.0",
+  "activation": "Restart",
+  "graphicsBackend": {
+    "api": "DirectX12Experimental",
+    "abiVersion": 1,
+    "runtimeLibrary": "runtime/LamaPonGraphicsD3D12.dll"
+  }
+}
+```
+
+起動前の検査では、最低エンジンバージョン、バックエンドABI、DLLの存在、パッケージ
+外を参照しない相対パスを確認します。不足・破損・非互換の場合はDLLをロードせず、
+DirectX 11へ安全に戻せる結果を返します。インストールや更新は実行中にDLLを交換せず、
+再起動後に反映します。
+
+現段階ではD3D12実装はまだ`LamaPonRuntime`へ組み込まれており、この検査境界だけを
+先に追加しています。実DLLの分離後に起動時ロードへ接続するための仕様であり、現行の
+D3D12描画やフォールバック挙動は変わりません。プロジェクト固有のcustom HLSLは従来
+どおりプロジェクト側でコンパイル・キャッシュし、共通バックエンドだけを配布対象にする
+方針です。
+
 プロジェクト設定とWindows書き出しの詳しい手順は
 [プロジェクト管理とビルド](project.md)を参照してください。

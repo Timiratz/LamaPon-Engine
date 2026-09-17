@@ -303,6 +303,8 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Graphics/GpuProfiler.h
     src/LamaPon/Graphics/GraphicsBackend.cpp
     src/LamaPon/Graphics/GraphicsBackend.h
+    src/LamaPon/Graphics/GraphicsBackendPackage.cpp
+    src/LamaPon/Graphics/GraphicsBackendPackage.h
     src/LamaPon/Graphics/GraphicsResource.h
     src/LamaPon/Graphics/PrefilteredEnvironment.h
     src/LamaPon/Graphics/GraphicsDevice.cpp

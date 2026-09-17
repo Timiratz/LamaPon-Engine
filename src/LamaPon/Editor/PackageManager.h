@@ -8,6 +8,22 @@
 
 namespace LamaPon
 {
+    // パッケージを利用可能にするタイミング。既存パッケージは
+    // Immediateのままなので、古いmanifest/indexとも互換です。
+    enum class PackageActivation : std::uint8_t
+    {
+        Immediate,
+        Restart,
+        RestartAndRebuild
+    };
+
+    [[nodiscard]] std::string_view PackageActivationName(
+        PackageActivation activation) noexcept;
+    [[nodiscard]] PackageActivation PackageActivationFromName(
+        std::string_view name) noexcept;
+    [[nodiscard]] bool PackageRequiresRestart(
+        PackageActivation activation) noexcept;
+
     // 配布リポジトリのパッケージ一覧（index.json）に載る1件分。
     struct PackageInfo final
     {
@@ -21,6 +37,7 @@ namespace LamaPon
         std::string minimumEngineVersion;
         std::string downloadUrl;
         std::uint64_t sizeBytes{};
+        PackageActivation activation{ PackageActivation::Immediate };
     };
 
     // 一覧JSONの取得先（配布リポジトリのpackages/index.json）。
@@ -60,6 +77,11 @@ namespace LamaPon
     [[nodiscard]] std::string InstalledPackageVersion(
         const std::filesystem::path& assetRoot,
         std::string_view name);
+
+    // manifestにactivationが無い既存パッケージはImmediateです。
+    [[nodiscard]] PackageActivation InstalledPackageActivation(
+        const std::filesystem::path& assetRoot,
+        std::string_view name) noexcept;
 
     // 手元のZipファイルからインストールします（作者から直接
     // 受け取った自作パッケージ用）。中のpackage.jsonから名前と

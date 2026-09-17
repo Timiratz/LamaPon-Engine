@@ -1,0 +1,194 @@
+#include "LamaPon/Graphics/GraphicsBackendPackage.h"
+
+#include "LamaPon/Core/PathUtils.h"
+#include "LamaPon/Core/VersionCompare.h"
+
+#include <nlohmann/json.hpp>
+
+#include <fstream>
+#include <iterator>
+#include <system_error>
+
+namespace
+{
+    bool IsSafeRelativePath(const std::filesystem::path& path)
+    {
+        if (path.empty() || path.is_absolute()
+            || path.has_root_name() || path.has_root_directory())
+        {
+            return false;
+        }
+        for (const auto& component : path.lexically_normal())
+        {
+            if (component == L"..")
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool IsWithinDirectory(
+        const std::filesystem::path& directory,
+        const std::filesystem::path& candidate)
+    {
+        std::error_code error;
+        auto root = std::filesystem::weakly_canonical(
+            directory,
+            error).native();
+        if (error)
+        {
+            return false;
+        }
+        auto file = std::filesystem::weakly_canonical(
+            candidate,
+            error).native();
+        if (error || file.size() <= root.size()
+            || _wcsnicmp(file.c_str(), root.c_str(), root.size()) != 0)
+        {
+            return false;
+        }
+        return root.ends_with(L'\\') || root.ends_with(L'/')
+            || file[root.size()] == L'\\'
+            || file[root.size()] == L'/';
+    }
+
+    LamaPon::GraphicsBackendPackageInspection Failure(
+        const LamaPon::GraphicsBackendPackageState state,
+        std::string message)
+    {
+        LamaPon::GraphicsBackendPackageInspection result;
+        result.state = state;
+        result.message = std::move(message);
+        return result;
+    }
+}
+
+namespace LamaPon
+{
+    GraphicsBackendPackageInspection InspectGraphicsBackendPackage(
+        const std::filesystem::path& assetRoot,
+        const RenderingApi api,
+        const std::string_view currentEngineVersion)
+    {
+        if (api != RenderingApi::DirectX12Experimental)
+        {
+            GraphicsBackendPackageInspection result;
+            result.state = GraphicsBackendPackageState::BuiltIn;
+            result.descriptor.api = RenderingApi::DirectX11;
+            return result;
+        }
+
+        const auto packageDirectory = assetRoot / L"packages"
+            / PathFromUtf8(DirectX12BackendPackageName);
+        const auto manifestPath = packageDirectory / L"package.json";
+        if (!std::filesystem::is_regular_file(manifestPath))
+        {
+            return Failure(
+                GraphicsBackendPackageState::Missing,
+                "DirectX 12バックエンドパッケージが未導入です。");
+        }
+
+        nlohmann::json manifest;
+        try
+        {
+            std::ifstream input(manifestPath, std::ios::binary);
+            input >> manifest;
+        }
+        catch (const std::exception&)
+        {
+            return Failure(
+                GraphicsBackendPackageState::InvalidManifest,
+                "DirectX 12バックエンドのpackage.jsonが不正です。");
+        }
+
+        try
+        {
+            const auto name = manifest.value("name", std::string{});
+            const auto version = manifest.value("version", std::string{});
+            const auto minimumVersion = manifest.value(
+                "minimumEngineVersion", std::string{});
+            const auto activation = manifest.value(
+                "activation", std::string{});
+            if (name != DirectX12BackendPackageName || version.empty()
+                || (activation != "Restart"
+                    && activation != "RestartAndRebuild")
+                || (!minimumVersion.empty()
+                    && ParseVersionNumbers(minimumVersion).empty()))
+            {
+                return Failure(
+                    GraphicsBackendPackageState::InvalidManifest,
+                    "DirectX 12バックエンドのパッケージ情報が不正です。");
+            }
+            if (!minimumVersion.empty()
+                && IsNewerVersion(currentEngineVersion, minimumVersion))
+            {
+                return Failure(
+                    GraphicsBackendPackageState::IncompatibleEngine,
+                    "DirectX 12バックエンドには新しいエンジンが必要です。");
+            }
+
+            if (!manifest.contains("graphicsBackend")
+                || !manifest.at("graphicsBackend").is_object())
+            {
+                return Failure(
+                    GraphicsBackendPackageState::InvalidManifest,
+                    "graphicsBackend宣言がありません。");
+            }
+            const auto& backend = manifest.at("graphicsBackend");
+            if (backend.value("api", std::string{})
+                != "DirectX12Experimental")
+            {
+                return Failure(
+                    GraphicsBackendPackageState::InvalidManifest,
+                    "graphicsBackend.apiがDirectX 12ではありません。");
+            }
+            const auto abiVersion = backend.value("abiVersion", 0u);
+            if (abiVersion != GraphicsBackendPackageAbiVersion)
+            {
+                return Failure(
+                    GraphicsBackendPackageState::IncompatibleAbi,
+                    "DirectX 12バックエンドのABIバージョンが一致しません。");
+            }
+
+            const auto runtimeRelative = PathFromUtf8(
+                backend.value("runtimeLibrary", std::string{}));
+            if (!IsSafeRelativePath(runtimeRelative)
+                || runtimeRelative.extension() != L".dll")
+            {
+                return Failure(
+                    GraphicsBackendPackageState::InvalidManifest,
+                    "runtimeLibraryはパッケージ内のDLLを指定してください。");
+            }
+            const auto runtimeLibrary =
+                (packageDirectory / runtimeRelative).lexically_normal();
+            if (!std::filesystem::is_regular_file(runtimeLibrary))
+            {
+                return Failure(
+                    GraphicsBackendPackageState::RuntimeMissing,
+                    "DirectX 12バックエンドDLLが見つかりません。");
+            }
+            if (!IsWithinDirectory(packageDirectory, runtimeLibrary))
+            {
+                return Failure(
+                    GraphicsBackendPackageState::InvalidManifest,
+                    "runtimeLibraryがパッケージ外を参照しています。");
+            }
+
+            GraphicsBackendPackageInspection result;
+            result.state = GraphicsBackendPackageState::Ready;
+            result.descriptor.api = RenderingApi::DirectX12Experimental;
+            result.descriptor.abiVersion = abiVersion;
+            result.descriptor.version = version;
+            result.descriptor.packageDirectory = packageDirectory;
+            result.descriptor.runtimeLibrary = runtimeLibrary;
+            return result;
+        }
+        catch (const std::exception&)
+        {
+            return Failure(
+                GraphicsBackendPackageState::InvalidManifest,
+                "DirectX 12バックエンドのpackage.jsonが不正です。");
+        }
+    }
+}

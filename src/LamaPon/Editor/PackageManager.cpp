@@ -157,6 +157,41 @@ namespace
 
 namespace LamaPon
 {
+    std::string_view PackageActivationName(
+        const PackageActivation activation) noexcept
+    {
+        switch (activation)
+        {
+        case PackageActivation::Restart:
+            return "Restart";
+        case PackageActivation::RestartAndRebuild:
+            return "RestartAndRebuild";
+        case PackageActivation::Immediate:
+        default:
+            return "Immediate";
+        }
+    }
+
+    PackageActivation PackageActivationFromName(
+        const std::string_view name) noexcept
+    {
+        if (name == "Restart")
+        {
+            return PackageActivation::Restart;
+        }
+        if (name == "RestartAndRebuild")
+        {
+            return PackageActivation::RestartAndRebuild;
+        }
+        return PackageActivation::Immediate;
+    }
+
+    bool PackageRequiresRestart(
+        const PackageActivation activation) noexcept
+    {
+        return activation != PackageActivation::Immediate;
+    }
+
     bool IsPackageNameSafe(
         const std::string_view name) noexcept
     {
@@ -253,6 +288,8 @@ namespace LamaPon
                 entry.value("downloadUrl", std::string{});
             package.sizeBytes =
                 entry.value("sizeBytes", std::uint64_t{});
+            package.activation = PackageActivationFromName(
+                entry.value("activation", std::string{}));
 
             // 不正なエントリは黙って除外します（他の正常な
             // パッケージまで巻き込まないため）。
@@ -305,6 +342,31 @@ namespace LamaPon
         catch (const std::exception&)
         {
             return {};
+        }
+    }
+
+    PackageActivation InstalledPackageActivation(
+        const std::filesystem::path& assetRoot,
+        const std::string_view name) noexcept
+    {
+        if (!IsPackageNameSafe(name))
+        {
+            return PackageActivation::Immediate;
+        }
+        try
+        {
+            std::ifstream input(
+                PackageInstallDirectory(assetRoot, name)
+                    / L"package.json",
+                std::ios::binary);
+            nlohmann::json manifest;
+            input >> manifest;
+            return PackageActivationFromName(
+                manifest.value("activation", std::string{}));
+        }
+        catch (const std::exception&)
+        {
+            return PackageActivation::Immediate;
         }
     }
 
@@ -373,6 +435,10 @@ namespace LamaPon
                     {
                         "minimumEngineVersion",
                         package.minimumEngineVersion
+                    },
+                    {
+                        "activation",
+                        PackageActivationName(package.activation)
                     }
                 };
                 std::ofstream output(
@@ -569,6 +635,8 @@ namespace LamaPon
                     manifest.value(
                         "minimumEngineVersion",
                         std::string{});
+                package.activation = PackageActivationFromName(
+                    manifest.value("activation", std::string{}));
             }
             std::error_code cleanupError;
             std::filesystem::remove_all(
@@ -660,6 +728,8 @@ namespace LamaPon
         const auto manifestPath =
             source / L"package.json";
         nlohmann::json nativeSection;
+        nlohmann::json graphicsBackendSection;
+        auto activation = package.activation;
         if (std::filesystem::is_regular_file(manifestPath))
         {
             std::ifstream input(
@@ -683,6 +753,16 @@ namespace LamaPon
                 {
                     nativeSection = previous.at("native");
                 }
+                if (previous.is_object()
+                    && previous.contains("graphicsBackend"))
+                {
+                    graphicsBackendSection =
+                        previous.at("graphicsBackend");
+                    // この項目は一般の作成ダイアログには出さないため、
+                    // Backend作者が手書きした有効化条件を保持します。
+                    activation = PackageActivationFromName(
+                        previous.value("activation", std::string{}));
+                }
             }
             catch (const std::exception&)
             {
@@ -705,11 +785,20 @@ namespace LamaPon
             {
                 "minimumEngineVersion",
                 package.minimumEngineVersion
+            },
+            {
+                "activation",
+                PackageActivationName(activation)
             }
         };
         if (!nativeSection.is_null())
         {
             manifest["native"] = std::move(nativeSection);
+        }
+        if (!graphicsBackendSection.is_null())
+        {
+            manifest["graphicsBackend"] =
+                std::move(graphicsBackendSection);
         }
         {
             std::ofstream output(
@@ -753,6 +842,7 @@ namespace LamaPon
         // 一覧はパッケージを選ぶための情報だけを載せます。ビルド用の
         // nativeはZip内のpackage.jsonが正本です。
         indexEntry.erase("native");
+        indexEntry.erase("graphicsBackend");
         indexEntry["downloadUrl"] =
             "https://example.com/packages/"
             + PathToUtf8(zipPath.filename());

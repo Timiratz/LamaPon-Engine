@@ -1,5 +1,6 @@
 #include "LamaPon/Editor/PackageManager.h"
 #include "LamaPon/Editor/PackageNativeDependencies.h"
+#include "LamaPon/Graphics/GraphicsBackendPackage.h"
 
 #include <nlohmann/json.hpp>
 
@@ -84,6 +85,7 @@ namespace
                         "description": "追従カメラ",
                         "version": "1.0",
                         "minimumEngineVersion": "2026.7.31",
+                        "activation": "Restart",
                         "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/camera-follow-1.0.zip",
                         "sizeBytes": 2048
                     },
@@ -108,8 +110,22 @@ namespace
                 && packages[0].version == "1.0"
                 && packages[0].minimumEngineVersion
                     == "2026.7.31"
+                && packages[0].activation
+                    == LamaPon::PackageActivation::Restart
                 && packages[0].sizeBytes == 2048,
             "package fields must round-trip");
+
+        Require(
+            LamaPon::PackageActivationFromName("Immediate")
+                    == LamaPon::PackageActivation::Immediate
+                && LamaPon::PackageActivationFromName("Restart")
+                    == LamaPon::PackageActivation::Restart
+                && LamaPon::PackageActivationFromName(
+                    "RestartAndRebuild")
+                    == LamaPon::PackageActivation::RestartAndRebuild
+                && LamaPon::PackageActivationFromName("unknown")
+                    == LamaPon::PackageActivation::Immediate,
+            "package activation names must be backward compatible");
 
         bool rejected = false;
         try
@@ -203,6 +219,7 @@ namespace
         package.displayName = "カメラ追従";
         package.version = "1.0";
         package.minimumEngineVersion = "2026.7.31";
+        package.activation = LamaPon::PackageActivation::Restart;
         package.downloadUrl =
             "https://raw.githubusercontent.com/Timiratz/"
             "LamaPon-Engine/main/packages/a.zip";
@@ -230,6 +247,11 @@ namespace
                 assetRoot,
                 package.name) == "1.0",
             "installed version must be readable");
+        Require(
+            LamaPon::InstalledPackageActivation(
+                assetRoot,
+                package.name) == LamaPon::PackageActivation::Restart,
+            "a synthesized manifest must preserve activation");
 
         // 更新: 新しい版で置き換え、古いファイルが残らないこと。
         std::filesystem::remove(
@@ -461,6 +483,117 @@ namespace
                         .lexically_normal(),
             "an installed native package must be discoverable");
     }
+
+    void TestGraphicsBackendPackageInspection()
+    {
+        const auto root = std::filesystem::current_path()
+            / "test-output"
+            / "graphics-backend-package";
+        std::filesystem::remove_all(root);
+        const auto assetRoot = root / "assets";
+        const auto packageRoot = assetRoot / "packages"
+            / LamaPon::DirectX12BackendPackageName;
+
+        const auto builtIn = LamaPon::InspectGraphicsBackendPackage(
+            assetRoot,
+            LamaPon::RenderingApi::DirectX11,
+            "1.0.0");
+        Require(
+            builtIn.state
+                == LamaPon::GraphicsBackendPackageState::BuiltIn
+                && builtIn.IsReady(),
+            "DirectX 11 must remain built in");
+
+        Require(
+            LamaPon::InspectGraphicsBackendPackage(
+                assetRoot,
+                LamaPon::RenderingApi::DirectX12Experimental,
+                "1.0.0").state
+                == LamaPon::GraphicsBackendPackageState::Missing,
+            "a missing D3D12 package must be reported safely");
+
+        WriteFile(
+            packageRoot / "package.json",
+            R"({"name":42})");
+        Require(
+            LamaPon::InspectGraphicsBackendPackage(
+                assetRoot,
+                LamaPon::RenderingApi::DirectX12Experimental,
+                "1.0.0").state
+                == LamaPon::GraphicsBackendPackageState::InvalidManifest,
+            "wrong manifest value types must not throw");
+
+        WriteFile(
+            packageRoot / "package.json",
+            R"({
+                "name":"directx12-renderer",
+                "version":"1.0.0",
+                "minimumEngineVersion":"1.0.0",
+                "activation":"Restart",
+                "graphicsBackend":{
+                    "api":"DirectX12Experimental",
+                    "abiVersion":1,
+                    "runtimeLibrary":"runtime/LamaPonGraphicsD3D12.dll"
+                }
+            })");
+        Require(
+            LamaPon::InspectGraphicsBackendPackage(
+                assetRoot,
+                LamaPon::RenderingApi::DirectX12Experimental,
+                "1.0.0").state
+                == LamaPon::GraphicsBackendPackageState::RuntimeMissing,
+            "a missing backend DLL must not be treated as ready");
+
+        WriteFile(
+            packageRoot / "runtime" / "LamaPonGraphicsD3D12.dll",
+            "test fixture");
+        const auto ready = LamaPon::InspectGraphicsBackendPackage(
+            assetRoot,
+            LamaPon::RenderingApi::DirectX12Experimental,
+            "1.0.0");
+        Require(
+            ready.state == LamaPon::GraphicsBackendPackageState::Ready
+                && ready.IsReady()
+                && ready.descriptor.abiVersion
+                    == LamaPon::GraphicsBackendPackageAbiVersion,
+            "a compatible backend package must be ready");
+
+        LamaPon::PackageInfo buildInfo;
+        buildInfo.name = LamaPon::DirectX12BackendPackageName;
+        buildInfo.displayName = "DirectX 12 Renderer";
+        buildInfo.version = "1.0.1";
+        static_cast<void>(LamaPon::BuildPackage(
+            assetRoot,
+            buildInfo,
+            root / "dist"));
+        const auto rebuiltManifest = nlohmann::json::parse(
+            ReadFile(packageRoot / "package.json"));
+        Require(
+            rebuiltManifest.value("activation", std::string{})
+                    == "Restart"
+                && rebuiltManifest.contains("graphicsBackend"),
+            "rebuilding must preserve backend activation and metadata");
+
+        WriteFile(
+            packageRoot / "package.json",
+            R"({
+                "name":"directx12-renderer",
+                "version":"1.0.0",
+                "activation":"Restart",
+                "graphicsBackend":{
+                    "api":"DirectX12Experimental",
+                    "abiVersion":999,
+                    "runtimeLibrary":"../escape.dll"
+                }
+            })");
+        Require(
+            LamaPon::InspectGraphicsBackendPackage(
+                assetRoot,
+                LamaPon::RenderingApi::DirectX12Experimental,
+                "1.0.0").state
+                == LamaPon::GraphicsBackendPackageState::IncompatibleAbi,
+            "an incompatible backend ABI must be rejected");
+    }
 }
 
 int main()
@@ -471,6 +604,7 @@ int main()
         TestValidation();
         TestInstallRoundTrip();
         TestNativeManifestIsValidatedOnInstall();
+        TestGraphicsBackendPackageInspection();
         std::cout << "Package manager tests passed.\n";
         return 0;
     }

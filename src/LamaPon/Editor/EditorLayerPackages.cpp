@@ -68,6 +68,37 @@ namespace LamaPon
                 (bytes + 1024ull * 1024ull - 1)
                 / (1024ull * 1024ull)) + " MB";
         }
+
+        const char* PackageActivationLabel(
+            const PackageActivation activation) noexcept
+        {
+            switch (activation)
+            {
+            case PackageActivation::Restart:
+                return "再起動後に有効";
+            case PackageActivation::RestartAndRebuild:
+                return "再起動・再ビルド後に有効";
+            case PackageActivation::Immediate:
+            default:
+                return "すぐに有効";
+            }
+        }
+
+        std::string RestartNotice(
+            const PackageActivation activation)
+        {
+            if (!PackageRequiresRestart(activation))
+            {
+                return {};
+            }
+            if (activation == PackageActivation::RestartAndRebuild)
+            {
+                return "。反映するにはエディターを再起動し、"
+                    "ゲームを再ビルドしてください";
+            }
+            return "。反映するにはエディターまたはゲームを"
+                "再起動してください";
+        }
     }
 
     void EditorLayer::JoinPackageWorker()
@@ -201,6 +232,12 @@ namespace LamaPon
                     package.displayName;
                 m_packageWorkerResult.installedHasScripts =
                     hasScripts;
+                m_packageWorkerResult.installedActivation =
+                    error.empty()
+                        ? InstalledPackageActivation(
+                            assetRoot,
+                            package.name)
+                        : package.activation;
             });
     }
 
@@ -226,7 +263,9 @@ namespace LamaPon
                 SetStatus(
                     "パッケージ『"
                     + result.installedDisplayName
-                    + "』をインストールしました");
+                    + "』をインストールしました"
+                    + RestartNotice(
+                        result.installedActivation));
                 RefreshAssets();
                 if (result.installedHasScripts)
                 {
@@ -329,12 +368,17 @@ namespace LamaPon
             {
                 try
                 {
+                    const auto activation =
+                        InstalledPackageActivation(
+                            m_graphics.Assets().AssetRoot(),
+                            name);
                     UninstallPackage(
                         m_graphics.Assets().AssetRoot(),
                         name);
                     RefreshAssets();
                     SetStatus(
-                        "パッケージを削除しました: " + name);
+                        "パッケージを削除しました: " + name
+                        + RestartNotice(activation));
                 }
                 catch (const std::exception& exception)
                 {
@@ -387,7 +431,8 @@ namespace LamaPon
                 "パッケージを読み込みました: "
                 + installed.displayName
                 + " v"
-                + installed.version);
+                + installed.version
+                + RestartNotice(installed.activation));
             // C++スクリプトを含む場合はそのまま使えるように
             // Game Moduleをビルドします。
             if (PackageContainsScripts(
@@ -737,6 +782,15 @@ namespace LamaPon
             ImGui::TextWrapped(
                 "%s",
                 package.description.c_str());
+            ImGui::TextDisabled(
+                "有効化: %s",
+                PackageActivationLabel(package.activation));
+            if (PackageRequiresRestart(package.activation))
+            {
+                ImGui::TextColored(
+                    ImVec4{ 1.0f, 0.75f, 0.25f, 1.0f },
+                    "インストール・更新・削除は再起動後に反映されます。");
+            }
             ImGui::Spacing();
 
             if (engineTooOld)
@@ -782,7 +836,8 @@ namespace LamaPon
                         SetStatus(
                             "パッケージ『"
                             + package.displayName
-                            + "』を削除しました");
+                            + "』を削除しました"
+                            + RestartNotice(package.activation));
                         RefreshAssets();
                     }
                     catch (const std::exception& exception)

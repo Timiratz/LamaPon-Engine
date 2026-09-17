@@ -816,6 +816,8 @@ namespace LamaPon
             std::vector<PackageInfo> index;
             std::string installedDisplayName;
             bool installedHasScripts{};
+            PackageActivation installedActivation{
+                PackageActivation::Immediate };
         };
         std::mutex m_packageResultMutex;
         PackageWorkerResult m_packageWorkerResult;

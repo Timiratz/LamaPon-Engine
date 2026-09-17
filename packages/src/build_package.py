@@ -97,6 +97,7 @@ def build(package: str) -> dict:
         "author": manifest["author"],
         "version": version,
         "minimumEngineVersion": manifest["minimumEngineVersion"],
+        "activation": manifest.get("activation", "Immediate"),
         "downloadUrl": (
             "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/"
             f"main/packages/{zip_path.name}"

@@ -73,6 +73,7 @@
 #include "LamaPon/Core/SaveData.h"
 #include "LamaPon/Core/Time.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
+#include "LamaPon/Graphics/GraphicsBackendPackage.h"
 #include "LamaPon/Graphics/Lighting.h"
 #include "LamaPon/Graphics/EnvironmentSettings.h"
 #include "LamaPon/Graphics/GraphicsQuality.h"
