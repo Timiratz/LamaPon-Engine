@@ -349,8 +349,8 @@ int main()
                 " does not own");
         }
 
-        // 描画APIのJSON名と保存往復。DirectX 12は未実装でも、
-        // 設定値としては安全に保存・再読み込みできる必要があります。
+        // 描画APIのJSON名と保存往復。起動中のBackend状態とは分離し、
+        // 設定値として安全に保存・再読み込みできる必要があります。
         {
             Require(
                 LamaPon::RenderingApiName(

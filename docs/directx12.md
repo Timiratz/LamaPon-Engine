@@ -78,11 +78,13 @@ custom HLSLの入口、利用できるregister、描画状態については
 
 ## D3D11互換について
 
-現在の目標は、書き出しゲームのユーザー向け描画機能をDirectX 11とDirectX 12の
-どちらでも利用できる「runtime feature parity」です。主要なScene描画経路は移植済みで、
-WARPによるD3D11／D3D12の画素比較とdebug layerを使った回帰テストを追加しています。
+書き出しゲームのユーザー向け描画機能をDirectX 11とDirectX 12のどちらでも利用できる
+「runtime feature parity」には到達しています。主要なScene／Editor／CLI描画経路を移植し、
+WARPによるD3D11／D3D12の画素比較、両APIでのresource生成、debug layerを使った
+回帰テストを継続しています。
 
-ただし、まだ「完全なD3D11互換」とは表記していません。残っている差は次のとおりです。
+ただし、「すべてのD3D11低レベル呼び出しと一対一で同じ」という意味での完全互換では
+ありません。DirectX 12 Experimentalのままにしている境界と差は次のとおりです。
 
 - API非依存の動的頂点buffer更新・bindは両Backendで利用できます。D3D11 Effect向けの
   pixel shader resource直接bindだけは、D3D12ではroot signature固有のdescriptor tableを
@@ -102,6 +104,13 @@ WARPによるD3D11／D3D12の画素比較とdebug layerを使った回帰テス�
 
 互換性は「同じ実装を共有すること」ではなく、「同じプロジェクト設定とアセットから、
 同じユーザー向け機能と意図した見た目を得られること」を基準に進めます。
+
+## 検証の目安
+
+変更時は少なくともD3D11／D3D12 WARPの描画回帰、Editor GUI、Backend選択、
+書き出しゲーム起動、Game Module ABIのテストを実行します。Release構成の全ターゲットを
+ビルドし、CTest全体も確認します。実機GPUでは、代表的なSceneについて影、半透明、
+custom shader、post-process、Editor Viewportを両APIで見比べてください。
 
 ## 問題が起きた場合
 

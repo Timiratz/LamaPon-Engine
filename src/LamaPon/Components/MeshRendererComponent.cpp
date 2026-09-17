@@ -1140,8 +1140,8 @@ namespace LamaPon
         }
 
         // D3D11のGeometricPrimitive / EffectはD3D12 deviceでは作りません。
-        // MaterialとtextureはAPI非依存なので読み込みを続け、次段階の
-        // D3D12 3D rendererが同じComponentデータを利用できる状態にします。
+        // D3D12は同じAPI非依存Material、texture、CPU geometryを専用render
+        // serviceから描画するため、ここではD3D11資源だけを条件付き生成します。
         if (graphics.ActiveRenderingApi()
             == RenderingApi::DirectX11)
         {

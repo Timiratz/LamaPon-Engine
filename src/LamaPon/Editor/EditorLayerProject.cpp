@@ -1007,8 +1007,8 @@ namespace LamaPon
         {
             drawRenderingApiWarning(
                 "DirectX 12は実験的な設定です。"
-                "現在の環境では未実装または一部機能が"
-                "動作しない可能性があります。");
+                "主要機能は対応済みですが、GPUやドライバーによって"
+                "表示差または動作しない機能が残る可能性があります。");
             if (m_graphics.StartupRenderingApi()
                     == RenderingApi::DirectX12Experimental
                 && m_graphics.ActiveRenderingApi()

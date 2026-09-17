@@ -577,9 +577,8 @@ int main()
                 {}),
             "An uninitialized backend accepted pixel shader resources");
 
-        // DirectX 12はまだGraphicsDeviceの実描画経路へ選択しませんが、
-        // bootstrap backend自体はWARPでdevice / swap chain / command
-        // submissionを独立検証します。画面を表示する必要はありません。
+        // DirectX 12 backendのdevice / swap chain / command submissionと
+        // 共通resource契約をWARPで独立検証します。画面表示は不要です。
         {
             constexpr std::uint32_t D3D12Width = 64u;
             constexpr std::uint32_t D3D12Height = 48u;

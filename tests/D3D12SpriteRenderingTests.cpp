@@ -578,7 +578,7 @@ namespace
         {
             Require(
                 graphics.IsD3D12ExperimentalBootstrap(),
-                "The DirectX 12 sprite test did not use the bootstrap path");
+                "The DirectX 12 sprite test did not activate its renderer");
             RequireD3D12MissingCustomShaderFallback(graphics);
         }
         graphics.EndFrame();
