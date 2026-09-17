@@ -5155,6 +5155,350 @@ namespace
         return capture;
     }
 
+    // 蓋の無い筒です。reversedでなければ外から見て画面上で時計回りの
+    // 三角形になり、D3D11の既定（CullCounterClockwise）で外側が残ります。
+    void BuildProceduralTube(
+        std::vector<LamaPon::ProceduralMeshVertex>& vertices,
+        std::vector<std::uint32_t>& indices,
+        const bool reversed)
+    {
+        constexpr std::uint32_t Segments = 16u;
+        constexpr float Radius = 0.45f;
+        constexpr float HalfHeight = 0.55f;
+        for (std::uint32_t segment{}; segment <= Segments; ++segment)
+        {
+            const float u = static_cast<float>(segment) / Segments;
+            const float angle = u * DirectX::XM_2PI;
+            const DirectX::XMFLOAT3 normal{
+                std::sin(angle), 0.0f, std::cos(angle) };
+            vertices.push_back({
+                { normal.x * Radius, -HalfHeight, normal.z * Radius },
+                normal,
+                { u, 1.0f } });
+            vertices.push_back({
+                { normal.x * Radius, HalfHeight, normal.z * Radius },
+                normal,
+                { u, 0.0f } });
+        }
+        for (std::uint32_t segment{}; segment < Segments; ++segment)
+        {
+            const std::uint32_t bottom = segment * 2u;
+            const std::uint32_t top = bottom + 1u;
+            const std::uint32_t nextBottom = bottom + 2u;
+            const std::uint32_t nextTop = bottom + 3u;
+            if (reversed)
+            {
+                indices.insert(
+                    indices.end(),
+                    { bottom, nextTop, top, bottom, nextBottom, nextTop });
+            }
+            else
+            {
+                indices.insert(
+                    indices.end(),
+                    { bottom, top, nextTop, bottom, nextTop, nextBottom });
+            }
+        }
+    }
+
+    [[nodiscard]] Capture CaptureSceneFrame(
+        LamaPon::GraphicsDevice& graphics,
+        LamaPon::Scene& scene,
+        const float clearColor[4])
+    {
+        graphics.BeginFrame(clearColor);
+        graphics.BeginSceneComposition(clearColor);
+        auto* const target = graphics.SceneCompositionTarget();
+        Require(
+            target != nullptr,
+            "The capture has no scene composition target");
+        scene.RenderMainCamera(
+            static_cast<float>(CanvasWidth) / CanvasHeight,
+            false,
+            target);
+        graphics.EndSceneComposition(scene.PostProcessFrameData());
+        Capture frame;
+        frame.pixels = graphics.CaptureBackBuffer(frame.width, frame.height);
+        graphics.EndFrame();
+        return frame;
+    }
+
+    // Mesh Rendererのカリングを、蓋の無い筒4本で比べます。D3D11の
+    // GeometricPrimitive::Drawは既定でCullCounterClockwiseを使い、
+    // SetCullModeで上書きします。逆向きの筒は内側の奥の面だけが見え、
+    // 影（深度パス）も同じカリングで書きます。
+    [[nodiscard]] Capture RenderMeshCullCapture(
+        const LamaPon::RenderingApi api,
+        const LamaPon::GraphicsStartupProfile profile)
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            api,
+            profile);
+        Require(
+            graphics.ActiveRenderingApi() == api,
+            "The mesh cull capture did not start the requested rendering API");
+        // D3D11のLit / Environment shaderはasset rootから読み込みます。
+        graphics.Assets().SetAssetRoot(LAMAPON_TEST_ASSET_DIR);
+        const std::string apiName = api == LamaPon::RenderingApi::DirectX11
+            ? "DirectX 11"
+            : "DirectX 12";
+
+        LamaPon::Scene scene(graphics);
+        auto& cameraObject = scene.CreateGameObject("MainCamera");
+        cameraObject.GetTransform().position = { 0.0f, 0.9f, 6.5f };
+        cameraObject.GetTransform().SetEulerAngles(-0.12f, 0.0f, 0.0f);
+        auto& camera = cameraObject.AddComponent<LamaPon::CameraComponent>();
+        scene.SetMainCamera(camera);
+        scene.SetAmbientLightColor({ 1.0f, 1.0f, 1.0f });
+        scene.SetAmbientLightIntensity(0.15f);
+
+        // 光は自分の-Z軸の向きへ進むので、上から手前へ差し込むよう傾けます。
+        auto& sunObject = scene.CreateGameObject("Sun");
+        sunObject.GetTransform().SetEulerAngles(-0.9f, 0.5f, 0.0f);
+        auto& sun = sunObject.AddComponent<
+            LamaPon::DirectionalLightComponent>();
+        sun.SetCastsShadows(true);
+
+        // 開いた口から見える内側も照らすよう、カメラ側に置きます。
+        auto& pointObject = scene.CreateGameObject("PointLight");
+        pointObject.GetTransform().position = { 0.0f, 1.5f, 4.0f };
+        auto& pointLight = pointObject.AddComponent<
+            LamaPon::PointLightComponent>(
+                DirectX::XMFLOAT3{ 1.0f, 0.95f, 0.85f },
+                5.0f,
+                14.0f);
+        pointLight.SetCastsShadows(false);
+
+        // 影を受ける床は両面で描きます。
+        auto& floorObject = scene.CreateGameObject("Floor");
+        auto& floor = floorObject.AddComponent<LamaPon::MeshRendererComponent>(
+            LamaPon::PrimitiveShape::Cube,
+            DirectX::XMFLOAT4{ 0.7f, 0.7f, 0.72f, 1.0f });
+        floor.SetProceduralMesh(
+            {
+                { { -4.5f, -0.9f, 2.0f }, { 0.0f, 1.0f, 0.0f }, { 0.0f, 1.0f } },
+                { { -4.5f, -0.9f, -2.0f }, { 0.0f, 1.0f, 0.0f }, { 0.0f, 0.0f } },
+                { { 4.5f, -0.9f, -2.0f }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 0.0f } },
+                { { 4.5f, -0.9f, 2.0f }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 1.0f } },
+            },
+            { 0u, 1u, 2u, 0u, 2u, 3u });
+        floor.SetCullMode(LamaPon::ShaderCullMode::None);
+
+        std::vector<LamaPon::ProceduralMeshVertex> tubeVertices;
+        std::vector<std::uint32_t> tubeIndices;
+        BuildProceduralTube(tubeVertices, tubeIndices, false);
+        std::vector<LamaPon::ProceduralMeshVertex> reversedVertices;
+        std::vector<std::uint32_t> reversedIndices;
+        BuildProceduralTube(reversedVertices, reversedIndices, true);
+        const auto addTube = [&](
+            const char* const name,
+            const float x,
+            const DirectX::XMFLOAT4& color,
+            const bool reversed) -> LamaPon::MeshRendererComponent&
+        {
+            auto& object = scene.CreateGameObject(name);
+            object.GetTransform().position = { x, 0.0f, 0.0f };
+            object.GetTransform().SetEulerAngles(0.7f, 0.3f, 0.0f);
+            auto& mesh = object.AddComponent<LamaPon::MeshRendererComponent>(
+                LamaPon::PrimitiveShape::Cube,
+                color);
+            if (reversed)
+            {
+                mesh.SetProceduralMesh(reversedVertices, reversedIndices);
+            }
+            else
+            {
+                mesh.SetProceduralMesh(tubeVertices, tubeIndices);
+            }
+            return mesh;
+        };
+        static_cast<void>(addTube(
+            "OutsideTube", -2.7f, { 0.9f, 0.45f, 0.3f, 1.0f }, false));
+        static_cast<void>(addTube(
+            "InsideTube", -0.9f, { 0.3f, 0.8f, 0.45f, 1.0f }, true));
+        addTube("FrontCulledTube", 0.9f, { 0.35f, 0.5f, 0.95f, 1.0f }, false)
+            .SetCullMode(LamaPon::ShaderCullMode::Front);
+        addTube("TwoSidedTube", 2.7f, { 0.9f, 0.85f, 0.35f, 1.0f }, false)
+            .SetCullMode(LamaPon::ShaderCullMode::None);
+
+        constexpr float clearColor[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+        static_cast<void>(CaptureSceneFrame(graphics, scene, clearColor));
+        const auto capture = CaptureSceneFrame(graphics, scene, clearColor);
+        std::size_t litPixels{};
+        for (std::size_t offset{};
+             offset + 3u < capture.pixels.size();
+             offset += 4u)
+        {
+            if (std::max({
+                    capture.pixels[offset],
+                    capture.pixels[offset + 1u],
+                    capture.pixels[offset + 2u] }) > 24u)
+            {
+                ++litPixels;
+            }
+        }
+        Require(
+            litPixels > 2000u,
+            apiName + " did not draw the culled tubes ("
+                + std::to_string(litPixels) + " lit pixels)");
+        return capture;
+    }
+
+    // 組み込み形状（Cube、Sphere、Cylinder、表と裏から見たPlane）の既定の
+    // カリングで、外側の面が残ることを比べます。D3D11はDirectXTKの形状、
+    // D3D12は同じ大きさの自前形状なので、画素ではなく列ごとの面積と
+    // 明るさで比べます。
+    constexpr std::uint32_t BuiltInShapeCellCount = 5u;
+
+    [[nodiscard]] Capture RenderBuiltInShapeCullCapture(
+        const LamaPon::RenderingApi api,
+        const LamaPon::GraphicsStartupProfile profile)
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            api,
+            profile);
+        Require(
+            graphics.ActiveRenderingApi() == api,
+            "The built-in shape cull capture did not start the requested "
+            "rendering API");
+        graphics.Assets().SetAssetRoot(LAMAPON_TEST_ASSET_DIR);
+
+        LamaPon::Scene scene(graphics);
+        auto& cameraObject = scene.CreateGameObject("MainCamera");
+        cameraObject.GetTransform().position = { 0.0f, 0.0f, 6.0f };
+        auto& camera = cameraObject.AddComponent<LamaPon::CameraComponent>();
+        scene.SetMainCamera(camera);
+        scene.SetAmbientLightColor({ 1.0f, 1.0f, 1.0f });
+        scene.SetAmbientLightIntensity(0.2f);
+        auto& sunObject = scene.CreateGameObject("Sun");
+        sunObject.GetTransform().SetEulerAngles(-0.5f, 0.3f, 0.0f);
+        auto& sun = sunObject.AddComponent<
+            LamaPon::DirectionalLightComponent>();
+        sun.SetCastsShadows(false);
+        auto& pointObject = scene.CreateGameObject("PointLight");
+        pointObject.GetTransform().position = { 0.0f, 0.0f, 4.0f };
+        auto& pointLight = pointObject.AddComponent<
+            LamaPon::PointLightComponent>(
+                DirectX::XMFLOAT3{ 1.0f, 1.0f, 1.0f },
+                4.0f,
+                12.0f);
+        pointLight.SetCastsShadows(false);
+
+        const auto addShape = [&](
+            const char* const name,
+            const LamaPon::PrimitiveShape shape,
+            const float x,
+            const float pitch,
+            const DirectX::XMFLOAT4& color)
+        {
+            auto& object = scene.CreateGameObject(name);
+            object.GetTransform().position = { x, 0.0f, 0.0f };
+            object.GetTransform().scale = { 0.9f, 0.9f, 0.9f };
+            object.GetTransform().SetEulerAngles(pitch, 0.4f, 0.0f);
+            static_cast<void>(
+                object.AddComponent<LamaPon::MeshRendererComponent>(
+                    shape,
+                    color));
+        };
+        addShape("Cube", LamaPon::PrimitiveShape::Cube,
+            -2.8f, 0.5f, { 0.9f, 0.5f, 0.35f, 1.0f });
+        addShape("Sphere", LamaPon::PrimitiveShape::Sphere,
+            -1.4f, 0.0f, { 0.4f, 0.8f, 0.5f, 1.0f });
+        addShape("Cylinder", LamaPon::PrimitiveShape::Cylinder,
+            0.0f, 0.5f, { 0.45f, 0.55f, 0.95f, 1.0f });
+        addShape("PlaneTop", LamaPon::PrimitiveShape::Plane,
+            1.4f, 1.1f, { 0.95f, 0.85f, 0.4f, 1.0f });
+        addShape("PlaneBottom", LamaPon::PrimitiveShape::Plane,
+            2.8f, -1.1f, { 0.85f, 0.45f, 0.85f, 1.0f });
+
+        constexpr float clearColor[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
+        static_cast<void>(CaptureSceneFrame(graphics, scene, clearColor));
+        return CaptureSceneFrame(graphics, scene, clearColor);
+    }
+
+    struct ShapeCell final
+    {
+        std::size_t coverage{};
+        double brightness{};
+    };
+
+    [[nodiscard]] std::array<ShapeCell, BuiltInShapeCellCount>
+        MeasureShapeCells(const Capture& capture)
+    {
+        std::array<ShapeCell, BuiltInShapeCellCount> cells{};
+        const std::uint32_t cellWidth = capture.width / BuiltInShapeCellCount;
+        for (std::uint32_t y{}; y < capture.height; ++y)
+        {
+            for (std::uint32_t x{}; x < cellWidth * BuiltInShapeCellCount; ++x)
+            {
+                const auto offset =
+                    (static_cast<std::size_t>(y) * capture.width + x) * 4u;
+                const int brightness = std::max({
+                    capture.pixels[offset],
+                    capture.pixels[offset + 1u],
+                    capture.pixels[offset + 2u] });
+                if (brightness <= 12)
+                {
+                    continue;
+                }
+                auto& cell = cells[x / cellWidth];
+                ++cell.coverage;
+                cell.brightness += brightness;
+            }
+        }
+        for (auto& cell : cells)
+        {
+            if (cell.coverage != 0u)
+            {
+                cell.brightness /= static_cast<double>(cell.coverage);
+            }
+        }
+        return cells;
+    }
+
+    void RequireSimilarShapeCells(
+        const Capture& d3d11,
+        const Capture& d3d12)
+    {
+        static constexpr std::array<const char*, BuiltInShapeCellCount>
+            names{ "Cube", "Sphere", "Cylinder", "Plane (top)",
+                "Plane (bottom)" };
+        const auto expected = MeasureShapeCells(d3d11);
+        const auto actual = MeasureShapeCells(d3d12);
+        for (std::size_t cell{}; cell < BuiltInShapeCellCount; ++cell)
+        {
+            const auto& reference = expected[cell];
+            const auto& measured = actual[cell];
+            const double coverageRatio = reference.coverage == 0u
+                ? 0.0
+                : static_cast<double>(measured.coverage) / reference.coverage;
+            const bool similar = reference.coverage > 80u
+                && coverageRatio > 0.8
+                && coverageRatio < 1.25
+                && std::abs(measured.brightness - reference.brightness)
+                    <= std::max(14.0, reference.brightness * 0.2);
+            Require(
+                similar,
+                std::string{ "DirectX 12 built-in " } + names[cell]
+                    + " did not keep the same visible faces as DirectX 11 ("
+                    + std::to_string(measured.coverage) + " px at "
+                    + std::to_string(static_cast<int>(measured.brightness))
+                    + " vs " + std::to_string(reference.coverage) + " px at "
+                    + std::to_string(static_cast<int>(reference.brightness))
+                    + ")");
+        }
+    }
+
     // 組み込みLitのインスタンス描画をD3D11と比べます。色と非一様スケールの
     // 違うCube 2個はMesh Rendererの1 batchに、アニメーションの無いglTFの箱
     // 2個はModel Rendererの1 batchになり、D3D11のLamaPonLit.hlslの
@@ -7199,6 +7543,12 @@ int main()
         const auto d3d11BuiltInInstancing = RenderBuiltInInstancingCapture(
             LamaPon::RenderingApi::DirectX11,
             LamaPon::GraphicsStartupProfile::FullRenderer);
+        const auto d3d11MeshCull = RenderMeshCullCapture(
+            LamaPon::RenderingApi::DirectX11,
+            LamaPon::GraphicsStartupProfile::FullRenderer);
+        const auto d3d11BuiltInShapeCull = RenderBuiltInShapeCullCapture(
+            LamaPon::RenderingApi::DirectX11,
+            LamaPon::GraphicsStartupProfile::FullRenderer);
         const auto d3d11CustomParticleShaders =
             RenderCustomParticleShaderCapture(
                 LamaPon::RenderingApi::DirectX11,
@@ -7302,6 +7652,12 @@ int main()
                 LamaPon::GraphicsStartupProfile::
                     AllowD3D12ExperimentalBootstrap);
         const auto d3d12BuiltInInstancing = RenderBuiltInInstancingCapture(
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap);
+        const auto d3d12MeshCull = RenderMeshCullCapture(
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap);
+        const auto d3d12BuiltInShapeCull = RenderBuiltInShapeCullCapture(
             LamaPon::RenderingApi::DirectX12Experimental,
             LamaPon::GraphicsStartupProfile::AllowD3D12ExperimentalBootstrap);
         const auto d3d12CustomParticleShaders =
@@ -7421,6 +7777,11 @@ int main()
             "built-in Lit instancing",
             d3d11BuiltInInstancing,
             d3d12BuiltInInstancing);
+        RequireMatchingFrameCaptures(
+            "mesh cull modes",
+            d3d11MeshCull,
+            d3d12MeshCull);
+        RequireSimilarShapeCells(d3d11BuiltInShapeCull, d3d12BuiltInShapeCull);
         RequireMatchingFrameCaptures(
             "custom particle shaders",
             d3d11CustomParticleShaders,

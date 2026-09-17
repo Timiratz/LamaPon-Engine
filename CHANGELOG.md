@@ -4,6 +4,7 @@
 
 ### 描画API設定
 
+- DirectX 12の組み込みLit描画でMesh Rendererのカリング指定を反映。D3D11のGeometricPrimitive::Drawと同じく既定で裏面を捨て、`SetCullMode`の上書きを通常・深度・影・インスタンス描画へ適用する。D3D12自前のCube／Sphere／Cylinderの三角形の向きをD3D11に揃え、PlaneもD3D11と同じ厚さ0.05の箱にした。D3D11に無かったShadow map用のrasterizer biasも外し、閉じていないProcedural Meshの見え方と影をD3D11と一致させる。
 - DirectX 12の利用者向け対応状況をruntime feature parity到達として整理し、Experimental継続理由を低レベルAPI設計差、GPU／driver差、全環境未検証に更新。Project Settingsの警告とbootstrap期の古いコメントも現状へ揃えた。
 - DX10 DDSのtypeless storageをDirectXTK互換のshader-readable viewへ正規化し、R8／R16 SNORM、R11G11B10 float、RGB9E5 shared exponentをD3D11／D3D12共通ローダーへ追加。公開texture formatの末尾追加に伴いGame Module APIを74へ更新。
 - DirectXTK11が認識するlegacy DDS形式（10:10:10:2、16-bit UNORM、B5／B4、alpha、signed bump map、packed RGB／YUY2、D3D9 numeric FourCC）をD3D11／D3D12共通ローダーへ追加。driver依存のYUY2はRGBA8へ安全にCPU変換し、公開texture formatの末尾追加に伴いGame Module APIを73へ更新。

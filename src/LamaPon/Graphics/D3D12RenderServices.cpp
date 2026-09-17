@@ -1460,31 +1460,59 @@ CustomPixelInput CustomParticleVertexShader(VertexInput input)
                 first + 2u, first + 1u, first + 3u });
     }
 
-    [[nodiscard]] Geometry CreateCube()
+    // D3D11のGeometricPrimitiveと同じく、外から見て画面上で時計回りの
+    // 三角形へそろえます。CullCounterClockwiseで外側の面が残る向きです。
+    void ReverseWinding(Geometry& geometry, const std::size_t firstIndex = 0u)
+    {
+        for (std::size_t index = firstIndex;
+             index + 2u < geometry.indices.size();
+             index += 3u)
+        {
+            std::swap(geometry.indices[index + 1u], geometry.indices[index + 2u]);
+        }
+    }
+
+    [[nodiscard]] Geometry CreateBox(
+        const DirectX::XMFLOAT3& half,
+        const bool includeTop)
     {
         Geometry result;
-        constexpr float h = 0.5f;
+        const float x = half.x;
+        const float y = half.y;
+        const float z = half.z;
         AddFace(result, { 0, 0, -1 }, { {
-            { -h, -h, -h }, { -h, h, -h }, { h, -h, -h }, { h, h, -h } } });
+            { -x, -y, -z }, { -x, y, -z }, { x, -y, -z }, { x, y, -z } } });
         AddFace(result, { 0, 0, 1 }, { {
-            { h, -h, h }, { h, h, h }, { -h, -h, h }, { -h, h, h } } });
+            { x, -y, z }, { x, y, z }, { -x, -y, z }, { -x, y, z } } });
         AddFace(result, { -1, 0, 0 }, { {
-            { -h, -h, h }, { -h, h, h }, { -h, -h, -h }, { -h, h, -h } } });
+            { -x, -y, z }, { -x, y, z }, { -x, -y, -z }, { -x, y, -z } } });
         AddFace(result, { 1, 0, 0 }, { {
-            { h, -h, -h }, { h, h, -h }, { h, -h, h }, { h, h, h } } });
-        AddFace(result, { 0, 1, 0 }, { {
-            { -h, h, -h }, { -h, h, h }, { h, h, -h }, { h, h, h } } });
+            { x, -y, -z }, { x, y, -z }, { x, -y, z }, { x, y, z } } });
+        if (includeTop)
+        {
+            AddFace(result, { 0, 1, 0 }, { {
+                { -x, y, -z }, { -x, y, z }, { x, y, -z }, { x, y, z } } });
+        }
         AddFace(result, { 0, -1, 0 }, { {
-            { -h, -h, h }, { -h, -h, -h }, { h, -h, h }, { h, -h, -h } } });
+            { -x, -y, z }, { -x, -y, -z }, { x, -y, z }, { x, -y, -z } } });
+        ReverseWinding(result);
         return result;
+    }
+
+    [[nodiscard]] Geometry CreateCube()
+    {
+        return CreateBox({ 0.5f, 0.5f, 0.5f }, true);
     }
 
     [[nodiscard]] Geometry CreatePlane()
     {
-        Geometry result;
+        // D3D11のCreateBox({ 1, 0.05, 1 })と同じ薄い箱にして、裏から見ても
+        // 消えないようにします。上面のUVは従来の板と同じです。
+        constexpr float halfThickness = 0.025f;
+        auto result = CreateBox({ 0.5f, halfThickness, 0.5f }, false);
         AddFace(result, { 0, 1, 0 }, { {
-            { -0.5f, 0, 0.5f }, { -0.5f, 0, -0.5f },
-            { 0.5f, 0, 0.5f }, { 0.5f, 0, -0.5f } } });
+            { -0.5f, halfThickness, 0.5f }, { -0.5f, halfThickness, -0.5f },
+            { 0.5f, halfThickness, 0.5f }, { 0.5f, halfThickness, -0.5f } } });
         return result;
     }
 
@@ -1524,6 +1552,7 @@ CustomPixelInput CustomParticleVertexShader(VertexInput input)
                     first + 1u, next, next + 1u });
             }
         }
+        ReverseWinding(result);
         return result;
     }
 
@@ -1552,6 +1581,7 @@ CustomPixelInput CustomParticleVertexShader(VertexInput input)
         result.vertices.push_back({ { 0, -0.5f, 0 }, { 0, -1, 0 }, { 0.5f, 0.5f } });
         const auto topCenter = static_cast<std::uint32_t>(result.vertices.size());
         result.vertices.push_back({ { 0, 0.5f, 0 }, { 0, 1, 0 }, { 0.5f, 0.5f } });
+        const auto capIndex = result.indices.size();
         for (std::uint32_t slice{}; slice < slices; ++slice)
         {
             const auto side = slice * 2u;
@@ -1560,6 +1590,8 @@ CustomPixelInput CustomParticleVertexShader(VertexInput input)
                 bottomCenter, next, side,
                 topCenter, side + 1u, next + 1u });
         }
+        // 側面は既に外向きです。上下の蓋だけを外向きにそろえます。
+        ReverseWinding(result, capIndex);
         return result;
     }
 
@@ -1609,15 +1641,23 @@ CustomPixelInput CustomParticleVertexShader(VertexInput input)
     }
 
     // wireframeはDirectXTKのCommonStates::Wireframeと同じく、カリングせず
-    // 辺だけを描きます。
+    // 辺だけを描きます。それ以外はCommonStatesのCullCounterClockwise／
+    // CullClockwiseと同じく、時計回りを表面として扱います。
     [[nodiscard]] D3D12_RASTERIZER_DESC MakeRasterizerDescription(
-        const bool wireframe = false) noexcept
+        const bool wireframe = false,
+        const LamaPon::ShaderCullMode cull =
+            LamaPon::ShaderCullMode::None) noexcept
     {
         D3D12_RASTERIZER_DESC result{};
         result.FillMode = wireframe
             ? D3D12_FILL_MODE_WIREFRAME
             : D3D12_FILL_MODE_SOLID;
-        result.CullMode = D3D12_CULL_MODE_NONE;
+        result.CullMode = wireframe || cull == LamaPon::ShaderCullMode::None
+            ? D3D12_CULL_MODE_NONE
+            : cull == LamaPon::ShaderCullMode::Front
+                ? D3D12_CULL_MODE_FRONT
+                : D3D12_CULL_MODE_BACK;
+        result.FrontCounterClockwise = FALSE;
         // DirectXTKのCommonStatesと同じく、辺は四角形の線で描きます。
         result.MultisampleEnable = wireframe ? TRUE : FALSE;
         result.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
@@ -2839,13 +2879,14 @@ CustomPixelInput CustomParticleVertexShader(VertexInput input)
                     static_cast<UINT>(sizeof(LamaPon::PrimitiveInstanceData)) };
             }
             auto* pipeline = request.depthOnly
-                ? DepthOnlyPipelineState(request.wireframe)
+                ? DepthOnlyPipelineState(request.wireframe, request.cull)
                 : PipelineState(
                     request.alphaBlend,
                     request.depthTest,
                     request.depthWrite,
                     request.wireframe,
-                    instanced);
+                    instanced,
+                    request.cull);
             commandList->SetGraphicsRootSignature(m_rootSignature.Get());
             commandList->SetPipelineState(pipeline);
             commandList->SetGraphicsRootConstantBufferView(
@@ -3264,12 +3305,24 @@ CustomPixelInput CustomParticleVertexShader(VertexInput input)
             return pipeline.Get();
         }
 
+        // ワイヤーフレームはカリングしないので、カリングの指定ごとに
+        // pipelineを分けません。
+        [[nodiscard]] static std::size_t CullIndex(
+            const bool wireframe,
+            const LamaPon::ShaderCullMode cull) noexcept
+        {
+            return wireframe
+                ? static_cast<std::size_t>(LamaPon::ShaderCullMode::None)
+                : static_cast<std::size_t>(cull);
+        }
+
         [[nodiscard]] ID3D12PipelineState* PipelineState(
             bool alphaBlend,
             bool depthTest,
             bool depthWrite,
             bool wireframe,
-            bool instanced)
+            bool instanced,
+            LamaPon::ShaderCullMode cull)
         {
             const auto colorFormat = m_backend->ActiveColorFormat();
             const std::size_t formatIndex = colorFormat
@@ -3280,7 +3333,8 @@ CustomPixelInput CustomParticleVertexShader(VertexInput input)
                     : throw std::invalid_argument(
                         "The active DirectX 12 primitive target format is "
                         "unsupported.");
-            const std::size_t index = formatIndex * 12u
+            const std::size_t index = formatIndex * 36u
+                + CullIndex(wireframe, cull) * 12u
                 + (instanced ? 6u : 0u)
                 + (wireframe ? 3u : 0u)
                 + (!depthTest ? 2u : (alphaBlend ? 1u : 0u));
@@ -3327,7 +3381,7 @@ CustomPixelInput CustomParticleVertexShader(VertexInput input)
             description.PS = { m_pixelShader->GetBufferPointer(), m_pixelShader->GetBufferSize() };
             description.BlendState = MakeBlendDescription(alphaBlend || !depthTest);
             description.SampleMask = std::numeric_limits<UINT>::max();
-            description.RasterizerState = MakeRasterizerDescription(wireframe);
+            description.RasterizerState = MakeRasterizerDescription(wireframe, cull);
             description.DepthStencilState = MakeDepthDescription(depthTest, depthWrite);
             description.InputLayout = instanced
                 ? D3D12_INPUT_LAYOUT_DESC{
@@ -3349,7 +3403,8 @@ CustomPixelInput CustomParticleVertexShader(VertexInput input)
         }
 
         [[nodiscard]] ID3D12PipelineState* DepthOnlyPipelineState(
-            bool wireframe)
+            bool wireframe,
+            LamaPon::ShaderCullMode cull)
         {
             const auto depthFormat = m_backend->ActiveDepthFormat();
             const std::size_t formatIndex = depthFormat
@@ -3361,7 +3416,9 @@ CustomPixelInput CustomParticleVertexShader(VertexInput input)
                         "The active DirectX 12 depth target format is "
                         "unsupported.");
             auto& pipeline = m_depthOnlyPipelineStates[
-                formatIndex * 2u + (wireframe ? 1u : 0u)];
+                formatIndex * 6u
+                + CullIndex(wireframe, cull) * 2u
+                + (wireframe ? 1u : 0u)];
             if (pipeline != nullptr)
             {
                 return pipeline.Get();
@@ -3384,14 +3441,9 @@ CustomPixelInput CustomParticleVertexShader(VertexInput input)
                 m_vertexShader->GetBufferSize() };
             description.BlendState = MakeBlendDescription(false);
             description.SampleMask = std::numeric_limits<UINT>::max();
-            description.RasterizerState = MakeRasterizerDescription(wireframe);
-            if (depthFormat == LamaPon::D3D12Backend::ShadowDepthFormat)
-            {
-                // Shadow mapの自己遮蔽を抑えるbiasは、通常の
-                // offscreen深度プリパスには適用しません。
-                description.RasterizerState.DepthBias = 1000;
-                description.RasterizerState.SlopeScaledDepthBias = 1.0f;
-            }
+            // D3D11のShadow mapもrasterizerのbiasを使わず、裏面をカリングして
+            // shader側のbiasだけで自己遮蔽を抑えます。
+            description.RasterizerState = MakeRasterizerDescription(wireframe, cull);
             description.DepthStencilState =
                 MakeDepthDescription(true, true);
             description.InputLayout = {
@@ -3426,9 +3478,11 @@ CustomPixelInput CustomParticleVertexShader(VertexInput input)
         std::unordered_map<std::filesystem::path, CustomParticleShaderEntry>
             m_customParticleShaders;
         std::uint64_t m_nextCustomParticleGeneration{ 1 };
-        std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 24>
+        // 色の2形式×カリング3種×instanced×wireframe×合成3種です。
+        std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 72>
             m_pipelineStates;
-        std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4>
+        // 深度の2形式×カリング3種×wireframeです。
+        std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 12>
             m_depthOnlyPipelineStates;
         Geometry m_cube;
         Geometry m_sphere;

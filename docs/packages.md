@@ -21,12 +21,25 @@ C++スクリプト、Prefab、アセットをパッケージとしてまとめ�
   `.cpp` を開いてそのまま学習・改造できます。
   削除・改造してもエンジン本体には影響しません。
 
+パッケージには有効化タイミングがあります。通常は「すぐに有効」ですが、
+ネイティブDLLや描画バックエンドを含むものは「再起動後に有効」、生成物にも
+影響するものは「再起動・再ビルド後に有効」と表示されます。この場合は実行中の
+DLLを差し替えず、インストール・更新・削除のあとに再起動する安全な設計です。
+
+作者は`package.json`と一覧へ`activation`を指定できます。値は`Immediate`、
+`Restart`、`RestartAndRebuild`です。省略した既存パッケージと不明な値は、互換性を
+保つため`Immediate`として扱います。
+
 ## 公式パッケージ
 
 | パッケージ | 内容 |
 |---|---|
 | **Easing & Tween**（`easing-tween`） | 動きに緩急をつけるイージング関数28種と、位置・回転・拡縮を時間をかけて動かす「Tween」コンポーネント。`Easing.h`をincludeすれば自分のScriptからも使えます |
 | **Discord Rich Presence (Social SDK)**（`discord-presence-sdk`） | [Discord Rich Presence](online-services.md#discord-rich-presence)を実際にDiscordへ表示するためのアダプター。ライセンス上SDK本体は同梱できないので、Discordから入手して`sdk/`へ置く形です（手順はパッケージのREADME）。Discordログインとは無関係で、ログインしなくても使えます |
+
+エンジンのReleaseビルドは、任意導入用の`directx12-renderer`を
+`packages/directx12-renderer/`へステージングします。このパッケージはABI検証済みの
+`LamaPonGraphicsD3D12.dll`を含み、導入後の再起動時にロードされます。
 
 導入すると`assets/packages/<名前>/`へ入り、Game Moduleが自動ビルドされて「コンポーネントを追加」から使えるようになります。
 中身は`.cpp`のままなので、開いて読んだり改造したりできます。
@@ -155,6 +168,9 @@ DLLと同じ名前は同梱できません。複数のパッケージが同じ�
 `package.json`を作り直しても**そのまま引き継がれます**。
 一覧用のJSONには含まれません（ビルド情報はZip内の`package.json`が
 正本です）。
+
+同様に、将来の任意描画バックエンドが使う`graphicsBackend`宣言も、パッケージを
+作り直したときに保持されます。これは一般スクリプト向けの設定ではありません。
 
 ## 作ったパッケージを配る
 

@@ -1,0 +1,14 @@
+{
+  "name": "directx12-renderer",
+  "displayName": "DirectX 12 Renderer",
+  "description": "LamaPonのDirectX 12 Experimental描画バックエンドです。インストールまたは更新後に再起動してください。",
+  "author": "LamaPon",
+  "version": "0.1.0",
+  "minimumEngineVersion": "0.1.0",
+  "activation": "Restart",
+  "graphicsBackend": {
+    "api": "DirectX12Experimental",
+    "abiVersion": 1,
+    "runtimeLibrary": "runtime/LamaPonGraphicsD3D12.dll"
+  }
+}

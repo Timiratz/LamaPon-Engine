@@ -1317,6 +1317,11 @@ namespace LamaPon
                 request.depthTest = true;
                 request.depthWrite = true;
             }
+            // D3D11のGeometricPrimitive::Drawと同じく既定はCullCounterClockwise
+            // で、SetCullModeの指定があればそれを使います（深度パスも同じ）。
+            request.cull = m_cullModeOverride
+                ? m_cullMode
+                : ShaderCullMode::Back;
             if (!m_material.Shader().empty())
             {
                 // D3D11のLitEffect経路と同じMaterial custom shaderの契約で
@@ -1888,6 +1893,9 @@ namespace LamaPon
             request.alphaBlend = request.baseColor.w < 1.0f;
             request.depthTest = true;
             request.depthWrite = !request.alphaBlend;
+            request.cull = m_cullModeOverride
+                ? m_cullMode
+                : ShaderCullMode::Back;
 
             bool drawn{};
             if (m_material.Shader().empty())
