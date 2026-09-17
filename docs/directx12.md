@@ -77,9 +77,11 @@ WARPによるD3D11／D3D12の画素比較とdebug layerを使った回帰テス�
 
 ただし、まだ「完全なD3D11互換」とは表記していません。残っている差は次のとおりです。
 
-- D3D11の即時Contextを前提にした一部の低レベル描画入口は、D3D12のゲーム描画経路では
-  使用せず、Backend固有の描画サービスへ置き換えています。すべての低レベル入口が
-  一対一で利用できる状態ではありません。
+- API非依存の動的頂点buffer更新・bindは両Backendで利用できます。D3D11 Effect向けの
+  pixel shader resource直接bindだけは、D3D12ではroot signature固有のdescriptor tableを
+  Backend固有の描画サービスからbindする設計へ置き換えており、一対一の低レベル入口では
+  ありません。ユーザー向けのMaterial、Sprite、Particle、post-process、custom shaderは
+  いずれもこのD3D12専用経路を使用します。
 - DDSはRGBA8／BGRA8／BC1／BC3／BC5に対応します。DirectX 11のDirectXTKが読める
   それ以外の形式には、API間の対応差があります。
 - GPU、driver、浮動小数点精度の違いにより、両APIの画素が常に完全一致するとは限りません。

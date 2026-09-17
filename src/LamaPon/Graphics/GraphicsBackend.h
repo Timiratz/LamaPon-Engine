@@ -310,13 +310,16 @@ namespace LamaPon
             std::uint32_t stride,
             std::uint32_t offset) = 0;
 
-        // Shader resource viewをAPI固有pointerへ解決せず、pixel shaderの
+        // D3D11 Effect互換slotです。Shader resource viewをAPI固有pointerへ
+        // 解決せず、pixel shaderの
         // register space 0にある連続したtNへbindします。emptyまたは無効なentryはfallbackへ
         // 置き換え、fallbackも無効ならnullをbindします。slot範囲が不正な
         // 場合だけ何も変更せずfalseを返します。既存virtualのslotを
         // 維持するため、新しい契約は末尾へ追加します。呼び出し側はrecord
         // した描画が終わるまでhandleを保持し、BackendはGPU完了まで必要な
-        // native resource / descriptorの寿命を保証します。
+        // native resource / descriptorの寿命を保証します。D3D12の描画島は
+        // root signature固有のdescriptor tableを専用RenderServicesでbindし、
+        // この互換slotへ非空rangeが渡された場合はfalseを返します。
         [[nodiscard]] virtual bool TryBindPixelShaderResources(
             std::uint32_t firstSlot,
             std::span<const GraphicsViewHandle> resources,

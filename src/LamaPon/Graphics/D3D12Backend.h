@@ -421,9 +421,6 @@ namespace LamaPon
             CaptureBackBufferImpl(
                 std::uint32_t& width,
                 std::uint32_t& height);
-        [[noreturn]] void ThrowUnsupported(
-            const char* operation) const;
-
         Microsoft::WRL::ComPtr<IDXGIFactory4> m_factory;
         Microsoft::WRL::ComPtr<IDXGIAdapter1> m_adapter;
         Microsoft::WRL::ComPtr<ID3D12Device> m_device;

@@ -515,9 +515,11 @@ namespace
         D3D12BufferPayload(
             const std::shared_ptr<LamaPon::Detail::D3D12ResourceDomain>&
                 resourceDomain,
-            Microsoft::WRL::ComPtr<ID3D12Resource> buffer)
+            Microsoft::WRL::ComPtr<ID3D12Resource> buffer,
+            const std::uint32_t dynamicVertexCapacity = 0u)
             : GraphicsBufferPayload(resourceDomain)
             , native(std::move(buffer))
+            , vertexCapacity(dynamicVertexCapacity)
         {
         }
 
@@ -528,6 +530,10 @@ namespace
         }
 
         Microsoft::WRL::ComPtr<ID3D12Resource> native;
+        // 0はStructuredBuffer等の非頂点bufferです。動的頂点bufferは
+        // upload heap上の容量を保持し、更新ごとに別resourceへrenameして
+        // 既に記録済みのdrawからCPU書き込みを隔離します。
+        std::uint32_t vertexCapacity{};
     };
 
     // shader-visible heap内のSRV descriptorです。参照先textureは基底の
@@ -2787,20 +2793,6 @@ namespace LamaPon
             m_terminalFailure = true;
             throw;
         }
-    }
-
-    void D3D12Backend::ThrowUnsupported(
-        const char* const operation) const
-    {
-        if (!IsInitialized())
-        {
-            throw std::logic_error(
-                std::string(operation)
-                + " requires an initialized D3D12 backend.");
-        }
-        throw std::logic_error(
-            std::string(operation)
-            + " is not implemented for DirectX 12 Experimental.");
     }
 
     void D3D12Backend::ResizeOffscreenTarget(
@@ -5321,10 +5313,87 @@ namespace LamaPon
     }
 
     bool D3D12Backend::UpdateDynamicVertexBuffer(
-        GraphicsBufferHandle&,
-        std::span<const std::byte>)
+        GraphicsBufferHandle& buffer,
+        const std::span<const std::byte> data)
     {
-        ThrowUnsupported("UpdateDynamicVertexBuffer");
+        using Detail::GraphicsResourceHandleAccess;
+        if (!IsInitialized() || m_resourceDomain == nullptr)
+        {
+            throw std::logic_error(
+                "UpdateDynamicVertexBuffer requires an initialized D3D12 "
+                "backend.");
+        }
+
+        const auto* const payload = dynamic_cast<const D3D12BufferPayload*>(
+            GraphicsResourceHandleAccess::Payload(buffer));
+        if (buffer
+            && (payload == nullptr
+                || payload->vertexCapacity == 0u
+                || GraphicsResourceHandleAccess::Domain(buffer)
+                    != m_resourceDomain.get()))
+        {
+            throw std::invalid_argument(
+                "UpdateDynamicVertexBuffer requires a dynamic vertex "
+                "buffer from this backend generation.");
+        }
+        if (data.empty())
+        {
+            return false;
+        }
+        constexpr std::uint64_t MinimumCapacity = 4096u;
+        constexpr std::uint64_t MaximumCapacity =
+            std::numeric_limits<std::uint32_t>::max();
+        if (data.size() > MaximumCapacity)
+        {
+            return false;
+        }
+        const std::uint64_t currentCapacity = payload != nullptr
+            ? payload->vertexCapacity
+            : 0u;
+        const std::uint64_t doubledCapacity =
+            currentCapacity > MaximumCapacity / 2u
+                ? MaximumCapacity
+                : currentCapacity * 2u;
+        const auto newCapacity64 = data.size() <= currentCapacity
+            ? currentCapacity
+            : std::max({
+                static_cast<std::uint64_t>(data.size()),
+                doubledCapacity,
+                MinimumCapacity });
+        const auto newCapacity = static_cast<std::uint32_t>(newCapacity64);
+
+        const auto uploadHeap = HeapProperties(D3D12_HEAP_TYPE_UPLOAD);
+        const auto description = BufferDescription(newCapacity);
+        Microsoft::WRL::ComPtr<ID3D12Resource> native;
+        if (FAILED(m_device->CreateCommittedResource(
+                &uploadHeap,
+                D3D12_HEAP_FLAG_NONE,
+                &description,
+                D3D12_RESOURCE_STATE_GENERIC_READ,
+                nullptr,
+                IID_PPV_ARGS(native.GetAddressOf()))))
+        {
+            return false;
+        }
+
+        void* mapped{};
+        const D3D12_RANGE readRange{};
+        if (FAILED(native->Map(0u, &readRange, &mapped)) || mapped == nullptr)
+        {
+            return false;
+        }
+        std::memcpy(mapped, data.data(), data.size());
+        const D3D12_RANGE writtenRange{ 0u, data.size() };
+        native->Unmap(0u, &writtenRange);
+
+        // D3D11のWRITE_DISCARDと同じ意味になるよう、毎回resourceを
+        // renameします。旧handleはresource domainがGPU完了まで保持します。
+        buffer = GraphicsResourceHandleAccess::MakeBuffer(
+            std::make_shared<D3D12BufferPayload>(
+                m_resourceDomain,
+                std::move(native),
+                newCapacity));
+        return true;
     }
 
     GraphicsTextureHandle D3D12Backend::CreateTexture2D(
@@ -5932,19 +6001,63 @@ namespace LamaPon
     }
 
     void D3D12Backend::BindVertexBuffer(
-        const GraphicsBufferHandle&,
-        std::uint32_t,
-        std::uint32_t,
-        std::uint32_t)
+        const GraphicsBufferHandle& buffer,
+        const std::uint32_t slot,
+        const std::uint32_t stride,
+        const std::uint32_t offset)
     {
-        ThrowUnsupported("BindVertexBuffer");
+        using Detail::GraphicsResourceHandleAccess;
+        if (!IsInitialized() || m_resourceDomain == nullptr)
+        {
+            throw std::logic_error(
+                "BindVertexBuffer requires an initialized D3D12 backend.");
+        }
+        const auto* const payload = dynamic_cast<const D3D12BufferPayload*>(
+            GraphicsResourceHandleAccess::Payload(buffer));
+        if (!buffer
+            || payload == nullptr
+            || payload->vertexCapacity == 0u
+            || GraphicsResourceHandleAccess::Domain(buffer)
+                != m_resourceDomain.get()
+            || slot >= D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT
+            || stride == 0u
+            || offset >= payload->vertexCapacity)
+        {
+            throw std::invalid_argument(
+                "BindVertexBuffer requires a current dynamic vertex buffer, "
+                "a valid slot and offset, and a non-zero stride.");
+        }
+
+        OpenCommandList();
+        const D3D12_VERTEX_BUFFER_VIEW view{
+            payload->native->GetGPUVirtualAddress() + offset,
+            payload->vertexCapacity - offset,
+            stride
+        };
+        m_commandList->IASetVertexBuffers(slot, 1u, &view);
     }
 
     bool D3D12Backend::TryBindPixelShaderResources(
-        std::uint32_t,
-        std::span<const GraphicsViewHandle>,
+        const std::uint32_t firstSlot,
+        const std::span<const GraphicsViewHandle> resources,
         const GraphicsViewHandle&) noexcept
     {
+        // このslotはAPI 42以前のD3D11 Effect互換用です。D3D12はroot
+        // signatureごとにD3D12RenderServicesがdescriptor tableをbindする
+        // ため、任意のpipelineへ後付けする非空rangeは受け付けません。
+        // ただし共通契約どおり、有効範囲の空rangeはno-opとして成功します。
+        constexpr std::size_t MaximumSlots =
+            D3D12_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT;
+        if (!IsInitialized()
+            || firstSlot >= MaximumSlots
+            || resources.size() > MaximumSlots - firstSlot)
+        {
+            return false;
+        }
+        if (resources.empty())
+        {
+            return true;
+        }
         return false;
     }
 

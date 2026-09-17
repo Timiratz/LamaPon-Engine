@@ -633,6 +633,90 @@ int main()
                         || (d3d12Memory.nonLocalUsageBytes == 0u
                             && d3d12Memory.nonLocalBudgetBytes == 0u)),
                 "Unavailable DirectX 12 memory budgets contained values");
+            // D3D11のWRITE_DISCARD相当の入口は、D3D12では更新ごとに
+            // upload resourceをrenameします。記録済みdrawが読む旧resourceを
+            // 上書きせず、旧handleもGPU完了まで有効なままです。
+            const std::array<float, 8> d3d12VertexData{
+                -1.0f, -1.0f, 0.0f, 1.0f,
+                1.0f, 1.0f, 0.0f, 1.0f
+            };
+            const auto d3d12VertexBytes = std::as_bytes(
+                std::span{ d3d12VertexData });
+            LamaPon::GraphicsBufferHandle d3d12VertexBuffer;
+            Require(
+                !d3d12Backend->UpdateDynamicVertexBuffer(
+                    d3d12VertexBuffer,
+                    {})
+                    && !d3d12VertexBuffer,
+                "An empty DirectX 12 dynamic vertex update changed state");
+            Require(
+                d3d12Backend->UpdateDynamicVertexBuffer(
+                    d3d12VertexBuffer,
+                    d3d12VertexBytes)
+                    && d3d12VertexBuffer,
+                "The DirectX 12 dynamic vertex buffer was not created");
+            const auto firstD3D12VertexBuffer = d3d12VertexBuffer;
+            Require(
+                d3d12Backend->UpdateDynamicVertexBuffer(
+                    d3d12VertexBuffer,
+                    d3d12VertexBytes)
+                    && d3d12VertexBuffer
+                    && d3d12VertexBuffer != firstD3D12VertexBuffer,
+                "The DirectX 12 dynamic vertex buffer was not renamed");
+            constexpr std::uint32_t MaximumVertexBufferSlots = 32u;
+            d3d12Backend->BindVertexBuffer(
+                firstD3D12VertexBuffer,
+                MaximumVertexBufferSlots - 1u,
+                static_cast<std::uint32_t>(sizeof(float) * 4u),
+                0u);
+            d3d12Backend->BindVertexBuffer(
+                d3d12VertexBuffer,
+                0u,
+                static_cast<std::uint32_t>(sizeof(float) * 4u),
+                static_cast<std::uint32_t>(sizeof(float) * 4u));
+            RequireThrowsExactly<std::invalid_argument>(
+                [&]
+                {
+                    d3d12Backend->BindVertexBuffer(
+                        {},
+                        0u,
+                        static_cast<std::uint32_t>(sizeof(float) * 4u),
+                        0u);
+                },
+                "An empty DirectX 12 vertex buffer was accepted");
+            RequireThrowsExactly<std::invalid_argument>(
+                [&]
+                {
+                    d3d12Backend->BindVertexBuffer(
+                        d3d12VertexBuffer,
+                        MaximumVertexBufferSlots,
+                        static_cast<std::uint32_t>(sizeof(float) * 4u),
+                        0u);
+                },
+                "An out-of-range DirectX 12 vertex buffer slot was accepted");
+
+            // D3D11 Effect互換の直接SRV bindはD3D12 pipelineでは使わず、
+            // 空rangeだけを共通契約のno-opとして受け付けます。
+            constexpr std::uint32_t MaximumShaderResourceSlots = 128u;
+            Require(
+                d3d12Backend->TryBindPixelShaderResources(
+                    0u,
+                    {},
+                    {}),
+                "An empty DirectX 12 shader resource range was rejected");
+            const std::array<LamaPon::GraphicsViewHandle, 1>
+                directD3D12ShaderResource{};
+            Require(
+                !d3d12Backend->TryBindPixelShaderResources(
+                    0u,
+                    directD3D12ShaderResource,
+                    {})
+                    && !d3d12Backend->TryBindPixelShaderResources(
+                        MaximumShaderResourceSlots,
+                        {},
+                        {}),
+                "The DirectX 12 backend accepted a D3D11-only direct SRV "
+                "binding");
 
             RequireClearColor(
                 *d3d12Backend,
@@ -763,6 +847,16 @@ int main()
             Require(
                 d3d12Backend->IsInitialized(),
                 "The DirectX 12 backend could not reinitialize after shutdown");
+            RequireThrowsExactly<std::invalid_argument>(
+                [&]
+                {
+                    d3d12Backend->BindVertexBuffer(
+                        d3d12VertexBuffer,
+                        0u,
+                        static_cast<std::uint32_t>(sizeof(float) * 4u),
+                        0u);
+                },
+                "A stale DirectX 12 vertex buffer survived reinitialization");
             RequireClearColor(
                 *d3d12Backend,
                 ReinitializedWidth,
