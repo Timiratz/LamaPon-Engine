@@ -1,13 +1,22 @@
 #pragma once
 
+#include "LamaPon/Graphics/GraphicsResource.h"
+
 #include <DirectXMath.h>
 
 #include <algorithm>
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 
 namespace LamaPon
 {
+    // Reflection ProbeとBaked GIが共有するcube面の解像度です。
+    // Backend固有rendererを参照せずcache keyと描画入力で共有します。
+    inline constexpr std::uint32_t EnvironmentProbeBakeFaceSize = 128;
+
     struct SkySettings final
     {
         bool enabled{};
@@ -24,6 +33,18 @@ namespace LamaPon
         // 太陽そのものも描かれます。ライトを回すだけで夜明けから
         // 日没まで動きます。末尾に足しています。
         bool sunDriven{};
+    };
+
+    // Sky描画へ渡す解決済みの太陽です。ライトやSceneの設定と
+    // 分け、描画API固有型を含まないフレーム入力として扱います。
+    struct SkySunDescription final
+    {
+        // 太陽へ向かう向き（Directional Lightの進行方向の逆）。
+        DirectX::XMFLOAT3 directionToSun{ 0.0f, 1.0f, 0.0f };
+        // 色×強さ。
+        DirectX::XMFLOAT3 color{ 1.0f, 1.0f, 1.0f };
+        // 角半径（ラジアン）。本物の太陽は0.53度＝0.00465。
+        float angularRadius{ 0.004625f };
     };
 
     // 太陽の高度から決まる空と環境光。sunDrivenのときに使います。
@@ -300,6 +321,15 @@ namespace LamaPon
         float clampTolerance{ 1.0f };
     };
 
+    // TAAへ渡すAPI非依存のフレーム入力です。履歴・深度・前フレーム
+    // 行列はビューごとに異なるため、RenderTargetが自分の状態から
+    // 注入します。Sceneは現在フレームの行列だけを渡します。
+    struct TemporalAntiAliasingInputs final
+    {
+        DirectX::XMFLOAT4X4 inverseViewProjection{};
+        DirectX::XMFLOAT4X4 viewProjection{};
+    };
+
     // SSR（画面空間反射）。濡れた床、磨いた金属、水面に周りの景色を
     // 映します。
     //
@@ -363,6 +393,23 @@ namespace LamaPon
         float scattering{ 0.6f };
     };
 
+    // ボリュメトリックライトへ渡すAPI非依存のフレーム入力です。
+    // depthはRenderTargetが注入し、cascade shadowだけをSceneから
+    // neutral handleで運びます。
+    struct VolumetricLightInputs final
+    {
+        GraphicsViewHandle cascadeShadow;
+        DirectX::XMFLOAT4X4 inverseViewProjection{};
+        DirectX::XMFLOAT3 cameraPosition{};
+        DirectX::XMFLOAT3 lightDirection{};
+        DirectX::XMFLOAT3 lightColor{ 1.0f, 1.0f, 1.0f };
+        std::array<DirectX::XMFLOAT4X4, 4>
+            cascadeViewProjections{};
+        std::uint32_t cascadeCount{};
+        float shadowBias{ 0.002f };
+        float shadowResolution{ 2048.0f };
+    };
+
     // ベイクした間接光（照度ボリューム）。
     //
     // シーンへ3D格子のライトプローブを敷き、格子の各点で周囲の光を
@@ -389,6 +436,44 @@ namespace LamaPon
         // 間接光の強さ（1で焼いたまま）。
         float intensity{ 1.0f };
     };
+
+    inline constexpr std::uint32_t
+        BakedGlobalIlluminationMaximumAxisResolution = 64;
+    inline constexpr std::size_t
+        BakedGlobalIlluminationMaximumProbeCount = 32768;
+    inline constexpr std::size_t
+        BakedGlobalIlluminationCoefficientsPerProbe = 12;
+
+    // JSON復元・CPU payload・GPU uploadが同じ上限を使うための
+    // 共通検査です。不正な形は値を返しません。
+    [[nodiscard]] inline constexpr std::optional<std::size_t>
+        BakedGlobalIlluminationProbeCount(
+            const std::uint32_t resolutionX,
+            const std::uint32_t resolutionY,
+            const std::uint32_t resolutionZ) noexcept
+    {
+        if (resolutionX == 0
+            || resolutionX
+                > BakedGlobalIlluminationMaximumAxisResolution
+            || resolutionY == 0
+            || resolutionY
+                > BakedGlobalIlluminationMaximumAxisResolution
+            || resolutionZ == 0
+            || resolutionZ
+                > BakedGlobalIlluminationMaximumAxisResolution)
+        {
+            return std::nullopt;
+        }
+        const auto count =
+            static_cast<std::uint64_t>(resolutionX)
+            * resolutionY
+            * resolutionZ;
+        if (count > BakedGlobalIlluminationMaximumProbeCount)
+        {
+            return std::nullopt;
+        }
+        return static_cast<std::size_t>(count);
+    }
 
     struct ColorGradingSettings final
     {

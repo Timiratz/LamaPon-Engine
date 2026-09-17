@@ -11,8 +11,6 @@
 #include "LamaPon/Scene/Scene.h"
 #include "LamaPon/Scene/SceneManager.h"
 
-#include <SpriteBatch.h>
-
 #include <algorithm>
 #include <cmath>
 #include <utility>
@@ -276,9 +274,7 @@ namespace LamaPon
     }
 
     void UIButtonComponent::OnRender2D(
-        DirectX::SpriteBatch& spriteBatch,
-        ID3D11ShaderResourceView*
-            whiteTexture)
+        const SpriteDrawContext& sprites)
     {
         using namespace DirectX;
 
@@ -335,23 +331,36 @@ namespace LamaPon
                 ? static_cast<float>(
                     m_texture->height)
                 : 1.0f;
-        spriteBatch.Draw(
-            m_texture
-                ? m_texture->view.Get()
-                : whiteTexture,
-            rect.minimum,
-            nullptr,
-            XMLoadFloat4(
-                &premultiplied),
-            0.0f,
-            {},
-            {
-                size.x / textureWidth,
-                size.y / textureHeight
-            });
+        GraphicsViewHandle textureView;
+        if (m_texture)
+        {
+            const auto resources =
+                m_texture->resources.Acquire();
+            textureView = resources
+                ? resources->shaderResourceView
+                : GraphicsViewHandle{};
+        }
+        SpriteDrawRequest backgroundRequest;
+        backgroundRequest.texture = textureView;
+        backgroundRequest.position = rect.minimum;
+        backgroundRequest.tint = premultiplied;
+        backgroundRequest.scale = {
+            size.x / textureWidth,
+            size.y / textureHeight
+        };
+        static_cast<void>(sprites.Draw(backgroundRequest));
 
         if (m_textTexture)
         {
+            const auto textResources =
+                m_textTexture->resources.Acquire();
+            const auto textTextureView = textResources
+                ? textResources->shaderResourceView
+                : GraphicsViewHandle{};
+            if (!textTextureView)
+            {
+                return;
+            }
             const XMFLOAT2 labelScale{
                 size.x / static_cast<float>(
                     m_textTexture->width),
@@ -359,14 +368,14 @@ namespace LamaPon
                     m_textTexture->height)
             };
             // 文字テクスチャは白で焼いてあるので色はここで掛けます。
-            spriteBatch.Draw(
-                m_textTexture->view.Get(),
-                rect.minimum,
-                nullptr,
-                PremultipliedTextColor(m_textColor),
-                0.0f,
-                {},
-                labelScale);
+            SpriteDrawRequest textRequest;
+            textRequest.texture = textTextureView;
+            textRequest.position = rect.minimum;
+            XMStoreFloat4(
+                &textRequest.tint,
+                PremultipliedTextColor(m_textColor));
+            textRequest.scale = labelScale;
+            static_cast<void>(sprites.Draw(textRequest));
         }
     }
 

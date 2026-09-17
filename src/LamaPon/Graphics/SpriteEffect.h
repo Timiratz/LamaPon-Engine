@@ -1,5 +1,7 @@
 #pragma once
 
+#include "LamaPon/Graphics/SpriteRendering.h"
+
 #include <DirectXMath.h>
 #include <d3d11.h>
 #include <wrl/client.h>
@@ -11,29 +13,6 @@
 namespace LamaPon
 {
     class AssetManager;
-
-    // 画面へ同時に効かせられるLight2Dの数。b1の定数バッファに載せる
-    // ので、CustomParameters（b0・8本しかなく、自作Shaderの持ち物）を
-    // 圧迫しません。
-    inline constexpr std::size_t MaximumSprite2DLights = 16;
-
-    struct Sprite2DLight final
-    {
-        // xy=画面ピクセル座標, z=届く半径, w=強さ。
-        DirectX::XMFLOAT4 positionRadiusIntensity{};
-        // rgb=色, w=予約。
-        DirectX::XMFLOAT4 color{};
-    };
-
-    // 組み込みの2D照明Shader（LamaPonSpriteLit.hlsl）が読む灯り一覧。
-    // 自作Shaderは宣言しなければ何の影響も受けません。
-    struct Sprite2DLighting final
-    {
-        // x=灯数, yzw=予約。
-        DirectX::XMUINT4 counts{};
-        std::array<Sprite2DLight, MaximumSprite2DLights>
-            lights{};
-    };
 
     // SpriteBatch が生成した頂点はそのまま使用し、ピクセル処理だけを
     // プロジェクト側の HLSL に差し替えるためのエフェクトです。

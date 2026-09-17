@@ -217,6 +217,149 @@ int RunTest(const std::string_view suite)
     try
     {
         LamaPon::GraphicsDevice graphics;
+        if (suite == "serialization")
+        {
+            // 焼き込みGIの復元はGPUを初期化せず検証できます。上限内の
+            // 最大形は受理し、不正な形は既存の有効結果を壊しません。
+            LamaPon::Scene bakedGiRestoreScene(graphics);
+            LamaPon::BakedGlobalIlluminationSettings acceptedShape;
+            acceptedShape.resolutionX = 64;
+            acceptedShape.resolutionY = 32;
+            acceptedShape.resolutionZ = 16;
+            std::vector<std::uint16_t> acceptedPayload(
+                LamaPon::BakedGlobalIlluminationMaximumProbeCount
+                    * LamaPon::
+                        BakedGlobalIlluminationCoefficientsPerProbe,
+                0x3c00);
+            bakedGiRestoreScene.RestoreBakedGlobalIllumination(
+                acceptedShape,
+                acceptedPayload);
+            Require(
+                bakedGiRestoreScene.HasBakedGlobalIllumination()
+                    && bakedGiRestoreScene
+                        .BakedGlobalIlluminationBakedShape()
+                        .resolutionX == 64
+                    && bakedGiRestoreScene
+                        .BakedGlobalIlluminationPayload()
+                        == acceptedPayload,
+                "The maximum valid baked GI payload was rejected.");
+
+            auto invalidAxisShape = acceptedShape;
+            invalidAxisShape.resolutionX = 65;
+            invalidAxisShape.resolutionY = 1;
+            invalidAxisShape.resolutionZ = 1;
+            bakedGiRestoreScene.RestoreBakedGlobalIllumination(
+                invalidAxisShape,
+                std::vector<std::uint16_t>(
+                    65 * LamaPon::
+                        BakedGlobalIlluminationCoefficientsPerProbe));
+
+            auto excessiveProbeShape = acceptedShape;
+            excessiveProbeShape.resolutionX = 64;
+            excessiveProbeShape.resolutionY = 27;
+            excessiveProbeShape.resolutionZ = 19;
+            bakedGiRestoreScene.RestoreBakedGlobalIllumination(
+                excessiveProbeShape,
+                std::vector<std::uint16_t>(
+                    64 * 27 * 19 * LamaPon::
+                        BakedGlobalIlluminationCoefficientsPerProbe));
+            Require(
+                bakedGiRestoreScene
+                        .BakedGlobalIlluminationBakedShape()
+                        .resolutionX == 64
+                    && bakedGiRestoreScene
+                        .BakedGlobalIlluminationBakedShape()
+                        .resolutionY == 32
+                    && bakedGiRestoreScene
+                        .BakedGlobalIlluminationPayload()
+                        == acceptedPayload,
+                "Invalid baked GI data replaced a valid payload.");
+
+            // JSON経路でも形をbase64 decode前に拒否します。1560 byte分の
+            // 文字列は旧実装なら65点のpayloadとして受理されていました。
+            LamaPon::Scene emptyScene(graphics);
+            auto invalidBakedGiDocument = nlohmann::json::parse(
+                emptyScene.SerializeToJson());
+            auto& bakedGi =
+                invalidBakedGiDocument["environment"]
+                    ["bakedGlobalIllumination"];
+            bakedGi["bakedResolution"] = { 65, 1, 1 };
+            bakedGi["data"] = std::string(2080, 'A');
+            LamaPon::Scene invalidBakedGiScene(graphics);
+            invalidBakedGiScene.LoadFromJson(
+                invalidBakedGiDocument.dump());
+            Require(
+                !invalidBakedGiScene
+                    .HasBakedGlobalIllumination(),
+                "An invalid baked GI resolution was restored from JSON.");
+
+            // GPU側の所有表現を変更しても、保存形式は従来どおり
+            // baked shapeとfp16 word列をbit単位で維持します。現在の
+            // 編集設定とは独立して復元されなければなりません。
+            LamaPon::Scene patternedBakedGiScene(graphics);
+            LamaPon::BakedGlobalIlluminationSettings currentSettings;
+            currentSettings.enabled = true;
+            currentSettings.center = { 9.0f, 8.0f, 7.0f };
+            currentSettings.size = { 6.0f, 5.0f, 4.0f };
+            currentSettings.resolutionX = 3;
+            currentSettings.resolutionY = 2;
+            currentSettings.resolutionZ = 1;
+            currentSettings.intensity = 0.25f;
+            patternedBakedGiScene
+                .SetBakedGlobalIlluminationSettings(currentSettings);
+
+            LamaPon::BakedGlobalIlluminationSettings bakedShape;
+            bakedShape.enabled = true;
+            bakedShape.center = { -1.0f, -2.0f, -3.0f };
+            bakedShape.size = { 2.0f, 4.0f, 6.0f };
+            bakedShape.resolutionX = 2;
+            bakedShape.resolutionY = 1;
+            bakedShape.resolutionZ = 2;
+            std::vector<std::uint16_t> patternedPayload(
+                4 * LamaPon::
+                    BakedGlobalIlluminationCoefficientsPerProbe);
+            for (std::size_t index{};
+                index < patternedPayload.size();
+                ++index)
+            {
+                patternedPayload[index] = static_cast<std::uint16_t>(
+                    0x1200u + index * 37u);
+            }
+            patternedBakedGiScene.RestoreBakedGlobalIllumination(
+                bakedShape,
+                patternedPayload);
+
+            LamaPon::Scene patternedRoundTripScene(graphics);
+            patternedRoundTripScene.LoadFromJson(
+                patternedBakedGiScene.SerializeToJson());
+            const auto& restoredCurrent =
+                patternedRoundTripScene.BakedGlobalIllumination();
+            const auto& restoredShape =
+                patternedRoundTripScene
+                    .BakedGlobalIlluminationBakedShape();
+            Require(
+                patternedRoundTripScene.HasBakedGlobalIllumination()
+                    && patternedRoundTripScene
+                        .BakedGlobalIlluminationPayload()
+                        == patternedPayload
+                    && restoredCurrent.enabled
+                    && restoredCurrent.center.x == 9.0f
+                    && restoredCurrent.resolutionX == 3
+                    && restoredCurrent.resolutionY == 2
+                    && restoredCurrent.resolutionZ == 1
+                    && NearlyEqual(restoredCurrent.intensity, 0.25f)
+                    && restoredShape.center.x == -1.0f
+                    && restoredShape.center.y == -2.0f
+                    && restoredShape.center.z == -3.0f
+                    && restoredShape.size.x == 2.0f
+                    && restoredShape.size.y == 4.0f
+                    && restoredShape.size.z == 6.0f
+                    && restoredShape.resolutionX == 2
+                    && restoredShape.resolutionY == 1
+                    && restoredShape.resolutionZ == 2,
+                "Baked GI shape or patterned fp16 payload changed during JSON round trip.");
+        }
+
         LamaPon::Scene source(graphics);
         source.SetAmbientLightColor(
             DirectX::XMFLOAT3{ 0.25f, 0.35f, 0.45f });
@@ -3789,6 +3932,16 @@ int RunTest(const std::string_view suite)
 
             const auto pbrJson =
                 pbrScene.SerializeToJson();
+            const auto pbrDocument =
+                nlohmann::json::parse(pbrJson);
+            const auto& serializedSky =
+                pbrDocument.at("environment").at("sky");
+            Require(
+                !serializedSky.contains("texture")
+                    && !serializedSky.contains("specular")
+                    && !serializedSky.contains("irradiance")
+                    && !serializedSky.contains("specularMaximumMip"),
+                "Runtime IBL handles leaked into scene serialization.");
             LamaPon::Scene pbrLoaded(graphics);
             pbrLoaded.LoadFromJson(pbrJson);
             const auto* loadedPbrObject =
@@ -6250,6 +6403,20 @@ int RunTest(const std::string_view suite)
                     front()->Name()
                     == "Async transition target",
             "Asynchronous scene cancellation failed.");
+
+        // Sceneのdestructorは、まだ実行中かもしれないworkerへcancelを
+        // 要求してjoinしてからGraphicsDevice resource leaseを返します。
+        // scopeを即座に抜けてもAssetManagerの借用が残らないことを確認します。
+        {
+            LamaPon::Scene shortLivedScene(graphics);
+            Require(
+                shortLivedScene.Scenes().RequestLoadAsync(
+                    transitionPath),
+                "Short-lived asynchronous scene load did not start.");
+        }
+        Require(
+            graphics.Assets().FileExists(transitionPath),
+            "Destroying a loading Scene invalidated AssetManager access.");
 
         // 追加シーンの読み込みと破棄を検証します。
         const auto additivePath =

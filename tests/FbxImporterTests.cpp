@@ -199,6 +199,11 @@ namespace
                     && primitive.inputLayout
                     && primitive.effect,
                 "FBX GPU resources were not created.");
+            Require(
+                !primitive.cpuVertexData.empty()
+                    && primitive.cpuVertexStride > 0
+                    && !primitive.cpuIndices.empty(),
+                "FBX CPU geometry was not retained.");
         }
 
         // 2回目はディスクキャッシュから復元されること。FBXは添字を
@@ -271,6 +276,14 @@ namespace
                         context.Get(),
                         right.indexBuffer.Get()),
                 "cached FBX index bytes must match");
+            Require(
+                left.cpuVertexData == right.cpuVertexData
+                    && left.cpuVertexStride
+                        == right.cpuVertexStride
+                    && left.cpuIndices == right.cpuIndices
+                    && left.cpuLodIndices
+                        == right.cpuLodIndices,
+                "cached FBX CPU geometry must match");
         }
         // アニメーションも同じ姿勢を出すこと（キーの取り違えを
         // 検出するには、数の一致より姿勢の一致が強い検査です）。

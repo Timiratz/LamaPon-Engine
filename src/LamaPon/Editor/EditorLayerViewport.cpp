@@ -1,5 +1,6 @@
 #include "LamaPon/Editor/EditorLayer.h"
 
+#include "LamaPon/Editor/EditorGuiRenderer.h"
 #include "LamaPon/Editor/EditorLayerShared.h"
 
 #include "LamaPon/Assets/AssetManager.h"
@@ -343,8 +344,8 @@ namespace LamaPon
         size.x = std::max(size.x, 16.0f);
         size.y = std::max(size.y, 16.0f);
 
-        m_sceneRenderTarget.Resize(
-            m_graphics.Device(),
+        m_graphics.ResizeOffscreenTarget(
+            m_sceneRenderTarget,
             std::max(
                 static_cast<std::uint32_t>(
                     std::lround(
@@ -365,10 +366,10 @@ namespace LamaPon
         m_viewportSize = { size.x, size.y };
 
         // ポスト処理でテクスチャが入れ替わっても表示が最終結果を
-        // 指すよう、表示専用SRVを使います。
+        // 指すよう、表示専用のテクスチャ参照を使います。
         ImGui::Image(
-            MakeTextureReference(
-                m_sceneRenderTarget.DisplayShaderResourceView()),
+            m_editorGuiRenderer->DisplayTextureReference(
+                m_sceneRenderTarget),
             size);
         const bool viewportImageHovered = ImGui::IsItemHovered();
         // Asset BrowserからScene Viewへのドロップは、落とした場所へ
@@ -452,8 +453,8 @@ namespace LamaPon
             {
                 const float renderScale =
                     m_graphics.Settings().renderScale;
-                m_cameraPreviewRenderTarget.Resize(
-                    m_graphics.Device(),
+                m_graphics.ResizeOffscreenTarget(
+                    m_cameraPreviewRenderTarget,
                     std::max(
                         static_cast<std::uint32_t>(
                             std::lround(
@@ -490,9 +491,8 @@ namespace LamaPon
 
                 ImGui::SetCursorScreenPos(previewPosition);
                 ImGui::Image(
-                    MakeTextureReference(
-                        m_cameraPreviewRenderTarget.
-                            DisplayShaderResourceView()),
+                    m_editorGuiRenderer->DisplayTextureReference(
+                        m_cameraPreviewRenderTarget),
                     ImVec2{ previewWidth, previewHeight });
                 cameraPreviewHovered = ImGui::IsItemHovered();
                 if (cameraPreviewHovered)
@@ -1157,8 +1157,8 @@ namespace LamaPon
                 1u);
         }
 
-        m_gameRenderTarget.Resize(
-            m_graphics.Device(),
+        m_graphics.ResizeOffscreenTarget(
+            m_gameRenderTarget,
             targetWidth,
             targetHeight);
         m_graphics.SetUIViewportSize(
@@ -1203,8 +1203,8 @@ namespace LamaPon
                 position.y + displayOffset.y
             });
         ImGui::Image(
-            MakeTextureReference(
-                m_gameRenderTarget.DisplayShaderResourceView()),
+            m_editorGuiRenderer->DisplayTextureReference(
+                m_gameRenderTarget),
             displaySize);
         const ImVec2 imageMinimum =
             ImGui::GetItemRectMin();
@@ -2908,8 +2908,7 @@ namespace LamaPon
                 clicked =
                     ImGui::ImageButton(
                         "##Tile",
-                        MakeTextureReference(
-                            texture->view.Get()),
+                        m_editorGuiRenderer->TextureReference(*texture),
                         ImVec2{
                             48.0f,
                             48.0f },

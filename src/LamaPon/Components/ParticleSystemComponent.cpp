@@ -2,26 +2,18 @@
 
 #include "LamaPon/Assets/AssetManager.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
+#include "LamaPon/Graphics/GraphicsRenderServices.h"
 #include "LamaPon/Scene/GameObject.h"
-
-#include <CommonStates.h>
-#include <Effects.h>
-#include <PrimitiveBatch.h>
-#include <VertexTypes.h>
-#include <wrl/client.h>
 
 #include <algorithm>
 #include <cmath>
 #include <numeric>
-#include <stdexcept>
 
 namespace LamaPon
 {
-    struct ParticleSystemComponent::
-        InputLayoutHolder final
+    struct ParticleSystemComponent::RenderData final
     {
-        Microsoft::WRL::ComPtr<
-            ID3D11InputLayout> value;
+        std::vector<ParticleRenderVertex> vertices;
     };
 
     ParticleSystemComponent::
@@ -54,6 +46,9 @@ namespace LamaPon
         SetEndColor(endColor);
         m_particles.reserve(m_maxParticles);
         m_renderOrder.reserve(m_maxParticles);
+        m_renderData = std::make_unique<RenderData>();
+        m_renderData->vertices.reserve(
+            static_cast<std::size_t>(m_maxParticles) * 4);
     }
 
     ParticleSystemComponent::
@@ -78,6 +73,11 @@ namespace LamaPon
             m_maxParticles);
         m_renderOrder.reserve(
             m_maxParticles);
+        if (m_renderData != nullptr)
+        {
+            m_renderData->vertices.reserve(
+                static_cast<std::size_t>(m_maxParticles) * 4);
+        }
     }
 
     void ParticleSystemComponent::
@@ -394,49 +394,6 @@ namespace LamaPon
                     m_auxiliaryTexturePath);
         }
 
-        m_effect =
-            std::make_unique<
-                DirectX::BasicEffect>(
-                    graphics.Device());
-        m_effect->SetVertexColorEnabled(true);
-        m_effect->SetTextureEnabled(true);
-        m_batch =
-            std::make_unique<
-                DirectX::PrimitiveBatch<
-                    DirectX::
-                        VertexPositionColorTexture>>(
-                            graphics.Context(),
-                            AbsoluteMaximumParticles
-                                * 6,
-                            AbsoluteMaximumParticles
-                                * 4);
-        m_inputLayout =
-            std::make_unique<
-                InputLayoutHolder>();
-
-        const void* shaderByteCode{};
-        std::size_t byteCodeLength{};
-        m_effect->GetVertexShaderBytecode(
-            &shaderByteCode,
-            &byteCodeLength);
-        const HRESULT result =
-            graphics.Device()->
-                CreateInputLayout(
-                    DirectX::
-                        VertexPositionColorTexture::
-                            InputElements,
-                    DirectX::
-                        VertexPositionColorTexture::
-                            InputElementCount,
-                    shaderByteCode,
-                    byteCodeLength,
-                    m_inputLayout->value.
-                        ReleaseAndGetAddressOf());
-        if (FAILED(result))
-        {
-            throw std::runtime_error(
-                "Failed to create Particle System input layout.");
-        }
         m_playing = m_playOnStart;
     }
 
@@ -676,9 +633,7 @@ namespace LamaPon
 
         if (m_particles.empty()
             || m_graphics == nullptr
-            || !m_effect
-            || !m_batch
-            || !m_inputLayout)
+            || m_renderData == nullptr)
         {
             return;
         }
@@ -734,77 +689,8 @@ namespace LamaPon
                 });
         }
 
-        auto& states =
-            m_graphics->States();
-        auto* context =
-            m_graphics->Context();
-        const float blendFactor[]{
-            0.0f,
-            0.0f,
-            0.0f,
-            0.0f
-        };
-        context->OMSetBlendState(
-            m_additive
-                ? states.Additive()
-                : states.NonPremultiplied(),
-            blendFactor,
-            0xffffffffu);
-        context->OMSetDepthStencilState(
-            states.DepthRead(),
-            0);
-        context->RSSetState(
-            states.CullNone());
-        ID3D11SamplerState* samplers[]{
-            states.LinearWrap()
-        };
-        context->PSSetSamplers(
-            0,
-            1,
-            samplers);
-
-        m_effect->SetWorld(
-            XMMatrixIdentity());
-        m_effect->SetView(view);
-        m_effect->SetProjection(
-            projection);
-        m_effect->SetTexture(
-            m_texture
-                ? m_texture->view.Get()
-                : m_graphics->
-                    WhiteTexture());
-        m_effect->Apply(context);
-        context->IASetInputLayout(
-            m_inputLayout->value.Get());
-
-        bool customShaderApplied = false;
-        if (!m_shaderPath.empty())
-        {
-            customShaderApplied =
-                m_graphics->ApplyCustomPixelShader(
-                    m_shaderPath,
-                    m_customParameters,
-                    &m_shaderGeneration,
-                    &m_shaderError);
-            if (customShaderApplied)
-            {
-                ID3D11ShaderResourceView* resources[]{
-                    m_texture
-                        ? m_texture->view.Get()
-                        : m_graphics->WhiteTexture(),
-                    m_auxiliaryTexture
-                        ? m_auxiliaryTexture->view.Get()
-                        : m_graphics->WhiteTexture()
-                };
-                context->PSSetShaderResources(
-                    0,
-                    static_cast<UINT>(
-                        std::size(resources)),
-                    resources);
-            }
-        }
-
-        m_batch->Begin();
+        auto& renderVertices = m_renderData->vertices;
+        renderVertices.clear();
         for (const std::size_t particleIndex :
             m_renderOrder)
         {
@@ -916,47 +802,54 @@ namespace LamaPon
                         center,
                         right),
                     up));
-            m_batch->DrawQuad(
-                VertexPositionColorTexture{
-                    corners[0],
-                    color,
-                    { 0.0f, 1.0f } },
-                VertexPositionColorTexture{
-                    corners[1],
-                    color,
-                    { 1.0f, 1.0f } },
-                VertexPositionColorTexture{
-                    corners[2],
-                    color,
-                    { 1.0f, 0.0f } },
-                VertexPositionColorTexture{
-                    corners[3],
-                    color,
-                    { 0.0f, 0.0f } });
-        }
-        m_batch->End();
-
-        if (customShaderApplied)
-        {
-            ID3D11ShaderResourceView* resources[]{
-                nullptr,
-                nullptr
-            };
-            context->PSSetShaderResources(
-                0,
-                static_cast<UINT>(
-                    std::size(resources)),
-                resources);
+            renderVertices.push_back({
+                corners[0],
+                color,
+                { 0.0f, 1.0f }
+            });
+            renderVertices.push_back({
+                corners[1],
+                color,
+                { 1.0f, 1.0f }
+            });
+            renderVertices.push_back({
+                corners[2],
+                color,
+                { 1.0f, 0.0f }
+            });
+            renderVertices.push_back({
+                corners[3],
+                color,
+                { 0.0f, 0.0f }
+            });
         }
 
-        context->OMSetBlendState(
-            states.Opaque(),
-            blendFactor,
-            0xffffffffu);
-        context->OMSetDepthStencilState(
-            states.DepthDefault(),
-            0);
-        context->RSSetState(
-            states.CullCounterClockwise());
+        const auto textureResources = m_texture
+            ? m_texture->resources.Acquire()
+            : nullptr;
+        const auto auxiliaryTextureResources =
+            m_auxiliaryTexture
+                ? m_auxiliaryTexture->resources.Acquire()
+                : nullptr;
+        ParticleDrawRequest request;
+        request.vertices =
+            std::span<const ParticleRenderVertex>{ renderVertices };
+        XMStoreFloat4x4(&request.view, view);
+        XMStoreFloat4x4(&request.projection, projection);
+        request.texture = textureResources
+            ? textureResources->shaderResourceView
+            : GraphicsViewHandle{};
+        request.auxiliaryTexture = auxiliaryTextureResources
+            ? auxiliaryTextureResources->shaderResourceView
+            : GraphicsViewHandle{};
+        request.fallbackTexture =
+            m_graphics->WhiteTextureViewHandle();
+        request.additive = m_additive;
+        static_cast<void>(m_graphics->DrawParticles(
+            request,
+            m_shaderPath,
+            m_customParameters,
+            &m_shaderGeneration,
+            &m_shaderError));
     }
 }

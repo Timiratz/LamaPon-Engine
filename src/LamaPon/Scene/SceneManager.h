@@ -68,6 +68,7 @@ namespace LamaPon
         SceneManager(
             Scene& scene,
             GraphicsDevice& graphics) noexcept;
+        ~SceneManager() noexcept;
 
         [[nodiscard]] bool RequestLoad(
             std::filesystem::path scenePath);

@@ -939,6 +939,87 @@ namespace LamaPon
     // プロジェクト設定「グラフィック」カテゴリー。
     void EditorLayer::DrawProjectSettingsGraphicsSection()
     {
+        ImGui::SeparatorText("描画API");
+        struct RenderingApiOption final
+        {
+            RenderingApi api;
+            const char* label;
+        };
+        static constexpr std::array<
+            RenderingApiOption,
+            3> renderingApiOptions{ {
+            { RenderingApi::Auto, "Auto" },
+            { RenderingApi::DirectX11, "DirectX 11" },
+            { RenderingApi::DirectX12Experimental,
+                "DirectX 12 Experimental" }
+        } };
+        const auto currentRenderingApi =
+            m_projectGraphicsDraft.renderingApi;
+        const char* currentRenderingApiLabel = "DirectX 11";
+        for (const auto& option : renderingApiOptions)
+        {
+            if (option.api == currentRenderingApi)
+            {
+                currentRenderingApiLabel = option.label;
+            }
+        }
+        if (ImGui::BeginCombo(
+                "Rendering API",
+                currentRenderingApiLabel))
+        {
+            for (const auto& option : renderingApiOptions)
+            {
+                const bool selected =
+                    option.api == currentRenderingApi;
+                if (ImGui::Selectable(
+                        option.label,
+                        selected))
+                {
+                    m_projectGraphicsDraft.renderingApi =
+                        option.api;
+                }
+                if (selected)
+                {
+                    ImGui::SetItemDefaultFocus();
+                }
+            }
+            ImGui::EndCombo();
+        }
+
+        const auto drawRenderingApiWarning =
+            [](const char* message)
+        {
+            ImGui::PushStyleColor(
+                ImGuiCol_Text,
+                ImVec4{ 1.0f, 0.65f, 0.25f, 1.0f });
+            ImGui::TextWrapped("%s", message);
+            ImGui::PopStyleColor();
+        };
+        if (m_projectGraphicsDraft.renderingApi
+            != m_graphics.StartupRenderingApi())
+        {
+            drawRenderingApiWarning(
+                "描画APIの変更は再起動後に反映されます。"
+                "エディターまたはゲームを再起動してください。");
+        }
+        if (m_projectGraphicsDraft.renderingApi
+            == RenderingApi::DirectX12Experimental)
+        {
+            drawRenderingApiWarning(
+                "DirectX 12は実験的な設定です。"
+                "主要機能は対応済みですが、GPUやドライバーによって"
+                "表示差または動作しない機能が残る可能性があります。");
+            if (m_graphics.StartupRenderingApi()
+                    == RenderingApi::DirectX12Experimental
+                && m_graphics.ActiveRenderingApi()
+                    != RenderingApi::DirectX12Experimental)
+            {
+                drawRenderingApiWarning(
+                    "DirectX 12を初期化できなかったため、このセッションは"
+                    "DirectX 11へフォールバックして起動しています。");
+            }
+        }
+
         ImGui::SeparatorText("グラフィック品質");
         constexpr std::array qualityPresets{
             GraphicsQualityPreset::Low,
@@ -976,11 +1057,14 @@ namespace LamaPon
                         const auto targetFrameRate =
                             m_projectGraphicsDraft
                                 .targetFrameRate;
-                        // 描画方式はプリセットの範囲外の選択
-                        // （絵の作り方そのもの）なので引き継ぎます。
+                        // 描画方式と描画APIはプリセットの
+                        // 範囲外の選択なので引き継ぎます。
                         const auto renderingPath =
                             m_projectGraphicsDraft
                                 .renderingPath;
+                        const auto renderingApi =
+                            m_projectGraphicsDraft
+                                .renderingApi;
                         m_projectGraphicsDraft =
                             GraphicsSettingsForPreset(
                                 preset);
@@ -990,6 +1074,9 @@ namespace LamaPon
                         m_projectGraphicsDraft
                             .renderingPath =
                                 renderingPath;
+                        m_projectGraphicsDraft
+                            .renderingApi =
+                                renderingApi;
                     }
                 }
                 if (selected)

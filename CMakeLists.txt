@@ -127,6 +127,7 @@ add_library(DearImGui STATIC
     third_party/imgui/imgui_tables.cpp
     third_party/imgui/imgui_widgets.cpp
     third_party/imgui/backends/imgui_impl_dx11.cpp
+    third_party/imgui/backends/imgui_impl_dx12.cpp
     third_party/imgui/backends/imgui_impl_win32.cpp
     # UIを記録するテストエンジンフックはimgui.objから参照されます。
     # LamaPonHubでもリンクできるよう、実装はこのターゲットに置きます。
@@ -150,7 +151,7 @@ target_compile_options(DearImGui PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/W3>
     $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
 )
-target_link_libraries(DearImGui PRIVATE d3d11)
+target_link_libraries(DearImGui PRIVATE d3d11 d3d12 dxgi)
 
 add_library(ImGuizmo STATIC
     third_party/ImGuizmo/src/ImGuizmo.cpp
@@ -179,6 +180,12 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Assets/AssetPacker.h
     src/LamaPon/Assets/DataAsset.cpp
     src/LamaPon/Assets/DataAsset.h
+    src/LamaPon/Assets/CmoImporter.cpp
+    src/LamaPon/Assets/CmoImporter.h
+    src/LamaPon/Assets/SdkmeshImporter.cpp
+    src/LamaPon/Assets/SdkmeshImporter.h
+    src/LamaPon/Assets/VboImporter.cpp
+    src/LamaPon/Assets/VboImporter.h
     src/LamaPon/Assets/GltfImporter.cpp
     src/LamaPon/Assets/GltfImporter.h
     src/LamaPon/Assets/AssetManager.cpp
@@ -294,13 +301,67 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Online/WindowsOnlinePlatform.h
     src/LamaPon/Graphics/GpuProfiler.cpp
     src/LamaPon/Graphics/GpuProfiler.h
+    src/LamaPon/Graphics/GraphicsBackend.cpp
+    src/LamaPon/Graphics/GraphicsBackend.h
+    src/LamaPon/Graphics/GraphicsResource.h
+    src/LamaPon/Graphics/PrefilteredEnvironment.h
     src/LamaPon/Graphics/GraphicsDevice.cpp
     src/LamaPon/Graphics/GraphicsDevice.h
+    src/LamaPon/Graphics/GraphicsDeviceApiResources.h
+    src/LamaPon/Graphics/GraphicsDeviceD3D12Resources.cpp
+    src/LamaPon/Graphics/GraphicsDeviceD3D12Resources.h
+    src/LamaPon/Graphics/GraphicsDeviceD3D11Resources.h
+    src/LamaPon/Graphics/GraphicsRenderServices.h
+    src/LamaPon/Graphics/GraphicsDeviceShaderState.h
+    src/LamaPon/Graphics/GraphicsDeviceShaderEffectsD3D11.cpp
+    src/LamaPon/Graphics/GraphicsDeviceBackendOps.cpp
+    src/LamaPon/Graphics/GraphicsDeviceBuiltInEffectsD3D11.cpp
+    src/LamaPon/Graphics/GraphicsDeviceComposition.cpp
+    src/LamaPon/Graphics/GraphicsDeviceD3D11.cpp
+    src/LamaPon/Graphics/GraphicsDeviceD3D11Access.h
+    src/LamaPon/Graphics/GraphicsDevicePostProcessD3D11.cpp
+    src/LamaPon/Graphics/GraphicsDeviceParticleRendering.cpp
+    src/LamaPon/Graphics/GraphicsDeviceSpriteFrontend.cpp
+    src/LamaPon/Graphics/GraphicsDeviceSpriteD3D11.cpp
+    src/LamaPon/Graphics/GraphicsDeviceState.cpp
+    src/LamaPon/Graphics/GraphicsDeviceState.h
+    src/LamaPon/Graphics/GraphicsDeviceResourceLease.cpp
+    src/LamaPon/Graphics/GraphicsDeviceResourceLease.h
+    src/LamaPon/Graphics/GraphicsDeviceResourceLeaseState.h
+    src/LamaPon/Graphics/D3D11Backend.cpp
+    src/LamaPon/Graphics/D3D11Backend.h
+    src/LamaPon/Graphics/D3D12Backend.cpp
+    src/LamaPon/Graphics/D3D12Backend.h
+    src/LamaPon/Graphics/D3D12DebugDrawingBackend.cpp
+    src/LamaPon/Graphics/D3D12DebugDrawingBackend.h
+    src/LamaPon/Graphics/D3D12GpuProfilerBackend.cpp
+    src/LamaPon/Graphics/D3D12GpuProfilerBackend.h
+    src/LamaPon/Graphics/D3D12RenderServices.cpp
+    src/LamaPon/Graphics/D3D12RenderServices.h
+    src/LamaPon/Graphics/D3D12SpriteRenderer.cpp
+    src/LamaPon/Graphics/D3D12SpriteRenderer.h
+    src/LamaPon/Graphics/D3D12ComputeEffectRenderer.cpp
+    src/LamaPon/Graphics/D3D12ComputeEffectRenderer.h
+    src/LamaPon/Graphics/D3D12EnvironmentPrefilter.cpp
+    src/LamaPon/Graphics/D3D12EnvironmentPrefilter.h
+    src/LamaPon/Graphics/D3D12MaterialShaderRenderer.cpp
+    src/LamaPon/Graphics/D3D12MaterialShaderRenderer.h
+    src/LamaPon/Graphics/MaterialShaderDrawRequest.h
+    src/LamaPon/Graphics/DxgiTextureLayout.h
+    src/LamaPon/Graphics/D3D11ClusteredLightsState.cpp
+    src/LamaPon/Graphics/D3D11ClusteredLightsState.h
+    src/LamaPon/Graphics/D3D11RenderServices.cpp
+    src/LamaPon/Graphics/D3D11RenderTargetState.cpp
+    src/LamaPon/Graphics/D3D11RenderTargetState.h
+    src/LamaPon/Graphics/D3D11ShadowMapState.cpp
+    src/LamaPon/Graphics/D3D11ShadowMapState.h
+    src/LamaPon/Graphics/D3D11GpuProfilerBackend.cpp
     src/LamaPon/Graphics/Lighting.cpp
     src/LamaPon/Graphics/Lighting.h
     src/LamaPon/Graphics/LitEffect.cpp
     src/LamaPon/Graphics/LitEffect.h
     src/LamaPon/Graphics/LitMaterial.h
+    src/LamaPon/Graphics/LitTextureRequest.h
     src/LamaPon/Graphics/LitMaterialAsset.cpp
     src/LamaPon/Graphics/LitMaterialAsset.h
     src/LamaPon/Graphics/PbrTextures.h
@@ -320,6 +381,7 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Components/RenderCullingComponent.h
     src/LamaPon/Graphics/ClusteredLights.cpp
     src/LamaPon/Graphics/ClusteredLights.h
+    src/LamaPon/Graphics/ClusteredLightsBackendState.h
     src/LamaPon/Graphics/ComputeEffect.cpp
     src/LamaPon/Graphics/ComputeEffect.h
     src/LamaPon/Graphics/TemporalJitter.cpp
@@ -329,12 +391,15 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Graphics/ReflectionProbeEnvironment.h
     src/LamaPon/Graphics/RenderTarget.cpp
     src/LamaPon/Graphics/RenderTarget.h
+    src/LamaPon/Graphics/RenderTargetBackendState.h
+    src/LamaPon/Graphics/AutoExposureAdaptation.h
     src/LamaPon/Graphics/ScreenEffect.cpp
     src/LamaPon/Graphics/ScreenEffect.h
     src/LamaPon/Graphics/ShaderRenderState.cpp
     src/LamaPon/Graphics/ShaderRenderState.h
     src/LamaPon/Graphics/ShadowMap.cpp
     src/LamaPon/Graphics/ShadowMap.h
+    src/LamaPon/Graphics/ShadowMapBackendState.h
     src/LamaPon/Graphics/ShaderCompiler.cpp
     src/LamaPon/Graphics/ShaderCompiler.h
     src/LamaPon/Graphics/ShaderDiagnostics.cpp
@@ -343,6 +408,8 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Graphics/ShaderVariants.h
     src/LamaPon/Graphics/SpriteEffect.cpp
     src/LamaPon/Graphics/SpriteEffect.h
+    src/LamaPon/Graphics/SpriteRendering.cpp
+    src/LamaPon/Graphics/SpriteRendering.h
     src/LamaPon/Graphics/SkeletalModel.cpp
     src/LamaPon/Graphics/SkeletalModel.h
     src/LamaPon/Graphics/TextLayout.h
@@ -456,6 +523,20 @@ set(LAMAPON_EDITOR_SOURCES
     src/LamaPon/Editor/Editor.h
     src/LamaPon/Editor/EditorExtensionRegistry.cpp
     src/LamaPon/Editor/EditorExtensionRegistry.h
+    src/LamaPon/Editor/EditorGuiRenderer.cpp
+    src/LamaPon/Editor/EditorGuiRenderer.h
+    src/LamaPon/Editor/D3D11EditorGuiRenderer.cpp
+    src/LamaPon/Editor/D3D11EditorGuiRenderer.h
+    src/LamaPon/Editor/D3D12EditorGuiRenderer.cpp
+    src/LamaPon/Editor/D3D12EditorGuiRenderer.h
+    src/LamaPon/Graphics/GraphicsDeviceD3D12Access.cpp
+    src/LamaPon/Graphics/GraphicsDeviceD3D12Access.h
+    src/LamaPon/Editor/EditorModelPreviewRenderer.cpp
+    src/LamaPon/Editor/EditorModelPreviewRenderer.h
+    src/LamaPon/Editor/D3D11EditorModelPreviewRenderer.cpp
+    src/LamaPon/Editor/D3D11EditorModelPreviewRenderer.h
+    src/LamaPon/Editor/D3D12EditorModelPreviewRenderer.cpp
+    src/LamaPon/Editor/D3D12EditorModelPreviewRenderer.h
     src/LamaPon/Editor/EditorLayer.cpp
     src/LamaPon/Editor/EditorLayer.h
     src/LamaPon/Editor/PersistencePanelState.h
@@ -498,6 +579,17 @@ add_library(LamaPonRuntime SHARED
 )
 add_library(LamaPon::Runtime ALIAS LamaPonRuntime)
 add_library(LamaPon ALIAS LamaPonRuntime)
+
+# MSVCはC++ memberのaccess指定をdecorated nameに含めます。
+# 旧public D3D11 facadeをprivate化しても直前APIのGame Moduleが
+# LoadLibrary後のAPI不一致案内へ到達できるよう、対応環境の
+# MSVC x64でのみ旧public名をprivate shimへaliasします。
+if(MSVC
+   AND CMAKE_CXX_COMPILER_ARCHITECTURE_ID STREQUAL "x64")
+    target_sources(LamaPonRuntime PRIVATE
+        src/LamaPon/Graphics/GraphicsDeviceLegacyExports.def
+    )
+endif()
 
 set_target_properties(LamaPonRuntime PROPERTIES
     WINDOWS_EXPORT_ALL_SYMBOLS ON
@@ -543,6 +635,7 @@ target_link_libraries(LamaPonRuntime
         crypt32
         dbghelp
         d3d11
+        d3d12
         d3dcompiler
         dxgi
         dxguid
@@ -914,7 +1007,23 @@ if(BUILD_TESTING)
         $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
     add_test(NAME EditorExtensionRegistry
         COMMAND LamaPonEditorExtensionRegistryTests)
-    foreach(test_name IN ITEMS RuntimeServices RenderSpatialIndex)
+    add_executable(LamaPonEditorGuiRendererTests
+        tests/EditorGuiRendererTests.cpp)
+    target_link_libraries(LamaPonEditorGuiRendererTests
+        PRIVATE LamaPonEditor DearImGui)
+    target_compile_definitions(LamaPonEditorGuiRendererTests PRIVATE
+        LAMAPON_TEST_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets"
+        LAMAPON_TEST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+    target_compile_options(LamaPonEditorGuiRendererTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
+    add_test(NAME EditorGuiRendererWarp
+        COMMAND LamaPonEditorGuiRendererTests)
+    set_tests_properties(EditorGuiRendererWarp PROPERTIES
+        LABELS "editor;graphics"
+        TIMEOUT 60)
+    foreach(test_name IN ITEMS RuntimeServices RenderSpatialIndex GraphicsBackendSelection GraphicsResource)
         add_executable(LamaPon${test_name}Tests tests/${test_name}Tests.cpp)
         target_link_libraries(LamaPon${test_name}Tests PRIVATE LamaPonRuntime)
         target_compile_options(LamaPon${test_name}Tests PRIVATE
@@ -923,6 +1032,24 @@ if(BUILD_TESTING)
             $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
         add_test(NAME ${test_name}Isolation COMMAND LamaPon${test_name}Tests)
     endforeach()
+    set_tests_properties(GraphicsBackendSelectionIsolation PROPERTIES
+        LABELS "graphics"
+        TIMEOUT 60)
+    # 同じSprite passをD3D11とD3D12のWARPで描き、画素とdebug layerを比べます。
+    add_executable(LamaPonD3D12SpriteRenderingTests
+        tests/D3D12SpriteRenderingTests.cpp)
+    target_link_libraries(LamaPonD3D12SpriteRenderingTests PRIVATE LamaPonRuntime)
+    target_compile_definitions(LamaPonD3D12SpriteRenderingTests PRIVATE
+        LAMAPON_TEST_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets")
+    target_compile_options(LamaPonD3D12SpriteRenderingTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
+    add_test(NAME D3D12SpriteRenderingWarp
+        COMMAND LamaPonD3D12SpriteRenderingTests)
+    set_tests_properties(D3D12SpriteRenderingWarp PROPERTIES
+        LABELS "graphics"
+        TIMEOUT 120)
     add_executable(LamaPonAudioOggProbe
         tests/AudioOggProbe.cpp
     )
@@ -2042,6 +2169,29 @@ install(
         PATTERN "Crypto.h" EXCLUDE
         PATTERN "AssetPacker.h" EXCLUDE
         PATTERN "AssetArchive.h" EXCLUDE
+        PATTERN "GraphicsDeviceApiResources.h" EXCLUDE
+        PATTERN "GraphicsDeviceD3D11Access.h" EXCLUDE
+        PATTERN "GraphicsDeviceD3D11Resources.h" EXCLUDE
+        PATTERN "GraphicsDeviceD3D12Resources.h" EXCLUDE
+        PATTERN "D3D11ClusteredLightsState.h" EXCLUDE
+        PATTERN "D3D11RenderTargetState.h" EXCLUDE
+        PATTERN "D3D11ShadowMapState.h" EXCLUDE
+        PATTERN "D3D12Backend.h" EXCLUDE
+        PATTERN "D3D12SpriteRenderer.h" EXCLUDE
+        PATTERN "D3D12ComputeEffectRenderer.h" EXCLUDE
+        PATTERN "D3D12EnvironmentPrefilter.h" EXCLUDE
+        PATTERN "D3D12MaterialShaderRenderer.h" EXCLUDE
+        PATTERN "MaterialShaderDrawRequest.h" EXCLUDE
+        PATTERN "D3D12RenderServices.h" EXCLUDE
+        PATTERN "DxgiTextureLayout.h" EXCLUDE
+        PATTERN "GraphicsRenderServices.h" EXCLUDE
+        PATTERN "GraphicsDeviceResourceLeaseState.h" EXCLUDE
+        PATTERN "GraphicsDeviceShaderState.h" EXCLUDE
+        PATTERN "GraphicsDeviceState.h" EXCLUDE
+        PATTERN "RenderTargetBackendState.h" EXCLUDE
+        PATTERN "AutoExposureAdaptation.h" EXCLUDE
+        PATTERN "ClusteredLightsBackendState.h" EXCLUDE
+        PATTERN "ShadowMapBackendState.h" EXCLUDE
         PATTERN "DiscordAuth.h" EXCLUDE
         PATTERN "CloudSave.h" EXCLUDE
         PATTERN "CloudSaveClient.h" EXCLUDE

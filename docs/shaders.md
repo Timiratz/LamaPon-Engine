@@ -86,6 +86,19 @@ color.rgb = lerp(color.rgb,
 自由枠が`t7`〜`t10`で途切れて`t11`からエンジンに戻るのは、自由枠が公開済みの取り決めだからです。
 エンジンの追加分を`t7`以降へ詰めると、既存の自作Shaderが**別のテクスチャを黙って読む**ことになるため、番号の連続性より互換性を取っています。
 
+### DirectX 12 Experimentalでの対応
+
+DirectX 12 Experimentalで書き出したゲームでは、Mesh RendererのMaterial custom shaderを上の表と同じ`b0`〜`b3`、`t0`〜`t25`、`s0`／`s1`で描きます。
+glTF／GLB／FBXのModel Rendererは、DirectX 11と同じくDirectXTK SkinnedEffectと同じ計算のエンジン内蔵頂点シェーダーで骨を変形し、`PSSkinnedMain`で描きます。
+`VSMain`／`PSMain`／`GSMain`、`LAMAPON_RENDER_STATE`、keyword（`#pragma multi_compile`）、影などの深度パス、ホットリロード、compile失敗時のマゼンタ表示はDirectX 11と同じです。
+SkyのcubemapによるIBL（`t3`の事前畳み込み済みスペキュラ、`t6`の放射照度、LightingBufferの`EnvironmentParameters`）、範囲に入ったリフレクションプローブ（`t3`／`t6`の差し替え、混ぜる2個目の`t19`／`t20`、`ReflectionBoxCenter`などのボックス射影と`ReflectionBlendParameters`）、Forward+のクラスタライト（`t16`〜`t18`とLightingBufferの`ClusteredParameters`など）、ベイクした間接光（`t23`〜`t25`とLightingBufferの`BakedGiVolumeMinimum`など）はDirectX 11と同じく入ります。
+CMO／SDKMESH／VBOのModel Rendererは、DirectX 11と同じくMaterial上書き中だけ`VSMain`／`PSMain`で描き、DirectXTKのModelMeshと同じ既定の描画状態へShaderの宣言を重ねます。
+Mesh RendererのPlane／Cubeでは`HSMain`／`DSMain`のテセレーションもDirectX 11と同じ四角パッチで描き、パッチへ分けられない形はDirectX 11と同じくマゼンタの代替表示になります。
+CMO／SDKMESH／VBOでは、`VSOutline`／`PSOutline`の輪郭と`PSOccluded`の遮蔽表示もDirectX 11と同じ描画状態と順番で重ねます。
+glTF／GLB／FBXでは、`VSSkinnedOutline`／`PSOutline`の輪郭と`PSSkinnedOccluded`の遮蔽表示も骨パレットを反映して重ねます。`PSSkinnedOccluded`が無い既存Shaderは`PSOccluded`へフォールバックします。
+Mesh Rendererで`VSInstancedMain`を持つShaderは、DirectX 11と同じく同じ形状・Material（色を含む）のRendererを1回にまとめ、slot 1の`INSTANCE_TRANSFORM0`〜`INSTANCE_TRANSFORM3`（world行列の各行）と`INSTANCE_COLOR0`で描きます。まとめた描画では`World`は単位行列で、Material・光源・リフレクションプローブは代表のRendererのものです。
+組み込みLitのMesh Rendererと、アニメーションしないglTF／GLB／FBXのModel Rendererも、DirectX 11と同じくまとめて描きます。
+
 ### SSAOを受け取る
 
 SSAO（[グラフィックス](graphics.md#ssao遮蔽による陰り)）は、ライティングの前に用意された遮蔽テクスチャを**Shader側が読んで環境光へ掛ける**方式です。
@@ -348,7 +361,7 @@ float4 PSMain(
 ```
 
 - **引数の並びは`COLOR0` → `TEXCOORD0` → `SV_Position`の順にしてください。**
-  差し替えているのはピクセルシェーダーだけで、頂点シェーダーはSpriteBatchのものがこの順で出力します。
+  差し替えているのはピクセルシェーダーだけで、組み込みSprite Backendの頂点シェーダーはこの順で出力します。
   ピクセルシェーダーの引数は宣言順に入力レジスタへ割り当てられるため、`SV_Position`を先頭に書くと**1本ずつずれます**（`color`にUVが入り、`uv`は未定義になる）。
   **エラーも警告も出ず、値だけが静かに壊れます。** 「なぜか色が変」「UVが効かない」ときは、まずこの並びを確認してください。
 - スプライトでは`CustomParameters[5]`（tint）、`[6]`（描画矩形: left,
@@ -358,6 +371,7 @@ float4 PSMain(
 - Particle SystemはInspectorで**補助テクスチャ**を1枚割り当てられ、
   `t1`から読めます（未設定時は白）。
   ノイズやマスクに便利です。
+- DirectX 12 Experimentalで書き出したゲームでも、Particle Systemの`PSMain`はDirectX 11と同じ`t0`／`t1`、`b0`、`s0`（線形・繰り返し）で描き、compileに失敗したShaderはマゼンタで表示します。
 - Shaderパスとパラメーターはシーンへ保存され、アセットの改名・移動にも
   参照が追従します。
 

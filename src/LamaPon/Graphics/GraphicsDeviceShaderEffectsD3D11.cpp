@@ -1,0 +1,2585 @@
+#include "LamaPon/Graphics/GraphicsDevice.h"
+#include "LamaPon/Graphics/GraphicsDeviceState.h"
+
+#include "LamaPon/Assets/AssetManager.h"
+#include "LamaPon/Core/PathUtils.h"
+#include "LamaPon/Graphics/ComputeEffect.h"
+#include "LamaPon/Graphics/ClusteredLights.h"
+#include "LamaPon/Graphics/D3D11RenderTargetState.h"
+#include "LamaPon/Graphics/D3D12ComputeEffectRenderer.h"
+#include "LamaPon/Graphics/D3D12RenderServices.h"
+#include "LamaPon/Graphics/D3D12SpriteRenderer.h"
+#include "LamaPon/Graphics/GraphicsDeviceD3D11Resources.h"
+#include "LamaPon/Graphics/GraphicsDeviceD3D12Resources.h"
+#include "LamaPon/Graphics/GraphicsDeviceD3D11Access.h"
+#include "LamaPon/Graphics/GraphicsDeviceShaderState.h"
+#include "LamaPon/Graphics/GraphicsRenderServices.h"
+#include "LamaPon/Graphics/LitEffect.h"
+#include "LamaPon/Graphics/MaterialShaderDrawRequest.h"
+#include "LamaPon/Graphics/LitTextureRequest.h"
+#include "LamaPon/Graphics/RenderTarget.h"
+#include "LamaPon/Graphics/ScreenEffect.h"
+#include "LamaPon/Graphics/ShaderCompiler.h"
+#include "LamaPon/Graphics/ShaderDiagnostics.h"
+#include "LamaPon/Graphics/ShaderVariants.h"
+#include "LamaPon/Graphics/SpriteEffect.h"
+
+#include <CommonStates.h>
+#include <SpriteBatch.h>
+
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cmath>
+#include <exception>
+#include <filesystem>
+#include <future>
+#include <limits>
+#include <memory>
+#include <string>
+#include <string_view>
+#include <utility>
+
+namespace
+{
+    // コンパイル失敗時にソースを読み、原因に対応する診断を追加します。
+    [[nodiscard]] std::string DescribeShaderFailure(
+        LamaPon::AssetManager& assets,
+        const std::filesystem::path& shaderPath,
+        const char* compilerMessage,
+        const LamaPon::ShaderUsage usage)
+    {
+        std::string source;
+        try
+        {
+            const auto bytes =
+                assets.ReadFileBytes(shaderPath);
+            source.assign(
+                reinterpret_cast<const char*>(bytes.data()),
+                bytes.size());
+        }
+        catch (const std::exception&)
+        {
+            // 読めなくても説明は返せます（includeの取りこぼしなど、
+            // ソースを見なくても分かるものがあるため）。
+        }
+        return LamaPon::ExplainShaderError(
+            compilerMessage != nullptr ? compilerMessage : "",
+            source,
+            usage);
+    }
+
+    // D3D11のMaterialShaderと同じく、宣言に無いkeywordを落とした
+    // 「パス?キーワード」をcache keyにします。
+    [[nodiscard]] LamaPon::Detail::MaterialShaderSource
+        MakeMaterialShaderSource(
+            const LamaPon::GraphicsDevice& graphics,
+            const std::filesystem::path& shaderPath,
+            const LamaPon::ShaderKeywordSet& keywords)
+    {
+        LamaPon::Detail::MaterialShaderSource source;
+        source.path =
+            graphics.Assets().ResolvePath(shaderPath).lexically_normal();
+        const auto normalized = LamaPon::NormalizeKeywords(
+            graphics.ShaderVariantsFor(source.path),
+            keywords);
+        const auto variantKey = normalized.Key();
+        source.cacheKey = variantKey.empty()
+            ? source.path
+            : std::filesystem::path(
+                source.path.wstring()
+                + L"?"
+                + LamaPon::Utf8ToWide(variantKey));
+        source.keywords = normalized.Keywords();
+        auto* const assets = &graphics.Assets();
+        source.describeFailure =
+            [assets, path = source.path](const char* const message)
+            {
+                return DescribeShaderFailure(
+                    *assets,
+                    path,
+                    message,
+                    LamaPon::ShaderUsage::Material);
+            };
+        return source;
+    }
+
+    [[nodiscard]] LamaPon::Detail::D3D12MaterialShaderServices*
+        TryD3D12MaterialShaderServices(
+            LamaPon::Detail::GraphicsDeviceApiResources* const resources)
+                noexcept
+    {
+        return resources != nullptr
+            ? dynamic_cast<LamaPon::Detail::D3D12MaterialShaderServices*>(
+                resources->TryRenderServices())
+            : nullptr;
+    }
+
+    [[nodiscard]] bool IsFinite(
+        const DirectX::XMFLOAT3& value) noexcept
+    {
+        return std::isfinite(value.x)
+            && std::isfinite(value.y)
+            && std::isfinite(value.z);
+    }
+
+    [[nodiscard]] bool TryResolvePrefilteredCube(
+        const LamaPon::GraphicsDevice& graphics,
+        const LamaPon::GraphicsViewHandle& handle,
+        const std::uint32_t expectedSize,
+        const std::uint32_t expectedMipLevels,
+        ID3D11ShaderResourceView*& resolved) noexcept
+    {
+        resolved = LamaPon::Detail::GraphicsDeviceD3D11Access::
+            TryResolveD3D11ShaderResourceView(graphics, handle);
+        if (!handle || resolved == nullptr)
+        {
+            return false;
+        }
+
+        D3D11_SHADER_RESOURCE_VIEW_DESC viewDescription{};
+        resolved->GetDesc(&viewDescription);
+        if (viewDescription.Format
+                != DXGI_FORMAT_R16G16B16A16_FLOAT
+            || viewDescription.ViewDimension
+                != D3D11_SRV_DIMENSION_TEXTURECUBE
+            || viewDescription.TextureCube.MostDetailedMip != 0
+            || viewDescription.TextureCube.MipLevels
+                != expectedMipLevels)
+        {
+            return false;
+        }
+
+        Microsoft::WRL::ComPtr<ID3D11Resource> resource;
+        resolved->GetResource(resource.ReleaseAndGetAddressOf());
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+        if (resource == nullptr || FAILED(resource.As(&texture)))
+        {
+            return false;
+        }
+        D3D11_TEXTURE2D_DESC description{};
+        texture->GetDesc(&description);
+        return description.Width == expectedSize
+            && description.Height == expectedSize
+            && description.MipLevels == expectedMipLevels
+            && description.ArraySize == 6
+            && description.Format
+                == DXGI_FORMAT_R16G16B16A16_FLOAT
+            && description.SampleDesc.Count == 1
+            && (description.BindFlags
+                & D3D11_BIND_SHADER_RESOURCE) != 0
+            && (description.MiscFlags
+                & D3D11_RESOURCE_MISC_TEXTURECUBE) != 0;
+    }
+
+    [[nodiscard]] LamaPon::Detail::D3D11RenderTargetState*
+        TryD3D11RenderTargetState(
+            LamaPon::RenderTarget& target) noexcept
+    {
+        return dynamic_cast<LamaPon::Detail::D3D11RenderTargetState*>(
+            LamaPon::Detail::RenderTargetBackendAccess::Get(target));
+    }
+
+}
+
+namespace LamaPon
+{
+    DirectX::SpriteBatch& GraphicsDevice::BeginSprites(
+        const std::filesystem::path& shaderPath,
+        const std::array<DirectX::XMFLOAT4, 8>&
+            customParameters,
+        std::uint64_t* generation,
+        std::string* error,
+        const Sprite2DLighting* lighting)
+    {
+        SpritePassDescription description;
+        description.pixelShader = shaderPath;
+        description.customParameters = customParameters;
+        description.lighting = lighting != nullptr
+            ? *lighting
+            : Sprite2DLighting{};
+        static_cast<void>(BeginD3D11SpritePass(
+            description,
+            false,
+            nullptr,
+            generation,
+            error));
+        return *RequireD3D11ApiResources().spriteBatch;
+    }
+
+    std::function<void()> GraphicsDevice::PrepareD3D11SpriteShader(
+        const SpritePassDescription& description,
+        SpriteShaderStatus& status)
+    {
+        status = {};
+        if (description.pixelShader.empty())
+        {
+            return {};
+        }
+
+        const auto absolutePath = Assets().ResolvePath(
+            description.pixelShader).lexically_normal();
+        auto& entry = RequireD3D11ApiResources().spriteShaders[absolutePath];
+        if (!entry)
+        {
+            entry = std::make_unique<SpriteShaderEntry>();
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        if (!entry->observed
+            || entry->forceReload
+            || now >= entry->nextCheck)
+        {
+            entry->nextCheck =
+                now + std::chrono::milliseconds(250);
+            const bool archived = Assets().IsArchived();
+            std::error_code fileError;
+            const bool sourceExists =
+                Assets().FileExists(absolutePath);
+            const auto writeTime =
+                (sourceExists && !archived)
+                ? std::filesystem::last_write_time(
+                    absolutePath,
+                    fileError)
+                : std::filesystem::file_time_type{};
+            const bool changed = !entry->observed
+                || entry->forceReload
+                || entry->sourceExists != sourceExists
+                || (sourceExists
+                    && !archived
+                    && entry->writeTime != writeTime);
+            if (changed)
+            {
+                entry->observed = true;
+                entry->forceReload = false;
+                entry->sourceExists = sourceExists;
+                entry->writeTime = writeTime;
+                if (!sourceExists)
+                {
+                    entry->error =
+                        "Sprite shader file was not found: "
+                        + PathToUtf8(absolutePath);
+                    entry->effect.reset();
+                }
+                else
+                {
+                    try
+                    {
+                        auto candidate =
+                            std::make_shared<SpriteEffect>(
+                                Device(),
+                                Context(),
+                                Assets(),
+                                absolutePath);
+                        entry->effect = std::move(candidate);
+                        entry->generation =
+                            ++m_state->m_spriteShaderGeneration;
+                        entry->error.clear();
+                    }
+                    catch (const std::exception& exception)
+                    {
+                        entry->error = DescribeShaderFailure(
+                            Assets(),
+                            absolutePath,
+                            exception.what(),
+                            ShaderUsage::Sprite);
+                        // 直前に成功したものを描き続けると、書き
+                        // 間違えたシェーダーが前のまま出ます。
+                        // 3Dと同じく捨てて代役に任せます。
+                        entry->effect.reset();
+                    }
+                }
+            }
+        }
+
+        status.generation = entry->generation;
+        status.error = entry->error;
+        if (!entry->effect)
+        {
+            // コンパイル失敗を視認できるよう、マゼンタの代替表示を使います。
+            if (!entry->error.empty())
+            {
+                if (auto* const placeholder =
+                        SpriteErrorPlaceholder())
+                {
+                    status.fallback =
+                        SpriteShaderFallback::ErrorPlaceholder;
+                    return [
+                        placeholder,
+                        parameters = description.customParameters]()
+                    {
+                        placeholder->SetParameters(parameters);
+                        placeholder->SetLights(Sprite2DLighting{});
+                        placeholder->Apply();
+                    };
+                }
+            }
+            status.fallback =
+                SpriteShaderFallback::DefaultPipeline;
+            return {};
+        }
+
+        // SpriteBatch invokes this callback only when it flushes. Capture both
+        // the compiled generation and this pass's values: another renderer may
+        // use or hot-reload the same shader between Begin and End.
+        auto effect = entry->effect;
+        return [
+            effect = std::move(effect),
+            parameters = description.customParameters,
+            lighting = description.lighting]()
+        {
+            effect->SetParameters(parameters);
+            effect->SetLights(lighting);
+            effect->Apply();
+        };
+    }
+
+    bool GraphicsDevice::ApplyCustomPixelShader(
+        const std::filesystem::path& shaderPath,
+        const std::array<
+            DirectX::XMFLOAT4,
+            8>& customParameters,
+        std::uint64_t* generation,
+        std::string* error) const
+    {
+        if (generation != nullptr)
+        {
+            *generation = 0;
+        }
+        if (error != nullptr)
+        {
+            error->clear();
+        }
+        if (shaderPath.empty())
+        {
+            return false;
+        }
+
+        const auto absolutePath =
+            Assets().ResolvePath(shaderPath).lexically_normal();
+        auto& entry = RequireD3D11ApiResources().spriteShaders[absolutePath];
+        if (!entry)
+        {
+            entry = std::make_unique<SpriteShaderEntry>();
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        if (!entry->observed
+            || entry->forceReload
+            || now >= entry->nextCheck)
+        {
+            entry->nextCheck =
+                now + std::chrono::milliseconds(250);
+            const bool archived = Assets().IsArchived();
+            std::error_code fileError;
+            const bool sourceExists =
+                Assets().FileExists(absolutePath);
+            const auto writeTime =
+                (sourceExists && !archived)
+                ? std::filesystem::last_write_time(
+                    absolutePath,
+                    fileError)
+                : std::filesystem::file_time_type{};
+            const bool changed = !entry->observed
+                || entry->forceReload
+                || entry->sourceExists != sourceExists
+                || (sourceExists
+                    && !archived
+                    && entry->writeTime != writeTime);
+            if (changed)
+            {
+                entry->observed = true;
+                entry->forceReload = false;
+                entry->sourceExists = sourceExists;
+                entry->writeTime = writeTime;
+                if (!sourceExists)
+                {
+                    entry->error =
+                        "Custom pixel shader file was not found: "
+                        + PathToUtf8(absolutePath);
+                    entry->effect.reset();
+                }
+                else
+                {
+                    try
+                    {
+                        auto candidate =
+                            std::make_shared<SpriteEffect>(
+                                Device(),
+                                Context(),
+                                Assets(),
+                                absolutePath);
+                        entry->effect = std::move(candidate);
+                        entry->generation =
+                            ++m_state->m_spriteShaderGeneration;
+                        entry->error.clear();
+                    }
+                    catch (const std::exception& exception)
+                    {
+                        entry->error = DescribeShaderFailure(
+                            Assets(),
+                            absolutePath,
+                            exception.what(),
+                            ShaderUsage::Sprite);
+                        // スプライトと同じく、失敗したら直前の
+                        // シェーダーは残しません。
+                        entry->effect.reset();
+                    }
+                }
+            }
+        }
+
+        if (generation != nullptr)
+        {
+            *generation = entry->generation;
+        }
+        if (error != nullptr)
+        {
+            *error = entry->error;
+        }
+        if (!entry->effect)
+        {
+            // スプライトと同じく、失敗はマゼンタで知らせます。
+            if (!entry->error.empty())
+            {
+                if (auto* const placeholder =
+                        SpriteErrorPlaceholder())
+                {
+                    placeholder->SetParameters(
+                        customParameters);
+                    placeholder->Apply();
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        entry->effect->SetParameters(customParameters);
+        entry->effect->Apply();
+        return true;
+    }
+
+    void GraphicsDevice::InvalidateCustomPixelShader(
+        const std::filesystem::path& shaderPath) const
+    {
+        InvalidateSpriteShader(shaderPath);
+    }
+
+    void GraphicsDevice::ApplyQueuedScreenEffects(
+        RenderTarget& target,
+        const ScreenEffectPoint point)
+    {
+        if (ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            auto* const resources = dynamic_cast<
+                Detail::GraphicsDeviceD3D12Resources*>(
+                    m_state->m_apiResources.get());
+            auto* const renderer = resources != nullptr
+                ? resources->TrySpriteRenderer()
+                : nullptr;
+            if (renderer == nullptr
+                || std::ranges::none_of(
+                    resources->queuedScreenEffects,
+                    [point](const ScreenEffectRequest& queued)
+                    {
+                        return queued.point == point;
+                    }))
+            {
+                return;
+            }
+
+            // t3はSceneの深度copyです。地点ごとにshader-readableへ
+            // 確定します。D3D11は深度viewが揃わないtargetでは適用を
+            // 飛ばしてキューから外すだけなので、同じ扱いにします。
+            m_state->m_backend->CaptureOffscreenTargetDepth(target);
+            const bool hasDepth = IsGraphicsViewCurrent(
+                target.DepthViewHandle());
+            // 深度を距離へ直す係数と法線再構成用の係数は、D3D11経路と
+            // 同じくこの画像を描いたときの射影から求めます。
+            const auto& projection = SceneProjection();
+            const DirectX::XMFLOAT4 depthParameters{
+                projection._33,
+                projection._43,
+                1.0f,
+                0.0f
+            };
+            const DirectX::XMFLOAT4 depthUnprojection{
+                1.0f / (std::abs(projection._11) > 1e-6f
+                    ? projection._11
+                    : 1.0f),
+                1.0f / (std::abs(projection._22) > 1e-6f
+                    ? projection._22
+                    : 1.0f),
+                0.0f,
+                0.0f
+            };
+            for (const auto& queued : resources->queuedScreenEffects)
+            {
+                if (queued.point != point || !hasDepth)
+                {
+                    continue;
+                }
+                // 描画を記録し終えるまでtexture snapshotを保持します。
+                // 読めない補助textureはD3D11と同じく白へ置き換わります。
+                std::array<std::shared_ptr<
+                    const TextureResourceSnapshot>, 2>
+                    auxiliaryResources{};
+                std::array<GraphicsViewHandle, 2> auxiliaryViews{};
+                for (std::size_t index{};
+                    index < queued.auxiliaryTextures.size();
+                    ++index)
+                {
+                    if (queued.auxiliaryTextures[index].empty())
+                    {
+                        continue;
+                    }
+                    const auto texture = Assets().LoadTexture(
+                        queued.auxiliaryTextures[index]);
+                    auxiliaryResources[index] = texture != nullptr
+                        ? texture->resources.Acquire()
+                        : nullptr;
+                    if (auxiliaryResources[index] != nullptr
+                        && IsGraphicsViewCurrent(
+                            auxiliaryResources[index]
+                                ->shaderResourceView))
+                    {
+                        auxiliaryViews[index] =
+                            auxiliaryResources[index]->shaderResourceView;
+                    }
+                }
+                renderer->ApplyScreenEffect(
+                    target,
+                    m_state->m_whiteTextureView,
+                    Assets(),
+                    queued.shader,
+                    auxiliaryViews,
+                    queued.customParameters,
+                    depthParameters,
+                    depthUnprojection);
+            }
+            std::erase_if(
+                resources->queuedScreenEffects,
+                [point](const ScreenEffectRequest& queued)
+                {
+                    return queued.point == point;
+                });
+            return;
+        }
+
+        // 対象地点にエフェクトが無い場合は、深度変換係数の計算を省略します。
+        if (std::ranges::none_of(
+                RequireD3D11ApiResources().queuedScreenEffects,
+                [point](const QueuedScreenEffect& queued)
+                {
+                    return queued.point == point;
+                }))
+        {
+            return;
+        }
+        auto* const targetState = TryD3D11RenderTargetState(target);
+        const bool targetStateIsCurrent = targetState != nullptr
+            && targetState->IsValid()
+            && IsGraphicsViewCurrent(targetState->m_currentColorView)
+            && IsGraphicsViewCurrent(targetState->m_depthView);
+        // 深度を距離へ直す係数。式は距離＝y/(深度+x)で、SSRの
+        // Hi-Z作成（PSReflectionDepthLinearize）と同じものです。
+        // SSRの深度変換と同じ式を使い、変換規則を一致させます。
+        // 射影はこの画像を描いたときのもの
+        // （TAAのずらし込み＝深度バッファと噛み合う方）。
+        const auto& projection = SceneProjection();
+        const DirectX::XMFLOAT4 depthParameters{
+            projection._33,
+            projection._43,
+            1.0f,
+            0.0f
+        };
+        // ビュー空間の位置（＝法線の再構成）用。SSAOが持っている
+        // AmbientOcclusionProjectionのzwと同じ中身です。
+        // 0除算よけの1e-6は、射影が空のときに無限大を配らないため。
+        const DirectX::XMFLOAT4 depthUnprojection{
+            1.0f / (std::abs(projection._11) > 1e-6f
+                ? projection._11
+                : 1.0f),
+            1.0f / (std::abs(projection._22) > 1e-6f
+                ? projection._22
+                : 1.0f),
+            0.0f,
+            0.0f
+        };
+        const auto whiteTextureView = WhiteTextureViewHandle();
+        auto* const whiteTexture =
+            TryResolveD3D11ShaderResourceView(whiteTextureView);
+        for (const auto& queued : RequireD3D11ApiResources().queuedScreenEffects)
+        {
+            if (queued.effect == nullptr
+                || queued.point != point)
+            {
+                continue;
+            }
+            if (!targetStateIsCurrent)
+            {
+                continue;
+            }
+            std::array<std::shared_ptr<
+                const TextureResourceSnapshot>, 2>
+                auxiliaryResources{};
+            std::array<ID3D11ShaderResourceView*, 2>
+                auxiliaryViews{};
+            for (std::size_t index = 0;
+                index < auxiliaryViews.size();
+                ++index)
+            {
+                const auto& asset =
+                    queued.auxiliaryTextures[index];
+                auxiliaryResources[index] = asset != nullptr
+                    ? asset->resources.Acquire()
+                    : nullptr;
+                auto* const resolved =
+                    auxiliaryResources[index] != nullptr
+                    ? TryResolveD3D11ShaderResourceView(
+                        *auxiliaryResources[index])
+                    : nullptr;
+                auxiliaryViews[index] = resolved != nullptr
+                    ? resolved
+                    : whiteTexture;
+            }
+            targetState->ApplyScreenEffect(
+                *queued.effect,
+                auxiliaryViews,
+                depthParameters,
+                depthUnprojection,
+                queued.parameters);
+        }
+        // 現在の地点で適用したエフェクトだけを取り除きます。同じフレームの
+        // 後続地点に登録されたエフェクトはキューへ残します。
+        std::erase_if(
+            RequireD3D11ApiResources().queuedScreenEffects,
+            [point](const QueuedScreenEffect& queued)
+            {
+                return queued.point == point;
+            });
+    }
+
+    bool GraphicsDevice::QueueScreenEffect(
+        const ScreenEffectRequest& request,
+        std::uint64_t* generation,
+        std::string* error)
+    {
+        if (generation != nullptr)
+        {
+            *generation = 0;
+        }
+        if (error != nullptr)
+        {
+            error->clear();
+        }
+        if (request.shader.empty())
+        {
+            return false;
+        }
+
+        if (ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            auto* const resources = dynamic_cast<
+                Detail::GraphicsDeviceD3D12Resources*>(
+                    m_state->m_apiResources.get());
+            auto* const renderer = resources != nullptr
+                ? resources->TrySpriteRenderer()
+                : nullptr;
+            const auto describeFailure =
+                [this, &request](const char* const message)
+                {
+                    return DescribeShaderFailure(
+                        Assets(),
+                        Assets().ResolvePath(request.shader)
+                            .lexically_normal(),
+                        message,
+                        ShaderUsage::ScreenEffect);
+                };
+            if (renderer == nullptr
+                || !renderer->PrepareScreenEffect(
+                    Assets(),
+                    request.shader,
+                    describeFailure,
+                    generation,
+                    error))
+            {
+                return false;
+            }
+            resources->queuedScreenEffects.push_back(request);
+            return true;
+        }
+
+        const auto absolutePath =
+            Assets().ResolvePath(request.shader)
+                .lexically_normal();
+        auto& entry = RequireD3D11ApiResources().screenShaders[absolutePath];
+        if (!entry)
+        {
+            entry = std::make_unique<ScreenShaderEntry>();
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        if (!entry->observed
+            || entry->forceReload
+            || now >= entry->nextCheck)
+        {
+            entry->nextCheck =
+                now + std::chrono::milliseconds(250);
+            const bool archived = Assets().IsArchived();
+            std::error_code fileError;
+            const bool sourceExists =
+                Assets().FileExists(absolutePath);
+            const auto writeTime =
+                (sourceExists && !archived)
+                ? std::filesystem::last_write_time(
+                    absolutePath,
+                    fileError)
+                : std::filesystem::file_time_type{};
+            const bool changed = !entry->observed
+                || entry->forceReload
+                || entry->sourceExists != sourceExists
+                || (sourceExists
+                    && !archived
+                    && entry->writeTime != writeTime);
+            if (changed)
+            {
+                entry->observed = true;
+                entry->forceReload = false;
+                entry->sourceExists = sourceExists;
+                entry->writeTime = writeTime;
+                if (!sourceExists)
+                {
+                    entry->error =
+                        "Screen effect shader file was not found: "
+                        + PathToUtf8(absolutePath);
+                }
+                else
+                {
+                    try
+                    {
+                        auto candidate =
+                            std::make_unique<ScreenEffect>(
+                                Device(),
+                                Context(),
+                                Assets(),
+                                absolutePath);
+                        entry->effect = std::move(candidate);
+                        entry->generation =
+                            ++m_state->m_screenShaderGeneration;
+                        entry->error.clear();
+                    }
+                    catch (const std::exception& exception)
+                    {
+                        // 再コンパイルに失敗しても、直前の正常なシェーダーは維持します。
+                        entry->error = DescribeShaderFailure(
+                            Assets(),
+                            absolutePath,
+                            exception.what(),
+                            ShaderUsage::ScreenEffect);
+                    }
+                }
+            }
+        }
+
+        if (generation != nullptr)
+        {
+            *generation = entry->generation;
+        }
+        if (error != nullptr)
+        {
+            *error = entry->error;
+        }
+        if (!entry->effect)
+        {
+            return false;
+        }
+
+        QueuedScreenEffect queued{};
+        queued.effect = entry->effect.get();
+        queued.parameters = request.customParameters;
+        queued.point = request.point;
+        for (std::size_t index = 0;
+            index < request.auxiliaryTextures.size();
+            ++index)
+        {
+            if (!request.auxiliaryTextures[index].empty())
+            {
+                queued.auxiliaryTextures[index] =
+                    Assets().LoadTexture(
+                        request.auxiliaryTextures[index]);
+            }
+        }
+        RequireD3D11ApiResources().queuedScreenEffects.emplace_back(
+            std::move(queued));
+        return true;
+    }
+
+    bool GraphicsDevice::DispatchComputeEffect(
+        const ComputeEffectRequest& request,
+        std::string* const error)
+    {
+        if (error != nullptr)
+        {
+            error->clear();
+        }
+        if (request.shader.empty()
+            || request.outputTexture.empty()
+            || request.outputWidth == 0
+            || request.outputHeight == 0)
+        {
+            if (error != nullptr)
+            {
+                *error =
+                    "A compute effect needs a shader, an"
+                    " output texture name and a non-zero"
+                    " size.";
+            }
+            return false;
+        }
+
+        if (ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            auto* const resources = dynamic_cast<
+                Detail::GraphicsDeviceD3D12Resources*>(
+                    m_state->m_apiResources.get());
+            auto* const renderer = resources != nullptr
+                ? resources->TryComputeEffectRenderer()
+                : nullptr;
+            if (renderer == nullptr)
+            {
+                if (error != nullptr)
+                {
+                    *error =
+                        "The DirectX 12 compute effect renderer is not"
+                        " available.";
+                }
+                return false;
+            }
+            const auto describeFailure =
+                [this, &request](const char* const message)
+                {
+                    return DescribeShaderFailure(
+                        Assets(),
+                        Assets().ResolvePath(request.shader)
+                            .lexically_normal(),
+                        message,
+                        ShaderUsage::Compute);
+                };
+            if (!renderer->Prepare(
+                    Assets(),
+                    request.shader,
+                    describeFailure,
+                    error))
+            {
+                return false;
+            }
+
+            // 書き込み先。D3D11と同じくResizeの前にUAVの印を付けます。
+            auto& target = AcquireComputeTexture(
+                request.outputTexture,
+                request.outputWidth,
+                request.outputHeight);
+            if (!IsGraphicsViewCurrent(target.DisplayViewHandle()))
+            {
+                if (error != nullptr)
+                {
+                    *error =
+                        "The compute output texture could not"
+                        " be created for writing.";
+                }
+                return false;
+            }
+
+            // 描画を記録し終えるまでtexture snapshotを保持します。読めない
+            // 入力はD3D11と同じく白へ置き換わります。
+            std::array<std::shared_ptr<
+                const TextureResourceSnapshot>, 2>
+                inputResources{};
+            std::array<GraphicsViewHandle, 2> inputs{};
+            const auto whiteTextureView = WhiteTextureViewHandle();
+            for (std::size_t index = 0;
+                index < request.inputTextures.size();
+                ++index)
+            {
+                inputs[index] = whiteTextureView;
+                if (request.inputTextures[index].empty())
+                {
+                    continue;
+                }
+                const auto texture = Assets().LoadTexture(
+                    request.inputTextures[index]);
+                inputResources[index] = texture != nullptr
+                    ? texture->resources.Acquire()
+                    : nullptr;
+                if (inputResources[index] != nullptr
+                    && IsGraphicsViewCurrent(
+                        inputResources[index]->shaderResourceView))
+                {
+                    inputs[index] =
+                        inputResources[index]->shaderResourceView;
+                }
+            }
+
+            GpuProfiler::SectionScope computeSection{
+                m_state->m_gpuProfiler,
+                "Compute"
+            };
+            renderer->Dispatch(
+                Assets(),
+                request.shader,
+                target,
+                inputs,
+                request.customParameters);
+            computeSection.End();
+            return true;
+        }
+
+        const auto absolutePath =
+            Assets().ResolvePath(request.shader)
+                .lexically_normal();
+        auto& entry = RequireD3D11ApiResources().computeShaders[absolutePath];
+        if (!entry)
+        {
+            entry = std::make_unique<ComputeShaderEntry>();
+        }
+
+        // 更新の見張り方はScreenEffectと同じです（保存したら
+        // 作り直す、失敗しても直前の正常な版を残す）。
+        const auto now = std::chrono::steady_clock::now();
+        if (!entry->observed
+            || entry->forceReload
+            || now >= entry->nextCheck)
+        {
+            entry->nextCheck =
+                now + std::chrono::milliseconds(250);
+            const bool archived = Assets().IsArchived();
+            std::error_code fileError;
+            const bool sourceExists =
+                Assets().FileExists(absolutePath);
+            const auto writeTime =
+                (sourceExists && !archived)
+                ? std::filesystem::last_write_time(
+                    absolutePath,
+                    fileError)
+                : std::filesystem::file_time_type{};
+            const bool changed = !entry->observed
+                || entry->forceReload
+                || entry->sourceExists != sourceExists
+                || (sourceExists
+                    && !archived
+                    && entry->writeTime != writeTime);
+            if (changed)
+            {
+                entry->observed = true;
+                entry->forceReload = false;
+                entry->sourceExists = sourceExists;
+                entry->writeTime = writeTime;
+                if (!sourceExists)
+                {
+                    entry->error =
+                        "Compute effect shader file was not"
+                        " found: "
+                        + PathToUtf8(absolutePath);
+                }
+                else
+                {
+                    try
+                    {
+                        entry->effect =
+                            std::make_unique<ComputeEffect>(
+                                Device(),
+                                Context(),
+                                Assets(),
+                                absolutePath);
+                        entry->error.clear();
+                    }
+                    catch (const std::exception& exception)
+                    {
+                        entry->error = DescribeShaderFailure(
+                            Assets(),
+                            absolutePath,
+                            exception.what(),
+                            ShaderUsage::Compute);
+                    }
+                }
+            }
+        }
+
+        if (error != nullptr)
+        {
+            *error = entry->error;
+        }
+        if (!entry->effect)
+        {
+            return false;
+        }
+
+        // 書き込み先。UAVが要るので、Resizeの前に印を付けます
+        // （バインドフラグは作成時にしか決められません）。
+        auto& target = AcquireComputeTexture(
+            request.outputTexture,
+            request.outputWidth,
+            request.outputHeight);
+        auto* const targetState = TryD3D11RenderTargetState(target);
+        auto* const outputView = targetState != nullptr
+                && targetState->IsValid()
+                && IsGraphicsViewCurrent(targetState->m_displayView)
+            ? targetState->m_displayUnorderedAccessView.Get()
+            : nullptr;
+        if (outputView == nullptr)
+        {
+            if (error != nullptr)
+            {
+                *error =
+                    "The compute output texture could not"
+                    " be created for writing.";
+            }
+            return false;
+        }
+
+        std::array<std::shared_ptr<
+            const TextureResourceSnapshot>, 2>
+            inputResources{};
+        std::array<ID3D11ShaderResourceView*, 2> inputs{};
+        const auto whiteTextureView = WhiteTextureViewHandle();
+        auto* const whiteTexture =
+            TryResolveD3D11ShaderResourceView(whiteTextureView);
+        for (std::size_t index = 0;
+            index < request.inputTextures.size();
+            ++index)
+        {
+            if (request.inputTextures[index].empty())
+            {
+                inputs[index] = whiteTexture;
+                continue;
+            }
+            const auto texture = Assets().LoadTexture(
+                request.inputTextures[index]);
+            inputResources[index] = texture != nullptr
+                ? texture->resources.Acquire()
+                : nullptr;
+            auto* const resolved = inputResources[index] != nullptr
+                ? TryResolveD3D11ShaderResourceView(
+                    *inputResources[index])
+                : nullptr;
+            inputs[index] = resolved != nullptr
+                ? resolved
+                : whiteTexture;
+        }
+
+        GpuProfiler::SectionScope computeSection{
+            m_state->m_gpuProfiler,
+            "Compute"
+        };
+        entry->effect->Dispatch(
+            inputs,
+            outputView,
+            targetState->m_width,
+            targetState->m_height,
+            request.customParameters);
+        computeSection.End();
+        return true;
+    }
+
+    void GraphicsDevice::InvalidateComputeEffectShader(
+        const std::filesystem::path& shaderPath) const
+    {
+        if (ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            auto* const d3d12Resources = dynamic_cast<
+                Detail::GraphicsDeviceD3D12Resources*>(
+                    m_state->m_apiResources.get());
+            auto* const renderer = d3d12Resources != nullptr
+                ? d3d12Resources->TryComputeEffectRenderer()
+                : nullptr;
+            if (renderer != nullptr && TryAssets() != nullptr)
+            {
+                renderer->Invalidate(Assets(), shaderPath);
+            }
+            return;
+        }
+        auto* const resources = TryD3D11ApiResources();
+        if (shaderPath.empty() || !TryAssets() || resources == nullptr)
+        {
+            return;
+        }
+        const auto absolutePath =
+            Assets().ResolvePath(shaderPath)
+                .lexically_normal();
+        const auto found = resources->computeShaders.find(absolutePath);
+        if (found != resources->computeShaders.end()
+            && found->second)
+        {
+            found->second->forceReload = true;
+        }
+    }
+
+    void GraphicsDevice::InvalidateScreenEffectShader(
+        const std::filesystem::path& shaderPath) const
+    {
+        if (ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            auto* const resources = dynamic_cast<
+                Detail::GraphicsDeviceD3D12Resources*>(
+                    m_state->m_apiResources.get());
+            auto* const renderer = resources != nullptr
+                ? resources->TrySpriteRenderer()
+                : nullptr;
+            if (renderer != nullptr && TryAssets() != nullptr)
+            {
+                renderer->InvalidateScreenEffect(
+                    Assets(),
+                    shaderPath);
+            }
+            return;
+        }
+        auto* const resources = TryD3D11ApiResources();
+        if (shaderPath.empty() || !TryAssets() || resources == nullptr)
+        {
+            return;
+        }
+        const auto absolutePath =
+            Assets().ResolvePath(shaderPath)
+                .lexically_normal();
+        const auto found = resources->screenShaders.find(absolutePath);
+        if (found != resources->screenShaders.end()
+            && found->second)
+        {
+            found->second->forceReload = true;
+        }
+    }
+
+    bool GraphicsDevice::IsShaderCompiling(
+        const std::filesystem::path& shaderPath,
+        const ShaderKeywordSet& keywords) const
+    {
+        const auto* const resources = TryD3D11ApiResources();
+        if (shaderPath.empty() || resources == nullptr)
+        {
+            return false;
+        }
+        const auto absolutePath =
+            Assets().ResolvePath(shaderPath).lexically_normal();
+        const auto normalized = NormalizeKeywords(
+            ShaderVariantsFor(absolutePath),
+            keywords);
+        const auto variantKey = normalized.Key();
+        const std::filesystem::path cacheKey =
+            variantKey.empty()
+                ? absolutePath
+                : std::filesystem::path(
+                    absolutePath.wstring()
+                    + L"?"
+                    + Utf8ToWide(variantKey));
+        const auto found = resources->materialShaders.find(cacheKey);
+        return found != resources->materialShaders.end()
+            && found->second->pending;
+    }
+
+    const ShaderVariantDeclaration&
+        GraphicsDevice::ShaderVariantsFor(
+            const std::filesystem::path& shaderPath) const
+    {
+        static const ShaderVariantDeclaration empty;
+        if (shaderPath.empty())
+        {
+            return empty;
+        }
+        const auto absolutePath =
+            Assets().ResolvePath(shaderPath).lexically_normal();
+        const auto found = m_state->m_shaderVariants.find(absolutePath);
+        if (found != m_state->m_shaderVariants.end())
+        {
+            return found->second;
+        }
+        ShaderVariantDeclaration declaration;
+        try
+        {
+            if (Assets().FileExists(absolutePath))
+            {
+                const auto source =
+                    Assets().ReadFileBytes(absolutePath);
+                declaration = ParseShaderVariants(
+                    std::string_view{
+                        reinterpret_cast<const char*>(
+                            source.data()),
+                        source.size() });
+            }
+        }
+        catch (const std::exception&)
+        {
+            // 読み取り失敗時は宣言なしとして扱い、Inspectorの表示を継続します。
+            declaration = {};
+        }
+        return m_state->m_shaderVariants
+            .emplace(absolutePath, std::move(declaration))
+            .first->second;
+    }
+
+    bool GraphicsDevice::TrySetLitEffectTextures(
+        LitEffect& effect,
+        const LitTextureRequest& request) const noexcept
+    {
+        if (!IsInitialized() || effect.m_context == nullptr)
+        {
+            return false;
+        }
+        Microsoft::WRL::ComPtr<ID3D11Device> effectDevice;
+        effect.m_context->GetDevice(
+            effectDevice.ReleaseAndGetAddressOf());
+        if (effectDevice.Get() != Device())
+        {
+            return false;
+        }
+
+        const auto tryResolve = [this](
+            const GraphicsViewHandle& view,
+            ID3D11ShaderResourceView*& resolved) noexcept
+        {
+            resolved = TryResolveD3D11ShaderResourceView(view);
+            return !view || resolved != nullptr;
+        };
+
+        ID3D11ShaderResourceView* albedo{};
+        ID3D11ShaderResourceView* normal{};
+        PbrTextures pbrTextures{};
+        std::array<
+            ID3D11ShaderResourceView*,
+            LitMaterial::CustomTextureCount> customTextures{};
+        bool valid = tryResolve(request.albedo, albedo)
+            && tryResolve(request.normal, normal)
+            && tryResolve(
+                request.roughness,
+                pbrTextures.roughness)
+            && tryResolve(
+                request.metallic,
+                pbrTextures.metallic)
+            && tryResolve(
+                request.occlusion,
+                pbrTextures.occlusion)
+            && tryResolve(
+                request.emissive,
+                pbrTextures.emissive);
+        for (std::size_t index{};
+            valid && index < customTextures.size();
+            ++index)
+        {
+            valid = tryResolve(
+                request.customTextures[index],
+                customTextures[index]);
+        }
+        if (!valid)
+        {
+            return false;
+        }
+
+        pbrTextures.occlusionStrength =
+            request.occlusionStrength;
+        pbrTextures.emissiveFactor = request.emissiveFactor;
+        effect.SetTextures(
+            albedo,
+            normal,
+            pbrTextures);
+        effect.SetCustomTextures(customTextures);
+        return true;
+    }
+
+    bool GraphicsDevice::TrySetLitEffectReflectionProbe(
+        LitEffect& effect,
+        const ReflectionProbeEnvironment& probe) const noexcept
+    {
+        if (!IsInitialized() || effect.m_context == nullptr)
+        {
+            return false;
+        }
+        Microsoft::WRL::ComPtr<ID3D11Device> effectDevice;
+        effect.m_context->GetDevice(
+            effectDevice.ReleaseAndGetAddressOf());
+        if (effectDevice.Get() != Device())
+        {
+            return false;
+        }
+
+        const bool hasSpecular = static_cast<bool>(probe.specular);
+        const bool hasIrradiance = static_cast<bool>(probe.irradiance);
+        if (!hasSpecular && !hasIrradiance)
+        {
+            // ProbeなしはSetLightingが設定したSky IBLを維持します。
+            // secondary側の古いhandleも無効なmetadataとして解決しません。
+            return true;
+        }
+        if (hasSpecular != hasIrradiance)
+        {
+            return false;
+        }
+
+        constexpr auto ExpectedMaximumMip = static_cast<float>(
+            EnvironmentRenderer::PrefilteredSpecularMipLevels - 1);
+        LitEffect::D3D11ReflectionProbeViews nativeViews;
+        if (!std::isfinite(probe.intensity)
+            || !std::isfinite(probe.specularMaximumMip)
+            || probe.specularMaximumMip != ExpectedMaximumMip
+            || !std::isfinite(probe.secondaryWeight)
+            || !IsFinite(probe.boxCenter)
+            || !IsFinite(probe.boxExtents)
+            || !TryResolvePrefilteredCube(
+                *this,
+                probe.specular,
+                EnvironmentRenderer::PrefilteredSpecularSize,
+                EnvironmentRenderer::PrefilteredSpecularMipLevels,
+                nativeViews.specular)
+            || !TryResolvePrefilteredCube(
+                *this,
+                probe.irradiance,
+                EnvironmentRenderer::PrefilteredIrradianceSize,
+                EnvironmentRenderer::PrefilteredIrradianceMipLevels,
+                nativeViews.irradiance))
+        {
+            return false;
+        }
+
+        if (probe.secondaryWeight > 0.0f)
+        {
+            if (!probe.secondarySpecular
+                || !probe.secondaryIrradiance
+                || !std::isfinite(
+                    probe.secondarySpecularMaximumMip)
+                || probe.secondarySpecularMaximumMip
+                    != ExpectedMaximumMip
+                || !IsFinite(probe.secondaryBoxCenter)
+                || !IsFinite(probe.secondaryBoxExtents)
+                || !TryResolvePrefilteredCube(
+                    *this,
+                    probe.secondarySpecular,
+                    EnvironmentRenderer::PrefilteredSpecularSize,
+                    EnvironmentRenderer::PrefilteredSpecularMipLevels,
+                    nativeViews.secondarySpecular)
+                || !TryResolvePrefilteredCube(
+                    *this,
+                    probe.secondaryIrradiance,
+                    EnvironmentRenderer::PrefilteredIrradianceSize,
+                    EnvironmentRenderer::PrefilteredIrradianceMipLevels,
+                    nativeViews.secondaryIrradiance))
+            {
+                return false;
+            }
+        }
+
+        effect.SetEnvironmentOverrideD3D11(probe, nativeViews);
+        return true;
+    }
+
+    bool GraphicsDevice::TrySetLitEffectLighting(
+        LitEffect& effect,
+        const LightingState& lighting) const noexcept
+    {
+        if (!IsInitialized() || effect.m_context == nullptr)
+        {
+            return false;
+        }
+        Microsoft::WRL::ComPtr<ID3D11Device> effectDevice;
+        effect.m_context->GetDevice(
+            effectDevice.ReleaseAndGetAddressOf());
+        if (effectDevice.Get() != Device())
+        {
+            return false;
+        }
+
+        LitEffect::D3D11LightingViews nativeViews;
+
+        const auto tryResolveTexture2D = [this](
+            const GraphicsViewHandle& handle,
+            const DXGI_FORMAT expectedFormat,
+            const std::uint32_t expectedMipLevels,
+            ID3D11ShaderResourceView*& resolved,
+            D3D11_TEXTURE2D_DESC& textureDescription) noexcept
+        {
+            resolved = TryResolveD3D11ShaderResourceView(handle);
+            if (!handle || resolved == nullptr)
+            {
+                return false;
+            }
+            D3D11_SHADER_RESOURCE_VIEW_DESC viewDescription{};
+            resolved->GetDesc(&viewDescription);
+            if (viewDescription.ViewDimension
+                    != D3D11_SRV_DIMENSION_TEXTURE2D
+                || viewDescription.Format != expectedFormat
+                || viewDescription.Texture2D.MostDetailedMip != 0
+                || viewDescription.Texture2D.MipLevels
+                    != expectedMipLevels)
+            {
+                return false;
+            }
+            Microsoft::WRL::ComPtr<ID3D11Resource> resource;
+            resolved->GetResource(resource.ReleaseAndGetAddressOf());
+            Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+            if (resource == nullptr || FAILED(resource.As(&texture)))
+            {
+                return false;
+            }
+            texture->GetDesc(&textureDescription);
+            return textureDescription.Format == expectedFormat
+                && textureDescription.MipLevels == expectedMipLevels
+                && textureDescription.ArraySize == 1
+                && textureDescription.SampleDesc.Count == 1
+                && (textureDescription.BindFlags
+                    & D3D11_BIND_SHADER_RESOURCE) != 0;
+        };
+        const auto tryResolveTextureCube = [this](
+            const GraphicsViewHandle& handle,
+            const DXGI_FORMAT expectedFormat,
+            const std::uint32_t expectedSize,
+            const std::uint32_t expectedMipLevels,
+            ID3D11ShaderResourceView*& resolved) noexcept
+        {
+            resolved = TryResolveD3D11ShaderResourceView(handle);
+            if (!handle || resolved == nullptr)
+            {
+                return false;
+            }
+            D3D11_SHADER_RESOURCE_VIEW_DESC viewDescription{};
+            resolved->GetDesc(&viewDescription);
+            if (viewDescription.ViewDimension
+                    != D3D11_SRV_DIMENSION_TEXTURECUBE
+                || viewDescription.TextureCube.MostDetailedMip != 0
+                || viewDescription.TextureCube.MipLevels == 0)
+            {
+                return false;
+            }
+
+            Microsoft::WRL::ComPtr<ID3D11Resource> resource;
+            resolved->GetResource(resource.ReleaseAndGetAddressOf());
+            Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+            if (resource == nullptr || FAILED(resource.As(&texture)))
+            {
+                return false;
+            }
+            D3D11_TEXTURE2D_DESC description{};
+            texture->GetDesc(&description);
+            auto viewMipLevels =
+                viewDescription.TextureCube.MipLevels;
+            if (viewMipLevels == std::numeric_limits<UINT>::max())
+            {
+                viewMipLevels = description.MipLevels;
+            }
+            if (description.Width == 0
+                || description.Width != description.Height
+                || description.ArraySize != 6
+                || description.MipLevels == 0
+                || viewMipLevels > description.MipLevels
+                || description.SampleDesc.Count != 1
+                || (description.MiscFlags
+                    & D3D11_RESOURCE_MISC_TEXTURECUBE) == 0
+                || (description.BindFlags
+                    & D3D11_BIND_SHADER_RESOURCE) == 0)
+            {
+                return false;
+            }
+
+            if (expectedFormat != DXGI_FORMAT_UNKNOWN)
+            {
+                return viewDescription.Format == expectedFormat
+                    && description.Format == expectedFormat
+                    && description.Width == expectedSize
+                    && description.MipLevels == expectedMipLevels
+                    && viewMipLevels == expectedMipLevels;
+            }
+
+            UINT formatSupport{};
+            constexpr UINT RequiredFormatSupport =
+                D3D11_FORMAT_SUPPORT_TEXTURECUBE
+                | D3D11_FORMAT_SUPPORT_SHADER_SAMPLE;
+            return viewDescription.Format != DXGI_FORMAT_UNKNOWN
+                && (description.BindFlags
+                    & D3D11_BIND_DEPTH_STENCIL) == 0
+                && SUCCEEDED(Device()->CheckFormatSupport(
+                    viewDescription.Format,
+                    &formatSupport))
+                && (formatSupport & RequiredFormatSupport)
+                    == RequiredFormatSupport;
+        };
+        const auto tryRecoverDimension = [](
+            const float inverseDimension,
+            std::uint32_t& dimension) noexcept
+        {
+            if (!std::isfinite(inverseDimension)
+                || !(inverseDimension > 0.0f))
+            {
+                return false;
+            }
+            const auto exactDimension =
+                1.0 / static_cast<double>(inverseDimension);
+            if (!std::isfinite(exactDimension)
+                || exactDimension < 1.0
+                || exactDimension
+                    > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION)
+            {
+                return false;
+            }
+            const auto roundedDimension = std::round(exactDimension);
+            if (std::abs(
+                    inverseDimension * roundedDimension - 1.0)
+                    > 0.0001)
+            {
+                return false;
+            }
+            dimension = static_cast<std::uint32_t>(roundedDimension);
+            return true;
+        };
+
+        const auto& environment = lighting.environment;
+        if (environment.enabled)
+        {
+            if (!std::isfinite(environment.intensity)
+                || !tryResolveTextureCube(
+                    environment.texture,
+                    DXGI_FORMAT_UNKNOWN,
+                    0,
+                    0,
+                    nativeViews.environment[0]))
+            {
+                return false;
+            }
+
+            const bool hasSpecular =
+                static_cast<bool>(environment.specular);
+            const bool hasIrradiance =
+                static_cast<bool>(environment.irradiance);
+            if (hasSpecular != hasIrradiance)
+            {
+                return false;
+            }
+            if (hasSpecular)
+            {
+                constexpr auto ExpectedMaximumMip = static_cast<float>(
+                    EnvironmentRenderer::PrefilteredSpecularMipLevels - 1);
+                if (!tryResolveTextureCube(
+                        environment.specular,
+                        DXGI_FORMAT_R16G16B16A16_FLOAT,
+                        EnvironmentRenderer::PrefilteredSpecularSize,
+                        EnvironmentRenderer::PrefilteredSpecularMipLevels,
+                        nativeViews.environment[1])
+                    || !tryResolveTextureCube(
+                        environment.irradiance,
+                        DXGI_FORMAT_R16G16B16A16_FLOAT,
+                        EnvironmentRenderer::PrefilteredIrradianceSize,
+                        EnvironmentRenderer::PrefilteredIrradianceMipLevels,
+                        nativeViews.environment[2])
+                    || !std::isfinite(
+                        environment.specularMaximumMip)
+                    || environment.specularMaximumMip
+                        != ExpectedMaximumMip)
+                {
+                    return false;
+                }
+            }
+        }
+
+        const auto tryResolveShadow = [this](
+            const GraphicsViewHandle& handle,
+            const bool cube,
+            const std::uint32_t minimumSlices,
+            const std::uint32_t maximumSlices,
+            const float expectedResolution,
+            ID3D11ShaderResourceView*& resolved) noexcept
+        {
+            if (!std::isfinite(expectedResolution)
+                || expectedResolution < 1.0f
+                || expectedResolution
+                    > static_cast<float>(
+                        D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION))
+            {
+                return false;
+            }
+            const auto roundedResolution =
+                std::round(expectedResolution);
+            if (std::abs(
+                    static_cast<double>(expectedResolution)
+                        - roundedResolution) > 0.0001)
+            {
+                return false;
+            }
+
+            resolved = TryResolveD3D11ShaderResourceView(handle);
+            if (!handle || resolved == nullptr)
+            {
+                return false;
+            }
+            D3D11_SHADER_RESOURCE_VIEW_DESC viewDescription{};
+            resolved->GetDesc(&viewDescription);
+            if (viewDescription.Format != DXGI_FORMAT_R32_FLOAT)
+            {
+                return false;
+            }
+            if (cube)
+            {
+                if (viewDescription.ViewDimension
+                        != D3D11_SRV_DIMENSION_TEXTURECUBE
+                    || viewDescription.TextureCube.MostDetailedMip != 0
+                    || viewDescription.TextureCube.MipLevels != 1)
+                {
+                    return false;
+                }
+            }
+            else if (viewDescription.ViewDimension
+                    != D3D11_SRV_DIMENSION_TEXTURE2DARRAY
+                || viewDescription.Texture2DArray.MostDetailedMip != 0
+                || viewDescription.Texture2DArray.MipLevels != 1
+                || viewDescription.Texture2DArray.FirstArraySlice != 0
+                || viewDescription.Texture2DArray.ArraySize
+                    < minimumSlices
+                || viewDescription.Texture2DArray.ArraySize
+                    > maximumSlices)
+            {
+                return false;
+            }
+
+            Microsoft::WRL::ComPtr<ID3D11Resource> resource;
+            resolved->GetResource(resource.ReleaseAndGetAddressOf());
+            Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+            if (resource == nullptr || FAILED(resource.As(&texture)))
+            {
+                return false;
+            }
+            D3D11_TEXTURE2D_DESC description{};
+            texture->GetDesc(&description);
+            const auto resolution =
+                static_cast<std::uint32_t>(roundedResolution);
+            const bool isCube = (description.MiscFlags
+                & D3D11_RESOURCE_MISC_TEXTURECUBE) != 0;
+            return description.Width == resolution
+                && description.Height == resolution
+                && description.MipLevels == 1
+                && description.ArraySize >= minimumSlices
+                && description.ArraySize <= maximumSlices
+                && (cube
+                    || description.ArraySize
+                        == viewDescription.Texture2DArray.ArraySize)
+                && description.Format == DXGI_FORMAT_R32_TYPELESS
+                && description.SampleDesc.Count == 1
+                && (description.BindFlags & D3D11_BIND_DEPTH_STENCIL) != 0
+                && (description.BindFlags & D3D11_BIND_SHADER_RESOURCE) != 0
+                && isCube == cube;
+        };
+
+        const auto& directionalShadow = lighting.directionalShadow;
+        if (directionalShadow.enabled)
+        {
+            const auto directionalLightCount = std::min(
+                lighting.directionalLightCount,
+                MaximumDirectionalLights);
+            if (directionalShadow.cascadeCount == 0
+                || directionalShadow.cascadeCount
+                    > MaximumShadowCascades
+                || directionalShadow.lightIndex
+                    >= directionalLightCount
+                || !tryResolveShadow(
+                    directionalShadow.texture,
+                    false,
+                    static_cast<std::uint32_t>(
+                        directionalShadow.cascadeCount),
+                    static_cast<std::uint32_t>(
+                        MaximumShadowCascades),
+                    lighting.directionalShadowResolution,
+                    nativeViews.directionalShadow))
+            {
+                return false;
+            }
+        }
+
+        bool hasSpotShadow{};
+        const auto spotLightCount = std::min(
+            lighting.spotLightCount,
+            MaximumSpotLights);
+        for (const auto& spotShadow : lighting.spotShadows)
+        {
+            if (!spotShadow.enabled)
+            {
+                continue;
+            }
+            if (spotShadow.lightIndex < 0
+                || static_cast<std::size_t>(spotShadow.lightIndex)
+                    >= spotLightCount)
+            {
+                return false;
+            }
+            hasSpotShadow = true;
+        }
+        if (hasSpotShadow
+            && !tryResolveShadow(
+                lighting.spotShadowTexture,
+                false,
+                static_cast<std::uint32_t>(MaximumSpotShadows),
+                static_cast<std::uint32_t>(MaximumSpotShadows),
+                lighting.localShadowResolution,
+                nativeViews.spotShadow))
+        {
+            return false;
+        }
+
+        const auto& pointShadow = lighting.pointShadow;
+        if (pointShadow.enabled)
+        {
+            const auto pointLightCount = std::min(
+                lighting.pointLightCount,
+                MaximumPointLights);
+            if (pointShadow.lightIndex < 0
+                || static_cast<std::size_t>(pointShadow.lightIndex)
+                    >= pointLightCount
+                || !tryResolveShadow(
+                    pointShadow.texture,
+                    true,
+                    6,
+                    6,
+                    lighting.localShadowResolution,
+                    nativeViews.pointShadow))
+            {
+                return false;
+            }
+        }
+
+        const auto& screenOcclusion =
+            lighting.screenAmbientOcclusion;
+        if (screenOcclusion.enabled)
+        {
+            if (!std::isfinite(screenOcclusion.inverseWidth)
+                || !std::isfinite(screenOcclusion.inverseHeight)
+                || !(screenOcclusion.inverseWidth > 0.0f)
+                || !(screenOcclusion.inverseHeight > 0.0f))
+            {
+                return false;
+            }
+            D3D11_TEXTURE2D_DESC description{};
+            std::uint32_t targetWidth{};
+            std::uint32_t targetHeight{};
+            if (!tryResolveTexture2D(
+                    screenOcclusion.texture,
+                    DXGI_FORMAT_R8_UNORM,
+                    1,
+                    nativeViews.screenAmbientOcclusion,
+                    description)
+                || !tryRecoverDimension(
+                    screenOcclusion.inverseWidth,
+                    targetWidth)
+                || !tryRecoverDimension(
+                    screenOcclusion.inverseHeight,
+                    targetHeight)
+                || description.Width
+                    != std::max(targetWidth / 2u, 1u)
+                || description.Height
+                    != std::max(targetHeight / 2u, 1u))
+            {
+                return false;
+            }
+        }
+
+        const auto& screenReflection =
+            lighting.screenSpaceReflection;
+        if (screenReflection.enabled)
+        {
+            if (!std::isfinite(screenReflection.inverseWidth)
+                || !std::isfinite(screenReflection.inverseHeight)
+                || !(screenReflection.inverseWidth > 0.0f)
+                || !(screenReflection.inverseHeight > 0.0f)
+                || screenReflection.depthPyramidMaximumMip
+                    >= D3D11_REQ_MIP_LEVELS)
+            {
+                return false;
+            }
+            D3D11_TEXTURE2D_DESC colorDescription{};
+            D3D11_TEXTURE2D_DESC depthDescription{};
+            std::uint32_t targetWidth{};
+            std::uint32_t targetHeight{};
+            const auto depthMipLevels =
+                screenReflection.depthPyramidMaximumMip + 1;
+            if (!tryResolveTexture2D(
+                    screenReflection.texture,
+                    DXGI_FORMAT_R16G16B16A16_FLOAT,
+                    1,
+                    nativeViews.screenSpaceReflection[0],
+                    colorDescription)
+                || !tryResolveTexture2D(
+                    screenReflection.depth,
+                    DXGI_FORMAT_R32_FLOAT,
+                    depthMipLevels,
+                    nativeViews.screenSpaceReflection[1],
+                    depthDescription)
+                || colorDescription.Width != depthDescription.Width
+                || colorDescription.Height != depthDescription.Height
+                || !tryRecoverDimension(
+                    screenReflection.inverseWidth,
+                    targetWidth)
+                || !tryRecoverDimension(
+                    screenReflection.inverseHeight,
+                    targetHeight)
+                || colorDescription.Width != targetWidth
+                || colorDescription.Height != targetHeight)
+            {
+                return false;
+            }
+            std::uint32_t fullMipLevels{ 1 };
+            for (auto maximumDimension =
+                    std::max(targetWidth, targetHeight);
+                maximumDimension > 1;
+                maximumDimension >>= 1)
+            {
+                ++fullMipLevels;
+            }
+            if (depthMipLevels != fullMipLevels)
+            {
+                return false;
+            }
+        }
+
+        const auto& clustered = lighting.clustered;
+        if (clustered.enabled)
+        {
+            if (clustered.lightCount == 0
+                || clustered.lightCount > MaximumClusteredLights
+                || !std::isfinite(clustered.nearPlane)
+                || !std::isfinite(clustered.farPlane)
+                || !std::isfinite(clustered.inverseWidth)
+                || !std::isfinite(clustered.inverseHeight)
+                || !(clustered.nearPlane > 0.0f)
+                || !(clustered.farPlane > clustered.nearPlane)
+                || !(clustered.inverseWidth > 0.0f)
+                || !(clustered.inverseHeight > 0.0f))
+            {
+                return false;
+            }
+
+            const std::array<const GraphicsViewHandle*, 3> handles{
+                &clustered.lights,
+                &clustered.lightIndices,
+                &clustered.clusterCounts
+            };
+            const std::array<std::uint32_t, 3> expectedStrides{
+                static_cast<std::uint32_t>(sizeof(GpuLight)),
+                static_cast<std::uint32_t>(sizeof(std::uint32_t)),
+                static_cast<std::uint32_t>(sizeof(std::uint32_t))
+            };
+            const std::array<std::uint32_t, 3> expectedElements{
+                static_cast<std::uint32_t>(MaximumClusteredLights),
+                ClusteredLights::ClusterCount
+                    * ClusteredLights::MaximumLightsPerCluster,
+                ClusteredLights::ClusterCount
+            };
+            for (std::size_t index{};
+                index < handles.size();
+                ++index)
+            {
+                const auto& handle = *handles[index];
+                auto* const nativeView =
+                    TryResolveD3D11ShaderResourceView(handle);
+                if (!handle || nativeView == nullptr)
+                {
+                    return false;
+                }
+
+                D3D11_SHADER_RESOURCE_VIEW_DESC viewDescription{};
+                nativeView->GetDesc(&viewDescription);
+                if (viewDescription.ViewDimension
+                        != D3D11_SRV_DIMENSION_BUFFER
+                    || viewDescription.Format != DXGI_FORMAT_UNKNOWN
+                    || viewDescription.Buffer.FirstElement != 0
+                    || viewDescription.Buffer.NumElements
+                        != expectedElements[index])
+                {
+                    return false;
+                }
+
+                Microsoft::WRL::ComPtr<ID3D11Resource> resource;
+                nativeView->GetResource(
+                    resource.ReleaseAndGetAddressOf());
+                Microsoft::WRL::ComPtr<ID3D11Buffer> buffer;
+                if (resource == nullptr
+                    || FAILED(resource.As(&buffer)))
+                {
+                    return false;
+                }
+                D3D11_BUFFER_DESC bufferDescription{};
+                buffer->GetDesc(&bufferDescription);
+                const auto requiredBytes =
+                    static_cast<std::uint64_t>(expectedElements[index])
+                    * expectedStrides[index];
+                if ((bufferDescription.BindFlags
+                        & D3D11_BIND_SHADER_RESOURCE) == 0
+                    || (bufferDescription.MiscFlags
+                        & D3D11_RESOURCE_MISC_BUFFER_STRUCTURED) == 0
+                    || bufferDescription.StructureByteStride
+                        != expectedStrides[index]
+                    || bufferDescription.ByteWidth < requiredBytes)
+                {
+                    return false;
+                }
+                nativeViews.clustered[index] = nativeView;
+            }
+        }
+
+        const auto& bakedGi = lighting.bakedGlobalIllumination;
+        if (bakedGi.enabled)
+        {
+            D3D11_TEXTURE3D_DESC expectedVolume{};
+            const std::array<const GraphicsViewHandle*, 3> handles{
+                &bakedGi.redCoefficients,
+                &bakedGi.greenCoefficients,
+                &bakedGi.blueCoefficients
+            };
+            for (std::size_t index{};
+                index < handles.size();
+                ++index)
+            {
+                const auto& handle = *handles[index];
+                auto* const nativeView =
+                    TryResolveD3D11ShaderResourceView(handle);
+                if (!handle || nativeView == nullptr)
+                {
+                    return false;
+                }
+                D3D11_SHADER_RESOURCE_VIEW_DESC description{};
+                nativeView->GetDesc(&description);
+                if (description.ViewDimension
+                        != D3D11_SRV_DIMENSION_TEXTURE3D
+                    || description.Format
+                        != DXGI_FORMAT_R16G16B16A16_FLOAT
+                    || description.Texture3D.MostDetailedMip != 0
+                    || description.Texture3D.MipLevels != 1)
+                {
+                    return false;
+                }
+
+                Microsoft::WRL::ComPtr<ID3D11Resource> resource;
+                nativeView->GetResource(
+                    resource.ReleaseAndGetAddressOf());
+                Microsoft::WRL::ComPtr<ID3D11Texture3D> volume;
+                if (resource == nullptr
+                    || FAILED(resource.As(&volume)))
+                {
+                    return false;
+                }
+                D3D11_TEXTURE3D_DESC volumeDescription{};
+                volume->GetDesc(&volumeDescription);
+                if (volumeDescription.Format
+                        != DXGI_FORMAT_R16G16B16A16_FLOAT
+                    || (index != 0
+                        && (volumeDescription.Width
+                                != expectedVolume.Width
+                            || volumeDescription.Height
+                                != expectedVolume.Height
+                            || volumeDescription.Depth
+                                != expectedVolume.Depth)))
+                {
+                    return false;
+                }
+                if (index == 0)
+                {
+                    expectedVolume = volumeDescription;
+                }
+                nativeViews.bakedGlobalIllumination[index] =
+                    nativeView;
+            }
+            if (bakedGi.resolution.x
+                    != static_cast<float>(expectedVolume.Width)
+                || bakedGi.resolution.y
+                    != static_cast<float>(expectedVolume.Height)
+                || bakedGi.resolution.z
+                    != static_cast<float>(expectedVolume.Depth))
+            {
+                return false;
+            }
+        }
+
+        effect.SetLightingD3D11(lighting, nativeViews);
+        return true;
+    }
+
+    LitEffect& GraphicsDevice::MaterialShader(
+        const std::filesystem::path& shaderPath,
+        std::uint64_t& generation,
+        std::string& error,
+        const ShaderKeywordSet& keywords) const
+    {
+        generation = 0;
+        error.clear();
+        if (shaderPath.empty())
+        {
+            return Lit();
+        }
+
+        const auto absolutePath =
+            Assets().ResolvePath(shaderPath).lexically_normal();
+        // 宣言に無いキーワードは落とします。シェーダーを差し替えた
+        // 後のマテリアルが、存在しないキーワードでコンパイルを
+        // 走らせないようにするためです。
+        const auto normalized = NormalizeKeywords(
+            ShaderVariantsFor(absolutePath),
+            keywords);
+        // 同じHLSLでもバリアントごとに別のエントリーです。キーは
+        // 「パス?キーワード」で、キーワードは常に整列済みなので
+        // 同じ組み合わせなら必ず同じキーになります。
+        const auto variantKey = normalized.Key();
+        const std::filesystem::path cacheKey =
+            variantKey.empty()
+                ? absolutePath
+                : std::filesystem::path(
+                    absolutePath.wstring()
+                    + L"?"
+                    + Utf8ToWide(variantKey));
+        auto& entry = RequireD3D11ApiResources().materialShaders[cacheKey];
+        if (!entry)
+        {
+            entry = std::make_unique<MaterialShaderEntry>();
+            entry->keywords = normalized.Keywords();
+        }
+
+        // コンパイル失敗を明示するため標準Litではなくマゼンタの代替表示を使います。
+        const auto resolve = [this, &entry]() -> LitEffect&
+        {
+            if (entry->effect)
+            {
+                return *entry->effect;
+            }
+            if (!entry->error.empty())
+            {
+                if (auto* const placeholder =
+                        ShaderErrorPlaceholder(false))
+                {
+                    return *placeholder;
+                }
+            }
+            return Lit();
+        };
+
+        // 非同期コンパイル完了後にLitEffectを組み立てます
+        // （キャッシュに当たるので一瞬で終わります）。
+        if (entry->pending)
+        {
+            if (entry->warming.valid()
+                && entry->warming.wait_for(
+                        std::chrono::seconds(0))
+                    == std::future_status::ready)
+            {
+                entry->warming.get();
+                entry->pending = false;
+                try
+                {
+                    entry->effect =
+                        std::make_unique<LitEffect>(
+                            Device(),
+                            Context(),
+                            Assets(),
+                            absolutePath,
+                            false,
+                            entry->keywords);
+                    entry->generation =
+                        ++m_state->m_materialShaderGeneration;
+                    entry->error.clear();
+                }
+                catch (const std::exception& exception)
+                {
+                    entry->error = DescribeShaderFailure(
+                        Assets(),
+                        absolutePath,
+                        exception.what(),
+                        ShaderUsage::Material);
+                }
+            }
+            else
+            {
+                // 非同期コンパイルの完了までは標準Litで描画を継続します。
+                generation = entry->generation;
+                error.clear();
+                return Lit();
+            }
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        if (entry->observed
+            && !entry->forceReload
+            && now < entry->nextCheck)
+        {
+            generation = entry->generation;
+            error = entry->error;
+            return resolve();
+        }
+        entry->nextCheck = now + std::chrono::milliseconds(250);
+
+        // アーカイブで配布したゲームには変更監視の対象となる展開済みファイルが
+        // ありません。ホットリロードの更新日時確認はエディター上の展開済み
+        // アセットだけに行い、アーカイブ内のシェーダーは一度だけ読み込みます。
+        const bool archived = Assets().IsArchived();
+        std::error_code fileError;
+        const bool sourceExists = Assets().FileExists(absolutePath);
+        const auto writeTime = (sourceExists && !archived)
+            ? std::filesystem::last_write_time(
+                absolutePath,
+                fileError)
+            : std::filesystem::file_time_type{};
+        const bool changed = !entry->observed
+            || entry->forceReload
+            || entry->sourceExists != sourceExists
+            || (sourceExists
+                && !archived
+                && entry->writeTime != writeTime);
+        if (changed)
+        {
+            entry->observed = true;
+            entry->forceReload = false;
+            entry->sourceExists = sourceExists;
+            entry->writeTime = writeTime;
+            if (!sourceExists)
+            {
+                entry->error =
+                    "Shader file was not found: "
+                    + PathToUtf8(absolutePath);
+                entry->effect.reset();
+            }
+            else
+            {
+                try
+                {
+                    // アーカイブ（書き出したゲーム）は全部事前
+                    // コンパイル済みなので待ち時間が無く、かつ
+                    // アーカイブ読み取りはスレッド安全ではないため
+                    // 同期のままにします。
+                    if (m_state->m_asyncShaderCompilation
+                        && !Assets().IsArchived())
+                    {
+                        // effectを破棄すると、失敗時は代替表示へ切り替わります。
+                        auto* const assets = &Assets();
+                        const auto path = absolutePath;
+                        const auto keywordList = entry->keywords;
+                        entry->effect.reset();
+                        entry->pending = true;
+                        entry->error.clear();
+                        entry->warming = std::async(
+                            std::launch::async,
+                            [assets, path, keywordList]
+                            {
+                                WarmShaderCache(
+                                    *assets,
+                                    path,
+                                    keywordList);
+                            });
+                        return Lit();
+                    }
+                    auto candidate = std::make_unique<LitEffect>(
+                        Device(),
+                        Context(),
+                        Assets(),
+                        absolutePath,
+                        false,
+                        entry->keywords);
+                    entry->effect = std::move(candidate);
+                    entry->generation =
+                        ++m_state->m_materialShaderGeneration;
+                    entry->error.clear();
+                }
+                catch (const std::exception& exception)
+                {
+                    entry->error = DescribeShaderFailure(
+                        Assets(),
+                        absolutePath,
+                        exception.what(),
+                        ShaderUsage::Material);
+                    // 再コンパイル失敗を視認できるよう、直前のシェーダーを破棄して
+                    // 代替表示へ切り替えます。
+                    entry->effect.reset();
+                }
+            }
+        }
+
+        generation = entry->generation;
+        error = entry->error;
+        return resolve();
+    }
+
+    LitEffect* GraphicsDevice::SkinnedMaterialShader(
+        const std::filesystem::path& shaderPath,
+        std::uint64_t& generation,
+        std::string& error,
+        const ShaderKeywordSet& keywords) const
+    {
+        generation = 0;
+        error.clear();
+        if (shaderPath.empty())
+        {
+            return nullptr;
+        }
+
+        const auto absolutePath =
+            Assets().ResolvePath(shaderPath).lexically_normal();
+        // 通常マテリアルと同じく、バリアントごとに別エントリーです。
+        const auto normalized = NormalizeKeywords(
+            ShaderVariantsFor(absolutePath),
+            keywords);
+        const auto variantKey = normalized.Key();
+        const std::filesystem::path cacheKey =
+            variantKey.empty()
+                ? absolutePath
+                : std::filesystem::path(
+                    absolutePath.wstring()
+                    + L"?"
+                    + Utf8ToWide(variantKey));
+        auto& entry = RequireD3D11ApiResources().skinnedMaterialShaders[cacheKey];
+        if (!entry)
+        {
+            entry = std::make_unique<MaterialShaderEntry>();
+            entry->keywords = normalized.Keywords();
+        }
+
+        // 通常マテリアルと同じく、失敗時はマゼンタの代替表示を使い、
+        // シェーダーを作成できなかったモデルを画面上で特定できます。
+        const auto resolve = [this, &entry]() -> LitEffect*
+        {
+            if (entry->effect)
+            {
+                return entry->effect.get();
+            }
+            if (!entry->error.empty())
+            {
+                return ShaderErrorPlaceholder(true);
+            }
+            return nullptr;
+        };
+
+        const auto now = std::chrono::steady_clock::now();
+        if (entry->observed
+            && !entry->forceReload
+            && now < entry->nextCheck)
+        {
+            generation = entry->generation;
+            error = entry->error;
+            return resolve();
+        }
+        entry->nextCheck = now + std::chrono::milliseconds(250);
+
+        // アーカイブで配布したゲームには変更監視の対象となる展開済みファイルが
+        // ありません。ホットリロードの更新日時確認はエディター上の展開済み
+        // アセットだけに行い、アーカイブ内のシェーダーは一度だけ読み込みます。
+        const bool archived = Assets().IsArchived();
+        std::error_code fileError;
+        const bool sourceExists = Assets().FileExists(absolutePath);
+        const auto writeTime = (sourceExists && !archived)
+            ? std::filesystem::last_write_time(
+                absolutePath,
+                fileError)
+            : std::filesystem::file_time_type{};
+        const bool changed = !entry->observed
+            || entry->forceReload
+            || entry->sourceExists != sourceExists
+            || (sourceExists
+                && !archived
+                && entry->writeTime != writeTime);
+        if (changed)
+        {
+            entry->observed = true;
+            entry->forceReload = false;
+            entry->sourceExists = sourceExists;
+            entry->writeTime = writeTime;
+            if (!sourceExists)
+            {
+                entry->error =
+                    "Shader file was not found: "
+                    + PathToUtf8(absolutePath);
+                entry->effect.reset();
+            }
+            else
+            {
+                try
+                {
+                    auto candidate = std::make_unique<LitEffect>(
+                        Device(),
+                        Context(),
+                        Assets(),
+                        absolutePath,
+                        true,
+                        entry->keywords);
+                    entry->effect = std::move(candidate);
+                    entry->generation =
+                        ++m_state->m_materialShaderGeneration;
+                    entry->error.clear();
+                }
+                catch (const std::exception& exception)
+                {
+                    entry->error = DescribeShaderFailure(
+                        Assets(),
+                        absolutePath,
+                        exception.what(),
+                        ShaderUsage::Material);
+                    // 通常マテリアルと同じく、失敗したら直前の
+                    // シェーダーは残しません。
+                    entry->effect.reset();
+                }
+            }
+        }
+
+        generation = entry->generation;
+        error = entry->error;
+        return resolve();
+    }
+
+    bool GraphicsDevice::DrawMaterialShaderPrimitive(
+        const PrimitiveDrawRequest& request,
+        const Detail::MaterialShaderDrawRequest& material,
+        std::uint64_t& generation,
+        std::string& error)
+    {
+        generation = 0;
+        error.clear();
+        // glTF／FBXでMaterial上書きが無いときは、定数はモデル自身の材質、
+        // Shaderとkeywordはコンポーネントの材質から読みます。
+        const auto* const shaderMaterial = material.shaderMaterial != nullptr
+            ? material.shaderMaterial
+            : material.material;
+        if (material.material == nullptr
+            || shaderMaterial == nullptr
+            || shaderMaterial->Shader().empty()
+            || ActiveRenderingApi()
+                != RenderingApi::DirectX12Experimental)
+        {
+            return false;
+        }
+        auto* const services = TryD3D12MaterialShaderServices(
+            m_state->m_apiResources.get());
+        if (services == nullptr)
+        {
+            return false;
+        }
+
+        const auto shader = MakeMaterialShaderSource(
+            *this,
+            shaderMaterial->Shader(),
+            shaderMaterial->ShaderKeywords());
+        // D3D11のShaderErrorPlaceholderと同じく、プロジェクトに代替
+        // Shaderが無いときはエンジン同梱版を使います。
+        constexpr const char* placeholderRelativePath =
+            "shaders/LamaPonShaderError.hlsl";
+        auto placeholderPath = Assets().ResolvePath(placeholderRelativePath);
+        if (!Assets().FileExists(placeholderPath))
+        {
+            placeholderPath =
+                ExecutableDirectory() / "assets" / placeholderRelativePath;
+        }
+        Detail::MaterialShaderSource placeholder;
+        placeholder.path = placeholderPath.lexically_normal();
+        placeholder.cacheKey = placeholder.path;
+        const auto result = services->DrawMaterialShader(
+            Assets(),
+            shader,
+            placeholder,
+            DepthPass() == DepthPassKind::Prepass,
+            request,
+            material,
+            Lighting());
+        generation = result.generation;
+        // 通常の描画に問題が無くても、輪郭／遮蔽表示だけを止めたときは
+        // その説明を出します。
+        error = result.error.empty() ? result.passError : result.error;
+        if (result.drawn && result.placeholder)
+        {
+            // 代替表示を使った回数をFrameStatisticsへ記録します。
+            ++m_state->m_frameStatistics.shaderFallbackDraws;
+        }
+        return result.drawn;
+    }
+
+    bool GraphicsDevice::TryGetMaterialShaderRenderState(
+        const std::filesystem::path& shaderPath,
+        const ShaderKeywordSet& keywords,
+        ShaderRenderState& state) const
+    {
+        if (shaderPath.empty()
+            || TryAssets() == nullptr
+            || ActiveRenderingApi()
+                != RenderingApi::DirectX12Experimental)
+        {
+            return false;
+        }
+        auto* const services = TryD3D12MaterialShaderServices(
+            m_state->m_apiResources.get());
+        return services != nullptr
+            && services->TryGetMaterialShaderRenderState(
+                MakeMaterialShaderSource(*this, shaderPath, keywords)
+                    .cacheKey,
+                state);
+    }
+
+    Detail::MaterialShaderPasses GraphicsDevice::PrepareMaterialShaderPasses(
+        const std::filesystem::path& shaderPath,
+        const ShaderKeywordSet& keywords)
+    {
+        if (shaderPath.empty()
+            || TryAssets() == nullptr
+            || ActiveRenderingApi()
+                != RenderingApi::DirectX12Experimental)
+        {
+            return {};
+        }
+        auto* const services = TryD3D12MaterialShaderServices(
+            m_state->m_apiResources.get());
+        return services != nullptr
+            ? services->PrepareMaterialShaderPasses(
+                Assets(),
+                MakeMaterialShaderSource(*this, shaderPath, keywords))
+            : Detail::MaterialShaderPasses{};
+    }
+
+    void GraphicsDevice::InvalidateMaterialShader(
+        const std::filesystem::path& shaderPath) const
+    {
+        if (shaderPath.empty())
+        {
+            return;
+        }
+        const auto absolutePath =
+            Assets().ResolvePath(shaderPath).lexically_normal();
+        // 宣言そのものも読み直します（multi_compileの行を
+        // 足し引きしたときに追従するため）。
+        m_state->m_shaderVariants.erase(absolutePath);
+        if (ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            if (auto* const services = TryD3D12MaterialShaderServices(
+                    m_state->m_apiResources.get()))
+            {
+                services->InvalidateMaterialShader(absolutePath);
+            }
+            return;
+        }
+        auto* const resources = TryD3D11ApiResources();
+        if (resources == nullptr)
+        {
+            return;
+        }
+        // バリアントごとに別エントリーなので、そのHLSLから作られた
+        // ものを全部立て直します（キーは「パス?キーワード」）。
+        const auto prefix = absolutePath.wstring();
+        for (auto& [key, value] : resources->materialShaders)
+        {
+            const auto text = key.wstring();
+            if (text == prefix
+                || (text.rfind(prefix, 0) == 0
+                    && text.size() > prefix.size()
+                    && text[prefix.size()] == L'?'))
+            {
+                value->forceReload = true;
+            }
+        }
+        for (auto& [key, value] : resources->skinnedMaterialShaders)
+        {
+            const auto text = key.wstring();
+            if (text == prefix
+                || (text.rfind(prefix, 0) == 0
+                    && text.size() > prefix.size()
+                    && text[prefix.size()] == L'?'))
+            {
+                value->forceReload = true;
+            }
+        }
+    }
+
+    bool GraphicsDevice::DrawD3D12CustomParticles(
+        const ParticleDrawRequest& request,
+        const std::filesystem::path& shaderPath,
+        const std::array<DirectX::XMFLOAT4, 8>& customParameters,
+        std::uint64_t* const shaderGeneration,
+        std::string* const shaderError)
+    {
+        auto* const services = TryD3D12MaterialShaderServices(
+            m_state->m_apiResources.get());
+        if (services == nullptr
+            || shaderPath.empty()
+            || TryAssets() == nullptr)
+        {
+            return false;
+        }
+        // D3D11のApplyCustomPixelShaderと同じく絶対パスをcache keyにし、
+        // compile失敗の説明は2DのShaderとして出します。
+        Detail::MaterialShaderSource shader;
+        shader.path = Assets().ResolvePath(shaderPath).lexically_normal();
+        shader.cacheKey = shader.path;
+        auto* const assets = &Assets();
+        shader.describeFailure =
+            [assets, path = shader.path](const char* const message)
+            {
+                return DescribeShaderFailure(
+                    *assets,
+                    path,
+                    message,
+                    ShaderUsage::Sprite);
+            };
+        // D3D11のSpriteErrorPlaceholderと同じく、プロジェクトに代替Shaderが
+        // 無いときはエンジン同梱版を使います。
+        constexpr const char* placeholderRelativePath =
+            "shaders/LamaPonSpriteError.hlsl";
+        auto placeholderPath = Assets().ResolvePath(placeholderRelativePath);
+        if (!Assets().FileExists(placeholderPath))
+        {
+            placeholderPath =
+                ExecutableDirectory() / "assets" / placeholderRelativePath;
+        }
+        Detail::MaterialShaderSource placeholder;
+        placeholder.path = placeholderPath.lexically_normal();
+        placeholder.cacheKey = placeholder.path;
+        const auto result = services->DrawCustomParticles(
+            Assets(),
+            shader,
+            placeholder,
+            request,
+            customParameters);
+        if (shaderGeneration != nullptr)
+        {
+            *shaderGeneration = result.generation;
+        }
+        if (shaderError != nullptr)
+        {
+            *shaderError = result.error;
+        }
+        if (result.drawn && result.placeholder)
+        {
+            // D3D11と同じく、代替表示を使った回数を数えます。
+            ++m_state->m_frameStatistics.shaderFallbackDraws;
+        }
+        return result.drawn;
+    }
+
+    void GraphicsDevice::InvalidateSpriteShader(
+        const std::filesystem::path& shaderPath) const
+    {
+        if (ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            // D3D12のSpriteは描くたびにcompile cacheを確かめるため、
+            // ParticleSystemのcustom pixel shaderだけを作り直させます。
+            auto* const services = TryD3D12MaterialShaderServices(
+                m_state->m_apiResources.get());
+            if (services != nullptr
+                && !shaderPath.empty()
+                && TryAssets() != nullptr)
+            {
+                services->InvalidateCustomPixelShader(
+                    Assets().ResolvePath(shaderPath).lexically_normal());
+            }
+            return;
+        }
+        auto* const resources = TryD3D11ApiResources();
+        if (shaderPath.empty() || resources == nullptr)
+        {
+            return;
+        }
+        const auto absolutePath =
+            Assets().ResolvePath(shaderPath).lexically_normal();
+        const auto found = resources->spriteShaders.find(absolutePath);
+        if (found != resources->spriteShaders.end())
+        {
+            found->second->forceReload = true;
+        }
+    }
+}

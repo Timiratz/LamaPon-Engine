@@ -5,8 +5,6 @@
 #include "LamaPon/Input/InputSystem.h"
 #include "LamaPon/Scene/GameObject.h"
 
-#include <SpriteBatch.h>
-
 #include <algorithm>
 
 namespace
@@ -178,11 +176,8 @@ namespace LamaPon
     }
 
     void UIScrollViewComponent::OnRender2D(
-        DirectX::SpriteBatch& spriteBatch,
-        ID3D11ShaderResourceView* whiteTexture)
+        const SpriteDrawContext& sprites)
     {
-        using namespace DirectX;
-
         if (m_graphics == nullptr)
         {
             return;
@@ -196,14 +191,11 @@ namespace LamaPon
 
         const auto premultipliedBackground =
             Premultiply(m_backgroundColor);
-        spriteBatch.Draw(
-            whiteTexture,
-            rect.minimum,
-            nullptr,
-            XMLoadFloat4(&premultipliedBackground),
-            0.0f,
-            {},
-            XMFLOAT2{ size.x, size.y });
+        SpriteDrawRequest request;
+        request.position = rect.minimum;
+        request.tint = premultipliedBackground;
+        request.scale = { size.x, size.y };
+        static_cast<void>(sprites.Draw(request));
 
         // 右端の縦スクロールバー。
         const float maximumOffset =
@@ -231,15 +223,11 @@ namespace LamaPon
         const float barWidth = 6.0f;
         const auto premultipliedBar =
             Premultiply(m_scrollbarColor);
-        spriteBatch.Draw(
-            whiteTexture,
-            XMFLOAT2{
-                rect.maximum.x - barWidth,
-                rect.minimum.y + thumbOffset },
-            nullptr,
-            XMLoadFloat4(&premultipliedBar),
-            0.0f,
-            {},
-            XMFLOAT2{ barWidth, thumbHeight });
+        request.position = {
+            rect.maximum.x - barWidth,
+            rect.minimum.y + thumbOffset };
+        request.tint = premultipliedBar;
+        request.scale = { barWidth, thumbHeight };
+        static_cast<void>(sprites.Draw(request));
     }
 }

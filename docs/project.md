@@ -150,6 +150,7 @@ GPUが無い・正しく動かない環境（仮想マシン、リモートデ�
 - 初期ウィンドウ解像度
 - 起動シーン
 - ビューポート設定（フライ操作／オービット操作プリセット、回転・パン・ズーム感度、Y軸反転）
+- Rendering API（Auto／DirectX 11／DirectX 12 Experimental）
 - グラフィック品質プリセット
 - 描画方式（Forward+／Forward。[詳細](graphics.md#描画方式rendering-path)）
 - 描画スケール、Shadow解像度／Cascade上限
@@ -162,6 +163,11 @@ GPUが無い・正しく動かない環境（仮想マシン、リモートデ�
 - Inspectorの小数点桁数
 - オンラインサービス（Discordアカウント連携、バックエンドURL、ゲームID、環境ID、Discord Rich Presence）
 - ビルドプロファイル（Windows／Web）と書き出し先の設定画面への入口
+
+Rendering APIの既定はDirectX 11です。変更は実行中に切り替わらず、エディターまたはゲームの再起動後に反映されます。
+DirectX 12 Experimentalを選んだWindows書き出しゲームはD3D12で起動し、主要な3D／2D描画、Model、影、ポストプロセス、custom shader、インスタンス描画を利用できます。詳しい対応範囲、D3D11との互換状況、制限は[DirectX 12 Experimental](directx12.md)を参照してください。
+D3D12を初期化できない環境では、DirectX 11へ自動的にフォールバックして通常どおり起動します。
+エディターとCLIもDirectX 12 Experimentalで起動し、Dear ImGui、モデルプレビュー、デバッグライン、GPU ProfilerをD3D12で描画します。
 
 タグを登録すると、InspectorのTag欄がドロップダウン選択になり、Scene／Prefab読み込み時に未登録タグの使用をConsoleへ警告します。
 一覧が空の間は従来通り検査なしで動作します。

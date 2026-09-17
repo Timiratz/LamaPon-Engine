@@ -394,7 +394,7 @@ int WINAPI wWinMain(
             LamaPon::GraphicsDevice::SetPreferWarpAdapter(true);
         }
 
-        // --d3ddebug: D3D11のデバッグレイヤーを有効にします。
+        // --d3ddebug: 選択中Direct3D APIのデバッグレイヤーを有効にします。
         // 不正な描画は、これが無いと警告も出ずにドライバーへ渡り、
         // WARPではプロセスごと落ちます。落ちる場所を突き止め
         // たいときに付けてください（普段は重いので既定は無効）。
@@ -411,7 +411,11 @@ int WINAPI wWinMain(
             720,
             projectSettings.gameName);
 
-        application.Initialize(instance);
+        application.Initialize(
+            instance,
+            // Editor GUI、モデルプレビュー、grid／gizmoを含むD3D12
+            // rendererを起動します。初期化失敗時はD3D11へ戻ります。
+            projectSettings.graphics.renderingApi);
         // セーフモードと自動UI検証では、保存済みセッションの復元を含む
         // 外部通信を開始しません。通常のEditor起動だけで有効化します。
         if (!safeMode

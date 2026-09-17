@@ -50,6 +50,7 @@ namespace LamaPon
     };
 
     class AssetManager;
+    class GraphicsDevice;
 
     class LitEffect final : public DirectX::IEffect
     {
@@ -89,15 +90,6 @@ namespace LamaPon
                 ID3D11ShaderResourceView*,
                 LitMaterial::CustomTextureCount>&
                 textures) noexcept;
-        void SetLighting(const LightingState& lighting) noexcept;
-        // リフレクションプローブ用。環境反射（t3/t6）をシーン共通の
-        // ものからプローブの結果へ差し替えます。SetLightingの後に
-        // 呼び、SetLightingを呼び直せば元へ戻ります。
-        //
-        // 2個目が入っていればt7/t8へ載せて重みで混ぜます。中身の
-        // 組み立てはScene::ReflectionProbeEnvironmentAtが行います。
-        void SetEnvironmentOverride(
-            const ReflectionProbeEnvironment& probe) noexcept;
         void SetBoneTransforms(
             const DirectX::XMMATRIX* transforms,
             std::size_t count) noexcept;
@@ -185,6 +177,52 @@ namespace LamaPon
             std::size_t* byteCodeLength) override;
 
     private:
+        friend class GraphicsDevice;
+        friend class SkeletalModel;
+
+        // API 52のGame ModuleをLoadLibraryしてAPI不一致案内へ到達する
+        // ためのprivate shimです。旧raw SkeletalModel::Drawも1互換期間
+        // この入口を使い、neutral化済みのlighting resourceは安全に
+        // 無効として扱います。
+        void SetLighting(const LightingState& lighting) noexcept;
+        // neutral LightingStateを検証・解決した後にだけ渡すD3D11 view群。
+        // 今後ほかのlighting resourceを移すときもこのtransactionへ
+        // 追加し、Effectを部分更新しないようにします。
+        struct D3D11LightingViews final
+        {
+            ID3D11ShaderResourceView* directionalShadow{};
+            ID3D11ShaderResourceView* spotShadow{};
+            ID3D11ShaderResourceView* pointShadow{};
+            // source/specular/irradiance。共通Sky IBLは3本を同時に
+            // 検証した後だけnative bindingへ反映します。
+            std::array<ID3D11ShaderResourceView*, 3> environment{};
+            ID3D11ShaderResourceView* screenAmbientOcclusion{};
+            std::array<ID3D11ShaderResourceView*, 2>
+                screenSpaceReflection{};
+            std::array<ID3D11ShaderResourceView*, 3> clustered{};
+            std::array<ID3D11ShaderResourceView*, 3>
+                bakedGlobalIllumination{};
+        };
+        void SetLightingD3D11(
+            const LightingState& lighting,
+            const D3D11LightingViews& views) noexcept;
+
+        // API 57以前のpublic symbolをAPI不一致案内のため残すraw互換
+        // shimです。新しい呼び出しはGraphicsDeviceの検証bridgeを通り、
+        // この入口単体ではneutral handleをnative viewへ解決しません。
+        void SetEnvironmentOverride(
+            const ReflectionProbeEnvironment& probe) noexcept;
+        struct D3D11ReflectionProbeViews final
+        {
+            ID3D11ShaderResourceView* specular{};
+            ID3D11ShaderResourceView* irradiance{};
+            ID3D11ShaderResourceView* secondarySpecular{};
+            ID3D11ShaderResourceView* secondaryIrradiance{};
+        };
+        void SetEnvironmentOverrideD3D11(
+            const ReflectionProbeEnvironment& probe,
+            const D3D11ReflectionProbeViews& views) noexcept;
+
         [[nodiscard]] ID3D11SamplerState*
             ActiveMaterialSampler() const noexcept;
         // 法線マップとPBRマップの有効フラグを、実際にバインドされて

@@ -366,7 +366,7 @@ LamaPonCli.exe patch --project "C:\path\to\MyProject" --scene scenes/main.scene.
 | `image.magentaPixels` | 代役シェーダーの色と一致した画素数。通常の画像に同じ色があれば増えるため、診断の補助値として扱います |
 | `shaderFallbackDraws` | 代役シェーダーを使用した回数。撮影した1フレーム分を数えます |
 | `problems` | 検出した問題の構造化一覧（下記） |
-| `logs` | エンジンの警告とエラー（infoは含めない）。`--d3ddebug` 時はD3D11デバッグレイヤーの警告もここに入る |
+| `logs` | エンジンの警告とエラー（infoは含めない）。`--d3ddebug` 時は選択したDirectX APIのデバッグレイヤー警告もここに入る |
 
 ### problemsの中身
 
@@ -410,7 +410,7 @@ AとDが1つのActionにまとまっているため、既定（正方向）だ�
 負の倍率を持つBinding（A）を押します。JSONの`inputEvents`には
 どちらを押したかが`value`として載ります。
 | `--warp` | GPUを使わずCPU（WARP）で描く |
-| `--d3ddebug` | D3D11デバッグレイヤーを有効にする。不正な描画状態が `logs` に載る |
+| `--d3ddebug` | 選択したDirectX APIのデバッグレイヤーを有効にする。不正な描画状態が `logs` に載る |
 
 ## newのオプション
 

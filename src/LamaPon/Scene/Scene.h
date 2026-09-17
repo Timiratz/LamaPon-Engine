@@ -2,6 +2,7 @@
 
 #include "LamaPon/Graphics/Lighting.h"
 #include "LamaPon/Graphics/EnvironmentSettings.h"
+#include "LamaPon/Graphics/GraphicsDeviceResourceLease.h"
 // VolumetricLightFrameを値で持つため（ポスト処理へ受け渡す情報）。
 #include "LamaPon/Graphics/RenderPipeline.h"
 // ReflectionProbeEnvironmentを値で返すため。
@@ -12,7 +13,6 @@
 #include "LamaPon/Scene/RenderSpatialIndex.h"
 
 #include <DirectXMath.h>
-#include <wrl/client.h>
 
 #include <array>
 #include <memory>
@@ -95,7 +95,7 @@ namespace LamaPon
     class Scene final
     {
     public:
-        explicit Scene(GraphicsDevice& graphics) noexcept;
+        explicit Scene(GraphicsDevice& graphics);
         ~Scene();
 
         Scene(const Scene&) = delete;
@@ -693,6 +693,10 @@ namespace LamaPon
             std::filesystem::path sourcePath);
 
         GraphicsDevice& m_graphics;
+        // SceneManagerのasync workerと全Componentより後に破棄される
+        // （memberの逆順破棄）よう、これらより先に宣言します。
+        GraphicsDeviceResourceLease
+            m_graphicsResourceLease;
         std::unique_ptr<SceneManager>
             m_sceneManager;
         std::vector<std::unique_ptr<GameObject>> m_gameObjects;
@@ -765,15 +769,12 @@ namespace LamaPon
         // 今フレームの描画で使うプローブ一覧（毎フレーム集め直し）。
         std::vector<ReflectionProbeComponent*>
             m_frameReflectionProbes;
-        // ベイク用の共有キューブマップ等（実体はScene.cpp）。
-        struct ReflectionProbeBakeResources;
-        std::unique_ptr<ReflectionProbeBakeResources>
-            m_probeBakeResources;
         // ベイク中の再帰描画でプローブ自身が映り込まないように。
         bool m_bakingReflectionProbes{};
-        // SkyboxのIBL畳み込みのディスクキャッシュ鍵。パスが変わった
-        // ときだけ読み直して計算するための控えです（0は鍵なし）。
+        // SkyboxのIBL畳み込みのディスクキャッシュ鍵。パスまたは
+        // Asset再読込後のview世代が変わったときに内容を再hashします。
         std::filesystem::path m_skyPrefilterKeyPath;
+        GraphicsViewHandle m_skyPrefilterKeySourceView;
         std::uint64_t m_skyPrefilterKey{};
 
         // ベイクした間接光（照度ボリューム）。
@@ -787,10 +788,7 @@ namespace LamaPon
         // m_bakedGiDataを焼いたときの格子と配置（設定を後から
         // 変えても、表示は焼いたときの形で続けるため）。
         BakedGlobalIlluminationSettings m_bakedGiBakedShape;
-        std::array<
-            Microsoft::WRL::ComPtr<
-                ID3D11ShaderResourceView>,
-            3> m_bakedGiViews;
+        std::array<GraphicsViewHandle, 3> m_bakedGiViews;
         bool m_bakedGiTexturesDirty{};
         // ベイクの進行状態（毎フレーム数点ずつ進める）。
         bool m_bakedGiBaking{};

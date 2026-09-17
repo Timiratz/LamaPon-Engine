@@ -24,11 +24,6 @@ namespace
         DXGI_FORMAT_R16G16B16A16_FLOAT;
     constexpr std::uint32_t BytesPerPixel = 8;
 
-    // 検査用の上限。畳み込み出力は128px・8ミップまでで、これを
-    // 超える値が読めたらファイルが壊れています。
-    constexpr std::uint32_t MaximumSize = 1024;
-    constexpr std::uint32_t MaximumMips = 11;
-
     std::mutex g_directoryMutex;
     std::filesystem::path g_directoryOverride;
 
@@ -96,10 +91,13 @@ namespace
                 return;
             }
         }
-        std::error_code error;
-        std::filesystem::rename(temporary, destination, error);
-        if (error)
+        if (!MoveFileExW(
+                temporary.c_str(),
+                destination.c_str(),
+                MOVEFILE_REPLACE_EXISTING
+                    | MOVEFILE_WRITE_THROUGH))
         {
+            std::error_code error;
             std::filesystem::remove(temporary, error);
         }
     }
@@ -363,6 +361,17 @@ namespace LamaPon::EnvironmentCache
             {
                 return;
             }
+            if (specularSize
+                    != EnvironmentRenderer::PrefilteredSpecularSize
+                || specularMips
+                    != EnvironmentRenderer::PrefilteredSpecularMipLevels
+                || irradianceSize
+                    != EnvironmentRenderer::PrefilteredIrradianceSize
+                || irradianceMips
+                    != EnvironmentRenderer::PrefilteredIrradianceMipLevels)
+            {
+                return;
+            }
 
             const auto path = EntryPath(key);
             if (path.empty())
@@ -428,7 +437,20 @@ namespace LamaPon::EnvironmentCache
             }
             input.seekg(0, std::ios::end);
             const std::streamoff fileSize = input.tellg();
-            if (fileSize <= 0)
+            // 形は固定なので全体サイズをallocationより先に検査し、
+            // 巨大または切り詰められたcacheを読み込みません。
+            constexpr std::size_t HeaderBytes = 4 + 4 * 5;
+            const std::size_t expectedFileSize =
+                HeaderBytes
+                + CubeByteCount(
+                    EnvironmentRenderer::PrefilteredSpecularSize,
+                    EnvironmentRenderer::PrefilteredSpecularMipLevels)
+                + CubeByteCount(
+                    EnvironmentRenderer::PrefilteredIrradianceSize,
+                    EnvironmentRenderer::PrefilteredIrradianceMipLevels);
+            if (fileSize <= 0
+                || static_cast<std::uintmax_t>(fileSize)
+                    != expectedFileSize)
             {
                 return result;
             }
@@ -445,7 +467,6 @@ namespace LamaPon::EnvironmentCache
             input.close();
 
             // ヘッダー: magic + version + サイズ4つ。
-            constexpr std::size_t HeaderBytes = 4 + 4 * 5;
             if (bytes.size() < HeaderBytes
                 || std::memcmp(
                     bytes.data(),
@@ -469,14 +490,20 @@ namespace LamaPon::EnvironmentCache
             const std::uint32_t specularMips = readU32(12);
             const std::uint32_t irradianceSize = readU32(16);
             const std::uint32_t irradianceMips = readU32(20);
-            if (specularSize == 0
-                || specularSize > MaximumSize
-                || specularMips == 0
-                || specularMips > MaximumMips
-                || irradianceSize == 0
-                || irradianceSize > MaximumSize
-                || irradianceMips == 0
-                || irradianceMips > MaximumMips)
+            // 現在の畳み込み契約と形が完全一致しない古い／破損
+            // cacheはmissとして扱い、renderer側で再生成します。
+            if (specularSize
+                    != LamaPon::EnvironmentRenderer::
+                        PrefilteredSpecularSize
+                || specularMips
+                    != LamaPon::EnvironmentRenderer::
+                        PrefilteredSpecularMipLevels
+                || irradianceSize
+                    != LamaPon::EnvironmentRenderer::
+                        PrefilteredIrradianceSize
+                || irradianceMips
+                    != LamaPon::EnvironmentRenderer::
+                        PrefilteredIrradianceMipLevels)
             {
                 return result;
             }

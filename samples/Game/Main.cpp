@@ -66,7 +66,13 @@ int WINAPI wWinMain(
             settings.windowHeight,
             settings.gameName);
 
-        application.Initialize(instance);
+        // 描画APIはデバイス初期化時にだけ選択し、実行中は切り替えません。
+        // D3D12を作れない環境ではD3D11へ安全にフォールバックします。
+        application.Initialize(
+            instance,
+            settings.graphics.renderingApi);
+        const bool d3d12ExperimentalRenderer =
+            application.Graphics().IsD3D12ExperimentalRenderer();
         // 無人の配布検証では外部サービスへ接続しません。通常起動時だけ、
         // project.jsonから書き出された公開接続情報を適用します。
         if (!validateStartup && settings.online.enabled)
@@ -123,6 +129,7 @@ int WINAPI wWinMain(
             settings.physics);
         application.Input().SetActions(
             settings.inputActions);
+
         application.ActiveScene().SetRegisteredTags(
             settings.tags);
         if (validateStartup)
@@ -155,6 +162,23 @@ int WINAPI wWinMain(
                         throw std::runtime_error(script->LastError());
                     }
                 }
+            }
+            if (d3d12ExperimentalRenderer)
+            {
+                // D3D12でも実シーンの初期化・Script更新・最小3D・2D/UI
+                // 描画を無人起動検証に含めます。
+                constexpr float experimentalClearColor[4]{
+                    0.025f, 0.035f, 0.055f, 1.0f };
+                application.Graphics().BeginFrame(
+                    experimentalClearColor);
+                scene.RenderMainCamera(
+                    application.Graphics().AspectRatio(),
+                    false,
+                    nullptr);
+                scene.Render2D();
+                application.Graphics().EndFrame();
+                LamaPon::Logger::Instance().Info(
+                    "DirectX 12 ExperimentalでSceneの3Dと2D/UI描画を検証しました。");
             }
             return 0;
         }

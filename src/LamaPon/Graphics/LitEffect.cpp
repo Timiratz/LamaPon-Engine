@@ -292,13 +292,23 @@ namespace LamaPon
                     "ID3D11Device::CreatePixelShader(outline)");
             }
         }
-        const auto occludedPixelByteCode =
-            TryCompileShader(
+        auto occludedPixelByteCode = TryCompileShader(
+            assets,
+            shaderPath,
+            skinned ? "PSSkinnedOccluded" : "PSOccluded",
+            "ps_5_0",
+            keywords);
+        if (skinned && !occludedPixelByteCode)
+        {
+            // 既存のMaterial ShaderはPSOccludedだけを持つため、専用入口が
+            // 無い場合は従来の入口をそのまま使います。
+            occludedPixelByteCode = TryCompileShader(
                 assets,
                 shaderPath,
                 "PSOccluded",
                 "ps_5_0",
-            keywords);
+                keywords);
+        }
         if (occludedPixelByteCode)
         {
             ThrowIfFailed(
@@ -545,6 +555,13 @@ namespace LamaPon
     void LitEffect::SetLighting(
         const LightingState& lighting) noexcept
     {
+        SetLightingD3D11(lighting, {});
+    }
+
+    void LitEffect::SetLightingD3D11(
+        const LightingState& lighting,
+        const D3D11LightingViews& views) noexcept
+    {
         m_lightingConstants = {};
         m_lightingConstants.ambient = {
             lighting.ambientColor.x
@@ -663,6 +680,16 @@ namespace LamaPon
         }
 
         const auto& shadow = lighting.directionalShadow;
+        const bool directionalShadowActive =
+            shadow.enabled
+            && views.directionalShadow != nullptr
+            && shadow.cascadeCount != 0
+            && shadow.lightIndex
+                < m_lightingConstants.lightCounts[0];
+        m_lightingConstants.lightCounts[3] =
+            directionalShadowActive
+                ? m_lightingConstants.lightCounts[3]
+                : 0u;
         m_lightingConstants.shadowViewProjections =
             shadow.lightViewProjections;
         m_lightingConstants.shadowCascadeSplits = {
@@ -672,25 +699,27 @@ namespace LamaPon
             shadow.cascadeSplits[3]
         };
         m_lightingConstants.shadowParameters = {
-            shadow.enabled
+            directionalShadowActive
                 ? static_cast<float>(shadow.lightIndex + 1)
                 : 0.0f,
             shadow.bias,
             shadow.normalBias,
             shadow.strength
         };
-        m_shadowTexture = shadow.enabled
-            ? shadow.texture
+        m_shadowTexture = directionalShadowActive
+            ? views.directionalShadow
             : nullptr;
 
         // スポットライトの影スロットを対応するライトへ紐付けます。
+        bool spotShadowActive{};
         for (std::size_t slot = 0;
             slot < MaximumSpotShadows;
             ++slot)
         {
             const auto& spotShadow =
                 lighting.spotShadows[slot];
-            if (!spotShadow.enabled
+            if (views.spotShadow == nullptr
+                || !spotShadow.enabled
                 || spotShadow.lightIndex < 0
                 || static_cast<std::size_t>(
                     spotShadow.lightIndex)
@@ -713,14 +742,15 @@ namespace LamaPon
                     spotShadow.lightIndex)]
                 .outerCosinePadding.y =
                 static_cast<float>(slot + 1);
+            spotShadowActive = true;
         }
         m_spotShadowTexture =
-            lighting.spotShadowTexture;
+            spotShadowActive ? views.spotShadow : nullptr;
 
         const auto& pointShadow = lighting.pointShadow;
         const bool pointShadowActive =
             pointShadow.enabled
-            && pointShadow.texture != nullptr
+            && views.pointShadow != nullptr
             && pointShadow.lightIndex >= 0
             && static_cast<std::size_t>(
                 pointShadow.lightIndex)
@@ -735,7 +765,7 @@ namespace LamaPon
             0.0f
         };
         m_pointShadowTexture = pointShadowActive
-            ? pointShadow.texture
+            ? views.pointShadow
             : nullptr;
 
         // PCF用のテクセルサイズ
@@ -759,7 +789,7 @@ namespace LamaPon
             lighting.screenAmbientOcclusion;
         const bool screenOcclusionActive =
             screenOcclusion.enabled
-            && screenOcclusion.texture != nullptr;
+            && views.screenAmbientOcclusion != nullptr;
         m_lightingConstants
             .screenAmbientOcclusionParameters = {
             screenOcclusion.inverseWidth,
@@ -769,7 +799,7 @@ namespace LamaPon
         };
         m_screenAmbientOcclusionTexture =
             screenOcclusionActive
-                ? screenOcclusion.texture
+                ? views.screenAmbientOcclusion
                 : nullptr;
 
         // SSR（画面空間反射）。前フレームのカラーと深度が揃って
@@ -778,8 +808,8 @@ namespace LamaPon
             lighting.screenSpaceReflection;
         const bool screenReflectionActive =
             screenReflection.enabled
-            && screenReflection.texture != nullptr
-            && screenReflection.depth != nullptr;
+            && views.screenSpaceReflection[0] != nullptr
+            && views.screenSpaceReflection[1] != nullptr;
         m_lightingConstants.screenReflectionParameters = {
             std::clamp(screenReflection.intensity, 0.0f, 1.0f),
             screenReflectionActive ? 1.0f : 0.0f,
@@ -812,11 +842,11 @@ namespace LamaPon
                 screenReflection.previousViewProjection;
         m_screenReflectionColorTexture =
             screenReflectionActive
-                ? screenReflection.texture
+                ? views.screenSpaceReflection[0]
                 : nullptr;
         m_screenReflectionDepthTexture =
             screenReflectionActive
-                ? screenReflection.depth
+                ? views.screenSpaceReflection[1]
                 : nullptr;
 
         // クラスタライトカリング（Forward+）。SRVが揃っていなければ
@@ -824,9 +854,9 @@ namespace LamaPon
         const auto& clustered = lighting.clustered;
         const bool clusteredActive =
             clustered.enabled
-            && clustered.lights != nullptr
-            && clustered.lightIndices != nullptr
-            && clustered.clusterCounts != nullptr;
+            && views.clustered[0] != nullptr
+            && views.clustered[1] != nullptr
+            && views.clustered[2] != nullptr;
         m_lightingConstants.clusteredParameters = {
             static_cast<float>(
                 ClusteredLights::GridWidth),
@@ -856,26 +886,28 @@ namespace LamaPon
             0.0f
         };
         m_clusterLights =
-            clusteredActive ? clustered.lights : nullptr;
+            clusteredActive ? views.clustered[0] : nullptr;
         m_clusterIndexList = clusteredActive
-            ? clustered.lightIndices
+            ? views.clustered[1]
             : nullptr;
         m_clusterCounts = clusteredActive
-            ? clustered.clusterCounts
+            ? views.clustered[2]
             : nullptr;
 
         const auto& environment = lighting.environment;
         const bool environmentActive =
             environment.enabled
-            && environment.texture != nullptr;
+            && views.environment[0] != nullptr;
         // 事前フィルタ済みがあればそれを使い、z へ最終ミップ番号を
         // 載せます（0なら旧来のソース直接サンプリング）。
         const bool prefilteredActive =
             environmentActive
-            && environment.specular != nullptr
-            && environment.irradiance != nullptr;
+            && views.environment[1] != nullptr
+            && views.environment[2] != nullptr;
         m_lightingConstants.environmentParameters = {
-            std::max(environment.intensity, 0.0f),
+            environmentActive
+                ? std::max(environment.intensity, 0.0f)
+                : 0.0f,
             environmentActive ? 1.0f : 0.0f,
             prefilteredActive
                 ? environment.specularMaximumMip
@@ -884,11 +916,11 @@ namespace LamaPon
         };
         m_environmentTexture = environmentActive
             ? (prefilteredActive
-                ? environment.specular
-                : environment.texture)
+                ? views.environment[1]
+                : views.environment[0])
             : nullptr;
         m_irradianceTexture = prefilteredActive
-            ? environment.irradiance
+            ? views.environment[2]
             : nullptr;
         // ベイクした間接光（照度ボリューム）。3枚のSH係数
         // テクスチャが揃っていなければ無効にして、シェーダーは
@@ -896,9 +928,9 @@ namespace LamaPon
         const auto& bakedGi = lighting.bakedGlobalIllumination;
         const bool bakedGiActive =
             bakedGi.enabled
-            && bakedGi.redCoefficients != nullptr
-            && bakedGi.greenCoefficients != nullptr
-            && bakedGi.blueCoefficients != nullptr;
+            && views.bakedGlobalIllumination[0] != nullptr
+            && views.bakedGlobalIllumination[1] != nullptr
+            && views.bakedGlobalIllumination[2] != nullptr;
         m_lightingConstants.bakedGiVolumeMinimum = {
             bakedGi.volumeMinimum.x,
             bakedGi.volumeMinimum.y,
@@ -918,13 +950,13 @@ namespace LamaPon
             0.0f
         };
         m_bakedGiRedTexture = bakedGiActive
-            ? bakedGi.redCoefficients
+            ? views.bakedGlobalIllumination[0]
             : nullptr;
         m_bakedGiGreenTexture = bakedGiActive
-            ? bakedGi.greenCoefficients
+            ? views.bakedGlobalIllumination[1]
             : nullptr;
         m_bakedGiBlueTexture = bakedGiActive
-            ? bakedGi.blueCoefficients
+            ? views.bakedGlobalIllumination[2]
             : nullptr;
 
         // プローブの2個目は前のオブジェクトの分が残らないよう
@@ -937,10 +969,18 @@ namespace LamaPon
     void LitEffect::SetEnvironmentOverride(
         const ReflectionProbeEnvironment& probe) noexcept
     {
+        SetEnvironmentOverrideD3D11(probe, {});
+    }
+
+    void LitEffect::SetEnvironmentOverrideD3D11(
+        const ReflectionProbeEnvironment& probe,
+        const D3D11ReflectionProbeViews& views) noexcept
+    {
         // リフレクションプローブによる、オブジェクト単位のIBL
         // 差し替えです。SetLightingがシーン共通の環境を設定した後、
         // SetLighting後、描画直前にプローブ設定を適用します。
-        if (!probe.IsValid())
+        if (views.specular == nullptr
+            || views.irradiance == nullptr)
         {
             return;
         }
@@ -950,8 +990,8 @@ namespace LamaPon
             probe.specularMaximumMip,
             0.0f
         };
-        m_environmentTexture = probe.specular;
-        m_irradianceTexture = probe.irradiance;
+        m_environmentTexture = views.specular;
+        m_irradianceTexture = views.irradiance;
 
         // ボックス射影。3軸すべてが正のときだけ有効にします
         // （0を含むと箱の内側が定義できず、除算で破綻します）。
@@ -980,7 +1020,9 @@ namespace LamaPon
 
         // 2個目のプローブ。混ぜないときは比率0にしておけば、
         // Shader側は1個目だけを読みます（テクスチャも外します）。
-        if (!probe.IsBlended())
+        if (views.secondarySpecular == nullptr
+            || views.secondaryIrradiance == nullptr
+            || !(probe.secondaryWeight > 0.0f))
         {
             m_secondaryEnvironmentTexture = nullptr;
             m_secondaryIrradianceTexture = nullptr;
@@ -993,9 +1035,9 @@ namespace LamaPon
             return;
         }
         m_secondaryEnvironmentTexture =
-            probe.secondarySpecular;
+            views.secondarySpecular;
         m_secondaryIrradianceTexture =
-            probe.secondaryIrradiance;
+            views.secondaryIrradiance;
         m_lightingConstants
             .reflectionSecondaryBoxCenter = {
                 probe.secondaryBoxCenter.x,

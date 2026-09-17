@@ -12,18 +12,6 @@
 #include <string_view>
 #include <vector>
 
-namespace DirectX
-{
-    inline namespace DX11
-    {
-        class BasicEffect;
-        class CommonStates;
-        template<typename TVertex>
-        class PrimitiveBatch;
-        struct VertexPositionColorTexture;
-    }
-}
-
 namespace LamaPon
 {
     class AssetManager;
@@ -371,10 +359,9 @@ namespace LamaPon
         std::vector<std::size_t> m_renderOrder;
         GraphicsDevice* m_graphics{};
         AssetManager* m_assets{};
-        std::unique_ptr<DirectX::BasicEffect> m_effect;
-        std::unique_ptr<DirectX::PrimitiveBatch<
-            DirectX::VertexPositionColorTexture>> m_batch;
-        struct InputLayoutHolder;
-        std::unique_ptr<InputLayoutHolder> m_inputLayout;
+        // 生成済みquadを再利用するAPI非依存CPU cacheです。実際の
+        // Effect / Batch / InputLayoutはGraphicsRenderServicesが所有します。
+        struct RenderData;
+        std::unique_ptr<RenderData> m_renderData;
     };
 }

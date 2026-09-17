@@ -6,9 +6,14 @@
 #include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Core/Profiler.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
+#include "LamaPon/Graphics/ShadowMap.h"
+#include "LamaPon/Graphics/GraphicsDeviceD3D11Access.h"
+#include "LamaPon/Graphics/GraphicsRenderServices.h"
 #include "LamaPon/Graphics/Lighting.h"
 #include "LamaPon/Graphics/LitEffect.h"
 #include "LamaPon/Graphics/LitMaterialAsset.h"
+#include "LamaPon/Graphics/LitTextureRequest.h"
+#include "LamaPon/Graphics/MaterialShaderDrawRequest.h"
 #include "LamaPon/Graphics/SkeletalModel.h"
 #include "LamaPon/Scene/GameObject.h"
 #include "LamaPon/Scene/Scene.h"
@@ -21,16 +26,240 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cwctype>
 #include <cstring>
 #include <functional>
 #include <limits>
 #include <numbers>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace
 {
+    // CMO／SDKMESHはD3D11でDirectXTK Modelとして描かれます。Material
+    // 上書き中の色の合成規則を、D3D12のCPU幾何経路でも揃えるために判定します。
+    [[nodiscard]] bool UsesDirectXTKModelMaterial(
+        const std::filesystem::path& path)
+    {
+        auto extension = path.extension().wstring();
+        std::ranges::transform(
+            extension,
+            extension.begin(),
+            std::towlower);
+        return extension == L".cmo"
+            || extension == L".sdkmesh"
+            || extension == L".vbo";
+    }
+
+    // DirectXTKのCreateFromCMOは既定でModelLoader_CounterClockwise、
+    // SDKMESHとVBOはModelLoader_Clockwiseで読み込みます。
+    [[nodiscard]] bool LoadsCounterClockwiseDirectXTKModel(
+        const std::filesystem::path& path)
+    {
+        auto extension = path.extension().wstring();
+        std::ranges::transform(
+            extension,
+            extension.begin(),
+            std::towlower);
+        return extension == L".cmo";
+    }
+
+    // glTF／GLB／FBXはD3D11でSkeletalModelとして読み込まれ、Material custom
+    // shaderをDirectXTK SkinnedEffectの頂点シェーダーとPSSkinnedMainで描きます。
+    [[nodiscard]] bool UsesSkinnedMaterialShader(
+        const std::filesystem::path& path)
+    {
+        auto extension = path.extension().wstring();
+        std::ranges::transform(
+            extension,
+            extension.begin(),
+            std::towlower);
+        return extension == L".gltf"
+            || extension == L".glb"
+            || extension == L".fbx";
+    }
+
+    struct ImportedModelVertex final
+    {
+        DirectX::XMFLOAT3 position{};
+        DirectX::XMFLOAT3 normal{};
+        DirectX::XMFLOAT4 tangent{};
+        std::uint32_t color{};
+        DirectX::XMFLOAT2 textureCoordinate{};
+        std::uint32_t blendIndices{};
+        std::uint32_t blendWeights{};
+    };
+
+    static_assert(
+        sizeof(ImportedModelVertex)
+            == sizeof(DirectX::
+                VertexPositionNormalTangentColorTextureSkinning));
+
+    [[nodiscard]] LamaPon::GraphicsViewHandle AcquireTextureView(
+        const std::shared_ptr<
+            const LamaPon::TextureAsset>& asset) noexcept
+    {
+        if (asset == nullptr)
+        {
+            return {};
+        }
+        const auto resources = asset->resources.Acquire();
+        return resources != nullptr
+            ? resources->shaderResourceView
+            : LamaPon::GraphicsViewHandle{};
+    }
+
+    void CopyPrimitiveLighting(
+        const LamaPon::LightingState& lighting,
+        LamaPon::PrimitiveDrawRequest& request) noexcept
+    {
+        request.ambientColor = lighting.ambientColor;
+        request.ambientIntensity = lighting.ambientIntensity;
+        request.directionalLightCount = std::min(
+            request.directionalLights.size(),
+            lighting.directionalLightCount);
+        for (std::size_t index{};
+            index < request.directionalLightCount;
+            ++index)
+        {
+            const auto& source = lighting.directionalLights[index];
+            request.directionalLights[index] = {
+                source.direction,
+                source.color,
+                source.intensity,
+                source.angularRadius };
+        }
+        request.pointLightCount = std::min(
+            request.pointLights.size(),
+            lighting.pointLightCount);
+        for (std::size_t index{};
+            index < request.pointLightCount;
+            ++index)
+        {
+            const auto& source = lighting.pointLights[index];
+            request.pointLights[index] = {
+                source.position,
+                source.range,
+                source.color,
+                source.intensity };
+        }
+        request.spotLightCount = std::min(
+            request.spotLights.size(),
+            lighting.spotLightCount);
+        for (std::size_t index{};
+            index < request.spotLightCount;
+            ++index)
+        {
+            const auto& source = lighting.spotLights[index];
+            request.spotLights[index] = {
+                source.position,
+                source.range,
+                source.direction,
+                source.innerConeCosine,
+                source.color,
+                source.intensity,
+                source.outerConeCosine };
+        }
+        const auto& shadow = lighting.directionalShadow;
+        request.directionalShadow.lightViewProjections =
+            shadow.lightViewProjections;
+        request.directionalShadow.cascadeSplits =
+            shadow.cascadeSplits;
+        request.directionalShadow.texture = shadow.texture;
+        request.directionalShadow.lightIndex = shadow.lightIndex;
+        request.directionalShadow.cascadeCount = shadow.cascadeCount;
+        request.directionalShadow.bias = shadow.bias;
+        request.directionalShadow.normalBias = shadow.normalBias;
+        request.directionalShadow.strength = shadow.strength;
+        request.directionalShadow.inverseResolution =
+            1.0f / std::max(
+                lighting.directionalShadowResolution,
+                1.0f);
+        request.directionalShadow.enabled = shadow.enabled;
+        for (std::size_t index{};
+            index < request.spotShadows.size();
+            ++index)
+        {
+            const auto& source = lighting.spotShadows[index];
+            request.spotShadows[index] = {
+                source.lightViewProjection,
+                source.lightIndex,
+                source.bias,
+                source.normalBias,
+                source.strength,
+                source.enabled };
+        }
+        request.spotShadowTexture = lighting.spotShadowTexture;
+        request.pointShadow = {
+            lighting.pointShadow.texture,
+            lighting.pointShadow.lightIndex,
+            lighting.pointShadow.bias,
+            lighting.pointShadow.strength,
+            lighting.pointShadow.enabled };
+        request.localShadowInverseResolution =
+            1.0f / std::max(
+                lighting.localShadowResolution,
+                1.0f);
+        request.screenAmbientOcclusion = {
+            lighting.screenAmbientOcclusion.texture,
+            lighting.screenAmbientOcclusion.inverseWidth,
+            lighting.screenAmbientOcclusion.inverseHeight,
+            lighting.screenAmbientOcclusion.enabled };
+        const auto& reflection = lighting.screenSpaceReflection;
+        request.screenSpaceReflection = {
+            reflection.texture,
+            reflection.depth,
+            reflection.previousViewProjection,
+            reflection.inverseWidth,
+            reflection.inverseHeight,
+            reflection.intensity,
+            reflection.maximumDistance,
+            reflection.thickness,
+            reflection.roughnessCutoff,
+            reflection.stepCount,
+            reflection.depthPyramidMaximumMip,
+            reflection.enabled };
+        const auto& environment = lighting.environment;
+        request.environment = {
+            environment.texture,
+            environment.specular,
+            environment.irradiance,
+            environment.specularMaximumMip,
+            environment.intensity,
+            environment.enabled };
+        request.fog = {
+            lighting.fog.color,
+            lighting.fog.startDistance,
+            lighting.fog.endDistance,
+            lighting.fog.density,
+            LamaPon::PrimitiveFogModel::LamaPonLit,
+            lighting.fog.enabled };
+        const auto& clustered = lighting.clustered;
+        request.clustered = {
+            clustered.lights,
+            clustered.lightIndices,
+            clustered.clusterCounts,
+            clustered.nearPlane,
+            clustered.farPlane,
+            clustered.inverseWidth,
+            clustered.inverseHeight,
+            clustered.lightCount,
+            clustered.enabled };
+        const auto& bakedGi = lighting.bakedGlobalIllumination;
+        request.bakedGlobalIllumination = {
+            bakedGi.redCoefficients,
+            bakedGi.greenCoefficients,
+            bakedGi.blueCoefficients,
+            bakedGi.volumeMinimum,
+            bakedGi.volumeSize,
+            bakedGi.resolution,
+            bakedGi.intensity,
+            bakedGi.enabled };
+    }
+
     // テセレーションが使えるのは、四角パッチに割れる形状（Plane・
     // Cube）のMesh Rendererだけです。
     // モデルにはパッチで描く経路が無いので、ハル／ドメインは束ねられず、
@@ -67,39 +296,6 @@ namespace
             return placeholder;
         }
         return effect;
-    }
-
-    // 読み込み済みテクスチャとマテリアル値から、Effectへ渡す
-    // PBRマップ一式を組み立てます。未設定はnullptrのままにして、
-    // シェーダー側では「マップなし」として扱わせます。
-    LamaPon::LitEffect::PbrTextures BuildPbrTextures(
-        const std::shared_ptr<
-            const LamaPon::TextureAsset>& roughness,
-        const std::shared_ptr<
-            const LamaPon::TextureAsset>& metallic,
-        const std::shared_ptr<
-            const LamaPon::TextureAsset>& occlusion,
-        const std::shared_ptr<
-            const LamaPon::TextureAsset>& emissive,
-        const LamaPon::LitMaterial& material) noexcept
-    {
-        LamaPon::LitEffect::PbrTextures textures{};
-        textures.roughness = roughness
-            ? roughness->view.Get()
-            : nullptr;
-        textures.metallic = metallic
-            ? metallic->view.Get()
-            : nullptr;
-        textures.occlusion = occlusion
-            ? occlusion->view.Get()
-            : nullptr;
-        textures.emissive = emissive
-            ? emissive->view.Get()
-            : nullptr;
-        textures.occlusionStrength =
-            material.OcclusionStrength();
-        textures.emissiveFactor = material.EmissiveColor();
-        return textures;
     }
 
     float SpecularPowerFromRoughness(const float roughness) noexcept
@@ -177,6 +373,29 @@ namespace
 
 namespace LamaPon
 {
+    LitTextureRequest
+        ModelRendererComponent::BuildLitTextureRequest() const noexcept
+    {
+        LitTextureRequest request;
+        request.albedo = AcquireTextureView(m_albedoTexture);
+        request.normal = AcquireTextureView(m_normalTexture);
+        request.roughness = AcquireTextureView(m_roughnessTexture);
+        request.metallic = AcquireTextureView(m_metallicTexture);
+        request.occlusion = AcquireTextureView(m_occlusionTexture);
+        request.emissive = AcquireTextureView(m_emissiveTexture);
+        for (std::size_t index{};
+            index < request.customTextures.size();
+            ++index)
+        {
+            request.customTextures[index] =
+                AcquireTextureView(m_customTextures[index]);
+        }
+        request.occlusionStrength =
+            m_material.OcclusionStrength();
+        request.emissiveFactor = m_material.EmissiveColor();
+        return request;
+    }
+
     bool ModelRendererComponent::TryGetLocalBounds(
         Bounds3D& bounds) const noexcept
     {
@@ -249,26 +468,6 @@ namespace LamaPon
         }
     }
 
-    std::array<
-        ID3D11ShaderResourceView*,
-        LitMaterial::CustomTextureCount>
-        ModelRendererComponent::ResolveCustomTextureViews() const noexcept
-    {
-        // 未設定の枠はnullptrにします（LitEffect側で白へ差し替え）。
-        std::array<
-            ID3D11ShaderResourceView*,
-            LitMaterial::CustomTextureCount> views{};
-        for (std::size_t index = 0;
-            index < views.size();
-            ++index)
-        {
-            views[index] = m_customTextures[index]
-                ? m_customTextures[index]->view.Get()
-                : nullptr;
-        }
-        return views;
-    }
-
     struct ModelRendererComponent::CommonLitResources final
     {
         struct Part final
@@ -277,12 +476,8 @@ namespace LamaPon
             DirectX::ModelMeshPart* part{};
             Microsoft::WRL::ComPtr<ID3D11InputLayout>
                 inputLayout;
-            Microsoft::WRL::ComPtr<
-                ID3D11ShaderResourceView>
-                embeddedAlbedoTexture;
-            Microsoft::WRL::ComPtr<
-                ID3D11ShaderResourceView>
-                embeddedNormalTexture;
+            GraphicsViewHandle embeddedAlbedoTexture;
+            GraphicsViewHandle embeddedNormalTexture;
             DirectX::XMFLOAT4 embeddedDiffuseColor{
                 1.0f,
                 1.0f,
@@ -426,6 +621,7 @@ namespace LamaPon
             ? std::min(index, AnimationCount() - 1)
             : 0;
         m_animationTime = 0.0f;
+        m_cachedPoseFrame = ~std::uint64_t{};
     }
 
     std::size_t
@@ -1060,6 +1256,7 @@ namespace LamaPon
             std::isfinite(time) ? time : 0.0f,
             0.0f,
             AnimationDuration());
+        m_cachedPoseFrame = ~std::uint64_t{};
     }
 
     void ModelRendererComponent::AdvanceAnimation(
@@ -1438,7 +1635,8 @@ namespace LamaPon
                     &shaderByteCode,
                     &shaderByteCodeSize);
                 const HRESULT result =
-                    m_graphics->Device()->CreateInputLayout(
+                    Detail::GraphicsDeviceD3D11Access::Device(
+                        *m_graphics)->CreateInputLayout(
                         DirectX::
                             VertexPositionNormalTangentColorTextureSkinning::
                                 InputElements,
@@ -1491,8 +1689,13 @@ namespace LamaPon
     {
         m_assets = &graphics.Assets();
         m_graphics = &graphics;
-        m_context = graphics.Context();
-        m_states = &graphics.States();
+        const bool usesD3D11 = graphics.ActiveRenderingApi()
+            == RenderingApi::DirectX11;
+        if (usesD3D11)
+        {
+            m_context = Detail::GraphicsDeviceD3D11Access::Context(graphics);
+            m_states = &Detail::GraphicsDeviceD3D11Access::States(graphics);
+        }
 
         if (!m_materialAssetPath.empty())
         {
@@ -1505,7 +1708,23 @@ namespace LamaPon
 
         if (!m_modelPath.empty())
         {
-            m_model = m_assets->CreateModelInstance(m_modelPath);
+            auto extension = m_modelPath.extension().wstring();
+            std::ranges::transform(
+                extension,
+                extension.begin(),
+                std::towlower);
+            // CMO/SDKMESH/VBO/glTF/GLB/FBXはD3D12でもCPU幾何を共通経路で
+            // 読み込みます。
+            if (usesD3D11
+                || extension == L".cmo"
+                || extension == L".sdkmesh"
+                || extension == L".vbo"
+                || extension == L".gltf"
+                || extension == L".glb"
+                || extension == L".fbx")
+            {
+                m_model = m_assets->CreateModelInstance(m_modelPath);
+            }
         }
         SetAnimationIndex(m_animationIndex);
         LoadAnimationController();
@@ -1566,6 +1785,30 @@ namespace LamaPon
 
     bool ModelRendererComponent::HasPreRender3DPass()
     {
+        if (m_graphics != nullptr
+            && m_graphics->ActiveRenderingApi()
+                == RenderingApi::DirectX12Experimental)
+        {
+            // D3D12はCMO／SDKMESH／VBOのMaterial custom shaderだけが、D3D11の
+            // DrawCommonLitと同じ遮蔽表示を持ちます（glTF／FBXはD3D11でも
+            // 描かれないため、描かないまま揃えています）。
+            return !m_wireframe
+                && m_materialOverrideEnabled
+                && !m_material.Shader().empty()
+                && m_model
+                && m_model->skeletalModel
+                && UsesDirectXTKModelMaterial(m_modelPath)
+                && m_material.CustomParameter(4).w > 0.0f
+                && m_graphics->PrepareMaterialShaderPasses(
+                    m_material.Shader(),
+                    m_material.ShaderKeywords()).occluded;
+        }
+        if (m_graphics != nullptr
+            && m_graphics->ActiveRenderingApi()
+                != RenderingApi::DirectX11)
+        {
+            return false;
+        }
         RefreshShader(false);
         return !m_wireframe
             && UsesCommonLit()
@@ -1579,9 +1822,535 @@ namespace LamaPon
         DirectX::CXMMATRIX projection)
     {
         // 原作と同様、キャラクター全パーツの通常描画より先に遮蔽部分だけを描きます。
-        if (HasPreRender3DPass())
+        if (!HasPreRender3DPass())
         {
-            DrawCommonLit(view, projection, true);
+            return;
+        }
+        if (m_graphics != nullptr
+            && m_graphics->ActiveRenderingApi()
+                == RenderingApi::DirectX12Experimental)
+        {
+            DrawD3D12Model(view, projection, true);
+            return;
+        }
+        DrawCommonLit(view, projection, true);
+    }
+
+    void ModelRendererComponent::DrawD3D12Model(
+        DirectX::FXMMATRIX view,
+        DirectX::CXMMATRIX projection,
+        const bool occludedOnly)
+    {
+        if (m_graphics == nullptr
+            || !m_model
+            || !m_model->skeletalModel)
+        {
+            return;
+        }
+        auto& model = *m_model->skeletalModel;
+        const auto* clip = m_animationIndex < model.animations.size()
+            ? &model.animations[m_animationIndex]
+            : nullptr;
+        const auto* blendClip = !m_nextAnimationState.empty()
+                && m_nextAnimationIndex < model.animations.size()
+            ? &model.animations[m_nextAnimationIndex]
+            : nullptr;
+        const float blendAmount = blendClip != nullptr
+                && m_animationTransitionDuration > 0.0f
+            ? std::clamp(
+                m_animationTransitionTime
+                    / m_animationTransitionDuration,
+                0.0f,
+                1.0f)
+            : 0.0f;
+        const auto poseFrame = m_graphics->FrameStats().totalFrames;
+        if (m_cachedPoseFrame != poseFrame
+            || m_cachedPoseModel != &model)
+        {
+            std::vector<SkeletalPoseTransform> localPose;
+            std::vector<SkeletalPoseSample> weightedSamples;
+            CollectAnimationPoseSamples(weightedSamples);
+            if (m_applyRootMotion
+                && weightedSamples.empty()
+                && clip != nullptr)
+            {
+                weightedSamples.push_back({
+                    clip,
+                    m_animationTime,
+                    1.0f });
+            }
+            if (!weightedSamples.empty())
+            {
+                SkeletalModel::SampleWeightedPose(
+                    model.nodes,
+                    weightedSamples,
+                    localPose,
+                    m_cachedGlobalPose,
+                    m_applyRootMotion
+                        ? ResolveRootMotionNode()
+                        : std::numeric_limits<std::size_t>::max());
+            }
+            else if (blendClip != nullptr && blendAmount > 0.0f)
+            {
+                SkeletalModel::SampleBlendedPose(
+                    model.nodes,
+                    clip,
+                    m_animationTime,
+                    blendClip,
+                    m_nextAnimationTime,
+                    blendAmount,
+                    localPose,
+                    m_cachedGlobalPose);
+            }
+            else
+            {
+                SkeletalModel::SamplePose(
+                    model.nodes,
+                    clip,
+                    m_animationTime,
+                    localPose,
+                    m_cachedGlobalPose);
+            }
+            m_cachedPoseFrame = poseFrame;
+            m_cachedPoseModel = &model;
+        }
+
+        const auto overrideTextures = BuildLitTextureRequest();
+        const auto ownerWorld = Owner().WorldMatrix();
+        const bool depthOnly = m_graphics->IsDepthOnlyPass();
+        const auto lodLevel = model.SelectAutomaticLod(
+            ownerWorld,
+            view,
+            projection,
+            m_graphics->Settings().automaticLodQuality);
+        // CMOはD3D11ではDirectXTK Modelとして描かれます。Material上書き中は
+        // D3D11の共通Lit経路と同じく、内蔵のDiffuseColorを
+        // PreserveEmbeddedMaterialColorのときだけTintとして掛けます。
+        const bool directXTKMaterialOverride =
+            m_materialOverrideEnabled
+            && UsesDirectXTKModelMaterial(m_modelPath);
+        // D3D11のSkeletalModel::DrawD3D11と同じく、glTF／FBXのMaterial
+        // custom shaderは既定Litの代わりに描きます。
+        const bool skinnedMaterialShader =
+            !m_material.Shader().empty()
+            && UsesSkinnedMaterialShader(m_modelPath);
+        // CMO／SDKMESH／VBOは、D3D11のDrawCommonLitと同じくMaterial上書き中
+        // だけcustom shaderで描きます（上書きが無いときはDirectXTK Effectです）。
+        const bool directXTKMaterialShader =
+            directXTKMaterialOverride
+            && !m_material.Shader().empty();
+        // D3D11のDrawCommonLitと同じく、遮蔽表示と輪郭は通常のパスだけで
+        // 描き、深度・影のパスでは描きません。
+        if (occludedOnly && (depthOnly || !directXTKMaterialShader))
+        {
+            return;
+        }
+        const bool drawOutline = directXTKMaterialShader
+            && !occludedOnly
+            && !m_wireframe
+            && !depthOnly
+            && m_material.CustomParameter(3).x > 0.0f;
+        const bool drawSkinnedOutline = skinnedMaterialShader
+            && !occludedOnly
+            && !m_wireframe
+            && !depthOnly
+            && m_material.CustomParameter(3).x > 0.0f;
+        const bool drawSkinnedOccluded = skinnedMaterialShader
+            && !occludedOnly
+            && !m_wireframe
+            && !depthOnly
+            && m_material.CustomParameter(4).w > 0.0f;
+        // 上書きが無いときに、モデル自身の色・粗さ・金属度だけを渡す
+        // Materialです。D3D11と同じく、custom値は既定の0です。
+        LitMaterial primitiveMaterial;
+        for (const bool alphaPass : { false, true })
+        {
+            if (depthOnly && alphaPass)
+            {
+                continue;
+            }
+            for (const auto& primitive : model.primitives)
+            {
+                if (primitive.cpuVertexStride
+                        < sizeof(ImportedModelVertex)
+                    || primitive.cpuVertexData.empty()
+                    || primitive.cpuVertexData.size()
+                        % primitive.cpuVertexStride != 0
+                    || primitive.cpuIndices.empty()
+                    || primitive.meshNode
+                        >= m_cachedGlobalPose.size())
+                {
+                    continue;
+                }
+                auto baseColor = m_materialOverrideEnabled
+                    ? m_material.BaseColor()
+                    : primitive.baseColor;
+                if (directXTKMaterialOverride
+                    && m_preserveEmbeddedMaterialColor)
+                {
+                    baseColor = {
+                        baseColor.x * primitive.baseColor.x,
+                        baseColor.y * primitive.baseColor.y,
+                        baseColor.z * primitive.baseColor.z,
+                        baseColor.w * primitive.baseColor.w };
+                }
+                // DirectXTK Modelの上書きは、上書き色のalphaと内蔵partの
+                // alphaで半透明passを決めます。
+                // D3D11のSkeletalModelは、custom shaderの半透明passを内蔵
+                // partのalphaと色のalphaだけで決めます。
+                const bool alpha = skinnedMaterialShader
+                    ? primitive.alpha || baseColor.w < 0.999f
+                    : directXTKMaterialOverride
+                    ? m_material.BaseColor().w < 0.999f || primitive.alpha
+                    : primitive.alpha
+                        || primitive.textureHasTransparency
+                        || baseColor.w < 0.999f;
+                if (alpha != alphaPass)
+                {
+                    continue;
+                }
+
+                const auto meshGlobal = DirectX::XMLoadFloat4x4(
+                    &m_cachedGlobalPose[primitive.meshNode]);
+                std::vector<DirectX::XMMATRIX> palette;
+                if (primitive.skin >= 0)
+                {
+                    const auto skinIndex =
+                        static_cast<std::size_t>(primitive.skin);
+                    if (skinIndex >= model.skins.size())
+                    {
+                        continue;
+                    }
+                    const auto& skin = model.skins[skinIndex];
+                    const auto inverseMesh =
+                        DirectX::XMMatrixInverse(nullptr, meshGlobal);
+                    palette.reserve(skin.joints.size());
+                    for (std::size_t jointIndex{};
+                        jointIndex < skin.joints.size();
+                        ++jointIndex)
+                    {
+                        const auto nodeIndex = skin.joints[jointIndex];
+                        if (nodeIndex >= m_cachedGlobalPose.size())
+                        {
+                            palette.push_back(
+                                DirectX::XMMatrixIdentity());
+                            continue;
+                        }
+                        const auto inverseBind =
+                            jointIndex < skin.inverseBindMatrices.size()
+                            ? DirectX::XMLoadFloat4x4(
+                                &skin.inverseBindMatrices[jointIndex])
+                            : DirectX::XMMatrixIdentity();
+                        palette.push_back(
+                            inverseBind
+                            * DirectX::XMLoadFloat4x4(
+                                &m_cachedGlobalPose[nodeIndex])
+                            * inverseMesh);
+                    }
+                }
+
+                const auto vertexCount = primitive.cpuVertexData.size()
+                    / primitive.cpuVertexStride;
+                std::vector<PrimitiveRenderVertex> vertices;
+                // custom shaderは頂点シェーダーで骨を変形するため、CPUでの
+                // スキニングを行いません。
+                if (!skinnedMaterialShader)
+                {
+                    vertices.reserve(vertexCount);
+                }
+                for (std::size_t index{};
+                    !skinnedMaterialShader && index < vertexCount;
+                    ++index)
+                {
+                    ImportedModelVertex source{};
+                    std::memcpy(
+                        &source,
+                        primitive.cpuVertexData.data()
+                            + index * primitive.cpuVertexStride,
+                        sizeof(source));
+                    auto position = DirectX::XMLoadFloat3(&source.position);
+                    auto normal = DirectX::XMLoadFloat3(&source.normal);
+                    if (!palette.empty())
+                    {
+                        DirectX::XMVECTOR skinnedPosition =
+                            DirectX::XMVectorZero();
+                        DirectX::XMVECTOR skinnedNormal =
+                            DirectX::XMVectorZero();
+                        float totalWeight{};
+                        for (std::size_t influence{};
+                            influence < 4u;
+                            ++influence)
+                        {
+                            const auto bone = static_cast<std::uint8_t>(
+                                source.blendIndices
+                                    >> (influence * 8u));
+                            const float weight = static_cast<float>(
+                                static_cast<std::uint8_t>(
+                                    source.blendWeights
+                                        >> (influence * 8u)))
+                                / 255.0f;
+                            if (bone >= palette.size() || weight <= 0.0f)
+                            {
+                                continue;
+                            }
+                            skinnedPosition = DirectX::XMVectorAdd(
+                                skinnedPosition,
+                                DirectX::XMVectorScale(
+                                    DirectX::XMVector3TransformCoord(
+                                        position,
+                                        palette[bone]),
+                                    weight));
+                            skinnedNormal = DirectX::XMVectorAdd(
+                                skinnedNormal,
+                                DirectX::XMVectorScale(
+                                    DirectX::XMVector3TransformNormal(
+                                        normal,
+                                        palette[bone]),
+                                    weight));
+                            totalWeight += weight;
+                        }
+                        if (totalWeight > 0.0001f)
+                        {
+                            position = DirectX::XMVectorScale(
+                                skinnedPosition,
+                                1.0f / totalWeight);
+                            normal = DirectX::XMVector3Normalize(
+                                skinnedNormal);
+                        }
+                    }
+                    PrimitiveRenderVertex converted;
+                    DirectX::XMStoreFloat3(&converted.position, position);
+                    DirectX::XMStoreFloat3(&converted.normal, normal);
+                    converted.textureCoordinate =
+                        source.textureCoordinate;
+                    vertices.push_back(converted);
+                }
+
+                std::span<const std::uint32_t> indices =
+                    primitive.cpuIndices;
+                for (std::size_t level = std::min<std::size_t>(
+                        lodLevel,
+                        primitive.cpuLodIndices.size());
+                    level > 0;
+                    --level)
+                {
+                    if (!primitive.cpuLodIndices[level - 1u].empty())
+                    {
+                        indices = primitive.cpuLodIndices[level - 1u];
+                        break;
+                    }
+                }
+
+                PrimitiveDrawRequest request;
+                request.shape = PrimitiveRenderShape::Procedural;
+                request.vertices = vertices;
+                request.indices = indices;
+                DirectX::XMStoreFloat4x4(
+                    &request.world,
+                    meshGlobal * ownerWorld);
+                DirectX::XMStoreFloat4x4(&request.view, view);
+                DirectX::XMStoreFloat4x4(
+                    &request.projection,
+                    projection);
+                request.baseColor = baseColor;
+                request.roughness = m_materialOverrideEnabled
+                    ? m_material.Roughness()
+                    : primitive.roughness;
+                request.metallic = m_materialOverrideEnabled
+                    ? m_material.Metallic()
+                    : primitive.metallic;
+                request.normalStrength = m_materialOverrideEnabled
+                    ? m_material.NormalStrength()
+                    : 1.0f;
+                request.occlusionStrength = m_materialOverrideEnabled
+                    ? m_material.OcclusionStrength()
+                    : primitive.occlusionStrength;
+                request.emissiveFactor = m_materialOverrideEnabled
+                    ? m_material.EmissiveColor()
+                    : primitive.emissiveFactor;
+                // D3D11のSkeletalModel::Draw、およびCMOの共通Lit経路と同じ
+                // merge規則です。上書き中もalbedo/normalの未指定はモデル
+                // 内蔵を継承し、PBR mapはemptyも含めて外部materialを正と
+                // します。
+                const auto& embeddedTextures = primitive.embeddedTextures;
+                const auto& pbrTextures = m_materialOverrideEnabled
+                    ? overrideTextures
+                    : embeddedTextures;
+                request.albedo = m_materialOverrideEnabled
+                        && overrideTextures.albedo
+                    ? overrideTextures.albedo
+                    : embeddedTextures.albedo;
+                request.normalTexture = m_materialOverrideEnabled
+                        && overrideTextures.normal
+                    ? overrideTextures.normal
+                    : embeddedTextures.normal;
+                request.roughnessTexture = pbrTextures.roughness;
+                request.metallicTexture = pbrTextures.metallic;
+                request.occlusionTexture = pbrTextures.occlusion;
+                request.emissiveTexture = pbrTextures.emissive;
+                request.fallbackTexture =
+                    m_graphics->WhiteTextureViewHandle();
+                request.alphaBlend = alpha;
+                request.depthWrite = !alpha;
+                request.depthOnly = depthOnly;
+                // D3D11のModel::Draw／SkeletalModel::Drawと同じく、影や深度の
+                // パスもワイヤーフレームの形で描きます。
+                request.wireframe = m_wireframe;
+                CopyPrimitiveLighting(
+                    m_graphics->Lighting(),
+                    request);
+                if (!depthOnly)
+                {
+                    // D3D11と同じく、モデルの位置で選んだプローブを渡します
+                    // （解決できないプローブは描画側がSkyのIBLへ戻します）。
+                    DirectX::XMFLOAT3 ownerPosition{};
+                    DirectX::XMStoreFloat3(
+                        &ownerPosition,
+                        Owner().WorldMatrix().r[3]);
+                    request.reflectionProbe = Owner().GetScene()
+                        .ReflectionProbeEnvironmentAt(ownerPosition);
+                }
+                // D3D11のCMO／SDKMESH／VBOは、Material上書きが無いとDirectXTKの
+                // Effectで描かれ、その線形霧が掛かります。glTF／FBXと上書き中の
+                // モデルはLitEffectの霧です。
+                if (UsesDirectXTKModelMaterial(m_modelPath)
+                    && !m_materialOverrideEnabled)
+                {
+                    request.fog.model = PrimitiveFogModel::DirectXTK;
+                }
+                if (!request.directionalShadow.texture
+                    && m_graphics->Shadows().IsValid())
+                {
+                    request.directionalShadow.texture =
+                        m_graphics->Shadows().ViewHandle();
+                }
+                if (!request.spotShadowTexture
+                    && m_graphics->SpotShadows().IsValid())
+                {
+                    request.spotShadowTexture =
+                        m_graphics->SpotShadows().ViewHandle();
+                }
+                if (!request.pointShadow.texture
+                    && m_graphics->PointShadows().IsValid())
+                {
+                    request.pointShadow.texture =
+                        m_graphics->PointShadows().ViewHandle();
+                }
+                if (directXTKMaterialShader)
+                {
+                    // D3D11のDrawCommonLitのpartMaterialと同じく、内蔵
+                    // DiffuseColorのTintを反映した色だけを差し替えます。
+                    LitMaterial partMaterial = m_material;
+                    partMaterial.SetBaseColor(baseColor);
+                    // D3D11はDirectXTKのModelLoader既定のフラグで読み込む
+                    // ため、プレマルチプライドにはならず、三角形の向きは
+                    // 形式で決まります。
+                    Detail::DirectXTKModelPartState partState;
+                    partState.alphaPass = alpha;
+                    partState.counterClockwise =
+                        LoadsCounterClockwiseDirectXTKModel(m_modelPath);
+                    Detail::MaterialShaderDrawRequest material;
+                    material.material = &partMaterial;
+                    material.shaderMaterial = &m_material;
+                    material.directXTKPart = &partState;
+                    material.customTextures = pbrTextures.customTextures;
+                    std::uint64_t generation{};
+                    std::string shaderError;
+                    // D3D11のDrawCommonLitと同じく、遮蔽表示はOnPreRender3Dで
+                    // 全partを先に描き、輪郭は各partの通常描画の直前に重ねます。
+                    // どちらもShaderに入口が無ければ何も描きません。
+                    if (occludedOnly || drawOutline)
+                    {
+                        material.pass = occludedOnly
+                            ? Detail::MaterialShaderPass::Occluded
+                            : Detail::MaterialShaderPass::Outline;
+                        static_cast<void>(
+                            m_graphics->DrawMaterialShaderPrimitive(
+                                request,
+                                material,
+                                generation,
+                                shaderError));
+                        if (occludedOnly)
+                        {
+                            continue;
+                        }
+                        material.pass = Detail::MaterialShaderPass::Main;
+                    }
+                    static_cast<void>(m_graphics->DrawMaterialShaderPrimitive(
+                        request,
+                        material,
+                        generation,
+                        shaderError));
+                    m_shaderError = std::move(shaderError);
+                    m_shaderGeneration = generation;
+                    m_activeShaderPath = m_material.Shader();
+                    continue;
+                }
+                if (skinnedMaterialShader)
+                {
+                    const LitMaterial* drawMaterial = &m_material;
+                    if (!m_materialOverrideEnabled)
+                    {
+                        primitiveMaterial.SetBaseColor(baseColor);
+                        primitiveMaterial.SetRoughness(primitive.roughness);
+                        primitiveMaterial.SetMetallic(primitive.metallic);
+                        drawMaterial = &primitiveMaterial;
+                    }
+                    std::vector<DirectX::XMFLOAT4X4> bones(palette.size());
+                    for (std::size_t bone{}; bone < palette.size(); ++bone)
+                    {
+                        DirectX::XMStoreFloat4x4(&bones[bone], palette[bone]);
+                    }
+                    Detail::SkinnedMaterialShaderGeometry geometry;
+                    geometry.vertices = primitive.cpuVertexData;
+                    geometry.vertexStride = primitive.cpuVertexStride;
+                    geometry.indices = indices;
+                    geometry.bones = bones;
+                    geometry.alphaPass = alpha;
+                    geometry.doubleSided = primitive.doubleSided;
+                    Detail::MaterialShaderDrawRequest material;
+                    material.material = drawMaterial;
+                    material.shaderMaterial = &m_material;
+                    material.skinned = &geometry;
+                    material.customTextures = pbrTextures.customTextures;
+                    std::uint64_t generation{};
+                    std::string shaderError;
+                    // D3D11のSkeletalModelと同じく、各primitiveで遮蔽表示、
+                    // 輪郭、通常描画の順に重ねます。入口が無いShaderでは
+                    // 追加passだけが安全に何も描きません。
+                    if (drawSkinnedOccluded)
+                    {
+                        material.pass = Detail::MaterialShaderPass::Occluded;
+                        static_cast<void>(
+                            m_graphics->DrawMaterialShaderPrimitive(
+                                request,
+                                material,
+                                generation,
+                                shaderError));
+                    }
+                    if (drawSkinnedOutline)
+                    {
+                        material.pass = Detail::MaterialShaderPass::Outline;
+                        static_cast<void>(
+                            m_graphics->DrawMaterialShaderPrimitive(
+                                request,
+                                material,
+                                generation,
+                                shaderError));
+                    }
+                    material.pass = Detail::MaterialShaderPass::Main;
+                    static_cast<void>(m_graphics->DrawMaterialShaderPrimitive(
+                        request,
+                        material,
+                        generation,
+                        shaderError));
+                    m_shaderError = std::move(shaderError);
+                    m_shaderGeneration = generation;
+                    m_activeShaderPath = m_material.Shader();
+                    continue;
+                }
+                static_cast<void>(m_graphics->DrawPrimitive(request));
+            }
         }
     }
 
@@ -1592,6 +2361,19 @@ namespace LamaPon
         if (m_instancedThisPass)
         {
             m_instancedThisPass = false;
+            return;
+        }
+        if (m_graphics != nullptr
+            && m_graphics->ActiveRenderingApi()
+                == RenderingApi::DirectX12Experimental)
+        {
+            DrawD3D12Model(view, projection);
+            return;
+        }
+        if (m_graphics != nullptr
+            && m_graphics->ActiveRenderingApi()
+                != RenderingApi::DirectX11)
+        {
             return;
         }
         RefreshShader(false);
@@ -1697,17 +2479,12 @@ namespace LamaPon
                 m_cachedPoseFrame = poseFrame;
                 m_cachedPoseModel = poseModel;
             }
-            // マテリアル上書き時にモデル自身のPBRマップより優先させる
-            // 一式。上書きが無ければDraw側で無視されます。
-            const auto overridePbrTextures = BuildPbrTextures(
-                m_roughnessTexture,
-                m_metallicTexture,
-                m_occlusionTexture,
-                m_emissiveTexture,
-                m_material);
+            // マテリアル上書き中だけ外部texture requestを正とします。
+            // albedo/normalのemptyはモデル内蔵を継承し、PBR/customの
+            // emptyはマップ無しとして扱うmergeをDraw側で行います。
+            const auto textureOverride = BuildLitTextureRequest();
             m_model->skeletalModel->Draw(
-                m_context,
-                *m_states,
+                *m_graphics,
                 m_graphics->Lighting(),
                 Owner().WorldMatrix(),
                 view,
@@ -1718,13 +2495,9 @@ namespace LamaPon
                 m_materialOverrideEnabled
                     ? &m_material
                     : nullptr,
-                m_albedoTexture
-                    ? m_albedoTexture->view.Get()
+                m_materialOverrideEnabled
+                    ? &textureOverride
                     : nullptr,
-                m_normalTexture
-                    ? m_normalTexture->view.Get()
-                    : nullptr,
-                &overridePbrTextures,
                 blendClip,
                 m_nextAnimationTime,
                 blendAmount,
@@ -1751,8 +2524,26 @@ namespace LamaPon
             return;
         }
 
+        const auto albedoResources = m_albedoTexture
+            ? m_albedoTexture->resources.Acquire()
+            : nullptr;
+        const auto normalResources = m_normalTexture
+            ? m_normalTexture->resources.Acquire()
+            : nullptr;
+        auto* const albedoView = albedoResources
+            ? Detail::GraphicsDeviceD3D11Access::
+                TryResolveD3D11ShaderResourceView(
+                    *m_graphics,
+                    *albedoResources)
+            : nullptr;
+        auto* const normalView = normalResources
+            ? Detail::GraphicsDeviceD3D11Access::
+                TryResolveD3D11ShaderResourceView(
+                    *m_graphics,
+                    *normalResources)
+            : nullptr;
         m_model->model->UpdateEffects(
-            [this](DirectX::IEffect* effect)
+            [this, albedoView, normalView](DirectX::IEffect* effect)
             {
                 if (m_materialOverrideEnabled)
                 {
@@ -1765,13 +2556,6 @@ namespace LamaPon
                     const auto specularColor =
                         SpecularColorFromRoughness(
                             m_material.Roughness());
-                    auto* const albedo = m_albedoTexture
-                        ? m_albedoTexture->view.Get()
-                        : nullptr;
-                    auto* const normal = m_normalTexture
-                        ? m_normalTexture->view.Get()
-                        : nullptr;
-
                     if (auto* normalMap =
                         dynamic_cast<DirectX::NormalMapEffect*>(
                             effect))
@@ -1782,13 +2566,13 @@ namespace LamaPon
                             specularColor);
                         normalMap->SetSpecularPower(
                             specularPower);
-                        if (albedo != nullptr)
+                        if (albedoView != nullptr)
                         {
-                            normalMap->SetTexture(albedo);
+                            normalMap->SetTexture(albedoView);
                         }
-                        if (normal != nullptr)
+                        if (normalView != nullptr)
                         {
-                            normalMap->SetNormalTexture(normal);
+                            normalMap->SetNormalTexture(normalView);
                         }
                     }
                     else if (auto* basic =
@@ -1798,10 +2582,10 @@ namespace LamaPon
                         basic->SetAlpha(alpha);
                         basic->SetSpecularColor(specularColor);
                         basic->SetSpecularPower(specularPower);
-                        if (albedo != nullptr)
+                        if (albedoView != nullptr)
                         {
                             basic->SetTextureEnabled(true);
-                            basic->SetTexture(albedo);
+                            basic->SetTexture(albedoView);
                         }
                     }
                     else if (auto* skinned =
@@ -1813,9 +2597,9 @@ namespace LamaPon
                             specularColor);
                         skinned->SetSpecularPower(
                             specularPower);
-                        if (albedo != nullptr)
+                        if (albedoView != nullptr)
                         {
-                            skinned->SetTexture(albedo);
+                            skinned->SetTexture(albedoView);
                         }
                     }
                     else if (auto* dgsl =
@@ -1825,10 +2609,10 @@ namespace LamaPon
                         dgsl->SetAlpha(alpha);
                         dgsl->SetSpecularColor(specularColor);
                         dgsl->SetSpecularPower(specularPower);
-                        if (albedo != nullptr)
+                        if (albedoView != nullptr)
                         {
                             dgsl->SetTextureEnabled(true);
-                            dgsl->SetTexture(albedo);
+                            dgsl->SetTexture(albedoView);
                         }
                     }
                     else if (auto* alphaTest =
@@ -1837,9 +2621,9 @@ namespace LamaPon
                     {
                         alphaTest->SetDiffuseColor(color);
                         alphaTest->SetAlpha(alpha);
-                        if (albedo != nullptr)
+                        if (albedoView != nullptr)
                         {
-                            alphaTest->SetTexture(albedo);
+                            alphaTest->SetTexture(albedoView);
                         }
                     }
                     else if (auto* dualTexture =
@@ -1848,9 +2632,9 @@ namespace LamaPon
                     {
                         dualTexture->SetDiffuseColor(color);
                         dualTexture->SetAlpha(alpha);
-                        if (albedo != nullptr)
+                        if (albedoView != nullptr)
                         {
-                            dualTexture->SetTexture(albedo);
+                            dualTexture->SetTexture(albedoView);
                         }
                     }
                     else if (auto* environment =
@@ -1860,9 +2644,9 @@ namespace LamaPon
                     {
                         environment->SetDiffuseColor(color);
                         environment->SetAlpha(alpha);
-                        if (albedo != nullptr)
+                        if (albedoView != nullptr)
                         {
-                            environment->SetTexture(albedo);
+                            environment->SetTexture(albedoView);
                         }
                     }
                 }
@@ -2338,14 +3122,22 @@ namespace LamaPon
 
     bool ModelRendererComponent::CanBeInstanced() const
     {
+        const bool usesD3D12 = m_graphics != nullptr
+            && m_graphics->ActiveRenderingApi()
+                == RenderingApi::DirectX12Experimental;
         if (m_wireframe
             || m_materialOverrideEnabled
             || m_useLegacyShading
             || !m_material.Shader().empty()
             || m_graphics == nullptr
+            || (!usesD3D12
+                && m_graphics->ActiveRenderingApi()
+                    != RenderingApi::DirectX11)
             || m_graphics->IsDepthOnlyPass()
             || !m_model
-            || !m_model->skeletalModel)
+            || !m_model->skeletalModel
+            // D3D11のCMO／SDKMESH／VBOはDirectXTK Modelで、まとめて描きません。
+            || (usesD3D12 && UsesDirectXTKModelMaterial(m_modelPath)))
         {
             return false;
         }
@@ -2353,17 +3145,25 @@ namespace LamaPon
         if (!model.skins.empty()
             || !model.animations.empty()
             || model.primitives.empty()
-            || !m_graphics->Lit().SupportsInstancing())
+            || (!usesD3D12 && !m_graphics->Lit().SupportsInstancing()))
         {
             return false;
         }
         return std::ranges::all_of(
             model.primitives,
-            [](const SkeletalPrimitive& primitive)
+            [usesD3D12](const SkeletalPrimitive& primitive)
             {
+                // D3D12はGPU bufferの代わりにCPU側の頂点と索引を描きます。
+                const bool hasGeometry = usesD3D12
+                    ? primitive.cpuVertexStride
+                            >= sizeof(ImportedModelVertex)
+                        && !primitive.cpuVertexData.empty()
+                        && primitive.cpuVertexData.size()
+                            % primitive.cpuVertexStride == 0u
+                        && !primitive.cpuIndices.empty()
+                    : primitive.vertexBuffer && primitive.indexBuffer;
                 return primitive.skin < 0
-                    && primitive.vertexBuffer
-                    && primitive.indexBuffer
+                    && hasGeometry
                     && !primitive.alpha
                     && !primitive.textureHasTransparency
                     && primitive.baseColor.w >= 0.999f;
@@ -2419,6 +3219,11 @@ namespace LamaPon
         if (batch.size() < 2 || !CanBeInstanced())
         {
             return false;
+        }
+        if (m_graphics->ActiveRenderingApi()
+            == RenderingApi::DirectX12Experimental)
+        {
+            return RenderD3D12InstancedBatch(batch, view, projection);
         }
 
         using Vertex = DirectX::
@@ -2480,7 +3285,8 @@ namespace LamaPon
             {
                 continue;
             }
-            if (FAILED(m_graphics->Device()->CreateInputLayout(
+            if (FAILED(Detail::GraphicsDeviceD3D11Access::Device(
+                    *m_graphics)->CreateInputLayout(
                     elements.data(),
                     static_cast<UINT>(elements.size()),
                     byteCode->GetBufferPointer(),
@@ -2525,13 +3331,19 @@ namespace LamaPon
         static_assert(sizeof(InstanceData) == 80);
         static_assert(sizeof(Vertex) >= 52);
 
-        auto* const context = m_graphics->Context();
+        auto* const context = Detail::GraphicsDeviceD3D11Access::Context(
+            *m_graphics);
         constexpr UINT vertexStride = sizeof(Vertex);
         effect.SetMatrices(
             DirectX::XMMatrixIdentity(),
             view,
             projection);
-        effect.SetLighting(m_graphics->Lighting());
+        if (!m_graphics->TrySetLitEffectLighting(
+                effect,
+                m_graphics->Lighting()))
+        {
+            return false;
+        }
         effect.SetInstancingEnabled(true);
         effect.SetTessellationDrawEnabled(false);
 
@@ -2565,11 +3377,10 @@ namespace LamaPon
                     data.color = primitive.baseColor;
                     instances.push_back(data);
                 }
-                auto* instanceBuffer =
-                    m_graphics->AcquireInstanceBuffer(
-                        instances.data(),
-                        instances.size() * sizeof(InstanceData));
-                if (instanceBuffer == nullptr)
+                const auto instanceBuffer =
+                    m_graphics->AcquireInstanceBufferHandle(
+                        std::as_bytes(std::span{ instances }));
+                if (!instanceBuffer)
                 {
                     effect.SetInstancingEnabled(false);
                     return false;
@@ -2616,7 +3427,7 @@ namespace LamaPon
                 effect.SetTextures(
                     primitive.texture
                         ? primitive.texture.Get()
-                        : m_graphics->WhiteTexture(),
+                        : nullptr,
                     primitive.normalTexture.Get(),
                     pbr);
                 effect.SetCustomTextures({});
@@ -2633,20 +3444,21 @@ namespace LamaPon
                         ? m_states->CullNone()
                         : m_states->CullClockwise());
                 ID3D11Buffer* vertexBuffers[]{
-                    primitive.vertexBuffer.Get(),
-                    instanceBuffer
+                    primitive.vertexBuffer.Get()
                 };
-                const UINT strides[]{
-                    vertexStride,
-                    sizeof(InstanceData)
-                };
-                constexpr UINT offsets[]{ 0, 0 };
+                const UINT strides[]{ vertexStride };
+                constexpr UINT offsets[]{ 0 };
                 context->IASetVertexBuffers(
                     0,
-                    2,
+                    1,
                     vertexBuffers,
                     strides,
                     offsets);
+                m_graphics->BindVertexBuffer(
+                    instanceBuffer,
+                    1,
+                    static_cast<std::uint32_t>(
+                        sizeof(InstanceData)));
                 context->IASetIndexBuffer(
                     indexBuffer,
                     DXGI_FORMAT_R32_UINT,
@@ -2676,6 +3488,171 @@ namespace LamaPon
             {
                 component->m_instancedThisPass = true;
             }
+        }
+        return true;
+    }
+
+    bool ModelRendererComponent::RenderD3D12InstancedBatch(
+        const std::vector<ModelRendererComponent*>& batch,
+        DirectX::FXMMATRIX view,
+        DirectX::CXMMATRIX projection)
+    {
+        if (batch.size() < 2 || !CanBeInstanced())
+        {
+            return false;
+        }
+        const auto& model = *m_model->skeletalModel;
+        // D3D11と同じく、アニメーションの無いモデルを初期姿勢で描き、
+        // 自動LODの段ごとにまとめます。
+        std::vector<SkeletalPoseTransform> localPose;
+        std::vector<DirectX::XMFLOAT4X4> bindPose;
+        SkeletalModel::SamplePose(
+            model.nodes,
+            nullptr,
+            0.0f,
+            localPose,
+            bindPose);
+        std::array<std::vector<ModelRendererComponent*>, 3> lodBatches;
+        for (auto* const component : batch)
+        {
+            if (component != nullptr && component->CanBeInstanced())
+            {
+                lodBatches[std::min<std::size_t>(
+                    component->AutomaticLodLevel(view, projection),
+                    2u)].push_back(component);
+            }
+        }
+
+        std::vector<ModelRendererComponent*> drawnComponents;
+        for (std::size_t lodLevel{}; lodLevel < lodBatches.size(); ++lodLevel)
+        {
+            const auto& components = lodBatches[lodLevel];
+            if (components.empty())
+            {
+                continue;
+            }
+            bool drewLevel{};
+            for (const auto& primitive : model.primitives)
+            {
+                if (primitive.meshNode >= bindPose.size())
+                {
+                    continue;
+                }
+                const auto meshGlobal = DirectX::XMLoadFloat4x4(
+                    &bindPose[primitive.meshNode]);
+                // D3D11と同じく、instanceの色はprimitiveの色です。
+                std::vector<PrimitiveInstanceData> instances;
+                instances.reserve(components.size());
+                for (const auto* const component : components)
+                {
+                    PrimitiveInstanceData instance;
+                    DirectX::XMStoreFloat4x4(
+                        &instance.world,
+                        meshGlobal * component->Owner().WorldMatrix());
+                    instance.color = primitive.baseColor;
+                    instances.push_back(instance);
+                }
+
+                const auto vertexCount = primitive.cpuVertexData.size()
+                    / primitive.cpuVertexStride;
+                std::vector<PrimitiveRenderVertex> vertices;
+                vertices.reserve(vertexCount);
+                for (std::size_t index{}; index < vertexCount; ++index)
+                {
+                    ImportedModelVertex source{};
+                    std::memcpy(
+                        &source,
+                        primitive.cpuVertexData.data()
+                            + index * primitive.cpuVertexStride,
+                        sizeof(source));
+                    vertices.push_back({
+                        source.position,
+                        source.normal,
+                        source.textureCoordinate });
+                }
+                std::span<const std::uint32_t> indices =
+                    primitive.cpuIndices;
+                for (std::size_t level = std::min<std::size_t>(
+                        lodLevel,
+                        primitive.cpuLodIndices.size());
+                    level > 0;
+                    --level)
+                {
+                    if (!primitive.cpuLodIndices[level - 1u].empty())
+                    {
+                        indices = primitive.cpuLodIndices[level - 1u];
+                        break;
+                    }
+                }
+
+                PrimitiveDrawRequest request;
+                request.shape = PrimitiveRenderShape::Procedural;
+                request.vertices = vertices;
+                request.indices = indices;
+                DirectX::XMStoreFloat4x4(
+                    &request.world,
+                    DirectX::XMMatrixIdentity());
+                DirectX::XMStoreFloat4x4(&request.view, view);
+                DirectX::XMStoreFloat4x4(&request.projection, projection);
+                // D3D11のまとめ描きと同じく、primitive自身の色・粗さ・
+                // 金属度・PBR mapで描きます。
+                request.baseColor = primitive.baseColor;
+                request.roughness = primitive.roughness;
+                request.metallic = primitive.metallic;
+                request.occlusionStrength = primitive.occlusionStrength;
+                request.emissiveFactor = primitive.emissiveFactor;
+                const auto& textures = primitive.embeddedTextures;
+                request.albedo = textures.albedo;
+                request.normalTexture = textures.normal;
+                request.roughnessTexture = textures.roughness;
+                request.metallicTexture = textures.metallic;
+                request.occlusionTexture = textures.occlusion;
+                request.emissiveTexture = textures.emissive;
+                request.fallbackTexture =
+                    m_graphics->WhiteTextureViewHandle();
+                // D3D11のまとめ描きはリフレクションプローブを適用しないため、
+                // SkyのIBLのまま描きます。
+                CopyPrimitiveLighting(m_graphics->Lighting(), request);
+                if (!request.directionalShadow.texture
+                    && m_graphics->Shadows().IsValid())
+                {
+                    request.directionalShadow.texture =
+                        m_graphics->Shadows().ViewHandle();
+                }
+                if (!request.spotShadowTexture
+                    && m_graphics->SpotShadows().IsValid())
+                {
+                    request.spotShadowTexture =
+                        m_graphics->SpotShadows().ViewHandle();
+                }
+                if (!request.pointShadow.texture
+                    && m_graphics->PointShadows().IsValid())
+                {
+                    request.pointShadow.texture =
+                        m_graphics->PointShadows().ViewHandle();
+                }
+                request.instances = instances;
+                if (m_graphics->DrawPrimitive(request))
+                {
+                    drewLevel = true;
+                }
+            }
+            if (drewLevel)
+            {
+                drawnComponents.insert(
+                    drawnComponents.end(),
+                    components.begin(),
+                    components.end());
+            }
+        }
+        if (drawnComponents.empty())
+        {
+            return false;
+        }
+        // まとめて描いたRendererだけ、このパスの個別描画を飛ばします。
+        for (auto* const component : drawnComponents)
+        {
+            component->m_instancedThisPass = true;
         }
         return true;
     }
@@ -2761,8 +3738,12 @@ namespace LamaPon
                 commonPart.part = part.get();
                 try
                 {
+                    auto* const context =
+                        Detail::GraphicsDeviceD3D11Access::Context(
+                            *m_graphics);
                     part->CreateInputLayout(
-                        m_graphics->Device(),
+                        Detail::GraphicsDeviceD3D11Access::Device(
+                            *m_graphics),
                         &effect,
                         commonPart.inputLayout.
                             ReleaseAndGetAddressOf());
@@ -2771,24 +3752,37 @@ namespace LamaPon
                     // 明示的な上書き画像がない場合、カスタムShaderでも
                     // 元モデルの複数マテリアルを失わないようにする。
                     ID3D11ShaderResourceView* emptyViews[2]{};
-                    m_graphics->Context()->
-                        PSSetShaderResources(
-                            0,
-                            2,
-                            emptyViews);
-                    part->effect->Apply(
-                        m_graphics->Context());
+                    context->PSSetShaderResources(
+                        0,
+                        2,
+                        emptyViews);
+                    part->effect->Apply(context);
                     ID3D11ShaderResourceView*
                         embeddedViews[2]{};
-                    m_graphics->Context()->
-                        PSGetShaderResources(
-                            0,
-                            2,
-                            embeddedViews);
-                    commonPart.embeddedAlbedoTexture.
-                        Attach(embeddedViews[0]);
-                    commonPart.embeddedNormalTexture.
-                        Attach(embeddedViews[1]);
+                    context->PSGetShaderResources(
+                        0,
+                        2,
+                        embeddedViews);
+                    // PSGetShaderResourcesが加算した参照を先に両方とも
+                    // RAIIへ移します。片方のimportが例外になっても、もう
+                    // 片方を漏らしません。Partにはnative pointerではなく
+                    // Backend世代付きのneutral handleだけを残します。
+                    std::array<Microsoft::WRL::ComPtr<
+                        ID3D11ShaderResourceView>, 2>
+                        ownedEmbeddedViews;
+                    for (std::size_t index{};
+                        index < ownedEmbeddedViews.size();
+                        ++index)
+                    {
+                        ownedEmbeddedViews[index].Attach(
+                            embeddedViews[index]);
+                    }
+                    commonPart.embeddedAlbedoTexture =
+                        m_graphics->ImportD3D11ShaderResourceView(
+                            ownedEmbeddedViews[0].Get());
+                    commonPart.embeddedNormalTexture =
+                        m_graphics->ImportD3D11ShaderResourceView(
+                            ownedEmbeddedViews[1].Get());
                     if (const auto embeddedColor =
                             m_model->embeddedDiffuseColors.find(
                                 part->effect.get());
@@ -2832,8 +3826,8 @@ namespace LamaPon
                     resources->parts,
                     [](const CommonLitResources::Part& part)
                     {
-                        return part.embeddedAlbedoTexture
-                            != nullptr;
+                        return static_cast<bool>(
+                            part.embeddedAlbedoTexture);
                     });
             if (embeddedCount == 0)
             {
@@ -2897,7 +3891,12 @@ namespace LamaPon
         if (!depthOnly)
         {
             effect.SetMaterial(m_material);
-            effect.SetLighting(m_graphics->Lighting());
+            if (!m_graphics->TrySetLitEffectLighting(
+                    effect,
+                    m_graphics->Lighting()))
+            {
+                return;
+            }
             // 範囲に入っているリフレクションプローブがあれば、
             // 環境反射をその結果へ差し替えます（2個あれば混ぜます）。
             const auto ownerWorldMatrix =
@@ -2906,10 +3905,14 @@ namespace LamaPon
             DirectX::XMStoreFloat3(
                 &ownerPosition,
                 ownerWorldMatrix.r[3]);
-            effect.SetEnvironmentOverride(
-                Owner().GetScene()
-                    .ReflectionProbeEnvironmentAt(
-                        ownerPosition));
+            const auto probe = Owner().GetScene()
+                .ReflectionProbeEnvironmentAt(ownerPosition);
+            // Probe ComponentがDraw完了までneutral handleを保持します。
+            // stale/foreign ProbeはSky IBLへ安全にフォールバックします。
+            static_cast<void>(
+                m_graphics->TrySetLitEffectReflectionProbe(
+                    effect,
+                    probe));
         }
 
         const auto ownerWorld = Owner().WorldMatrix();
@@ -2949,6 +3952,8 @@ namespace LamaPon
             && !depthOnly
             && effect.HasOccludedPass()
             && m_material.CustomParameter(4).w > 0.0f;
+
+        const auto baseTextureRequest = BuildLitTextureRequest();
 
         for (const bool alphaPass : { false, true })
         {
@@ -3002,23 +4007,28 @@ namespace LamaPon
                     {
                         continue;
                     }
-                    effect.SetTextures(
-                        m_albedoTexture
-                            ? m_albedoTexture->view.Get()
-                            : (part.embeddedAlbedoTexture
-                                ? part.embeddedAlbedoTexture.Get()
-                                : m_graphics->WhiteTexture()),
-                        m_normalTexture
-                            ? m_normalTexture->view.Get()
-                            : part.embeddedNormalTexture.Get(),
-                        BuildPbrTextures(
-                            m_roughnessTexture,
-                            m_metallicTexture,
-                            m_occlusionTexture,
-                            m_emissiveTexture,
-                            m_material));
-                    effect.SetCustomTextures(
-                        ResolveCustomTextureViews());
+                    // 明示的な上書きが無いalbedo/normalだけ、モデル内蔵
+                    // textureで補います。requestはこのpartの全Drawが戻る
+                    // まで生存し、Backend固有resourceを強所有します。
+                    auto partTextureRequest = baseTextureRequest;
+                    if (!partTextureRequest.albedo)
+                    {
+                        partTextureRequest.albedo =
+                            part.embeddedAlbedoTexture;
+                    }
+                    if (!partTextureRequest.normal)
+                    {
+                        partTextureRequest.normal =
+                            part.embeddedNormalTexture;
+                    }
+                    if (!m_graphics->TrySetLitEffectTextures(
+                            effect,
+                            partTextureRequest))
+                    {
+                        // 前のpartのnative bindingを再利用した描画はせず、
+                        // stale / 別Backend世代のrequestを安全に拒否します。
+                        continue;
+                    }
                     if (m_preserveEmbeddedMaterialColor)
                     {
                         // 上書き色をTintとして扱い、CMO/SDKMESH内の
