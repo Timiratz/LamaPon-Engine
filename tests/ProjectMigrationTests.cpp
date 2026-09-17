@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace
@@ -452,6 +453,263 @@ int main()
                     == LamaPon::RenderingApi::DirectX11,
                 "an unknown project rendering API must load as"
                 " DirectX 11");
+            std::filesystem::remove(settingsFile);
+        }
+
+        // Discord連携に必要なのは公開可能なバックエンド接続情報だけです。
+        // Project/GamePackageの両方で往復し、資格情報らしい未知キーは
+        // onlineオブジェクトを再生成するときに持ち越さないことを確認します。
+        {
+            const auto settingsFile =
+                projectRoot / ".lamapon" / "online.json";
+            LamaPon::ProjectSettings settings;
+            settings.online.enabled = true;
+            settings.online.serviceBaseUrl =
+                "https://online.example.test/api";
+            settings.online.gameId = "com.example.online-game";
+            settings.online.environmentId = "staging_2";
+            settings.online.openAuthorizationBrowser = false;
+            settings.online.discordPresence.enabled = true;
+            settings.online.discordPresence.applicationId =
+                "123456789012345678";
+            settings.online.discordPresence
+                .defaultLargeImageKey = "game_icon";
+            settings.online.discordPresence
+                .defaultLargeImageText = "My Awesome Game";
+
+            for (const auto fileType : {
+                    LamaPon::ProjectSettingsFileType::Project,
+                    LamaPon::ProjectSettingsFileType::
+                        GamePackage })
+            {
+                // 以前の手編集で危険なキーがあっても、所有するonline
+                // オブジェクトは許可した6項目だけで書き直します。
+                WriteFile(
+                    settingsFile,
+                    R"({"online":{"client_secret":"leak",)"
+                    R"("accessToken":"leak","refreshToken":"leak"}})");
+                LamaPon::SaveProjectSettings(
+                    settingsFile,
+                    settings,
+                    fileType);
+                const auto loaded =
+                    LamaPon::LoadProjectSettings(settingsFile);
+                Require(
+                    loaded.online.enabled
+                        && loaded.online.serviceBaseUrl
+                            == settings.online.serviceBaseUrl
+                        && loaded.online.gameId
+                            == settings.online.gameId
+                        && loaded.online.environmentId
+                            == settings.online.environmentId
+                        && !loaded.online.allowInsecureLoopback
+                        && !loaded.online
+                            .openAuthorizationBrowser,
+                    "online project settings must survive both"
+                    " project and game-package round trips");
+                Require(
+                    loaded.online.discordPresence.enabled
+                        && loaded.online.discordPresence
+                                .applicationId
+                            == settings.online.discordPresence
+                                .applicationId
+                        && loaded.online.discordPresence
+                                .defaultLargeImageKey
+                            == settings.online.discordPresence
+                                .defaultLargeImageKey
+                        && loaded.online.discordPresence
+                                .defaultLargeImageText
+                            == settings.online.discordPresence
+                                .defaultLargeImageText,
+                    "Discord rich presence settings must"
+                    " survive project and game-package round"
+                    " trips");
+
+                const auto document = nlohmann::json::parse(
+                    ReadFile(settingsFile));
+                const auto& online = document.at("online");
+                Require(
+                    online.size() == 7
+                        && !online.contains("client_secret")
+                        && !online.contains("clientSecret")
+                        && !online.contains("accessToken")
+                        && !online.contains("refreshToken")
+                        && !online.contains("token"),
+                    "project settings must never retain Discord"
+                    " secrets or session tokens");
+                const auto& presence =
+                    online.at("discordPresence");
+                Require(
+                    presence.size() == 4
+                        && presence.contains("enabled")
+                        && presence.contains("applicationId")
+                        && presence.contains(
+                            "defaultLargeImageKey")
+                        && presence.contains(
+                            "defaultLargeImageText"),
+                    "Discord rich presence must store only its"
+                    " four public settings");
+            }
+
+            // HTTPは明示したloopback開発だけProjectで許可し、同じ設定を
+            // 配布用GamePackageへ入れる操作は必ず拒否します。
+            auto development = settings;
+            development.online.serviceBaseUrl =
+                "http://127.0.0.1:8080";
+            development.online.allowInsecureLoopback = true;
+            LamaPon::ValidateProjectSettings(
+                development,
+                LamaPon::ProjectSettingsFileType::Project);
+            LamaPon::SaveProjectSettings(
+                settingsFile,
+                development,
+                LamaPon::ProjectSettingsFileType::Project);
+            Require(
+                LamaPon::LoadProjectSettings(settingsFile)
+                    .online.allowInsecureLoopback,
+                "an explicitly enabled loopback URL must be"
+                " available to local project development");
+
+            bool rejected = false;
+            try
+            {
+                LamaPon::SaveProjectSettings(
+                    settingsFile,
+                    development,
+                    LamaPon::ProjectSettingsFileType::
+                        GamePackage);
+            }
+            catch (const std::exception&)
+            {
+                rejected = true;
+            }
+            Require(
+                rejected,
+                "an enabled game package must reject the insecure"
+                " loopback development switch");
+
+            // formatを手で配布用へ変えたファイルも、読み込み時点で同じ
+            // 制約を受けます。起動側だけを迂回できてはいけません。
+            auto packaged = nlohmann::json::parse(
+                ReadFile(settingsFile));
+            packaged["format"] = "LamaPonGame";
+            WriteFile(settingsFile, packaged.dump(2));
+            rejected = false;
+            try
+            {
+                static_cast<void>(
+                    LamaPon::LoadProjectSettings(settingsFile));
+            }
+            catch (const std::exception&)
+            {
+                rejected = true;
+            }
+            Require(
+                rejected,
+                "loading a packaged game must reject the insecure"
+                " loopback development switch");
+
+            // 有効化した設定は全項目を必要とし、namespaceにヘッダーへ
+            // 混入できる文字を受け付けません。
+            for (auto invalid : {
+                    LamaPon::OnlineProjectSettings{
+                        true,
+                        {},
+                        "game",
+                        "production",
+                        false,
+                        true },
+                    LamaPon::OnlineProjectSettings{
+                        true,
+                        "http://example.test",
+                        "game",
+                        "production",
+                        true,
+                        true },
+                    LamaPon::OnlineProjectSettings{
+                        true,
+                        "https://online.example.test",
+                        "bad/game",
+                        "production",
+                        false,
+                        true },
+                    LamaPon::OnlineProjectSettings{
+                        true,
+                        "https://online.example.test",
+                        "game",
+                        "bad environment",
+                        false,
+                        true } })
+            {
+                auto invalidSettings = settings;
+                invalidSettings.online = std::move(invalid);
+                rejected = false;
+                try
+                {
+                    LamaPon::ValidateProjectSettings(
+                        invalidSettings);
+                }
+                catch (const std::exception&)
+                {
+                    rejected = true;
+                }
+                Require(
+                    rejected,
+                    "an incomplete or unsafe online project setting"
+                    " was accepted");
+            }
+
+            // JSONを手編集した場合も、6項目の型を暗黙変換しません。
+            // boolへ数値や文字列を通すと、意図せず開発用通信が有効に
+            // なるため、読込時点で閉じます。
+            const std::vector<std::pair<
+                std::string,
+                nlohmann::json>> invalidTypes{
+                { "enabled", 1 },
+                { "serviceBaseUrl", false },
+                { "gameId", 7 },
+                {
+                    "environmentId",
+                    nlohmann::json::array()
+                },
+                { "allowInsecureLoopback", "true" },
+                { "openAuthorizationBrowser", nullptr }
+            };
+            for (const auto& [field, invalidValue] : invalidTypes)
+            {
+                nlohmann::json online{
+                    { "enabled", true },
+                    {
+                        "serviceBaseUrl",
+                        "https://online.example.test"
+                    },
+                    { "gameId", "com.example.type-test" },
+                    { "environmentId", "production" },
+                    { "allowInsecureLoopback", false },
+                    { "openAuthorizationBrowser", true }
+                };
+                online[field] = invalidValue;
+                WriteFile(
+                    settingsFile,
+                    nlohmann::json{
+                        { "format", "LamaPonProject" },
+                        { "online", std::move(online) }
+                    }.dump(2));
+                rejected = false;
+                try
+                {
+                    static_cast<void>(
+                        LamaPon::LoadProjectSettings(settingsFile));
+                }
+                catch (const std::exception&)
+                {
+                    rejected = true;
+                }
+                Require(
+                    rejected,
+                    ("an online JSON field accepted the wrong type: "
+                        + field).c_str());
+            }
             std::filesystem::remove(settingsFile);
         }
 

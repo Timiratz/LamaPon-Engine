@@ -23,6 +23,7 @@
 #include "LamaPon/Assets/AssetImporter.h"
 #include "LamaPon/Editor/GameExporter.h"
 #include "LamaPon/Editor/GameModuleBuilder.h"
+#include "LamaPon/Editor/PackageNativeDependencies.h"
 #include "LamaPon/Scripting/GameModule.h"
 #include "LamaPon/Graphics/PngWriter.h"
 #include "LamaPon/Hub/LearningJourney.h"
@@ -2064,6 +2065,13 @@ namespace
             / L"LamaPonGameModule.dll";
         bool gameModuleLoaded = false;
         std::string gameModuleError;
+        // パッケージが持ち込むSDKのDLLを、Game Moduleが解決できる
+        // ようにします（assets/packages/<名前>/ の下にあるため、
+        // 既定のDLL探索順では見つかりません）。
+        gameModule.SetNativeSearchDirectories(
+            LamaPon::PackageNativeSearchDirectories(
+                LamaPon::ScanPackageNativeDependencies(
+                    projectRoot / L"assets").packages));
         if (std::filesystem::is_regular_file(gameModulePath))
         {
             gameModuleLoaded = gameModule.Load(gameModulePath);
@@ -4349,6 +4357,13 @@ namespace
             / L"LamaPonGameModule.dll";
         bool gameModuleLoaded = false;
         std::string gameModuleError;
+        // パッケージが持ち込むSDKのDLLを、Game Moduleが解決できる
+        // ようにします（assets/packages/<名前>/ の下にあるため、
+        // 既定のDLL探索順では見つかりません）。
+        gameModule.SetNativeSearchDirectories(
+            LamaPon::PackageNativeSearchDirectories(
+                LamaPon::ScanPackageNativeDependencies(
+                    projectRoot / L"assets").packages));
         if (std::filesystem::exists(gameModulePath))
         {
             gameModuleLoaded =

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "LamaPon/Core/PlayerPrefs.h"
+#include "LamaPon/Online/OnlineServices.h"
 #include "LamaPon/Scripting/Coroutine.h"
 #include "LamaPon/Scripting/GameModule.h"
 // 初心者向けショートカット（GetComponent/Find/Instantiate等）を
@@ -505,6 +506,217 @@ namespace LamaPon
             Owner().GetScene().Events().Publish(
                 eventName,
                 eventArgs);
+        }
+
+        // Discordログインは非同期です。開始後はUpdate()などから
+        // OnlineState()を確認し、SignedInになったらプロフィールを
+        // 利用します。Scriptのコールバックを保持しないため、
+        // Game ModuleのHot Reload中も安全です。
+        [[nodiscard]] bool SignInWithDiscord() const
+        {
+            auto* online = ActiveOnlineServices();
+            return online != nullptr
+                && online->BeginDiscordSignIn();
+        }
+
+        void CancelDiscordSignIn() const noexcept
+        {
+            if (auto* online = ActiveOnlineServices())
+            {
+                online->CancelDiscordSignIn();
+            }
+        }
+
+        void SignOutOnline() const
+        {
+            if (auto* online = ActiveOnlineServices())
+            {
+                online->SignOut();
+            }
+        }
+
+        [[nodiscard]] OnlineAccountState OnlineState() const noexcept
+        {
+            const auto* online = ActiveOnlineServices();
+            return online != nullptr
+                ? online->State()
+                : OnlineAccountState::Unconfigured;
+        }
+
+        [[nodiscard]] bool IsOnlineSignedIn() const noexcept
+        {
+            const auto* online = ActiveOnlineServices();
+            return online != nullptr && online->IsSignedIn();
+        }
+
+        [[nodiscard]] std::string OnlinePlayerId() const
+        {
+            const auto* online = ActiveOnlineServices();
+            return online != nullptr
+                ? online->Player().playerId
+                : std::string{};
+        }
+
+        [[nodiscard]] std::string OnlinePlayerName() const
+        {
+            const auto* online = ActiveOnlineServices();
+            return online != nullptr
+                ? online->Player().displayName
+                : std::string{};
+        }
+
+        [[nodiscard]] std::string OnlineAuthorizationUrl() const
+        {
+            const auto* online = ActiveOnlineServices();
+            return online != nullptr
+                ? online->AuthorizationUrl()
+                : std::string{};
+        }
+
+        [[nodiscard]] std::string OnlineError() const
+        {
+            const auto* online = ActiveOnlineServices();
+            return online != nullptr
+                ? online->LastError()
+                : std::string{};
+        }
+
+        // クラウド同期の公開状態だけをScriptへ中継します。ETag、token、
+        // 保存先pathなどの内部情報はOnlineServices側で公開DTOから除外済みです。
+        [[nodiscard]] OnlineCloudSyncStatus CloudSyncStatus() const noexcept
+        {
+            const auto* online = ActiveOnlineServices();
+            return online != nullptr
+                ? online->CloudSyncStatus()
+                : OnlineCloudSyncStatus{};
+        }
+
+        [[nodiscard]] std::vector<OnlineCloudConflict>
+            CloudConflicts() const
+        {
+            const auto* online = ActiveOnlineServices();
+            return online != nullptr
+                ? online->CloudConflicts()
+                : std::vector<OnlineCloudConflict>{};
+        }
+
+        [[nodiscard]] OnlinePersistenceOperationResult
+            RequestCloudSync() const noexcept
+        {
+            auto* online = ActiveOnlineServices();
+            return online != nullptr
+                ? online->RequestCloudSync()
+                : OnlinePersistenceOperationResult::Unavailable;
+        }
+
+        [[nodiscard]] OnlinePersistenceOperationResult
+            ResolveCloudConflict(
+            const std::string_view conflictId,
+            const OnlineCloudConflictResolution resolution) const noexcept
+        {
+            auto* online = ActiveOnlineServices();
+            return online != nullptr
+                ? online->ResolveCloudConflict(conflictId, resolution)
+                : OnlinePersistenceOperationResult::Unavailable;
+        }
+
+        [[nodiscard]] OnlinePersistenceRecoveryStatus
+            PersistenceRecoveryStatus() const noexcept
+        {
+            const auto* online = ActiveOnlineServices();
+            return online != nullptr
+                ? online->PersistenceRecoveryStatus()
+                : OnlinePersistenceRecoveryStatus{};
+        }
+
+        [[nodiscard]] OnlinePersistenceOperationResult
+            RestorePersistence(
+            const std::uint64_t expectedRevision) const noexcept
+        {
+            auto* online = ActiveOnlineServices();
+            return online != nullptr
+                ? online->RestorePersistence(expectedRevision)
+                : OnlinePersistenceOperationResult::Unavailable;
+        }
+
+        [[nodiscard]] OnlinePersistenceOperationResult
+            DiscardPersistence(
+            const std::uint64_t expectedRevision) const noexcept
+        {
+            auto* online = ActiveOnlineServices();
+            return online != nullptr
+                ? online->DiscardPersistence(expectedRevision)
+                : OnlinePersistenceOperationResult::Unavailable;
+        }
+
+        // Discord Rich Presence（プレイ状況の表示）
+        //
+        // Discordログインとは別の機能です。ログインしていなくても、
+        // オンライン設定が無効でも使えます。ジャンルを問わず、
+        // details / stateへ好きな文字列を入れてください。
+        //
+        //   DiscordActivity activity;
+        //   activity.details = "Chapter 3";
+        //   activity.state = "Boss Battle";
+        //   activity.largeImageKey = "game_icon";
+        //   activity.largeImageText = "My Awesome Game";
+        //   activity.startTimestamp = LamaPon::DiscordPresenceUnixTime();
+        //   SetDiscordActivity(activity);
+        //
+        // Discordが起動していない場合はfalseを返すだけで、ゲームは
+        // そのまま動きます。最後に渡した内容は保持され、Discordへ
+        // 接続できた時点で表示されます。
+        [[nodiscard]] bool SetDiscordActivity(
+            const DiscordActivity& activity) const noexcept
+        {
+            auto* online = ActiveOnlineServices();
+            return online != nullptr
+                && online->Presence().SetActivity(activity);
+        }
+
+        // details / stateだけを渡す簡易版です。
+        //   SetDiscordActivity("Chapter 3", "Boss Battle");
+        [[nodiscard]] bool SetDiscordActivity(
+            const std::string_view details,
+            const std::string_view state) const noexcept
+        {
+            auto* online = ActiveOnlineServices();
+            return online != nullptr
+                && online->Presence().SetActivity(details, state);
+        }
+
+        // 何度呼んでも安全です。
+        void ClearDiscordActivity() const noexcept
+        {
+            if (auto* online = ActiveOnlineServices())
+            {
+                online->Presence().ClearActivity();
+            }
+        }
+
+        [[nodiscard]] bool
+            IsDiscordPresenceAvailable() const noexcept
+        {
+            const auto* online = ActiveOnlineServices();
+            return online != nullptr
+                && online->Presence().IsAvailable();
+        }
+
+        [[nodiscard]] DiscordPresenceState
+            DiscordPresenceStatus() const noexcept
+        {
+            const auto* online = ActiveOnlineServices();
+            return online != nullptr
+                ? online->Presence().State()
+                : DiscordPresenceState::Disabled;
+        }
+
+        [[nodiscard]] std::string DiscordPresenceError() const
+        {
+            const auto* online = ActiveOnlineServices();
+            return online != nullptr
+                ? online->Presence().LastError()
+                : std::string{};
         }
 
         // 設定値の保存（アプリを終了しても残ります）

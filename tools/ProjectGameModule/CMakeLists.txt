@@ -36,6 +36,23 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# パッケージが持ち込むネイティブ依存です。assets/packages/<名前>/
+# package.json の native を LamaPon が検証して生成します。ここでは
+# 生成済みの変数を読み込むだけで、パッケージ側が任意のコンパイル／
+# リンクオプションを差し込めないようにしています。
+# ファイルが無い状態から現れた場合にも再configureできるよう、
+# 存在の有無に関わらず依存として登録します。
+set(LAMAPON_PACKAGE_NATIVE_FILE
+    "${LAMAPON_PROJECT_ROOT}/.lamapon/package-native.cmake")
+set_property(DIRECTORY APPEND PROPERTY
+    CMAKE_CONFIGURE_DEPENDS "${LAMAPON_PACKAGE_NATIVE_FILE}")
+set(LAMAPON_PACKAGE_INCLUDE_DIRECTORIES)
+set(LAMAPON_PACKAGE_LIBRARIES)
+set(LAMAPON_PACKAGE_DEFINES)
+if(EXISTS "${LAMAPON_PACKAGE_NATIVE_FILE}")
+    include("${LAMAPON_PACKAGE_NATIVE_FILE}")
+endif()
+
 file(GLOB_RECURSE LAMAPON_PROJECT_SCRIPT_SOURCES CONFIGURE_DEPENDS
     "${LAMAPON_PROJECT_ROOT}/assets/*.cpp"
 )
@@ -127,6 +144,21 @@ target_compile_options(LamaPonGameModule PRIVATE
     /utf-8
 )
 target_link_libraries(LamaPonGameModule PRIVATE LamaPonRuntime)
+
+if(LAMAPON_PACKAGE_INCLUDE_DIRECTORIES)
+    target_include_directories(LamaPonGameModule PRIVATE
+        ${LAMAPON_PACKAGE_INCLUDE_DIRECTORIES})
+endif()
+if(LAMAPON_PACKAGE_LIBRARIES)
+    target_link_libraries(LamaPonGameModule PRIVATE
+        ${LAMAPON_PACKAGE_LIBRARIES})
+    set_property(TARGET LamaPonGameModule APPEND PROPERTY LINK_DEPENDS
+        ${LAMAPON_PACKAGE_LIBRARIES})
+endif()
+if(LAMAPON_PACKAGE_DEFINES)
+    target_compile_definitions(LamaPonGameModule PRIVATE
+        ${LAMAPON_PACKAGE_DEFINES})
+endif()
 
 # IMPORTED_IMPLIBをリンクしていても、NMakeでは外部Runtimeを建て直した
 # だけのケースがGame Moduleの再リンク条件へ入らないことがあります。

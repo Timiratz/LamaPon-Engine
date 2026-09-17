@@ -22,6 +22,7 @@ namespace LamaPon
             application.ActiveScene(),
             application.Preferences(),
             application.Saves(),
+            application.Online(),
             std::move(scenePath),
             std::move(engineRoot),
             std::move(buildConfiguration));

@@ -89,6 +89,7 @@ LAMAPON_SCRIPT(MyScript);
 | [アニメーション](#アニメーション) | クリップ再生、Trigger |
 | [UI](#ui) | ボタン、スライダー、入力欄 |
 | [ナビゲーション](#ナビゲーション) | NavMeshによる経路移動 |
+| [オンライン](#オンライン) | Discordログイン、クラウド同期、競合と復旧 |
 | [セーブとログ](#セーブとログ) | 進行状況の保存、デバッグ出力 |
 | [逆引き](#逆引きやりたいこと別) | やりたいことから探す |
 | [よくあるコンパイルエラー](#よくあるコンパイルエラー) | エラー文から原因を引く |
@@ -2679,6 +2680,110 @@ void Chase()
 
 ---
 
+## オンライン
+
+Discordログインとクラウドセーブは、プロジェクトでオンラインサービスを設定し、
+対応するバックエンドを用意したWindows x64ゲームで利用できます。
+
+### ログインとアカウント状態
+
+**宣言（Script）**
+
+```cpp
+bool SignInWithDiscord() const;
+void CancelDiscordSignIn() const noexcept;
+void SignOutOnline() const;
+
+OnlineAccountState OnlineState() const noexcept;
+bool IsOnlineSignedIn() const noexcept;
+std::string OnlinePlayerId() const;
+std::string OnlinePlayerName() const;
+std::string OnlineAuthorizationUrl() const;
+std::string OnlineError() const;
+```
+
+**概略**
+
+`SignInWithDiscord()`はブラウザー認証を非同期で開始し、要求を受理したときtrueを返します。
+`OnlineState()`が`SignedIn`になるまで、ゲームループから状態を確認してください。
+`OnlinePlayerId()`はDiscord IDではなくバックエンドの内部プレイヤーIDです。
+
+`OnlineAccountState`には`Unconfigured`、`SignedOut`、`StartingSignIn`、
+`WaitingForAuthorization`、`PollingAuthorization`、`SignedIn`、`SigningOut`、`Error`、
+`RestoringSession`、`RefreshingSession`があります。すべてのオンラインAPIは
+`Application`を動かす同じスレッドから呼びます。
+
+```cpp
+void Start() override
+{
+    SignInWithDiscord();
+}
+
+void Update(float) override
+{
+    if (OnlineState() == LamaPon::OnlineAccountState::Error)
+    {
+        LamaPon::Logger::Instance().Error(OnlineError());
+    }
+}
+```
+
+### クラウド同期と競合
+
+**宣言（Script）**
+
+```cpp
+OnlineCloudSyncStatus CloudSyncStatus() const noexcept;
+std::vector<OnlineCloudConflict> CloudConflicts() const;
+OnlinePersistenceOperationResult RequestCloudSync() const noexcept;
+OnlinePersistenceOperationResult ResolveCloudConflict(
+    std::string_view conflictId,
+    OnlineCloudConflictResolution resolution) const noexcept;
+```
+
+`RequestCloudSync()`は手動同期を要求します。戻り値は`Succeeded`、`Unavailable`、`Busy`、
+`Stale`、`Failed`のいずれかです。`CloudSyncStatus()`では`Unavailable`、`Idle`、
+`Synchronizing`、`WaitingToRetry`、`Conflict`、`Unauthorized`、`Stopped`の状態、再試行までの秒数、
+競合数を確認できます。
+
+`CloudConflicts()`は競合したリソースの種類、スロット名、ローカル／クラウドそれぞれの
+削除状態とバイト数を返します。`id`はプロセス内だけで有効なので永続化しないでください。
+利用者へ確認してから`UseLocal`または`UseRemote`で解決します。
+
+```cpp
+for (const auto& conflict : CloudConflicts())
+{
+    ResolveCloudConflict(
+        conflict.id,
+        LamaPon::OnlineCloudConflictResolution::UseRemote);
+}
+```
+
+`UseLocal`は競合検出時のローカル版を再送し、`UseRemote`はクラウド版でローカルを
+上書きします。どちらもデータを失う可能性があるため、実際のゲームでは確認UIが必要です。
+
+### 永続化処理の復旧
+
+**宣言（Script）**
+
+```cpp
+OnlinePersistenceRecoveryStatus
+    PersistenceRecoveryStatus() const noexcept;
+OnlinePersistenceOperationResult RestorePersistence(
+    std::uint64_t expectedRevision) const noexcept;
+OnlinePersistenceOperationResult DiscardPersistence(
+    std::uint64_t expectedRevision) const noexcept;
+```
+
+強制終了などで中断した保存処理がある場合、状態は`MemorySnapshot`、`DurableSidecar`、
+または`UnavailableSidecar`になります。表示時に取得した`revision`を復元／破棄へ渡します。
+対象が変化していれば`Stale`となり、古い確認画面からの操作を拒否します。
+
+構成、設定、バックエンド契約、秘密情報の扱いは
+[Discordログインとクラウドセーブ](online-services.md)を参照してください。
+
+---
+
 ## セーブとログ
 
 ### Logger（デバッグ出力）
@@ -2816,6 +2921,9 @@ void OnGameOver()
 エディターの「セーブデータ」タブからは編集・確認ができます。
 
 保存先は`%LOCALAPPDATA%/LamaPon/<ゲーム名>/`です。
+オンラインでサインイン中は内部プレイヤーIDごとの分離領域へ切り替わり、クラウド同期の対象に
+なります。ゲストデータは自動移行しません。詳しくは
+[Discordログインとクラウドセーブ](online-services.md)を参照してください。
 
 ---
 

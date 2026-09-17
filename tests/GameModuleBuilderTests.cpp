@@ -110,6 +110,13 @@ int main()
             !LamaPon::ShouldUseLocalGameModuleBuildCache(project),
             "A normal local project must not require a local cache.");
 
+        // パッケージのネイティブ依存が無いプロジェクトでも、CMakeが
+        // 常にinclude()できるよう空の定義を書き出します。
+        Require(
+            std::filesystem::is_regular_file(
+                project / L".lamapon" / L"package-native.cmake"),
+            "The package native settings must always be generated.");
+
         Require(
             command.usesLocalBuildCache,
             "An explicit local cache root must enable cached builds.");

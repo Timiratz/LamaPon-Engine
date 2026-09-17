@@ -134,7 +134,54 @@ namespace LamaPon
         }
         m_instances.clear();
         ReleaseLoadedModule();
+        ReleaseNativeSearchDirectories();
         s_current = nullptr;
+    }
+
+    // パッケージが持ち込むSDKのDLLは、実行ファイルの隣ではなく
+    // assets/packages/<名前>/ の下にあります。既定のDLL探索順では
+    // 見つからないため、明示的に探索先へ足します。
+    void GameModuleHost::SetNativeSearchDirectories(
+        std::vector<std::filesystem::path> directories)
+    {
+        ReleaseNativeSearchDirectories();
+        m_nativeSearchDirectories = std::move(directories);
+        ApplyNativeSearchDirectories();
+    }
+
+    void GameModuleHost::ApplyNativeSearchDirectories()
+    {
+        for (const auto& directory : m_nativeSearchDirectories)
+        {
+            std::error_code error;
+            if (!std::filesystem::is_directory(directory, error))
+            {
+                continue;
+            }
+            const auto absolute =
+                std::filesystem::absolute(directory, error)
+                    .lexically_normal();
+            if (error)
+            {
+                continue;
+            }
+            if (auto* const cookie =
+                AddDllDirectory(absolute.c_str()))
+            {
+                m_nativeSearchCookies.push_back(cookie);
+            }
+        }
+    }
+
+    void GameModuleHost::ReleaseNativeSearchDirectories() noexcept
+    {
+        for (auto* const cookie : m_nativeSearchCookies)
+        {
+            static_cast<void>(
+                RemoveDllDirectory(
+                    static_cast<DLL_DIRECTORY_COOKIE>(cookie)));
+        }
+        m_nativeSearchCookies.clear();
     }
 
     bool GameModuleHost::Load(std::filesystem::path modulePath)
@@ -418,8 +465,15 @@ namespace LamaPon
             return false;
         }
 
-        const HMODULE handle =
-            LoadLibraryW(candidate.shadowPath.c_str());
+        // 探索先を足していないときは、従来どおりの読み込みのままに
+        // します。フラグを渡すと探索順そのものが変わるためです。
+        const HMODULE handle = m_nativeSearchCookies.empty()
+            ? LoadLibraryW(candidate.shadowPath.c_str())
+            : LoadLibraryExW(
+                candidate.shadowPath.c_str(),
+                nullptr,
+                LOAD_LIBRARY_SEARCH_DEFAULT_DIRS
+                    | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR);
         if (handle == nullptr)
         {
             m_lastError =
