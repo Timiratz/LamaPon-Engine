@@ -17,6 +17,8 @@
 - Discord固有APIを`DiscordPresenceBackend`アダプターへ閉じ込め、ゲーム側コードからDiscord SDKの型を使わせない。LamaPonはSDKを同梱しないため、アダプター未登録・Discord未起動でも警告ログだけを出してゲームは通常どおり動く。
 - プロジェクト設定「オンライン」にRich Presence設定（Application ID、既定の大画像キーとテキスト）とエディターからの動作確認を追加。`project.json`の`online.discordPresence`へ公開情報だけを保存し、`discordPresence`が無い古いプロジェクトは無効として読み込む。
 - C++ ScriptへDiscord Rich Presence APIを追加したため、Game Module APIを23へ更新。
+- 拡張機能へ公式パッケージ`discord-presence-sdk`を追加。Discord公式のSocial SDKでRich Presenceを実際に表示するアダプターで、Game Module読み込み時に自動登録するためゲーム側のコード変更は要らない。ライセンス上SDK本体は同梱できないため、利用者がDiscordから入手して`sdk/`へ置く。
+- 配布パッケージのソースを`packages/src/`へ置き、`build_package.py`でZipと一覧を作れるようにした。改行をLFへ固定し、どのOSで作っても利用者が受け取る中身が変わらないようにした。
 
 ### オンラインアカウントとクラウドセーブ
 
