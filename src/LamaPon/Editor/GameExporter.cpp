@@ -704,8 +704,9 @@ namespace LamaPon
             ProjectSettingsFileType::GamePackage);
 
         // パッケージが宣言したネイティブDLLは、実行ファイルの隣へ
-        // 同梱します。壊れた宣言・配置忘れ・名前の衝突は、書き出しの
-        // 作業を始める前に止めます。
+        // 同梱します。壊れた宣言・名前の衝突は、書き出しの作業を
+        // 始める前に止めます。SDK本体が未配置のパッケージは、Game
+        // Moduleのビルドと同じく警告してDLLを同梱しません。
         const auto packageScan =
             ScanPackageNativeDependencies(assetDirectory);
         if (!packageScan.errors.empty())
@@ -718,9 +719,15 @@ namespace LamaPon
             }
             throw std::runtime_error(message);
         }
-        RequirePackageNativeFiles(packageScan.packages);
+        const auto nativeSelection =
+            SelectAvailablePackageNativeDependencies(
+                packageScan.packages);
+        for (const auto& missing : nativeSelection.missing)
+        {
+            Logger::Instance().Warning(missing);
+        }
         const auto packageRuntimeFiles =
-            CollectPackageRuntimeFiles(packageScan.packages);
+            CollectPackageRuntimeFiles(nativeSelection.available);
 
         const auto gameExecutable =
             runtimeDirectory / L"LamaPonGame.exe";

@@ -320,6 +320,60 @@ namespace
         LamaPon::RequirePackageNativeFiles({ dependency });
     }
 
+    // SDK本体が未配置のパッケージは、ビルドを止めずにnative設定ごと外します。
+    void TestMissingPackagesAreSkipped(
+        const std::filesystem::path& root)
+    {
+        const auto parse = [&root](const char* const name)
+        {
+            return LamaPon::ParsePackageNativeDependency(
+                R"({"native":{"includeDirectories":["sdk/include"],)"
+                R"("libraries":["sdk/lib/vendor.lib"],)"
+                R"("runtimeFiles":["sdk/bin/vendor.dll"],)"
+                R"("defines":["VENDOR_SDK"]}})",
+                root / "skip" / name,
+                name);
+        };
+        const auto placedDirectory = root / "skip" / "placed-sdk";
+        std::filesystem::create_directories(
+            placedDirectory / "sdk" / "include");
+        WriteFile(placedDirectory / "sdk" / "lib" / "vendor.lib", "lib");
+        WriteFile(placedDirectory / "sdk" / "bin" / "vendor.dll", "dll");
+
+        const auto selection =
+            LamaPon::SelectAvailablePackageNativeDependencies(
+                { parse("missing-sdk"), parse("placed-sdk") });
+        Require(
+            selection.available.size() == 1u
+                && selection.available.front().packageName == "placed-sdk"
+                && selection.available.front().defines.size() == 1u,
+            "a package with every native file must stay available");
+        Require(
+            selection.missing.size() == 1u
+                && selection.missing.front().find("missing-sdk")
+                    != std::string::npos
+                && selection.missing.front().find("vendor.lib")
+                    != std::string::npos
+                && selection.missing.front().find("vendor.dll")
+                    != std::string::npos,
+            "a package without its SDK must be skipped with every missing "
+            "file named");
+
+        // 外したパッケージのdefinesはCMakeへ渡しません。
+        const auto cmakePath = root / "skip" / "package-native.cmake";
+        LamaPon::WritePackageNativeCMakeFile(
+            cmakePath,
+            selection.available);
+        std::ifstream input(cmakePath, std::ios::binary);
+        const std::string cmake{
+            std::istreambuf_iterator<char>(input),
+            std::istreambuf_iterator<char>() };
+        Require(
+            cmake.find("placed-sdk") != std::string::npos
+                && cmake.find("missing-sdk") == std::string::npos,
+            "only packages with their SDK may reach the Game Module build");
+    }
+
     // エンジン自身のDLLを、パッケージに差し替えさせません。
     void TestRuntimeFileCollisionsAreRejected(
         const std::filesystem::path& root)
@@ -460,6 +514,7 @@ int main()
         TestInvalidJsonIsReported(root);
         TestScanCollectsAndReports(root);
         TestMissingFilesAreExplained(root);
+        TestMissingPackagesAreSkipped(root);
         TestRuntimeFileCollisionsAreRejected(root);
         TestCMakeFileGeneration(root);
     }

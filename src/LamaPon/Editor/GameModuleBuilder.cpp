@@ -1,5 +1,6 @@
 #include "LamaPon/Editor/GameModuleBuilder.h"
 
+#include "LamaPon/Core/Log.h"
 #include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Editor/PackageNativeDependencies.h"
 #include "LamaPon/Scripting/GameModule.h"
@@ -639,8 +640,9 @@ namespace LamaPon
             lamaponDirectory);
 
         // パッケージが持ち込むネイティブ依存をCMakeへ渡します。
-        // 壊れたnative指定やSDKの配置忘れは、リンカーの読みにくい
-        // エラーになる前にここで止めます。
+        // 壊れたnative指定は、リンカーの読みにくいエラーになる前に
+        // ここで止めます。SDK本体が未配置のパッケージは警告して
+        // native設定を外し、SDKなしのアダプターとしてビルドします。
         const auto packageScan =
             ScanPackageNativeDependencies(
                 projectRoot / L"assets");
@@ -654,10 +656,16 @@ namespace LamaPon
             }
             throw std::runtime_error(message);
         }
-        RequirePackageNativeFiles(packageScan.packages);
+        const auto nativeSelection =
+            SelectAvailablePackageNativeDependencies(
+                packageScan.packages);
+        for (const auto& missing : nativeSelection.missing)
+        {
+            Logger::Instance().Warning(missing);
+        }
         WritePackageNativeCMakeFile(
             lamaponDirectory / L"package-native.cmake",
-            packageScan.packages);
+            nativeSelection.available);
 
         GameModuleBuildCommand command;
         command.logPath =
