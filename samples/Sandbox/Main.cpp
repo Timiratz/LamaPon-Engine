@@ -411,6 +411,7 @@ int WINAPI wWinMain(
             720,
             projectSettings.gameName);
 
+        LamaPon::SetGraphicsBackendPackageAssetRoot(assetRoot);
         application.Initialize(
             instance,
             // Editor GUI、モデルプレビュー、grid／gizmoを含むD3D12

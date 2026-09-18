@@ -2044,6 +2044,8 @@ namespace
             LamaPon::Logger::Instance().SetFilePath(
                 directory / L"runtime.log"));
         LamaPon::GraphicsDevice graphics;
+        LamaPon::SetGraphicsBackendPackageAssetRoot(
+            projectRoot / L"assets");
         graphics.Initialize(
             window,
             width,
@@ -4325,6 +4327,8 @@ namespace
         const HWND window =
             CreateHiddenWindow(width, height);
         LamaPon::GraphicsDevice graphics;
+        LamaPon::SetGraphicsBackendPackageAssetRoot(
+            projectRoot / L"assets");
         graphics.Initialize(
             window,
             width,

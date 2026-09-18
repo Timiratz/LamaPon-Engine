@@ -42,6 +42,8 @@ ALLOWED_NATIVE_KEYS = {
     "runtimeFiles",
     "defines",
 }
+# バイナリはCRLFを含み得るため、テキスト改行の検証対象から外します。
+BINARY_SUFFIXES = {".a", ".dll", ".dylib", ".exe", ".lib", ".pdb", ".so"}
 
 
 def load_index() -> dict:
@@ -182,6 +184,8 @@ class PackageIndexTests(unittest.TestCase):
             if not source_directory.is_dir():
                 continue
             for path in package_source_files(source_directory):
+                if path.suffix.lower() in BINARY_SUFFIXES:
+                    continue
                 relative = path.relative_to(SOURCE_ROOT).as_posix()
                 with self.subTest(file=relative):
                     self.assertNotIn(

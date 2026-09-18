@@ -6,6 +6,7 @@
 #include "LamaPon/Core/Version.h"
 #include "LamaPon/Core/VersionCompare.h"
 #include "LamaPon/Editor/PackageManager.h"
+#include "LamaPon/Graphics/GraphicsBackendPackage.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 
 #include <imgui.h>
@@ -67,6 +68,52 @@ namespace LamaPon
             return std::to_string(
                 (bytes + 1024ull * 1024ull - 1)
                 / (1024ull * 1024ull)) + " MB";
+        }
+
+        const char* PackageActivationLabel(
+            const PackageActivation activation) noexcept
+        {
+            switch (activation)
+            {
+            case PackageActivation::Restart:
+                return "再起動後に有効";
+            case PackageActivation::RestartAndRebuild:
+                return "再起動・再ビルド後に有効";
+            case PackageActivation::Immediate:
+            default:
+                return "すぐに有効";
+            }
+        }
+
+        std::string RestartNotice(
+            const PackageActivation activation)
+        {
+            if (!PackageRequiresRestart(activation))
+            {
+                return {};
+            }
+            if (activation == PackageActivation::RestartAndRebuild)
+            {
+                return "。反映するにはエディターを再起動し、"
+                    "ゲームを再ビルドしてください";
+            }
+            return "。反映するにはエディターまたはゲームを"
+                "再起動してください";
+        }
+
+        const char* RenderingApiDisplayName(
+            const RenderingApi api) noexcept
+        {
+            switch (api)
+            {
+            case RenderingApi::Auto:
+                return "Auto";
+            case RenderingApi::DirectX12Experimental:
+                return "DirectX 12 Experimental";
+            case RenderingApi::DirectX11:
+            default:
+                return "DirectX 11";
+            }
         }
     }
 
@@ -201,6 +248,12 @@ namespace LamaPon
                     package.displayName;
                 m_packageWorkerResult.installedHasScripts =
                     hasScripts;
+                m_packageWorkerResult.installedActivation =
+                    error.empty()
+                        ? InstalledPackageActivation(
+                            assetRoot,
+                            package.name)
+                        : package.activation;
             });
     }
 
@@ -226,7 +279,9 @@ namespace LamaPon
                 SetStatus(
                     "パッケージ『"
                     + result.installedDisplayName
-                    + "』をインストールしました");
+                    + "』をインストールしました"
+                    + RestartNotice(
+                        result.installedActivation));
                 RefreshAssets();
                 if (result.installedHasScripts)
                 {
@@ -329,12 +384,17 @@ namespace LamaPon
             {
                 try
                 {
+                    const auto activation =
+                        InstalledPackageActivation(
+                            m_graphics.Assets().AssetRoot(),
+                            name);
                     UninstallPackage(
                         m_graphics.Assets().AssetRoot(),
                         name);
                     RefreshAssets();
                     SetStatus(
-                        "パッケージを削除しました: " + name);
+                        "パッケージを削除しました: " + name
+                        + RestartNotice(activation));
                 }
                 catch (const std::exception& exception)
                 {
@@ -387,7 +447,8 @@ namespace LamaPon
                 "パッケージを読み込みました: "
                 + installed.displayName
                 + " v"
-                + installed.version);
+                + installed.version
+                + RestartNotice(installed.activation));
             // C++スクリプトを含む場合はそのまま使えるように
             // Game Moduleをビルドします。
             if (PackageContainsScripts(
@@ -613,6 +674,29 @@ namespace LamaPon
                 static_cast<int>(m_packages.size()));
         }
 
+        const auto d3d12PackageDirectory =
+            PackageInstallDirectory(
+                m_graphics.Assets().AssetRoot(),
+                DirectX12BackendPackageName);
+        if (std::filesystem::is_directory(
+                d3d12PackageDirectory))
+        {
+            ImGui::Spacing();
+            ImGui::SeparatorText("描画API");
+            ImGui::Text(
+                "現在の設定: %s",
+                RenderingApiDisplayName(
+                    m_projectSettings.graphics.renderingApi));
+            ImGui::TextWrapped(
+                "DirectX 12 Rendererを使用するには、プロジェクトの"
+                "描画APIを選択してエディターを再起動してください。");
+            if (ImGui::Button("描画APIを選択..."))
+            {
+                m_projectSettingsCategory = 1;
+                OpenProjectSettingsDialog();
+            }
+        }
+
         if (m_packageListState == PackageListState::Failed)
         {
             ImGui::TextColored(
@@ -737,6 +821,15 @@ namespace LamaPon
             ImGui::TextWrapped(
                 "%s",
                 package.description.c_str());
+            ImGui::TextDisabled(
+                "有効化: %s",
+                PackageActivationLabel(package.activation));
+            if (PackageRequiresRestart(package.activation))
+            {
+                ImGui::TextColored(
+                    ImVec4{ 1.0f, 0.75f, 0.25f, 1.0f },
+                    "インストール・更新・削除は再起動後に反映されます。");
+            }
             ImGui::Spacing();
 
             if (engineTooOld)
@@ -782,7 +875,8 @@ namespace LamaPon
                         SetStatus(
                             "パッケージ『"
                             + package.displayName
-                            + "』を削除しました");
+                            + "』を削除しました"
+                            + RestartNotice(package.activation));
                         RefreshAssets();
                     }
                     catch (const std::exception& exception)

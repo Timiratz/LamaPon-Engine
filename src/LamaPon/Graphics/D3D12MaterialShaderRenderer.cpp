@@ -439,11 +439,10 @@ float4 SkinnedErrorPixelShader(VertexOutput input) : SV_Target
     }
 
     // DirectXTKのCullCounterClockwise／CullClockwise／CullNoneと同じく、
-    // 時計回りを表面とします。影のbiasはD3D12の組み込み深度pipelineと
-    // 同じ値です。
+    // 時計回りを表面とします。D3D11と同じく、影でもrasterizerのbiasは
+    // 使いません。
     [[nodiscard]] D3D12_RASTERIZER_DESC MakeRasterizerDescription(
         const ShaderCullMode cull,
-        const bool shadowBias,
         const bool wireframe) noexcept
     {
         D3D12_RASTERIZER_DESC result{};
@@ -456,11 +455,9 @@ float4 SkinnedErrorPixelShader(VertexOutput input) : SV_Target
                 ? D3D12_CULL_MODE_NONE
                 : D3D12_CULL_MODE_BACK;
         result.FrontCounterClockwise = FALSE;
-        result.DepthBias = shadowBias ? 1000 : D3D12_DEFAULT_DEPTH_BIAS;
+        result.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
         result.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
-        result.SlopeScaledDepthBias = shadowBias
-            ? 1.0f
-            : D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
+        result.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
         result.DepthClipEnable = TRUE;
         // DirectXTKのCommonStatesと同じく、辺は四角形の線で描きます。
         result.MultisampleEnable = wireframe ? TRUE : FALSE;
@@ -1246,7 +1243,6 @@ namespace LamaPon::Detail
         description.SampleMask = std::numeric_limits<UINT>::max();
         description.RasterizerState = MakeRasterizerDescription(
             static_cast<ShaderCullMode>(key.cull),
-            key.shadowBias,
             key.wireframe);
         description.DepthStencilState =
             MakeDepthDescription(static_cast<DepthKind>(key.depth));
@@ -1435,8 +1431,6 @@ namespace LamaPon::Detail
                 ? DXGI_FORMAT_UNKNOWN
                 : m_backend->ActiveColorFormat();
             key.depthFormat = m_backend->ActiveDepthFormat();
-            key.shadowBias = depthOnly
-                && key.depthFormat == D3D12Backend::ShadowDepthFormat;
             // D3D11のMesh Rendererは、GeometricPrimitive::Drawの既定
             // （不透明ならOpaque／DepthDefault、半透明ならAlphaBlend／
             // DepthRead、CullCounterClockwise）の後に、World Overlayか

@@ -280,6 +280,42 @@ namespace
         quoted.push_back('"');
         return quoted;
     }
+
+    // 宣言したファイルのうち、置かれていないものを1行ずつ説明します。
+    [[nodiscard]] std::string DescribeMissingNativeFiles(
+        const LamaPon::PackageNativeDependency& package)
+    {
+        std::string missing;
+        const auto report =
+            [&missing, &package](
+                const std::filesystem::path& path)
+        {
+            missing += "\n  - " + package.packageName
+                + ": " + LamaPon::PathToUtf8(path);
+        };
+        for (const auto& path : package.includeDirectories)
+        {
+            if (!std::filesystem::is_directory(path))
+            {
+                report(path);
+            }
+        }
+        for (const auto& path : package.libraries)
+        {
+            if (!std::filesystem::is_regular_file(path))
+            {
+                report(path);
+            }
+        }
+        for (const auto& path : package.runtimeFiles)
+        {
+            if (!std::filesystem::is_regular_file(path))
+            {
+                report(path);
+            }
+        }
+        return missing;
+    }
 }
 
 namespace LamaPon
@@ -496,34 +532,7 @@ namespace LamaPon
         std::string missing;
         for (const auto& package : packages)
         {
-            const auto report =
-                [&missing, &package](
-                    const std::filesystem::path& path)
-            {
-                missing += "\n  - " + package.packageName
-                    + ": " + PathToUtf8(path);
-            };
-            for (const auto& path : package.includeDirectories)
-            {
-                if (!std::filesystem::is_directory(path))
-                {
-                    report(path);
-                }
-            }
-            for (const auto& path : package.libraries)
-            {
-                if (!std::filesystem::is_regular_file(path))
-                {
-                    report(path);
-                }
-            }
-            for (const auto& path : package.runtimeFiles)
-            {
-                if (!std::filesystem::is_regular_file(path))
-                {
-                    report(path);
-                }
-            }
+            missing += DescribeMissingNativeFiles(package);
         }
         if (!missing.empty())
         {
@@ -533,6 +542,28 @@ namespace LamaPon
                 "配置してください:"
                 + missing);
         }
+    }
+
+    PackageNativeSelection SelectAvailablePackageNativeDependencies(
+        std::vector<PackageNativeDependency> packages)
+    {
+        PackageNativeSelection selection;
+        for (auto& package : packages)
+        {
+            const auto missing = DescribeMissingNativeFiles(package);
+            if (missing.empty())
+            {
+                selection.available.push_back(std::move(package));
+                continue;
+            }
+            selection.missing.push_back(
+                "パッケージ " + package.packageName
+                + " のネイティブライブラリが見つからないため、"
+                  "SDKなしでビルドします（READMEに従って配置すると"
+                  "有効になります）:"
+                + missing);
+        }
+        return selection;
     }
 
     std::vector<PackageRuntimeFile> CollectPackageRuntimeFiles(
