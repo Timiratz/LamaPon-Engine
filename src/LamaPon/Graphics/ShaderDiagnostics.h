@@ -13,6 +13,7 @@ namespace LamaPon
         bool pixel{};           // PSMain
         bool skinnedVertex{};   // VSSkinnedMain
         bool skinnedPixel{};    // PSSkinnedMain
+        bool geometry{};        // GSMain
         bool hull{};            // HSMain
         bool domain{};          // DSMain
         bool compute{};         // CSMain
@@ -20,7 +21,8 @@ namespace LamaPon
         [[nodiscard]] bool Any() const noexcept
         {
             return vertex || pixel || skinnedVertex
-                || skinnedPixel || hull || domain || compute;
+                || skinnedPixel || geometry || hull || domain
+                || compute;
         }
     };
 

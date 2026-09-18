@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "name": "Custom/InvalidComputeEntry",
+  "type": "compute",
+  "source": "custom-entry-compute.hlsl",
+  "passes": [
+    {
+      "name": "Main",
+      "compute": {
+        "entry": "RequiredComputeDoesNotExist",
+        "target": "cs_5_0"
+      }
+    }
+  ]
+}

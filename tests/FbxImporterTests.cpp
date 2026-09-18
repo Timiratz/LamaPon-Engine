@@ -138,6 +138,15 @@ namespace
             std::filesystem::path(LAMAPON_TEST_ASSET_DIR)
             / "models"
             / "AnimatedSausage.fbx";
+        bool requiresForwardRole{};
+        Require(
+            LamaPon::FbxImporter::RequiresSkinning(
+                assets,
+                modelPath,
+                &requiresForwardRole)
+                && !requiresForwardRole,
+            "FBX role probe did not classify the rigged fixture as "
+                "Skinned-only.");
         const auto model = LamaPon::FbxImporter::Load(
             device.Get(),
             context.Get(),

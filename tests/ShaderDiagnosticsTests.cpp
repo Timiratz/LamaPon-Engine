@@ -51,7 +51,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     // 「VSMain and PSMain (...)」を入口として数えてしまいます。
     constexpr std::string_view CommentOnlyMentions = R"(
 // Entry points must remain VSMain and PSMain (Shader Model 5.0).
-/* HSMain (tessellation) is optional. */
+/* GSMain and HSMain (geometry/tessellation) are optional. */
 [numthreads(8, 8, 1)]
 void CSMain(uint3 id : SV_DispatchThreadID) {}
 )";
@@ -71,6 +71,7 @@ float4 PSMain(PixelInput input) : SV_Target { return 1; }
     constexpr std::string_view TessellatedShader = R"(
 struct Patch { float4 p : SV_Position; };
 Patch VSMain(float3 position : SV_Position) { Patch o; o.p = float4(position, 1); return o; }
+void GSMain() {}
 void HSMain() {}
 void DSMain() {}
 float4 PSMain(Patch input) : SV_Target { return 1; }
@@ -102,8 +103,9 @@ int main()
                     TessellatedShader);
             Require(
                 tessellated.vertex && tessellated.pixel
+                    && tessellated.geometry
                     && tessellated.hull && tessellated.domain,
-                "a tessellated shader has all four");
+                "a tessellated shader has all five graphics stages");
         }
 
         // コメントの中の名前を数えないこと。数えると、雛形の説明文
@@ -113,7 +115,8 @@ int main()
                 LamaPon::ParseShaderEntryPoints(
                     CommentOnlyMentions);
             Require(
-                !parsed.vertex && !parsed.pixel && !parsed.hull,
+                !parsed.vertex && !parsed.pixel && !parsed.geometry
+                    && !parsed.hull,
                 "names inside comments must not count");
             Require(
                 parsed.compute,

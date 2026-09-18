@@ -1,4 +1,6 @@
 #include "LamaPon/Editor/UIComponentInspectors.h"
+#include "LamaPon/Editor/EditorLayerShared.h"
+#include "LamaPon/Editor/ShaderProperties.h"
 #include "LamaPon/Scene/GameObject.h"
 #include "LamaPon/Components/UICanvasComponent.h"
 #include "LamaPon/Components/UIRectTransformComponent.h"
@@ -23,6 +25,120 @@ namespace
     {
         if (!condition) throw std::runtime_error(message);
     }
+
+    void TestMalformedShaderPropertiesFallBackWithoutThrowing()
+    {
+        const auto invalidTarget = LamaPon::ParseShaderProperties(
+            R"(/* LAMAPON_PROPERTIES
+            [{"target":1,"type":"float","name":"Amount"}]
+            */)");
+        Require(
+            invalidTarget.declared
+                && !invalidTarget.error.empty()
+                && invalidTarget.fields.empty(),
+            "A non-string property target must fall back with an error");
+
+        const auto invalidDefault = LamaPon::ParseShaderProperties(
+            R"(/* LAMAPON_PROPERTIES
+            [{"target":"0.x","type":"float","name":"Amount",
+              "default":["invalid"]}]
+            */)");
+        Require(
+            invalidDefault.declared
+                && !invalidDefault.error.empty()
+                && invalidDefault.fields.empty(),
+            "An invalid property default must fall back with an error");
+    }
+
+    void TestManifestPropertyConversion()
+    {
+        LamaPon::ShaderPropertyDesc amount;
+        amount.name = "Amount";
+        amount.type = "float";
+        amount.target = "0.x";
+        amount.defaultValue = "0.75";
+        amount.minimum = 0.0;
+        amount.maximum = 1.0;
+
+        const auto converted =
+            LamaPon::ConvertShaderManifestProperties({ amount });
+        Require(
+            converted.declared
+                && converted.error.empty()
+                && converted.fields.size() == 1
+                && converted.fields.front().hasRange
+                && converted.fields.front().defaultValue.has_value()
+                && (*converted.fields.front().defaultValue)[0] == 0.75f,
+            "A valid manifest property must retain its Inspector metadata");
+
+        amount.target.clear();
+        const auto targetless =
+            LamaPon::ConvertShaderManifestProperties({ amount });
+        Require(
+            targetless.declared
+                && !targetless.error.empty()
+                && targetless.fields.empty(),
+            "A targetless manifest property must use the raw UI fallback");
+    }
+
+    void TestShaderAssetSelectionAndOpenRoutes()
+    {
+        using namespace LamaPon::EditorDetail;
+
+        const std::filesystem::path manifest{
+            "Shaders/Toon.lamashader.json" };
+        Require(
+            IsOpenableShaderAsset(manifest),
+            "A shader manifest must be openable from the Asset Browser");
+        Require(
+            IsOpenableShaderAsset("Shaders/Legacy.HLSL"),
+            "A legacy HLSL shader must remain openable");
+        Require(
+            !IsShaderAsset(manifest),
+            "A manifest must not enter legacy-only assignment routes");
+        Require(
+            !IsOpenableShaderAsset("Materials/Toon.material.json"),
+            "An unrelated JSON asset must not enter the shader editor route");
+
+        Require(
+            !IsAssetSelectionChange(manifest, manifest),
+            "Re-selecting the active manifest must not count as a change");
+        Require(
+            !IsAssetSelectionChange(
+                manifest,
+                "shaders/./TOON.LAMASHADER.JSON"),
+            "Equivalent manifest references must not count as a change");
+        Require(
+            !IsAssetSelectionChange({}, {}),
+            "Re-selecting the default shader must not count as a change");
+        Require(
+            IsAssetSelectionChange(manifest, "Shaders/Lit.hlsl"),
+            "Selecting a different shader must count as a change");
+        Require(
+            IsAssetSelectionChange({}, manifest),
+            "Selecting a manifest from the default shader must count as a change");
+    }
+
+    void TestShaderPropertyEditCommitIsIndependentFromChange()
+    {
+        LamaPon::ShaderPropertyEditResult dragging;
+        dragging.Observe(true, false);
+        Require(
+            dragging.changed && !dragging.committed,
+            "Dragging must update the value without growing Undo history");
+
+        LamaPon::ShaderPropertyEditResult released;
+        released.Observe(false, true);
+        Require(
+            !released.changed && released.committed,
+            "The release frame must commit Undo even without a new value");
+
+        LamaPon::ShaderPropertyEditResult button;
+        button.Observe(true, true);
+        Require(
+            button.changed && button.committed,
+            "An immediate property action must update and commit together");
+    }
 }
 
 int main()
@@ -31,6 +147,11 @@ int main()
     int result{};
     try
     {
+        TestMalformedShaderPropertiesFallBackWithoutThrowing();
+        TestManifestPropertyConversion();
+        TestShaderAssetSelectionAndOpenRoutes();
+        TestShaderPropertyEditCommitIsIndependentFromChange();
+
         auto& io = ImGui::GetIO();
         io.IniFilename = nullptr;
         io.DisplaySize = ImVec2(1280, 720);

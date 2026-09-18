@@ -1,6 +1,7 @@
 #pragma once
 
 #include "LamaPon/Graphics/LitTextureRequest.h"
+#include "LamaPon/Graphics/LitMaterial.h"
 #include "LamaPon/Graphics/PbrTextures.h"
 #include "LamaPon/Physics/CollisionTypes.h"
 
@@ -259,7 +260,32 @@ namespace LamaPon
             // nullptrなら従来どおり、この呼び出し内で計算します。
             const std::vector<DirectX::XMFLOAT4X4>*
                 globalPoseOverride = nullptr,
-            float automaticLodQuality = 1.0f) const;
+            float automaticLodQuality = 1.0f,
+            // Manifestは同じroleを複数持てるため、
+            // ModelRendererがVSごとに作成したlayoutをJSON順で
+            // 受け取ります。direct HLSLではnullptrのままです。
+            const std::vector<Microsoft::WRL::ComPtr<
+                ID3D11InputLayout>>* customColorInputLayouts = nullptr,
+            const std::vector<Microsoft::WRL::ComPtr<
+                ID3D11InputLayout>>* customOutlineInputLayouts = nullptr,
+            const std::array<
+                ID3D11ShaderResourceView*,
+                LitMaterial::CustomTextureCount>*
+                customTextureViews = nullptr,
+            // skin有無のprimitiveが混在するManifestモデルだけが使う
+            // forward role側のEffect/layout。direct HLSLは従来どおり
+            // customEffect 1個を全primitiveで使います。
+            LitEffect* staticManifestEffect = nullptr,
+            const std::vector<Microsoft::WRL::ComPtr<
+                ID3D11InputLayout>>*
+                staticManifestColorInputLayouts = nullptr,
+            const std::vector<Microsoft::WRL::ComPtr<
+                ID3D11InputLayout>>*
+                staticManifestOutlineInputLayouts = nullptr,
+            // 深度prepassでは非OpaqueまたはdepthWrite=falseの
+            // primary passを、そのroleのprimitiveだけ除外します。
+            bool depthPrepass = false)
+            const;
 
     private:
         struct TextureInputs;
@@ -285,7 +311,20 @@ namespace LamaPon
             bool depthOnly,
             const std::vector<DirectX::XMFLOAT4X4>*
                 globalPoseOverride,
-            float automaticLodQuality) const;
+            float automaticLodQuality,
+            const std::vector<Microsoft::WRL::ComPtr<
+                ID3D11InputLayout>>* customColorInputLayouts,
+            const std::vector<Microsoft::WRL::ComPtr<
+                ID3D11InputLayout>>* customOutlineInputLayouts,
+            const std::array<
+                ID3D11ShaderResourceView*,
+                LitMaterial::CustomTextureCount>* customTextureViews,
+            LitEffect* staticManifestEffect,
+            const std::vector<Microsoft::WRL::ComPtr<
+                ID3D11InputLayout>>* staticManifestColorInputLayouts,
+            const std::vector<Microsoft::WRL::ComPtr<
+                ID3D11InputLayout>>* staticManifestOutlineInputLayouts,
+            bool depthPrepass) const;
 
         // API 49のGame Moduleが旧公開名を解決してからAPI不一致を
         // 案内できるよう、raw texture引数を持つ旧署名を1互換期間だけ
