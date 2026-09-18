@@ -2166,7 +2166,7 @@ namespace LamaPon
         // 左のカテゴリー一覧と右の内容ペインへ分割します。
         constexpr std::array<const char*, 9> categories{
             "ゲーム",
-            "グラフィック（描画API）",
+            "グラフィック",
             "ビューポート設定",
             "物理",
             "タグ",
