@@ -270,70 +270,59 @@ namespace LamaPon
                     {
                         continue;
                     }
-                    frame.pending = false;
-                    if (disjointData.Disjoint
-                        || disjointData.Frequency == 0)
-                    {
-                        continue;
-                    }
+                    const double toMilliseconds =
+                        disjointData.Frequency != 0
+                        ? 1000.0 / static_cast<double>(
+                            disjointData.Frequency)
+                        : 0.0;
 
-                    const auto readTimestamp =
-                        [this](ID3D11Query* query,
-                            std::uint64_t& value)
+                    // disjoint queryの完了だけでは、同じフレームで
+                    // 発行したtimestampやsection queryがすべて
+                    // GetData済みとは限りません。どれか一つでも未完了の
+                    // 間はpendingのままにして、query objectを再利用しません。
+                    const auto tryRead =
+                        [this](ID3D11Query* const query,
+                            void* const value,
+                            const UINT size)
                     {
                         return m_context->GetData(
                                 query,
-                                &value,
-                                sizeof(value),
-                                0)
+                                value,
+                                size,
+                                D3D11_ASYNC_GETDATA_DONOTFLUSH)
                             == S_OK;
                     };
-                    const double toMilliseconds =
-                        1000.0
-                        / static_cast<double>(
-                            disjointData.Frequency);
 
                     std::uint64_t frameBegin{};
                     std::uint64_t frameEnd{};
-                    if (!readTimestamp(
+                    if (!tryRead(
                             frame.frameBegin.Get(),
-                            frameBegin)
-                        || !readTimestamp(
+                            &frameBegin,
+                            sizeof(frameBegin))
+                        || !tryRead(
                             frame.frameEnd.Get(),
-                            frameEnd))
+                            &frameEnd,
+                            sizeof(frameEnd)))
                     {
                         continue;
                     }
-                    m_latestFrameMilliseconds =
-                        static_cast<float>(
-                            static_cast<double>(
-                                frameEnd - frameBegin)
-                            * toMilliseconds);
 
+                    D3D11_QUERY_DATA_PIPELINE_STATISTICS statistics{};
+                    bool hasPipelineStatistics = false;
                     if (frame.pipelineStatistics)
                     {
-                        D3D11_QUERY_DATA_PIPELINE_STATISTICS statistics{};
-                        if (m_context->GetData(
+                        if (!tryRead(
                                 frame.pipelineStatistics.Get(),
                                 &statistics,
-                                sizeof(statistics),
-                                0) == S_OK)
+                                sizeof(statistics)))
                         {
-                            m_latestPipelineStatistics = {
-                                statistics.IAVertices,
-                                statistics.IAPrimitives,
-                                statistics.VSInvocations,
-                                statistics.PSInvocations,
-                                statistics.HSInvocations,
-                                statistics.DSInvocations,
-                                statistics.GSInvocations,
-                                statistics.CSInvocations,
-                                true
-                            };
+                            continue;
                         }
+                        hasPipelineStatistics = true;
                     }
 
-                    m_latestSections.clear();
+                    std::vector<GpuSectionTime> sections;
+                    sections.reserve(frame.usedSections);
                     for (std::size_t sectionIndex = 0;
                         sectionIndex < frame.usedSections;
                         ++sectionIndex)
@@ -342,22 +331,63 @@ namespace LamaPon
                             frame.sections[sectionIndex];
                         std::uint64_t begin{};
                         std::uint64_t end{};
-                        if (!readTimestamp(
+                        if (!tryRead(
                                 section.begin.Get(),
-                                begin)
-                            || !readTimestamp(
+                                &begin,
+                                sizeof(begin))
+                            || !tryRead(
                                 section.end.Get(),
-                                end))
+                                &end,
+                                sizeof(end)))
                         {
-                            continue;
+                            // 先に読み出したqueryも含め、このフレームの
+                            // query群がそろうまでスロットを保持します。
+                            break;
                         }
-                        m_latestSections.push_back({
+                        sections.push_back({
                             section.name,
                             static_cast<float>(
                                 static_cast<double>(end - begin)
                                 * toMilliseconds),
                             section.depth });
                     }
+
+                    if (sections.size() != frame.usedSections)
+                    {
+                        continue;
+                    }
+
+                    // ここに到達した時点で、このframeの全queryは
+                    // GetData済みです。以降は安全に同じslotを再利用できます。
+                    frame.pending = false;
+                    if (disjointData.Disjoint
+                        || disjointData.Frequency == 0)
+                    {
+                        continue;
+                    }
+
+                    m_latestFrameMilliseconds =
+                        static_cast<float>(
+                            static_cast<double>(
+                                frameEnd - frameBegin)
+                            * toMilliseconds);
+
+                    if (hasPipelineStatistics)
+                    {
+                        m_latestPipelineStatistics = {
+                            statistics.IAVertices,
+                            statistics.IAPrimitives,
+                            statistics.VSInvocations,
+                            statistics.PSInvocations,
+                            statistics.HSInvocations,
+                            statistics.DSInvocations,
+                            statistics.GSInvocations,
+                            statistics.CSInvocations,
+                            true
+                        };
+                    }
+
+                    m_latestSections = std::move(sections);
                 }
             }
 
