@@ -53,6 +53,39 @@ namespace
         return std::filesystem::path(buffer);
     }
 
+    // CIではこのテスト自体が静的CRTでリンクされる場合があり、
+    // GetModuleHandleWだけではVC++再頒布DLLを取得できません。実行時に
+    // Windowsが解決できるsystem directoryも同じ順で確認します。
+    std::filesystem::path VcRuntimeLibraryPath(
+        const wchar_t* const moduleName)
+    {
+        if (const HMODULE module = GetModuleHandleW(moduleName);
+            module != nullptr)
+        {
+            std::wstring modulePath(32768, L'\0');
+            const DWORD length = GetModuleFileNameW(
+                module,
+                modulePath.data(),
+                static_cast<DWORD>(modulePath.size()));
+            Require(
+                length != 0 && length < modulePath.size(),
+                "A loaded VC runtime module path was not available.");
+            modulePath.resize(length);
+            return std::filesystem::path(modulePath);
+        }
+
+        wchar_t systemDirectory[MAX_PATH]{};
+        Require(
+            GetSystemDirectoryW(systemDirectory, MAX_PATH) != 0,
+            "The Windows system directory was not available.");
+        const auto systemRuntime =
+            std::filesystem::path(systemDirectory) / moduleName;
+        Require(
+            std::filesystem::is_regular_file(systemRuntime),
+            "A VC runtime DLL was not found.");
+        return systemRuntime;
+    }
+
     // 実行ファイルへ埋め込まれたアイコングループを検証します。
     void RequireEmbeddedIcon(
         const std::filesystem::path& executablePath,
@@ -2605,21 +2638,8 @@ int main(const int argumentCount, char** const arguments)
                     L"vcruntime140.dll",
                     L"msvcp140.dll" })
             {
-                const auto module = GetModuleHandleW(moduleName);
-                Require(
-                    module != nullptr,
-                    "A loaded VC runtime module was not found.");
-                std::wstring modulePath(32768, L'\0');
-                const DWORD length = GetModuleFileNameW(
-                    module,
-                    modulePath.data(),
-                    static_cast<DWORD>(modulePath.size()));
-                Require(
-                    length != 0 && length < modulePath.size(),
-                    "A loaded VC runtime module path was not available.");
-                modulePath.resize(length);
                 std::filesystem::copy_file(
-                    modulePath,
+                    VcRuntimeLibraryPath(moduleName),
                     runtimeDirectory / moduleName,
                     std::filesystem::copy_options::overwrite_existing);
             }
