@@ -20,6 +20,17 @@
       "minimumEngineVersion": "0.1.0",
       "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/easing-tween-1.0.0.zip",
       "sizeBytes": 9148
+    },
+    {
+      "name": "directx12-renderer",
+      "displayName": "DirectX 12 Renderer",
+      "description": "LamaPonのDirectX 12 Experimental描画バックエンドです。インストールまたは更新後に再起動してください。",
+      "author": "LamaPon",
+      "version": "0.1.0",
+      "minimumEngineVersion": "0.1.0",
+      "activation": "Restart",
+      "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/directx12-renderer-0.1.0.zip",
+      "sizeBytes": 8799
     }
   ],
   "version": 1
