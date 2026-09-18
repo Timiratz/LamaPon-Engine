@@ -82,9 +82,15 @@ namespace LamaPon
                 }
                 if (frame.pending)
                 {
-                    // リングを一周してもまだ結果が取れていない
-                    // 古いフレームは破棄します。
-                    frame.pending = false;
+                    // 未完了のQueryへEndを重ねるとD3D11 debug layerが
+                    // 警告を出し、一部のdriverではdevice removedにまで
+                    // 発展し得ます。結果を捨てて再利用せず、GPUが追い
+                    // 付くまでこのフレームの計測だけを休止します。
+                    PollPendingFrames();
+                    if (frame.pending)
+                    {
+                        return;
+                    }
                 }
                 frame.open = true;
                 frame.usedSections = 0;
