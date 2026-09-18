@@ -21,6 +21,7 @@
 #include "LamaPon/Graphics/ScreenEffect.h"
 #include "LamaPon/Graphics/ShaderCompiler.h"
 #include "LamaPon/Graphics/ShaderDiagnostics.h"
+#include "LamaPon/Graphics/ShaderManifest.h"
 #include "LamaPon/Graphics/ShaderVariants.h"
 #include "LamaPon/Graphics/SpriteEffect.h"
 
@@ -42,6 +43,42 @@
 
 namespace
 {
+    // Keep a manifest as the public/cache identity while directing variant
+    // parsing and include dependency tracking to its referenced HLSL source.
+    [[nodiscard]] bool ResolveMaterialShaderSource(
+        LamaPon::AssetManager& assets,
+        const std::filesystem::path& definitionPath,
+        std::filesystem::path& sourcePath,
+        std::string& error)
+    {
+        sourcePath = definitionPath;
+        error.clear();
+        if (!LamaPon::IsShaderManifestPath(definitionPath))
+        {
+            return true;
+        }
+
+        LamaPon::ShaderAssetDesc description;
+        if (!LamaPon::LoadShaderAssetDesc(
+                assets,
+                definitionPath,
+                description,
+                error))
+        {
+            return false;
+        }
+        if (description.type != LamaPon::ShaderAssetType::Material)
+        {
+            error = "Material shader requires a shader manifest whose"
+                " type is 'material': "
+                + LamaPon::PathToUtf8(definitionPath);
+            return false;
+        }
+        sourcePath = assets.ResolvePath(description.source)
+            .lexically_normal();
+        return true;
+    }
+
     // コンパイル失敗時にソースを読み、原因に対応する診断を追加します。
     [[nodiscard]] std::string DescribeShaderFailure(
         LamaPon::AssetManager& assets,
@@ -242,18 +279,26 @@ namespace LamaPon
                     absolutePath,
                     fileError)
                 : std::filesystem::file_time_type{};
+            const auto dependencyRevision =
+                ShaderSourceDependencyRevision(
+                    Assets(),
+                    absolutePath);
             const bool changed = !entry->observed
                 || entry->forceReload
                 || entry->sourceExists != sourceExists
                 || (sourceExists
                     && !archived
-                    && entry->writeTime != writeTime);
+                    && entry->writeTime != writeTime)
+                || (entry->observed
+                    && entry->dependencyRevision
+                        != dependencyRevision);
             if (changed)
             {
                 entry->observed = true;
                 entry->forceReload = false;
                 entry->sourceExists = sourceExists;
                 entry->writeTime = writeTime;
+                entry->dependencyRevision = dependencyRevision;
                 if (!sourceExists)
                 {
                     entry->error =
@@ -380,18 +425,26 @@ namespace LamaPon
                     absolutePath,
                     fileError)
                 : std::filesystem::file_time_type{};
+            const auto dependencyRevision =
+                ShaderSourceDependencyRevision(
+                    Assets(),
+                    absolutePath);
             const bool changed = !entry->observed
                 || entry->forceReload
                 || entry->sourceExists != sourceExists
                 || (sourceExists
                     && !archived
-                    && entry->writeTime != writeTime);
+                    && entry->writeTime != writeTime)
+                || (entry->observed
+                    && entry->dependencyRevision
+                        != dependencyRevision);
             if (changed)
             {
                 entry->observed = true;
                 entry->forceReload = false;
                 entry->sourceExists = sourceExists;
                 entry->writeTime = writeTime;
+                entry->dependencyRevision = dependencyRevision;
                 if (!sourceExists)
                 {
                     entry->error =
@@ -738,18 +791,26 @@ namespace LamaPon
                     absolutePath,
                     fileError)
                 : std::filesystem::file_time_type{};
+            const auto dependencyRevision =
+                ShaderSourceDependencyRevision(
+                    Assets(),
+                    absolutePath);
             const bool changed = !entry->observed
                 || entry->forceReload
                 || entry->sourceExists != sourceExists
                 || (sourceExists
                     && !archived
-                    && entry->writeTime != writeTime);
+                    && entry->writeTime != writeTime)
+                || (entry->observed
+                    && entry->dependencyRevision
+                        != dependencyRevision);
             if (changed)
             {
                 entry->observed = true;
                 entry->forceReload = false;
                 entry->sourceExists = sourceExists;
                 entry->writeTime = writeTime;
+                entry->dependencyRevision = dependencyRevision;
                 if (!sourceExists)
                 {
                     entry->error =
@@ -761,7 +822,7 @@ namespace LamaPon
                     try
                     {
                         auto candidate =
-                            std::make_unique<ScreenEffect>(
+                            std::make_shared<ScreenEffect>(
                                 Device(),
                                 Context(),
                                 Assets(),
@@ -798,19 +859,40 @@ namespace LamaPon
         }
 
         QueuedScreenEffect queued{};
-        queued.effect = entry->effect.get();
+        queued.effect = entry->effect;
         queued.parameters = request.customParameters;
         queued.point = request.point;
-        for (std::size_t index = 0;
-            index < request.auxiliaryTextures.size();
-            ++index)
+        try
         {
-            if (!request.auxiliaryTextures[index].empty())
+            for (std::size_t index = 0;
+                index < request.auxiliaryTextures.size();
+                ++index)
             {
-                queued.auxiliaryTextures[index] =
-                    Assets().LoadTexture(
-                        request.auxiliaryTextures[index]);
+                if (!request.auxiliaryTextures[index].empty())
+                {
+                    queued.auxiliaryTextures[index] =
+                        Assets().LoadTexture(
+                            request.auxiliaryTextures[index]);
+                }
             }
+        }
+        catch (const std::exception& exception)
+        {
+            if (error != nullptr)
+            {
+                *error = "Screen effect auxiliary texture could not"
+                    " be loaded: " + std::string(exception.what());
+            }
+            return false;
+        }
+        catch (...)
+        {
+            if (error != nullptr)
+            {
+                *error = "Screen effect auxiliary texture could not"
+                    " be loaded.";
+            }
+            return false;
         }
         RequireD3D11ApiResources().queuedScreenEffects.emplace_back(
             std::move(queued));
@@ -966,18 +1048,26 @@ namespace LamaPon
                     absolutePath,
                     fileError)
                 : std::filesystem::file_time_type{};
+            const auto dependencyRevision =
+                ShaderSourceDependencyRevision(
+                    Assets(),
+                    absolutePath);
             const bool changed = !entry->observed
                 || entry->forceReload
                 || entry->sourceExists != sourceExists
                 || (sourceExists
                     && !archived
-                    && entry->writeTime != writeTime);
+                    && entry->writeTime != writeTime)
+                || (entry->observed
+                    && entry->dependencyRevision
+                        != dependencyRevision);
             if (changed)
             {
                 entry->observed = true;
                 entry->forceReload = false;
                 entry->sourceExists = sourceExists;
                 entry->writeTime = writeTime;
+                entry->dependencyRevision = dependencyRevision;
                 if (!sourceExists)
                 {
                     entry->error =
@@ -1201,10 +1291,17 @@ namespace LamaPon
         ShaderVariantDeclaration declaration;
         try
         {
-            if (Assets().FileExists(absolutePath))
+            std::filesystem::path sourcePath;
+            std::string manifestError;
+            if (ResolveMaterialShaderSource(
+                    Assets(),
+                    absolutePath,
+                    sourcePath,
+                    manifestError)
+                && Assets().FileExists(sourcePath))
             {
                 const auto source =
-                    Assets().ReadFileBytes(absolutePath);
+                    Assets().ReadFileBytesFresh(sourcePath);
                 declaration = ParseShaderVariants(
                     std::string_view{
                         reinterpret_cast<const char*>(
@@ -2121,18 +2218,37 @@ namespace LamaPon
                 absolutePath,
                 fileError)
             : std::filesystem::file_time_type{};
+        std::filesystem::path dependencyPath;
+        std::string dependencyPathError;
+        if (!ResolveMaterialShaderSource(
+                Assets(),
+                absolutePath,
+                dependencyPath,
+                dependencyPathError))
+        {
+            dependencyPath = absolutePath;
+        }
+        const auto dependencyRevision =
+            ShaderSourceDependencyRevision(
+                Assets(),
+                dependencyPath,
+                entry->keywords);
         const bool changed = !entry->observed
             || entry->forceReload
             || entry->sourceExists != sourceExists
             || (sourceExists
                 && !archived
-                && entry->writeTime != writeTime);
+                && entry->writeTime != writeTime)
+            || (entry->observed
+                && entry->dependencyRevision
+                    != dependencyRevision);
         if (changed)
         {
             entry->observed = true;
             entry->forceReload = false;
             entry->sourceExists = sourceExists;
             entry->writeTime = writeTime;
+            entry->dependencyRevision = dependencyRevision;
             if (!sourceExists)
             {
                 entry->error =
@@ -2271,18 +2387,37 @@ namespace LamaPon
                 absolutePath,
                 fileError)
             : std::filesystem::file_time_type{};
+        std::filesystem::path dependencyPath;
+        std::string dependencyPathError;
+        if (!ResolveMaterialShaderSource(
+                Assets(),
+                absolutePath,
+                dependencyPath,
+                dependencyPathError))
+        {
+            dependencyPath = absolutePath;
+        }
+        const auto dependencyRevision =
+            ShaderSourceDependencyRevision(
+                Assets(),
+                dependencyPath,
+                entry->keywords);
         const bool changed = !entry->observed
             || entry->forceReload
             || entry->sourceExists != sourceExists
             || (sourceExists
                 && !archived
-                && entry->writeTime != writeTime);
+                && entry->writeTime != writeTime)
+            || (entry->observed
+                && entry->dependencyRevision
+                    != dependencyRevision);
         if (changed)
         {
             entry->observed = true;
             entry->forceReload = false;
             entry->sourceExists = sourceExists;
             entry->writeTime = writeTime;
+            entry->dependencyRevision = dependencyRevision;
             if (!sourceExists)
             {
                 entry->error =

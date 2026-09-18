@@ -1030,6 +1030,13 @@ namespace LamaPon
 
     void AssetManager::SetAssetRoot(std::filesystem::path assetRoot)
     {
+        SetAssetRoot(std::move(assetRoot), true);
+    }
+
+    void AssetManager::SetAssetRoot(
+        std::filesystem::path assetRoot,
+        const bool createMissingMeta)
+    {
         // ワーカーはm_assetRoot/m_archiveを参照するため、切り替える
         // 前に必ず完了させます。
         WaitForModelPreparation();
@@ -1047,7 +1054,8 @@ namespace LamaPon
             }
         }
         m_database.SetAssetRoot(m_assetRoot);
-        static_cast<void>(m_database.Refresh(true));
+        static_cast<void>(
+            m_database.Refresh(createMissingMeta));
         Clear();
     }
 
@@ -1083,6 +1091,12 @@ namespace LamaPon
             return *cachedBytes;
         }
         return ReadFileBytesUncached(resolvedPath);
+    }
+
+    std::vector<std::uint8_t> AssetManager::ReadFileBytesFresh(
+        const std::filesystem::path& path) const
+    {
+        return ReadFileBytesUncached(ResolvePath(path));
     }
 
     std::vector<std::uint8_t>

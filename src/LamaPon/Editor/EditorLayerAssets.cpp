@@ -446,7 +446,7 @@ namespace LamaPon
                 static_cast<void>(BuildGameModule());
             }
         }
-        if (IsShaderAsset(asset))
+        if (IsOpenableShaderAsset(asset))
         {
             hasAssetAction = true;
             if (ImGui::MenuItem(
@@ -1085,7 +1085,7 @@ namespace LamaPon
         const std::filesystem::path& asset)
     {
         if (!IsCppScriptAsset(asset)
-            && !IsShaderAsset(asset))
+            && !IsOpenableShaderAsset(asset))
         {
             return;
         }
@@ -5533,12 +5533,14 @@ namespace LamaPon
                             "Lit",
                             ImVec2{ 64.0f, 64.0f });
                     }
-                    else if (IsShaderAsset(asset))
+                    else if (IsOpenableShaderAsset(asset))
                     {
                         clicked = drawTypeButton(
                             AssetIconKind::Shader,
                             "##ShaderIcon",
-                            "HLSL",
+                            IsShaderManifestAsset(asset)
+                                ? "Manifest"
+                                : "HLSL",
                             ImVec2{ 64.0f, 64.0f });
                     }
                     else if (IsAnimationAsset(asset))
@@ -5646,7 +5648,7 @@ namespace LamaPon
                         m_selectedAsset = asset;
                         OpenCodeAsset(asset);
                     }
-                    else if (IsShaderAsset(asset)
+                    else if (IsOpenableShaderAsset(asset)
                         && thumbnailHovered
                         && ImGui::IsMouseDoubleClicked(
                             ImGuiMouseButton_Left)
@@ -5724,7 +5726,8 @@ namespace LamaPon
                     : IsPrefabAsset(asset) ? AssetIconKind::Prefab
                     : IsModelAsset(asset) ? AssetIconKind::Model
                     : IsMaterialAsset(asset) ? AssetIconKind::Material
-                    : IsShaderAsset(asset) ? AssetIconKind::Shader
+                    : IsOpenableShaderAsset(asset)
+                        ? AssetIconKind::Shader
                     : IsAnimationAsset(asset) ? AssetIconKind::Animation
                     : IsAnimatorControllerAsset(asset)
                         ? AssetIconKind::AnimatorController
@@ -5798,7 +5801,7 @@ namespace LamaPon
                     m_selectedAsset = asset;
                     OpenCodeAsset(asset);
                 }
-                else if (IsShaderAsset(asset)
+                else if (IsOpenableShaderAsset(asset)
                     && ImGui::IsItemHovered()
                     && ImGui::IsMouseDoubleClicked(
                         ImGuiMouseButton_Left)

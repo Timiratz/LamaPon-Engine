@@ -397,6 +397,10 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Graphics/AutoExposureAdaptation.h
     src/LamaPon/Graphics/ScreenEffect.cpp
     src/LamaPon/Graphics/ScreenEffect.h
+    src/LamaPon/Graphics/ShaderManifest.cpp
+    src/LamaPon/Graphics/ShaderManifest.h
+    src/LamaPon/Graphics/ShaderProgram.cpp
+    src/LamaPon/Graphics/ShaderProgram.h
     src/LamaPon/Graphics/ShaderRenderState.cpp
     src/LamaPon/Graphics/ShaderRenderState.h
     src/LamaPon/Graphics/ShadowMap.cpp
@@ -1177,6 +1181,11 @@ if(BUILD_TESTING)
         tests/GameExporterTests.cpp
     )
     target_link_libraries(LamaPonGameExporterTests PRIVATE LamaPonEditor)
+    target_compile_definitions(
+        LamaPonGameExporterTests
+        PRIVATE
+            LAMAPON_TEST_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets"
+    )
     target_compile_options(LamaPonGameExporterTests PRIVATE
         $<$<CXX_COMPILER_ID:MSVC>:/W4>
         $<$<CXX_COMPILER_ID:MSVC>:/permissive->
@@ -1352,6 +1361,36 @@ if(BUILD_TESTING)
         COMMAND LamaPonShaderCacheTests)
     set_tests_properties(
         ShaderCache
+        PROPERTIES
+            LABELS "graphics;shader"
+    )
+
+    add_executable(LamaPonShaderManifestTests
+        tests/ShaderManifestTests.cpp
+    )
+    target_link_libraries(
+        LamaPonShaderManifestTests
+        PRIVATE
+            LamaPonRuntime
+            d3d11
+    )
+    target_compile_definitions(
+        LamaPonShaderManifestTests
+        PRIVATE
+            LAMAPON_SHADER_MANIFEST_FIXTURE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/shader-manifest"
+    )
+    target_compile_options(
+        LamaPonShaderManifestTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_test(
+        NAME ShaderManifest
+        COMMAND LamaPonShaderManifestTests
+    )
+    set_tests_properties(
+        ShaderManifest
         PROPERTIES
             LABELS "graphics;shader"
     )

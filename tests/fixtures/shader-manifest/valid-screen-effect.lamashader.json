@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "name": "Custom/FixtureEntryPoints",
+  "type": "screenEffect",
+  "source": "custom-entry-screen-effect.hlsl",
+  "properties": [
+    {
+      "name": "Intensity",
+      "type": "float",
+      "default": 1.0
+    }
+  ],
+  "passes": [
+    {
+      "name": "Main",
+      "vertex": {
+        "entry": "ManifestVertex",
+        "target": "vs_5_0"
+      },
+      "pixel": {
+        "entry": "ManifestPixel",
+        "target": "ps_5_0"
+      },
+      "renderState": {
+        "zTest": "Always",
+        "zWrite": false,
+        "cull": "Off",
+        "blend": "Opaque"
+      }
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "name": "Custom/ComputeEntryPoint",
+  "type": "compute",
+  "source": "custom-entry-compute.hlsl",
+  "passes": [
+    {
+      "name": "OptionalProbe",
+      "compute": {
+        "entry": "OptionalComputeDoesNotExist",
+        "target": "cs_5_0",
+        "optional": true
+      }
+    },
+    {
+      "name": "Main",
+      "compute": {
+        "entry": "CustomComputeEntry",
+        "target": "cs_5_0"
+      }
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "name": "Custom/InvalidMaterialDepthState",
+  "type": "material",
+  "source": "custom-entry-material.hlsl",
+  "passes": [
+    {
+      "name": "Main",
+      "vertex": {
+        "entry": "CustomMaterialVertex",
+        "target": "vs_5_0"
+      },
+      "pixel": {
+        "entry": "CustomMaterialPixel",
+        "target": "ps_5_0"
+      },
+      "renderState": {
+        "zTest": "Always",
+        "zWrite": true,
+        "cull": "Back",
+        "blend": "Opaque"
+      }
+    }
+  ]
+}
