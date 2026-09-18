@@ -85,6 +85,23 @@ namespace LamaPon
     void RequirePackageNativeFiles(
         const std::vector<PackageNativeDependency>& packages);
 
+    struct PackageNativeSelection final
+    {
+        // 宣言したファイルがすべて置かれているパッケージです。
+        std::vector<PackageNativeDependency> available;
+        // native設定を外したパッケージごとの、足りないファイルの
+        // 説明です。呼び出し側が警告として表示します。
+        std::vector<std::string> missing;
+    };
+
+    // SDK本体を利用者が後から置くパッケージのために、宣言したファイルが
+    // 1つでも足りないパッケージはnative設定（definesを含む）ごと外します。
+    // SDKの有無をマクロで分けたアダプターは、SDKなしのままビルドと
+    // 書き出しができます。
+    [[nodiscard]] PackageNativeSelection
+        SelectAvailablePackageNativeDependencies(
+            std::vector<PackageNativeDependency> packages);
+
     // 書き出したゲームへ持っていくDLLを、コピー先の名前つきで
     // 返します。エンジン自身のDLLと同じ名前は上書き事故になるため
     // 拒否します（std::runtime_error）。
