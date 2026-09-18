@@ -1083,7 +1083,9 @@ if(BUILD_TESTING)
         COMMAND LamaPonD3D12SpriteRenderingTests)
     set_tests_properties(D3D12SpriteRenderingWarp PROPERTIES
         LABELS "graphics"
-        TIMEOUT 120)
+        # WARPのDebug実行はGitHub Actionsの共有Windowsランナーで
+        # 120秒を超え得るため、実測済みのRelease時間にも余裕を持たせます。
+        TIMEOUT 180)
     add_executable(LamaPonAudioOggProbe
         tests/AudioOggProbe.cpp
     )
