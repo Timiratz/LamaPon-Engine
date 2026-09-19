@@ -4,6 +4,11 @@
 
 #include <vector>
 
+static_assert(
+    LamaPon::GameModuleApiVersion == @LAMAPON_GAME_MODULE_API_VERSION@,
+    "The Game Module SDK does not match the Runtime API version. "
+    "Rebuild and reinstall LamaPon before building the game module.");
+
 LAMAPON_GAME_MODULE_EXPORT
 {
     static const std::vector<LamaPon::NativeScriptTypeDescriptor>
@@ -19,7 +24,7 @@ LAMAPON_GAME_MODULE_EXPORT
     const auto& registeredDataAssets =
         LamaPon::GameModuleDataAssets::RegisteredDataAssets();
     static const LamaPon::GameModuleDescriptor module{
-        LamaPon::GameModuleApiVersion,
+        @LAMAPON_GAME_MODULE_API_VERSION@,
         "LamaPon Project Game Module",
         registeredComponents.size(),
         registeredComponents.data(),
