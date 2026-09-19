@@ -242,6 +242,7 @@ namespace LamaPon
         {
             return m_material;
         }
+        void SetMaterial(const LitMaterial& material);
         void SetMaterialAssetPath(std::filesystem::path path);
         void ReloadMaterialAsset();
         [[nodiscard]] const std::filesystem::path&

@@ -12,6 +12,7 @@
 #include "LamaPon/Editor/PersistencePanelState.h"
 #include "LamaPon/Editor/ScriptEditorDetection.h"
 #include "LamaPon/Editor/ShaderProperties.h"
+#include "LamaPon/Editor/SimpleMaterialShaderGenerator.h"
 #include "LamaPon/Graphics/RenderTarget.h"
 #include "LamaPon/Graphics/LitMaterial.h"
 #include "LamaPon/Input/InputSystem.h"
@@ -43,6 +44,7 @@ namespace LamaPon
     class EditorModelPreviewRenderer;
     class GameExportDialog;
     class GraphicsDevice;
+    class MeshRendererComponent;
     class OnlineServices;
     class PlayerPrefs;
     class SaveDataStore;
@@ -292,7 +294,10 @@ namespace LamaPon
         void OpenAssetInExplorer(
             const std::filesystem::path& asset,
             bool selectFile);
-        void OpenCodeAsset(const std::filesystem::path& asset);
+        void OpenCodeAsset(
+            const std::filesystem::path& asset,
+            std::uint32_t line = 0,
+            std::uint32_t column = 0);
         [[nodiscard]] bool BuildGameModule();
         void UpdateGameModuleBuild();
         [[nodiscard]] std::optional<std::filesystem::path>
@@ -361,6 +366,12 @@ namespace LamaPon
         void DrawInspector();
         void DrawMaterialAssetInspector();
         void LoadMaterialInspectorDraft();
+        void RenderMaterialPreview();
+        void EnsureMaterialPreviewScene();
+        void DrawShaderError(
+            const std::filesystem::path& shaderPath,
+            std::string_view error,
+            const char* identifier);
         // データアセット（*.asset.json）の編集。型はGame Moduleが
         // 宣言し、スキーマから入力欄を作ります。
         void DrawDataAssetInspector();
@@ -769,6 +780,8 @@ namespace LamaPon
         std::vector<GameObjectId> m_additionalSelection;
         std::array<char, 128> m_assetFolderNameBuffer{};
         std::array<char, 256> m_assetFileNameBuffer{};
+        bool m_createShaderFromGraph{ true };
+        SimpleMaterialShaderGraph m_createShaderGraph;
         std::unique_ptr<GameExportDialog> m_gameExportDialog;
         std::array<char, 256> m_projectGameNameBuffer{};
         std::array<char, 512> m_projectStartupSceneBuffer{};
@@ -931,6 +944,9 @@ namespace LamaPon
         RenderTarget m_sceneRenderTarget;
         RenderTarget m_gameRenderTarget;
         RenderTarget m_cameraPreviewRenderTarget;
+        RenderTarget m_materialPreviewRenderTarget;
+        std::unique_ptr<Scene> m_materialPreviewScene;
+        MeshRendererComponent* m_materialPreviewRenderer{};
         bool m_gameViewFixedResolution{};
         int m_gameViewResolutionWidth{ 1920 };
         int m_gameViewResolutionHeight{ 1080 };

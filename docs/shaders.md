@@ -666,6 +666,12 @@ passの名前は表示と診断用です。実際の用途は`role`で決まる�
 `source`は`assets`を基準にした相対パスです。絶対パス、ドライブ相対パス、
 `..`を含むパスは、配布先から同じHLSLを参照できないため検証エラーになります。
 
+Material InspectorまたはAsset Browserの「新規Shader...」では、コード雛形に加えて
+簡易ノード生成を選べます。Tint、Emission、Rim Light、UV Scroll、Mask Texture、
+Alpha Clipを選ぶと、`Albedo Texture → 選択ノード → Material Output`のHLSLを生成します。
+生成ファイルにはGPUの`register`宣言を置かず、エンジン同梱の
+`LamaPonSimpleMaterialGraph.hlsli`が定数バッファとTexture slotを接続します。
+
 ```cpp
 LamaPon::ScreenEffectRequest effect;
 effect.shader = "shaders/MyEffect.lamashader.json";
@@ -783,15 +789,17 @@ depthを`Greater`／書き込み無しへ固定します。このroleでは`blen
 #### Manifestの`properties`
 
 `properties`は[HLSL内の`LAMAPON_PROPERTIES`](#パラメーターに名前を付ける)と
-同じ名前付きUIをMaterial Inspectorへ作ります。`target`は
+同じ名前付きUIをMaterial Inspectorへ作ります。`target`を指定する場合は
 `CustomParameters[8]`の成分（`"0.x"`、`"1.rgb"`など）、textureなら
 自由枠の`"t7"`〜`"t10"`です。`type`は`float`／`color`／`bool`／
 `vector`／`texture`、`float`には`min`／`max`、texture以外には`default`を
 指定できます。重なったtargetや型と成分数の不一致はエラーになります。
 
-初期版との互換性のため、`target`が無いpropertyを含むManifest自体は読み込めます。
-ただし値の格納先を決められないためInspectorに理由を表示し、生の`float4`編集UIへ
-戻ります。Manifestを保存し直したホットリロードでは既存Materialの値を上書きせず、
+`target`を省略すると、明示targetが使用している領域を先に予約したうえで、定数は
+`CustomParameters[0]`から空き成分へ、textureは`t7`から空き枠へ宣言順に自動配置します。
+`color`／`vector`は`default`配列の成分数を使い、defaultが無い場合は4成分です。
+空き領域が不足した場合だけInspectorに理由を表示して生の`float4`編集UIへ戻ります。
+Manifestを保存し直したホットリロードでは既存Materialの値を上書きせず、
 「既定値に戻す」を選んだときだけ`default`を使います。
 
 ComputeEffectで使う場合は`type`を`compute`にします。`passes`を先頭から調べ、
@@ -1089,6 +1097,9 @@ dispatch呼び出しの中で変更を確認し、検出した呼び出しで再
 ComputeEffectは戻り値とは独立して`error`引数を確認）へエラーを表示しながら
 描画は続きます。
 ゲームが止まることはありません。
+
+InspectorのShaderエラーにfile・line情報が含まれる場合は「エラー箇所を開く」が表示されます。
+Visual Studio CodeまたはVisual Studioをプロジェクトのコードエディターに指定していれば、クリックすると該当する行へ移動します。
 
 Shaderがコンパイルできなかったときは、**そこがマゼンタ（明るい紫）で描かれます。** ファイルが見つからないとき、書き間違えたとき、どちらも同じ色です。
 3Dマテリアルはオブジェクトごと、2D（スプライト／UI／パーティクル）は元の絵の形を保ったまま塗り替わります。

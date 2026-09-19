@@ -383,6 +383,58 @@ namespace LamaPon
             return result;
         };
 
+        // 明示targetを先に予約します。省略propertyが後続の明示targetを
+        // 奪わないようにしてから、残りを宣言順に自動配置します。
+        for (std::size_t propertyIndex = 0;
+            propertyIndex < properties.size();
+            ++propertyIndex)
+        {
+            const auto& property = properties[propertyIndex];
+            if (property.target.empty())
+            {
+                continue;
+            }
+            ShaderPropertyField reserved;
+            std::string parseError;
+            const bool texture = property.type == "texture";
+            if (!(texture
+                    ? ParseTextureTarget(
+                        property.target, reserved, parseError)
+                    : ParseTarget(
+                        property.target, reserved, parseError)))
+            {
+                return fail("Shader Manifest properties["
+                    + std::to_string(propertyIndex) + "]: "
+                    + parseError);
+            }
+            if (texture)
+            {
+                if (textureSlotsUsed[reserved.parameterIndex])
+                {
+                    return fail("Shader Manifest property targetが重複しています: "
+                        + property.target);
+                }
+                textureSlotsUsed[reserved.parameterIndex] = true;
+            }
+            else
+            {
+                for (std::size_t component{};
+                    component < reserved.componentCount;
+                    ++component)
+                {
+                    auto& used = parameterComponentsUsed[
+                        reserved.parameterIndex][reserved.components[component]];
+                    if (used)
+                    {
+                        return fail(
+                            "Shader Manifest property targetが重複しています: "
+                            + property.target);
+                    }
+                    used = true;
+                }
+            }
+        }
+
         for (std::size_t propertyIndex = 0;
             propertyIndex < properties.size();
             ++propertyIndex)
@@ -395,24 +447,31 @@ namespace LamaPon
             {
                 return fail(context + " のnameが空です。");
             }
-            if (property.target.empty())
-            {
-                return fail(
-                    context
-                    + " にtargetがありません。Inspectorへ表示するには"
-                      "0.x／1.rgbまたはt7〜t10を指定してください。");
-            }
-
             ShaderPropertyField field;
             field.name = property.name;
             std::string parseError;
             if (property.type == "texture")
             {
                 field.kind = ShaderPropertyKind::Texture;
-                if (!ParseTextureTarget(
-                        property.target,
-                        field,
-                        parseError))
+                if (property.target.empty())
+                {
+                    const auto available = std::find(
+                        textureSlotsUsed.begin(),
+                        textureSlotsUsed.end(),
+                        false);
+                    if (available == textureSlotsUsed.end())
+                    {
+                        return fail(context
+                            + " を自動配置できるTexture枠がありません。");
+                    }
+                    field.parameterIndex = static_cast<std::size_t>(
+                        std::distance(textureSlotsUsed.begin(), available));
+                    *available = true;
+                }
+                else if (!ParseTextureTarget(
+                    property.target,
+                    field,
+                    parseError))
                 {
                     return fail(context + ": " + parseError);
                 }
@@ -421,13 +480,6 @@ namespace LamaPon
                     return fail(context
                         + " のtexture slotが範囲外です。");
                 }
-                if (textureSlotsUsed[field.parameterIndex])
-                {
-                    return fail(context
-                        + " のtexture targetが重複しています: "
-                        + property.target);
-                }
-                textureSlotsUsed[field.parameterIndex] = true;
                 if (!property.defaultValue.empty())
                 {
                     return fail(context
@@ -444,10 +496,73 @@ namespace LamaPon
                     return fail(context + " のtypeが不正です: "
                         + property.type);
                 }
-                if (!ParseTarget(
-                        property.target,
-                        field,
-                        parseError))
+                if (property.target.empty())
+                {
+                    std::size_t required = 1;
+                    if (property.type == "color"
+                        || property.type == "vector")
+                    {
+                        required = 4;
+                        if (!property.defaultValue.empty())
+                        {
+                            const auto value = nlohmann::json::parse(
+                                property.defaultValue,
+                                nullptr,
+                                false);
+                            if (value.is_array()
+                                && value.size() >= 2
+                                && value.size() <= 4)
+                            {
+                                required = value.size();
+                            }
+                        }
+                    }
+                    bool allocated{};
+                    for (std::size_t parameter{};
+                        parameter < parameterComponentsUsed.size()
+                            && !allocated;
+                        ++parameter)
+                    {
+                        for (std::size_t first{};
+                            first + required <= 4;
+                            ++first)
+                        {
+                            bool free = true;
+                            for (std::size_t offset{};
+                                offset < required;
+                                ++offset)
+                            {
+                                free = free && !parameterComponentsUsed[
+                                    parameter][first + offset];
+                            }
+                            if (!free)
+                            {
+                                continue;
+                            }
+                            field.parameterIndex = parameter;
+                            field.componentCount = required;
+                            for (std::size_t offset{};
+                                offset < required;
+                                ++offset)
+                            {
+                                field.components[offset] = first + offset;
+                                parameterComponentsUsed[parameter]
+                                    [first + offset] = true;
+                            }
+                            allocated = true;
+                            break;
+                        }
+                    }
+                    if (!allocated)
+                    {
+                        return fail(context
+                            + " を自動配置できる定数領域がありません。");
+                    }
+                }
+                else if (!ParseTarget(
+                    property.target,
+                    field,
+                    parseError))
                 {
                     return fail(context + ": " + parseError);
                 }
@@ -470,22 +585,6 @@ namespace LamaPon
                     property.type,
                     field.componentCount);
 
-                for (std::size_t component = 0;
-                    component < field.componentCount;
-                    ++component)
-                {
-                    const auto componentIndex =
-                        field.components[component];
-                    if (parameterComponentsUsed[
-                            field.parameterIndex][componentIndex])
-                    {
-                        return fail(context
-                            + " のtarget成分が別のpropertyと重複しています: "
-                            + property.target);
-                    }
-                    parameterComponentsUsed[
-                        field.parameterIndex][componentIndex] = true;
-                }
             }
 
             if (property.minimum.has_value()

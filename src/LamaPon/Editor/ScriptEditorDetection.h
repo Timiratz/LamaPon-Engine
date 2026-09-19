@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -21,4 +22,10 @@ namespace LamaPon
     // （呼び出し側で「システムの既定」と組み合わせて表示してください）。
     [[nodiscard]] std::vector<ScriptEditorOption>
         DetectScriptEditors();
+
+    [[nodiscard]] std::wstring BuildScriptEditorArguments(
+        const std::filesystem::path& editor,
+        const std::filesystem::path& source,
+        std::uint32_t line = 0,
+        std::uint32_t column = 0);
 }

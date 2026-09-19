@@ -991,6 +991,8 @@ namespace LamaPon
         case AssetDialogRequest::CreateShader:
             m_assetDirectory = m_assetDialogTarget;
             m_selectedAsset.clear();
+            m_createShaderFromGraph = true;
+            m_createShaderGraph = {};
             strncpy_s(
                 m_assetFileNameBuffer.data(),
                 m_assetFileNameBuffer.size(),
@@ -1116,7 +1118,9 @@ namespace LamaPon
     }
 
     void EditorLayer::OpenCodeAsset(
-        const std::filesystem::path& asset)
+        const std::filesystem::path& asset,
+        const std::uint32_t line,
+        const std::uint32_t column)
     {
         if (!IsCppScriptAsset(asset)
             && !IsOpenableShaderAsset(asset))
@@ -1149,7 +1153,11 @@ namespace LamaPon
                 && std::filesystem::is_regular_file(editor))
             {
                 const std::wstring parameters =
-                    L"\"" + resolved.wstring() + L"\"";
+                    BuildScriptEditorArguments(
+                        editor,
+                        resolved,
+                        line,
+                        column);
                 result = ShellExecuteW(
                     m_window,
                     L"open",
@@ -1177,7 +1185,12 @@ namespace LamaPon
             }
             SetStatus(
                 "コードを開きました: "
-                + PathToUtf8(asset));
+                + PathToUtf8(asset)
+                + (line == 0
+                    ? std::string{}
+                    : " (" + std::to_string(line)
+                        + ":" + std::to_string(
+                            std::max(column, 1u)) + ")"));
         }
         catch (const std::exception& exception)
         {
@@ -2030,8 +2043,52 @@ namespace LamaPon
                 m_assetFileNameBuffer.data(),
                 m_assetFileNameBuffer.size(),
                 ImGuiInputTextFlags_EnterReturnsTrue);
-            ImGui::TextDisabled(
-                "VSMain / PSMainと4本のMaterialパラメーターを持つ雛形です。");
+            ImGui::SeparatorText("作成方法");
+            if (ImGui::RadioButton(
+                    "簡易ノード生成",
+                    m_createShaderFromGraph))
+            {
+                m_createShaderFromGraph = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::RadioButton(
+                    "コード雛形",
+                    !m_createShaderFromGraph))
+            {
+                m_createShaderFromGraph = false;
+            }
+            if (m_createShaderFromGraph)
+            {
+                ImGui::TextDisabled(
+                    "Albedo Texture → 選択ノード → Material Output");
+                ImGui::Checkbox("Tint", &m_createShaderGraph.tint);
+                ImGui::SameLine();
+                ImGui::Checkbox(
+                    "Emission",
+                    &m_createShaderGraph.emission);
+                ImGui::Checkbox(
+                    "Rim Light",
+                    &m_createShaderGraph.rimLight);
+                ImGui::SameLine();
+                ImGui::Checkbox(
+                    "UV Scroll",
+                    &m_createShaderGraph.uvScroll);
+                ImGui::Checkbox(
+                    "Mask Texture",
+                    &m_createShaderGraph.maskTexture);
+                ImGui::SameLine();
+                ImGui::Checkbox(
+                    "Alpha Clip",
+                    &m_createShaderGraph.alphaClip);
+                ImGui::TextWrapped(
+                    "定数とTextureの空きスロットは自動で割り当てます。"
+                    "register番号を指定する必要はありません。");
+            }
+            else
+            {
+                ImGui::TextDisabled(
+                    "VSMain / PSMainを持つ編集用HLSL雛形です。");
+            }
             if (!m_assetFileDialogError.empty())
             {
                 ImGui::TextColored(
@@ -2620,16 +2677,37 @@ namespace LamaPon
                     "同じ名前のファイルが存在します";
                 return false;
             }
-            const auto shaderTemplate =
-                m_graphics.Assets().ResolvePath(
-                    "shaders/LamaPonCustomMaterial.hlsl");
-            if (!std::filesystem::copy_file(
-                shaderTemplate,
-                destination,
-                std::filesystem::copy_options::none))
+            if (m_createShaderFromGraph)
             {
-                throw std::runtime_error(
-                    "Shader雛形をコピーできませんでした");
+                std::ofstream output(
+                    destination,
+                    std::ios::binary | std::ios::trunc);
+                if (!output)
+                {
+                    throw std::runtime_error(
+                        "生成したShaderを書き込めませんでした");
+                }
+                output << GenerateSimpleMaterialShader(
+                    m_createShaderGraph);
+                if (!output)
+                {
+                    throw std::runtime_error(
+                        "生成したShaderを保存できませんでした");
+                }
+            }
+            else
+            {
+                const auto shaderTemplate =
+                    m_graphics.Assets().ResolvePath(
+                        "shaders/LamaPonCustomMaterial.hlsl");
+                if (!std::filesystem::copy_file(
+                    shaderTemplate,
+                    destination,
+                    std::filesystem::copy_options::none))
+                {
+                    throw std::runtime_error(
+                        "Shader雛形をコピーできませんでした");
+                }
             }
             m_selectedAsset = relativePath;
             RefreshAssets();

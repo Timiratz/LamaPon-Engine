@@ -77,8 +77,8 @@ namespace LamaPon
         std::string name;
         std::string type;
         // CustomParametersの成分（"0.x"／"1.rgb"）または追加
-        // テクスチャslot（"t7"〜"t10"）。Phase 1のManifestとの
-        // 後方互換のため、省略時は空文字列のまま保持します。
+        // テクスチャslot（"t7"〜"t10"）。省略時はEditorが明示targetを
+        // 避け、宣言順に空き領域へ自動配置します。
         std::string target;
         // defaultの正規化されたJSON表現です。未指定時は空文字列に
         // なります。JSONライブラリの型を公開APIへ漏らさず、MVPで

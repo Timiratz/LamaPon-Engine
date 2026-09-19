@@ -1,10 +1,25 @@
 #pragma once
 
+#include "LamaPon/Core/Api.h"
+
+#include <cstdint>
+#include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 
 namespace LamaPon
 {
+    struct ShaderDiagnosticLocation final
+    {
+        std::filesystem::path path;
+        std::uint32_t line{ 1 };
+        std::uint32_t column{ 1 };
+    };
+
+    [[nodiscard]] LAMAPON_API std::optional<ShaderDiagnosticLocation>
+        ParseShaderDiagnosticLocation(std::string_view message);
+
     // そのHLSLが持っている入口。コンパイルせずにソースから読みます
     // （割り当てた直後、コンパイルが失敗した理由を説明するため）。
     struct ShaderEntryPoints final
