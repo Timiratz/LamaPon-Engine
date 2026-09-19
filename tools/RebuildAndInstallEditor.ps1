@@ -22,6 +22,32 @@ function Fail([string]$message) {
     exit 1
 }
 
+# エディターから起動した再インストールでは、自分自身が終了するまで
+# 待ってからコピーします。明示的な指定なしに他のLamaPonプロセスを
+# 非対話で終了しないよう、強制終了も専用フラグに限定します。
+$CloseRunningLamaPonProcesses =
+    $args -contains "-CloseRunningLamaPonProcesses"
+$WaitForProcessId = 0
+for ($argumentIndex = 0;
+    $argumentIndex -lt $args.Count;
+    $argumentIndex++) {
+    if ($args[$argumentIndex] -ne "-WaitForProcessId") {
+        continue
+    }
+    if ($argumentIndex + 1 -ge $args.Count) {
+        Fail "-WaitForProcessId には待機するプロセスIDを指定してください。"
+    }
+    $parsedProcessId = 0
+    $validProcessId = [int]::TryParse(
+        [string]$args[$argumentIndex + 1],
+        [ref]$parsedProcessId)
+    if (-not $validProcessId -or $parsedProcessId -le 0) {
+        Fail "-WaitForProcessId には正のプロセスIDを指定してください。"
+    }
+    $WaitForProcessId = $parsedProcessId
+    $argumentIndex++
+}
+
 Write-Host "==============================================="
 Write-Host " LamaPon Editor 再ビルド & インストール"
 Write-Host "==============================================="
@@ -30,11 +56,25 @@ Write-Host "ビルド先      : $buildDir"
 Write-Host "インストール先: $installDir"
 Write-Host ""
 
+if ($WaitForProcessId -gt 0) {
+    Write-Host "エディターの終了を待機しています（PID: $WaitForProcessId）..."
+    $waitDeadline = [DateTime]::UtcNow.AddSeconds(30)
+    while (Get-Process -Id $WaitForProcessId -ErrorAction SilentlyContinue) {
+        if ([DateTime]::UtcNow -ge $waitDeadline) {
+            Fail "指定されたエディターが30秒以内に終了しませんでした。"
+        }
+        Start-Sleep -Milliseconds 250
+    }
+}
+
 $hubProc = Get-Process -Name "LamaPonHub" -ErrorAction SilentlyContinue
 $editorProc = Get-Process -Name "LamaPonEditor" -ErrorAction SilentlyContinue
 if ($hubProc -or $editorProc) {
     Write-Host "[警告] LamaPon Hub / LamaPon Editor が起動中です。" -ForegroundColor Yellow
     Write-Host "保存していない作業がある場合は失われます。"
+    if ($NonInteractive -and -not $CloseRunningLamaPonProcesses) {
+        Fail "LamaPon Hub / LamaPon Editor が起動中です。終了してから再実行してください。"
+    }
     if (-not $NonInteractive) {
         Read-Host "続行するには Enter キーを押してください（中止する場合はこのウィンドウを閉じてください）"
     }
@@ -198,6 +238,25 @@ foreach ($fileName in $runtimeFiles) {
     if ($sourceHash -ne $installedHash) {
         Fail "インストール後の実行ファイルが一致しません: $destination"
     }
+}
+
+# インストール済みエディターから「再インストール」を選んだときに、
+# ビルド可能な元リポジトリを確実に見つけるための情報です。SDKとRuntime
+# はこのスクリプトが同じCMake install規則から更新するため、世代が揃います。
+$desktopBuildSourcePath = Join-Path $installDir "desktop-build-source.json"
+$desktopBuildSource = [ordered]@{
+    format = "LamaPonDesktopBuildSource"
+    version = 1
+    sourceRoot = [System.IO.Path]::GetFullPath($repoDir)
+} | ConvertTo-Json -Compress
+try {
+    [System.IO.File]::WriteAllText(
+        $desktopBuildSourcePath,
+        $desktopBuildSource,
+        [System.Text.UTF8Encoding]::new($false))
+}
+catch {
+    Fail "デスクトップ再インストール情報を保存できません: $desktopBuildSourcePath`n$($_.Exception.Message)"
 }
 
 Write-Host ""
