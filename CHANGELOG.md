@@ -4,6 +4,8 @@
 
 ### 描画API設定
 
+- Material Asset Inspectorへ、編集中の標準Lit／custom shader／texture／parameterを即時反映する専用プレビュー球を追加。Shader compileエラーには「エラー箇所を開く」を表示し、D3DCompilerのfile・line・columnをVS Code／Visual Studioへ渡して該当位置へ移動できるようにした。
+- Shader作成へTint／Emission／Rim Light／UV Scroll／Mask Texture／Alpha Clipの簡易ノード生成を追加。生成HLSLからGPU register宣言を共通includeへ隠し、Shader Manifestのtarget省略時はCustomParametersとt7〜t10の空き領域へ自動バインドする。
 - DirectX 12の組み込みLit描画でMesh Rendererのカリング指定を反映。D3D11のGeometricPrimitive::Drawと同じく既定で裏面を捨て、`SetCullMode`の上書きを通常・深度・影・インスタンス描画へ適用する。D3D12自前のCube／Sphere／Cylinderの三角形の向きをD3D11に揃え、PlaneもD3D11と同じ厚さ0.05の箱にした。D3D11に無かったShadow map用のrasterizer biasも外し、閉じていないProcedural Meshの見え方と影をD3D11と一致させる。
 - DirectX 12の利用者向け対応状況をruntime feature parity到達として整理し、Experimental継続理由を低レベルAPI設計差、GPU／driver差、全環境未検証に更新。Project Settingsの警告とbootstrap期の古いコメントも現状へ揃えた。
 - DX10 DDSのtypeless storageをDirectXTK互換のshader-readable viewへ正規化し、R8／R16 SNORM、R11G11B10 float、RGB9E5 shared exponentをD3D11／D3D12共通ローダーへ追加。公開texture formatの末尾追加に伴いGame Module APIを74へ更新。

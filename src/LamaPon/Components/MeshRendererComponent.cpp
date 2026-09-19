@@ -867,6 +867,13 @@ namespace LamaPon
             m_assets));
     }
 
+    void MeshRendererComponent::SetMaterial(
+        const LitMaterial& material)
+    {
+        m_materialAssetPath.clear();
+        ApplyMaterial(material);
+    }
+
     void MeshRendererComponent::ApplyMaterial(
         const LitMaterial& material)
     {
@@ -876,6 +883,9 @@ namespace LamaPon
         std::shared_ptr<const TextureAsset> metallic;
         std::shared_ptr<const TextureAsset> occlusion;
         std::shared_ptr<const TextureAsset> emissive;
+        std::array<
+            std::shared_ptr<const TextureAsset>,
+            LitMaterial::CustomTextureCount> customTextures{};
         if (m_assets != nullptr)
         {
             // スロットごとに用途を渡します。法線はBC5、粗さ・
@@ -909,6 +919,14 @@ namespace LamaPon
             emissive = load(
                 material.EmissiveTexture(),
                 Usage::Color);
+            for (std::size_t index{};
+                index < customTextures.size();
+                ++index)
+            {
+                customTextures[index] = load(
+                    material.CustomTexture(index),
+                    Usage::Color);
+            }
         }
 
         m_material = material;
@@ -918,6 +936,7 @@ namespace LamaPon
         m_metallicTexture = std::move(metallic);
         m_occlusionTexture = std::move(occlusion);
         m_emissiveTexture = std::move(emissive);
+        m_customTextures = std::move(customTextures);
         RefreshShader(false);
     }
 

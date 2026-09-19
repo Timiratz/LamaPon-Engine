@@ -90,8 +90,8 @@ namespace LamaPon
         std::string_view shaderSource);
 
     // Manifestのpropertiesを、既存のInspector用表現へ変換します。
-    // targetが無いPhase 1 propertyはschema上は有効ですが、Inspectorでは
-    // 明示的なerrorを返し、生のfloat4 UIへフォールバックさせます。
+    // targetを省略したpropertyは、明示targetを避けながら定数成分または
+    // 追加Texture枠へ宣言順に自動配置します。
     [[nodiscard]] ShaderProperties ConvertShaderManifestProperties(
         const std::vector<ShaderPropertyDesc>& properties);
 

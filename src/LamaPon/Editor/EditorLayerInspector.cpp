@@ -2,6 +2,7 @@
 
 #include "LamaPon/Editor/EditorLayerShared.h"
 #include "LamaPon/Editor/DataAssetSchema.h"
+#include "LamaPon/Editor/EditorGuiRenderer.h"
 
 #include "LamaPon/Animation/AnimatorController.h"
 #include "LamaPon/Assets/AssetManager.h"
@@ -56,6 +57,7 @@
 #include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Graphics/LitMaterialAsset.h"
+#include "LamaPon/Graphics/ShaderDiagnostics.h"
 #include "LamaPon/Graphics/ShaderManifest.h"
 #include "LamaPon/Input/InputSystem.h"
 #include "LamaPon/Scene/Scene.h"
@@ -1121,6 +1123,82 @@ namespace LamaPon
         }
     }
 
+    void EditorLayer::DrawShaderError(
+        const std::filesystem::path& shaderPath,
+        const std::string_view error,
+        const char* const identifier)
+    {
+        if (error.empty())
+        {
+            return;
+        }
+        ImGui::PushID(identifier);
+        ImGui::TextColored(
+            ImVec4{ 1.0f, 0.35f, 0.30f, 1.0f },
+            "Shader Error: %s",
+            std::string{ error }.c_str());
+
+        std::filesystem::path asset = shaderPath;
+        std::uint32_t line{};
+        std::uint32_t column{};
+        if (const auto location =
+                ParseShaderDiagnosticLocation(error))
+        {
+            std::error_code pathError;
+            const auto root = std::filesystem::weakly_canonical(
+                m_graphics.Assets().AssetRoot(),
+                pathError);
+            auto candidate = location->path;
+            if (!pathError && !candidate.is_absolute())
+            {
+                const auto besideShader =
+                    m_graphics.Assets().ResolvePath(
+                        shaderPath.parent_path() / candidate);
+                std::error_code regularFileError;
+                candidate = std::filesystem::is_regular_file(
+                        besideShader,
+                        regularFileError)
+                    && !regularFileError
+                    ? besideShader
+                    : m_graphics.Assets().ResolvePath(candidate);
+            }
+            std::error_code canonicalError;
+            const auto resolved = std::filesystem::weakly_canonical(
+                candidate,
+                canonicalError);
+            if (!canonicalError
+                && !pathError
+                && IsPathWithin(root, resolved)
+                && std::filesystem::is_regular_file(
+                    resolved,
+                    pathError)
+                && !pathError)
+            {
+                asset = resolved.lexically_relative(root);
+                line = location->line;
+                column = location->column;
+            }
+        }
+
+        if (!asset.empty()
+            && ImGui::Button(
+                line == 0
+                    ? "Shaderを開く"
+                    : "エラー箇所を開く"))
+        {
+            OpenCodeAsset(asset, line, column);
+        }
+        if (line != 0 && ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip(
+                "%s (%u:%u)",
+                PathToUtf8(asset).c_str(),
+                line,
+                std::max(column, 1u));
+        }
+        ImGui::PopID();
+    }
+
     void EditorLayer::LoadModelInspectorDraft()
     {
         m_modelInspectorAsset = m_selectedAsset;
@@ -1594,6 +1672,35 @@ namespace LamaPon
             ImGui::TextColored(
                 ImVec4{ 1.0f, 0.75f, 0.25f, 1.0f },
                 "未保存の変更があります");
+        }
+
+        ImGui::SeparatorText("Preview");
+        const float previewSize = std::clamp(
+            ImGui::GetContentRegionAvail().x,
+            160.0f,
+            300.0f);
+        m_graphics.ResizeOffscreenTarget(
+            m_materialPreviewRenderTarget,
+            static_cast<std::uint32_t>(previewSize),
+            static_cast<std::uint32_t>(previewSize));
+        if (m_materialPreviewRenderTarget.IsValid())
+        {
+            const float offset = std::max(
+                (ImGui::GetContentRegionAvail().x - previewSize)
+                    * 0.5f,
+                0.0f);
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
+            ImGui::Image(
+                m_editorGuiRenderer->DisplayTextureReference(
+                    m_materialPreviewRenderTarget),
+                ImVec2{ previewSize, previewSize });
+        }
+        if (m_materialPreviewRenderer != nullptr)
+        {
+            DrawShaderError(
+                m_materialInspectorDraft.Shader(),
+                m_materialPreviewRenderer->ShaderError(),
+                "MaterialPreviewShaderError");
         }
 
         ImGui::BeginDisabled(m_playing);
@@ -7743,14 +7850,10 @@ namespace LamaPon
                 }
                 if (!particles->ShaderError().empty())
                 {
-                    ImGui::TextColored(
-                        ImVec4{
-                            1.0f,
-                            0.35f,
-                            0.30f,
-                            1.0f },
-                        "Shader Error: %s",
-                        particles->ShaderError().c_str());
+                    DrawShaderError(
+                        particles->ShaderPath(),
+                        particles->ShaderError(),
+                        "ParticleShaderError");
                 }
 
                 const auto auxiliaryPath =
@@ -8148,10 +8251,10 @@ namespace LamaPon
                 }
                 if (!mesh->ShaderError().empty())
                 {
-                    ImGui::TextColored(
-                        ImVec4{ 1.0f, 0.35f, 0.30f, 1.0f },
-                        "Shader Error: %s",
-                        mesh->ShaderError().c_str());
+                    DrawShaderError(
+                        mesh->ShaderPath(),
+                        mesh->ShaderError(),
+                        "MeshShaderError");
                 }
                 if (m_graphics.IsShaderCompiling(
                         mesh->ShaderPath(),
@@ -9139,10 +9242,10 @@ namespace LamaPon
                     }
                     if (!model->ShaderError().empty())
                     {
-                        ImGui::TextColored(
-                            ImVec4{ 1.0f, 0.35f, 0.30f, 1.0f },
-                            "Shader Error: %s",
-                            model->ShaderError().c_str());
+                        DrawShaderError(
+                            model->ShaderPath(),
+                            model->ShaderError(),
+                            "ModelShaderError");
                     }
                     if (m_graphics.IsShaderCompiling(
                             model->ShaderPath(),
@@ -9541,15 +9644,10 @@ namespace LamaPon
                 }
                 if (!sprite->ShaderError().empty())
                 {
-                    ImGui::TextColored(
-                        ImVec4{
-                            1.0f,
-                            0.35f,
-                            0.30f,
-                            1.0f
-                        },
-                        "Shader Error: %s",
-                        sprite->ShaderError().c_str());
+                    DrawShaderError(
+                        sprite->ShaderPath(),
+                        sprite->ShaderError(),
+                        "SpriteShaderError");
                 }
                 if (ImGui::TreeNode(
                         "UIシェーダーパラメーター"))

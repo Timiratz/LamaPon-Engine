@@ -318,6 +318,7 @@ MeshRenderer／ModelRendererへドラッグするか、Materialの右クリッ�
 Inspectorでは次の操作が可能です。
 
 MaterialをAsset Browserで単クリックすると専用Inspectorが開き、ベースカラー、粗さ、アルベド、法線マップ、Shader、カスタムパラメーターをまとめて編集できます。
+Inspector上部のプレビュー球には保存前の変更も即時反映されるため、シーンへオブジェクトを置かずに材質を確認できます。
 「選択オブジェクトへ適用」で、選択中のMeshRenderer／ModelRendererへ直接割り当てられます。
 ShaderはMaterial Inspectorおよび各Rendererの候補一覧から選択でき、標準Litへも戻せます。
 
@@ -341,7 +342,7 @@ HLSLをダブルクリックしてコードエディターで編集し、Mesh Re
 保存したHLSLは実行中も自動再コンパイルされ、失敗時はInspectorへエラーを表示しながら直前の正常なShader（未成功なら標準Lit）で描画を継続します。
 
 カスタムShaderはShader Model 5.0の`VSMain`と`PSMain`を持ち、雛形と同じ`ObjectBuffer`レイアウトを使用します。
-Inspectorの「カスタムShaderパラメーター」から`CustomParameters[0]`〜`CustomParameters[3]`へ4本の`float4`を渡せます。
+Inspectorの「カスタムShaderパラメーター」から`CustomParameters[0]`〜`CustomParameters[7]`へ8本の`float4`を渡せます。
 Shaderパスと値は`.material.json`（version 2）およびシーンへ保存されます。
 静的モデルは位置・法線・UVが共通Lit形式と互換な場合に対応します。
 スキニング（ボーン）モデルも、Shaderに`VSSkinnedMain`があればカスタムShaderで描画します（エンジンがスキニング用に別途コンパイルし、専用の入力レイアウトを作ります）。

@@ -235,6 +235,46 @@ int main()
                 "an unrecognized error must be passed through");
         }
 
+        // D3DCompilerの位置表記。日本語の説明が前に付いていても、実際の
+        // ファイルと行・列を取り出してコードエディターへ渡せること。
+        {
+            const auto location =
+                LamaPon::ParseShaderDiagnosticLocation(
+                    "分かりやすい説明\n"
+                    "C:\\Game\\assets\\shaders\\broken.hlsl(27,9): "
+                    "error X3000: syntax error");
+            Require(location.has_value(), "a compiler location is parsed");
+            Require(
+                location->path.filename() == "broken.hlsl"
+                    && location->line == 27
+                    && location->column == 9,
+                "the compiler file, line and column are preserved");
+        }
+        {
+            const auto location =
+                LamaPon::ParseShaderDiagnosticLocation(
+                    "included.hlsli(4): error X3004");
+            Require(
+                location.has_value()
+                    && location->line == 4
+                    && location->column == 1,
+                "a line-only compiler location defaults to column one");
+        }
+        {
+            const auto location =
+                LamaPon::ParseShaderDiagnosticLocation(
+                    "Failed to compile shader "
+                    "assets/shaders/broken.hlsl (VSMain): "
+                    "assets/shaders/broken.hlsl(12,6): error X3000");
+            Require(
+                location.has_value()
+                    && location->path
+                        == "assets/shaders/broken.hlsl"
+                    && location->line == 12
+                    && location->column == 6,
+                "the engine compile prefix is excluded from the path");
+        }
+
         std::cout << "Shader diagnostics tests passed.\n";
         return 0;
     }

@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cwctype>
 #include <sstream>
 #include <string_view>
 
@@ -258,6 +259,41 @@ namespace
 
 namespace LamaPon
 {
+    std::wstring BuildScriptEditorArguments(
+        const std::filesystem::path& editor,
+        const std::filesystem::path& source,
+        const std::uint32_t line,
+        const std::uint32_t column)
+    {
+        auto executable = editor.filename().wstring();
+        std::ranges::transform(
+            executable,
+            executable.begin(),
+            [](const wchar_t character)
+            {
+                return static_cast<wchar_t>(std::towlower(character));
+            });
+        const auto quotedSource = L"\"" + source.wstring() + L"\"";
+        if (line == 0)
+        {
+            return quotedSource;
+        }
+        if (executable == L"code.exe"
+            || executable == L"code - insiders.exe")
+        {
+            return L"--goto \"" + source.wstring()
+                + L":" + std::to_wstring(line)
+                + L":" + std::to_wstring(std::max(column, 1u))
+                + L"\"";
+        }
+        if (executable == L"devenv.exe")
+        {
+            return quotedSource + L" /command \"Edit.Goto "
+                + std::to_wstring(line) + L"\"";
+        }
+        return quotedSource;
+    }
+
     std::vector<ScriptEditorOption> DetectScriptEditors()
     {
         std::vector<ScriptEditorOption> options;

@@ -578,6 +578,8 @@ set(LAMAPON_EDITOR_SOURCES
     src/LamaPon/Editor/ScriptEditorDetection.h
     src/LamaPon/Editor/ShaderProperties.cpp
     src/LamaPon/Editor/ShaderProperties.h
+    src/LamaPon/Editor/SimpleMaterialShaderGenerator.cpp
+    src/LamaPon/Editor/SimpleMaterialShaderGenerator.h
 )
 
 add_library(LamaPonRuntime SHARED
@@ -1030,7 +1032,8 @@ if(BUILD_TESTING)
     add_dependencies(LamaPonBgmLoopPanelTests LamaPonGame)
     add_test(NAME BgmLoopPanelIsolation COMMAND LamaPonBgmLoopPanelTests)
     add_executable(LamaPonUIComponentInspectorTests tests/UIComponentInspectorTests.cpp)
-    target_link_libraries(LamaPonUIComponentInspectorTests PRIVATE LamaPonEditor DearImGui)
+    target_link_libraries(LamaPonUIComponentInspectorTests PRIVATE
+        LamaPonEditor DearImGui d3dcompiler)
     target_compile_options(LamaPonUIComponentInspectorTests PRIVATE
         $<$<CXX_COMPILER_ID:MSVC>:/W4>
         $<$<CXX_COMPILER_ID:MSVC>:/permissive->
