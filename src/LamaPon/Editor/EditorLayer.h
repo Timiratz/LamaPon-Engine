@@ -295,6 +295,10 @@ namespace LamaPon
         void OpenCodeAsset(const std::filesystem::path& asset);
         [[nodiscard]] bool BuildGameModule();
         void UpdateGameModuleBuild();
+        [[nodiscard]] std::optional<std::filesystem::path>
+            DesktopReinstallScript() const;
+        [[nodiscard]] bool OfferDesktopReinstallForGameModuleMismatch(
+            const std::string& diagnostic);
         // assets内の.cpp/.hの保存を検知して、Game Moduleを自動
         // ビルドします（プロジェクト設定でオフにできます）。
         void UpdateScriptAutoBuild();
@@ -1008,6 +1012,8 @@ namespace LamaPon
 
         HANDLE m_gameModuleBuildProcess{};
         double m_gameModuleBuildStartedAt{};
+        // 同じ不一致で確認ダイアログを繰り返し出さないための状態です。
+        bool m_desktopReinstallPrompted{};
         // スクリプト保存の自動ビルド用。最後に見たスクリプトの
         // 更新時刻と、変更を検知した時刻（0なら待機なし）です。
         // 変更が続いている間は待ち、静かになってからビルドします。

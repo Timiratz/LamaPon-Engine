@@ -144,6 +144,12 @@ int main()
             "MSVC include output must be UTF-8 so Ninja records"
             " header dependencies.");
         Require(
+            command.parameters.find(
+                L"LAMAPON_RUNTIME_API_VERSION:STRING=")
+                != std::wstring::npos,
+            "The Game Module build must receive the Runtime API version"
+            " so an engine update recompiles its descriptor.");
+        Require(
             command.logPath
                 == project / L".lamapon"
                     / L"game-module-build.log",
