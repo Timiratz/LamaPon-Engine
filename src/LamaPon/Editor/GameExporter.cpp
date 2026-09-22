@@ -440,6 +440,57 @@ namespace
             || name.ends_with(L".bak");
     }
 
+    std::string InspectExportFiles(
+        const std::filesystem::path& stagingDirectory)
+    {
+        std::vector<std::filesystem::path> files;
+        for (const auto& entry :
+            std::filesystem::recursive_directory_iterator(
+                stagingDirectory))
+        {
+            const auto relative = entry.path().lexically_relative(
+                stagingDirectory);
+            if (entry.is_symlink())
+            {
+                throw std::runtime_error(
+                    "Export contains a symbolic link: "
+                    + LamaPon::PathToUtf8(relative));
+            }
+            if (!entry.is_regular_file())
+            {
+                continue;
+            }
+            const auto name = ShaderReferenceKey(
+                entry.path().filename());
+            const auto extension = ShaderReferenceKey(
+                entry.path().extension());
+            if (extension == ".c" || extension == ".cc"
+                || extension == ".cpp" || extension == ".cxx"
+                || extension == ".h" || extension == ".hpp"
+                || extension == ".hxx" || extension == ".pdb"
+                || extension == ".pem" || extension == ".pfx"
+                || extension == ".p12" || extension == ".p8"
+                || extension == ".key"
+                || name == ".env" || name.starts_with(".env.")
+                || name == "credentials.json"
+                || name == "secrets.json")
+            {
+                throw std::runtime_error(
+                    "Export contains a development or credential file: "
+                    + LamaPon::PathToUtf8(relative));
+            }
+            files.push_back(relative);
+        }
+        std::sort(files.begin(), files.end());
+        std::string inventory = "Exported loose-file inventory ("
+            + std::to_string(files.size()) + " files):";
+        for (const auto& path : files)
+        {
+            inventory += "\n  + " + LamaPon::PathToUtf8(path);
+        }
+        return inventory;
+    }
+
     // AssetDatabase::Refreshは不足.metaや依存cacheを書き得るため、exportの
     // 検証では既存.metaだけを読み、GUID -> 現在pathの表をread-onlyで作ります。
     AssetGuidPaths ReadAssetGuidPaths(
@@ -1109,6 +1160,116 @@ namespace
         }
     }
 
+    std::wstring QuoteSigningArgument(
+        const std::wstring_view argument)
+    {
+        std::wstring quoted{ L'"' };
+        std::size_t backslashes = 0;
+        for (const wchar_t character : argument)
+        {
+            if (character == L'\\')
+            {
+                ++backslashes;
+                continue;
+            }
+            if (character == L'"')
+            {
+                quoted.append(backslashes * 2 + 1, L'\\');
+                quoted.push_back(character);
+                backslashes = 0;
+                continue;
+            }
+            quoted.append(backslashes, L'\\');
+            backslashes = 0;
+            quoted.push_back(character);
+        }
+        quoted.append(backslashes * 2, L'\\');
+        quoted.push_back(L'"');
+        return quoted;
+    }
+
+    void RunSignTool(
+        const LamaPon::GameSigningOptions& signing,
+        const std::vector<std::wstring>& arguments,
+        const std::filesystem::path& binary)
+    {
+        const auto signTool = std::filesystem::absolute(
+            signing.signToolPath).lexically_normal();
+        std::wstring commandLine =
+            QuoteSigningArgument(signTool.wstring());
+        for (const auto& argument : arguments)
+        {
+            commandLine += L" " + QuoteSigningArgument(argument);
+        }
+        commandLine += L" " + QuoteSigningArgument(binary.wstring());
+
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        PROCESS_INFORMATION process{};
+        if (!CreateProcessW(
+                signTool.c_str(), commandLine.data(),
+                nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+                nullptr, nullptr, &startup, &process))
+        {
+            throw ExportError(
+                "Could not start SignTool", signTool);
+        }
+        const DWORD waitResult = WaitForSingleObject(
+            process.hProcess, 300000);
+        if (waitResult == WAIT_TIMEOUT)
+        {
+            TerminateProcess(process.hProcess, 1);
+            WaitForSingleObject(process.hProcess, INFINITE);
+        }
+        DWORD exitCode = 1;
+        if (waitResult == WAIT_OBJECT_0)
+        {
+            GetExitCodeProcess(process.hProcess, &exitCode);
+        }
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+        if (waitResult != WAIT_OBJECT_0 || exitCode != 0)
+        {
+            throw ExportError(
+                arguments.front() == L"sign"
+                    ? "SignTool signing failed or timed out (exit code "
+                        + std::to_string(exitCode) + ")"
+                    : "SignTool signature verification failed or timed out (exit code "
+                        + std::to_string(exitCode) + ")",
+                binary);
+        }
+    }
+
+    void SignExportedBinaries(
+        const LamaPon::GameSigningOptions& signing,
+        const std::vector<std::filesystem::path>& binaries)
+    {
+        if (!signing.enabled)
+        {
+            return;
+        }
+        const std::wstring thumbprint(
+            signing.certificateSha1.begin(),
+            signing.certificateSha1.end());
+        const std::wstring timestampUrl(
+            signing.timestampUrl.begin(),
+            signing.timestampUrl.end());
+        for (const auto& binary : binaries)
+        {
+            RunSignTool(signing,
+                { L"sign", L"/sha1", thumbprint,
+                  L"/fd", L"SHA256", L"/tr", timestampUrl,
+                  L"/td", L"SHA256" },
+                binary);
+            RunSignTool(signing,
+                { L"verify", L"/pa", L"/all", L"/tw" },
+                binary);
+            LamaPon::Logger::Instance().Info(
+                "Signed and verified: "
+                + LamaPon::PathToUtf8(binary.filename()));
+        }
+    }
+
     void PublishZipArchive(
         const std::filesystem::path& sourceZip,
         const std::filesystem::path& destinationZip)
@@ -1279,6 +1440,60 @@ namespace
 
 namespace LamaPon
 {
+    void ValidateGameSigningOptions(
+        const GameSigningOptions& options)
+    {
+        if (!options.enabled)
+        {
+            return;
+        }
+        if (!options.signToolPath.is_absolute()
+            || !std::filesystem::is_regular_file(
+                options.signToolPath))
+        {
+            throw std::invalid_argument(
+                "Signing requires an absolute path to Windows SDK signtool.exe.");
+        }
+        auto toolName = options.signToolPath.filename().wstring();
+        std::transform(
+            toolName.begin(), toolName.end(), toolName.begin(),
+            [](const wchar_t character)
+            {
+                return static_cast<wchar_t>(std::towlower(character));
+            });
+        if (toolName != L"signtool.exe")
+        {
+            throw std::invalid_argument(
+                "The signing tool must be signtool.exe.");
+        }
+        if (options.certificateSha1.size() != 40
+            || !std::all_of(
+                options.certificateSha1.begin(),
+                options.certificateSha1.end(),
+                [](const unsigned char character)
+                {
+                    return std::isxdigit(character) != 0;
+                }))
+        {
+            throw std::invalid_argument(
+                "Signing requires a 40-character hexadecimal certificate SHA-1 thumbprint.");
+        }
+        if (!options.timestampUrl.starts_with("https://")
+            || options.timestampUrl.size() <= 8
+            || !std::all_of(
+                options.timestampUrl.begin(),
+                options.timestampUrl.end(),
+                [](const unsigned char character)
+                {
+                    return character >= 0x21 && character <= 0x7e
+                        && character != '"';
+                }))
+        {
+            throw std::invalid_argument(
+                "Signing requires an HTTPS RFC 3161 timestamp URL.");
+        }
+    }
+
     std::wstring SanitizeGameFileName(
         const std::string& gameName)
     {
@@ -1338,6 +1553,7 @@ namespace LamaPon
     GameExportResult ExportGamePackage(
         const GameExportOptions& options)
     {
+        ValidateGameSigningOptions(options.signing);
         const auto runtimeDirectory = std::filesystem::weakly_canonical(
             options.runtimeDirectory);
         const auto assetDirectory = std::filesystem::weakly_canonical(
@@ -1684,21 +1900,40 @@ namespace LamaPon
                     : std::vector<std::wstring>{};
             const auto assetGuidPaths =
                 ReadAssetGuidPaths(assetDirectory);
-            static_cast<void>(
-                PackAssets(
-                    assetDirectory,
-                    stagingDirectory / L"assets.tpak",
-                    archiveKey,
-                    skippedExtensions,
-                    [&assetGuidPaths](
-                        const std::filesystem::path& relativePath,
-                        std::vector<std::uint8_t>& contents)
-                    {
-                        RewritePackedJsonGuidReferences(
-                            relativePath,
-                            contents,
-                            assetGuidPaths);
-                    }));
+            const auto packResult = PackAssets(
+                assetDirectory,
+                stagingDirectory / L"assets.tpak",
+                archiveKey,
+                skippedExtensions,
+                [&assetGuidPaths](
+                    const std::filesystem::path& relativePath,
+                    std::vector<std::uint8_t>& contents)
+                {
+                    RewritePackedJsonGuidReferences(
+                        relativePath,
+                        contents,
+                        assetGuidPaths);
+                });
+            // アーカイブ内のファイル名索引は暗号化されたままにし、
+            // 配布内容の一覧はエディターのログで確認できるようにします。
+            std::string assetInventory =
+                "Exported asset inventory ("
+                + std::to_string(packResult.fileCount) + " files):";
+            for (const auto& path : packResult.includedFiles)
+            {
+                assetInventory += "\n  + " + PathToUtf8(path);
+            }
+            Logger::Instance().Info(std::move(assetInventory));
+            if (!packResult.excludedFiles.empty())
+            {
+                std::string excludedInventory =
+                    "Excluded development files from asset export:";
+                for (const auto& path : packResult.excludedFiles)
+                {
+                    excludedInventory += "\n  - " + PathToUtf8(path);
+                }
+                Logger::Instance().Warning(std::move(excludedInventory));
+            }
 
             // シェーダーを事前にコンパイルして同梱し、プレイヤーの
             // 初回起動時に発生するコンパイル待ちを避けます。
@@ -2450,6 +2685,20 @@ namespace LamaPon
                 settingsPath,
                 options.projectSettings,
                 ProjectSettingsFileType::GamePackage);
+            Logger::Instance().Info(
+                InspectExportFiles(stagingDirectory));
+            std::vector<std::filesystem::path> ownedBinaries{
+                stagingDirectory / exportedExecutableName,
+                stagingDirectory / runtimeLibrary.filename()
+            };
+            if (std::filesystem::is_regular_file(gameModule))
+            {
+                ownedBinaries.push_back(
+                    stagingDirectory / gameModule.filename());
+            }
+            // 鍵とアイコンを書き換え、他のファイルの配置が終わってから
+            // 署名する。検証失敗時は既存の配布先を置き換えない。
+            SignExportedBinaries(options.signing, ownedBinaries);
         }
         catch (...)
         {

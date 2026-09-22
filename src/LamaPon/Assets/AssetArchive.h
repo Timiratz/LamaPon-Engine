@@ -3,6 +3,7 @@
 #include "LamaPon/Core/Crypto.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -13,6 +14,16 @@
 
 namespace LamaPon
 {
+    namespace AssetArchiveLimits
+    {
+        inline constexpr std::uint64_t MaxIndexCipherBytes =
+            64ull * 1024 * 1024;
+        inline constexpr std::uint64_t MaxEntryCipherBytes =
+            512ull * 1024 * 1024;
+        inline constexpr std::size_t MaxEntries = 100'000;
+        inline constexpr std::size_t MaxPathBytes = 4'096;
+    }
+
     // AssetPackerが書き出す暗号化アーカイブ（.tpak）の読み取り専用
     // インターフェースです。各エントリはAES-256-CBCで個別に暗号化し、
     // 必要なアセットだけを復号できます。

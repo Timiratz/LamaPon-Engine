@@ -185,6 +185,14 @@ target_compile_options(LamaPonGameModule PRIVATE
     /W4
     /permissive-
     /utf-8
+    $<$<CONFIG:Release>:/Gy>
+    $<$<CONFIG:Release>:/GL>
+)
+target_link_options(LamaPonGameModule PRIVATE
+    $<$<CONFIG:Release>:/OPT:REF>
+    $<$<CONFIG:Release>:/OPT:ICF>
+    $<$<CONFIG:Release>:/LTCG>
+    $<$<CONFIG:Release>:/PDBALTPATH:LamaPonGameModule.pdb>
 )
 target_link_libraries(LamaPonGameModule PRIVATE LamaPonRuntime)
 

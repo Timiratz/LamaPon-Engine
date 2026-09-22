@@ -92,6 +92,7 @@ function(lamapon_enable_release_symbols target)
                 ${target}
                 PRIVATE
                     $<$<CONFIG:Release>:/DEBUG:FULL>
+                    $<$<CONFIG:Release>:/PDBALTPATH:$<TARGET_PDB_FILE_NAME:${target}>>
             )
         endif()
     endif()
@@ -852,7 +853,16 @@ target_compile_options(LamaPonGameModule
         $<$<CXX_COMPILER_ID:MSVC>:/W4>
         $<$<CXX_COMPILER_ID:MSVC>:/permissive->
         $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+        $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release>>:/Gy>
+        $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release>>:/GL>
 )
+if(MSVC)
+    target_link_options(LamaPonGameModule PRIVATE
+        $<$<CONFIG:Release>:/OPT:REF>
+        $<$<CONFIG:Release>:/OPT:ICF>
+        $<$<CONFIG:Release>:/LTCG>
+    )
+endif()
 lamapon_enable_release_symbols(LamaPonGameModule)
 add_custom_command(TARGET LamaPonGameModule POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory
