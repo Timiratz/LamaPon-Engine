@@ -82,9 +82,20 @@ namespace LamaPon
                     OutputDirectory(), context.settings,
                     m_projectRoot / L".lamapon" / L"bin" / L"LamaPonGameModule.dll"};
                 options.createZipArchive = m_createZip;
+                options.signing.enabled = m_signWindowsBinaries;
+                if (m_signWindowsBinaries)
+                {
+                    options.signing.signToolPath =
+                        PathFromUtf8(m_signTool.data());
+                    options.signing.certificateSha1 =
+                        m_signingCertificate.data();
+                    options.signing.timestampUrl =
+                        m_timestampUrl.data();
+                }
                 const auto result = ExportGamePackage(options);
                 m_completedOutput = result.outputDirectory;
                 m_success = "Windows（EXE）の出力が完了しました: " + PathToUtf8(result.executablePath);
+                if (m_signWindowsBinaries) m_success += " / EXE・DLL署名済み";
                 if (!result.zipPath.empty()) m_success += " / ZIP: " + PathToUtf8(result.zipPath);
                 context.setStatus(m_success, false);
             }
@@ -173,6 +184,17 @@ namespace LamaPon
                 GraphicsQualityPresetName(context.settings.graphics.preset).data(), context.settings.graphics.renderScale);
             ImGui::TextWrapped("出力物: EXE / LamaPonRuntime.dll / 音声DLL / assets.tpak / 設定ファイル");
             ImGui::Checkbox("配布用ZIPも作成（出力フォルダーの隣に置きます）", &m_createZip);
+            ImGui::Checkbox("自分のコード署名証明書でEXE/DLLに署名", &m_signWindowsBinaries);
+            if (m_signWindowsBinaries)
+            {
+                ImGui::TextWrapped("Windows SDKのSignToolと、現在のユーザーの証明書ストアにあるコード署名証明書を使います。設定はプロジェクトに保存しません。");
+                ImGui::SetNextItemWidth(510.0f);
+                ImGui::InputText("signtool.exeの絶対パス", m_signTool.data(), m_signTool.size());
+                ImGui::SetNextItemWidth(510.0f);
+                ImGui::InputText("証明書のSHA-1拇印（40桁）", m_signingCertificate.data(), m_signingCertificate.size());
+                ImGui::SetNextItemWidth(510.0f);
+                ImGui::InputText("RFC 3161タイムスタンプURL（HTTPS）", m_timestampUrl.data(), m_timestampUrl.size());
+            }
         }
         ImGui::TextWrapped("既存のパッケージは、出力が成功してから置き換えます。");
         ImGui::EndDisabled();

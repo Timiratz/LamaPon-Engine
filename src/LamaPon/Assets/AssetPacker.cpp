@@ -1,5 +1,6 @@
 #include "LamaPon/Assets/AssetPacker.h"
 
+#include "LamaPon/Assets/AssetArchive.h"
 #include "LamaPon/Assets/AssetDatabase.h"
 #include "LamaPon/Core/Crypto.h"
 #include "LamaPon/Core/PathUtils.h"
@@ -7,10 +8,13 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <cwctype>
 #include <array>
 #include <fstream>
 #include <stdexcept>
+#include <string_view>
+#include <unordered_set>
 #include <vector>
 
 namespace
@@ -30,6 +34,62 @@ namespace
         return name.find(L".lamapon-delete") != std::wstring::npos
             || name.ends_with(L".lamapon-remap.tmp")
             || name.ends_with(L".bak");
+    }
+
+    std::wstring Lowercase(std::wstring value)
+    {
+        std::transform(value.begin(), value.end(), value.begin(),
+            [](const wchar_t character)
+            {
+                return static_cast<wchar_t>(std::towlower(character));
+            });
+        return value;
+    }
+
+    bool IsSecretFile(const std::filesystem::path& path)
+    {
+        const auto name = Lowercase(path.filename().wstring());
+        const auto extension = Lowercase(path.extension().wstring());
+        return name == L".env"
+            || name.starts_with(L".env.")
+            || name == L".npmrc"
+            || name == L".pypirc"
+            || name == L".netrc"
+            || name == L"id_rsa"
+            || name == L"id_ed25519"
+            || name == L"id_ecdsa"
+            || name == L"credentials.json"
+            || name == L"secrets.json"
+            || name.starts_with(L"service-account")
+            || extension == L".pem"
+            || extension == L".pfx"
+            || extension == L".p12"
+            || extension == L".p8"
+            || extension == L".key";
+    }
+
+    bool IsDevelopmentDirectory(const std::filesystem::path& path)
+    {
+        const auto name = Lowercase(path.filename().wstring());
+        return name == L".git"
+            || name == L".github"
+            || name == L".lamapon"
+            || name == L".vs"
+            || name == L".vscode";
+    }
+
+    bool IsBuildArtifact(const std::filesystem::path& path)
+    {
+        constexpr std::array<std::wstring_view, 25> excluded{
+            L".c", L".cc", L".cpp", L".cxx", L".h", L".hpp",
+            L".hxx", L".inl", L".ixx", L".cs", L".py",
+            L".pdb", L".idb", L".obj", L".lib", L".exp",
+            L".ilk", L".map", L".pch", L".ipch", L".exe",
+            L".dll", L".bat", L".cmd", L".ps1"
+        };
+        const auto extension = Lowercase(path.extension().wstring());
+        return std::find(excluded.begin(), excluded.end(), extension)
+            != excluded.end();
     }
 
     std::vector<std::uint8_t> ReadWholeFile(
@@ -96,68 +156,104 @@ namespace LamaPon
             Crypto::MacTag mac{};
         };
         std::vector<PendingEntry> pending;
+        std::unordered_set<std::string> normalizedPaths;
         AssetPackResult result;
 
-        std::error_code iteratorError;
-        const auto options =
-            std::filesystem::directory_options::
-                skip_permission_denied;
         for (std::filesystem::recursive_directory_iterator iterator{
-                sourceDirectory,
-                options,
-                iteratorError
+                sourceDirectory
             };
             iterator
                 != std::filesystem::
                     recursive_directory_iterator{};
-            iterator.increment(iteratorError))
+            ++iterator)
         {
-            if (iteratorError)
-            {
-                iteratorError.clear();
-                continue;
-            }
-            if (!iterator->is_regular_file(iteratorError)
-                || iteratorError)
-            {
-                iteratorError.clear();
-                continue;
-            }
-            if (!skipExtensions.empty())
-            {
-                auto extension =
-                    iterator->path().extension().wstring();
-                std::transform(
-                    extension.begin(),
-                    extension.end(),
-                    extension.begin(),
-                    [](const wchar_t value)
-                    {
-                        return static_cast<wchar_t>(
-                            std::towlower(value));
-                    });
-                if (std::find(
-                        skipExtensions.begin(),
-                        skipExtensions.end(),
-                        extension)
-                    != skipExtensions.end())
-                {
-                    continue;
-                }
-            }
             const auto& path = iterator->path();
+            const auto relativePath =
+                path.lexically_relative(sourceDirectory);
+            if (iterator->is_symlink())
+            {
+                throw std::runtime_error(
+                    "Symbolic links cannot be exported from assets: "
+                    + PathToUtf8(relativePath));
+            }
+            if (iterator->is_directory())
+            {
+                if (IsDevelopmentDirectory(path))
+                {
+                    iterator.disable_recursion_pending();
+                    result.excludedFiles.push_back(relativePath);
+                }
+                continue;
+            }
+            if (!iterator->is_regular_file())
+            {
+                continue;
+            }
             if (LamaPon::AssetDatabase::IsMetaFile(path)
                 || IsTemporaryAssetFile(path))
             {
                 continue;
             }
+            if (IsSecretFile(path))
+            {
+                throw std::runtime_error(
+                    "A file that may contain credentials is in assets: "
+                    + PathToUtf8(relativePath));
+            }
+            const auto extension = Lowercase(path.extension().wstring());
+            if (IsBuildArtifact(path)
+                || std::find(skipExtensions.begin(),
+                    skipExtensions.end(), extension)
+                    != skipExtensions.end())
+            {
+                result.excludedFiles.push_back(relativePath);
+                continue;
+            }
 
-            const auto relativePath =
-                path.lexically_relative(sourceDirectory);
+            if (pending.size() >= AssetArchiveLimits::MaxEntries
+                || PathToUtf8(relativePath).size()
+                    > AssetArchiveLimits::MaxPathBytes)
+            {
+                throw std::runtime_error(
+                    "Asset archive entry count or path is too large: "
+                    + PathToUtf8(relativePath));
+            }
+            auto normalizedPath = PathToUtf8(
+                relativePath.lexically_normal());
+            std::transform(normalizedPath.begin(), normalizedPath.end(),
+                normalizedPath.begin(),
+                [](const unsigned char value)
+                {
+                    return static_cast<char>(std::tolower(value));
+                });
+            if (!normalizedPaths.emplace(normalizedPath).second)
+            {
+                throw std::runtime_error(
+                    "Duplicate asset archive path: "
+                    + PathToUtf8(relativePath));
+            }
+            // PKCS#7 can add a full AES block. Check before loading the
+            // entire source file into memory.
+            constexpr auto MaxPlainBytes =
+                AssetArchiveLimits::MaxEntryCipherBytes
+                - Crypto::AesIvSize;
+            if (std::filesystem::file_size(path) > MaxPlainBytes)
+            {
+                throw std::runtime_error(
+                    "Asset is too large for the archive: "
+                    + PathToUtf8(relativePath));
+            }
+
             auto plainBytes = ReadWholeFile(path);
             if (transform)
             {
                 transform(relativePath, plainBytes);
+            }
+            if (plainBytes.size() > MaxPlainBytes)
+            {
+                throw std::runtime_error(
+                    "Transformed asset is too large for the archive: "
+                    + PathToUtf8(relativePath));
             }
             const auto iv = Crypto::RandomIv();
             auto cipherText = Crypto::AesEncrypt(
@@ -173,6 +269,7 @@ namespace LamaPon
 
             result.totalBytes += plainBytes.size();
             ++result.fileCount;
+            result.includedFiles.push_back(relativePath);
             pending.push_back(
                 PendingEntry{
                     relativePath,
@@ -181,6 +278,9 @@ namespace LamaPon
                     mac
                 });
         }
+
+        std::sort(result.includedFiles.begin(), result.includedFiles.end());
+        std::sort(result.excludedFiles.begin(), result.excludedFiles.end());
 
         Json index;
         index["entries"] = Json::array();
@@ -213,6 +313,13 @@ namespace LamaPon
         }
 
         const std::string indexText = index.dump();
+        if (indexText.size()
+            > AssetArchiveLimits::MaxIndexCipherBytes
+                - Crypto::AesIvSize)
+        {
+            throw std::runtime_error(
+                "Asset archive index is too large.");
+        }
         const auto indexIv = Crypto::RandomIv();
         const std::vector<std::uint8_t> indexPlainBytes(
             indexText.begin(),

@@ -19,6 +19,10 @@ namespace
     constexpr std::array<char, 8> ArchiveMagic{
         'T', 'R', 'D', 'N', 'P', 'A', 'K', '2'
     };
+    constexpr std::uint64_t HeaderSize = ArchiveMagic.size()
+        + sizeof(std::uint64_t)
+        + LamaPon::Crypto::AesIvSize
+        + LamaPon::Crypto::MacSize;
 
     // 索引のJSONに入っているバイト配列（IVとMAC）を読みます。
     template <std::size_t Size>
@@ -27,22 +31,32 @@ namespace
         const char* field,
         std::array<std::uint8_t, Size>& destination)
     {
-        const auto values =
-            source.at(field).get<std::vector<unsigned>>();
-        if (values.size() != destination.size())
+        const auto& values = source.at(field);
+        if (!values.is_array()
+            || values.size() != destination.size())
         {
             throw std::runtime_error(
                 std::string("Corrupt ")
                 + field
                 + " in asset archive index.");
         }
-        std::ranges::transform(
-            values,
-            destination.begin(),
-            [](const unsigned value)
+        for (std::size_t index = 0; index < Size; ++index)
+        {
+            if (!values[index].is_number_integer())
             {
-                return static_cast<std::uint8_t>(value);
-            });
+                throw std::runtime_error(
+                    std::string("Invalid ") + field
+                    + " in asset archive index.");
+            }
+            const auto value = values[index].get<std::int64_t>();
+            if (value < 0 || value > 255)
+            {
+                throw std::runtime_error(
+                    std::string("Invalid ") + field
+                    + " in asset archive index.");
+            }
+            destination[index] = static_cast<std::uint8_t>(value);
+        }
     }
 }
 
@@ -83,13 +97,24 @@ namespace LamaPon
         const std::filesystem::path& archivePath,
         const Crypto::AesKey& key)
     {
-        std::ifstream input(archivePath, std::ios::binary);
+        std::ifstream input(archivePath,
+            std::ios::binary | std::ios::ate);
         if (!input)
         {
             throw std::runtime_error(
                 "Could not open asset archive: "
                 + PathToUtf8(archivePath));
         }
+        const auto end = input.tellg();
+        if (end < 0
+            || static_cast<std::uint64_t>(end) < HeaderSize)
+        {
+            throw std::runtime_error(
+                "Truncated asset archive header: "
+                + PathToUtf8(archivePath));
+        }
+        const auto archiveSize = static_cast<std::uint64_t>(end);
+        input.seekg(0);
 
         std::array<char, ArchiveMagic.size()> magic{};
         input.read(magic.data(), magic.size());
@@ -119,6 +144,17 @@ namespace LamaPon
         {
             throw std::runtime_error(
                 "Truncated asset archive header: "
+                + PathToUtf8(archivePath));
+        }
+
+        if (indexCipherSize == 0
+            || indexCipherSize % Crypto::AesIvSize != 0
+            || indexCipherSize
+                > AssetArchiveLimits::MaxIndexCipherBytes
+            || indexCipherSize > archiveSize - HeaderSize)
+        {
+            throw std::runtime_error(
+                "Invalid asset archive index size: "
                 + PathToUtf8(archivePath));
         }
 
@@ -153,15 +189,50 @@ namespace LamaPon
             indexCipherText,
             key,
             indexIv);
+        std::size_t parseEvents{};
+        const auto limitIndexStructure =
+            [&parseEvents](const int depth,
+                const Json::parse_event_t,
+                Json&)
+            {
+                if (depth < 0 || depth > 8
+                    || ++parseEvents
+                        > AssetArchiveLimits::MaxEntries * 64 + 16)
+                {
+                    throw std::runtime_error(
+                        "Asset archive index structure is too large.");
+                }
+                return true;
+            };
         const auto indexDocument = Json::parse(
             indexPlainText.begin(),
-            indexPlainText.end());
+            indexPlainText.end(), limitIndexStructure);
+
+        if (!indexDocument.is_object()
+            || !indexDocument.contains("entries")
+            || !indexDocument.at("entries").is_array()
+            || indexDocument.at("entries").size()
+                > AssetArchiveLimits::MaxEntries)
+        {
+            throw std::runtime_error(
+                "Invalid asset archive entry list: "
+                + PathToUtf8(archivePath));
+        }
 
         auto archive = std::unique_ptr<AssetArchive>(
             new AssetArchive(archivePath, key));
+        archive->m_payloadStart = HeaderSize + indexCipherSize;
+        const auto payloadSize =
+            archiveSize - archive->m_payloadStart;
+        std::uint64_t expectedOffset{};
         for (const auto& entryJson :
             indexDocument.at("entries"))
         {
+            if (!entryJson.is_object())
+            {
+                throw std::runtime_error(
+                    "Invalid asset archive entry.");
+            }
             Entry entry;
             entry.offset =
                 entryJson.at("offset").get<std::uint64_t>();
@@ -169,15 +240,56 @@ namespace LamaPon
                 entryJson.at("size").get<std::uint64_t>();
             ReadByteArray(entryJson, "iv", entry.iv);
             ReadByteArray(entryJson, "mac", entry.mac);
-            const auto path = PathFromUtf8(
-                entryJson.at("path")
-                    .get<std::string>());
-            archive->m_entries.emplace(
-                NormalizeKey(path),
-                entry);
+            if (entry.offset != expectedOffset
+                || entry.size == 0
+                || entry.size % Crypto::AesIvSize != 0
+                || entry.size
+                    > AssetArchiveLimits::MaxEntryCipherBytes
+                || entry.size > payloadSize - expectedOffset)
+            {
+                throw std::runtime_error(
+                    "Invalid asset archive entry range.");
+            }
+            expectedOffset += entry.size;
+            const auto pathText =
+                entryJson.at("path").get<std::string>();
+            if (pathText.empty()
+                || pathText.size()
+                    > AssetArchiveLimits::MaxPathBytes
+                || pathText.find('\0') != std::string::npos)
+            {
+                throw std::runtime_error(
+                    "Invalid asset archive entry path.");
+            }
+            const auto path = PathFromUtf8(pathText);
+            if (path.empty() || path == "."
+                || path.is_absolute()
+                || path.has_root_name()
+                || path.has_root_directory())
+            {
+                throw std::runtime_error(
+                    "Invalid asset archive entry path.");
+            }
+            for (const auto& component : path)
+            {
+                if (component == "." || component == "..")
+                {
+                    throw std::runtime_error(
+                        "Invalid asset archive entry path.");
+                }
+            }
+            if (!archive->m_entries.emplace(
+                    NormalizeKey(path), entry).second)
+            {
+                throw std::runtime_error(
+                    "Duplicate asset archive entry path.");
+            }
         }
-        archive->m_payloadStart =
-            static_cast<std::uint64_t>(input.tellg());
+        if (expectedOffset != payloadSize)
+        {
+            throw std::runtime_error(
+                "Unexpected data after asset archive entries.");
+        }
         return archive;
     }
 
@@ -209,6 +321,12 @@ namespace LamaPon
         input.seekg(
             static_cast<std::streamoff>(
                 m_payloadStart + found->second.offset));
+        if (!input)
+        {
+            throw std::runtime_error(
+                "Could not seek to asset entry in archive: "
+                + PathToUtf8(relativePath));
+        }
         std::vector<std::uint8_t> cipherText(
             static_cast<std::size_t>(found->second.size));
         input.read(

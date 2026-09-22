@@ -45,8 +45,12 @@ namespace LamaPon
         std::array<char, 4096> m_path{};
         std::array<char, 4096> m_emsdk{};
         std::array<char, 4096> m_python{};
+        std::array<char, 4096> m_signTool{};
+        std::array<char, 41> m_signingCertificate{};
+        std::array<char, 512> m_timestampUrl{};
         bool m_requested{};
         bool m_createZip{};
+        bool m_signWindowsBinaries{};
         std::string m_error;
         std::string m_success;
         std::filesystem::path m_completedOutput;

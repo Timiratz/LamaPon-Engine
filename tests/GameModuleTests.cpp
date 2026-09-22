@@ -3,7 +3,9 @@
 #include <nlohmann/json.hpp>
 
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <stdexcept>
 
 namespace
@@ -17,6 +19,31 @@ namespace
             throw std::runtime_error(message);
         }
     }
+
+#ifdef NDEBUG
+    void RequireSafePdbReference(
+        const std::filesystem::path& modulePath)
+    {
+        std::ifstream input(modulePath, std::ios::binary);
+        Require(input.good(), "Could not inspect the Game Module.");
+        const std::string bytes(
+            std::istreambuf_iterator<char>(input),
+            std::istreambuf_iterator<char>{});
+        const auto marker = bytes.find("RSDS");
+        if (marker == std::string::npos)
+        {
+            return; // Release symbols may be disabled.
+        }
+        // CodeView RSDS: signature (4), GUID (16), age (4), PDB path.
+        const auto pathBegin = marker + 24;
+        const auto pathEnd = bytes.find('\0', pathBegin);
+        Require(
+            pathEnd != std::string::npos
+                && bytes.substr(pathBegin, pathEnd - pathBegin)
+                    == "LamaPonGameModule.pdb",
+            "Release Game Module leaked its build-machine PDB path.");
+    }
+#endif
 }
 
 int main()
@@ -46,6 +73,11 @@ int main()
             "Network Game Modules must shadow-copy into the local cache.");
 
         LamaPon::GameModuleHost host;
+#ifdef NDEBUG
+        RequireSafePdbReference(
+            std::filesystem::current_path()
+                / "LamaPonGameModule.dll");
+#endif
         const bool moduleLoaded = host.Load(
             std::filesystem::current_path() / "LamaPonGameModule.dll");
         Require(moduleLoaded, host.LastError().c_str());

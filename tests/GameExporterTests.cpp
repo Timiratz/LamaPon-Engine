@@ -22,6 +22,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <ranges>
 #include <sstream>
 #include <stdexcept>
@@ -201,6 +202,147 @@ namespace
         output.write(
             reinterpret_cast<const char*>(bytes.data()),
             static_cast<std::streamsize>(bytes.size()));
+    }
+
+    void RunArchiveValidationProbe(
+        const std::filesystem::path& archivePath)
+    {
+        using Json = nlohmann::json;
+        const auto key = LamaPon::Crypto::RandomKey();
+        const auto macKey = LamaPon::Crypto::DeriveMacKey(key);
+        const auto entryIv = LamaPon::Crypto::RandomIv();
+        const std::vector<std::uint8_t> plain{ 'o', 'k' };
+        const auto payload = LamaPon::Crypto::AesEncrypt(
+            plain, key, entryIv);
+        const auto entryMac = LamaPon::Crypto::MacForCipherText(
+            macKey, entryIv, payload.data(), payload.size());
+        const auto numbers = [](const auto& bytes)
+        {
+            std::vector<unsigned> result;
+            for (const auto value : bytes)
+            {
+                result.push_back(value);
+            }
+            return result;
+        };
+        const Json first{
+            { "path", "data/test.bin" },
+            { "offset", 0 },
+            { "size", payload.size() },
+            { "iv", numbers(entryIv) },
+            { "mac", numbers(entryMac) }
+        };
+        const auto makeArchive = [&](
+            const Json& entries,
+            const std::vector<std::uint8_t>& entryPayload)
+        {
+            const auto indexText = Json{
+                { "entries", entries }
+            }.dump();
+            const std::vector<std::uint8_t> indexPlain(
+                indexText.begin(), indexText.end());
+            const auto indexIv = LamaPon::Crypto::RandomIv();
+            const auto indexCipher = LamaPon::Crypto::AesEncrypt(
+                indexPlain, key, indexIv);
+            const auto indexMac =
+                LamaPon::Crypto::MacForCipherText(
+                    macKey, indexIv,
+                    indexCipher.data(), indexCipher.size());
+            std::vector<std::uint8_t> bytes{
+                'T', 'R', 'D', 'N', 'P', 'A', 'K', '2'
+            };
+            const auto append = [&](const void* data,
+                const std::size_t size)
+            {
+                const auto* start =
+                    static_cast<const std::uint8_t*>(data);
+                bytes.insert(bytes.end(), start, start + size);
+            };
+            const std::uint64_t indexSize = indexCipher.size();
+            append(&indexSize, sizeof(indexSize));
+            append(indexIv.data(), indexIv.size());
+            append(indexMac.data(), indexMac.size());
+            append(indexCipher.data(), indexCipher.size());
+            append(entryPayload.data(), entryPayload.size());
+            return bytes;
+        };
+        const auto reject = [&](
+            const std::vector<std::uint8_t>& bytes,
+            const char* failure)
+        {
+            WriteBytes(archivePath, bytes);
+            bool rejected{};
+            try
+            {
+                static_cast<void>(LamaPon::AssetArchive::Open(
+                    archivePath, key));
+            }
+            catch (const std::bad_alloc&)
+            {
+                throw std::runtime_error(
+                    "Archive allocated memory before rejecting a bad size.");
+            }
+            catch (const std::exception&)
+            {
+                rejected = true;
+            }
+            Require(rejected, failure);
+        };
+
+        const Json entries = Json::array({ first });
+        auto valid = makeArchive(entries, payload);
+        WriteBytes(archivePath, valid);
+        const auto archive = LamaPon::AssetArchive::Open(
+            archivePath, key);
+        Require(archive->EntryCount() == 1
+            && archive->TryRead("data/test.bin") == plain,
+            "A valid archive was rejected by the new limits.");
+
+        auto oversizedHeader = valid;
+        const auto huge = std::numeric_limits<std::uint64_t>::max();
+        std::memcpy(oversizedHeader.data() + 8,
+            &huge, sizeof(huge));
+        reject(oversizedHeader,
+            "An unbounded index length was accepted.");
+        reject(std::vector<std::uint8_t>(
+            valid.begin(), valid.begin() + 63),
+            "A truncated archive header was accepted.");
+        auto truncatedEntry = valid;
+        truncatedEntry.pop_back();
+        reject(truncatedEntry,
+            "A truncated entry payload was accepted.");
+        auto oversizedEntry = first;
+        oversizedEntry["size"] =
+            LamaPon::AssetArchiveLimits::MaxEntryCipherBytes + 16;
+        reject(makeArchive(Json::array({ oversizedEntry }), payload),
+            "An oversized entry was accepted.");
+        auto overflowEntry = first;
+        overflowEntry["offset"] = huge;
+        reject(makeArchive(Json::array({ overflowEntry }), payload),
+            "An overflowing entry offset was accepted.");
+        auto traversal = first;
+        traversal["path"] = "../escape.bin";
+        reject(makeArchive(Json::array({ traversal }), payload),
+            "A traversal path was accepted.");
+        auto longPath = first;
+        longPath["path"] = std::string(
+            LamaPon::AssetArchiveLimits::MaxPathBytes + 1, 'x');
+        reject(makeArchive(Json::array({ longPath }), payload),
+            "An oversized entry path was accepted.");
+        auto invalidIv = first;
+        invalidIv["iv"][0] = 256;
+        reject(makeArchive(Json::array({ invalidIv }), payload),
+            "An out-of-range IV byte was accepted.");
+        auto duplicate = first;
+        duplicate["path"] = "DATA/TEST.BIN";
+        duplicate["offset"] = payload.size();
+        auto twice = payload;
+        twice.insert(twice.end(), payload.begin(), payload.end());
+        reject(makeArchive(Json::array({ first, duplicate }), twice),
+            "A duplicate normalized path was accepted.");
+        valid.push_back(0);
+        reject(valid, "Trailing archive data was accepted.");
+        std::filesystem::remove(archivePath);
     }
 
     // 既存のrigged GLBへ同じmeshのskin無しnodeを足し、1ファイル内で
@@ -551,11 +693,80 @@ int main(const int argumentCount, char** const arguments)
 {
     try
     {
+        if (argumentCount == 3
+            && std::string_view{ arguments[1] }
+                == "--signing-options-probe")
+        {
+            LamaPon::GameSigningOptions signing;
+            LamaPon::ValidateGameSigningOptions(signing);
+            signing.enabled = true;
+            signing.signToolPath = arguments[2];
+            signing.certificateSha1 = std::string(40, 'a');
+            signing.timestampUrl =
+                "https://timestamp.example.invalid";
+            LamaPon::ValidateGameSigningOptions(signing);
+            auto expectRejected = [&]()
+            {
+                try
+                {
+                    LamaPon::ValidateGameSigningOptions(signing);
+                }
+                catch (const std::invalid_argument&)
+                {
+                    return;
+                }
+                throw std::runtime_error(
+                    "Invalid signing options were accepted.");
+            };
+            signing.certificateSha1 = "not-a-thumbprint";
+            expectRejected();
+            signing.certificateSha1 = std::string(40, 'a');
+            signing.timestampUrl = "http://timestamp.example.invalid";
+            expectRejected();
+            signing.timestampUrl =
+                "https://timestamp.example.invalid";
+            signing.signToolPath = "signtool.exe";
+            expectRejected();
+            std::cout << "Signing options probe passed.\n";
+            return 0;
+        }
         if (argumentCount == 2
             && std::string_view{ arguments[1] }
                 == "--shader-cache-probe")
         {
             RunExportedShaderCacheProbe();
+            return 0;
+        }
+        if (argumentCount == 2
+            && std::string_view{ arguments[1] }
+                == "--archive-validation-probe")
+        {
+            RunArchiveValidationProbe(
+                std::filesystem::current_path()
+                / "test-output" / "game-exporter"
+                / "archive-validation.tpak");
+            std::cout << "Archive validation tests passed.\n";
+            return 0;
+        }
+        if (argumentCount == 2
+            && std::string_view{ arguments[1] }
+                == "--existing-archive-probe")
+        {
+            const auto output = std::filesystem::current_path()
+                / "test-output" / "game-exporter"
+                / "dist" / "MyGame";
+            const auto key = ReadEmbeddedArchiveKey(
+                output / "LamaPonRuntime.dll");
+            const auto archive = LamaPon::AssetArchive::Open(
+                output / "assets.tpak", key);
+            Require(archive->EntryCount() > 0
+                && archive->TryRead("data/custom.lpdata")
+                    == std::vector<std::uint8_t>{
+                        'c', 'u', 's', 't', 'o', 'm', '-',
+                        'r', 'u', 'n', 't', 'i', 'm', 'e', '-',
+                        'a', 's', 's', 'e', 't' },
+                "An existing exported archive no longer opens.");
+            std::cout << "Existing archive probe passed.\n";
             return 0;
         }
         const auto root =
@@ -1017,6 +1228,15 @@ int main(const int argumentCount, char** const arguments)
             projectScript,
             "// Export freshness test source.\n");
         WriteFile(
+            assetDirectory / "scripts" / "TestScript.h",
+            "// Private game script header.\n");
+        WriteFile(
+            assetDirectory / "scripts" / "TestScript.hpp",
+            "// Private game script header.\n");
+        WriteFile(
+            assetDirectory / "scripts" / "TestScript.pdb",
+            "private-debug-symbols");
+        WriteFile(
             projectGameModule.parent_path()
                 / "middleware.dll",
             "project-middleware");
@@ -1033,6 +1253,9 @@ int main(const int argumentCount, char** const arguments)
         WriteFile(
             assetDirectory / "textures" / "sample.bin",
             textureMarker);
+        WriteFile(
+            assetDirectory / "data" / "custom.lpdata",
+            "custom-runtime-asset");
 
         // エンジン更新後に古いGame Moduleを梱包するとNative Scriptが
         // 解決できないため、配布前に拒否します。
@@ -1042,6 +1265,12 @@ int main(const int argumentCount, char** const arguments)
         std::filesystem::last_write_time(
             projectScript,
             runtimeWriteTime - std::chrono::minutes(2));
+        for (const auto* name : { "TestScript.h", "TestScript.hpp" })
+        {
+            std::filesystem::last_write_time(
+                assetDirectory / "scripts" / name,
+                runtimeWriteTime - std::chrono::minutes(2));
+        }
         std::filesystem::last_write_time(
             projectGameModule,
             runtimeWriteTime - std::chrono::minutes(1));
@@ -1102,6 +1331,8 @@ int main(const int argumentCount, char** const arguments)
                 projectSettings,
                 projectGameModule
             });
+        RunArchiveValidationProbe(
+            root / "archive-validation.tpak");
         {
             bool invalidManifestReported{};
             bool compileFailureReported{};
@@ -1363,6 +1594,15 @@ int main(const int argumentCount, char** const arguments)
             Require(
                 archive->Contains(startupScene),
                 "Startup scene is missing from the encrypted archive.");
+            Require(
+                !archive->Contains("scripts/TestScript.cpp")
+                    && !archive->Contains("scripts/TestScript.h")
+                    && !archive->Contains("scripts/TestScript.hpp")
+                    && !archive->Contains("scripts/TestScript.pdb"),
+                "Source code or debug symbols were exported as assets.");
+            Require(
+                archive->Contains("data/custom.lpdata"),
+                "A custom runtime asset extension was not exported.");
             const auto decryptedScene =
                 archive->TryRead(startupScene);
             Require(
@@ -1402,6 +1642,32 @@ int main(const int argumentCount, char** const arguments)
                         "LAMAPON_PLAINTEXT_SCENE_MARKER")
                         == std::string::npos,
                 "Encrypted archive contains plaintext asset content.");
+        }
+
+        {
+            const auto credential = assetDirectory / ".env";
+            WriteFile(credential, "TEST_SECRET=do-not-ship\n");
+            bool credentialRejected = false;
+            try
+            {
+                static_cast<void>(LamaPon::ExportGamePackage(
+                    LamaPon::GameExportOptions{
+                        runtimeDirectory,
+                        assetDirectory,
+                        root / "dist" / "CredentialLeak",
+                        projectSettings,
+                        projectGameModule
+                    }));
+            }
+            catch (const std::exception& exception)
+            {
+                credentialRejected = std::string_view(exception.what())
+                    .find("may contain credentials")
+                    != std::string_view::npos;
+            }
+            std::filesystem::remove(credential);
+            Require(credentialRejected,
+                "An asset named .env must block game export.");
         }
 
         nlohmann::json settings;
