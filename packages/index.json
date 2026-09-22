@@ -31,7 +31,7 @@
       "activation": "Restart",
       "target": "Engine",
       "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/directx12-renderer-0.1.0.zip",
-      "sizeBytes": 8980
+      "sizeBytes": 8989
     }
   ],
   "version": 1
