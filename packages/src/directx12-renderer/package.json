@@ -6,6 +6,7 @@
   "version": "0.1.0",
   "minimumEngineVersion": "0.1.0",
   "activation": "Restart",
+  "target": "Engine",
   "graphicsBackend": {
     "api": "DirectX12Experimental",
     "abiVersion": 1,
