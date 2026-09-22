@@ -192,6 +192,20 @@ namespace LamaPon
         return activation != PackageActivation::Immediate;
     }
 
+    std::string_view PackageTargetName(
+        const PackageTarget target) noexcept
+    {
+        return target == PackageTarget::Engine
+            ? "Engine" : "Project";
+    }
+
+    PackageTarget PackageTargetFromName(
+        const std::string_view name) noexcept
+    {
+        return name == "Engine"
+            ? PackageTarget::Engine : PackageTarget::Project;
+    }
+
     bool IsPackageNameSafe(
         const std::string_view name) noexcept
     {
@@ -290,6 +304,8 @@ namespace LamaPon
                 entry.value("sizeBytes", std::uint64_t{});
             package.activation = PackageActivationFromName(
                 entry.value("activation", std::string{}));
+            package.target = PackageTargetFromName(
+                entry.value("target", std::string{}));
 
             // 不正なエントリは黙って除外します（他の正常な
             // パッケージまで巻き込まないため）。
@@ -439,6 +455,10 @@ namespace LamaPon
                     {
                         "activation",
                         PackageActivationName(package.activation)
+                    },
+                    {
+                        "target",
+                        PackageTargetName(package.target)
                     }
                 };
                 std::ofstream output(
@@ -637,6 +657,12 @@ namespace LamaPon
                         std::string{});
                 package.activation = PackageActivationFromName(
                     manifest.value("activation", std::string{}));
+                package.target = PackageTargetFromName(
+                    manifest.value("target", std::string{}));
+                if (manifest.contains("graphicsBackend"))
+                {
+                    package.target = PackageTarget::Engine;
+                }
             }
             std::error_code cleanupError;
             std::filesystem::remove_all(
@@ -730,6 +756,7 @@ namespace LamaPon
         nlohmann::json nativeSection;
         nlohmann::json graphicsBackendSection;
         auto activation = package.activation;
+        auto target = package.target;
         if (std::filesystem::is_regular_file(manifestPath))
         {
             std::ifstream input(
@@ -754,14 +781,24 @@ namespace LamaPon
                     nativeSection = previous.at("native");
                 }
                 if (previous.is_object()
+                    && previous.contains("activation"))
+                {
+                    // 作成ダイアログに無い作者指定を保持します。
+                    activation = PackageActivationFromName(
+                        previous.value("activation", std::string{}));
+                }
+                if (previous.is_object()
                     && previous.contains("graphicsBackend"))
                 {
                     graphicsBackendSection =
                         previous.at("graphicsBackend");
-                    // この項目は一般の作成ダイアログには出さないため、
-                    // Backend作者が手書きした有効化条件を保持します。
-                    activation = PackageActivationFromName(
-                        previous.value("activation", std::string{}));
+                    target = PackageTarget::Engine;
+                }
+                else if (previous.is_object()
+                    && previous.contains("target"))
+                {
+                    target = PackageTargetFromName(
+                        previous.value("target", std::string{}));
                 }
             }
             catch (const std::exception&)
@@ -789,6 +826,10 @@ namespace LamaPon
             {
                 "activation",
                 PackageActivationName(activation)
+            },
+            {
+                "target",
+                PackageTargetName(target)
             }
         };
         if (!nativeSection.is_null())

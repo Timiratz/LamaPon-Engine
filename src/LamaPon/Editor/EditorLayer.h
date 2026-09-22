@@ -824,6 +824,7 @@ namespace LamaPon
         std::vector<PackageInfo> m_packages;
         std::string m_packagePanelError;
         int m_selectedPackageIndex{ -1 };
+        PackageTarget m_packageTargetFilter{ PackageTarget::Project };
         // 取得またはインストールの実行中か（UIスレッド専用）。
         bool m_packageBusy{};
         std::thread m_packageWorker;
