@@ -104,6 +104,9 @@ def build(package: str) -> dict:
             f"main/packages/{zip_path.name}"
         ),
         "sizeBytes": zip_path.stat().st_size,
+        # エディターはこの値とダウンロードしたZipを照合してから
+        # 展開します。Zipを作り直したら必ず更新してください。
+        "sha256": hashlib.sha256(zip_path.read_bytes()).hexdigest(),
     }
     print(f"{zip_path.relative_to(REPOSITORY_ROOT)}: "
           f"{len(files)} files, {entry['sizeBytes']} bytes")

@@ -141,6 +141,19 @@ namespace LamaPon::Crypto
         const std::uint8_t* data,
         std::size_t size);
 
+    // 公開データの同一性確認用SHA-256（CNG）。配布パッケージの
+    // 照合など、鍵を使わない検証に使います。
+    using Sha256Digest = std::array<std::uint8_t, 32>;
+
+    [[nodiscard]] Sha256Digest Sha256(
+        const std::uint8_t* data,
+        std::size_t size);
+
+    // 英小文字16進64桁で返します。
+    [[nodiscard]] std::string Sha256Hex(
+        const std::uint8_t* data,
+        std::size_t size);
+
     // MACの比較は必ずこれを通します（内容で早期returnしない）。
     [[nodiscard]] bool MacEquals(
         const MacTag& left,
