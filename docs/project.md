@@ -416,14 +416,43 @@ cmake --build --preset windows-package
 
 ZIPは`out/build/windows-release`以下へ生成されます。
 ZIPにはゲーム制作へ必要なものだけが入り、サンプルゲームやテストは含まれません（PDBはリリース時に別の`LamaPon-symbols`ZIPとして配布されます）。
-ルートの`build-info.json`にはエンジン版とGitビルド識別子が含まれます。
-クラッシュ診断にも同じ識別子が記録され、実行ファイル横、またはプロジェクトの`.lamapon/Crashes`へ保存されます。
+ルートの`build-info.json`には、ビルド元のブランチ名・コミット（完全ハッシュと短縮形）・コミットメッセージの1行目・未コミット変更の有無と、互換バージョンが含まれます。
+クラッシュ診断にも同じ情報が記録され、実行ファイル横、またはプロジェクトの`.lamapon/Crashes`へ保存されます。
+
+## エンジンの表示バージョン（ブランチ名 @ コミット）
+
+エンジンが「どのソースから作られたか」は、`MAJOR.MINOR.PATCH` ではなく **ブランチ名とコミット** で表示します。
+
+| 表示場所 | 内容 |
+| --- | --- |
+| LamaPon Hub 右下 | `community/main @ 932b08c3a1b2` |
+| エディターのウィンドウタイトル | `<ゲーム名> - LamaPon Editor (community/main @ 932b08c3a1b2)` |
+| ヘルプとサポート | ブランチ @ コミット、コミットメッセージ、互換バージョン |
+| サポート情報のコピー／クラッシュレポート | Branch、Commit（完全ハッシュ）、Commit subject、Compatibility version |
+| エンジンログ | `LamaPonを初期化しました: community/main @ 932b08c3a1b2` |
+| `LamaPonCli version` | 上記をJSONで出力 |
+
+- 未コミットの変更を含むビルドは、コミットの後ろに `-dirty` が付きます。
+- 値はビルドのたびに `LamaPonBuildInfo` ターゲット（`cmake/GenerateBuildInfo.cmake`）がGitから取り直します。CMakeを再構成しなくても、コミットやブランチの切り替えがそのまま反映されます。内容が変わらなければ生成ファイルは書き換えないため、再コンパイルも起きません。
+- GitHub Actionsなどdetached HEADでビルドした場合は `GITHUB_HEAD_REF` / `GITHUB_REF_NAME` をブランチ名として使います。環境変数 `LAMAPON_BUILD_BRANCH` を指定すると、その値を優先します。
+- Gitが無い環境（配布zipのソースなど）では、互換バージョン（例: `v0.1.0`）を表示します。
+- C++からは `LamaPon/Core/BuildInfo.h` の `GetBuildInfo()` / `FormatBuildLabel()` / `FormatBuildDetails()` で参照できます。
+
+### 互換バージョン（MAJOR.MINOR.PATCH）の役割
+
+`CMakeLists.txt` の `project(LamaPon VERSION x.y.z)` は表示には使いませんが、次の **互換判定** のために残しています。
+
+- パッケージの `minimumEngineVersion` との比較
+- プロジェクトの `.lamapon/project.json` の `engineVersion`（組み込みアセットの移行判定）
+- LamaPon Hub の更新確認（GitHub Releases のタグとの比較）とリリースzipの名前
+
+パッケージの互換性やプロジェクト形式を変えたときだけ上げてください。
 
 Visual Studioでは「ローカル フォルダーを開く」で、このフォルダーをCMakeプロジェクトとして扱えます。
 
 ## リリース（配布パッケージの公開）
 
-開発版は `0.1.0` から開始します。バージョンは `MAJOR.MINOR.PATCH` 形式です。
+開発版は `0.1.0` から開始します。リリースのバージョンは互換バージョンと同じ `MAJOR.MINOR.PATCH` 形式です（日々のビルドの識別はブランチ名とコミットで行います）。
 `v0.1.0` のようなタグをプッシュすると、GitHub Actions がビルド・全テスト・パッケージングを行い、[LamaPon-Engine の Releases](https://github.com/Timiratz/LamaPon-Engine/releases) に配布物を添付します。
 
 リポジトリがプライベートの間、ソースとリリースの閲覧にはアクセス権が必要です。

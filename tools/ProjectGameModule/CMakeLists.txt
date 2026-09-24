@@ -124,25 +124,6 @@ target_include_directories(LamaPonGameModule PRIVATE
 # ソースツリーをLAMAPON_ENGINE_ROOTへ直接指定した場合は、本体のビルド前でも
 # 解決できるよう、このモジュールのビルドディレクトリにも同じ内容を生成します。
 if(NOT EXISTS "${LAMAPON_ENGINE_ROOT}/src/LamaPon/Core/Version.h")
-    set(LAMAPON_BUILD_REVISION "unknown")
-    find_package(Git QUIET)
-    if(Git_FOUND AND EXISTS "${LAMAPON_ENGINE_ROOT}/.git")
-        execute_process(
-            COMMAND
-                "${GIT_EXECUTABLE}"
-                -C "${LAMAPON_ENGINE_ROOT}"
-                rev-parse --short=12 HEAD
-            OUTPUT_VARIABLE LAMAPON_MODULE_GIT_REVISION
-            OUTPUT_STRIP_TRAILING_WHITESPACE
-            RESULT_VARIABLE LAMAPON_MODULE_GIT_REVISION_RESULT
-            ERROR_QUIET
-        )
-        if(LAMAPON_MODULE_GIT_REVISION_RESULT EQUAL 0
-            AND NOT LAMAPON_MODULE_GIT_REVISION STREQUAL "")
-            set(LAMAPON_BUILD_REVISION "${LAMAPON_MODULE_GIT_REVISION}")
-        endif()
-    endif()
-
     # バージョン番号はエンジン本体のCMakeLists.txtを正本とし、
     # project()のVERSIONから読み取ります。
     file(STRINGS

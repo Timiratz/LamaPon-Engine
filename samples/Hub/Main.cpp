@@ -1,6 +1,7 @@
 #include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Core/ProjectInstance.h"
 #include "LamaPon/Core/CrashReporter.h"
+#include "LamaPon/Core/BuildInfo.h"
 #include "LamaPon/Core/Version.h"
 #include "LamaPon/Resources/WindowsResource.h"
 #include "LamaPon/Hub/ProjectHub.h"
@@ -480,14 +481,14 @@ namespace
                 SS_LEFT | SS_ENDELLIPSIS,
                 IdStatus);
 
-            // 右下にエンジンのバージョンを表示します。
-            const auto versionText =
-                L"v" + LamaPon::Utf8ToWide(
-                    LamaPon::VersionString);
+            // 右下に、どのソースから作ったエンジンか
+            // （ブランチ名 @ コミット）を表示します。
+            const auto versionText = LamaPon::Utf8ToWide(
+                LamaPon::FormatBuildLabel());
             m_versionLabel = AddControl(
                 WC_STATICW,
                 versionText.c_str(),
-                SS_RIGHT,
+                SS_RIGHT | SS_ENDELLIPSIS,
                 0);
 
             // エンジン更新の通知バナー（結果が届くまで非表示）。
@@ -716,14 +717,14 @@ namespace
                 m_status,
                 margin,
                 height - margin - 24,
-                std::max(contentWidth - 160, 100),
+                std::max(contentWidth - 370, 100),
                 24,
                 TRUE);
             MoveWindow(
                 m_versionLabel,
-                width - margin - 150,
+                width - margin - 360,
                 height - margin - 24,
-                150,
+                360,
                 24,
                 TRUE);
         }

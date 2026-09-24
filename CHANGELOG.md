@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### エンジンの表示バージョン
+
+- エンジンの表示を `0.1.0` のような番号から「ブランチ名 @ コミット」（例: `community/main @ 932b08c3a1b2`）へ変更。LamaPon Hub右下、エディターのウィンドウタイトル、ヘルプとサポート、サポート情報のコピー、クラッシュレポート、起動ログに表示し、未コミットの変更を含むビルドには `-dirty` を付ける。
+- ブランチ名・コミット・コミットメッセージを構成時だけでなくビルドのたびにGitから取り直す `LamaPonBuildInfo` ターゲットを追加。CMakeを再構成しなくても最新のコミットが表示され、変更が無ければ再コンパイルしない。CIのdetached HEADでは `GITHUB_HEAD_REF` / `GITHUB_REF_NAME`、明示指定には `LAMAPON_BUILD_BRANCH` を使う。
+- `LamaPon/Core/BuildInfo.h`（`GetBuildInfo` / `FormatBuildLabel` / `FormatBuildDetails`）と `LamaPonCli version` を追加。`build-info.json` へ `branch` / `commit` / `commitShort` / `commitSubject` / `dirty` を追加（`buildRevision` は互換のため残す）。
+- `Version.h` の `BuildRevision` を削除し、`MAJOR.MINOR.PATCH` はパッケージの必要エンジン版・プロジェクト移行・更新確認の互換判定専用とした。ビルド識別子が必要なコードは `GetBuildInfo()` を使う。
+
 ### 描画API設定
 
 - Material Asset Inspectorへ、編集中の標準Lit／custom shader／texture／parameterを即時反映する専用プレビュー球を追加。Shader compileエラーには「エラー箇所を開く」を表示し、D3DCompilerのfile・line・columnをVS Code／Visual Studioへ渡して該当位置へ移動できるようにした。
