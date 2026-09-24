@@ -36,6 +36,7 @@
 #include "LamaPon/Core/Profiler.h"
 #include "LamaPon/Core/SaveData.h"
 #include "LamaPon/Core/Time.h"
+#include "LamaPon/Core/BuildInfo.h"
 #include "LamaPon/Core/Version.h"
 #include "LamaPon/Graphics/DebugRenderer.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
@@ -4155,9 +4156,9 @@ namespace LamaPon
             Logger::Instance().FilePath();
         std::ostringstream information;
         information
-            << "LamaPon Engine: " << VersionString
+            << "LamaPon Engine: " << FormatBuildLabel()
             << '\n'
-            << "Revision: " << BuildRevision
+            << FormatBuildDetails()
             << '\n'
             << "Build configuration: "
             << m_buildConfiguration
@@ -4199,14 +4200,22 @@ namespace LamaPon
             return;
         }
 
+        const auto& buildInfo = GetBuildInfo();
+        const std::string buildLabel = FormatBuildLabel();
         ImGui::Text(
-            "LamaPon Engine %.*s",
-            static_cast<int>(VersionString.size()),
-            VersionString.data());
+            "LamaPon Engine  %s",
+            buildLabel.c_str());
+        if (!buildInfo.commitSubject.empty())
+        {
+            ImGui::TextWrapped(
+                "%.*s",
+                static_cast<int>(buildInfo.commitSubject.size()),
+                buildInfo.commitSubject.data());
+        }
         ImGui::TextDisabled(
-            "Revision: %.*s  /  %s",
-            static_cast<int>(BuildRevision.size()),
-            BuildRevision.data(),
+            "互換バージョン %.*s  /  %s",
+            static_cast<int>(VersionString.size()),
+            VersionString.data(),
             m_buildConfiguration.c_str());
         ImGui::Separator();
         ImGui::Spacing();

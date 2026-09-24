@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### エンジンの表示バージョン
+
+- エンジンの表示を `0.1.0` のような番号から「ブランチ名 @ コミット」（例: `community/main @ 932b08c3a1b2`）へ変更。LamaPon Hub右下、エディターのウィンドウタイトル、ヘルプとサポート、サポート情報のコピー、クラッシュレポート、起動ログに表示し、未コミットの変更を含むビルドには `-dirty` を付ける。
+- ブランチ名・コミット・コミットメッセージを構成時だけでなくビルドのたびにGitから取り直す `LamaPonBuildInfo` ターゲットを追加。CMakeを再構成しなくても最新のコミットが表示され、変更が無ければ再コンパイルしない。CIのdetached HEADでは `GITHUB_HEAD_REF` / `GITHUB_REF_NAME`、明示指定には `LAMAPON_BUILD_BRANCH` を使う。
+- `LamaPon/Core/BuildInfo.h`（`GetBuildInfo` / `FormatBuildLabel` / `FormatBuildDetails`）と `LamaPonCli version` を追加。`build-info.json` へ `branch` / `commit` / `commitShort` / `commitSubject` / `dirty` を追加（`buildRevision` は互換のため残す）。
+- `Version.h` の `BuildRevision` を削除し、`MAJOR.MINOR.PATCH` はパッケージの必要エンジン版・プロジェクト移行・更新確認の互換判定専用とした。ビルド識別子が必要なコードは `GetBuildInfo()` を使う。
+
 ### セキュリティ
 
 - パッケージ一覧（`packages/index.json`）の各エントリへZip全体のSHA-256（`sha256`）を追加し、エディターはダウンロードしたZipが一致した場合だけ展開するようにした。`sha256`の無いエントリは一覧に表示しない。「パッケージを作成...」と`build_package.py`が出力する一覧用JSONにも`sha256`を含める。

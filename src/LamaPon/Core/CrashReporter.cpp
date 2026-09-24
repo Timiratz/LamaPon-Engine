@@ -1,4 +1,5 @@
 #include "LamaPon/Core/CrashReporter.h"
+#include "LamaPon/Core/BuildInfo.h"
 #include "LamaPon/Core/Version.h"
 
 #include <Windows.h>
@@ -85,25 +86,37 @@ namespace
                     information->ExceptionRecord->
                         ExceptionAddress)
                 : 0;
+        // 例外フィルター内なのでヒープを使わず、埋め込み済みの
+        // string_viewをそのまま書きます。
+        const auto& build = LamaPon::GetBuildInfo();
         const int length = std::snprintf(
             text.data(),
             text.size(),
             "LamaPon crash report\n"
             "Application: %s\n"
-            "Engine version: %.*s\n"
-            "Build revision: %.*s\n"
+            "Branch: %.*s\n"
+            "Commit: %.*s%s\n"
+            "Commit subject: %.*s\n"
+            "Compatibility version: %.*s\n"
             "Process: %lu\n"
             "Thread: %lu\n"
             "Exception code: 0x%08lX\n"
             "Exception address: 0x%llX\n"
             "Reason: %.*s\n",
             g_applicationName.c_str(),
+            static_cast<int>(build.branch.size()),
+            build.branch.data(),
+            static_cast<int>(build.commitFull.size()),
+            build.commitFull.data(),
+            build.dirty ? " (uncommitted changes)" : "",
+            static_cast<int>(
+                std::min<std::size_t>(
+                    build.commitSubject.size(),
+                    256)),
+            build.commitSubject.data(),
             static_cast<int>(
                 LamaPon::VersionString.size()),
             LamaPon::VersionString.data(),
-            static_cast<int>(
-                LamaPon::BuildRevision.size()),
-            LamaPon::BuildRevision.data(),
             GetCurrentProcessId(),
             GetCurrentThreadId(),
             exceptionCode,

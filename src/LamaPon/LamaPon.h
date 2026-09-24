@@ -57,6 +57,7 @@
 #include "LamaPon/Core/ApplicationLayer.h"
 #include "LamaPon/Core/Api.h"
 #include "LamaPon/Core/CrashReporter.h"
+#include "LamaPon/Core/BuildInfo.h"
 #include "LamaPon/Core/CrashSentinel.h"
 #include "LamaPon/Core/DocumentMigration.h"
 #include "LamaPon/Core/JobSystem.h"

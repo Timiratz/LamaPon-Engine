@@ -5,6 +5,7 @@
 #include "LamaPon/Audio/AudioSystem.h"
 #include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Core/Log.h"
+#include "LamaPon/Core/BuildInfo.h"
 #include "LamaPon/Core/PlayerPrefs.h"
 #include "LamaPon/Core/Profiler.h"
 #include "LamaPon/Core/SaveData.h"
@@ -240,8 +241,10 @@ namespace LamaPon
         // %LOCALAPPDATA%側のキャッシュが効きます）。
         AddShaderCacheSearchDirectory(
             executableDirectory / L"shader-cache");
+        // ログだけで、どのソースから作ったエンジンか分かるようにします。
         Logger::Instance().Info(
-            "LamaPonを初期化しました。");
+            "LamaPonを初期化しました: "
+            + FormatBuildLabel());
 
         const auto userData =
             UserDataDirectory(m_persistenceName);

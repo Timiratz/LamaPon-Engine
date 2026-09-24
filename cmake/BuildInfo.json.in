@@ -1,5 +1,10 @@
 {
   "engineVersion": "@PROJECT_VERSION@",
+  "branch": "@LAMAPON_BUILD_BRANCH@",
+  "commit": "@LAMAPON_BUILD_COMMIT_FULL@",
+  "commitShort": "@LAMAPON_BUILD_COMMIT@",
+  "commitSubject": "@LAMAPON_BUILD_COMMIT_SUBJECT@",
+  "dirty": @LAMAPON_BUILD_DIRTY_JSON@,
   "buildRevision": "@LAMAPON_BUILD_REVISION@",
   "generator": "@CMAKE_GENERATOR@",
   "compiler": "@CMAKE_CXX_COMPILER_ID@ @CMAKE_CXX_COMPILER_VERSION@",
