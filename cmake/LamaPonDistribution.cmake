@@ -18,13 +18,21 @@ lamapon_bundle_license(stb-vorbis third_party/stb/LICENSE.txt)
 configure_file(THIRD_PARTY_NOTICES.md
     "${LAMAPON_DISTRIBUTION_DIR}/THIRD_PARTY_NOTICES.md" COPYONLY)
 
-# Runtimeの隣へ常に揃えます。通知だけの変更でも再リンクは不要です。
+# Runtimeの隣へ通知とライセンスだけを揃えます。distribution/に残った
+# 古いDLLを新しいビルド成果物へ上書きしてはいけません。
 add_custom_target(LamaPonDistributionFiles ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${LAMAPON_DISTRIBUTION_DIR}" "$<TARGET_FILE_DIR:LamaPonRuntime>"
+        "${LAMAPON_DISTRIBUTION_DIR}/licenses"
+        "$<TARGET_FILE_DIR:LamaPonRuntime>/licenses"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${LAMAPON_DISTRIBUTION_DIR}/THIRD_PARTY_NOTICES.md"
+        "$<TARGET_FILE_DIR:LamaPonRuntime>/THIRD_PARTY_NOTICES.md"
     VERBATIM)
 add_dependencies(LamaPonRuntime LamaPonDistributionFiles)
-install(DIRECTORY "${LAMAPON_DISTRIBUTION_DIR}/" DESTINATION ".")
+install(DIRECTORY "${LAMAPON_DISTRIBUTION_DIR}/licenses/"
+    DESTINATION "licenses")
+install(FILES "${LAMAPON_DISTRIBUTION_DIR}/THIRD_PARTY_NOTICES.md"
+    DESTINATION ".")
 
 # Webビルドは配布SDKだけで生成できるよう、C++ソースも同梱します。
 # Emscripten自体は利用者のSDKを使います。

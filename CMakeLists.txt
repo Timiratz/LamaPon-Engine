@@ -92,6 +92,7 @@ function(lamapon_enable_release_symbols target)
                 ${target}
                 PRIVATE
                     $<$<CONFIG:Release>:/DEBUG:FULL>
+                    $<$<CONFIG:Release>:/PDBALTPATH:$<TARGET_PDB_FILE_NAME:${target}>>
             )
         endif()
     endif()
@@ -397,6 +398,10 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Graphics/AutoExposureAdaptation.h
     src/LamaPon/Graphics/ScreenEffect.cpp
     src/LamaPon/Graphics/ScreenEffect.h
+    src/LamaPon/Graphics/ShaderManifest.cpp
+    src/LamaPon/Graphics/ShaderManifest.h
+    src/LamaPon/Graphics/ShaderProgram.cpp
+    src/LamaPon/Graphics/ShaderProgram.h
     src/LamaPon/Graphics/ShaderRenderState.cpp
     src/LamaPon/Graphics/ShaderRenderState.h
     src/LamaPon/Graphics/ShadowMap.cpp
@@ -574,6 +579,8 @@ set(LAMAPON_EDITOR_SOURCES
     src/LamaPon/Editor/ScriptEditorDetection.h
     src/LamaPon/Editor/ShaderProperties.cpp
     src/LamaPon/Editor/ShaderProperties.h
+    src/LamaPon/Editor/SimpleMaterialShaderGenerator.cpp
+    src/LamaPon/Editor/SimpleMaterialShaderGenerator.h
 )
 
 add_library(LamaPonRuntime SHARED
@@ -846,7 +853,16 @@ target_compile_options(LamaPonGameModule
         $<$<CXX_COMPILER_ID:MSVC>:/W4>
         $<$<CXX_COMPILER_ID:MSVC>:/permissive->
         $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+        $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release>>:/Gy>
+        $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release>>:/GL>
 )
+if(MSVC)
+    target_link_options(LamaPonGameModule PRIVATE
+        $<$<CONFIG:Release>:/OPT:REF>
+        $<$<CONFIG:Release>:/OPT:ICF>
+        $<$<CONFIG:Release>:/LTCG>
+    )
+endif()
 lamapon_enable_release_symbols(LamaPonGameModule)
 add_custom_command(TARGET LamaPonGameModule POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory
@@ -1026,7 +1042,8 @@ if(BUILD_TESTING)
     add_dependencies(LamaPonBgmLoopPanelTests LamaPonGame)
     add_test(NAME BgmLoopPanelIsolation COMMAND LamaPonBgmLoopPanelTests)
     add_executable(LamaPonUIComponentInspectorTests tests/UIComponentInspectorTests.cpp)
-    target_link_libraries(LamaPonUIComponentInspectorTests PRIVATE LamaPonEditor DearImGui)
+    target_link_libraries(LamaPonUIComponentInspectorTests PRIVATE
+        LamaPonEditor DearImGui d3dcompiler)
     target_compile_options(LamaPonUIComponentInspectorTests PRIVATE
         $<$<CXX_COMPILER_ID:MSVC>:/W4>
         $<$<CXX_COMPILER_ID:MSVC>:/permissive->
@@ -1177,6 +1194,11 @@ if(BUILD_TESTING)
         tests/GameExporterTests.cpp
     )
     target_link_libraries(LamaPonGameExporterTests PRIVATE LamaPonEditor)
+    target_compile_definitions(
+        LamaPonGameExporterTests
+        PRIVATE
+            LAMAPON_TEST_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets"
+    )
     target_compile_options(LamaPonGameExporterTests PRIVATE
         $<$<CXX_COMPILER_ID:MSVC>:/W4>
         $<$<CXX_COMPILER_ID:MSVC>:/permissive->
@@ -1352,6 +1374,36 @@ if(BUILD_TESTING)
         COMMAND LamaPonShaderCacheTests)
     set_tests_properties(
         ShaderCache
+        PROPERTIES
+            LABELS "graphics;shader"
+    )
+
+    add_executable(LamaPonShaderManifestTests
+        tests/ShaderManifestTests.cpp
+    )
+    target_link_libraries(
+        LamaPonShaderManifestTests
+        PRIVATE
+            LamaPonRuntime
+            d3d11
+    )
+    target_compile_definitions(
+        LamaPonShaderManifestTests
+        PRIVATE
+            LAMAPON_SHADER_MANIFEST_FIXTURE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/shader-manifest"
+    )
+    target_compile_options(
+        LamaPonShaderManifestTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_test(
+        NAME ShaderManifest
+        COMMAND LamaPonShaderManifestTests
+    )
+    set_tests_properties(
+        ShaderManifest
         PROPERTIES
             LABELS "graphics;shader"
     )

@@ -756,7 +756,8 @@ namespace LamaPon
             + runtimeDirectory.wstring()
             + L"\" -DLAMAPON_MODULE_OUTPUT_DIR:PATH=\""
             + workingOutputDirectory.wstring()
-            + L"\"";
+            + L"\" -DLAMAPON_RUNTIME_API_VERSION:STRING="
+            + std::to_wstring(GameModuleApiVersion);
         if (!compiler.empty())
         {
             // CMakeCache.txtに残る古いcl.exeを使わないよう、検出した

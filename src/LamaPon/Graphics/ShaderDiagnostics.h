@@ -1,10 +1,25 @@
 #pragma once
 
+#include "LamaPon/Core/Api.h"
+
+#include <cstdint>
+#include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 
 namespace LamaPon
 {
+    struct ShaderDiagnosticLocation final
+    {
+        std::filesystem::path path;
+        std::uint32_t line{ 1 };
+        std::uint32_t column{ 1 };
+    };
+
+    [[nodiscard]] LAMAPON_API std::optional<ShaderDiagnosticLocation>
+        ParseShaderDiagnosticLocation(std::string_view message);
+
     // そのHLSLが持っている入口。コンパイルせずにソースから読みます
     // （割り当てた直後、コンパイルが失敗した理由を説明するため）。
     struct ShaderEntryPoints final
@@ -13,6 +28,7 @@ namespace LamaPon
         bool pixel{};           // PSMain
         bool skinnedVertex{};   // VSSkinnedMain
         bool skinnedPixel{};    // PSSkinnedMain
+        bool geometry{};        // GSMain
         bool hull{};            // HSMain
         bool domain{};          // DSMain
         bool compute{};         // CSMain
@@ -20,7 +36,8 @@ namespace LamaPon
         [[nodiscard]] bool Any() const noexcept
         {
             return vertex || pixel || skinnedVertex
-                || skinnedPixel || hull || domain || compute;
+                || skinnedPixel || geometry || hull || domain
+                || compute;
         }
     };
 

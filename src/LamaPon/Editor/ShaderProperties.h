@@ -1,5 +1,7 @@
 #pragma once
 
+#include "LamaPon/Graphics/ShaderManifest.h"
+
 #include <array>
 #include <cstddef>
 #include <filesystem>
@@ -66,9 +68,32 @@ namespace LamaPon
         std::string error;
     };
 
+    // ImGuiの値変更frameとドラッグを離した確定frameは一致しないことが
+    // あります。Inspector側で両方を保持し、Undo履歴を確定frameにだけ
+    // 追加するための結果です。
+    struct ShaderPropertyEditResult final
+    {
+        bool changed{};
+        bool committed{};
+
+        void Observe(
+            const bool valueChanged,
+            const bool editCommitted) noexcept
+        {
+            changed = changed || valueChanged;
+            committed = committed || editCommitted;
+        }
+    };
+
     // HLSLのテキストから宣言ブロックを読み取ります。例外は投げません。
     [[nodiscard]] ShaderProperties ParseShaderProperties(
         std::string_view shaderSource);
+
+    // Manifestのpropertiesを、既存のInspector用表現へ変換します。
+    // targetを省略したpropertyは、明示targetを避けながら定数成分または
+    // 追加Texture枠へ宣言順に自動配置します。
+    [[nodiscard]] ShaderProperties ConvertShaderManifestProperties(
+        const std::vector<ShaderPropertyDesc>& properties);
 
     // ファイルから読み取ります。読めない場合は declared=false を返します。
     [[nodiscard]] ShaderProperties LoadShaderProperties(

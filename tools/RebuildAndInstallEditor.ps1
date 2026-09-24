@@ -22,6 +22,106 @@ function Fail([string]$message) {
     exit 1
 }
 
+# エディターから起動した再インストールでは、自分自身が終了するまで
+# 待ってからコピーします。明示的な指定なしに他のLamaPonプロセスを
+# 非対話で終了しないよう、強制終了も専用フラグに限定します。
+$CloseRunningLamaPonProcesses =
+    $args -contains "-CloseRunningLamaPonProcesses"
+$WaitForProcessId = 0
+for ($argumentIndex = 0;
+    $argumentIndex -lt $args.Count;
+    $argumentIndex++) {
+    if ($args[$argumentIndex] -ne "-WaitForProcessId") {
+        continue
+    }
+    if ($argumentIndex + 1 -ge $args.Count) {
+        Fail "-WaitForProcessId には待機するプロセスIDを指定してください。"
+    }
+    $parsedProcessId = 0
+    $validProcessId = [int]::TryParse(
+        [string]$args[$argumentIndex + 1],
+        [ref]$parsedProcessId)
+    if (-not $validProcessId -or $parsedProcessId -le 0) {
+        Fail "-WaitForProcessId には正のプロセスIDを指定してください。"
+    }
+    $WaitForProcessId = $parsedProcessId
+    $argumentIndex++
+}
+
+# Native Game Moduleは、インストール済みエンジンのテンプレートと公開SDKを
+# 参照してビルドされます。Runtimeだけが更新されSDKが古いままだと、DLL自体は
+# 正常にビルドできてもABIバージョン不一致で読み込みに失敗します。
+# CMakeのinstall規則に加え、ゲームモジュールが直接参照するSDKをハッシュで
+# 検証しながら同期して、実行ファイルとSDKの世代を必ずそろえます。
+function Sync-InstalledSdkDirectory(
+    [string]$sourceRelativePath,
+    [string]$destinationRelativePath,
+    [string]$filter = "*") {
+    $sourceDirectory = Join-Path $repoDir $sourceRelativePath
+    $destinationDirectory = Join-Path $installDir $destinationRelativePath
+    if (-not (Test-Path $sourceDirectory -PathType Container)) {
+        Fail "Game Module SDKのコピー元フォルダーが見つかりません: $sourceDirectory"
+    }
+
+    Get-ChildItem -LiteralPath $sourceDirectory -Recurse -File -Filter $filter | ForEach-Object {
+        $relativeFilePath = $_.FullName.Substring($sourceDirectory.Length).TrimStart('\')
+        $destination = Join-Path $destinationDirectory $relativeFilePath
+        $destinationParent = Split-Path -Parent $destination
+        New-Item -ItemType Directory -Path $destinationParent -Force | Out-Null
+
+        $sourceHash = (Get-FileHash -Algorithm SHA256 $_.FullName).Hash
+        $destinationHash = if (Test-Path $destination -PathType Leaf) {
+            (Get-FileHash -Algorithm SHA256 $destination).Hash
+        }
+        else {
+            ""
+        }
+        if ($sourceHash -ne $destinationHash) {
+            try {
+                Copy-Item -LiteralPath $_.FullName -Destination $destination -Force
+            }
+            catch {
+                Fail "Game Module SDKを同期できません: $destination`n$($_.Exception.Message)"
+            }
+        }
+
+        $installedHash = (Get-FileHash -Algorithm SHA256 $destination).Hash
+        if ($sourceHash -ne $installedHash) {
+            Fail "インストール後のGame Module SDKが一致しません: $destination"
+        }
+    }
+}
+
+function Sync-InstalledSdkFile([string]$relativePath) {
+    $source = Join-Path $repoDir $relativePath
+    $destination = Join-Path $installDir $relativePath
+    if (-not (Test-Path $source -PathType Leaf)) {
+        Fail "Game Module SDKのコピー元ファイルが見つかりません: $source"
+    }
+
+    New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
+    $sourceHash = (Get-FileHash -Algorithm SHA256 $source).Hash
+    $destinationHash = if (Test-Path $destination -PathType Leaf) {
+        (Get-FileHash -Algorithm SHA256 $destination).Hash
+    }
+    else {
+        ""
+    }
+    if ($sourceHash -ne $destinationHash) {
+        try {
+            Copy-Item -LiteralPath $source -Destination $destination -Force
+        }
+        catch {
+            Fail "Game Module SDKを同期できません: $destination`n$($_.Exception.Message)"
+        }
+    }
+
+    $installedHash = (Get-FileHash -Algorithm SHA256 $destination).Hash
+    if ($sourceHash -ne $installedHash) {
+        Fail "インストール後のGame Module SDKが一致しません: $destination"
+    }
+}
+
 Write-Host "==============================================="
 Write-Host " LamaPon Editor 再ビルド & インストール"
 Write-Host "==============================================="
@@ -30,11 +130,25 @@ Write-Host "ビルド先      : $buildDir"
 Write-Host "インストール先: $installDir"
 Write-Host ""
 
+if ($WaitForProcessId -gt 0) {
+    Write-Host "エディターの終了を待機しています（PID: $WaitForProcessId）..."
+    $waitDeadline = [DateTime]::UtcNow.AddSeconds(30)
+    while (Get-Process -Id $WaitForProcessId -ErrorAction SilentlyContinue) {
+        if ([DateTime]::UtcNow -ge $waitDeadline) {
+            Fail "指定されたエディターが30秒以内に終了しませんでした。"
+        }
+        Start-Sleep -Milliseconds 250
+    }
+}
+
 $hubProc = Get-Process -Name "LamaPonHub" -ErrorAction SilentlyContinue
 $editorProc = Get-Process -Name "LamaPonEditor" -ErrorAction SilentlyContinue
 if ($hubProc -or $editorProc) {
     Write-Host "[警告] LamaPon Hub / LamaPon Editor が起動中です。" -ForegroundColor Yellow
     Write-Host "保存していない作業がある場合は失われます。"
+    if ($NonInteractive -and -not $CloseRunningLamaPonProcesses) {
+        Fail "LamaPon Hub / LamaPon Editor が起動中です。終了してから再実行してください。"
+    }
     if (-not $NonInteractive) {
         Read-Host "続行するには Enter キーを押してください（中止する場合はこのウィンドウを閉じてください）"
     }
@@ -198,6 +312,36 @@ foreach ($fileName in $runtimeFiles) {
     if ($sourceHash -ne $installedHash) {
         Fail "インストール後の実行ファイルが一致しません: $destination"
     }
+}
+
+# ProjectGameModuleはインストール先のSDKを直接使うため、Runtime DLLと同様に
+# 明示的に同期・検証する。公開ヘッダーは将来のABI変更を取りこぼさないよう
+# 全ヘッダーを対象とし、ゲームモジュールが使用する同梱依存も併せて同期する。
+Write-Host "Game Module SDKを同期・検証しています..."
+Sync-InstalledSdkDirectory "tools\ProjectGameModule" "tools\ProjectGameModule"
+Sync-InstalledSdkDirectory "src\LamaPon" "src\LamaPon" "*.h"
+Sync-InstalledSdkDirectory "third_party\nlohmann" "third_party\nlohmann" "*.hpp"
+Sync-InstalledSdkDirectory "third_party\DirectXTK\include" "third_party\DirectXTK\include"
+Sync-InstalledSdkDirectory "third_party\XAudio2Redist\include" "third_party\XAudio2Redist\include"
+Sync-InstalledSdkFile "cmake\LamaPonMsvcDependencies.cmake"
+
+# インストール済みエディターから「再インストール」を選んだときに、
+# ビルド可能な元リポジトリを確実に見つけるための情報です。SDKとRuntime
+# はこのスクリプトが同じCMake install規則から更新するため、世代が揃います。
+$desktopBuildSourcePath = Join-Path $installDir "desktop-build-source.json"
+$desktopBuildSource = [ordered]@{
+    format = "LamaPonDesktopBuildSource"
+    version = 1
+    sourceRoot = [System.IO.Path]::GetFullPath($repoDir)
+} | ConvertTo-Json -Compress
+try {
+    [System.IO.File]::WriteAllText(
+        $desktopBuildSourcePath,
+        $desktopBuildSource,
+        [System.Text.UTF8Encoding]::new($false))
+}
+catch {
+    Fail "デスクトップ再インストール情報を保存できません: $desktopBuildSourcePath`n$($_.Exception.Message)"
 }
 
 Write-Host ""

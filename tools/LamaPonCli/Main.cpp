@@ -5455,6 +5455,7 @@ namespace
         // 空なら <プロジェクト>/export へ書き出します。
         std::filesystem::path outputDirectory;
         bool zip{};
+        LamaPon::GameSigningOptions signing;
     };
 
     [[nodiscard]] int RunExport(
@@ -5504,6 +5505,7 @@ namespace
             gameModulePath
         };
         exportOptions.createZipArchive = options.zip;
+        exportOptions.signing = options.signing;
         Progress(
             "export: "
             + LamaPon::PathToUtf8(
@@ -5533,6 +5535,7 @@ namespace
                 { "fileCount", result.fileCount },
             } },
             { "gameModuleIncluded", gameModuleIncluded },
+            { "codeSigned", options.signing.enabled },
             { "errorCount", errorCount },
             { "warningCount", warningCount },
             { "logs", std::move(logs) },
@@ -5641,6 +5644,9 @@ namespace
             " <project>/export)\n"
             "  --zip             also create a"
             " distribution ZIP\n"
+            "  --signtool <exe>  absolute Windows SDK signtool.exe path\n"
+            "  --sign-cert-sha1 <hash>  Current User certificate thumbprint\n"
+            "  --timestamp-url <url>   HTTPS RFC 3161 timestamp service\n"
             "\n"
             "learn options:\n"
             "  status              show progress and the next action\n"
@@ -6877,6 +6883,25 @@ int wmain(const int argumentCount, wchar_t** arguments)
                 else if (argument == L"--zip")
                 {
                     options.zip = true;
+                }
+                else if (argument == L"--signtool")
+                {
+                    options.signing.enabled = true;
+                    options.signing.signToolPath = next();
+                }
+                else if (argument == L"--sign-cert-sha1")
+                {
+                    options.signing.enabled = true;
+                    const auto value = next();
+                    options.signing.certificateSha1 =
+                        LamaPon::WideToUtf8(value);
+                }
+                else if (argument == L"--timestamp-url")
+                {
+                    options.signing.enabled = true;
+                    const auto value = next();
+                    options.signing.timestampUrl =
+                        LamaPon::WideToUtf8(value);
                 }
                 else
                 {

@@ -24,6 +24,18 @@ namespace LamaPon
     [[nodiscard]] bool PackageRequiresRestart(
         PackageActivation activation) noexcept;
 
+    // 追加先。反映タイミング（activation）とは独立した分類です。
+    enum class PackageTarget : std::uint8_t
+    {
+        Project,
+        Engine
+    };
+
+    [[nodiscard]] std::string_view PackageTargetName(
+        PackageTarget target) noexcept;
+    [[nodiscard]] PackageTarget PackageTargetFromName(
+        std::string_view name) noexcept;
+
     // 配布リポジトリのパッケージ一覧（index.json）に載る1件分。
     struct PackageInfo final
     {
@@ -38,6 +50,7 @@ namespace LamaPon
         std::string downloadUrl;
         std::uint64_t sizeBytes{};
         PackageActivation activation{ PackageActivation::Immediate };
+        PackageTarget target{ PackageTarget::Project };
     };
 
     // 一覧JSONの取得先（配布リポジトリのpackages/index.json）。

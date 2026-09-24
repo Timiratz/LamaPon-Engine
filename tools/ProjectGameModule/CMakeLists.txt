@@ -32,6 +32,40 @@ if(NOT EXISTS "${LAMAPON_RUNTIME_DIR}/LamaPonRuntime.lib")
     message(FATAL_ERROR "LamaPonRuntime.lib was not found in LAMAPON_RUNTIME_DIR.")
 endif()
 
+# Game Moduleのdescriptorへ埋め込むAPI版数を、実際にコンパイルするSDK
+# ヘッダーから読み取る。ビルドを起動したRuntimeの版数も渡されている場合は
+# ここで照合するため、Runtimeだけ更新されSDKが古い状態を明確に検出できる。
+set(LAMAPON_GAME_MODULE_API_HEADER
+    "${LAMAPON_ENGINE_ROOT}/src/LamaPon/Scripting/GameModule.h")
+if(NOT EXISTS "${LAMAPON_GAME_MODULE_API_HEADER}")
+    message(FATAL_ERROR
+        "LAMAPON_ENGINE_ROOT does not contain GameModule.h: "
+        "${LAMAPON_GAME_MODULE_API_HEADER}")
+endif()
+set_property(DIRECTORY APPEND PROPERTY
+    CMAKE_CONFIGURE_DEPENDS "${LAMAPON_GAME_MODULE_API_HEADER}")
+file(STRINGS "${LAMAPON_GAME_MODULE_API_HEADER}"
+    LAMAPON_GAME_MODULE_API_VERSION_LINE
+    REGEX "GameModuleApiVersion[ \\t]*=[ \\t]*[0-9]+"
+    LIMIT_COUNT 1)
+if(NOT LAMAPON_GAME_MODULE_API_VERSION_LINE MATCHES
+    "GameModuleApiVersion[ \\t]*=[ \\t]*([0-9]+)")
+    message(FATAL_ERROR
+        "Could not read GameModuleApiVersion from: "
+        "${LAMAPON_GAME_MODULE_API_HEADER}")
+endif()
+set(LAMAPON_GAME_MODULE_API_VERSION "${CMAKE_MATCH_1}")
+if(DEFINED LAMAPON_RUNTIME_API_VERSION
+    AND NOT "${LAMAPON_RUNTIME_API_VERSION}" STREQUAL ""
+    AND NOT "${LAMAPON_RUNTIME_API_VERSION}" STREQUAL
+        "${LAMAPON_GAME_MODULE_API_VERSION}")
+    message(FATAL_ERROR
+        "The installed Game Module SDK is API "
+        "${LAMAPON_GAME_MODULE_API_VERSION}, but LamaPonRuntime is API "
+        "${LAMAPON_RUNTIME_API_VERSION}. Rebuild and reinstall LamaPon "
+        "so the Runtime and SDK are from the same version.")
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -63,8 +97,17 @@ set_target_properties(LamaPonRuntime PROPERTIES
     IMPORTED_IMPLIB "${LAMAPON_RUNTIME_DIR}/LamaPonRuntime.lib"
 )
 
-add_library(LamaPonGameModule SHARED
+# descriptorを生成済みソースにすることで、API番号が変わった場合は
+# CMakeの全ジェネレーター（NMakeを含む）で必ず再コンパイルされる。
+# ヘッダー依存だけに任せると、NMakeやネットワークドライブの古い依存情報が
+# ProjectGameModule.cppを再利用し、旧API番号のDLLを作ることがある。
+configure_file(
     "${CMAKE_CURRENT_LIST_DIR}/ProjectGameModule.cpp"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/ProjectGameModule.cpp"
+    @ONLY)
+
+add_library(LamaPonGameModule SHARED
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/ProjectGameModule.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/ScriptRegistry.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/ScriptRegistry.h"
     ${LAMAPON_PROJECT_SCRIPT_SOURCES}
@@ -142,6 +185,14 @@ target_compile_options(LamaPonGameModule PRIVATE
     /W4
     /permissive-
     /utf-8
+    $<$<CONFIG:Release>:/Gy>
+    $<$<CONFIG:Release>:/GL>
+)
+target_link_options(LamaPonGameModule PRIVATE
+    $<$<CONFIG:Release>:/OPT:REF>
+    $<$<CONFIG:Release>:/OPT:ICF>
+    $<$<CONFIG:Release>:/LTCG>
+    $<$<CONFIG:Release>:/PDBALTPATH:LamaPonGameModule.pdb>
 )
 target_link_libraries(LamaPonGameModule PRIVATE LamaPonRuntime)
 

@@ -2156,6 +2156,88 @@ namespace LamaPon
             m_graphics.PublishOffscreenTarget(
                 m_gameRenderTarget);
         }
+
+        RenderMaterialPreview();
+    }
+
+    void EditorLayer::EnsureMaterialPreviewScene()
+    {
+        if (m_materialPreviewScene != nullptr)
+        {
+            return;
+        }
+
+        m_materialPreviewScene = std::make_unique<Scene>(m_graphics);
+        m_materialPreviewScene->SetAmbientLightColor(
+            { 0.62f, 0.68f, 0.80f });
+        m_materialPreviewScene->SetAmbientLightIntensity(0.32f);
+
+        auto& sphere = m_materialPreviewScene->CreateGameObject(
+            "Material Preview Sphere");
+        m_materialPreviewRenderer =
+            &sphere.AddComponent<MeshRendererComponent>(
+                PrimitiveShape::Sphere);
+
+        auto& light = m_materialPreviewScene->CreateGameObject(
+            "Material Preview Light");
+        light.GetTransform().SetRotationVector(
+            { -0.55f, -0.75f, 0.0f });
+        light.AddComponent<DirectionalLightComponent>(
+            DirectX::XMFLOAT3{ 1.0f, 0.94f, 0.84f },
+            1.65f,
+            false);
+    }
+
+    void EditorLayer::RenderMaterialPreview()
+    {
+        if (!m_materialInspectorLoaded
+            || !IsMaterialAsset(m_selectedAsset)
+            || !m_materialPreviewRenderTarget.IsValid())
+        {
+            return;
+        }
+        EnsureMaterialPreviewScene();
+        if (m_materialPreviewRenderer == nullptr)
+        {
+            return;
+        }
+
+        m_materialPreviewRenderer->SetMaterial(
+            m_materialInspectorDraft);
+        m_materialPreviewRenderer->GetTransform().SetRotationVector(
+            {
+                -0.08f,
+                static_cast<float>(ImGui::GetTime()) * 0.18f,
+                0.0f
+            });
+
+        constexpr float clearColor[]{
+            0.035f, 0.045f, 0.065f, 1.0f
+        };
+        const auto view = DirectX::XMMatrixLookAtLH(
+            DirectX::XMVectorSet(0.0f, 0.0f, 2.15f, 1.0f),
+            DirectX::XMVectorZero(),
+            DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f));
+        const auto projection = DirectX::XMMatrixPerspectiveFovLH(
+            DirectX::XMConvertToRadians(34.0f),
+            1.0f,
+            0.05f,
+            20.0f);
+
+        m_graphics.SetUIViewportSize(
+            m_materialPreviewRenderTarget.Width(),
+            m_materialPreviewRenderTarget.Height());
+        m_graphics.BeginOffscreenTarget(
+            m_materialPreviewRenderTarget,
+            clearColor);
+        m_materialPreviewScene->RenderWithMatrices(
+            view,
+            projection,
+            false,
+            false,
+            &m_materialPreviewRenderTarget);
+        m_graphics.PublishOffscreenTarget(
+            m_materialPreviewRenderTarget);
     }
 
     void EditorLayer::Render()

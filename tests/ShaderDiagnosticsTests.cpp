@@ -51,7 +51,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     // 「VSMain and PSMain (...)」を入口として数えてしまいます。
     constexpr std::string_view CommentOnlyMentions = R"(
 // Entry points must remain VSMain and PSMain (Shader Model 5.0).
-/* HSMain (tessellation) is optional. */
+/* GSMain and HSMain (geometry/tessellation) are optional. */
 [numthreads(8, 8, 1)]
 void CSMain(uint3 id : SV_DispatchThreadID) {}
 )";
@@ -71,6 +71,7 @@ float4 PSMain(PixelInput input) : SV_Target { return 1; }
     constexpr std::string_view TessellatedShader = R"(
 struct Patch { float4 p : SV_Position; };
 Patch VSMain(float3 position : SV_Position) { Patch o; o.p = float4(position, 1); return o; }
+void GSMain() {}
 void HSMain() {}
 void DSMain() {}
 float4 PSMain(Patch input) : SV_Target { return 1; }
@@ -102,8 +103,9 @@ int main()
                     TessellatedShader);
             Require(
                 tessellated.vertex && tessellated.pixel
+                    && tessellated.geometry
                     && tessellated.hull && tessellated.domain,
-                "a tessellated shader has all four");
+                "a tessellated shader has all five graphics stages");
         }
 
         // コメントの中の名前を数えないこと。数えると、雛形の説明文
@@ -113,7 +115,8 @@ int main()
                 LamaPon::ParseShaderEntryPoints(
                     CommentOnlyMentions);
             Require(
-                !parsed.vertex && !parsed.pixel && !parsed.hull,
+                !parsed.vertex && !parsed.pixel && !parsed.geometry
+                    && !parsed.hull,
                 "names inside comments must not count");
             Require(
                 parsed.compute,
@@ -230,6 +233,46 @@ int main()
             Require(
                 message == original,
                 "an unrecognized error must be passed through");
+        }
+
+        // D3DCompilerの位置表記。日本語の説明が前に付いていても、実際の
+        // ファイルと行・列を取り出してコードエディターへ渡せること。
+        {
+            const auto location =
+                LamaPon::ParseShaderDiagnosticLocation(
+                    "分かりやすい説明\n"
+                    "C:\\Game\\assets\\shaders\\broken.hlsl(27,9): "
+                    "error X3000: syntax error");
+            Require(location.has_value(), "a compiler location is parsed");
+            Require(
+                location->path.filename() == "broken.hlsl"
+                    && location->line == 27
+                    && location->column == 9,
+                "the compiler file, line and column are preserved");
+        }
+        {
+            const auto location =
+                LamaPon::ParseShaderDiagnosticLocation(
+                    "included.hlsli(4): error X3004");
+            Require(
+                location.has_value()
+                    && location->line == 4
+                    && location->column == 1,
+                "a line-only compiler location defaults to column one");
+        }
+        {
+            const auto location =
+                LamaPon::ParseShaderDiagnosticLocation(
+                    "Failed to compile shader "
+                    "assets/shaders/broken.hlsl (VSMain): "
+                    "assets/shaders/broken.hlsl(12,6): error X3000");
+            Require(
+                location.has_value()
+                    && location->path
+                        == "assets/shaders/broken.hlsl"
+                    && location->line == 12
+                    && location->column == 6,
+                "the engine compile prefix is excluded from the path");
         }
 
         std::cout << "Shader diagnostics tests passed.\n";

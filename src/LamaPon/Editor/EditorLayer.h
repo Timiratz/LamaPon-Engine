@@ -12,6 +12,7 @@
 #include "LamaPon/Editor/PersistencePanelState.h"
 #include "LamaPon/Editor/ScriptEditorDetection.h"
 #include "LamaPon/Editor/ShaderProperties.h"
+#include "LamaPon/Editor/SimpleMaterialShaderGenerator.h"
 #include "LamaPon/Graphics/RenderTarget.h"
 #include "LamaPon/Graphics/LitMaterial.h"
 #include "LamaPon/Input/InputSystem.h"
@@ -43,6 +44,7 @@ namespace LamaPon
     class EditorModelPreviewRenderer;
     class GameExportDialog;
     class GraphicsDevice;
+    class MeshRendererComponent;
     class OnlineServices;
     class PlayerPrefs;
     class SaveDataStore;
@@ -184,13 +186,15 @@ namespace LamaPon
         void DrawPerformancePanel(bool& open);
         void DrawPersistencePanel(bool& open);
         // カスタムShaderのパラメーターUI。Shaderに
-        // LAMAPON_PROPERTIES宣言があれば名前付きのUIを生成し、
+        // LAMAPON_PROPERTIESまたはShader Manifestのproperties宣言が
+        // あれば名前付きのUIを生成し、
         // 無ければ生のfloat4を8本編集する従来のUIを出します。
-        // 変更があればtrueを返します。
+        // 値変更とUndo確定を分けて返します。
         [[nodiscard]] const ShaderProperties&
             ShaderPropertiesFor(
                 const std::filesystem::path& shaderPath);
-        [[nodiscard]] bool DrawCustomShaderParameters(
+        [[nodiscard]] ShaderPropertyEditResult
+            DrawCustomShaderParameters(
             const std::filesystem::path& shaderPath,
             const char* identifier,
             const std::function<
@@ -290,9 +294,16 @@ namespace LamaPon
         void OpenAssetInExplorer(
             const std::filesystem::path& asset,
             bool selectFile);
-        void OpenCodeAsset(const std::filesystem::path& asset);
+        void OpenCodeAsset(
+            const std::filesystem::path& asset,
+            std::uint32_t line = 0,
+            std::uint32_t column = 0);
         [[nodiscard]] bool BuildGameModule();
         void UpdateGameModuleBuild();
+        [[nodiscard]] std::optional<std::filesystem::path>
+            DesktopReinstallScript() const;
+        [[nodiscard]] bool OfferDesktopReinstallForGameModuleMismatch(
+            const std::string& diagnostic);
         // assets内の.cpp/.hの保存を検知して、Game Moduleを自動
         // ビルドします（プロジェクト設定でオフにできます）。
         void UpdateScriptAutoBuild();
@@ -355,6 +366,12 @@ namespace LamaPon
         void DrawInspector();
         void DrawMaterialAssetInspector();
         void LoadMaterialInspectorDraft();
+        void RenderMaterialPreview();
+        void EnsureMaterialPreviewScene();
+        void DrawShaderError(
+            const std::filesystem::path& shaderPath,
+            std::string_view error,
+            const char* identifier);
         // データアセット（*.asset.json）の編集。型はGame Moduleが
         // 宣言し、スキーマから入力欄を作ります。
         void DrawDataAssetInspector();
@@ -379,7 +396,8 @@ namespace LamaPon
         void LoadModelInspectorDraft();
         [[nodiscard]] bool DrawShaderAssetSelector(
             const char* label,
-            std::filesystem::path& shaderPath);
+            std::filesystem::path& shaderPath,
+            bool allowMaterialManifests = false);
         [[nodiscard]] bool DrawTextureAssetSelector(
             const char* label,
             std::filesystem::path& texturePath);
@@ -762,6 +780,8 @@ namespace LamaPon
         std::vector<GameObjectId> m_additionalSelection;
         std::array<char, 128> m_assetFolderNameBuffer{};
         std::array<char, 256> m_assetFileNameBuffer{};
+        bool m_createShaderFromGraph{ true };
+        SimpleMaterialShaderGraph m_createShaderGraph;
         std::unique_ptr<GameExportDialog> m_gameExportDialog;
         std::array<char, 256> m_projectGameNameBuffer{};
         std::array<char, 512> m_projectStartupSceneBuffer{};
@@ -804,6 +824,7 @@ namespace LamaPon
         std::vector<PackageInfo> m_packages;
         std::string m_packagePanelError;
         int m_selectedPackageIndex{ -1 };
+        PackageTarget m_packageTargetFilter{ PackageTarget::Project };
         // 取得またはインストールの実行中か（UIスレッド専用）。
         bool m_packageBusy{};
         std::thread m_packageWorker;
@@ -924,6 +945,9 @@ namespace LamaPon
         RenderTarget m_sceneRenderTarget;
         RenderTarget m_gameRenderTarget;
         RenderTarget m_cameraPreviewRenderTarget;
+        RenderTarget m_materialPreviewRenderTarget;
+        std::unique_ptr<Scene> m_materialPreviewScene;
+        MeshRendererComponent* m_materialPreviewRenderer{};
         bool m_gameViewFixedResolution{};
         int m_gameViewResolutionWidth{ 1920 };
         int m_gameViewResolutionHeight{ 1080 };
@@ -1005,6 +1029,8 @@ namespace LamaPon
 
         HANDLE m_gameModuleBuildProcess{};
         double m_gameModuleBuildStartedAt{};
+        // 同じ不一致で確認ダイアログを繰り返し出さないための状態です。
+        bool m_desktopReinstallPrompted{};
         // スクリプト保存の自動ビルド用。最後に見たスクリプトの
         // 更新時刻と、変更を検知した時刻（0なら待機なし）です。
         // 変更が続いている間は待ち、静かになってからビルドします。

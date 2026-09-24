@@ -42,8 +42,10 @@
 #include <cwchar>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <optional>
 #include <stdexcept>
+#include <string_view>
 #include <system_error>
 #include <utility>
 
@@ -51,6 +53,38 @@ using namespace LamaPon::EditorDetail;
 
 namespace
 {
+    [[nodiscard]] bool IsSdkRuntimeMismatch(
+        const std::string_view diagnostic) noexcept
+    {
+        return diagnostic.find(
+                   "The installed Game Module SDK is API ")
+                != std::string_view::npos
+            || diagnostic.find(
+                   "Game Module was built for API version ")
+                != std::string_view::npos;
+    }
+
+    [[nodiscard]] std::string ReadTextFile(
+        const std::filesystem::path& path)
+    {
+        std::ifstream input(path, std::ios::binary);
+        if (!input)
+        {
+            return {};
+        }
+        return {
+            std::istreambuf_iterator<char>{ input },
+            std::istreambuf_iterator<char>{}
+        };
+    }
+
+    [[nodiscard]] bool IsRegularFile(
+        const std::filesystem::path& path) noexcept
+    {
+        std::error_code error;
+        return std::filesystem::is_regular_file(path, error) && !error;
+    }
+
     // PBRマップ（粗さ・金属度・遮蔽・発光）のテクスチャ参照一覧。
     // アセットの削除警告・移動・改名の各処理で、法線マップと同じ
     // 扱いをするために使います。MeshRendererとModelRendererで
@@ -446,7 +480,7 @@ namespace LamaPon
                 static_cast<void>(BuildGameModule());
             }
         }
-        if (IsShaderAsset(asset))
+        if (IsOpenableShaderAsset(asset))
         {
             hasAssetAction = true;
             if (ImGui::MenuItem(
@@ -957,6 +991,8 @@ namespace LamaPon
         case AssetDialogRequest::CreateShader:
             m_assetDirectory = m_assetDialogTarget;
             m_selectedAsset.clear();
+            m_createShaderFromGraph = true;
+            m_createShaderGraph = {};
             strncpy_s(
                 m_assetFileNameBuffer.data(),
                 m_assetFileNameBuffer.size(),
@@ -1082,10 +1118,12 @@ namespace LamaPon
     }
 
     void EditorLayer::OpenCodeAsset(
-        const std::filesystem::path& asset)
+        const std::filesystem::path& asset,
+        const std::uint32_t line,
+        const std::uint32_t column)
     {
         if (!IsCppScriptAsset(asset)
-            && !IsShaderAsset(asset))
+            && !IsOpenableShaderAsset(asset))
         {
             return;
         }
@@ -1115,7 +1153,11 @@ namespace LamaPon
                 && std::filesystem::is_regular_file(editor))
             {
                 const std::wstring parameters =
-                    L"\"" + resolved.wstring() + L"\"";
+                    BuildScriptEditorArguments(
+                        editor,
+                        resolved,
+                        line,
+                        column);
                 result = ShellExecuteW(
                     m_window,
                     L"open",
@@ -1143,12 +1185,151 @@ namespace LamaPon
             }
             SetStatus(
                 "コードを開きました: "
-                + PathToUtf8(asset));
+                + PathToUtf8(asset)
+                + (line == 0
+                    ? std::string{}
+                    : " (" + std::to_string(line)
+                        + ":" + std::to_string(
+                            std::max(column, 1u)) + ")"));
         }
         catch (const std::exception& exception)
         {
             SetStatus(exception.what(), true);
         }
+    }
+
+    std::optional<std::filesystem::path>
+        EditorLayer::DesktopReinstallScript() const
+    {
+        // 開発元リポジトリから起動している場合は、そのまま使います。
+        const auto directScript = m_engineRoot
+            / "tools"
+            / "RebuildAndInstallEditor.ps1";
+        if (IsRegularFile(directScript)
+            && IsRegularFile(m_engineRoot / "CMakeLists.txt"))
+        {
+            return directScript;
+        }
+
+        // 配布済みエディターにはソース一式を同梱しないため、直近の
+        // デスクトップ再インストール時に保存した元リポジトリを使います。
+        // 任意のパスを実行しないよう、識別子・形式番号・ビルドに必要な
+        // ファイルの存在をすべて検証します。
+        const auto manifest = ExecutableDirectory()
+            / "desktop-build-source.json";
+        if (!IsRegularFile(manifest))
+        {
+            return std::nullopt;
+        }
+
+        try
+        {
+            const auto document = nlohmann::json::parse(
+                ReadTextFile(manifest));
+            if (document.value("format", std::string{})
+                    != "LamaPonDesktopBuildSource"
+                || document.value("version", 0) != 1)
+            {
+                return std::nullopt;
+            }
+            const auto sourceRoot = PathFromUtf8(
+                document.value("sourceRoot", std::string{}));
+            if (sourceRoot.empty())
+            {
+                return std::nullopt;
+            }
+            const auto script = sourceRoot
+                / "tools"
+                / "RebuildAndInstallEditor.ps1";
+            if (!IsRegularFile(script)
+                || !IsRegularFile(sourceRoot / "CMakeLists.txt"))
+            {
+                return std::nullopt;
+            }
+            return script;
+        }
+        catch (const std::exception&)
+        {
+            return std::nullopt;
+        }
+    }
+
+    bool EditorLayer::OfferDesktopReinstallForGameModuleMismatch(
+        const std::string& diagnostic)
+    {
+        if (m_desktopReinstallPrompted
+            || !IsSdkRuntimeMismatch(diagnostic))
+        {
+            return false;
+        }
+        m_desktopReinstallPrompted = true;
+
+        const auto script = DesktopReinstallScript();
+        if (!script)
+        {
+            SetStatus(
+                "Game Module SDKとRuntimeの世代が一致しません。"
+                "デスクトップの自動ビルドを一度実行して、"
+                "RuntimeとSDKを再インストールしてください。",
+                true);
+            return false;
+        }
+
+        const std::wstring message =
+            L"LamaPon RuntimeとGame Module SDKの世代が一致しません。\n\n"
+            L"デスクトップ版を再インストールして、RuntimeとSDKを"
+            L"同じ版へそろえます。エディターとHubを閉じて、"
+            L"クリーンビルドを実行します。\n\n"
+            L"保存していない変更がある場合は、先に保存確認を表示します。\n\n"
+            L"再インストールしますか？";
+        const int result = MessageBoxW(
+            m_window,
+            message.c_str(),
+            L"LamaPon SDK の再インストール",
+            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
+        if (result != IDYES)
+        {
+            SetStatus(
+                "Game Module SDKとRuntimeの世代が一致しません。"
+                "デスクトップの自動ビルドで再インストールしてください。",
+                true);
+            return false;
+        }
+        if (!ConfirmClose())
+        {
+            SetStatus("SDKの再インストールをキャンセルしました", true);
+            return false;
+        }
+
+        const std::wstring parameters =
+            L"-NoProfile -ExecutionPolicy Bypass -File \""
+            + script->wstring()
+            + L"\" -NonInteractive -CloseRunningLamaPonProcesses "
+              L"-WaitForProcessId "
+            + std::to_wstring(GetCurrentProcessId());
+        SHELLEXECUTEINFOW executeInfo{};
+        executeInfo.cbSize = sizeof(executeInfo);
+        executeInfo.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI;
+        executeInfo.hwnd = m_window;
+        executeInfo.lpVerb = L"open";
+        executeInfo.lpFile = L"powershell.exe";
+        executeInfo.lpParameters = parameters.c_str();
+        executeInfo.lpDirectory = script->parent_path().c_str();
+        executeInfo.nShow = SW_SHOWNORMAL;
+        if (!ShellExecuteExW(&executeInfo)
+            || executeInfo.hProcess == nullptr)
+        {
+            SetStatus(
+                "SDKの再インストールを開始できませんでした: "
+                + PathToUtf8(*script),
+                true);
+            return false;
+        }
+        CloseHandle(executeInfo.hProcess);
+
+        // スクリプトは上のPIDの終了を待ってから実行ファイルを更新します。
+        DestroyWindow(m_window);
+        return true;
     }
 
     bool EditorLayer::BuildGameModule()
@@ -1398,6 +1579,11 @@ namespace LamaPon
         if (exitCode != 0)
         {
             m_pendingScriptAttachments.clear();
+            if (OfferDesktopReinstallForGameModuleMismatch(
+                    ReadTextFile(m_gameModuleBuildLogPath)))
+            {
+                return;
+            }
             SetStatus(
                 "C++ Scriptのビルドに失敗しました。ログ: "
                 + PathToUtf8(m_gameModuleBuildLogPath),
@@ -1409,10 +1595,15 @@ namespace LamaPon
         if (module == nullptr || !module->Reload())
         {
             m_pendingScriptAttachments.clear();
+            const std::string diagnostic = module != nullptr
+                ? module->LastError()
+                : "Game Moduleを再読み込みできませんでした";
+            if (OfferDesktopReinstallForGameModuleMismatch(diagnostic))
+            {
+                return;
+            }
             SetStatus(
-                module != nullptr
-                    ? module->LastError()
-                    : "Game Moduleを再読み込みできませんでした",
+                diagnostic,
                 true);
             return;
         }
@@ -1852,8 +2043,52 @@ namespace LamaPon
                 m_assetFileNameBuffer.data(),
                 m_assetFileNameBuffer.size(),
                 ImGuiInputTextFlags_EnterReturnsTrue);
-            ImGui::TextDisabled(
-                "VSMain / PSMainと4本のMaterialパラメーターを持つ雛形です。");
+            ImGui::SeparatorText("作成方法");
+            if (ImGui::RadioButton(
+                    "簡易ノード生成",
+                    m_createShaderFromGraph))
+            {
+                m_createShaderFromGraph = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::RadioButton(
+                    "コード雛形",
+                    !m_createShaderFromGraph))
+            {
+                m_createShaderFromGraph = false;
+            }
+            if (m_createShaderFromGraph)
+            {
+                ImGui::TextDisabled(
+                    "Albedo Texture → 選択ノード → Material Output");
+                ImGui::Checkbox("Tint", &m_createShaderGraph.tint);
+                ImGui::SameLine();
+                ImGui::Checkbox(
+                    "Emission",
+                    &m_createShaderGraph.emission);
+                ImGui::Checkbox(
+                    "Rim Light",
+                    &m_createShaderGraph.rimLight);
+                ImGui::SameLine();
+                ImGui::Checkbox(
+                    "UV Scroll",
+                    &m_createShaderGraph.uvScroll);
+                ImGui::Checkbox(
+                    "Mask Texture",
+                    &m_createShaderGraph.maskTexture);
+                ImGui::SameLine();
+                ImGui::Checkbox(
+                    "Alpha Clip",
+                    &m_createShaderGraph.alphaClip);
+                ImGui::TextWrapped(
+                    "定数とTextureの空きスロットは自動で割り当てます。"
+                    "register番号を指定する必要はありません。");
+            }
+            else
+            {
+                ImGui::TextDisabled(
+                    "VSMain / PSMainを持つ編集用HLSL雛形です。");
+            }
             if (!m_assetFileDialogError.empty())
             {
                 ImGui::TextColored(
@@ -2442,16 +2677,37 @@ namespace LamaPon
                     "同じ名前のファイルが存在します";
                 return false;
             }
-            const auto shaderTemplate =
-                m_graphics.Assets().ResolvePath(
-                    "shaders/LamaPonCustomMaterial.hlsl");
-            if (!std::filesystem::copy_file(
-                shaderTemplate,
-                destination,
-                std::filesystem::copy_options::none))
+            if (m_createShaderFromGraph)
             {
-                throw std::runtime_error(
-                    "Shader雛形をコピーできませんでした");
+                std::ofstream output(
+                    destination,
+                    std::ios::binary | std::ios::trunc);
+                if (!output)
+                {
+                    throw std::runtime_error(
+                        "生成したShaderを書き込めませんでした");
+                }
+                output << GenerateSimpleMaterialShader(
+                    m_createShaderGraph);
+                if (!output)
+                {
+                    throw std::runtime_error(
+                        "生成したShaderを保存できませんでした");
+                }
+            }
+            else
+            {
+                const auto shaderTemplate =
+                    m_graphics.Assets().ResolvePath(
+                        "shaders/LamaPonCustomMaterial.hlsl");
+                if (!std::filesystem::copy_file(
+                    shaderTemplate,
+                    destination,
+                    std::filesystem::copy_options::none))
+                {
+                    throw std::runtime_error(
+                        "Shader雛形をコピーできませんでした");
+                }
             }
             m_selectedAsset = relativePath;
             RefreshAssets();
@@ -5533,12 +5789,14 @@ namespace LamaPon
                             "Lit",
                             ImVec2{ 64.0f, 64.0f });
                     }
-                    else if (IsShaderAsset(asset))
+                    else if (IsOpenableShaderAsset(asset))
                     {
                         clicked = drawTypeButton(
                             AssetIconKind::Shader,
                             "##ShaderIcon",
-                            "HLSL",
+                            IsShaderManifestAsset(asset)
+                                ? "Manifest"
+                                : "HLSL",
                             ImVec2{ 64.0f, 64.0f });
                     }
                     else if (IsAnimationAsset(asset))
@@ -5646,7 +5904,7 @@ namespace LamaPon
                         m_selectedAsset = asset;
                         OpenCodeAsset(asset);
                     }
-                    else if (IsShaderAsset(asset)
+                    else if (IsOpenableShaderAsset(asset)
                         && thumbnailHovered
                         && ImGui::IsMouseDoubleClicked(
                             ImGuiMouseButton_Left)
@@ -5724,7 +5982,8 @@ namespace LamaPon
                     : IsPrefabAsset(asset) ? AssetIconKind::Prefab
                     : IsModelAsset(asset) ? AssetIconKind::Model
                     : IsMaterialAsset(asset) ? AssetIconKind::Material
-                    : IsShaderAsset(asset) ? AssetIconKind::Shader
+                    : IsOpenableShaderAsset(asset)
+                        ? AssetIconKind::Shader
                     : IsAnimationAsset(asset) ? AssetIconKind::Animation
                     : IsAnimatorControllerAsset(asset)
                         ? AssetIconKind::AnimatorController
@@ -5798,7 +6057,7 @@ namespace LamaPon
                     m_selectedAsset = asset;
                     OpenCodeAsset(asset);
                 }
-                else if (IsShaderAsset(asset)
+                else if (IsOpenableShaderAsset(asset)
                     && ImGui::IsItemHovered()
                     && ImGui::IsMouseDoubleClicked(
                         ImGuiMouseButton_Left)

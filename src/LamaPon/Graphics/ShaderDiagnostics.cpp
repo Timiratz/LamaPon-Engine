@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <charconv>
 #include <string>
 
 namespace
@@ -204,6 +205,106 @@ namespace
 
 namespace LamaPon
 {
+    std::optional<ShaderDiagnosticLocation>
+        ParseShaderDiagnosticLocation(const std::string_view message)
+    {
+        std::size_t searchFrom{};
+        while (searchFrom < message.size())
+        {
+            const auto open = message.find('(', searchFrom);
+            if (open == std::string_view::npos)
+            {
+                return std::nullopt;
+            }
+            const auto close = message.find(')', open + 1);
+            if (close == std::string_view::npos)
+            {
+                return std::nullopt;
+            }
+            const auto comma = message.find(',', open + 1);
+            const auto lineEnd = comma != std::string_view::npos
+                    && comma < close
+                ? comma
+                : close;
+            std::uint32_t line{};
+            const auto lineText = message.substr(
+                open + 1,
+                lineEnd - open - 1);
+            const auto lineResult = std::from_chars(
+                lineText.data(),
+                lineText.data() + lineText.size(),
+                line);
+            if (lineResult.ec != std::errc{}
+                || lineResult.ptr != lineText.data() + lineText.size()
+                || line == 0)
+            {
+                searchFrom = open + 1;
+                continue;
+            }
+
+            std::uint32_t column{ 1 };
+            if (comma != std::string_view::npos && comma < close)
+            {
+                const auto columnText = message.substr(
+                    comma + 1,
+                    close - comma - 1);
+                const auto columnResult = std::from_chars(
+                    columnText.data(),
+                    columnText.data() + columnText.size(),
+                    column);
+                if (columnResult.ec != std::errc{}
+                    || columnResult.ptr
+                        != columnText.data() + columnText.size()
+                    || column == 0)
+                {
+                    column = 1;
+                }
+            }
+
+            const auto newline = message.rfind('\n', open);
+            auto pathStart = newline == std::string_view::npos
+                ? std::size_t{}
+                : newline + 1;
+            // ShaderCompilerはD3DCompilerの本文を
+            // "Failed to compile ...: " の後へ連結します。
+            // Windowsのドライブ区切り（"C:\\"）とは衝突しない
+            // 「コロン+空白」を使い、その説明部分を除きます。
+            const auto prefix = message.rfind(": ", open);
+            if (prefix != std::string_view::npos
+                && prefix + 2 > pathStart)
+            {
+                pathStart = prefix + 2;
+            }
+            while (pathStart < open
+                && std::isspace(static_cast<unsigned char>(
+                    message[pathStart])) != 0)
+            {
+                ++pathStart;
+            }
+            auto pathEnd = open;
+            while (pathEnd > pathStart
+                && std::isspace(static_cast<unsigned char>(
+                    message[pathEnd - 1])) != 0)
+            {
+                --pathEnd;
+            }
+            if (pathEnd == pathStart)
+            {
+                searchFrom = close + 1;
+                continue;
+            }
+
+            return ShaderDiagnosticLocation{
+                std::filesystem::path{ std::string{ message.substr(
+                    pathStart,
+                    pathEnd - pathStart) } },
+                line,
+                column
+            };
+        }
+        return std::nullopt;
+    }
+
     ShaderEntryPoints ParseShaderEntryPoints(
         const std::string_view source)
     {
@@ -215,6 +316,7 @@ namespace LamaPon
             HasEntryPoint(stripped, "VSSkinnedMain");
         entryPoints.skinnedPixel =
             HasEntryPoint(stripped, "PSSkinnedMain");
+        entryPoints.geometry = HasEntryPoint(stripped, "GSMain");
         entryPoints.hull = HasEntryPoint(stripped, "HSMain");
         entryPoints.domain = HasEntryPoint(stripped, "DSMain");
         entryPoints.compute = HasEntryPoint(stripped, "CSMain");

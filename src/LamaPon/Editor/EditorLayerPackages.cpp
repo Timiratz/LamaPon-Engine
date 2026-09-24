@@ -70,21 +70,6 @@ namespace LamaPon
                 / (1024ull * 1024ull)) + " MB";
         }
 
-        const char* PackageActivationLabel(
-            const PackageActivation activation) noexcept
-        {
-            switch (activation)
-            {
-            case PackageActivation::Restart:
-                return "再起動後に有効";
-            case PackageActivation::RestartAndRebuild:
-                return "再起動・再ビルド後に有効";
-            case PackageActivation::Immediate:
-            default:
-                return "すぐに有効";
-            }
-        }
-
         std::string RestartNotice(
             const PackageActivation activation)
         {
@@ -307,9 +292,24 @@ namespace LamaPon
                 m_packageListState =
                     PackageListState::Ready;
                 if (m_selectedPackageIndex < 0
-                    && !m_packages.empty())
+                    || m_selectedPackageIndex
+                        >= static_cast<int>(m_packages.size())
+                    || m_packages[static_cast<std::size_t>(
+                        m_selectedPackageIndex)].target
+                        != m_packageTargetFilter)
                 {
-                    m_selectedPackageIndex = 0;
+                    m_selectedPackageIndex = -1;
+                    for (std::size_t index = 0;
+                        index < m_packages.size(); ++index)
+                    {
+                        if (m_packages[index].target
+                            == m_packageTargetFilter)
+                        {
+                            m_selectedPackageIndex =
+                                static_cast<int>(index);
+                            break;
+                        }
+                    }
                 }
             }
             else
@@ -734,16 +734,66 @@ namespace LamaPon
 
         ImGui::SeparatorText("公式パッケージ");
 
+        const auto selectFirstOfTarget = [this](
+            const PackageTarget target)
+        {
+            m_packageTargetFilter = target;
+            m_selectedPackageIndex = -1;
+            for (std::size_t index = 0;
+                index < m_packages.size(); ++index)
+            {
+                if (m_packages[index].target == target)
+                {
+                    m_selectedPackageIndex =
+                        static_cast<int>(index);
+                    break;
+                }
+            }
+        };
+        if (ImGui::RadioButton(
+                "ゲームに追加",
+                m_packageTargetFilter == PackageTarget::Project))
+        {
+            selectFirstOfTarget(PackageTarget::Project);
+        }
+        ImGui::SameLine();
+        if (ImGui::RadioButton(
+                "エンジンの機能を追加",
+                m_packageTargetFilter == PackageTarget::Engine))
+        {
+            selectFirstOfTarget(PackageTarget::Engine);
+        }
+        ImGui::TextDisabled(
+            "%s",
+            m_packageTargetFilter == PackageTarget::Project
+                ? "スクリプト・Prefab・素材などをゲームへ追加します。"
+                : "描画機能などを追加します。再起動が必要な場合があります。");
+
         // 左に一覧、右に選択したパッケージの詳細。
         ImGui::BeginChild(
             "PackageList",
             ImVec2{ 240.0f, 0.0f },
             true);
+        if (std::ranges::none_of(
+                m_packages,
+                [this](const PackageInfo& package)
+                {
+                    return package.target
+                        == m_packageTargetFilter;
+                }))
+        {
+            ImGui::TextWrapped(
+                "この分類の公式パッケージはまだありません。");
+        }
         for (std::size_t index = 0;
             index < m_packages.size();
             ++index)
         {
             const auto& package = m_packages[index];
+            if (package.target != m_packageTargetFilter)
+            {
+                continue;
+            }
             const auto installedIterator =
                 m_installedPackageVersions.find(
                     package.name);
@@ -773,7 +823,10 @@ namespace LamaPon
         ImGui::BeginChild("PackageDetails");
         if (m_selectedPackageIndex >= 0
             && m_selectedPackageIndex
-                < static_cast<int>(m_packages.size()))
+                < static_cast<int>(m_packages.size())
+            && m_packages[static_cast<std::size_t>(
+                m_selectedPackageIndex)].target
+                == m_packageTargetFilter)
         {
             const auto& package = m_packages[
                 static_cast<std::size_t>(
@@ -822,13 +875,41 @@ namespace LamaPon
                 "%s",
                 package.description.c_str());
             ImGui::TextDisabled(
-                "有効化: %s",
-                PackageActivationLabel(package.activation));
+                "追加先: %s",
+                package.target == PackageTarget::Engine
+                    ? "エンジンの機能" : "ゲーム");
+            ImGui::SeparatorText("使えるまでの手順");
+            if (package.name == DirectX12BackendPackageName)
+            {
+                ImGui::TextWrapped(
+                    "インストール後、プロジェクト設定で"
+                    "DirectX 12 Experimentalを選び、"
+                    "エディターを再起動してください。");
+            }
+            else if (package.activation
+                == PackageActivation::RestartAndRebuild)
+            {
+                ImGui::TextWrapped(
+                    "インストール後、エディターを再起動し、"
+                    "ゲームを再ビルドしてください。");
+            }
+            else if (package.activation
+                == PackageActivation::Restart)
+            {
+                ImGui::TextWrapped(
+                    "インストール後、エディターまたはゲームを"
+                    "再起動してください。");
+            }
+            else
+            {
+                ImGui::TextWrapped(
+                    "インストール後に使えます。C++スクリプトが"
+                    "含まれる場合は自動でビルドします。");
+            }
             if (PackageRequiresRestart(package.activation))
             {
-                ImGui::TextColored(
-                    ImVec4{ 1.0f, 0.75f, 0.25f, 1.0f },
-                    "インストール・更新・削除は再起動後に反映されます。");
+                ImGui::TextDisabled(
+                    "更新・削除も再起動後に反映されます。");
             }
             ImGui::Spacing();
 

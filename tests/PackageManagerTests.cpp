@@ -90,6 +90,13 @@ namespace
                         "sizeBytes": 2048
                     },
                     {
+                        "name": "renderer",
+                        "version": "1.0",
+                        "target": "Engine",
+                        "activation": "Restart",
+                        "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/renderer-1.0.zip"
+                    },
+                    {
                         "name": "BAD NAME!",
                         "version": "1.0",
                         "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/x.zip"
@@ -102,7 +109,7 @@ namespace
                 ]
             })");
         Require(
-            packages.size() == 1,
+            packages.size() == 2,
             "invalid entries must be filtered out");
         Require(
             packages[0].name == "camera-follow"
@@ -112,8 +119,17 @@ namespace
                     == "2026.7.31"
                 && packages[0].activation
                     == LamaPon::PackageActivation::Restart
+                && packages[0].target
+                    == LamaPon::PackageTarget::Project
                 && packages[0].sizeBytes == 2048,
             "package fields must round-trip");
+        Require(
+            packages[1].target == LamaPon::PackageTarget::Engine
+                && LamaPon::PackageTargetFromName("unknown")
+                    == LamaPon::PackageTarget::Project
+                && LamaPon::PackageTargetName(
+                    LamaPon::PackageTarget::Engine) == "Engine",
+            "package targets must preserve old index compatibility");
 
         Require(
             LamaPon::PackageActivationFromName("Immediate")
@@ -252,6 +268,11 @@ namespace
                 assetRoot,
                 package.name) == LamaPon::PackageActivation::Restart,
             "a synthesized manifest must preserve activation");
+        Require(
+            nlohmann::json::parse(
+                ReadFile(installed / "package.json"))
+                    .value("target", std::string{}) == "Project",
+            "a synthesized manifest must preserve the target");
 
         // 更新: 新しい版で置き換え、古いファイルが残らないこと。
         std::filesystem::remove(
@@ -562,17 +583,23 @@ namespace
         buildInfo.name = LamaPon::DirectX12BackendPackageName;
         buildInfo.displayName = "DirectX 12 Renderer";
         buildInfo.version = "1.0.1";
-        static_cast<void>(LamaPon::BuildPackage(
+        const auto built = LamaPon::BuildPackage(
             assetRoot,
             buildInfo,
-            root / "dist"));
+            root / "dist");
         const auto rebuiltManifest = nlohmann::json::parse(
             ReadFile(packageRoot / "package.json"));
         Require(
             rebuiltManifest.value("activation", std::string{})
                     == "Restart"
+                && rebuiltManifest.value("target", std::string{})
+                    == "Engine"
                 && rebuiltManifest.contains("graphicsBackend"),
             "rebuilding must preserve backend activation and metadata");
+        Require(
+            nlohmann::json::parse(built.indexEntryJson)
+                .value("target", std::string{}) == "Engine",
+            "a backend index entry must use the engine category");
 
         WriteFile(
             packageRoot / "package.json",

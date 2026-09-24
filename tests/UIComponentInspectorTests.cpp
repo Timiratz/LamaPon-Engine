@@ -1,4 +1,7 @@
 #include "LamaPon/Editor/UIComponentInspectors.h"
+#include "LamaPon/Editor/EditorLayerShared.h"
+#include "LamaPon/Editor/ShaderProperties.h"
+#include "LamaPon/Editor/SimpleMaterialShaderGenerator.h"
 #include "LamaPon/Scene/GameObject.h"
 #include "LamaPon/Components/UICanvasComponent.h"
 #include "LamaPon/Components/UIRectTransformComponent.h"
@@ -12,7 +15,11 @@
 #include "LamaPon/Components/RotatorComponent.h"
 
 #include <imgui.h>
+#include <d3dcompiler.h>
+#include <wrl/client.h>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <string_view>
 #include <vector>
@@ -23,6 +30,231 @@ namespace
     {
         if (!condition) throw std::runtime_error(message);
     }
+
+    void TestMalformedShaderPropertiesFallBackWithoutThrowing()
+    {
+        const auto invalidTarget = LamaPon::ParseShaderProperties(
+            R"(/* LAMAPON_PROPERTIES
+            [{"target":1,"type":"float","name":"Amount"}]
+            */)");
+        Require(
+            invalidTarget.declared
+                && !invalidTarget.error.empty()
+                && invalidTarget.fields.empty(),
+            "A non-string property target must fall back with an error");
+
+        const auto invalidDefault = LamaPon::ParseShaderProperties(
+            R"(/* LAMAPON_PROPERTIES
+            [{"target":"0.x","type":"float","name":"Amount",
+              "default":["invalid"]}]
+            */)");
+        Require(
+            invalidDefault.declared
+                && !invalidDefault.error.empty()
+                && invalidDefault.fields.empty(),
+            "An invalid property default must fall back with an error");
+    }
+
+    void TestManifestPropertyConversion()
+    {
+        LamaPon::ShaderPropertyDesc amount;
+        amount.name = "Amount";
+        amount.type = "float";
+        amount.target = "0.x";
+        amount.defaultValue = "0.75";
+        amount.minimum = 0.0;
+        amount.maximum = 1.0;
+
+        const auto converted =
+            LamaPon::ConvertShaderManifestProperties({ amount });
+        Require(
+            converted.declared
+                && converted.error.empty()
+                && converted.fields.size() == 1
+                && converted.fields.front().hasRange
+                && converted.fields.front().defaultValue.has_value()
+                && (*converted.fields.front().defaultValue)[0] == 0.75f,
+            "A valid manifest property must retain its Inspector metadata");
+
+        amount.target.clear();
+        const auto targetless =
+            LamaPon::ConvertShaderManifestProperties({ amount });
+        Require(
+            targetless.declared
+                && targetless.error.empty()
+                && targetless.fields.size() == 1
+                && targetless.fields[0].parameterIndex == 0
+                && targetless.fields[0].components[0] == 0,
+            "A targetless manifest property must be auto-bound");
+
+        LamaPon::ShaderPropertyDesc tint;
+        tint.name = "Tint";
+        tint.type = "color";
+        tint.defaultValue = "[1.0,0.5,0.25]";
+        LamaPon::ShaderPropertyDesc mask;
+        mask.name = "Mask";
+        mask.type = "texture";
+        const auto automatic =
+            LamaPon::ConvertShaderManifestProperties(
+                { amount, tint, mask });
+        Require(
+            automatic.error.empty()
+                && automatic.fields.size() == 3
+                && automatic.fields[0].parameterIndex == 0
+                && automatic.fields[0].components[0] == 0
+                && automatic.fields[1].parameterIndex == 0
+                && automatic.fields[1].componentCount == 3
+                && automatic.fields[1].components[0] == 1
+                && automatic.fields[2].kind
+                    == LamaPon::ShaderPropertyKind::Texture
+                && automatic.fields[2].parameterIndex == 0,
+            "Automatic bindings must pack constants and start textures at t7");
+
+        LamaPon::ShaderPropertyDesc reserved = amount;
+        reserved.name = "Reserved";
+        reserved.target = "0.x";
+        LamaPon::ShaderPropertyDesc allocated = amount;
+        allocated.name = "Allocated first";
+        const auto mixed =
+            LamaPon::ConvertShaderManifestProperties(
+                { allocated, reserved });
+        Require(
+            mixed.error.empty()
+                && mixed.fields.size() == 2
+                && mixed.fields[0].parameterIndex == 0
+                && mixed.fields[0].components[0] == 1
+                && mixed.fields[1].components[0] == 0,
+            "Automatic bindings must not consume a later explicit target");
+    }
+
+    void TestShaderAssetSelectionAndOpenRoutes()
+    {
+        using namespace LamaPon::EditorDetail;
+
+        const std::filesystem::path manifest{
+            "Shaders/Toon.lamashader.json" };
+        Require(
+            IsOpenableShaderAsset(manifest),
+            "A shader manifest must be openable from the Asset Browser");
+        Require(
+            IsOpenableShaderAsset("Shaders/Legacy.HLSL"),
+            "A legacy HLSL shader must remain openable");
+        Require(
+            !IsShaderAsset(manifest),
+            "A manifest must not enter legacy-only assignment routes");
+        Require(
+            !IsOpenableShaderAsset("Materials/Toon.material.json"),
+            "An unrelated JSON asset must not enter the shader editor route");
+
+        Require(
+            !IsAssetSelectionChange(manifest, manifest),
+            "Re-selecting the active manifest must not count as a change");
+        Require(
+            !IsAssetSelectionChange(
+                manifest,
+                "shaders/./TOON.LAMASHADER.JSON"),
+            "Equivalent manifest references must not count as a change");
+        Require(
+            !IsAssetSelectionChange({}, {}),
+            "Re-selecting the default shader must not count as a change");
+        Require(
+            IsAssetSelectionChange(manifest, "Shaders/Lit.hlsl"),
+            "Selecting a different shader must count as a change");
+        Require(
+            IsAssetSelectionChange({}, manifest),
+            "Selecting a manifest from the default shader must count as a change");
+    }
+
+    void TestShaderPropertyEditCommitIsIndependentFromChange()
+    {
+        LamaPon::ShaderPropertyEditResult dragging;
+        dragging.Observe(true, false);
+        Require(
+            dragging.changed && !dragging.committed,
+            "Dragging must update the value without growing Undo history");
+
+        LamaPon::ShaderPropertyEditResult released;
+        released.Observe(false, true);
+        Require(
+            !released.changed && released.committed,
+            "The release frame must commit Undo even without a new value");
+
+        LamaPon::ShaderPropertyEditResult button;
+        button.Observe(true, true);
+        Require(
+            button.changed && button.committed,
+            "An immediate property action must update and commit together");
+    }
+
+    void TestSimpleMaterialShaderGeneration()
+    {
+        LamaPon::SimpleMaterialShaderGraph graph;
+        graph.emission = true;
+        graph.rimLight = true;
+        graph.uvScroll = true;
+        graph.maskTexture = true;
+        const auto source = LamaPon::GenerateSimpleMaterialShader(graph);
+        Require(
+            source.find("LamaPonSimpleMaterialGraph.hlsli")
+                    != std::string::npos
+                && source.find("UV Scroll") != std::string::npos
+                && source.find("Mask") != std::string::npos
+                && source.find("register(") == std::string::npos
+                && source.find("PSMain") != std::string::npos
+                && source.find("PSSkinnedMain") != std::string::npos,
+            "A simple graph must generate register-free material HLSL");
+
+        std::ifstream includeFile(
+            "assets/shaders/LamaPonSimpleMaterialGraph.hlsli",
+            std::ios::binary);
+        Require(
+            static_cast<bool>(includeFile),
+            "The generated graph support include must be distributed");
+        std::ostringstream includeContents;
+        includeContents << includeFile.rdbuf();
+        auto compilable = source;
+        const std::string includeLine =
+            "#include \"shaders/LamaPonSimpleMaterialGraph.hlsli\"";
+        const auto includePosition = compilable.find(includeLine);
+        Require(
+            includePosition != std::string::npos,
+            "The generated source must reference its support include");
+        compilable.replace(
+            includePosition,
+            includeLine.size(),
+            includeContents.str());
+
+        const auto compile = [&compilable](
+            const char* entry,
+            const char* target)
+        {
+            Microsoft::WRL::ComPtr<ID3DBlob> byteCode;
+            Microsoft::WRL::ComPtr<ID3DBlob> errors;
+            const auto result = D3DCompile(
+                compilable.data(),
+                compilable.size(),
+                "GeneratedSimpleMaterial.hlsl",
+                nullptr,
+                nullptr,
+                entry,
+                target,
+                D3DCOMPILE_ENABLE_STRICTNESS,
+                0,
+                byteCode.ReleaseAndGetAddressOf(),
+                errors.ReleaseAndGetAddressOf());
+            if (FAILED(result))
+            {
+                const auto message = errors
+                    ? static_cast<const char*>(errors->GetBufferPointer())
+                    : "Generated shader compilation failed";
+                throw std::runtime_error(message);
+            }
+        };
+        compile("VSMain", "vs_5_0");
+        compile("PSMain", "ps_5_0");
+        compile("VSSkinnedMain", "vs_5_0");
+        compile("PSSkinnedMain", "ps_5_0");
+    }
 }
 
 int main()
@@ -31,6 +263,12 @@ int main()
     int result{};
     try
     {
+        TestMalformedShaderPropertiesFallBackWithoutThrowing();
+        TestManifestPropertyConversion();
+        TestShaderAssetSelectionAndOpenRoutes();
+        TestShaderPropertyEditCommitIsIndependentFromChange();
+        TestSimpleMaterialShaderGeneration();
+
         auto& io = ImGui::GetIO();
         io.IniFilename = nullptr;
         io.DisplaySize = ImVec2(1280, 720);

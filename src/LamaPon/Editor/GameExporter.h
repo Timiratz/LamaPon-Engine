@@ -8,6 +8,15 @@
 
 namespace LamaPon
 {
+    struct GameSigningOptions final
+    {
+        bool enabled{ false };
+        std::filesystem::path signToolPath;
+        // Current User の Personal (My) ストアにあるコード署名証明書。
+        std::string certificateSha1;
+        std::string timestampUrl;
+    };
+
     struct GameExportOptions final
     {
         std::filesystem::path runtimeDirectory;
@@ -17,6 +26,7 @@ namespace LamaPon
         std::filesystem::path gameModulePath;
         // trueなら出力フォルダーの隣へ配布用ZIPも作成します。
         bool createZipArchive{ false };
+        GameSigningOptions signing;
     };
 
     struct GameExportResult final
@@ -35,6 +45,9 @@ namespace LamaPon
     // 予約デバイス名は安全な名前へ調整します。
     [[nodiscard]] std::wstring SanitizeGameFileName(
         const std::string& gameName);
+
+    // 署名設定を配布物へ書き込まず、書き出し前に検証します。
+    void ValidateGameSigningOptions(const GameSigningOptions& options);
 
     [[nodiscard]] GameExportResult ExportGamePackage(
         const GameExportOptions& options);

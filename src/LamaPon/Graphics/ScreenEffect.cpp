@@ -1,19 +1,14 @@
 #include "LamaPon/Graphics/ScreenEffect.h"
-#include "LamaPon/Graphics/ShaderCompiler.h"
+#include "LamaPon/Graphics/ShaderManifest.h"
 
 #include "LamaPon/Assets/AssetManager.h"
 #include "LamaPon/Core/PathUtils.h"
 
-#include <d3dcompiler.h>
-
 #include <algorithm>
 #include <limits>
-#include <memory>
 #include <stdexcept>
 #include <string>
-#include <unordered_map>
 #include <utility>
-#include <vector>
 
 namespace
 {
@@ -29,114 +24,6 @@ namespace
                 + std::to_string(
                     static_cast<unsigned long>(result)));
         }
-    }
-
-    // プロジェクト内HLSLの相対 #include を、AssetManager経由で解決します。
-    // これにより、暗号化済み配布アーカイブ内でも同じシェーダーを使用できます。
-    class AssetShaderInclude final : public ID3DInclude
-    {
-    public:
-        AssetShaderInclude(
-            LamaPon::AssetManager& assets,
-            std::filesystem::path rootShader)
-            : m_assets(assets)
-            , m_rootShader(std::move(rootShader))
-        {
-        }
-
-        HRESULT Open(
-            const D3D_INCLUDE_TYPE includeType,
-            const LPCSTR fileName,
-            const LPCVOID parentData,
-            LPCVOID* data,
-            UINT* bytes) override
-        {
-            if (fileName == nullptr
-                || data == nullptr
-                || bytes == nullptr)
-            {
-                return E_INVALIDARG;
-            }
-
-            std::filesystem::path parent =
-                m_rootShader.parent_path();
-            if (includeType == D3D_INCLUDE_LOCAL
-                && parentData != nullptr)
-            {
-                const auto found =
-                    m_parentDirectories.find(parentData);
-                if (found != m_parentDirectories.end())
-                {
-                    parent = found->second;
-                }
-            }
-
-            auto path =
-                (parent / std::filesystem::path(fileName))
-                    .lexically_normal();
-            if (!m_assets.FileExists(path))
-            {
-                path = m_assets.ResolvePath(
-                    std::filesystem::path(fileName))
-                    .lexically_normal();
-            }
-            if (!m_assets.FileExists(path))
-            {
-                return E_FAIL;
-            }
-
-            try
-            {
-                auto source =
-                    m_assets.ReadFileBytes(path);
-                auto storage =
-                    std::make_unique<std::vector<std::uint8_t>>(
-                        std::move(source));
-                const void* pointer = storage->data();
-                *data = pointer;
-                *bytes = static_cast<UINT>(storage->size());
-                m_parentDirectories[pointer] =
-                    path.parent_path();
-                m_sources[pointer] = std::move(storage);
-                return S_OK;
-            }
-            catch (...)
-            {
-                return E_FAIL;
-            }
-        }
-
-        HRESULT Close(const LPCVOID data) override
-        {
-            m_parentDirectories.erase(data);
-            m_sources.erase(data);
-            return S_OK;
-        }
-
-    private:
-        LamaPon::AssetManager& m_assets;
-        std::filesystem::path m_rootShader;
-        std::unordered_map<
-            const void*,
-            std::filesystem::path> m_parentDirectories;
-        std::unordered_map<
-            const void*,
-            std::unique_ptr<std::vector<std::uint8_t>>>
-            m_sources;
-    };
-
-    Microsoft::WRL::ComPtr<ID3DBlob> CompileShader(
-        LamaPon::AssetManager& assets,
-        const std::filesystem::path& path,
-        const char* entryPoint,
-        const char* target)
-    {
-        // コンパイルとディスクキャッシュはShaderCompilerが処理します。
-        return LamaPon::CompileShaderCached(
-            assets,
-            path,
-            entryPoint,
-            target);
     }
 }
 
@@ -155,32 +42,64 @@ namespace LamaPon
                 "ScreenEffect requires a Direct3D device and context.");
         }
 
-        const auto vertexByteCode =
-            CompileShader(
+        std::filesystem::path hlslPath = shaderPath;
+        ShaderPassDesc pass;
+        if (IsShaderManifestPath(shaderPath))
+        {
+            ShaderAssetDesc asset;
+            std::string manifestError;
+            if (!LoadShaderAssetDesc(
+                    assets,
+                    shaderPath,
+                    asset,
+                    manifestError))
+            {
+                throw std::runtime_error(manifestError);
+            }
+            if (asset.type != ShaderAssetType::ScreenEffect)
+            {
+                throw std::runtime_error(
+                    "ScreenEffect requires a shader manifest"
+                    " whose type is 'screenEffect': "
+                    + PathToUtf8(shaderPath));
+            }
+            // LoadShaderAssetDescがscreenEffectの先頭passにvertexと
+            // pixelがあることを検証済みです。
+            hlslPath = asset.source;
+            pass = asset.passes.front();
+        }
+        else
+        {
+            // 従来のHLSL直接指定は固定入口を使うfallbackとして維持します。
+            ShaderStageDesc vertex;
+            vertex.stage = ShaderStage::Vertex;
+            vertex.entryPoint = "VSMain";
+            vertex.target = "vs_5_0";
+            pass.stages.emplace_back(std::move(vertex));
+
+            ShaderStageDesc pixel;
+            pixel.stage = ShaderStage::Pixel;
+            pixel.entryPoint = "PSMain";
+            pixel.target = "ps_5_0";
+            pass.stages.emplace_back(std::move(pixel));
+        }
+
+        std::string programError;
+        if (!m_program.Compile(
+                device,
                 assets,
-                shaderPath,
-                "VSMain",
-                "vs_5_0");
-        const auto pixelByteCode =
-            CompileShader(
-                assets,
-                shaderPath,
-                "PSMain",
-                "ps_5_0");
-        ThrowIfFailed(
-            device->CreateVertexShader(
-                vertexByteCode->GetBufferPointer(),
-                vertexByteCode->GetBufferSize(),
-                nullptr,
-                m_vertexShader.ReleaseAndGetAddressOf()),
-            "ID3D11Device::CreateVertexShader(screen effect)");
-        ThrowIfFailed(
-            device->CreatePixelShader(
-                pixelByteCode->GetBufferPointer(),
-                pixelByteCode->GetBufferSize(),
-                nullptr,
-                m_pixelShader.ReleaseAndGetAddressOf()),
-            "ID3D11Device::CreatePixelShader(screen effect)");
+                hlslPath,
+                pass,
+                programError))
+        {
+            throw std::runtime_error(programError);
+        }
+        if (m_program.VertexShader() == nullptr
+            || m_program.PixelShader() == nullptr)
+        {
+            throw std::runtime_error(
+                "ScreenEffect requires vertex and pixel shader stages.");
+        }
 
         D3D11_BUFFER_DESC buffer{};
         buffer.ByteWidth =
@@ -284,9 +203,9 @@ namespace LamaPon
         m_context->IASetPrimitiveTopology(
             D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         m_context->VSSetShader(
-            m_vertexShader.Get(), nullptr, 0);
+            m_program.VertexShader(), nullptr, 0);
         m_context->PSSetShader(
-            m_pixelShader.Get(), nullptr, 0);
+            m_program.PixelShader(), nullptr, 0);
         ID3D11Buffer* buffers[]{
             m_constantBuffer.Get()
         };

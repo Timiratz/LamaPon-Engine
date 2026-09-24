@@ -33,6 +33,7 @@ namespace LamaPon
         // バイトコードの用意待ち。trueの間は標準Litで描きます。
         bool pending{};
         std::filesystem::file_time_type writeTime{};
+        std::uint64_t dependencyRevision{};
         std::uint64_t generation{};
         std::string error;
         std::chrono::steady_clock::time_point nextCheck{};
@@ -48,6 +49,7 @@ namespace LamaPon
         // began with while the cache is hot-reloaded.
         std::shared_ptr<SpriteEffect> effect;
         std::filesystem::file_time_type writeTime{};
+        std::uint64_t dependencyRevision{};
         std::uint64_t generation{};
         std::string error;
         std::chrono::steady_clock::time_point nextCheck{};
@@ -58,8 +60,12 @@ namespace LamaPon
 
     struct GraphicsDevice::ScreenShaderEntry final
     {
-        std::unique_ptr<ScreenEffect> effect;
+        // Queued passes must retain the exact generation that was active
+        // when they were submitted, even if the shader is hot-reloaded
+        // before the pass is applied.
+        std::shared_ptr<ScreenEffect> effect;
         std::filesystem::file_time_type writeTime{};
+        std::uint64_t dependencyRevision{};
         std::uint64_t generation{};
         std::string error;
         std::chrono::steady_clock::time_point nextCheck{};
@@ -72,6 +78,7 @@ namespace LamaPon
     {
         std::unique_ptr<ComputeEffect> effect;
         std::filesystem::file_time_type writeTime{};
+        std::uint64_t dependencyRevision{};
         std::string error;
         std::chrono::steady_clock::time_point nextCheck{};
         bool observed{};
@@ -81,7 +88,7 @@ namespace LamaPon
 
     struct GraphicsDevice::QueuedScreenEffect final
     {
-        ScreenEffect* effect{};
+        std::shared_ptr<ScreenEffect> effect;
         std::array<
             std::shared_ptr<const TextureAsset>,
             2> auxiliaryTextures{};
