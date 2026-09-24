@@ -1,3 +1,4 @@
+#include "LamaPon/Core/Crypto.h"
 #include "LamaPon/Editor/PackageManager.h"
 #include "LamaPon/Editor/PackageNativeDependencies.h"
 #include "LamaPon/Graphics/GraphicsBackendPackage.h"
@@ -72,6 +73,11 @@ namespace
             std::istreambuf_iterator<char>{});
     }
 
+    std::string Sha256Of(const std::vector<std::uint8_t>& bytes)
+    {
+        return LamaPon::Crypto::Sha256Hex(bytes.data(), bytes.size());
+    }
+
     void TestParsing()
     {
         const auto packages = LamaPon::ParsePackageIndex(
@@ -87,30 +93,52 @@ namespace
                         "minimumEngineVersion": "2026.7.31",
                         "activation": "Restart",
                         "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/camera-follow-1.0.zip",
-                        "sizeBytes": 2048
+                        "sizeBytes": 2048,
+                        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
                     },
                     {
                         "name": "renderer",
                         "version": "1.0",
                         "target": "Engine",
                         "activation": "Restart",
-                        "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/renderer-1.0.zip"
+                        "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/renderer-1.0.zip",
+                        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+                    },
+                    {
+                        "name": "no-hash",
+                        "version": "1.0",
+                        "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/no-hash-1.0.zip"
+                    },
+                    {
+                        "name": "upper-hash",
+                        "version": "1.0",
+                        "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/upper-hash-1.0.zip",
+                        "sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+                    },
+                    {
+                        "name": "short-hash",
+                        "version": "1.0",
+                        "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/short-hash-1.0.zip",
+                        "sha256": "e3b0c442"
                     },
                     {
                         "name": "BAD NAME!",
                         "version": "1.0",
-                        "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/x.zip"
+                        "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/x.zip",
+                        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
                     },
                     {
                         "name": "evil",
                         "version": "1.0",
-                        "downloadUrl": "https://evil.example/x.zip"
+                        "downloadUrl": "https://evil.example/x.zip",
+                        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
                     }
                 ]
             })");
         Require(
             packages.size() == 2,
-            "invalid entries must be filtered out");
+            "invalid entries, including ones without a canonical"
+            " sha256, must be filtered out");
         Require(
             packages[0].name == "camera-follow"
                 && packages[0].displayName == "カメラ追従"
@@ -121,7 +149,9 @@ namespace
                     == LamaPon::PackageActivation::Restart
                 && packages[0].target
                     == LamaPon::PackageTarget::Project
-                && packages[0].sizeBytes == 2048,
+                && packages[0].sizeBytes == 2048
+                && packages[0].sha256
+                    == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
             "package fields must round-trip");
         Require(
             packages[1].target == LamaPon::PackageTarget::Engine
@@ -167,6 +197,17 @@ namespace
 
     void TestValidation()
     {
+        Require(
+            LamaPon::Crypto::Sha256Hex(nullptr, 0)
+                == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                && LamaPon::IsCanonicalPackageSha256(
+                    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+                && !LamaPon::IsCanonicalPackageSha256(
+                    "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855")
+                && !LamaPon::IsCanonicalPackageSha256("")
+                && !LamaPon::IsCanonicalPackageSha256("e3b0c442"),
+            "package SHA-256 format rules");
+
         Require(
             LamaPon::IsPackageNameSafe("camera-follow_2d")
                 && !LamaPon::IsPackageNameSafe("Camera")
@@ -240,6 +281,40 @@ namespace
             "https://raw.githubusercontent.com/Timiratz/"
             "LamaPon-Engine/main/packages/a.zip";
 
+        // ハッシュの無い、または一致しないZipは展開前に拒否し、
+        // 何も残さないこと。
+        const auto rejectsWithoutInstalling =
+            [&assetRoot, &package, &zipBytes](const std::string& sha256)
+        {
+            auto candidate = package;
+            candidate.sha256 = sha256;
+            bool rejected = false;
+            try
+            {
+                LamaPon::InstallPackage(
+                    assetRoot,
+                    candidate,
+                    zipBytes);
+            }
+            catch (const std::exception&)
+            {
+                rejected = true;
+            }
+            return rejected
+                && !std::filesystem::exists(
+                    LamaPon::PackageInstallDirectory(
+                        assetRoot,
+                        package.name));
+        };
+        auto tamperedHash = Sha256Of(zipBytes);
+        tamperedHash[0] = tamperedHash[0] == '0' ? '1' : '0';
+        Require(
+            rejectsWithoutInstalling({})
+                && rejectsWithoutInstalling(tamperedHash),
+            "a package whose SHA-256 is missing or does not match"
+            " must not install");
+
+        package.sha256 = Sha256Of(zipBytes);
         LamaPon::InstallPackage(
             assetRoot,
             package,
@@ -285,6 +360,7 @@ namespace
             source,
             root / "package2.zip");
         package.version = "1.1";
+        package.sha256 = Sha256Of(zipBytes2);
         LamaPon::InstallPackage(
             assetRoot,
             package,
@@ -321,6 +397,7 @@ namespace
             source,
             root / "package3.zip");
         package.version = "1.2";
+        package.sha256 = Sha256Of(zipBytes3);
         LamaPon::InstallPackage(
             assetRoot,
             package,
@@ -427,12 +504,14 @@ namespace
             std::filesystem::remove_all(source);
             WriteFile(source / "Adapter.cpp", "// adapter");
             WriteFile(source / "package.json", manifest);
+            const auto zipBytes = ZipDirectory(
+                source,
+                root / (std::string{ folder } + ".zip"));
+            package.sha256 = Sha256Of(zipBytes);
             LamaPon::InstallPackage(
                 assetRoot,
                 package,
-                ZipDirectory(
-                    source,
-                    root / (std::string{ folder } + ".zip")));
+                zipBytes);
         };
 
         bool rejected = false;
@@ -475,11 +554,22 @@ namespace
             "a valid native package must install");
 
         // 作者が書いたnativeは、パッケージを作り直しても残します。
-        static_cast<void>(
-            LamaPon::BuildPackage(
-                assetRoot,
-                package,
-                root / "dist"));
+        const auto built = LamaPon::BuildPackage(
+            assetRoot,
+            package,
+            root / "dist");
+        {
+            std::ifstream builtInput(built.zipPath, std::ios::binary);
+            const std::vector<std::uint8_t> builtBytes(
+                std::istreambuf_iterator<char>{ builtInput },
+                std::istreambuf_iterator<char>{});
+            Require(
+                nlohmann::json::parse(built.indexEntryJson)
+                        .value("sha256", std::string{})
+                    == Sha256Of(builtBytes),
+                "a built package's index entry must carry the"
+                " zip's SHA-256");
+        }
         const auto manifest = nlohmann::json::parse(
             ReadFile(installed / "package.json"));
         Require(

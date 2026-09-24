@@ -7,6 +7,7 @@ SDK本体がZipへ紛れ込んでいないことも確認します。
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import unittest
@@ -25,6 +26,8 @@ ALLOWED_URL_PREFIXES = (
     "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/",
     "https://github.com/Timiratz/LamaPon-Engine/",
 )
+# PackageManager.cpp の IsCanonicalPackageSha256 と同じ規則です。
+CANONICAL_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 REQUIRED_KEYS = {
     "name",
     "displayName",
@@ -34,6 +37,7 @@ REQUIRED_KEYS = {
     "minimumEngineVersion",
     "downloadUrl",
     "sizeBytes",
+    "sha256",
 }
 # PackageNativeDependencies.cpp が受け付けるキーです。
 ALLOWED_NATIVE_KEYS = {
@@ -97,6 +101,15 @@ class PackageIndexTests(unittest.TestCase):
                     archive_path.stat().st_size,
                     entry["sizeBytes"],
                     "sizeBytesが実際のZipと違います。",
+                )
+                # エディターはこの値で照合してから展開します。値が
+                # 合わないパッケージは利用者の環境でインストールできません。
+                self.assertRegex(entry["sha256"], CANONICAL_SHA256)
+                self.assertEqual(
+                    hashlib.sha256(archive_path.read_bytes()).hexdigest(),
+                    entry["sha256"],
+                    "sha256が実際のZipと違います。"
+                    " build_package.py --update-index で更新してください。",
                 )
                 with zipfile.ZipFile(archive_path) as archive:
                     manifest = json.loads(
