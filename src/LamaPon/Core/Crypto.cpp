@@ -517,6 +517,63 @@ namespace LamaPon::Crypto
         return macKey;
     }
 
+    Sha256Digest Sha256(
+        const std::uint8_t* data,
+        const std::size_t size)
+    {
+        if ((size != 0 && data == nullptr)
+            || size > std::numeric_limits<ULONG>::max())
+        {
+            throw std::invalid_argument(
+                "SHA-256 input is invalid or too large.");
+        }
+        BCRYPT_ALG_HANDLE algorithm{};
+        ThrowIfFailed(
+            BCryptOpenAlgorithmProvider(
+                &algorithm,
+                BCRYPT_SHA256_ALGORITHM,
+                nullptr,
+                0),
+            "BCryptOpenAlgorithmProvider(SHA-256)");
+        const struct AlgorithmGuard final
+        {
+            BCRYPT_ALG_HANDLE handle;
+            ~AlgorithmGuard()
+            {
+                BCryptCloseAlgorithmProvider(handle, 0);
+            }
+        } algorithmGuard{ algorithm };
+
+        Sha256Digest digest{};
+        ThrowIfFailed(
+            BCryptHash(
+                algorithm,
+                nullptr,
+                0,
+                const_cast<PUCHAR>(data),
+                static_cast<ULONG>(size),
+                digest.data(),
+                static_cast<ULONG>(digest.size())),
+            "BCryptHash(SHA-256)");
+        return digest;
+    }
+
+    std::string Sha256Hex(
+        const std::uint8_t* data,
+        const std::size_t size)
+    {
+        constexpr char Digits[] = "0123456789abcdef";
+        const auto digest = Sha256(data, size);
+        std::string text;
+        text.reserve(digest.size() * 2);
+        for (const auto value : digest)
+        {
+            text.push_back(Digits[value >> 4]);
+            text.push_back(Digits[value & 0x0f]);
+        }
+        return text;
+    }
+
     bool MacEquals(const MacTag& left, const MacTag& right)
     {
         // 一致した長さで実行時間が変わらないよう、全バイトを見ます。

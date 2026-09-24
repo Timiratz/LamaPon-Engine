@@ -1,5 +1,6 @@
 #include "LamaPon/Editor/PackageManager.h"
 
+#include "LamaPon/Core/Crypto.h"
 #include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Editor/PackageNativeDependencies.h"
 
@@ -228,6 +229,19 @@ namespace LamaPon
         return true;
     }
 
+    bool IsCanonicalPackageSha256(
+        const std::string_view value) noexcept
+    {
+        return value.size() == 64
+            && std::ranges::all_of(
+                value,
+                [](const char character)
+                {
+                    return (character >= '0' && character <= '9')
+                        || (character >= 'a' && character <= 'f');
+                });
+    }
+
     bool IsAllowedPackageUrl(
         const std::string_view url) noexcept
     {
@@ -302,6 +316,8 @@ namespace LamaPon
                 entry.value("downloadUrl", std::string{});
             package.sizeBytes =
                 entry.value("sizeBytes", std::uint64_t{});
+            package.sha256 =
+                entry.value("sha256", std::string{});
             package.activation = PackageActivationFromName(
                 entry.value("activation", std::string{}));
             package.target = PackageTargetFromName(
@@ -312,7 +328,8 @@ namespace LamaPon
             if (!IsPackageNameSafe(package.name)
                 || package.version.empty()
                 || !IsAllowedPackageUrl(
-                    package.downloadUrl))
+                    package.downloadUrl)
+                || !IsCanonicalPackageSha256(package.sha256))
             {
                 continue;
             }
@@ -401,6 +418,22 @@ namespace LamaPon
         {
             throw std::runtime_error(
                 "Package archive is empty.");
+        }
+        // 一覧のURLは配布リポジトリ配下に限っていますが、それだけでは
+        // 転送中や配布先で差し替えられたZipを検出できません。展開する
+        // 前に、一覧に載ったハッシュと照合します。
+        if (!IsCanonicalPackageSha256(package.sha256))
+        {
+            throw std::runtime_error(
+                "Package has no valid SHA-256 to verify: "
+                + package.name);
+        }
+        if (Crypto::Sha256Hex(zipBytes.data(), zipBytes.size())
+            != package.sha256)
+        {
+            throw std::runtime_error(
+                "Package archive failed its SHA-256 check: "
+                + package.name);
         }
         if (!std::filesystem::is_directory(assetRoot))
         {
@@ -719,6 +752,11 @@ namespace LamaPon
                 + package.name);
         }
 
+        // 手元のZipは利用者が選んだファイルそのものが正です。
+        // 読み込んだバイト列のハッシュをそのまま照合に使います。
+        package.sha256 = Crypto::Sha256Hex(
+            bytes.data(),
+            bytes.size());
         InstallPackage(assetRoot, package, bytes);
         return package;
     }
@@ -888,6 +926,21 @@ namespace LamaPon
             "https://example.com/packages/"
             + PathToUtf8(zipPath.filename());
         indexEntry["sizeBytes"] = result.sizeBytes;
+        {
+            std::ifstream zipInput(zipPath, std::ios::binary);
+            const std::vector<std::uint8_t> zipBytes(
+                std::istreambuf_iterator<char>{ zipInput },
+                std::istreambuf_iterator<char>{});
+            if (zipBytes.size() != result.sizeBytes)
+            {
+                throw std::runtime_error(
+                    "パッケージのZipを読み込めませんでした: "
+                    + PathToUtf8(zipPath));
+            }
+            indexEntry["sha256"] = Crypto::Sha256Hex(
+                zipBytes.data(),
+                zipBytes.size());
+        }
         result.indexEntryJson = indexEntry.dump(2);
         return result;
     }

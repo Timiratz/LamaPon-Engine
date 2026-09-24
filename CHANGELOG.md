@@ -9,6 +9,11 @@
 - `LamaPon/Core/BuildInfo.h`（`GetBuildInfo` / `FormatBuildLabel` / `FormatBuildDetails`）と `LamaPonCli version` を追加。`build-info.json` へ `branch` / `commit` / `commitShort` / `commitSubject` / `dirty` を追加（`buildRevision` は互換のため残す）。
 - `Version.h` の `BuildRevision` を削除し、`MAJOR.MINOR.PATCH` はパッケージの必要エンジン版・プロジェクト移行・更新確認の互換判定専用とした。ビルド識別子が必要なコードは `GetBuildInfo()` を使う。
 
+### セキュリティ
+
+- パッケージ一覧（`packages/index.json`）の各エントリへZip全体のSHA-256（`sha256`）を追加し、エディターはダウンロードしたZipが一致した場合だけ展開するようにした。`sha256`の無いエントリは一覧に表示しない。「パッケージを作成...」と`build_package.py`が出力する一覧用JSONにも`sha256`を含める。
+- CIのActionsをコミットSHAで固定し、checkout／setup-pythonの版をワークフロー間でv7へ揃えた。Web CIのemsdkもタグとコミットで固定し、checkoutは`persist-credentials: false`でビルドやテストへトークンを残さない。Release作成の書き込み権限はジョブ単位へ限定し、固定したActionsはDependabotで更新を確認する。
+
 ### 描画API設定
 
 - Material Asset Inspectorへ、編集中の標準Lit／custom shader／texture／parameterを即時反映する専用プレビュー球を追加。Shader compileエラーには「エラー箇所を開く」を表示し、D3DCompilerのfile・line・columnをVS Code／Visual Studioへ渡して該当位置へ移動できるようにした。
