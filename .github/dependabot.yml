@@ -1,0 +1,12 @@
+# ワークフローのActionsはコミットSHAで固定しています。固定したままだと
+# 修正版を取り込めないため、更新はDependabotのPRで確認してから入れます。
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
