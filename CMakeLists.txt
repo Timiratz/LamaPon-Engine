@@ -1372,10 +1372,14 @@ if(BUILD_TESTING)
     add_test(
         NAME ShaderCache
         COMMAND LamaPonShaderCacheTests)
+    # このテストはキャッシュへ「ちょうど1件増えた」ことを確かめます。
+    # 並列に走る描画系テストも%LOCALAPPDATA%のキャッシュへ書くため、
+    # このテストだけ専用の置き場を使います。
     set_tests_properties(
         ShaderCache
         PROPERTIES
             LABELS "graphics;shader"
+            ENVIRONMENT "LOCALAPPDATA=${CMAKE_CURRENT_BINARY_DIR}/test-output/shader-cache-localappdata"
     )
 
     add_executable(LamaPonShaderManifestTests
