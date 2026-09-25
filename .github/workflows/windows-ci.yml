@@ -69,7 +69,7 @@ jobs:
 
       - name: Upload render regression output
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: LamaPon-render-regression-output-${{ matrix.configuration }}
           path: build-ci/test-output/render-regression
@@ -88,7 +88,7 @@ jobs:
         # PRではパッケージ生成までを検証し、成果物は保存しません。
         # 通常pushと手動実行だけ保存してActionsの容量超過を避けます。
         if: github.event_name != 'pull_request' && matrix.configuration == 'Release'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: LamaPonGame-windows-x64
           path: build-ci/export/LamaPonGame
@@ -97,7 +97,7 @@ jobs:
 
       - name: Upload engine package
         if: github.event_name != 'pull_request' && matrix.configuration == 'Release'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: LamaPon-windows-x64
           path: build-ci/LamaPon-*-windows-x64.zip
@@ -106,7 +106,7 @@ jobs:
 
       - name: Upload debug symbols
         if: github.event_name != 'pull_request' && matrix.configuration == 'Release'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: LamaPon-symbols-windows-x64
           path: |
