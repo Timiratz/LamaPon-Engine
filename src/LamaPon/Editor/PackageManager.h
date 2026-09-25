@@ -49,6 +49,9 @@ namespace LamaPon
         std::string minimumEngineVersion;
         std::string downloadUrl;
         std::uint64_t sizeBytes{};
+        // Zip全体のSHA-256（英小文字16進64桁）。一覧から得た
+        // パッケージでは必須で、インストール前に照合します。
+        std::string sha256;
         PackageActivation activation{ PackageActivation::Immediate };
         PackageTarget target{ PackageTarget::Project };
     };
@@ -60,7 +63,8 @@ namespace LamaPon
         L"/Timiratz/LamaPon-Engine/main/packages/index.json";
 
     // 一覧JSONを解釈します。形式不正は例外、パッケージ0件は空を
-    // 返します。name不正・URL不許可のエントリは除外します。
+    // 返します。name不正・URL不許可・sha256の無いエントリは
+    // 除外します。
     [[nodiscard]] std::vector<PackageInfo> ParsePackageIndex(
         std::string_view indexJson);
 
@@ -68,6 +72,10 @@ namespace LamaPon
     // （英小文字・数字・-・_のみ、1～64文字）。
     [[nodiscard]] bool IsPackageNameSafe(
         std::string_view name) noexcept;
+
+    // 英小文字16進64桁のSHA-256表記か。
+    [[nodiscard]] bool IsCanonicalPackageSha256(
+        std::string_view value) noexcept;
 
     // ダウンロードURLとして許可するか（配布リポジトリ配下のみ）。
     [[nodiscard]] bool IsAllowedPackageUrl(
@@ -104,9 +112,11 @@ namespace LamaPon
         const std::filesystem::path& assetRoot,
         const std::filesystem::path& zipPath);
 
-    // Zipバイト列を検証・展開してインストールします。展開は
-    // ステージングフォルダーで行い、成功時のみ既存を置き換えるため
-    // 途中失敗で壊れたパッケージを残しません。失敗時は例外。
+    // Zipバイト列を検証・展開してインストールします。
+    // package.sha256とZipのSHA-256が一致しない場合は展開前に
+    // 例外にします（sha256が空・不正な形式の場合も拒否します）。
+    // 展開はステージングフォルダーで行い、成功時のみ既存を
+    // 置き換えるため途中失敗で壊れたパッケージを残しません。
     void InstallPackage(
         const std::filesystem::path& assetRoot,
         const PackageInfo& package,

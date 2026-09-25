@@ -5557,6 +5557,7 @@ namespace
             " editor GUI\n"
             "\n"
             "usage:\n"
+            "  LamaPonCli version\n"
             "  LamaPonCli render --project <dir> [options]\n"
             "  LamaPonCli new --dir <dir> [options]\n"
             "  LamaPonCli build --project <dir> [options]\n"
@@ -5777,6 +5778,33 @@ int wmain(const int argumentCount, wchar_t** arguments)
                         std::filesystem::path{
                         argument }));
             };
+
+        // どのソース（ブランチ名 @ コミット）から作ったCLIかを返します。
+        // compatibilityVersionはパッケージやプロジェクトの互換判定用です。
+        if (command == L"version"
+            || command == L"--version")
+        {
+            const auto& build = LamaPon::GetBuildInfo();
+            const nlohmann::json response{
+                { "ok", true },
+                { "command", "version" },
+                { "label", LamaPon::FormatBuildLabel() },
+                { "branch", std::string(build.branch) },
+                { "commit", std::string(build.commitFull) },
+                { "commitShort", std::string(build.commit) },
+                { "commitSubject", std::string(build.commitSubject) },
+                { "dirty", build.dirty },
+                { "compatibilityVersion",
+                    std::string(LamaPon::VersionString) },
+            };
+            std::cout << response.dump(
+                2,
+                ' ',
+                false,
+                nlohmann::json::error_handler_t::replace)
+                << std::endl;
+            return 0;
+        }
 
         if (command == L"learn")
         {

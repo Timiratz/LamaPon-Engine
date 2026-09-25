@@ -61,6 +61,27 @@ LamaPonCli.exe project move --project "C:\path\to\MyProject" --to "D:\Games\MyPr
 `project move`は移動先へ一時コピーし、項目数・総バイト数・Project構造を
 検証してから元フォルダーを削除します。検証に失敗した場合は元を残します。
 
+## エンジンのビルド情報（version）
+
+`LamaPonCli version`（`--version` でも可）は、このCLIをどのソースから作ったかをJSONで返します。
+表示用の `label` は「ブランチ名 @ コミット」で、`compatibilityVersion` はパッケージやプロジェクトの互換判定に使う番号です。
+
+```json
+{
+  "ok": true,
+  "command": "version",
+  "label": "community/main @ 932b08c3a1b2",
+  "branch": "community/main",
+  "commit": "932b08c3a1b2...",
+  "commitShort": "932b08c3a1b2",
+  "commitSubject": "Harden exported game assets and release binaries (#26)",
+  "dirty": false,
+  "compatibilityVersion": "0.1.0"
+}
+```
+
+詳しくは[プロジェクトのエンジン表示バージョン](project.md#エンジンの表示バージョンブランチ名--コミット)を参照してください。
+
 ## 学習進捗と環境診断
 
 学習テンプレートの進捗と教材をCLIから操作できます。

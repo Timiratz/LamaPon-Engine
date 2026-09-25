@@ -13,15 +13,27 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
       - name: Install Emscripten
+        # emsdk本体も既定ブランチの最新ではなく、タグとコミットで固定します。
+        # 更新するときは両方を同じリリースへ揃えてください。
+        env:
+          EMSDK_VERSION: "6.0.9"
+          EMSDK_COMMIT: 5eb0bde7585670252e8ba05e9d361627bffd08b5
         run: |
-          git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
-          "$RUNNER_TEMP/emsdk/emsdk" install 6.0.9
-          "$RUNNER_TEMP/emsdk/emsdk" activate 6.0.9
+          git -c advice.detachedHead=false clone --depth 1 --branch "$EMSDK_VERSION" https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
+          actual="$(git -C "$RUNNER_TEMP/emsdk" rev-parse HEAD)"
+          if [ "$actual" != "$EMSDK_COMMIT" ]; then
+            echo "::error::emsdk $EMSDK_VERSION resolved to $actual, expected $EMSDK_COMMIT"
+            exit 1
+          fi
+          "$RUNNER_TEMP/emsdk/emsdk" install "$EMSDK_VERSION"
+          "$RUNNER_TEMP/emsdk/emsdk" activate "$EMSDK_VERSION"
       - name: Build and run browser regressions
         shell: bash
         run: |

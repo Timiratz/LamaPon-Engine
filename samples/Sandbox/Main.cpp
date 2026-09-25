@@ -403,8 +403,11 @@ int WINAPI wWinMain(
             LamaPon::GraphicsDevice::SetEnableDebugLayer(true);
         }
 
+        // 複数ブランチのエディターを並べても取り違えないよう、
+        // タイトルにブランチ名とコミットを出します。
         const auto windowTitle = LamaPon::Utf8ToWide(
-            projectSettings.gameName + " - LamaPon Editor");
+            projectSettings.gameName + " - LamaPon Editor ("
+            + LamaPon::FormatBuildLabel() + ")");
         LamaPon::Application application(
             windowTitle,
             1280,

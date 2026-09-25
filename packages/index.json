@@ -9,7 +9,8 @@
       "version": "1.0.0",
       "minimumEngineVersion": "0.1.0",
       "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/discord-presence-sdk-1.0.0.zip",
-      "sizeBytes": 12332
+      "sizeBytes": 12332,
+      "sha256": "da0df22092136131342ad911b81df724846e2fba9d846206e7c029a0e23b6cb7"
     },
     {
       "name": "easing-tween",
@@ -19,7 +20,8 @@
       "version": "1.0.0",
       "minimumEngineVersion": "0.1.0",
       "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/easing-tween-1.0.0.zip",
-      "sizeBytes": 9148
+      "sizeBytes": 9148,
+      "sha256": "f4a7f629b3dedbd791b5c0ec0c211292198a2059aed8a9ddbfad643d36d40873"
     },
     {
       "name": "directx12-renderer",
@@ -31,7 +33,8 @@
       "activation": "Restart",
       "target": "Engine",
       "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/directx12-renderer-0.1.0.zip",
-      "sizeBytes": 8989
+      "sizeBytes": 8989,
+      "sha256": "0781e5b1dfcab07063b15618864173c53ea4d7d3484516ce784af33d3d62a271"
     }
   ],
   "version": 1

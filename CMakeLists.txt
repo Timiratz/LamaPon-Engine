@@ -5,48 +5,35 @@ project(LamaPon VERSION 0.1.0 LANGUAGES CXX)
 include(cmake/LamaPonMsvcDependencies.cmake)
 lamapon_configure_msvc_dependencies()
 
-set(LAMAPON_BUILD_REVISION "unknown")
-find_package(Git QUIET)
-if(Git_FOUND AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git")
-    execute_process(
-        COMMAND
-            "${GIT_EXECUTABLE}"
-            -C "${CMAKE_CURRENT_SOURCE_DIR}"
-            rev-parse --short=12 HEAD
-        OUTPUT_VARIABLE LAMAPON_GIT_REVISION
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        RESULT_VARIABLE LAMAPON_GIT_REVISION_RESULT
-        ERROR_QUIET
-    )
-    if(LAMAPON_GIT_REVISION_RESULT EQUAL 0
-       AND NOT LAMAPON_GIT_REVISION STREQUAL "")
-        set(LAMAPON_BUILD_REVISION "${LAMAPON_GIT_REVISION}")
-        execute_process(
-            COMMAND
-                "${GIT_EXECUTABLE}"
-                -C "${CMAKE_CURRENT_SOURCE_DIR}"
-                status --porcelain
-            OUTPUT_VARIABLE LAMAPON_GIT_STATUS
-            OUTPUT_STRIP_TRAILING_WHITESPACE
-            RESULT_VARIABLE LAMAPON_GIT_STATUS_RESULT
-            ERROR_QUIET
-        )
-        if(LAMAPON_GIT_STATUS_RESULT EQUAL 0
-           AND NOT LAMAPON_GIT_STATUS STREQUAL "")
-            string(APPEND LAMAPON_BUILD_REVISION "-dirty")
-        endif()
-    endif()
-endif()
-
 configure_file(
     cmake/Version.h.in
     "${CMAKE_CURRENT_BINARY_DIR}/generated/LamaPon/Core/Version.h"
     @ONLY
 )
-configure_file(
-    cmake/BuildInfo.json.in
-    "${CMAKE_CURRENT_BINARY_DIR}/generated/build-info.json"
-    @ONLY
+
+# 表示用のブランチ名とコミットは構成時に一度生成し、さらにビルドの
+# たびにLamaPonBuildInfoターゲットで取り直します（内容が同じなら
+# 書き換えません）。
+include(cmake/LamaPonGitInfo.cmake)
+lamapon_write_build_info(
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_BINARY_DIR}"
+)
+add_custom_target(LamaPonBuildInfo
+    COMMAND ${CMAKE_COMMAND}
+        "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        "-DPROJECT_VERSION=${PROJECT_VERSION}"
+        "-DCMAKE_GENERATOR=${CMAKE_GENERATOR}"
+        "-DCMAKE_CXX_COMPILER_ID=${CMAKE_CXX_COMPILER_ID}"
+        "-DCMAKE_CXX_COMPILER_VERSION=${CMAKE_CXX_COMPILER_VERSION}"
+        "-DCMAKE_SYSTEM_PROCESSOR=${CMAKE_SYSTEM_PROCESSOR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateBuildInfo.cmake"
+    BYPRODUCTS
+        "${CMAKE_CURRENT_BINARY_DIR}/generated/LamaPon/Core/BuildInfoData.cpp"
+        "${CMAKE_CURRENT_BINARY_DIR}/generated/build-info.json"
+    COMMENT "Updating LamaPon build info (branch and commit)"
+    VERBATIM
 )
 
 if(NOT WIN32)
@@ -252,6 +239,8 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Core/HttpClient.h
     src/LamaPon/Core/VersionCompare.cpp
     src/LamaPon/Core/VersionCompare.h
+    src/LamaPon/Core/BuildInfo.cpp
+    src/LamaPon/Core/BuildInfo.h
     src/LamaPon/Core/Log.cpp
     src/LamaPon/Core/Log.h
     src/LamaPon/Core/LocalPersistenceDocuments.cpp
@@ -587,6 +576,12 @@ add_library(LamaPonRuntime SHARED
     ${LAMAPON_RUNTIME_SOURCES}
 )
 add_library(LamaPon::Runtime ALIAS LamaPonRuntime)
+# 生成物はsrc外にあるため、source_group(TREE src)の対象から外して
+# 個別に追加します。
+target_sources(LamaPonRuntime PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/LamaPon/Core/BuildInfoData.cpp"
+)
+add_dependencies(LamaPonRuntime LamaPonBuildInfo)
 add_library(LamaPon ALIAS LamaPonRuntime)
 
 # MSVCはC++ memberのaccess指定をdecorated nameに含めます。
@@ -1074,7 +1069,7 @@ if(BUILD_TESTING)
     set_tests_properties(EditorGuiRendererWarp PROPERTIES
         LABELS "editor;graphics"
         TIMEOUT 60)
-    foreach(test_name IN ITEMS RuntimeServices RenderSpatialIndex GraphicsBackendSelection GraphicsResource)
+    foreach(test_name IN ITEMS RuntimeServices RenderSpatialIndex GraphicsBackendSelection GraphicsResource BuildInfo)
         add_executable(LamaPon${test_name}Tests tests/${test_name}Tests.cpp)
         target_link_libraries(LamaPon${test_name}Tests PRIVATE LamaPonRuntime)
         target_compile_options(LamaPon${test_name}Tests PRIVATE
@@ -1372,10 +1367,14 @@ if(BUILD_TESTING)
     add_test(
         NAME ShaderCache
         COMMAND LamaPonShaderCacheTests)
+    # このテストはキャッシュへ「ちょうど1件増えた」ことを確かめます。
+    # 並列に走る描画系テストも%LOCALAPPDATA%のキャッシュへ書くため、
+    # このテストだけ専用の置き場を使います。
     set_tests_properties(
         ShaderCache
         PROPERTIES
             LABELS "graphics;shader"
+            ENVIRONMENT "LOCALAPPDATA=${CMAKE_CURRENT_BINARY_DIR}/test-output/shader-cache-localappdata"
     )
 
     add_executable(LamaPonShaderManifestTests
