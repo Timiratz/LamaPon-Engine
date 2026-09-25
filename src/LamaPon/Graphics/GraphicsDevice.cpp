@@ -164,6 +164,11 @@ namespace LamaPon
         return m_state->m_gpuProfiler;
     }
 
+    FrameDebugger& GraphicsDevice::FrameDebug() noexcept
+    {
+        return m_state->m_frameDebugger;
+    }
+
     void GraphicsDevice::SetAsyncShaderCompilationEnabled(
         const bool enabled) noexcept
     {

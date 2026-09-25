@@ -1,6 +1,7 @@
 #include "LamaPon/Components/SpriteParticles2DComponent.h"
 
 #include "LamaPon/Assets/AssetManager.h"
+#include "LamaPon/Components/FrameDebugDescription.h"
 #include "LamaPon/Components/UIRectTransformComponent.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Scene/GameObject.h"
@@ -295,5 +296,18 @@ namespace LamaPon
                     size / textureHeight };
             static_cast<void>(sprites.Draw(request));
         }
+    }
+
+    bool SpriteParticles2DComponent::DescribeDrawEvent(
+        FrameDebugDrawDescription& description) const
+    {
+        description.instanceCount =
+            static_cast<std::uint32_t>(ActiveParticleCount());
+        return Detail::DescribeTexturedDraw(
+            description,
+            "2Dパーティクル "
+                + std::to_string(ActiveParticleCount()) + "個",
+            TexturePath(),
+            RenderSortOrder());
     }
 }

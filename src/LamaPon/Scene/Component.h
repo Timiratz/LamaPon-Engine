@@ -11,6 +11,7 @@ namespace LamaPon
     class GameObject;
     class GraphicsDevice;
     class Script;
+    struct FrameDebugDrawDescription;
     class SpriteDrawContext;
     struct Transform;
 
@@ -52,6 +53,16 @@ namespace LamaPon
         [[nodiscard]] virtual int RenderSortOrder() const noexcept
         {
             return 0;
+        }
+        // フレームデバッガーへ描画イベントとして報告する内容を書き込み
+        // ます。描画を行うComponentはtrueを返します。描画しない
+        // Componentは既定のfalseのままにし、イベント一覧に現れません。
+        // フレームデバッガーを有効にしている間だけ、描画の直前に呼ばれます。
+        [[nodiscard]] virtual bool DescribeDrawEvent(
+            FrameDebugDrawDescription& description) const
+        {
+            static_cast<void>(description);
+            return false;
         }
 
     protected:

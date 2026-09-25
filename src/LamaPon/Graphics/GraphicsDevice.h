@@ -92,6 +92,7 @@ namespace LamaPon
     class AudioSystem;
     class ClusteredLights;
     class DebugRenderer;
+    class FrameDebugger;
     class InputSystem;
     class LitEffect;
     class ModelRendererComponent;
@@ -524,6 +525,8 @@ namespace LamaPon
         // GPU区間計測（タイムスタンプクエリ）。フレームの
         // 開始/終了はBeginFrame/EndFrameが自動で行います。
         [[nodiscard]] GpuProfiler& Gpu() noexcept;
+        // フレームの描画イベントを記録し、途中までの描画を作るデバッガーです。
+        [[nodiscard]] FrameDebugger& FrameDebug() noexcept;
         // Sky cubemapをnative SRVへ公開せず、現在のBackend世代に
         // 属するsampleableなTextureCubeかを確認します。
         [[nodiscard]] bool IsSampleableCubeView(

@@ -54,6 +54,19 @@ namespace LamaPon
         std::size_t activeContactCount{};
     };
 
+    // 物理デバッガーが表示する接触1点です。pointとnormalはワールド座標で、
+    // normalはleftへ通知した衝突法線と同じ向きです。
+    struct PhysicsDebugContact final
+    {
+        GameObjectId left{};
+        GameObjectId right{};
+        DirectX::XMFLOAT3 point{};
+        DirectX::XMFLOAT3 normal{};
+        float penetration{};
+        bool is3D{};
+        bool isTrigger{};
+    };
+
     struct RenderVisibilityStats final
     {
         std::size_t rendererCount{};
@@ -398,6 +411,20 @@ namespace LamaPon
             PhysicsStats() const noexcept
         {
             return m_physicsStats;
+        }
+        // 物理デバッガー用に、直前の物理ステップの接触点を記録するか
+        // どうかです。既定は無効で、無効の間は記録の負荷がかかりません。
+        void SetPhysicsDebugCaptureEnabled(bool enabled) noexcept;
+        [[nodiscard]] bool IsPhysicsDebugCaptureEnabled() const noexcept
+        {
+            return m_physicsDebugCaptureEnabled;
+        }
+        // 最後に実行した物理ステップで検出した接触点です（トリガーを
+        // 含みます）。同じ組の接触はステップごとに最初の1回だけです。
+        [[nodiscard]] const std::vector<PhysicsDebugContact>&
+            PhysicsDebugContacts() const noexcept
+        {
+            return m_physicsDebugContacts;
         }
         // 互換用の既定値です。現在の設定値はPhysicsTiming().fixedDeltaTime。
         [[nodiscard]] static constexpr float
@@ -751,6 +778,8 @@ namespace LamaPon
         ColorGradingSettings m_colorGrading;
         float m_physicsBroadPhaseCellSize{ 4.0f };
         PhysicsBroadPhaseStats m_physicsStats;
+        std::vector<PhysicsDebugContact> m_physicsDebugContacts;
+        bool m_physicsDebugCaptureEnabled{};
         Detail::PhysicsFrameClock m_physicsClock;
         bool m_renderingInterpolatedTransforms{};
         // レンダーテクスチャ描画中の再入を防ぎます。

@@ -1,6 +1,7 @@
 #include "LamaPon/Components/MeshRendererComponent.h"
 
 #include "LamaPon/Assets/AssetManager.h"
+#include "LamaPon/Components/FrameDebugDescription.h"
 #include "LamaPon/Components/ReflectionProbeComponent.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Graphics/ShadowMap.h"
@@ -2330,5 +2331,55 @@ namespace LamaPon
         {
             component->m_instancedThisPass = true;
         }
+    }
+
+    bool MeshRendererComponent::DescribeDrawEvent(
+        FrameDebugDrawDescription& description) const
+    {
+        // インスタンス描画でまとめて描いた後の個別の呼び出しは何も
+        // 描かないため、イベントとして数えません。
+        if (m_instancedThisPass)
+        {
+            return false;
+        }
+        if (HasProceduralMesh())
+        {
+            description.geometry = "手続きメッシュ";
+            description.vertexCount = m_proceduralVertices.size();
+            description.triangleCount = m_proceduralIndices.size() / 3u;
+        }
+        else
+        {
+            switch (m_shape)
+            {
+            case PrimitiveShape::Cube:
+                description.geometry = "立方体";
+                break;
+            case PrimitiveShape::Sphere:
+                description.geometry = "球";
+                break;
+            case PrimitiveShape::Cylinder:
+                description.geometry = "円柱";
+                break;
+            case PrimitiveShape::Plane:
+                description.geometry = "平面";
+                break;
+            }
+        }
+        description.material = Detail::FrameDebugMaterialLabel(
+            m_materialAssetPath,
+            m_material.Shader(),
+            m_material.AlbedoTexture());
+        Detail::AppendFrameDebugItem(
+            description.state,
+            IsAlphaBlended3D() ? "アルファ合成" : "不透明");
+        Detail::AppendFrameDebugItem(
+            description.state,
+            Detail::FrameDebugCullLabel(m_cullMode));
+        if (m_worldOverlay)
+        {
+            Detail::AppendFrameDebugItem(description.state, "最前面表示");
+        }
+        return true;
     }
 }

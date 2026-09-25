@@ -49,6 +49,7 @@ namespace LamaPon
     class DataAsset;
     class GraphicsBackend;
     class SkeletalModel;
+    struct MemorySnapshotEntry;
 
     namespace Detail
     {
@@ -101,6 +102,9 @@ namespace LamaPon
         // DDSキューブマップとして読み込まれた場合true
         // （SRVはTextureCube）。
         bool isCube{};
+        // GPUへ置く全mip・全面の合計バイト数の見積もりです。メモリ
+        // プロファイラーが内訳に使い、不明な経路では0のままです。
+        std::uint64_t gpuBytes{};
     };
 
     struct ModelAsset final
@@ -418,6 +422,10 @@ namespace LamaPon
         {
             return m_dataAssetCache.size();
         }
+        // キャッシュ中の資源を1件ずつメモリ内訳としてentriesへ追加します
+        // （メモリプロファイラー用）。メインスレッドから呼んでください。
+        void AppendMemoryEntries(
+            std::vector<MemorySnapshotEntry>& entries) const;
 
     private:
         AssetManager(

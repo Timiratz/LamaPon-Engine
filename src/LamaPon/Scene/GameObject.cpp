@@ -1,6 +1,7 @@
 #include "LamaPon/Scene/GameObject.h"
 
 #include "LamaPon/Components/RenderCullingComponent.h"
+#include "LamaPon/Graphics/FrameDebugger.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Scene/Scene.h"
 
@@ -28,6 +29,24 @@ namespace
             && left.scale.x == right.scale.x
             && left.scale.y == right.scale.y
             && left.scale.z == right.scale.z;
+    }
+}
+
+namespace
+{
+    [[nodiscard]] LamaPon::FrameDebugPass CurrentFrameDebugPass(
+        const LamaPon::GraphicsDevice& graphics) noexcept
+    {
+        switch (graphics.DepthPass())
+        {
+        case LamaPon::DepthPassKind::Shadow:
+            return LamaPon::FrameDebugPass::ShadowDepth;
+        case LamaPon::DepthPassKind::Prepass:
+            return LamaPon::FrameDebugPass::DepthPrepass;
+        case LamaPon::DepthPassKind::None:
+            break;
+        }
+        return LamaPon::FrameDebugPass::Color;
     }
 }
 
@@ -653,11 +672,48 @@ namespace LamaPon
         {
             component->InitializeIfNeeded(graphics);
 
-            if (component->m_enabled)
+            if (component->m_enabled
+                && SubmitFrameDebugEvent(
+                    graphics,
+                    *component,
+                    FrameDebugEventKind::Draw3D))
             {
                 component->OnRender3D(view, projection);
             }
         }
+    }
+
+    bool GameObject::SubmitFrameDebugEvent(
+        GraphicsDevice& graphics,
+        const Component& component,
+        const FrameDebugEventKind kind)
+    {
+        auto& frameDebugger = graphics.FrameDebug();
+        if (!frameDebugger.IsEnabled())
+        {
+            return true;
+        }
+        FrameDebugDrawDescription description;
+        try
+        {
+            if (!component.DescribeDrawEvent(description))
+            {
+                return true;
+            }
+        }
+        catch (...)
+        {
+            // 説明の作成に失敗しても描画は通常どおり行い、項目だけ
+            // 空のイベントとして数えます。
+            description = {};
+        }
+        return frameDebugger.SubmitDrawEvent(
+            kind,
+            CurrentFrameDebugPass(graphics),
+            Id(),
+            Name(),
+            component.TypeName(),
+            std::move(description));
     }
 
     bool GameObject::HasPreRender3DPass(
@@ -714,7 +770,11 @@ namespace LamaPon
         {
             component->InitializeIfNeeded(graphics);
             if (component->m_enabled
-                && component->HasPreRender3DPass())
+                && component->HasPreRender3DPass()
+                && SubmitFrameDebugEvent(
+                    graphics,
+                    *component,
+                    FrameDebugEventKind::PreRender3D))
             {
                 component->OnPreRender3D(view, projection);
             }
@@ -734,7 +794,11 @@ namespace LamaPon
         {
             component->InitializeIfNeeded(graphics);
 
-            if (component->m_enabled)
+            if (component->m_enabled
+                && SubmitFrameDebugEvent(
+                    graphics,
+                    *component,
+                    FrameDebugEventKind::Draw2D))
             {
                 component->OnRender2D(sprites);
             }

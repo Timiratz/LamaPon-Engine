@@ -1,7 +1,8 @@
+#include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Graphics/D3D11Backend.h"
 #include "LamaPon/Graphics/GpuProfiler.h"
 
-#include <d3d11.h>
+#include <d3d11_1.h>
 #include <wrl/client.h>
 
 #include <array>
@@ -29,6 +30,11 @@ namespace LamaPon
                 {
                     return;
                 }
+                // debug markerはtimestampとは独立に使えるため、queryの
+                // 作成に失敗しても先に取得しておきます。取得できない環境
+                // （D3D11.1未満）ではmarkerを出しません。
+                static_cast<void>(context->QueryInterface(
+                    IID_PPV_ARGS(m_annotation.GetAddressOf())));
 
                 // 全フレームスロットのクエリを事前に作成します。
                 // 1つでも失敗したら計測を無効にします。
@@ -205,6 +211,35 @@ namespace LamaPon
                 LatestPipelineStatistics() const noexcept override
             {
                 return m_latestPipelineStatistics;
+            }
+
+            [[nodiscard]] bool BeginMarker(
+                const std::string_view name) noexcept override
+            {
+                // PIXやRenderDocなどが接続していない間は文字列変換を
+                // 省きます。
+                if (m_annotation == nullptr || !m_annotation->GetStatus())
+                {
+                    return false;
+                }
+                try
+                {
+                    const auto wideName = Utf8ToWide(name);
+                    m_annotation->BeginEvent(wideName.c_str());
+                    return true;
+                }
+                catch (...)
+                {
+                    return false;
+                }
+            }
+
+            void EndMarker() noexcept override
+            {
+                if (m_annotation != nullptr)
+                {
+                    m_annotation->EndEvent();
+                }
             }
 
         private:
@@ -396,6 +431,8 @@ namespace LamaPon
             // 逆順破棄時はQueryがDevice / Contextより先に解放されます。
             Microsoft::WRL::ComPtr<ID3D11Device> m_device;
             Microsoft::WRL::ComPtr<ID3D11DeviceContext> m_context;
+            // PIX / RenderDoc向けのイベント名を積むinterfaceです。
+            Microsoft::WRL::ComPtr<ID3DUserDefinedAnnotation> m_annotation;
             // 読み出し遅延用のリングバッファ。
             static constexpr std::size_t FrameCount = 4;
             std::array<FrameQueries, FrameCount> m_frames;

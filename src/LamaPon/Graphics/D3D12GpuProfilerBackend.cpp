@@ -1,5 +1,6 @@
 #include "LamaPon/Graphics/D3D12GpuProfilerBackend.h"
 
+#include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Graphics/D3D12Backend.h"
 
 #include <algorithm>
@@ -268,9 +269,73 @@ namespace LamaPon
         return m_latestPipelineStatistics;
     }
 
+    bool D3D12GpuProfilerBackend::BeginMarker(
+        const std::string_view name) noexcept
+    {
+        if (m_backend == nullptr)
+        {
+            return false;
+        }
+        auto* const commands = m_backend->RecordingFrameCommands();
+        if (commands == nullptr)
+        {
+            return false;
+        }
+        try
+        {
+            // PIXの旧形式（metadata 0 = UTF-16文字列）です。PIXとRenderDocの
+            // どちらも、追加のruntime無しでこの形式を読めます。
+            const auto wideName = Utf8ToWide(name);
+            m_markerStack.reserve(m_markerStack.size() + 1);
+            commands->BeginEvent(
+                0,
+                wideName.c_str(),
+                static_cast<UINT>(
+                    (wideName.size() + 1) * sizeof(wchar_t)));
+            m_markerStack.push_back(true);
+            return true;
+        }
+        catch (...)
+        {
+            return false;
+        }
+    }
+
+    void D3D12GpuProfilerBackend::EndMarker() noexcept
+    {
+        if (m_markerStack.empty())
+        {
+            return;
+        }
+        const bool open = m_markerStack.back();
+        m_markerStack.pop_back();
+        if (!open || m_backend == nullptr)
+        {
+            return;
+        }
+        if (auto* const commands = m_backend->RecordingFrameCommands())
+        {
+            commands->EndEvent();
+        }
+    }
+
     void D3D12GpuProfilerBackend::BeforeCommandListClose(
         ID3D12GraphicsCommandList* const commands) noexcept
     {
+        // 閉じるcommand listの中でmarkerの入れ子を完結させます。
+        if (commands != nullptr)
+        {
+            for (auto marker = m_markerStack.rbegin();
+                marker != m_markerStack.rend();
+                ++marker)
+            {
+                if (*marker)
+                {
+                    commands->EndEvent();
+                    *marker = false;
+                }
+            }
+        }
         if (!m_supported || commands == nullptr)
         {
             return;

@@ -1,6 +1,7 @@
 #include "LamaPon/Components/ParticleSystemComponent.h"
 
 #include "LamaPon/Assets/AssetManager.h"
+#include "LamaPon/Components/FrameDebugDescription.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Graphics/GraphicsRenderServices.h"
 #include "LamaPon/Scene/GameObject.h"
@@ -851,5 +852,21 @@ namespace LamaPon
             m_customParameters,
             &m_shaderGeneration,
             &m_shaderError));
+    }
+
+    bool ParticleSystemComponent::DescribeDrawEvent(
+        FrameDebugDrawDescription& description) const
+    {
+        description.geometry =
+            "パーティクル " + std::to_string(ActiveParticleCount())
+            + " / " + std::to_string(MaxParticles());
+        description.instanceCount =
+            static_cast<std::uint32_t>(ActiveParticleCount());
+        description.material = Detail::FrameDebugMaterialLabel(
+            {},
+            ShaderPath(),
+            TexturePath());
+        description.state = Additive() ? "加算合成" : "アルファ合成";
+        return true;
     }
 }

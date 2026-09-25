@@ -42,9 +42,14 @@ namespace LamaPon
     class BgmLoopPanel;
     class EditorGuiRenderer;
     class EditorModelPreviewRenderer;
+    class FrameDebuggerPanel;
     class GameExportDialog;
     class GraphicsDevice;
+    class MemoryProfilerPanel;
     class MeshRendererComponent;
+    class PhysicsDebuggerPanel;
+    class ProfileAnalyzerPanel;
+    class ProfilerPanel;
     class OnlineServices;
     class PlayerPrefs;
     class SaveDataStore;
@@ -162,6 +167,18 @@ namespace LamaPon
         static constexpr std::string_view TilePalettePanelId{
             "tilePalette" };
         static constexpr std::string_view PackagesPanelId{ "packages" };
+        // 「ウィンドウ」→「解析」にまとめるデバッグ用パネルです。
+        static constexpr std::string_view ProfilerPanelId{ "profiler" };
+        static constexpr std::string_view ProfileAnalyzerPanelId{
+            "profileAnalyzer" };
+        static constexpr std::string_view MemoryProfilerPanelId{
+            "memoryProfiler" };
+        static constexpr std::string_view FrameDebuggerPanelId{
+            "frameDebugger" };
+        static constexpr std::string_view PhysicsDebuggerPanelId{
+            "physicsDebugger" };
+        static constexpr std::string_view ImGuiDebuggerPanelId{
+            "imguiDebugger" };
 
         // 最後に保存（または読み込み）した時点のシーンJSON。
         // 現在の状態との比較で未保存変更を判定します。
@@ -171,6 +188,17 @@ namespace LamaPon
         void DrawToolbar();
         void DrawDockSpace();
         void RegisterBuiltInEditorExtensions();
+        // プロファイラー・フレームデバッガーなどの解析パネルを登録します
+        // （EditorLayerAnalysis.cpp）。
+        void RegisterAnalysisExtension();
+        // プロジェクトの.lamapon配下にある解析記録の保存先です。
+        [[nodiscard]] std::filesystem::path DebugCaptureDirectory(
+            std::wstring_view name) const;
+        [[nodiscard]] std::optional<std::filesystem::path>
+            OpenDebugCaptureDialog(
+                const std::filesystem::path& initialDirectory);
+        // Scene Viewの補助表示へ解析パネルの重ね描きを追加します。
+        void DrawAnalysisSceneOverlay();
         void DrawRegisteredPanelMenuItems();
         void DrawRegisteredExtensionMenuItems();
         void DrawRegisteredPanels();
@@ -922,6 +950,13 @@ namespace LamaPon
         std::unique_ptr<BgmLoopPanel> m_bgmPanel;
         // 車種別の性能・寸法・Colliderを調整するプロジェクトパネル。
         std::unique_ptr<VehicleParametersPanel> m_vehicleParametersPanel;
+        // 「ウィンドウ」→「解析」のパネル。各パネルが表示状態と記録を
+        // 所有し、EditorLayerは開閉と保存先、選択の仲介だけを行います。
+        std::unique_ptr<ProfilerPanel> m_profilerPanel;
+        std::unique_ptr<ProfileAnalyzerPanel> m_profileAnalyzerPanel;
+        std::unique_ptr<MemoryProfilerPanel> m_memoryProfilerPanel;
+        std::unique_ptr<FrameDebuggerPanel> m_frameDebuggerPanel;
+        std::unique_ptr<PhysicsDebuggerPanel> m_physicsDebuggerPanel;
         std::uint64_t m_projectMenuManifestHash{};
         bool m_projectMenuManifestSeen{};
         double m_lastProjectMenuScanAt{ -2.0 };

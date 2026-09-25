@@ -229,6 +229,46 @@ namespace
             && probe.maximumRelativeError < 0.0001f,
             "New timestep settings must apply consistently on the next frame.");
     }
+
+    // 物理デバッガーの接触記録は、有効にした間だけ最後のステップの
+    // 接触点を保持し、無効にすると空へ戻ること。
+    void CheckPhysicsDebugContacts(LamaPon::GraphicsDevice& graphics)
+    {
+        LamaPon::Scene scene(graphics);
+        auto& ground = scene.CreateGameObject("Ground");
+        ground.AddComponent<LamaPon::BoxCollider3DComponent>(
+            DirectX::XMFLOAT3{ 10.0f, 1.0f, 10.0f });
+        auto& box = scene.CreateGameObject("Box");
+        // 床の上面(0.5)へ少しめり込ませ、最初のステップで接触させます。
+        box.GetTransform().position = { 0.0f, 0.95f, 0.0f };
+        box.AddComponent<LamaPon::BoxCollider3DComponent>();
+        box.AddComponent<LamaPon::RigidbodyComponent>();
+
+        scene.Update(1.0f / 60.0f);
+        Require(!scene.IsPhysicsDebugCaptureEnabled()
+            && scene.PhysicsDebugContacts().empty(),
+            "Physics debug contacts must not be recorded unless enabled.");
+
+        scene.SetPhysicsDebugCaptureEnabled(true);
+        scene.Update(1.0f / 60.0f);
+        const auto& contacts = scene.PhysicsDebugContacts();
+        Require(!contacts.empty(),
+            "Enabled physics debug capture did not record the resting contact.");
+        for (const auto& contact : contacts)
+        {
+            const bool pair =
+                (contact.left == ground.Id() && contact.right == box.Id())
+                || (contact.left == box.Id() && contact.right == ground.Id());
+            Require(pair && contact.is3D && !contact.isTrigger
+                && std::isfinite(contact.point.y)
+                && std::abs(contact.normal.y) > 0.5f,
+                "A physics debug contact did not describe the box on the ground.");
+        }
+
+        scene.SetPhysicsDebugCaptureEnabled(false);
+        Require(scene.PhysicsDebugContacts().empty(),
+            "Disabling physics debug capture must release recorded contacts.");
+    }
 }
 
 int main()
@@ -252,7 +292,8 @@ int main()
         CheckPauseAndTeleport(graphics);
         CheckDroppedTimeAndReset(graphics);
         CheckFrameSettingsSnapshot(graphics);
-        std::cout << "Physics presentation timing tests passed (15 cadences, pause, caps, reset, settings).\n";
+        CheckPhysicsDebugContacts(graphics);
+        std::cout << "Physics presentation timing tests passed (15 cadences, pause, caps, reset, settings, debug contacts).\n";
         return 0;
     }
     catch (const std::exception& error)

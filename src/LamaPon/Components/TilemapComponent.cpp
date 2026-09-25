@@ -1,6 +1,7 @@
 #include "LamaPon/Components/TilemapComponent.h"
 
 #include "LamaPon/Assets/AssetManager.h"
+#include "LamaPon/Components/FrameDebugDescription.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Scene/GameObject.h"
 
@@ -301,5 +302,15 @@ namespace LamaPon
 
             static_cast<void>(sprites.Draw(request));
         }
+    }
+
+    bool TilemapComponent::DescribeDrawEvent(
+        FrameDebugDrawDescription& description) const
+    {
+        return Detail::DescribeTexturedDraw(
+            description,
+            "タイル " + std::to_string(Cells().size()) + "枚",
+            TexturePath(),
+            RenderSortOrder());
     }
 }

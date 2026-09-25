@@ -2,6 +2,7 @@
 
 // GraphicsDeviceの公開layoutを描画APIや実装cacheから切り離すRuntime内部
 // headerです。Game Module SDKにはインストールしません。
+#include "LamaPon/Graphics/FrameDebugger.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 
 namespace LamaPon
@@ -32,6 +33,9 @@ namespace LamaPon
         GraphicsViewHandle m_whiteTextureView;
         GraphicsBufferHandle m_instanceBuffer;
         DepthPassKind m_depthPass{ DepthPassKind::None };
+        // GpuProfilerが区間の通知先として参照するため、先に宣言して
+        // GpuProfilerより長く生存させます。
+        FrameDebugger m_frameDebugger;
         GpuProfiler m_gpuProfiler;
 
         std::unique_ptr<DebugRenderer> m_debugRenderer;

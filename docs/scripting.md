@@ -380,6 +380,29 @@ const int hitPoints = enemy->GetInt("hitPoints");
 
 作り方と読み方は[データアセット](data-assets.md)を参照してください。
 
+### 処理時間を計測する
+
+重いと感じる処理は`LAMAPON_PROFILE_SCOPE`で囲むと、エディターの「ウィンドウ」→「解析」→「プロファイラー」に区間として現れます。
+区間は入れ子にでき、その時点で開いている区間（`Update`や`FixedUpdate`など）の子として、合計時間・自己時間・呼び出し回数が記録されます。
+
+```cpp
+#include "LamaPon/LamaPon.h"
+
+void EnemySpawner::OnUpdate(float deltaTime)
+{
+    LAMAPON_PROFILE_SCOPE("EnemySpawner.Update");
+    {
+        LAMAPON_PROFILE_SCOPE("EnemySpawner.FindTargets");
+        FindTargets();
+    }
+    SpawnWaves(deltaTime);
+}
+```
+
+区間の名前は同じ親の下で集計されるため、ループの中で使うと1行にまとまり、呼び出し回数が増えます。
+計測は区間を開いたスレッドごとに管理され、ワーカースレッドの区間は最上位に並びます。
+記録を保存して「プロファイル分析」で比べると、変更の前後で速くなったかを確かめられます（[解析ツール](editor.md#解析ツール)）。
+
 ### Discordログインとクラウドセーブ
 
 `Script`から`SignInWithDiscord()`でブラウザーログインを開始し、`OnlineState()`と

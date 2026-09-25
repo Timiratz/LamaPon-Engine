@@ -1,6 +1,7 @@
 #include "LamaPon/Scene/Scene.h"
 
 #include "LamaPon/Core/JobSystem.h"
+#include "LamaPon/Core/Profiler.h"
 
 #include "LamaPon/Components/BoxCollider3DComponent.h"
 #include "LamaPon/Components/CapsuleCollider3DComponent.h"
@@ -421,6 +422,7 @@ namespace LamaPon
             DirectX::FXMMATRIX view,
             DirectX::CXMMATRIX projection) const
     {
+        LAMAPON_PROFILE_SCOPE("Visibility");
         VisibilityResult result;
         const bool spatialIndexReused =
             RefreshRenderSpatialIndex();

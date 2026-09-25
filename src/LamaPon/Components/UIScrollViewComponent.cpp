@@ -1,5 +1,6 @@
 #include "LamaPon/Components/UIScrollViewComponent.h"
 
+#include "LamaPon/Components/FrameDebugDescription.h"
 #include "LamaPon/Components/UICanvasComponent.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Input/InputSystem.h"
@@ -229,5 +230,13 @@ namespace LamaPon
         request.tint = premultipliedBar;
         request.scale = { barWidth, thumbHeight };
         static_cast<void>(sprites.Draw(request));
+    }
+
+    bool UIScrollViewComponent::DescribeDrawEvent(
+        FrameDebugDrawDescription& description) const
+    {
+        description.geometry = "UIスクロールビュー";
+        description.state = "並び順 " + std::to_string(RenderSortOrder());
+        return true;
     }
 }

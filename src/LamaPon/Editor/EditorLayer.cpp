@@ -2,7 +2,12 @@
 #include "LamaPon/Editor/EditorLayer.h"
 #include "LamaPon/Editor/EditorGuiRenderer.h"
 #include "LamaPon/Editor/EditorModelPreviewRenderer.h"
+#include "LamaPon/Editor/FrameDebuggerPanel.h"
 #include "LamaPon/Editor/GameExportDialog.h"
+#include "LamaPon/Editor/MemoryProfilerPanel.h"
+#include "LamaPon/Editor/PhysicsDebuggerPanel.h"
+#include "LamaPon/Editor/ProfileAnalyzerPanel.h"
+#include "LamaPon/Editor/ProfilerPanel.h"
 #include "LamaPon/Editor/VehicleParametersPanel.h"
 
 #include "LamaPon/Editor/EditorLayerShared.h"
@@ -931,11 +936,18 @@ namespace LamaPon
             auto samples = nlohmann::json::array();
             for (const auto& sample : profile.samples)
             {
-                samples.push_back({
+                auto entry = nlohmann::json{
                     { "name", sample.name },
                     { "milliseconds", sample.milliseconds },
                     { "calls", sample.callCount },
-                });
+                    { "depth", sample.depth },
+                };
+                // 最上位区間はparentを省略し、従来の読み手と同じ形にします。
+                if (sample.parent != ProfileSample::NoParent)
+                {
+                    entry["parent"] = sample.parent;
+                }
+                samples.push_back(std::move(entry));
             }
             runtimeState["profiler"] = {
                 { "enabled", Profiler::Instance().IsEnabled() },
@@ -1664,6 +1676,20 @@ namespace LamaPon
             "project-settings:" };
         constexpr std::string_view inspectorPrefix{
             "inspector:" };
+        // 登録済みパネルをIDで開きます（例: panel:frameDebugger）。
+        constexpr std::string_view panelPrefix{ "panel:" };
+        if (show.starts_with(panelPrefix))
+        {
+            const std::string panelId =
+                show.substr(panelPrefix.size());
+            if (!m_editorExtensions.SetPanelOpen(panelId, true))
+            {
+                Logger::Instance().Warning(
+                    "スクリーンショット対象のパネルが見つかりません: "
+                    + panelId);
+            }
+            return;
+        }
         if (show.starts_with(settingsPrefix))
         {
             // カテゴリー名はDrawProjectSettingsDialogと同じ順にします。
@@ -2029,6 +2055,12 @@ namespace LamaPon
         if (m_activeViewport == ViewportMode::Scene
             && m_sceneRenderTarget.IsValid())
         {
+            // ビューごとに区間を分け、GPU時間とフレームデバッガーの
+            // イベントがどのビューの描画か分かるようにします。
+            GpuProfiler::SectionScope sceneViewSection{
+                m_graphics.Gpu(),
+                "Scene View"
+            };
             m_graphics.SetUIViewportSize(
                 m_sceneRenderTarget.Width(),
                 m_sceneRenderTarget.Height());
@@ -2082,6 +2114,8 @@ namespace LamaPon
             {
                 DrawLightGizmos();
             }
+            // 物理デバッガーの接触点と速度（パネルを開いている間だけ）。
+            DrawAnalysisSceneOverlay();
             // 選択枠は「今どれを触っているか」の表示なので、
             // デバッグ線のトグルとは独立に常に出します。
             DrawSelectionHighlight();
@@ -2090,6 +2124,7 @@ namespace LamaPon
             m_graphics.PublishOffscreenTarget(
                 m_sceneRenderTarget);
             helperOverlaySection.End();
+            sceneViewSection.End();
 
             const auto* selected =
                 m_scene.FindGameObject(m_selectedObjectId);
@@ -2099,6 +2134,10 @@ namespace LamaPon
             if (selectedCamera != nullptr
                 && m_cameraPreviewRenderTarget.IsValid())
             {
+                GpuProfiler::SectionScope cameraPreviewSection{
+                    m_graphics.Gpu(),
+                    "カメラプレビュー"
+                };
                 m_graphics.SetUIViewportSize(
                     m_cameraPreviewRenderTarget.Width(),
                     m_cameraPreviewRenderTarget.Height());
@@ -2125,6 +2164,10 @@ namespace LamaPon
         else if (m_activeViewport == ViewportMode::Game
             && m_gameRenderTarget.IsValid())
         {
+            GpuProfiler::SectionScope gameViewSection{
+                m_graphics.Gpu(),
+                "Game View"
+            };
             m_graphics.SetUIViewportSize(
                 m_gameRenderTarget.Width(),
                 m_gameRenderTarget.Height());
@@ -4620,6 +4663,19 @@ namespace LamaPon
                 / (1024.0 * 1024.0));
 
         ImGui::SeparatorText("CPUプロファイラー");
+        // 履歴のタイムラインや呼び出し木は専用パネルで扱います。
+        if (ImGui::SmallButton("プロファイラーを開く"))
+        {
+            static_cast<void>(
+                m_editorExtensions.SetPanelOpen(ProfilerPanelId, true));
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("メモリプロファイラーを開く"))
+        {
+            static_cast<void>(m_editorExtensions.SetPanelOpen(
+                MemoryProfilerPanelId,
+                true));
+        }
         auto& profiler = Profiler::Instance();
         bool profilerEnabled = profiler.IsEnabled();
         if (ImGui::Checkbox(
@@ -4674,7 +4730,11 @@ namespace LamaPon
             {
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
-                ImGui::TextUnformatted(
+                // 入れ子の区間は深さの分だけ字下げします。
+                ImGui::Text(
+                    "%*s%s",
+                    static_cast<int>(sample.depth * 2),
+                    "",
                     sample.name.c_str());
                 ImGui::TableSetColumnIndex(1);
                 ImGui::Text("%.3f", sample.milliseconds);

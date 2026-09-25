@@ -1,6 +1,7 @@
 #include "LamaPon/Components/UIInputFieldComponent.h"
 
 #include "LamaPon/Assets/AssetManager.h"
+#include "LamaPon/Components/FrameDebugDescription.h"
 #include "LamaPon/Components/UIRectTransformComponent.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Graphics/TextLayout.h"
@@ -435,5 +436,14 @@ namespace LamaPon
         {
             m_text.pop_back();
         }
+    }
+
+    bool UIInputFieldComponent::DescribeDrawEvent(
+        FrameDebugDrawDescription& description) const
+    {
+        description.geometry = "UI入力欄";
+        description.material = "\"" + Text() + "\"";
+        description.state = "並び順 " + std::to_string(RenderSortOrder());
+        return true;
     }
 }

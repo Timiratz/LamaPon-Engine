@@ -28,6 +28,7 @@
 #include "LamaPon/Graphics/PngWriter.h"
 #include "LamaPon/Hub/LearningJourney.h"
 #include "LamaPon/Hub/ProjectHub.h"
+#include "AnalysisCommands.h"
 #include "RuntimeTiming.h"
 #include "BuildDiagnostics.h"
 #include "SceneCommands.h"
@@ -1334,11 +1335,19 @@ namespace
             profile["milliseconds"] = latest.milliseconds;
             for (const auto& sample : latest.samples)
             {
-                profile["samples"].push_back({
+                auto entry = nlohmann::json{
                     { "name", sample.name },
                     { "milliseconds", sample.milliseconds },
                     { "calls", sample.callCount },
-                });
+                    { "depth", sample.depth },
+                };
+                // 最上位区間はparentを省略し、従来の読み手と同じ形にします。
+                if (sample.parent
+                    != LamaPon::ProfileSample::NoParent)
+                {
+                    entry["parent"] = sample.parent;
+                }
+                profile["samples"].push_back(std::move(entry));
             }
         }
         snapshot["profiler"] = std::move(profile);
@@ -5558,6 +5567,10 @@ namespace
             "\n"
             "usage:\n"
             "  LamaPonCli version\n"
+            "  LamaPonCli profile analyze <capture.json> [--first N] [--last M] [--top K]\n"
+            "  LamaPonCli profile compare <a.json> <b.json> [--top K]\n"
+            "  LamaPonCli memory summary <snapshot.json> [--top K]\n"
+            "  LamaPonCli memory compare <a.json> <b.json> [--top K]\n"
             "  LamaPonCli render --project <dir> [options]\n"
             "  LamaPonCli new --dir <dir> [options]\n"
             "  LamaPonCli build --project <dir> [options]\n"
@@ -5797,6 +5810,27 @@ int wmain(const int argumentCount, wchar_t** arguments)
                 { "compatibilityVersion",
                     std::string(LamaPon::VersionString) },
             };
+            std::cout << response.dump(
+                2,
+                ' ',
+                false,
+                nlohmann::json::error_handler_t::replace)
+                << std::endl;
+            return 0;
+        }
+
+        // 保存済みのプロファイルとメモリスナップショットを解析します
+        // （エディターの「プロファイル分析」「メモリプロファイラー」と同じ処理）。
+        if (command == L"profile" || command == L"memory")
+        {
+            std::vector<std::wstring_view> analysisArguments;
+            for (int argument = 2; argument < argumentCount; ++argument)
+            {
+                analysisArguments.emplace_back(arguments[argument]);
+            }
+            const auto response = LamaPon::Cli::RunAnalysisCommand(
+                command,
+                analysisArguments);
             std::cout << response.dump(
                 2,
                 ' ',

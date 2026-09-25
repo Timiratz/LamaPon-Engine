@@ -91,7 +91,8 @@ namespace LamaPon
                 panel.defaultOpen,
                 open,
                 panel.showInWindowMenu,
-                std::move(panel.draw)
+                std::move(panel.draw),
+                std::move(panel.windowMenuGroup)
             });
         }
         m_extensions.push_back(RegisteredEditorExtension{

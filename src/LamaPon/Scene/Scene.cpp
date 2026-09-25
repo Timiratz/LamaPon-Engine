@@ -50,6 +50,8 @@
 #include "LamaPon/Components/TransformAnimatorComponent.h"
 #include "LamaPon/Core/Log.h"
 #include "LamaPon/Core/PathUtils.h"
+#include "LamaPon/Core/Profiler.h"
+#include "LamaPon/Graphics/FrameDebugger.h"
 // 自動露出の順応に実時間（timeScale非依存）が要ります。
 #include "LamaPon/Core/Time.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
@@ -3770,6 +3772,7 @@ namespace LamaPon
         m_bakedGiWorking.clear();
         m_physicsBroadPhaseCellSize = 4.0f;
         m_physicsStats = {};
+        m_physicsDebugContacts.clear();
         m_physicsClock = {};
         m_renderingInterpolatedTransforms = false;
         m_frustumCullingEnabled = true;
@@ -3797,11 +3800,14 @@ namespace LamaPon
         // イテレーターが宙に浮き、次の要素（ムーブ済みでnullになった
         // unique_ptr）を触ってアクセス違反になります。添字なら毎回
         // size()と配列先頭を読み直すので、走査中に追加されても壊れません。
-        for (std::size_t index = 0;
-            index < m_gameObjects.size();
-            ++index)
         {
-            m_gameObjects[index]->Update(m_graphics, deltaTime);
+            LAMAPON_PROFILE_SCOPE("Update");
+            for (std::size_t index = 0;
+                index < m_gameObjects.size();
+                ++index)
+            {
+                m_gameObjects[index]->Update(m_graphics, deltaTime);
+            }
         }
         for (const auto& gameObject : m_gameObjects)
         {
@@ -3854,13 +3860,16 @@ namespace LamaPon
                 gameObject->
                     BeginPhysicsInterpolationStep();
             }
-            for (std::size_t index = 0;
-                index < m_gameObjects.size();
-                ++index)
             {
-                m_gameObjects[index]->FixedUpdate(
-                    m_graphics,
-                    fixedDeltaTime);
+                LAMAPON_PROFILE_SCOPE("FixedUpdate");
+                for (std::size_t index = 0;
+                    index < m_gameObjects.size();
+                    ++index)
+                {
+                    m_gameObjects[index]->FixedUpdate(
+                        m_graphics,
+                        fixedDeltaTime);
+                }
             }
             StepPhysics(fixedDeltaTime);
             for (const auto& gameObject : m_gameObjects)
@@ -3872,6 +3881,7 @@ namespace LamaPon
         }
         m_physicsClock.FinishFrame();
 
+        LAMAPON_PROFILE_SCOPE("LateUpdate");
         for (std::size_t index = 0;
             index < m_gameObjects.size();
             ++index)
@@ -4486,7 +4496,9 @@ namespace LamaPon
 
     void Scene::StepPhysics(const float deltaTime)
     {
+        LAMAPON_PROFILE_SCOPE("Physics");
         std::map<CollisionKey, bool> currentCollisions;
+        std::vector<PhysicsDebugContact> debugContacts;
         std::unordered_set<std::uint64_t>
             supportedBodies;
         const auto findRigidbodyObject =
@@ -4517,6 +4529,7 @@ namespace LamaPon
         const auto processContact =
             [this,
                 &currentCollisions,
+                &debugContacts,
                 &supportedBodies,
                 &findRigidbodyObject](
                 GameObject& left,
@@ -4545,6 +4558,36 @@ namespace LamaPon
                 const bool firstContactThisFrame =
                     !currentCollisions.contains(key);
                 currentCollisions[key] = isTrigger;
+
+                // CCDのサブステップで同じ組を何度も解決するため、
+                // 表示用の接触点はステップ内で最初の1回だけ控えます。
+                if (m_physicsDebugCaptureEnabled && firstContactThisFrame)
+                {
+                    const auto record =
+                        [&](const DirectX::XMFLOAT3& point)
+                        {
+                            debugContacts.push_back({
+                                left.Id(),
+                                right.Id(),
+                                point,
+                                contact.normal,
+                                contact.penetration,
+                                is3D,
+                                isTrigger });
+                        };
+                    if (contact.pointCount == 0)
+                    {
+                        record(contact.point);
+                    }
+                    for (std::size_t pointIndex{};
+                        pointIndex < std::min(
+                            contact.pointCount,
+                            contact.points.size());
+                        ++pointIndex)
+                    {
+                        record(contact.points[pointIndex]);
+                    }
+                }
 
                 const DirectX::XMFLOAT3 oppositeNormal{
                     -contact.normal.x,
@@ -5997,6 +6040,20 @@ namespace LamaPon
         m_physicsStats = aggregateStats;
         m_physicsStats.activeContactCount =
             m_activeCollisions.size();
+        if (m_physicsDebugCaptureEnabled)
+        {
+            m_physicsDebugContacts = std::move(debugContacts);
+        }
+    }
+
+    void Scene::SetPhysicsDebugCaptureEnabled(
+        const bool enabled) noexcept
+    {
+        m_physicsDebugCaptureEnabled = enabled;
+        if (!enabled)
+        {
+            m_physicsDebugContacts.clear();
+        }
     }
 
     void Scene::Render()
@@ -7149,10 +7206,47 @@ namespace LamaPon
                     .push_back(meshRenderer);
             }
         }
+        // インスタンス描画は1回の描画で複数のGameObjectを描くため、
+        // 代表のComponentで1つの描画イベントとして報告します。
+        const auto submitInstancedBatch =
+            [this](const Component& representative, const std::size_t count)
+            {
+                auto& frameDebugger = m_graphics.FrameDebug();
+                if (!frameDebugger.IsEnabled())
+                {
+                    return true;
+                }
+                FrameDebugDrawDescription description;
+                try
+                {
+                    static_cast<void>(
+                        representative.DescribeDrawEvent(description));
+                }
+                catch (...)
+                {
+                    description = {};
+                }
+                description.instanceCount =
+                    static_cast<std::uint32_t>(count);
+                const auto pass =
+                    m_graphics.DepthPass() == DepthPassKind::Shadow
+                        ? FrameDebugPass::ShadowDepth
+                        : (m_graphics.DepthPass() == DepthPassKind::Prepass
+                            ? FrameDebugPass::DepthPrepass
+                            : FrameDebugPass::Color);
+                return frameDebugger.SubmitDrawEvent(
+                    FrameDebugEventKind::InstancedBatch,
+                    pass,
+                    representative.Owner().Id(),
+                    representative.Owner().Name(),
+                    representative.TypeName(),
+                    std::move(description));
+            };
         for (auto& [batchKey, batch] : instanceBatches)
         {
             static_cast<void>(batchKey);
-            if (batch.size() < 2)
+            if (batch.size() < 2
+                || !submitInstancedBatch(*batch.front(), batch.size()))
             {
                 continue;
             }
@@ -7194,6 +7288,7 @@ namespace LamaPon
         {
             static_cast<void>(batchKey);
             if (batch.size() >= 2
+                && submitInstancedBatch(*batch.front(), batch.size())
                 && batch.front()->RenderInstancedBatch(
                     batch,
                     view,

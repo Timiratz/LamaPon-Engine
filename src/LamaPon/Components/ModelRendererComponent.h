@@ -400,6 +400,8 @@ namespace LamaPon
             DirectX::CXMMATRIX projection) const noexcept;
         [[nodiscard]] std::uint64_t TriangleCount(
             std::size_t lodLevel) const noexcept;
+        [[nodiscard]] bool DescribeDrawEvent(
+            FrameDebugDrawDescription& description) const override;
         [[nodiscard]] std::string_view TypeName() const noexcept override
         {
             return "ModelRenderer";

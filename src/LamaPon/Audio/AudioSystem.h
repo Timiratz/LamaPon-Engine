@@ -17,6 +17,7 @@ namespace LamaPon
     class AudioListenerComponent;
     class AudioSystem;
     struct AudioStreamVoiceTestAccess;
+    struct MemorySnapshotEntry;
 
     // ミキサーのバス。ソースはいずれかのバスに属し、
     // バス音量×ソース音量×マスター音量で再生されます。
@@ -322,6 +323,10 @@ namespace LamaPon
         {
             return m_soundCache.size();
         }
+        // 読み込み済みの効果音を1件ずつメモリ内訳へ追加します
+        // （メモリプロファイラー用）。ストリーム再生は含みません。
+        void AppendMemoryEntries(
+            std::vector<MemorySnapshotEntry>& entries) const;
         [[nodiscard]] DirectX::AudioStatistics Statistics() const;
         [[nodiscard]] std::uint64_t DeviceGeneration() const noexcept
         {

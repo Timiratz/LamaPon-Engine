@@ -177,6 +177,7 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Assets/GltfImporter.cpp
     src/LamaPon/Assets/GltfImporter.h
     src/LamaPon/Assets/AssetManager.cpp
+    src/LamaPon/Assets/AssetManagerMemory.cpp
     src/LamaPon/Assets/AssetManager.h
     src/LamaPon/Assets/FbxImporter.cpp
     src/LamaPon/Assets/FbxImporter.h
@@ -248,6 +249,10 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Core/Noise.h
     src/LamaPon/Core/Profiler.cpp
     src/LamaPon/Core/Profiler.h
+    src/LamaPon/Core/ProfileAnalysis.cpp
+    src/LamaPon/Core/ProfileAnalysis.h
+    src/LamaPon/Core/MemorySnapshot.cpp
+    src/LamaPon/Core/MemorySnapshot.h
     src/LamaPon/Core/ApplicationLayer.h
     src/LamaPon/Core/PathUtils.h
     src/LamaPon/Core/ProjectInstance.cpp
@@ -290,6 +295,10 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Online/WindowsOnlinePlatform.cpp
     src/LamaPon/Online/WindowsOnlinePlatform.h
     src/LamaPon/Graphics/GpuProfiler.cpp
+    src/LamaPon/Graphics/FrameDebugger.cpp
+    src/LamaPon/Graphics/FrameDebugger.h
+    src/LamaPon/Graphics/MemorySnapshotCapture.cpp
+    src/LamaPon/Graphics/MemorySnapshotCapture.h
     src/LamaPon/Graphics/GpuProfiler.h
     src/LamaPon/Graphics/GraphicsBackend.cpp
     src/LamaPon/Graphics/GraphicsBackend.h
@@ -501,6 +510,7 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Components/UISliderComponent.h
     src/LamaPon/Components/UIToggleComponent.cpp
     src/LamaPon/Components/UIToggleComponent.h
+    src/LamaPon/Components/FrameDebugDescription.h
     src/LamaPon/Components/SpriteAnimatorComponent.cpp
     src/LamaPon/Components/SpriteAnimatorComponent.h
     src/LamaPon/Components/SpriteRendererComponent.cpp
@@ -539,6 +549,7 @@ set(LAMAPON_EDITOR_SOURCES
     src/LamaPon/Editor/EditorLayerAnimationTools.cpp
     src/LamaPon/Editor/EditorLayerAssets.cpp
     src/LamaPon/Editor/EditorLayerExtensions.cpp
+    src/LamaPon/Editor/EditorLayerAnalysis.cpp
     src/LamaPon/Editor/EditorLayerInspector.cpp
     src/LamaPon/Editor/UIComponentInspectors.cpp
     src/LamaPon/Editor/DataAssetSchema.cpp
@@ -554,6 +565,18 @@ set(LAMAPON_EDITOR_SOURCES
     src/LamaPon/Editor/BgmLoopPanel.h
     src/LamaPon/Editor/VehicleParametersPanel.cpp
     src/LamaPon/Editor/VehicleParametersPanel.h
+    src/LamaPon/Editor/DebugCaptureFiles.cpp
+    src/LamaPon/Editor/DebugCaptureFiles.h
+    src/LamaPon/Editor/ProfilerPanel.cpp
+    src/LamaPon/Editor/ProfilerPanel.h
+    src/LamaPon/Editor/ProfileAnalyzerPanel.cpp
+    src/LamaPon/Editor/ProfileAnalyzerPanel.h
+    src/LamaPon/Editor/MemoryProfilerPanel.cpp
+    src/LamaPon/Editor/MemoryProfilerPanel.h
+    src/LamaPon/Editor/FrameDebuggerPanel.cpp
+    src/LamaPon/Editor/FrameDebuggerPanel.h
+    src/LamaPon/Editor/PhysicsDebuggerPanel.cpp
+    src/LamaPon/Editor/PhysicsDebuggerPanel.h
     src/LamaPon/Editor/GameExporter.cpp
     src/LamaPon/Editor/GameExporter.h
     src/LamaPon/Editor/GameExportDialog.cpp
@@ -901,6 +924,8 @@ lamapon_enable_release_symbols(LamaPonGame)
 # stdoutへJSONを返すため、WIN32を付けずコンソールアプリとして構成します。
 add_executable(LamaPonCli
     tools/LamaPonCli/Main.cpp
+    tools/LamaPonCli/AnalysisCommands.cpp
+    tools/LamaPonCli/AnalysisCommands.h
     tools/LamaPonCli/SceneCommands.cpp
     tools/LamaPonCli/ComponentSchemas.cpp
     tools/LamaPonCli/JsonFiles.cpp
@@ -1435,6 +1460,37 @@ if(BUILD_TESTING)
         ProfilerAndCrashReporter
         PROPERTIES LABELS "diagnostics"
     )
+
+    # 解析ツール（プロファイル分析・メモリスナップショット・フレーム
+    # デバッガー）の記録と比較の規則を、描画APIなしで検証します。
+    foreach(test_name IN ITEMS ProfileAnalysis MemorySnapshot FrameDebugger)
+        add_executable(LamaPon${test_name}Tests tests/${test_name}Tests.cpp)
+        target_link_libraries(LamaPon${test_name}Tests PRIVATE LamaPonRuntime)
+        target_compile_options(LamaPon${test_name}Tests PRIVATE
+            $<$<CXX_COMPILER_ID:MSVC>:/W4>
+            $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+            $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+        )
+        add_test(NAME ${test_name} COMMAND LamaPon${test_name}Tests)
+        set_tests_properties(${test_name} PROPERTIES LABELS "diagnostics")
+    endforeach()
+    # CLIのprofile / memoryサブコマンドが同じ解析結果をJSONで返すこと。
+    add_executable(LamaPonCliAnalysisCommandTests
+        tests/CliAnalysisCommandTests.cpp
+        tools/LamaPonCli/AnalysisCommands.cpp
+        tools/LamaPonCli/AnalysisCommands.h
+    )
+    target_include_directories(LamaPonCliAnalysisCommandTests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/LamaPonCli"
+    )
+    target_link_libraries(LamaPonCliAnalysisCommandTests PRIVATE LamaPonRuntime)
+    target_compile_options(LamaPonCliAnalysisCommandTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_test(NAME CliAnalysisCommands COMMAND LamaPonCliAnalysisCommandTests)
+    set_tests_properties(CliAnalysisCommands PROPERTIES LABELS "diagnostics")
 
     add_executable(LamaPonPersistenceTests
         tests/PersistenceTests.cpp
@@ -2283,6 +2339,7 @@ install(
         PATTERN "AutoExposureAdaptation.h" EXCLUDE
         PATTERN "ClusteredLightsBackendState.h" EXCLUDE
         PATTERN "ShadowMapBackendState.h" EXCLUDE
+        PATTERN "FrameDebugDescription.h" EXCLUDE
         PATTERN "DiscordAuth.h" EXCLUDE
         PATTERN "CloudSave.h" EXCLUDE
         PATTERN "CloudSaveClient.h" EXCLUDE

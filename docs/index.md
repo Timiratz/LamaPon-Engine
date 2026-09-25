@@ -20,7 +20,7 @@ LamaPonのプロジェクト作成、C++スクリプト、エディター操作�
 
 | ページ | 内容 |
 |---|---|
-| [エディター](editor.md) | 画面構成、Asset Browser、Scene View / Game View、Console |
+| [エディター](editor.md) | 画面構成、Asset Browser、Scene View / Game View、Console、解析ツール（プロファイラー、フレームデバッガー、メモリ／物理デバッガー） |
 | [C++スクリプティング](scripting.md) | C++ Scriptの作成、ホットリロード、Script API |
 | [コマンドライン（LamaPonCli）](cli.md) | エディターなしで作成・撮影・ビルド・書き出し。JSONレポート付き |
 | [ゲームを作る](ai-agent.md) | CLI・エディター・リモート操作を使った制作手順 |

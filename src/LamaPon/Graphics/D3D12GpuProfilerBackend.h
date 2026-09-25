@@ -33,6 +33,9 @@ namespace LamaPon
         [[nodiscard]] float LatestFrameMilliseconds() const noexcept override;
         [[nodiscard]] const GpuPipelineStatistics&
             LatestPipelineStatistics() const noexcept override;
+        [[nodiscard]] bool BeginMarker(
+            std::string_view name) noexcept override;
+        void EndMarker() noexcept override;
 
         // Capture等がフレーム途中でcommand listを閉じる前に、開いている
         // pipeline queryを閉じます。そのフレームの統計だけは無効です。
@@ -84,5 +87,9 @@ namespace LamaPon
         std::vector<GpuSectionTime> m_latestSections;
         float m_latestFrameMilliseconds{};
         GpuPipelineStatistics m_latestPipelineStatistics;
+        // 開いているdebug markerごとに、現在のcommand listでEndEventが
+        // 必要かどうかです。途中でcommand listを閉じるときに全て閉じ、
+        // 以降の対応するEndMarkerでは何もしません。
+        std::vector<bool> m_markerStack;
     };
 }

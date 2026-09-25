@@ -1232,8 +1232,8 @@ int main(const int argumentCount, char** arguments)
             !HasPublicDisplayUnorderedAccessView<LamaPon::RenderTarget>);
         static_assert(!HasPublicDisplayTexture<LamaPon::RenderTarget>);
         static_assert(
-            LamaPon::GameModuleApiVersion == 74,
-            "The extended DDS texture formats require Game Module API 74");
+            LamaPon::GameModuleApiVersion == 75,
+            "The debug tool layout changes require Game Module API 75");
         static_assert(
             sizeof(LamaPon::RenderTarget) <= 128,
             "RenderTarget leaked native backend state into its public layout");
