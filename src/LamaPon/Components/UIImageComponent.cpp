@@ -1,6 +1,7 @@
 #include "LamaPon/Components/UIImageComponent.h"
 
 #include "LamaPon/Assets/AssetManager.h"
+#include "LamaPon/Components/FrameDebugDescription.h"
 #include "LamaPon/Components/UIRectTransformComponent.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Graphics/RenderTarget.h"
@@ -319,5 +320,20 @@ namespace LamaPon
                 static_cast<void>(sprites.Draw(request));
             }
         }
+    }
+
+    bool UIImageComponent::DescribeDrawEvent(
+        FrameDebugDrawDescription& description) const
+    {
+        static_cast<void>(Detail::DescribeTexturedDraw(
+            description,
+            "UI画像",
+            TexturePath(),
+            RenderSortOrder()));
+        if (!RenderTexture().empty())
+        {
+            description.material = "RenderTexture: " + RenderTexture();
+        }
+        return true;
     }
 }

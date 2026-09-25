@@ -758,6 +758,7 @@ namespace
         auto asset = std::make_shared<LamaPon::TextureAsset>();
         asset->width = Size;
         asset->height = Size;
+        asset->gpuBytes = static_cast<std::uint64_t>(Size) * Size * 4u;
         asset->sourcePath = sourcePath.lexically_normal();
         if (backend != nullptr)
         {
@@ -1616,6 +1617,10 @@ namespace LamaPon
                 texture->width = prepared.width;
                 texture->height = prepared.height;
                 texture->isCube = resource.cube;
+                for (const auto& subresource : prepared.subresources)
+                {
+                    texture->gpuBytes += subresource.bytes.size();
+                }
                 PublishTextureResources(
                     *texture,
                     m_backend,
@@ -1690,6 +1695,7 @@ namespace LamaPon
                 prepared = std::move(entry.data);
             }
 
+            texture->gpuBytes = prepared.TotalBytes();
             if ((m_backend != nullptr || m_context != nullptr)
                 && prepared.TotalBytes()
                     >= ProgressiveUploadThreshold())
@@ -1821,6 +1827,16 @@ namespace LamaPon
                     (description.MiscFlags
                         & D3D11_RESOURCE_MISC_TEXTURECUBE) != 0;
             }
+        }
+        if (texture->gpuBytes == 0 && extension == L".dds")
+        {
+            // DirectXTKのDDS経路はmip列を直接GPUへ送るため、ヘッダーを
+            // 除いたファイルの大きさがGPU上の量の良い見積もりです。
+            constexpr std::size_t DdsHeaderBytes = 128;
+            texture->gpuBytes =
+                bytes.size() > DdsHeaderBytes
+                    ? bytes.size() - DdsHeaderBytes
+                    : bytes.size();
         }
         return texture;
     }

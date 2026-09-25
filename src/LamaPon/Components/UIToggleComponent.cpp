@@ -1,6 +1,7 @@
 #include "LamaPon/Components/UIToggleComponent.h"
 
 #include "LamaPon/Assets/AssetManager.h"
+#include "LamaPon/Components/FrameDebugDescription.h"
 #include "LamaPon/Components/UIRectTransformComponent.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Graphics/TextLayout.h"
@@ -276,5 +277,15 @@ namespace LamaPon
                 TextHorizontalAlignment::Left,
                 TextVerticalAlignment::Center,
                 false });
+    }
+
+    bool UIToggleComponent::DescribeDrawEvent(
+        FrameDebugDrawDescription& description) const
+    {
+        description.geometry = "UIトグル";
+        description.material =
+            "\"" + Label() + "\" " + (IsOn() ? "オン" : "オフ");
+        description.state = "並び順 " + std::to_string(RenderSortOrder());
+        return true;
     }
 }

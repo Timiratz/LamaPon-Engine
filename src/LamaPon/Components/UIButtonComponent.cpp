@@ -1,6 +1,7 @@
 #include "LamaPon/Components/UIButtonComponent.h"
 
 #include "LamaPon/Assets/AssetManager.h"
+#include "LamaPon/Components/FrameDebugDescription.h"
 #include "LamaPon/Components/UIRectTransformComponent.h"
 #include "LamaPon/Core/Log.h"
 #include "LamaPon/Core/PathUtils.h"
@@ -397,5 +398,19 @@ namespace LamaPon
                     TextHorizontalAlignment::Center,
                     TextVerticalAlignment::Center,
                     false });
+    }
+
+    bool UIButtonComponent::DescribeDrawEvent(
+        FrameDebugDrawDescription& description) const
+    {
+        static_cast<void>(Detail::DescribeTexturedDraw(
+            description,
+            "UIボタン",
+            TexturePath(),
+            RenderSortOrder()));
+        Detail::AppendFrameDebugItem(
+            description.material,
+            "\"" + Label() + "\"");
+        return true;
     }
 }

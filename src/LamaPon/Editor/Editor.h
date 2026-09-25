@@ -22,6 +22,7 @@ namespace LamaPon
         // 撮る前に開いておくUI。空なら既定レイアウトのまま。
         //   "project-settings:<ゲーム|グラフィック|ビューポート設定|物理|タグ|入力|スクリプト|ビルドプロファイル|オンライン>"
         //   "inspector:<GameObject名>"
+        //   "panel:<パネルID>"（例: panel:profiler、panel:frameDebugger）
         std::string show;
         // 撮影するフレーム番号。UIのレイアウトとフォントが落ち着く
         // まで数フレームかかるので、少し待ってから撮ります。

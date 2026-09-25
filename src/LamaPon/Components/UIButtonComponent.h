@@ -177,6 +177,8 @@ namespace LamaPon
             return m_sortOrder;
         }
 
+        [[nodiscard]] bool DescribeDrawEvent(
+            FrameDebugDrawDescription& description) const override;
         [[nodiscard]] std::string_view
             TypeName() const noexcept override
         {

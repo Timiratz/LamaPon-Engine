@@ -37,6 +37,21 @@ if (!editorLayer.ExtensionRegistry().Register(
 }
 ```
 
+`EditorPanelDefinition`の6番目の`windowMenuGroup`へ名前を入れると、「ウィンドウ」メニューの
+その名前のサブメニューへまとめて表示します。LamaPon標準の解析パネルは`"解析"`を使っているため、
+独自の計測・デバッグ用パネルも同じ名前にすると並べて置けます。
+
+```cpp
+extension.panels.push_back({
+    "sample.navmesh-inspector",
+    "NavMesh検査",
+    false,
+    true,
+    [](bool& open) { /* ... */ },
+    "解析" // 「ウィンドウ」→「解析」へ表示
+});
+```
+
 パネルIDはすべての拡張機能を通して一意にしてください。
 登録時に重複や空のID、描画コールバック不足を検出し、失敗した登録は
 途中のパネルを残しません。

@@ -307,6 +307,8 @@ namespace LamaPon
         // その理由はこのメッセージ側に出ていることが多いためです。
         m_state->m_backend->DrainDebugMessages();
         m_state->m_gpuProfiler.CloseFrame();
+        // 区間を閉じた後に確定し、次のフレームの記録を空から始めます。
+        m_state->m_frameDebugger.EndFrame();
         m_state->m_backend->Present(
             m_state->m_graphicsSettings.vSyncEnabled);
     }

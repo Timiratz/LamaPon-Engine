@@ -3,6 +3,7 @@
 #include "LamaPon/Assets/AssetManager.h"
 #include "LamaPon/Components/AudioListenerComponent.h"
 #include "LamaPon/Core/Log.h"
+#include "LamaPon/Core/MemorySnapshot.h"
 #include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Scene/GameObject.h"
 
@@ -1651,6 +1652,26 @@ namespace LamaPon
                     submittedFrames;
                 ++m_queuedCount;
             }
+        }
+    }
+
+    void AudioSystem::AppendMemoryEntries(
+        std::vector<MemorySnapshotEntry>& entries) const
+    {
+        for (const auto& [key, sound] : m_soundCache)
+        {
+            if (sound == nullptr)
+            {
+                continue;
+            }
+            MemorySnapshotEntry entry;
+            entry.category = MemoryCategory::Audio;
+            entry.name = WideToUtf8(key);
+            // 効果音はデコード済みのPCMをCPUメモリに保持します。
+            entry.cpuBytes = sound->GetSampleSizeInBytes();
+            entry.detail =
+                std::to_string(sound->GetSampleDurationMS()) + " ms";
+            entries.push_back(std::move(entry));
         }
     }
 }

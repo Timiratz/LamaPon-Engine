@@ -6,8 +6,12 @@
 #include <imgui.h>
 #include <shellapi.h>
 
+#include <algorithm>
 #include <stdexcept>
+#include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 namespace LamaPon
 {
@@ -142,19 +146,54 @@ namespace LamaPon
             throw std::logic_error(
                 "Failed to register package extension: " + error);
         }
+
+        RegisterAnalysisExtension();
     }
 
     void EditorLayer::DrawRegisteredPanelMenuItems()
     {
+        // グループの無いパネルを先に並べ、グループはサブメニューとして
+        // 登録順に続けます（UnityのWindow > Analysisと同じ配置）。
+        std::vector<std::string_view> groups;
         for (auto& panel : m_editorExtensions.Panels())
         {
-            if (panel.showInWindowMenu)
+            if (!panel.showInWindowMenu)
             {
-                ImGui::MenuItem(
-                    panel.displayName.c_str(),
-                    nullptr,
-                    &panel.open);
+                continue;
             }
+            if (!panel.windowMenuGroup.empty())
+            {
+                if (std::ranges::find(groups, panel.windowMenuGroup)
+                    == groups.end())
+                {
+                    groups.push_back(panel.windowMenuGroup);
+                }
+                continue;
+            }
+            ImGui::MenuItem(
+                panel.displayName.c_str(),
+                nullptr,
+                &panel.open);
+        }
+        for (const auto group : groups)
+        {
+            const std::string label{ group };
+            if (!ImGui::BeginMenu(label.c_str()))
+            {
+                continue;
+            }
+            for (auto& panel : m_editorExtensions.Panels())
+            {
+                if (panel.showInWindowMenu
+                    && panel.windowMenuGroup == group)
+                {
+                    ImGui::MenuItem(
+                        panel.displayName.c_str(),
+                        nullptr,
+                        &panel.open);
+                }
+            }
+            ImGui::EndMenu();
         }
     }
 

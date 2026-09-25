@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### デバッグ・解析ツール
+
+- エディターの「ウィンドウ」へ「解析」サブメニューを追加し、UnityのWindow > Analysisに相当するパネルをまとめた。どのパネルも既定では閉じており、開いている間だけ記録する。
+- 「プロファイラー」を追加。フレームごとのCPU時間を最上位区間で色分けしたタイムラインから過去フレームを選び、呼び出し階層（合計・自己時間・割合・呼び出し回数）と自己時間順の一覧を表示する。記録の一時停止、1フレーム送り、履歴数（240〜6000）の変更、`.lamapon/profiles/`への保存に対応。
+- CPUプロファイラーを階層計測へ拡張。`LAMAPON_PROFILE_SCOPE`は開いている区間の子として記録され（スレッドごとに管理）、`ProfileSample`へ`parent`／`depth`を追加。Sceneの`Update`／`FixedUpdate`／`Physics`／`LateUpdate`／`Visibility`と、GPU計測区間（シャドウ、3D描画、ポスト処理など）もCPU区間として並ぶ。`profile.json`は`version: 2`（`parent`／`depth`付き）になり、version 1も引き続き読める。CLIとエディターのruntime状態JSONの`profiler.samples`にも`depth`／`parent`を追加。
+- 「プロファイル分析」を追加。記録を区間ごとに中央値・平均・最大・95%・自己時間で集計し、2つの記録（現在の記録または保存済みJSON）を中央値の差で比較する。フレーム範囲の指定、区間ごとのフレーム時間グラフに対応。
+- 「メモリプロファイラー」を追加。テクスチャ・モデル・文字テクスチャ・レンダーテクスチャ・オーディオ・アニメーション・データアセット・先読みファイルを資源ごとに記録し、分類別の合計、並べ替え、スナップショットの保存（`.lamapon/memory/`）と比較（追加・解放・変化）を表示する。`TextureAsset`へ読み込み時のGPU量`gpuBytes`を追加。
+- 「フレームデバッガー」を追加。描画イベント（Mesh／Model Renderer、パーティクル、スプライト、UI、インスタンス描画）をGPU区間ごとに一覧にし、選んだイベントより後ろの描画を飛ばした途中の絵をScene View／Game Viewに表示する。詳細欄に描画パス、マテリアル・Shader・テクスチャ、合成方式・カリング、頂点数・三角形数・インスタンス数を表示する。`Component::DescribeDrawEvent`で描画内容を報告する。
+- 描画パスの区間名をPIX／RenderDoc向けのイベントとして記録。D3D11は`ID3DUserDefinedAnnotation`（キャプチャツール接続時のみ）、D3D12はコマンドリストのイベント（PIXの旧形式）で、途中でコマンドリストを閉じるフレームでも入れ子を閉じる。エディターのScene View／Game View／カメラプレビューもGPU区間に分けた。
+- 「物理デバッガー」を追加。Scene Viewへ接触点・法線（衝突／トリガー）・速度・角速度を描き、ボディ（種類・質量・速さ・スリープ・接触数）と接触（組・位置・法線・めり込み）を一覧にする。`Scene::SetPhysicsDebugCaptureEnabled`／`PhysicsDebugContacts`を追加（既定は無効で負荷なし）。
+- 「ImGuiデバッガー」（Dear ImGuiのMetrics/Debugger）を追加。
+- CLIへ`profile analyze`／`profile compare`／`memory summary`／`memory compare`を追加し、保存した記録をエディターと同じ計算でJSONに出力する。
+- `EditorPanelDefinition`へ「ウィンドウ」メニューのサブメニュー名`windowMenuGroup`を追加。新規プロジェクトの`.gitignore`へ`.lamapon/profiles/`と`.lamapon/memory/`を追加し、既存プロジェクトでも保存先フォルダーへ除外用の`.gitignore`を自動で置く。
+- 公開構造体のレイアウト変更（`Component`、`Scene`、`ProfileScope`／`ProfileSample`、`TextureAsset`、`GpuProfilerBackend`）に伴いGame Module APIを75へ更新。ゲーム用DLLの再ビルドが必要。
+
 ### エンジンの表示バージョン
 
 - エンジンの表示を `0.1.0` のような番号から「ブランチ名 @ コミット」（例: `community/main @ 932b08c3a1b2`）へ変更。LamaPon Hub右下、エディターのウィンドウタイトル、ヘルプとサポート、サポート情報のコピー、クラッシュレポート、起動ログに表示し、未コミットの変更を含むビルドには `-dirty` を付ける。

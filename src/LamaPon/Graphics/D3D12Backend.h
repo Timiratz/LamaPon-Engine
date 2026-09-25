@@ -210,6 +210,14 @@ namespace LamaPon
         // listを返します。深度専用描画中だけrender serviceが使います。
         [[nodiscard]] ID3D12GraphicsCommandList*
             CurrentFrameCommands();
+        // 記録中のframe command listです。閉じている場合は新しく開かずに
+        // nullptrを返します（debug markerのように、描画の有無を変えては
+        // いけない付随情報の記録に使います）。
+        [[nodiscard]] ID3D12GraphicsCommandList*
+            RecordingFrameCommands() const noexcept
+        {
+            return m_commandListOpen ? m_commandList.Get() : nullptr;
+        }
         [[nodiscard]] bool IsShadowPassActive() const noexcept
         {
             return m_activeShadowMap != nullptr;

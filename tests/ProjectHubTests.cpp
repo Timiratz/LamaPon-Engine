@@ -166,6 +166,8 @@ namespace
                     ".lamapon/bin/",
                     ".lamapon/build/",
                     ".lamapon/profile.json",
+                    ".lamapon/profiles/",
+                    ".lamapon/memory/",
                     ".lamapon/game-module-build.log",
                     ".lamapon/package-backups/",
                     ".lamapon/Crashes/",

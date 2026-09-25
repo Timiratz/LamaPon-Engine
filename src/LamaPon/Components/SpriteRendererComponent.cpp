@@ -1,6 +1,7 @@
 #include "LamaPon/Components/SpriteRendererComponent.h"
 
 #include "LamaPon/Assets/AssetManager.h"
+#include "LamaPon/Components/FrameDebugDescription.h"
 #include "LamaPon/Components/UIRectTransformComponent.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Graphics/RenderTarget.h"
@@ -301,5 +302,16 @@ namespace LamaPon
         request.origin = origin;
         request.scale = scale;
         static_cast<void>(sprites.Draw(request));
+    }
+
+    bool SpriteRendererComponent::DescribeDrawEvent(
+        FrameDebugDrawDescription& description) const
+    {
+        return Detail::DescribeTexturedDraw(
+            description,
+            "スプライト " + Detail::FrameDebugNumber(Size().x) + "x"
+                + Detail::FrameDebugNumber(Size().y),
+            TexturePath(),
+            RenderSortOrder());
     }
 }
