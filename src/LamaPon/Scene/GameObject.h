@@ -18,6 +18,7 @@ namespace LamaPon
     class GraphicsDevice;
     class Scene;
     class SpriteDrawContext;
+    enum class FrameDebugEventKind : std::uint8_t;
     using GameObjectId = std::uint64_t;
     // 追加読み込み（Additive）したシーンを識別する番号です。
     // 0は最初に読み込んだ主シーンを指します。
@@ -355,6 +356,13 @@ namespace LamaPon
 
     private:
         friend class Scene;
+
+        // フレームデバッガーへ描画イベントを登録します。falseのときは
+        // 表示上限より後ろなので、その描画を飛ばします。
+        [[nodiscard]] bool SubmitFrameDebugEvent(
+            GraphicsDevice& graphics,
+            const Component& component,
+            FrameDebugEventKind kind);
 
         // GetComponentsInChildrenの再帰本体（深さ優先で収集）。
         template<typename T>

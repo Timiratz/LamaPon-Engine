@@ -1,6 +1,7 @@
 #include "LamaPon/Components/ModelRendererComponent.h"
 
 #include "LamaPon/Assets/AssetManager.h"
+#include "LamaPon/Components/FrameDebugDescription.h"
 #include "LamaPon/Components/ReflectionProbeComponent.h"
 #include "LamaPon/Core/Log.h"
 #include "LamaPon/Core/PathUtils.h"
@@ -5160,5 +5161,32 @@ namespace LamaPon
             }
         }
         effect.SetDepthOnlyEnabled(false);
+    }
+
+    bool ModelRendererComponent::DescribeDrawEvent(
+        FrameDebugDrawDescription& description) const
+    {
+        // インスタンス描画でまとめて描いた後の個別の呼び出しは何も
+        // 描かないため、イベントとして数えません。
+        if (m_instancedThisPass)
+        {
+            return false;
+        }
+        description.geometry = Detail::FrameDebugPathLabel(m_modelPath);
+        description.triangleCount = TriangleCount(0);
+        description.material = Detail::FrameDebugMaterialLabel(
+            MaterialAssetPath(),
+            m_material.Shader(),
+            m_material.AlbedoTexture());
+        Detail::AppendFrameDebugItem(
+            description.state,
+            IsAlphaBlended3D() ? "アルファ合成" : "不透明");
+        if (m_wireframe)
+        {
+            Detail::AppendFrameDebugItem(
+                description.state,
+                "ワイヤーフレーム");
+        }
+        return true;
     }
 }

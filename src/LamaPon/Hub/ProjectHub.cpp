@@ -860,6 +860,9 @@ namespace LamaPon::Hub
             ".lamapon/build/\n"
             // GPUプロファイラーが出力する端末固有の計測値。
             ".lamapon/profile.json\n"
+            // プロファイラーとメモリプロファイラーが保存する解析の記録。
+            ".lamapon/profiles/\n"
+            ".lamapon/memory/\n"
             // C++ Game Moduleのビルドログ。
             ".lamapon/game-module-build.log\n"
             // パッケージ更新前に作る1世代分のバックアップ。

@@ -17,6 +17,9 @@ namespace LamaPon
         bool defaultOpen{};
         bool showInWindowMenu{ true };
         std::function<void(bool& open)> draw;
+        // 空でなければ「ウィンドウ」メニューのこの名前のサブメニューへ
+        // まとめて表示します（例: 解析）。
+        std::string windowMenuGroup;
     };
 
     // 一つの機能に属するパネルとライフサイクル処理をまとめます。
@@ -42,6 +45,7 @@ namespace LamaPon
         bool open{};
         bool showInWindowMenu{ true };
         std::function<void(bool& open)> draw;
+        std::string windowMenuGroup;
     };
 
     struct RegisteredEditorExtension final

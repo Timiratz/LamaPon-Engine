@@ -1,5 +1,6 @@
 #include "LamaPon/Components/UISliderComponent.h"
 
+#include "LamaPon/Components/FrameDebugDescription.h"
 #include "LamaPon/Components/UIRectTransformComponent.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Input/InputSystem.h"
@@ -248,5 +249,14 @@ namespace LamaPon
         request.tint = premultipliedHandle;
         request.scale = { handleWidth, size.y };
         static_cast<void>(sprites.Draw(request));
+    }
+
+    bool UISliderComponent::DescribeDrawEvent(
+        FrameDebugDrawDescription& description) const
+    {
+        description.geometry = "UIスライダー";
+        description.material = "値 " + Detail::FrameDebugNumber(Value());
+        description.state = "並び順 " + std::to_string(RenderSortOrder());
+        return true;
     }
 }

@@ -271,6 +271,8 @@ namespace LamaPon
             float angularVelocity = 0.0f);
         void UpdatePreview(float deltaTime);
 
+        [[nodiscard]] bool DescribeDrawEvent(
+            FrameDebugDrawDescription& description) const override;
         [[nodiscard]] std::string_view
             TypeName() const noexcept override
         {

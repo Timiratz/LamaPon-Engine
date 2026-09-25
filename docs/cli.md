@@ -82,6 +82,26 @@ LamaPonCli.exe project move --project "C:\path\to\MyProject" --to "D:\Games\MyPr
 
 詳しくは[プロジェクトのエンジン表示バージョン](project.md#エンジンの表示バージョンブランチ名--コミット)を参照してください。
 
+## プロファイルとメモリの解析
+
+エディターの「プロファイラー」と「メモリプロファイラー」で保存した記録（`.lamapon/profiles/`と`.lamapon/memory/`のJSON）を、エディターを開かずに解析できます。
+結果はエディターの「プロファイル分析」と同じ計算です。
+
+```bat
+LamaPonCli.exe profile analyze .lamapon\profiles\profile-20260925-120000.json --first 60 --top 10
+LamaPonCli.exe profile compare before.json after.json --top 20
+LamaPonCli.exe memory summary .lamapon\memory\memory-20260925-120500.json --top 20
+LamaPonCli.exe memory compare stage1.json stage2.json
+```
+
+- `profile analyze`: フレーム時間と区間ごとの中央値・平均・最大・95%・自己時間の平均・1フレームあたりの呼び出し回数を、中央値の大きい順に返します。`--first`／`--last`は記録内の位置（0始まり、両端を含む）で、読み込み直後のフレームを除くときに使います
+- `profile compare`: フレーム時間の中央値の差と、区間ごとの中央値の差（B - A）を差の大きい順に返します。`status`は`changed`／`added`（Bだけ）／`removed`（Aだけ）です
+- `memory summary`: プロセス全体の量、分類ごとの合計、大きい資源を返します
+- `memory compare`: プロセス全体の増減、分類ごとの増減、追加・解放・変化した資源（`added`／`removed`／`changed`）を差の大きい順に返します
+- `--top`は一覧の件数です（既定20）
+
+変更の前後で同じ手順を記録して`profile compare`に渡すと、狙った処理が速くなったか、他の区間が遅くなっていないかを機械的に確かめられます。
+
 ## 学習進捗と環境診断
 
 学習テンプレートの進捗と教材をCLIから操作できます。
@@ -147,6 +167,7 @@ LamaPonCli.exe runtime stop --project "C:\path\to\MyProject" --id <sessionId>
 `runtime start`はすぐに`sessionId`を返します。
 `runtime status`の`session.status`は`queued`／`running`／`paused`／`stopped`／`failed`です。
 状態JSONの`runtime`にはGameObject・Transform・Component・ゲーム状態・入力・物理・可視性・Profiler・ログが入り、`lastCommandOk`と`lastCommandError`で直前の操作結果を確認できます。
+`runtime.profiler.samples`の各区間は`depth`（入れ子の深さ）と`parent`（親区間の添字。最上位では省略）を持ち、呼び出し階層を復元できます。
 決定論モードでも`runtime.time.deltaTime`は固定されたゲーム内時間、
 `runtime.frame.fps`／`frameTimeMilliseconds`は実際の描画間隔です。重い処理を
 固定60 FPSと誤表示しません。命令は1件ずつ処理されるため、手動の`send`で
@@ -511,6 +532,7 @@ LamaPonEditor.exe --project "C:\path\to\MyProject" --screenshot ui.png --report 
 |---|---|
 | `project-settings:<区分>` | プロジェクト設定ダイアログ。区分は `game` / `graphics` / `viewport` / `physics` / `tags` / `input` / `scripts` / `build`（日本語名も可） |
 | `inspector:<GameObject名>` | そのGameObjectを選択した状態（Inspectorに中身が出る） |
+| `panel:<パネルID>` | 登録済みパネルを開いた状態。解析ツールは `profiler`、`profileAnalyzer`、`memoryProfiler`、`frameDebugger`、`physicsDebugger`、`imguiDebugger` |
 | `help` | 「ヘルプとサポート」画面 |
 
 末尾に `:bottom` を付けると、対象を**末尾までスクロールした状態**で撮ります（例: `project-settings:physics:bottom` で衝突マトリクスが、`inspector:Player:bottom` で下の方のコンポーネントが写ります）。

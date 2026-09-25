@@ -3,9 +3,31 @@
 #include <algorithm>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
 
 namespace
 {
+    // スレッドごとに開いている区間の添字です。Profilerは1つだけなので
+    // スレッドローカルに置き、generationが変わったら中身を捨てます。
+    struct ThreadScopeStack final
+    {
+        std::uint64_t generation{};
+        std::vector<std::uint32_t> indices;
+    };
+
+    thread_local ThreadScopeStack t_scopeStack;
+
+    ThreadScopeStack& CurrentScopeStack(
+        const std::uint64_t generation) noexcept
+    {
+        if (t_scopeStack.generation != generation)
+        {
+            t_scopeStack.generation = generation;
+            t_scopeStack.indices.clear();
+        }
+        return t_scopeStack;
+    }
+
     std::string EscapeJson(const std::string_view value)
     {
         std::string escaped;
@@ -54,6 +76,7 @@ namespace LamaPon
         {
             m_frameActive = false;
             m_currentSamples.clear();
+            InvalidateOpenScopes();
         }
     }
 
@@ -78,6 +101,50 @@ namespace LamaPon
         }
     }
 
+    std::size_t Profiler::FrameCapacity() const noexcept
+    {
+        std::scoped_lock lock(m_mutex);
+        return m_frameCapacity;
+    }
+
+    void Profiler::InvalidateOpenScopes() noexcept
+    {
+        ++m_generation;
+    }
+
+    std::uint32_t Profiler::FindOrAddSample(
+        const std::string_view name,
+        const std::uint32_t parent)
+    {
+        // 子は親より後ろにしか登録されないため、親の位置から探します。
+        const std::size_t first =
+            parent == ProfileSample::NoParent
+                ? 0
+                : static_cast<std::size_t>(parent) + 1;
+        for (std::size_t index = first;
+            index < m_currentSamples.size();
+            ++index)
+        {
+            const auto& candidate = m_currentSamples[index];
+            if (candidate.parent == parent
+                && candidate.name == name)
+            {
+                return static_cast<std::uint32_t>(index);
+            }
+        }
+
+        ProfileSample sample;
+        sample.name = std::string(name);
+        sample.parent = parent;
+        sample.depth =
+            parent == ProfileSample::NoParent
+                ? 0
+                : m_currentSamples[parent].depth + 1;
+        m_currentSamples.push_back(std::move(sample));
+        return static_cast<std::uint32_t>(
+            m_currentSamples.size() - 1);
+    }
+
     void Profiler::BeginFrame()
     {
         std::scoped_lock lock(m_mutex);
@@ -86,6 +153,7 @@ namespace LamaPon
             return;
         }
         m_currentSamples.clear();
+        InvalidateOpenScopes();
         m_frameStart = std::chrono::steady_clock::now();
         m_frameActive = true;
     }
@@ -112,6 +180,7 @@ namespace LamaPon
             m_frames.erase(m_frames.begin());
         }
         m_frameActive = false;
+        InvalidateOpenScopes();
     }
 
     void Profiler::Record(
@@ -124,32 +193,103 @@ namespace LamaPon
             return;
         }
 
-        const double milliseconds =
+        const auto& stack = CurrentScopeStack(m_generation);
+        const std::uint32_t parent = stack.indices.empty()
+            ? ProfileSample::NoParent
+            : stack.indices.back();
+        auto& sample =
+            m_currentSamples[FindOrAddSample(name, parent)];
+        sample.milliseconds +=
             std::chrono::duration<double, std::milli>(
                 duration).count();
-        const auto sample = std::ranges::find_if(
-            m_currentSamples,
-            [name](const ProfileSample& candidate)
-            {
-                return candidate.name == name;
-            });
-        if (sample == m_currentSamples.end())
+        ++sample.callCount;
+    }
+
+    ProfileScopeToken Profiler::BeginScope(
+        const std::string_view name)
+    {
+        std::scoped_lock lock(m_mutex);
+        if (!m_enabled || !m_frameActive)
         {
-            m_currentSamples.push_back({
-                std::string(name),
-                milliseconds,
-                1
-            });
+            return {};
+        }
+
+        auto& stack = CurrentScopeStack(m_generation);
+        const std::uint32_t parent = stack.indices.empty()
+            ? ProfileSample::NoParent
+            : stack.indices.back();
+        const std::uint32_t index =
+            FindOrAddSample(name, parent);
+        // 呼び出し回数は開始時に数えます。フレーム末尾で閉じられなかった
+        // 区間も「呼ばれた」ことは残ります。
+        ++m_currentSamples[index].callCount;
+        stack.indices.push_back(index);
+        return { m_generation, index };
+    }
+
+    void Profiler::EndScope(
+        const ProfileScopeToken& token,
+        const std::chrono::steady_clock::duration duration) noexcept
+    {
+        if (!token.IsValid())
+        {
             return;
         }
-        sample->milliseconds += milliseconds;
-        ++sample->callCount;
+
+        std::scoped_lock lock(m_mutex);
+        if (t_scopeStack.generation == token.generation)
+        {
+            // 通常は末尾にありますが、GPU区間のEnd()のように内側の区間より
+            // 先に閉じられた場合も、自分の添字だけを取り除いて後続の親子
+            // 関係を保ちます。
+            auto& indices = t_scopeStack.indices;
+            const auto open = std::find(
+                indices.rbegin(),
+                indices.rend(),
+                token.index);
+            if (open != indices.rend())
+            {
+                indices.erase(std::next(open).base());
+            }
+        }
+        // フレームが切り替わった後に閉じた区間は、別フレームの添字を
+        // 指している可能性があるため加算しません。
+        if (!m_enabled
+            || !m_frameActive
+            || token.generation != m_generation
+            || token.index >= m_currentSamples.size())
+        {
+            return;
+        }
+        m_currentSamples[token.index].milliseconds +=
+            std::chrono::duration<double, std::milli>(
+                duration).count();
     }
 
     std::vector<ProfileFrame> Profiler::Snapshot() const
     {
         std::scoped_lock lock(m_mutex);
         return m_frames;
+    }
+
+    std::uint64_t Profiler::LatestFrameIndex() const noexcept
+    {
+        std::scoped_lock lock(m_mutex);
+        return m_frames.empty() ? 0 : m_frames.back().index;
+    }
+
+    std::vector<ProfileFrame> Profiler::SnapshotSince(
+        const std::uint64_t afterIndex) const
+    {
+        std::scoped_lock lock(m_mutex);
+        // indexは単調増加なので、条件を満たす範囲は末尾側に連続します。
+        const auto first = std::ranges::find_if(
+            m_frames,
+            [afterIndex](const ProfileFrame& frame)
+            {
+                return frame.index > afterIndex;
+            });
+        return { first, m_frames.end() };
     }
 
     void Profiler::Clear() noexcept
@@ -159,14 +299,15 @@ namespace LamaPon
         m_currentSamples.clear();
         m_frameActive = false;
         m_nextFrameIndex = 1;
+        InvalidateOpenScopes();
     }
 
-    bool Profiler::WriteJson(
-        const std::filesystem::path& path) const noexcept
+    bool WriteProfileJson(
+        const std::filesystem::path& path,
+        const std::span<const ProfileFrame> frames) noexcept
     {
         try
         {
-            const auto frames = Snapshot();
             if (!path.parent_path().empty())
             {
                 std::filesystem::create_directories(
@@ -183,7 +324,7 @@ namespace LamaPon
             output << std::fixed << std::setprecision(4);
             output
                 << "{\n  \"format\": \"LamaPonProfile\",\n"
-                << "  \"version\": 1,\n  \"frames\": [\n";
+                << "  \"version\": 2,\n  \"frames\": [\n";
             for (std::size_t frameIndex{};
                 frameIndex < frames.size();
                 ++frameIndex)
@@ -210,7 +351,16 @@ namespace LamaPon
                         << "\", \"milliseconds\": "
                         << sample.milliseconds
                         << ", \"calls\": "
-                        << sample.callCount << '}';
+                        << sample.callCount
+                        << ", \"depth\": "
+                        << sample.depth;
+                    // 最上位区間はparentを省略します。version 1の
+                    // 読み込み側と同じ形のまま扱えます。
+                    if (sample.parent != ProfileSample::NoParent)
+                    {
+                        output << ", \"parent\": " << sample.parent;
+                    }
+                    output << '}';
                 }
                 output << "]}";
                 if (frameIndex + 1 < frames.size())
@@ -228,12 +378,34 @@ namespace LamaPon
         }
     }
 
+    bool Profiler::WriteJson(
+        const std::filesystem::path& path) const noexcept
+    {
+        try
+        {
+            const auto frames = Snapshot();
+            return WriteProfileJson(path, frames);
+        }
+        catch (...)
+        {
+            return false;
+        }
+    }
+
     ProfileScope::ProfileScope(
         const std::string_view name) noexcept
-        : m_name(name)
-        , m_enabled(Profiler::Instance().IsEnabled())
     {
-        if (m_enabled)
+        // 計測の失敗（メモリ不足など）で呼び出し側の処理を止めないよう、
+        // 例外は計測なしとして扱います。
+        try
+        {
+            m_token = Profiler::Instance().BeginScope(name);
+        }
+        catch (...)
+        {
+            m_token = {};
+        }
+        if (m_token.IsValid())
         {
             m_start = std::chrono::steady_clock::now();
         }
@@ -241,10 +413,10 @@ namespace LamaPon
 
     ProfileScope::~ProfileScope()
     {
-        if (m_enabled)
+        if (m_token.IsValid())
         {
-            Profiler::Instance().Record(
-                m_name,
+            Profiler::Instance().EndScope(
+                m_token,
                 std::chrono::steady_clock::now() - m_start);
         }
     }

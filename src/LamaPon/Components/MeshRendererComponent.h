@@ -285,6 +285,8 @@ namespace LamaPon
         {
             return m_worldOverlay;
         }
+        [[nodiscard]] bool DescribeDrawEvent(
+            FrameDebugDrawDescription& description) const override;
         [[nodiscard]] std::string_view TypeName() const noexcept override { return "MeshRenderer"; }
 
         // インスタンス描画：同一キーのMeshRendererはシーンが

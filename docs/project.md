@@ -58,6 +58,8 @@ git push -u origin main
 - `.lamapon/bin/`、`.lamapon/build/`、`build/`、`dist/` — ビルド生成物
 - `.lamapon/LamaPonEditor.log`、`game-module-build.log`、`profile.json` —
   ログと計測値
+- `.lamapon/profiles/`、`.lamapon/memory/` — プロファイラーとメモリプロファイラーが
+  保存する解析の記録。フォルダー内にも除外用の`.gitignore`を自動で置きます
 - `.lamapon/package-backups/` — パッケージ更新前の退避（本体の複製）
 - `.lamapon/Crashes/` — クラッシュダンプ
 - `.lamapon/jobs/`、`.lamapon/runtime/` — CLIの非同期処理・実行セッション
@@ -298,6 +300,7 @@ VSyncを切ると、スワップチェーンのティアリング許可（`DXGI_
 
 「パフォーマンス」タブでは、FPS、Frame ms、CPU＋Present時間、直近120フレームのグラフ、固定物理Step数・補間率・補間中Rigidbody数、Collider／Broad Phase／Contact数、描画カリング数を確認できます。
 タブを閉じた場合は「ウィンドウ」→「パフォーマンス」から再表示できます。
+過去のフレームを選んで呼び出し階層を調べる、2つの記録を比べる、メモリの内訳を見るといった詳しい調査は、「ウィンドウ」→「解析」の各パネルで行います（[解析ツール](editor.md#解析ツール)）。
 
 ## ゲームをエクスポート
 

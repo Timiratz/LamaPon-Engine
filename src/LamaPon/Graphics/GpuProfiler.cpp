@@ -24,7 +24,7 @@ namespace LamaPon
         GpuProfiler& profiler,
         const std::string_view name)
         : m_profiler(&profiler)
-        , m_initialDepth(profiler.m_sectionDepth)
+        , m_initialDepth(profiler.m_sections.size())
         , m_generation(profiler.m_generation)
     {
         profiler.BeginSection(name);
@@ -70,45 +70,103 @@ namespace LamaPon
         }
     }
 
+    void GpuProfiler::SetSectionListener(
+        GpuSectionListener* const listener) noexcept
+    {
+        m_listener = listener;
+    }
+
     void GpuProfiler::BeginSection(
         const std::string_view name)
     {
-        if (!IsSupported())
+        // 以降の副作用より前に確保し、登録できない区間の開始だけが
+        // 各通知先へ残ることを防ぎます。
+        m_sections.reserve(m_sections.size() + 1);
+
+        OpenSection section;
+        if (IsSupported())
         {
-            return;
-        }
-        m_backend->OpenFrame();
-        if (m_backend->BeginSection(
+            m_backend->OpenFrame();
+            section.timed = m_backend->BeginSection(
                 name,
-                static_cast<std::uint32_t>(m_sectionDepth)))
-        {
-            ++m_sectionDepth;
+                static_cast<std::uint32_t>(m_timedDepth));
+            if (section.timed)
+            {
+                ++m_timedDepth;
+            }
         }
+        // ここから先は例外を送出しないため、開始した通知先は
+        // 必ずm_sectionsから終了されます。
+        if (m_backend != nullptr)
+        {
+            section.marker = m_backend->BeginMarker(name);
+        }
+        if (m_listener != nullptr)
+        {
+            m_listener->OnGpuSectionBegin(name);
+            section.listened = true;
+        }
+        try
+        {
+            section.cpuScope =
+                Profiler::Instance().BeginScope(name);
+            if (section.cpuScope.IsValid())
+            {
+                section.cpuStart = std::chrono::steady_clock::now();
+            }
+        }
+        catch (...)
+        {
+            // CPU計測の失敗で描画パスを止めません。
+            section.cpuScope = {};
+        }
+        m_sections.push_back(section);
     }
 
     void GpuProfiler::EndSection()
     {
-        if (m_sectionDepth == 0)
+        if (m_sections.empty())
         {
             return;
         }
-        if (m_backend != nullptr)
-        {
-            m_backend->EndSection();
-        }
-        --m_sectionDepth;
+        EndTopSection();
     }
 
-    void GpuProfiler::EndSectionsToDepth(
-        const std::size_t depth) noexcept
+    void GpuProfiler::EndTopSection() noexcept
     {
-        while (m_sectionDepth > depth)
+        const auto section = m_sections.back();
+        m_sections.pop_back();
+        if (section.cpuScope.IsValid())
+        {
+            Profiler::Instance().EndScope(
+                section.cpuScope,
+                std::chrono::steady_clock::now()
+                    - section.cpuStart);
+        }
+        if (section.listened && m_listener != nullptr)
+        {
+            m_listener->OnGpuSectionEnd();
+        }
+        if (section.marker && m_backend != nullptr)
+        {
+            m_backend->EndMarker();
+        }
+        if (section.timed)
         {
             if (m_backend != nullptr)
             {
                 m_backend->EndSection();
             }
-            --m_sectionDepth;
+            --m_timedDepth;
+        }
+    }
+
+    void GpuProfiler::EndSectionsToDepth(
+        const std::size_t depth) noexcept
+    {
+        while (m_sections.size() > depth)
+        {
+            EndTopSection();
         }
     }
 

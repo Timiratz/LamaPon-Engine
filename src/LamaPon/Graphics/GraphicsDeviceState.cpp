@@ -12,6 +12,7 @@ namespace LamaPon
         : m_resourceLeaseState(CreateResourceLeaseState(owner))
         , m_services(std::make_unique<RuntimeServices>())
     {
+        m_gpuProfiler.SetSectionListener(&m_frameDebugger);
     }
 
     GraphicsDevice::State::~State() = default;

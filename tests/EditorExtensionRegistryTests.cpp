@@ -156,6 +156,31 @@ int main()
                 && registry.Panels().size() == 1,
             "A rejected extension must not leave partial records.");
 
+        // 「ウィンドウ」メニューのサブメニュー名は登録後も保持され、
+        // 指定しないパネルは従来どおりグループ無しになります。
+        LamaPon::EditorExtensionDefinition analysis;
+        analysis.id = "example.analysis";
+        analysis.displayName = "Example Analysis";
+        analysis.panels.push_back({
+            "example.profiler",
+            "Example Profiler",
+            false,
+            true,
+            [](bool&) {},
+            "解析"
+        });
+        Require(registry.Register(std::move(analysis), &error),
+            "A grouped panel must register.");
+        const auto* grouped = registry.FindPanel("example.profiler");
+        const auto* ungrouped = registry.FindPanel("example.inspector");
+        Require(grouped != nullptr
+                && grouped->windowMenuGroup == "解析"
+                && ungrouped != nullptr
+                && ungrouped->windowMenuGroup.empty(),
+            "Window menu groups must be preserved per panel.");
+        Require(registry.Unregister("example.analysis"),
+            "The grouped extension must be removable by id.");
+
         Require(registry.Unregister("example.tools"),
             "Registered extensions must be removable by id.");
         Require(shutdownCount == 1

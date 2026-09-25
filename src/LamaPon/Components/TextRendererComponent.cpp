@@ -1,6 +1,7 @@
 #include "LamaPon/Components/TextRendererComponent.h"
 
 #include "LamaPon/Assets/AssetManager.h"
+#include "LamaPon/Components/FrameDebugDescription.h"
 #include "LamaPon/Components/UIRectTransformComponent.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Scene/GameObject.h"
@@ -220,5 +221,15 @@ namespace LamaPon
         request.origin = origin;
         request.scale = scale;
         static_cast<void>(sprites.Draw(request));
+    }
+
+    bool TextRendererComponent::DescribeDrawEvent(
+        FrameDebugDrawDescription& description) const
+    {
+        description.geometry = "文字列";
+        description.material =
+            "\"" + Text() + "\" " + Detail::FrameDebugNumber(FontSize()) + "pt";
+        description.state = "並び順 " + std::to_string(RenderSortOrder());
+        return true;
     }
 }
