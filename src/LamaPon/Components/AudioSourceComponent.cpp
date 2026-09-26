@@ -72,7 +72,7 @@ namespace LamaPon
         const noexcept
     {
         const float busVolume = m_audio != nullptr
-            ? m_audio->BusVolume(m_bus)
+            ? m_audio->EffectiveBusVolume(m_bus)
             : 1.0f;
         return m_volume * busVolume;
     }
@@ -460,7 +460,7 @@ namespace LamaPon
         if (m_audio != nullptr)
         {
             const float busVolume =
-                m_audio->BusVolume(m_bus);
+                m_audio->EffectiveBusVolume(m_bus);
             if (busVolume != m_lastBusVolume)
             {
                 m_lastBusVolume = busVolume;
@@ -523,7 +523,7 @@ namespace LamaPon
     void AudioSourceComponent::ApplyProperties()
     {
         m_lastBusVolume = m_audio != nullptr
-            ? m_audio->BusVolume(m_bus)
+            ? m_audio->EffectiveBusVolume(m_bus)
             : 1.0f;
         if (m_stream)
         {

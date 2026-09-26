@@ -1,6 +1,7 @@
 #include "LamaPon/Editor/EditorLayer.h"
 
 #include "LamaPon/Editor/EditorLayerShared.h"
+#include "LamaPon/Editor/SceneTransitionEditor.h"
 
 #include "LamaPon/Assets/AssetManager.h"
 #include "LamaPon/Audio/AudioSystem.h"
@@ -327,6 +328,10 @@ namespace LamaPon
         };
         m_projectSplashScreenDraft =
             m_projectSettings.splashScreenEnabled;
+        m_projectSceneTransitionDraft =
+            m_projectSettings.sceneTransition;
+        m_projectLoadingScreenDraft =
+            m_projectSettings.loadingScreen;
         m_projectGraphicsDraft =
             m_projectSettings.graphics;
         m_projectViewportDraft =
@@ -938,6 +943,50 @@ namespace LamaPon
             ImGui::EndCombo();
         }
 
+    }
+
+    // プロジェクト設定「シーン遷移」カテゴリー。
+    void EditorLayer::DrawProjectSettingsSceneTransitionSection()
+    {
+        ImGui::SeparatorText("既定の遷移演出");
+        ImGui::TextWrapped(
+            "UI Buttonによるシーン移動、ゲームの起動シーン、C++の"
+            "RequestLoadAsync(path)で使う演出です。旧シーンを覆い終えてから"
+            "新シーンへ切り替え、読み込みは覆っている間に進めます。");
+        ImGui::PushID("ProjectSceneTransition");
+        const auto transition = DrawSceneTransitionEditor(
+            m_projectSceneTransitionDraft,
+            true);
+        if (transition.previewRequested)
+        {
+            PreviewSceneTransition(m_projectSceneTransitionDraft);
+        }
+        ImGui::PopID();
+        ImGui::TextDisabled(
+            "C++では Scenes().PlayTransition(...) で、シーンを切り替えない"
+            "演出（部屋の移動など）にも使えます。");
+
+        ImGui::SeparatorText("読み込み画面");
+        ImGui::PushID("ProjectLoadingScreen");
+        static_cast<void>(DrawSceneLoadingScreenEditor(
+            m_projectLoadingScreenDraft));
+        ImGui::PopID();
+    }
+
+    void EditorLayer::PreviewSceneTransition(
+        const SceneTransitionSettings& transition)
+    {
+        auto& scenes = m_scene.Scenes();
+        if (!scenes.PreviewTransition(transition))
+        {
+            SetStatus(
+                "シーンの読み込み中は遷移をプレビューできません",
+                true);
+            return;
+        }
+        // 演出はGameビューにだけ描くので、ゲームタブを前面へ出します。
+        m_selectGameViewportRequested = true;
+        SetStatus("Gameビューで遷移演出をプレビューしています");
     }
 
     // プロジェクト設定「グラフィック」カテゴリー。
@@ -2053,6 +2102,11 @@ namespace LamaPon
                     m_projectGameIconBuffer.data());
             settings.splashScreenEnabled =
                 m_projectSplashScreenDraft;
+            settings.sceneTransition =
+                SanitizeSceneTransition(
+                    m_projectSceneTransitionDraft);
+            settings.loadingScreen =
+                m_projectLoadingScreenDraft;
             settings.graphics =
                 ClampGraphicsSettings(
                     m_projectGraphicsDraft);
@@ -2173,7 +2227,7 @@ namespace LamaPon
         }
 
         // 左のカテゴリー一覧と右の内容ペインへ分割します。
-        constexpr std::array<const char*, 9> categories{
+        constexpr std::array<const char*, 10> categories{
             "ゲーム",
             "グラフィック",
             "ビューポート設定",
@@ -2182,7 +2236,8 @@ namespace LamaPon
             "入力",
             "スクリプト",
             "ビルドプロファイル",
-            "オンライン"
+            "オンライン",
+            "シーン遷移"
         };
         ImGui::BeginChild(
             "ProjectSettingsCategories",
@@ -2245,6 +2300,9 @@ namespace LamaPon
             break;
         case 8:
             DrawProjectSettingsOnlineSection();
+            break;
+        case 9:
+            DrawProjectSettingsSceneTransitionSection();
             break;
         default:
             DrawProjectSettingsGameSection();
@@ -2350,6 +2408,12 @@ namespace LamaPon
                     SetCurrentScenePath(
                         m_scenePath);
             }
+            // 書き出したゲームと同じ既定の遷移と読み込み画面で再生します。
+            m_scene.Scenes().ResetTransition();
+            m_scene.Scenes().SetDefaultTransition(
+                m_projectSettings.sceneTransition);
+            m_scene.Scenes().LoadingScreen() =
+                m_projectSettings.loadingScreen;
             for (const auto& gameObject :
                 m_scene.GameObjects())
             {
@@ -2420,6 +2484,9 @@ namespace LamaPon
             m_scene.LoadFromJson(m_playSnapshot);
             m_scene.Scenes().
                 CancelPending();
+            // 遷移の途中で停止しても、覆いやBGMの音量を編集モードへ
+            // 持ち込みません。
+            m_scene.Scenes().ResetTransition();
             if (!m_scenePath.empty())
             {
                 m_scene.Scenes().

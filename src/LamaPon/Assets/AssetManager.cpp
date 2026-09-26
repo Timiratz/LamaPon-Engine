@@ -638,7 +638,8 @@ namespace
             std::towlower);
         if (name == L"builtin/circle"
             || name == L"builtin/triangle"
-            || name == L"builtin/ring")
+            || name == L"builtin/ring"
+            || name == L"builtin/iris")
         {
             return name.substr(8);
         }
@@ -712,6 +713,16 @@ namespace
                     const float dy = pointY - 128.0f;
                     signedDistance =
                         112.0f - std::sqrt(dx * dx + dy * dy);
+                }
+                else if (kind == L"iris")
+                {
+                    // circleを反転し、半径112pxの円の外側（四隅と縁を
+                    // 含む）を塗ります。シーン遷移のIrisが、この画像の
+                    // 外側を矩形で塗り足して画面全体を覆います。
+                    const float dx = pointX - 128.0f;
+                    const float dy = pointY - 128.0f;
+                    signedDistance =
+                        std::sqrt(dx * dx + dy * dy) - 112.0f;
                 }
                 else if (kind == L"ring")
                 {

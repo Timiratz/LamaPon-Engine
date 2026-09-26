@@ -40,6 +40,8 @@ if (scenes.IsLoading())
 
 エクスポートしたゲームでは標準Loading画面が自動表示され、日本語メッセージ、進捗バー、パーセントを描画します。
 色とメッセージは変更でき、独自UIを使用する場合は`enabled`を無効にできます。
+ヒント文、背景画像、回転インジケーター、進捗バーの平滑化も選べます（追加した項目は既定では従来の見た目のままです）。
+エディターではProject Settingsの「シーン遷移」でも同じ項目を編集でき、書き出したゲームと再生モードに反映されます。
 
 ```cpp
 auto& loading = scenes.LoadingScreen();
@@ -47,6 +49,10 @@ loading.message = "海底都市へ移動中...";
 loading.barFillColor =
     { 0.1f, 0.7f, 0.9f, 1.0f };
 loading.showPercentage = true;
+loading.hint = "ヒント: Shiftキーで走れます";
+loading.backgroundTexture = "textures/loading.png";
+loading.showSpinner = true;     // 右下で回る点
+loading.smoothProgress = true;  // バーを実際の進捗へ滑らかに追従
 
 scenes.SetMinimumLoadingScreenDuration(0.2f);
 scenes.CancelPending(); // 非同期要求をキャンセル
@@ -59,6 +65,150 @@ UI ButtonによるScene移動とゲームの起動Sceneも非同期読み込み�
 
 大きいテクスチャ（転送データ8MiB以上）はGPUへの転送も1フレームにまとめず、毎フレームの予算内で粗いミップから段階的にアップロードされます。
 読み込み直後は少しぼやけた状態から数フレームで鮮明になり、巨大なテクスチャを読んでもフレームが止まりません。
+
+## シーン遷移演出
+
+Sceneを切り替えるときに、フェードやワイプなどの演出で旧Sceneを覆い、新Sceneを見せられます。
+流れは「覆う → 覆ったまま読み込みと有効化 → 開く」で、非同期読み込みは覆っている間に並行して進みます。
+新Sceneの有効化は**画面を覆い終えてから**行うため、切り替わりの瞬間や読み込み直後のカクつきは見えません。
+覆い終えても読み込みが続いている場合だけ、標準Loading画面をふわっと重ねます（速い読み込みでは表示しません）。
+遷移はtimeScaleの影響を受けない実時間で進むので、timeScaleを0にしたポーズメニューからの移動でも止まりません。
+
+| 演出 | 見た目 | 主な設定 |
+|---|---|---|
+| `None` | 覆わずに切り替え（従来どおりLoading画面だけ） | — |
+| `Fade` | 単色で徐々に覆う | 色 |
+| `Wipe` | 画面の端から単色が伸びる（斜めも可） | 向き、境界のぼかし、差し色 |
+| `Iris` | 円が閉じて開く | 中心（`focus`）、差し色 |
+| `Diamond` | ひし形の穴が閉じて開く | 中心、差し色 |
+| `Blinds` | ブラインドの帯が順に伸びる | 向き、本数、時間差 |
+| `Tiles` / `DiamondTiles` / `Dots` | 四角・ひし形・丸のタイルが順に現れる | 向き、個数、時間差、差し色 |
+| `Shutter` | 両側から扉のように閉じる | 軸（向き）、差し色 |
+| `Shader` | ピクセルシェーダーの模様で覆う（下記） | 模様、ルール画像、独自シェーダー |
+
+差し色（`accentColor`）は覆いの先端や縁に入る別色の帯です。
+`passThrough`をオンにすると、開くときに覆いが同じ向きへ通り抜けます（オフなら巻き戻すように戻ります）。
+覆う・保持・開くの時間、動き方（イージング）、覆いの色も演出ごとに設定できます。
+
+### エディターで設定する
+
+- **Project Settings →「シーン遷移」**: UI Buttonによる移動、ゲームの起動Scene、引数なしの`RequestLoadAsync`で使う既定の演出と、Loading画面を設定します。
+- **UI ButtonのInspector →「シーン遷移の演出」**: 「このボタン専用の演出を使う」をオンにすると、そのボタンだけ別の演出にできます。
+- どちらも「Gameビューでプレビュー」で、Sceneを切り替えずに覆って開くまでを確認できます。
+
+新しく作成したプロジェクトの既定は短いFadeです。以前からあるプロジェクトは設定が無いため`None`（従来の動作）のままです。
+
+### C++から使う
+
+```cpp
+auto& scenes = GetScene().Scenes();
+
+// この移動だけ演出を指定する
+auto transition = LamaPon::MakeSceneTransition(
+    LamaPon::SceneTransitionEffect::Iris,
+    0.5f); // 覆う時間と開く時間（秒）
+transition.accentColor = { 1.0f, 0.8f, 0.2f, 1.0f };
+if (!scenes.RequestLoadAsync("scenes/stage-02.scene.json", transition))
+{
+    LamaPon::Logger::Instance().Error(scenes.LastError());
+}
+
+// 以後の非同期切り替え（UI Buttonを含む）の既定を変える
+scenes.SetDefaultTransition(
+    LamaPon::MakeSceneTransition(LamaPon::SceneTransitionEffect::Wipe));
+```
+
+`RequestLoad`／`RequestReload`（同期）は、遷移を引数で渡したときだけ覆い終えるまで切り替えを待ちます。
+追加読み込み（Additive）には遷移を使いません。
+
+Sceneを切り替えない演出（部屋の移動、ワープ、場面転換）には`PlayTransition`を使います。
+覆い終えた瞬間に`SceneTransition.Covered`イベントが届くので、その間にプレイヤーを移動します。
+
+```cpp
+void Start() override
+{
+    On("SceneTransition.Covered", [this]
+    {
+        if (m_warping)
+        {
+            // 画面が隠れている間に移動する
+            GetScene().FindGameObjectByName("Player")
+                ->GetTransform().position = { 0.0f, 0.0f, 40.0f };
+            m_warping = false;
+        }
+    });
+}
+
+void Warp()
+{
+    auto iris = LamaPon::MakeSceneTransition(
+        LamaPon::SceneTransitionEffect::Iris);
+    iris.focus = { 0.5f, 0.6f }; // プレイヤーの画面位置へ向かって閉じる
+    if (GetScene().Scenes().PlayTransition(iris))
+    {
+        m_warping = true;
+    }
+}
+```
+
+遷移の各段階でSceneのイベントが発行され、`EventArgs::text`には移動先Sceneのパスが入ります（`PlayTransition`では空）。
+
+| イベント名 | タイミング |
+|---|---|
+| `SceneTransition.Started` | 遷移を始めた（旧Sceneで受け取れます） |
+| `SceneTransition.Covered` | 画面を覆い終えた（新Sceneを有効化する直前） |
+| `SceneTransition.Finished` | 新Sceneを見せ終えた（操作の開始に安全なタイミング） |
+
+`IsTransitioning()`、`TransitionPhase()`、`TransitionCoverage()`で進み具合を確認できます。
+`blockInput`（既定オン）の遷移中は`IsInputBlocked()`がtrueになり、UI Buttonはクリックを受け付けません（二重に遷移を要求する事故を防ぎます）。
+`fadeMusic`（既定オン）の遷移では、Musicバスの音量を覆い具合に合わせて下げて戻します。
+プレイヤーが設定した`SetBusVolume`の値は変えず、別の倍率（`AudioSystem::SetBusFade`）として掛け合わせます。
+
+読み込みに失敗したり`CancelPending()`で取り消したりした場合は、その時点の覆い具合から開き直して元のSceneへ戻ります。
+
+### シェーダーによる遷移
+
+`SceneTransitionEffect::Shader`は、画面全体を1枚のSpriteで覆い、ピクセルシェーダーで画素ごとに「覆われる順番」を決めます。
+組み込みの`shaders/LamaPonSceneTransition.hlsl`（新規作成と既存プロジェクトの更新で配布）には次の模様があります。
+
+| 模様（`shaderPattern`） | 見た目 |
+|---|---|
+| `RuleImage` | ルール画像の暗い画素から順に覆う（ノベルゲームで定番の方式） |
+| `Dissolve` | ノイズでまだらに溶けるように覆う |
+| `Clock` | 12時の位置から時計の針のように回る |
+| `Spiral` | 渦を巻きながら中心へ閉じる |
+| `Ripple` | 波紋のように揺らぎながら閉じる |
+| `Hexagons` | 六角形のタイルが順に現れる |
+| `Heart` | ハート形の穴が閉じる |
+
+```cpp
+auto rule = LamaPon::MakeSceneTransition(
+    LamaPon::SceneTransitionEffect::Shader,
+    0.8f);
+rule.shaderPattern = LamaPon::SceneTransitionShaderPattern::RuleImage;
+rule.ruleTexture = "textures/rules/swirl.png"; // グレースケール画像
+rule.softness = 0.08f;                          // 境界のぼかし
+rule.accentColor = { 1.0f, 0.6f, 0.2f, 1.0f };  // 境界を光らせる
+```
+
+`shader`へ独自の`.hlsl`を指定すると、組み込みの代わりに使います。
+組み込みシェーダーを複製して`PatternOrder`だけを書き換えるのが簡単です。
+入力の並びと定数はUI用の2D Shaderと同じで、次の値が渡されます（`CustomParameters[5]`～`[7]`はエンジンが使うため読みません）。
+
+| 入力 | 内容 |
+|---|---|
+| `COLOR0` | 覆いの色 |
+| `TEXCOORD0` | 画面の左上(0,0)～右下(1,1) |
+| `SpriteTexture`（t0） | ルール画像（指定が無ければ白） |
+| `CustomParameters[0]` | coverage（0～1）、境界のぼかし幅、差し色の幅、模様の番号 |
+| `CustomParameters[1]` | 順番を反転するか（開く段階の通り抜け）、stagger、divisions |
+| `CustomParameters[2]` | 差し色 |
+| `CustomParameters[3]` | 画面の幅、高さ、中心x、中心y（ピクセル） |
+| `CustomParameters[4]` | 向きx、向きy |
+
+シェーダーが見つからない、コンパイルできない場合は、画面を確実に覆えるようFadeで代わりに描き、理由を一度だけログへ記録します。
+
+旧Sceneと新Sceneの画面を直接混ぜる演出（クロスフェード、旧画面のディゾルブ）は、画面の取り込みが必要なため現在は対応していません。
 
 ## 追加読み込み（Additive）
 

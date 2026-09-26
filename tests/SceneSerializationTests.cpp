@@ -2753,6 +2753,54 @@ int RunTest(const std::string_view suite)
                             ->ClickEventName()
                             == "StartGame",
                     "Button click event did not round-trip.");
+                Require(
+                    !eventButton->UseCustomTransition()
+                        && nlohmann::json::parse(buttonJson)
+                                .dump()
+                                .find("\"transition\"")
+                            == std::string::npos,
+                    "A button without its own transition must use the project default.");
+
+                // ボタン専用のシーン遷移演出の保存往復
+                auto transition = LamaPon::MakeSceneTransition(
+                    LamaPon::SceneTransitionEffect::Shader,
+                    0.6f,
+                    { 0.1f, 0.0f, 0.2f, 1.0f });
+                transition.shaderPattern =
+                    LamaPon::SceneTransitionShaderPattern::Heart;
+                transition.direction =
+                    LamaPon::SceneTransitionDirection::TopToBottom;
+                transition.focus = { 0.3f, 0.7f };
+                transition.fadeMusic = false;
+                button.SetUseCustomTransition(true);
+                button.SetTransition(transition);
+                LamaPon::Scene transitionButtonLoaded(graphics);
+                transitionButtonLoaded.LoadFromJson(
+                    buttonScene.SerializeToJson());
+                const auto* transitionButton =
+                    transitionButtonLoaded
+                        .FindGameObjectByName(
+                            "開始ボタン")
+                        ->GetComponent<
+                            LamaPon::
+                                UIButtonComponent>();
+                Require(
+                    transitionButton != nullptr
+                        && transitionButton->UseCustomTransition()
+                        && transitionButton->Transition().effect
+                            == LamaPon::SceneTransitionEffect::Shader
+                        && transitionButton->Transition().shaderPattern
+                            == LamaPon::SceneTransitionShaderPattern::Heart
+                        && transitionButton->Transition().direction
+                            == LamaPon::SceneTransitionDirection::TopToBottom
+                        && NearlyEqual(
+                            transitionButton->Transition().coverDuration,
+                            0.6f)
+                        && NearlyEqual(
+                            transitionButton->Transition().focus.y,
+                            0.7f)
+                        && !transitionButton->Transition().fadeMusic,
+                    "Button transition settings did not round-trip.");
             }
 
             // スプライトアニメーション：コマ送り・ループ・
@@ -6417,6 +6465,232 @@ int RunTest(const std::string_view suite)
         Require(
             graphics.Assets().FileExists(transitionPath),
             "Destroying a loading Scene invalidated AssetManager access.");
+
+        // シーン遷移演出: 旧シーンを覆い終えるまで新シーンを有効化せず、
+        // Started → Covered → Finishedの順にイベントを発行します。
+        // 遷移はTime::UnscaledDeltaTimeの実時間で進むため、時計を
+        // 明示的に進めて検査します。
+        {
+            LamaPon::Scene transitionHost(graphics);
+            transitionHost.CreateGameObject("Before transition");
+            auto& transitionScenes = transitionHost.Scenes();
+            transitionScenes.SetMinimumLoadingScreenDuration(0.0f);
+            std::vector<std::string> transitionEvents;
+            std::string nameWhenCovered;
+            const auto started = transitionHost.Events().Subscribe(
+                LamaPon::SceneTransitionStartedEvent,
+                [&transitionEvents](const LamaPon::EventArgs& args)
+                {
+                    transitionEvents.push_back("started:" + args.text);
+                });
+            const auto covered = transitionHost.Events().Subscribe(
+                LamaPon::SceneTransitionCoveredEvent,
+                [&](const LamaPon::EventArgs&)
+                {
+                    transitionEvents.push_back("covered");
+                    nameWhenCovered =
+                        transitionHost.GameObjects().front()->Name();
+                });
+            const auto finished = transitionHost.Events().Subscribe(
+                LamaPon::SceneTransitionFinishedEvent,
+                [&transitionEvents](const LamaPon::EventArgs&)
+                {
+                    transitionEvents.push_back("finished");
+                });
+            const auto advanceFrames =
+                [&](const int frames, const float seconds)
+                {
+                    for (int frame{}; frame < frames; ++frame)
+                    {
+                        LamaPon::Time::Detail::AdvanceFrame(seconds);
+                        transitionHost.Update(seconds);
+                        std::this_thread::sleep_for(
+                            std::chrono::milliseconds(1));
+                    }
+                };
+            const auto runUntilIdle = [&]()
+            {
+                for (int frame{};
+                    frame < 2000 && transitionScenes.IsTransitioning();
+                    ++frame)
+                {
+                    advanceFrames(1, 1.0f / 60.0f);
+                }
+            };
+
+            auto fade = LamaPon::MakeSceneTransition(
+                LamaPon::SceneTransitionEffect::Fade,
+                0.1f);
+            fade.holdDuration = 0.0f;
+            Require(
+                transitionScenes.RequestLoadAsync(transitionPath, fade)
+                    && transitionScenes.IsTransitioning()
+                    && transitionScenes.IsInputBlocked()
+                    && transitionEvents.size() == 1
+                    && transitionEvents.front()
+                        == "started:"
+                            + LamaPon::PathToUtf8(
+                                transitionPath.lexically_normal()),
+                "A transition load did not start covering.");
+            // 時計を止めたまま読み込みを完了させても、覆い終えるまでは
+            // 旧シーンのままです。
+            for (int attempt{};
+                attempt < 1000
+                    && transitionScenes.LoadState()
+                        != LamaPon::SceneLoadState::ReadyToActivate;
+                ++attempt)
+            {
+                advanceFrames(1, 0.0f);
+            }
+            advanceFrames(3, 0.0f);
+            Require(
+                transitionScenes.LoadState()
+                        == LamaPon::SceneLoadState::ReadyToActivate
+                    && transitionHost.GameObjects().front()->Name()
+                        == "Before transition"
+                    && transitionScenes.TransitionPhase()
+                        == LamaPon::SceneTransitionPhase::Covering,
+                "A scene was activated before the transition covered the screen.");
+            runUntilIdle();
+            Require(
+                transitionScenes.LoadState()
+                        == LamaPon::SceneLoadState::Succeeded
+                    && transitionHost.GameObjects().front()->Name()
+                        == "Transition target"
+                    && nameWhenCovered == "Before transition"
+                    && transitionEvents.size() == 3
+                    && transitionEvents[1] == "covered"
+                    && transitionEvents[2] == "finished"
+                    && !transitionScenes.IsTransitioning()
+                    && !transitionScenes.IsInputBlocked()
+                    && NearlyEqual(
+                        transitionScenes.TransitionCoverage(),
+                        0.0f),
+                "The transition did not cover, activate and reveal in order.");
+
+            // シーンを切り替えない演出でも同じイベントが届きます。
+            transitionEvents.clear();
+            const auto revisionBeforePlay =
+                transitionScenes.LoadRevision();
+            Require(
+                transitionScenes.PlayTransition(fade)
+                    && transitionScenes.IsInputBlocked(),
+                "PlayTransition did not start.");
+            runUntilIdle();
+            Require(
+                transitionEvents.size() == 3
+                    && transitionEvents[0] == "started:"
+                    && transitionEvents[1] == "covered"
+                    && transitionEvents[2] == "finished"
+                    && transitionScenes.LoadRevision()
+                        == revisionBeforePlay,
+                "PlayTransition must not load a scene.");
+
+            // エディターのプレビューはイベントも入力のブロックも行いません。
+            transitionEvents.clear();
+            Require(
+                transitionScenes.PreviewTransition(fade)
+                    && transitionScenes.IsTransitioning()
+                    && !transitionScenes.IsInputBlocked(),
+                "PreviewTransition did not start.");
+            advanceFrames(3, 1.0f / 60.0f);
+            transitionScenes.ResetTransition();
+            Require(
+                transitionEvents.empty()
+                    && !transitionScenes.IsTransitioning()
+                    && NearlyEqual(
+                        transitionScenes.TransitionCoverage(),
+                        0.0f),
+                "Previews must be silent and ResetTransition must clear them.");
+
+            // 読み込みに失敗したら、覆いを開いて元のシーンへ戻ります。
+            transitionEvents.clear();
+            Require(
+                transitionScenes.RequestLoadAsync(malformedPath, fade),
+                "A failing transition load was rejected too early.");
+            runUntilIdle();
+            Require(
+                transitionScenes.LoadState()
+                        == LamaPon::SceneLoadState::Failed
+                    && transitionHost.GameObjects().front()->Name()
+                        == "Transition target"
+                    && !transitionEvents.empty()
+                    && transitionEvents.back() == "finished"
+                    && !transitionScenes.IsTransitioning(),
+                "A failed transition load did not reveal the previous scene.");
+
+            // 覆っている途中のキャンセルは、今の覆い具合から開き直します。
+            Require(
+                transitionScenes.RequestLoadAsync(transitionPath, fade),
+                "A cancellable transition load did not start.");
+            advanceFrames(2, 1.0f / 60.0f);
+            transitionScenes.CancelPending();
+            Require(
+                transitionScenes.TransitionPhase()
+                    == LamaPon::SceneTransitionPhase::Revealing,
+                "Cancelling a transition load must start revealing.");
+            runUntilIdle();
+            Require(
+                !transitionScenes.IsTransitioning()
+                    && transitionScenes.LoadState()
+                        == LamaPon::SceneLoadState::Cancelled,
+                "A cancelled transition did not finish.");
+
+            // 遷移付きの同期読み込みも、覆い終えるまで切り替えを待ちます。
+            transitionHost.GameObjects().front()->SetName("Marker");
+            Require(
+                transitionScenes.RequestLoad(transitionPath, fade)
+                    && !transitionScenes.ProcessPending()
+                    && transitionScenes.HasPendingLoad()
+                    && transitionHost.GameObjects().front()->Name()
+                        == "Marker",
+                "A synchronous transition load did not wait for the cover.");
+            runUntilIdle();
+            Require(
+                transitionHost.GameObjects().front()->Name()
+                        == "Transition target"
+                    && !transitionScenes.HasPendingLoad(),
+                "A synchronous transition load did not activate.");
+
+            // 引数なしの非同期読み込みは既定の遷移を使い、既定のNoneは
+            // 従来どおり読み込み画面だけを表示します。
+            Require(
+                transitionScenes.DefaultTransition().effect
+                    == LamaPon::SceneTransitionEffect::None,
+                "The default transition must stay None for compatibility.");
+            Require(
+                transitionScenes.RequestLoadAsync(transitionPath),
+                "A default transition load did not start.");
+            const auto legacyFrame = transitionScenes.TransitionFrame();
+            Require(
+                legacyFrame.legacyLoadingScreen
+                    && NearlyEqual(legacyFrame.loadingScreenAlpha, 1.0f),
+                "A load without a covering effect must show the classic loading screen.");
+            runUntilIdle();
+            for (int attempt{};
+                attempt < 1000 && transitionScenes.IsLoading();
+                ++attempt)
+            {
+                advanceFrames(1, 1.0f / 60.0f);
+            }
+            transitionScenes.SetDefaultTransition(fade);
+            Require(
+                transitionScenes.RequestReloadAsync()
+                    && transitionScenes.ActiveTransition().effect
+                        == LamaPon::SceneTransitionEffect::Fade,
+                "Reloading without arguments must use the default transition.");
+            runUntilIdle();
+            for (int attempt{};
+                attempt < 1000 && transitionScenes.IsLoading();
+                ++attempt)
+            {
+                advanceFrames(1, 1.0f / 60.0f);
+            }
+            transitionHost.Events().Unsubscribe(started);
+            transitionHost.Events().Unsubscribe(covered);
+            transitionHost.Events().Unsubscribe(finished);
+            LamaPon::Time::Detail::Reset();
+        }
 
         // 追加シーンの読み込みと破棄を検証します。
         const auto additivePath =

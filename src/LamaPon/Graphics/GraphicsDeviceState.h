@@ -60,6 +60,9 @@ namespace LamaPon
         mutable std::uint64_t m_materialShaderGeneration{};
         mutable std::uint64_t m_spriteShaderGeneration{};
         mutable std::uint64_t m_screenShaderGeneration{};
+        // シーン遷移のShader演出で最後に記録したエラーです。同じエラーを
+        // 毎フレームログへ出さないために保持します。
+        std::string m_sceneTransitionShaderError;
         LightingState m_lightingState;
         GraphicsSettings m_graphicsSettings =
             GraphicsSettingsForPreset(GraphicsQualityPreset::High);

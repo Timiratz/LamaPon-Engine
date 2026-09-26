@@ -1,6 +1,7 @@
 #pragma once
 
 #include "LamaPon/Scene/Component.h"
+#include "LamaPon/Scene/SceneTransition.h"
 
 #include <DirectXMath.h>
 
@@ -176,6 +177,31 @@ namespace LamaPon
         {
             return m_sortOrder;
         }
+        // trueなら、クリックでシーンを切り替えるときにこのボタン専用の
+        // 遷移演出（Transition）を使います。falseならプロジェクト既定
+        // （SceneManager::DefaultTransition）を使います。追加読み込み
+        // （Additive）では遷移を使いません。
+        void SetUseCustomTransition(
+            const bool useCustom) noexcept
+        {
+            m_useCustomTransition = useCustom;
+        }
+        [[nodiscard]] bool
+            UseCustomTransition() const noexcept
+        {
+            return m_useCustomTransition;
+        }
+        void SetTransition(
+            const SceneTransitionSettings& transition)
+        {
+            m_transition =
+                SanitizeSceneTransition(transition);
+        }
+        [[nodiscard]] const SceneTransitionSettings&
+            Transition() const noexcept
+        {
+            return m_transition;
+        }
 
         [[nodiscard]] bool DescribeDrawEvent(
             FrameDebugDrawDescription& description) const override;
@@ -231,5 +257,9 @@ namespace LamaPon
             m_textTexture;
         GraphicsDevice* m_graphics{};
         AssetManager* m_assets{};
+        bool m_useCustomTransition{};
+        SceneTransitionSettings m_transition{
+            MakeSceneTransition(SceneTransitionEffect::Fade)
+        };
     };
 }

@@ -115,6 +115,7 @@ namespace LamaPon
                 L"shaders/LamaPonLightCulling.hlsl",
                 L"shaders/LamaPonSpriteLit.hlsl",
                 L"shaders/LamaPonSpriteMask.hlsl",
+                L"shaders/LamaPonSceneTransition.hlsl",
                 L"textures/LamaPonEngineLogo.png"
             };
         return assets;

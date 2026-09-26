@@ -468,6 +468,8 @@ set(LAMAPON_RUNTIME_SOURCES
     src/LamaPon/Scene/SceneSerialization.cpp
     src/LamaPon/Scene/SceneManager.cpp
     src/LamaPon/Scene/SceneManager.h
+    src/LamaPon/Scene/SceneTransition.cpp
+    src/LamaPon/Scene/SceneTransition.h
     src/LamaPon/Scene/SceneVisibility.cpp
     src/LamaPon/Scene/RenderSpatialIndex.cpp
     src/LamaPon/Scene/RuntimeGameState.cpp
@@ -574,6 +576,8 @@ set(LAMAPON_EDITOR_SOURCES
     src/LamaPon/Editor/EditorLayerAnalysis.cpp
     src/LamaPon/Editor/EditorLayerInspector.cpp
     src/LamaPon/Editor/UIComponentInspectors.cpp
+    src/LamaPon/Editor/SceneTransitionEditor.cpp
+    src/LamaPon/Editor/SceneTransitionEditor.h
     src/LamaPon/Editor/DataAssetSchema.cpp
     src/LamaPon/Editor/DataAssetSchema.h
     src/LamaPon/Editor/EditorLayerProject.cpp
@@ -1255,6 +1259,27 @@ if(BUILD_TESTING)
     set_tests_properties(
         SceneManagerTransitions
         PROPERTIES LABELS "scene;scene-manager"
+    )
+
+    # 遷移演出の純粋ロジックはDirect3Dを使わないため、Runtime DLLを
+    # 介さずに単体で検査します。
+    add_executable(LamaPonSceneTransitionTests
+        tests/SceneTransitionTests.cpp
+        src/LamaPon/Scene/SceneTransition.cpp
+    )
+    target_include_directories(LamaPonSceneTransitionTests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(LamaPonSceneTransitionTests PRIVATE LamaPonJson)
+    target_compile_options(LamaPonSceneTransitionTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_test(NAME SceneTransitionEffects COMMAND LamaPonSceneTransitionTests)
+    set_tests_properties(
+        SceneTransitionEffects
+        PROPERTIES LABELS "scene;scene-transition"
     )
 
     add_executable(LamaPonReactiveTests

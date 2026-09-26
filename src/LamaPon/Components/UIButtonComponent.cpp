@@ -149,8 +149,11 @@ namespace LamaPon
     void UIButtonComponent::OnUpdate(float)
     {
         m_clicked = false;
+        // シーン遷移の途中は、覆われて見えないボタンや表示し終える前の
+        // 新シーンのボタンを押せないようにします（二重の遷移も防ぎます）。
         if (m_graphics == nullptr
-            || !m_interactable)
+            || !m_interactable
+            || Owner().GetScene().Scenes().IsInputBlocked())
         {
             m_hovered = false;
             m_pressedInside = false;
@@ -240,7 +243,10 @@ namespace LamaPon
             auto& scenes = Owner().GetScene().Scenes();
             if (m_reloadCurrentScene)
             {
-                if (!scenes.RequestReloadAsync())
+                const bool requested = m_useCustomTransition
+                    ? scenes.RequestReloadAsync(m_transition)
+                    : scenes.RequestReloadAsync();
+                if (!requested)
                 {
                     Logger::Instance().Error(
                         "UI Buttonのシーン再読み込みに失敗しました: "
@@ -254,8 +260,12 @@ namespace LamaPon
                         ? scenes.
                             RequestLoadAdditiveAsync(
                                 m_targetScene)
-                        : scenes.RequestLoadAsync(
-                            m_targetScene);
+                        : m_useCustomTransition
+                            ? scenes.RequestLoadAsync(
+                                m_targetScene,
+                                m_transition)
+                            : scenes.RequestLoadAsync(
+                                m_targetScene);
                 if (!requested)
                 {
                     Logger::Instance().Error(
