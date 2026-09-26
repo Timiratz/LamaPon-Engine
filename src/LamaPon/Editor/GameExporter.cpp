@@ -1773,6 +1773,12 @@ namespace LamaPon
             std::filesystem::copy_file(
                 audioRuntime,
                 stagingDirectory / audioRuntime.filename());
+            const auto eosRuntime = runtimeDirectory / "EOSSDK-Win64-Shipping.dll";
+            if (options.projectSettings.network.backend == NetworkBackend::EpicOnlineServices
+                && (!HasEpicNetworkBackend() || !std::filesystem::is_regular_file(eosRuntime)))
+                throw std::runtime_error("EOS runtime DLL is missing. Build LamaPon with the official EOS SDK before exporting an EOS game.");
+            if (std::filesystem::is_regular_file(eosRuntime))
+                std::filesystem::copy_file(eosRuntime, stagingDirectory / eosRuntime.filename());
             // 実行コードに伴う通知を配布先にも残します。欠けたSDKから
             // 不完全な配布物を作らないよう、コピー失敗時は中断します。
             const auto licenses = runtimeDirectory / "licenses";

@@ -18,10 +18,12 @@
 #include <memory>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <utility>
 #include <unordered_set>
 #include <vector>
 
@@ -113,6 +115,16 @@ namespace LamaPon
 
         Scene(const Scene&) = delete;
         Scene& operator=(const Scene&) = delete;
+
+        // ゲーム画面の論理サイズ。実行ファイルではウィンドウの
+        // クライアント領域、エディター再生中はゲームビューを指します。
+        [[nodiscard]] bool SetWindowSize(
+            std::uint32_t width, std::uint32_t height);
+        [[nodiscard]] std::pair<std::uint32_t, std::uint32_t>
+            WindowSize() const;
+        void SetWindowSizeCallbacks(
+            std::function<bool(std::uint32_t, std::uint32_t)> setter,
+            std::function<std::pair<std::uint32_t, std::uint32_t>()> getter);
 
         GameObject& CreateGameObject(std::string name);
         GameObject& DuplicateGameObject(
@@ -495,6 +507,7 @@ namespace LamaPon
             return *m_sceneManager;
         }
 
+        [[nodiscard]] std::uint64_t ContentRevision() const noexcept { return m_contentRevision; }
         void Clear() noexcept;
         void SaveToFile(const std::filesystem::path& path) const;
         void LoadFromFile(const std::filesystem::path& path);
@@ -711,6 +724,9 @@ namespace LamaPon
             ExtractPersistentObjects();
         void MergePersistentObjects(
             PersistentTransfer transfer);
+        // Sceneの再読み込みによるGameObject IDの再利用を識別します。
+        std::uint64_t m_contentRevision{};
+
         // LoadFromJsonとMergeFromJsonの共通処理です。additiveが
         // trueならClear()せず、読み込んだGameObjectへ新しい
         // ハンドルを割り当てます。
@@ -720,6 +736,10 @@ namespace LamaPon
             std::filesystem::path sourcePath);
 
         GraphicsDevice& m_graphics;
+        std::function<bool(std::uint32_t, std::uint32_t)>
+            m_windowSizeSetter;
+        std::function<std::pair<std::uint32_t, std::uint32_t>()>
+            m_windowSizeGetter;
         // SceneManagerのasync workerと全Componentより後に破棄される
         // （memberの逆順破棄）よう、これらより先に宣言します。
         GraphicsDeviceResourceLease

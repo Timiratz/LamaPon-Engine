@@ -73,6 +73,7 @@ int WINAPI wWinMain(
         application.Initialize(
             instance,
             settings.graphics.renderingApi);
+        static_cast<void>(application.Network().Configure(settings.network));
         const bool d3d12ExperimentalRenderer =
             application.Graphics().IsD3D12ExperimentalRenderer();
         // 無人の配布検証では外部サービスへ接続しません。通常起動時だけ、
@@ -134,6 +135,12 @@ int WINAPI wWinMain(
 
         application.ActiveScene().SetRegisteredTags(
             settings.tags);
+        // UI Buttonや起動シーンなど、非同期のシーン切り替えで使う
+        // 既定の遷移演出と読み込み画面です。
+        application.ActiveScene().Scenes().SetDefaultTransition(
+            settings.sceneTransition);
+        application.ActiveScene().Scenes().LoadingScreen() =
+            settings.loadingScreen;
         if (validateStartup)
         {
             // 配布物を別プロセスで検証するための無人実行です。

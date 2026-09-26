@@ -186,7 +186,8 @@ namespace LamaPon::EditorDetail
             '/');
         if (normalized == "builtin/circle"
             || normalized == "builtin/triangle"
-            || normalized == "builtin/ring")
+            || normalized == "builtin/ring"
+            || normalized == "builtin/iris")
         {
             return true;
         }

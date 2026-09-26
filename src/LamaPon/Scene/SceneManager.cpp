@@ -1,10 +1,13 @@
 #include "LamaPon/Scene/SceneManager.h"
 
 #include "LamaPon/Assets/AssetManager.h"
+#include "LamaPon/Audio/AudioSystem.h"
 #include "LamaPon/Core/DocumentMigration.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Core/Log.h"
 #include "LamaPon/Core/PathUtils.h"
+#include "LamaPon/Core/Time.h"
+#include "LamaPon/Scene/EventBus.h"
 #include "LamaPon/Scene/Scene.h"
 #include "LamaPon/Scene/GameObject.h"
 
@@ -12,6 +15,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <stdexcept>
 #include <thread>
 #include <utility>
@@ -21,6 +25,8 @@ namespace LamaPon
     SceneManager::~SceneManager() noexcept
     {
         CancelPending();
+        // 遷移の途中で破棄されても、Musicバスを下げたままにしません。
+        ApplyMusicFade(1.0f);
         if (!m_asyncFuture.valid())
         {
             return;
@@ -168,9 +174,54 @@ namespace LamaPon
     bool SceneManager::RequestLoadAsync(
         std::filesystem::path scenePath)
     {
-        return BeginAsyncLoad(
+        return RequestLoadAsync(
             std::move(scenePath),
-            SceneLoadMode::Replace);
+            m_defaultTransition);
+    }
+
+    bool SceneManager::RequestLoadAsync(
+        std::filesystem::path scenePath,
+        const SceneTransitionSettings& transition)
+    {
+        // BeginAsyncLoadが失敗した場合に遷移を始めないよう、先に
+        // 設定を控えてから読み込みを開始します（transitionが
+        // m_defaultTransitionを指していても安全です）。
+        const auto settings = transition;
+        if (!BeginAsyncLoad(
+                std::move(scenePath),
+                SceneLoadMode::Replace))
+        {
+            return false;
+        }
+        StartLoadTransition(settings, m_asyncDestination);
+        return true;
+    }
+
+    bool SceneManager::RequestLoad(
+        std::filesystem::path scenePath,
+        const SceneTransitionSettings& transition)
+    {
+        const auto settings = transition;
+        const auto destination =
+            Resolve(scenePath).lexically_normal();
+        if (!RequestLoad(std::move(scenePath)))
+        {
+            return false;
+        }
+        StartLoadTransition(settings, destination);
+        return true;
+    }
+
+    bool SceneManager::RequestReload(
+        const SceneTransitionSettings& transition)
+    {
+        const auto settings = transition;
+        if (!RequestReload())
+        {
+            return false;
+        }
+        StartLoadTransition(settings, m_currentScene);
+        return true;
     }
 
     bool SceneManager::RequestLoadAdditiveAsync(
@@ -230,6 +281,8 @@ namespace LamaPon
         }
         m_asyncRequestTime =
             std::chrono::steady_clock::now();
+        m_displayedProgress = 0.0f;
+        m_loadingScreenTime = 0.0f;
         m_lastError.clear();
         m_prefetchedAssetCount = 0;
         m_prefetchedAssetBytes = 0;
@@ -402,19 +455,27 @@ namespace LamaPon
 
     bool SceneManager::RequestReloadAsync()
     {
+        return RequestReloadAsync(m_defaultTransition);
+    }
+
+    bool SceneManager::RequestReloadAsync(
+        const SceneTransitionSettings& transition)
+    {
         if (m_currentScene.empty())
         {
             m_lastError =
                 "There is no current scene to reload.";
             return false;
         }
-        return RequestLoadAsync(m_currentScene);
+        return RequestLoadAsync(m_currentScene, transition);
     }
 
     void SceneManager::CancelPending() noexcept
     {
         m_pendingRequests.clear();
         m_asyncStagedJson.reset();
+        // 読み込みを待っていた遷移は、今の覆い具合から開き直します。
+        FinishTransitionLoad(true);
         if (m_asyncShared
             && IsLoading())
         {
@@ -511,6 +572,10 @@ namespace LamaPon
 
     bool SceneManager::ProcessPending()
     {
+        // 遷移はtimeScaleの影響を受けない実時間で進めます（timeScaleを
+        // 0にした一時停止メニューからの移動でも演出を止めないため）。
+        AdvanceTransition(Time::UnscaledDeltaTime());
+
         if (m_asyncFuture.valid()
             && m_asyncFuture.wait_for(
                 std::chrono::seconds(0))
@@ -538,6 +603,7 @@ namespace LamaPon
                 }
                 m_graphics.Assets().
                     ClearPrefetchedFiles();
+                FinishTransitionLoad(true);
             }
             else if (!result.error.empty())
             {
@@ -560,6 +626,9 @@ namespace LamaPon
                     + m_lastError);
                 m_graphics.Assets().
                     ClearPrefetchedFiles();
+                // 失敗しても元のシーンは残っているので、覆いを開いて
+                // 元の画面へ戻します。
+                FinishTransitionLoad(true);
             }
             else
             {
@@ -648,6 +717,12 @@ namespace LamaPon
             {
                 return false;
             }
+            // 遷移演出が旧シーンを覆い終えるまで有効化を待ちます
+            // （読み込み自体は覆っている間に済ませています）。
+            if (TransitionBlocksActivation())
+            {
+                return false;
+            }
             if (m_asyncShared)
             {
                 m_asyncShared->state.store(
@@ -694,6 +769,10 @@ namespace LamaPon
                         ? "Scene loaded"
                         : m_lastError;
             }
+            if (m_asyncMode == SceneLoadMode::Replace)
+            {
+                FinishTransitionLoad(false);
+            }
             if (loaded)
             {
                 Logger::Instance().Info(
@@ -708,6 +787,12 @@ namespace LamaPon
         }
 
         if (m_pendingRequests.empty())
+        {
+            return false;
+        }
+        // 遷移付きのRequestLoadは、覆い終えてから切り替えます。
+        // 後から積まれた追加読み込みも順番を保つために一緒に待ちます。
+        if (TransitionBlocksActivation())
         {
             return false;
         }
@@ -757,6 +842,9 @@ namespace LamaPon
                         destination);
                 })
                 || processed;
+            // 成功・失敗のどちらでも、覆いは通常どおり開きます
+            // （失敗時はロールバックした元のシーンが見えます）。
+            FinishTransitionLoad(false);
         }
         return processed;
     }
@@ -807,6 +895,273 @@ namespace LamaPon
                 + " | "
                 + m_lastError);
             return false;
+        }
+    }
+
+    void SceneManager::SetDefaultTransition(
+        const SceneTransitionSettings& settings)
+    {
+        m_defaultTransition =
+            SanitizeSceneTransition(settings);
+    }
+
+    bool SceneManager::PlayTransition(
+        const SceneTransitionSettings& transition)
+    {
+        if (m_transitionAwaitsLoad || IsLoading())
+        {
+            m_lastError =
+                "A scene load with a transition is already in progress.";
+            return false;
+        }
+        StartTransition(transition, {}, false, false);
+        return true;
+    }
+
+    bool SceneManager::PreviewTransition(
+        const SceneTransitionSettings& transition)
+    {
+        if (m_transitionAwaitsLoad || IsLoading())
+        {
+            m_lastError =
+                "A scene load with a transition is already in progress.";
+            return false;
+        }
+        StartTransition(transition, {}, false, true);
+        return true;
+    }
+
+    void SceneManager::ResetTransition() noexcept
+    {
+        m_transition.Reset();
+        m_transitionAwaitsLoad = false;
+        m_transitionIsPreview = false;
+        m_transitionTarget.clear();
+        m_loadingScreenAlpha = 0.0f;
+        m_loadingScreenTime = 0.0f;
+        ApplyMusicFade(1.0f);
+    }
+
+    void SceneManager::StartLoadTransition(
+        const SceneTransitionSettings& transition,
+        const std::filesystem::path& destination)
+    {
+        StartTransition(
+            transition,
+            PathToUtf8(destination),
+            true,
+            false);
+    }
+
+    void SceneManager::StartTransition(
+        const SceneTransitionSettings& transition,
+        std::string target,
+        const bool awaitsLoad,
+        const bool preview)
+    {
+        m_transition.Start(transition);
+        m_transitionTarget = std::move(target);
+        m_transitionAwaitsLoad = awaitsLoad;
+        m_transitionIsPreview = preview;
+        if (!preview)
+        {
+            PublishTransitionEvent(SceneTransitionStartedEvent);
+        }
+    }
+
+    void SceneManager::FinishTransitionLoad(
+        const bool revealImmediately) noexcept
+    {
+        if (!m_transitionAwaitsLoad)
+        {
+            return;
+        }
+        m_transitionAwaitsLoad = false;
+        if (revealImmediately)
+        {
+            m_transition.Reveal();
+        }
+    }
+
+    bool SceneManager::TransitionBlocksActivation() const noexcept
+    {
+        return m_transitionAwaitsLoad
+            && !m_transition.IsFullyCovered();
+    }
+
+    bool SceneManager::IsInputBlocked() const noexcept
+    {
+        return m_transition.IsActive()
+            && m_transition.Settings().blockInput
+            && !m_transitionIsPreview;
+    }
+
+    void SceneManager::AdvanceTransition(
+        const float unscaledDeltaSeconds)
+    {
+        // 有効化で重いフレームがあっても、開く演出が一瞬で終わらない
+        // よう1回に進める時間を抑えます。
+        const float delta = std::clamp(
+            std::isfinite(unscaledDeltaSeconds)
+                ? unscaledDeltaSeconds
+                : 0.0f,
+            0.0f,
+            1.0f / 30.0f);
+        const bool loading = IsLoading();
+
+        const float targetProgress = loading
+            ? LoadProgress()
+            : LoadState() == SceneLoadState::Succeeded
+                ? 1.0f
+                : m_displayedProgress;
+        if (!m_loadingScreen.smoothProgress)
+        {
+            m_displayedProgress = targetProgress;
+        }
+        else
+        {
+            const float blend = 1.0f - std::exp(-delta * 10.0f);
+            m_displayedProgress = std::max(
+                m_displayedProgress,
+                m_displayedProgress
+                    + (targetProgress - m_displayedProgress) * blend);
+        }
+        m_loadingScreenTime = loading || m_loadingScreenAlpha > 0.0f
+            ? m_loadingScreenTime + delta
+            : 0.0f;
+
+        if (!m_transition.IsActive())
+        {
+            m_loadingScreenAlpha = 0.0f;
+            ApplyMusicFade(1.0f);
+            return;
+        }
+
+        const auto& settings = m_transition.Settings();
+        const bool covering =
+            settings.effect != SceneTransitionEffect::None;
+        if (covering)
+        {
+            // 覆い終えた後も読み込みが続いているときだけ、読み込み画面を
+            // フェードで重ねます。速い読み込みでは一度も表示しません。
+            const bool wantsLoadingScreen =
+                m_transition.IsFullyCovered()
+                && loading
+                && settings.showLoadingScreen
+                && m_loadingScreen.enabled
+                && !m_transitionIsPreview;
+            const float fade = m_loadingScreen.fadeDuration;
+            const float step = fade > 0.0f ? delta / fade : 1.0f;
+            m_loadingScreenAlpha = wantsLoadingScreen
+                ? std::min(m_loadingScreenAlpha + step, 1.0f)
+                : std::max(m_loadingScreenAlpha - step, 0.0f);
+        }
+        else
+        {
+            m_loadingScreenAlpha = 0.0f;
+        }
+
+        // 読み込み画面を消し終えてから開き始めます。
+        const bool ready =
+            !m_transitionAwaitsLoad
+            && (!covering || m_loadingScreenAlpha <= 0.0f);
+        const auto events = m_transition.Advance(delta, ready);
+        const bool fadesMusic =
+            covering
+            && settings.fadeMusic
+            && !m_transitionIsPreview;
+        ApplyMusicFade(
+            fadesMusic && m_transition.IsActive()
+                ? 1.0f - m_transition.Coverage()
+                : 1.0f);
+
+        const bool publishes = !m_transitionIsPreview;
+        if (events.finished)
+        {
+            m_transitionIsPreview = false;
+        }
+        if (publishes && events.covered)
+        {
+            PublishTransitionEvent(SceneTransitionCoveredEvent);
+        }
+        if (publishes && events.finished)
+        {
+            PublishTransitionEvent(SceneTransitionFinishedEvent);
+        }
+        if (events.finished && !m_transition.IsActive())
+        {
+            m_transitionTarget.clear();
+        }
+    }
+
+    SceneTransitionFrame SceneManager::TransitionFrame() const
+    {
+        SceneTransitionFrame frame;
+        frame.settings = m_transition.Settings();
+        frame.phase = m_transition.Phase();
+        frame.coverage = m_transition.Coverage();
+        frame.loadingProgress = m_loadingScreen.smoothProgress
+            ? m_displayedProgress
+            : LoadProgress();
+        frame.loadingScreenTime = m_loadingScreenTime;
+        const bool covering =
+            m_transition.IsActive()
+            && frame.settings.effect != SceneTransitionEffect::None;
+        if (covering)
+        {
+            frame.loadingScreenAlpha = m_loadingScreenAlpha;
+        }
+        else
+        {
+            // 覆いの無い読み込みは、従来どおり読み込み中だけ即座に
+            // 読み込み画面を表示します。
+            frame.legacyLoadingScreen = true;
+            frame.loadingScreenAlpha =
+                IsLoading() && m_loadingScreen.enabled
+                    ? 1.0f
+                    : 0.0f;
+        }
+        return frame;
+    }
+
+    void SceneManager::PublishTransitionEvent(
+        const std::string_view eventName)
+    {
+        EventArgs eventArgs;
+        eventArgs.text = m_transitionTarget;
+        try
+        {
+            m_scene.Events().Publish(eventName, eventArgs);
+        }
+        catch (const std::exception& exception)
+        {
+            // 受信側の例外で遷移の進行を止めないよう、ここで記録します。
+            Logger::Instance().Error(
+                "シーン遷移イベントの処理中に例外が発生しました: "
+                + std::string(eventName)
+                + " | "
+                + exception.what());
+        }
+    }
+
+    void SceneManager::ApplyMusicFade(const float gain) noexcept
+    {
+        const float clamped = std::clamp(gain, 0.0f, 1.0f);
+        if (std::abs(clamped - m_appliedMusicFade) < 1.0e-4f)
+        {
+            return;
+        }
+        // 音声が使えない環境（未初期化など）で毎フレーム例外を
+        // 投げ直さないよう、失敗しても適用済みとして扱います。
+        m_appliedMusicFade = clamped;
+        try
+        {
+            m_graphics.Audio().SetBusFade(
+                AudioBus::Music,
+                clamped);
+        }
+        catch (...)
+        {
         }
     }
 

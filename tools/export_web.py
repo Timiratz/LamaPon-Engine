@@ -236,7 +236,7 @@ KNOWN_NATIVE_SCENE_COMPONENTS = {
     "BoxCollider3D", "Camera", "CapsuleCollider3D", "CharacterController",
     "CircleCollider2D", "ConvexHullCollider3D", "DirectionalLight",
     "InputMover", "Joint", "LODGroup", "Light2D", "MeshCollider3D",
-    "MeshRenderer", "ModelRenderer", "NativeScript", "NavMesh",
+    "MeshRenderer", "ModelRenderer", "NativeScript", "NetworkIdentity", "NavMesh",
     "NavMeshAgent", "ParallaxLayer", "ParticleSystem", "PointLight",
     "PolygonCollider2D", "ReflectionProbe", "RenderCulling", "Rigidbody",
     "Rotator", "SphereCollider3D", "SpotLight", "SpriteAnimator",

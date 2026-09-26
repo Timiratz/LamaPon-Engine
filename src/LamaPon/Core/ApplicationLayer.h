@@ -1,6 +1,8 @@
 #pragma once
 
 #include <Windows.h>
+#include <cstdint>
+#include <utility>
 
 namespace LamaPon
 {
@@ -51,6 +53,12 @@ namespace LamaPon
             return false;
         }
         [[nodiscard]] virtual bool WantsKeyboard() const noexcept = 0;
+
+        // エディター再生中はゲームビューの論理解像度を変更します。
+        [[nodiscard]] virtual bool SetGameViewSize(
+            std::uint32_t, std::uint32_t) { return false; }
+        [[nodiscard]] virtual std::pair<std::uint32_t, std::uint32_t>
+            GameViewSize() const noexcept { return { 0, 0 }; }
 
         // ウィンドウを閉じてよいかを返します（falseで中止）。
         // エディターは未保存の変更がある場合にここで警告を出します。

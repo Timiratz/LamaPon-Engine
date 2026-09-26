@@ -21,6 +21,7 @@
 #include "LamaPon/Components/NavMeshAgentComponent.h"
 #include "LamaPon/Components/NavMeshComponent.h"
 #include "LamaPon/Components/NativeScriptComponent.h"
+#include "LamaPon/Components/NetworkIdentityComponent.h"
 #include "LamaPon/Components/ParticleSystemComponent.h"
 #include "LamaPon/Components/UICanvasComponent.h"
 #include "LamaPon/Components/UIRectTransformComponent.h"
@@ -1561,6 +1562,34 @@ namespace LamaPon
 
     Scene::~Scene() = default;
 
+    bool Scene::SetWindowSize(
+        const std::uint32_t width,
+        const std::uint32_t height)
+    {
+        return width != 0 && height != 0
+            && width <= 16384 && height <= 16384
+            && m_windowSizeSetter
+            && m_windowSizeSetter(width, height);
+    }
+
+    std::pair<std::uint32_t, std::uint32_t>
+        Scene::WindowSize() const
+    {
+        if (m_windowSizeGetter)
+        {
+            return m_windowSizeGetter();
+        }
+        return { m_graphics.Width(), m_graphics.Height() };
+    }
+
+    void Scene::SetWindowSizeCallbacks(
+        std::function<bool(std::uint32_t, std::uint32_t)> setter,
+        std::function<std::pair<std::uint32_t, std::uint32_t>()> getter)
+    {
+        m_windowSizeSetter = std::move(setter);
+        m_windowSizeGetter = std::move(getter);
+    }
+
     GameObject& Scene::CreateGameObject(std::string name)
     {
         auto gameObject = std::make_unique<GameObject>(m_nextId++, std::move(name));
@@ -2634,6 +2663,20 @@ namespace LamaPon
                                     lodGroup->Levels(),
                                     lodGroup->
                                         CullDistance());
+                    }
+                    else if (const auto* identity = dynamic_cast<const NetworkIdentityComponent*>(sourceComponent.get()))
+                    {
+                        std::string key = identity->SceneKey();
+                        if (!key.empty())
+                        {
+                            const auto suffix = ".copy" + std::to_string(duplicate.Id());
+                            key.resize(std::min(key.size(), 64 - suffix.size()));
+                            key += suffix;
+                        }
+                        auto& copy = duplicate.AddComponent<NetworkIdentityComponent>(key);
+                        copy.SetHostOnlySimulation(identity->HostOnlySimulation());
+                        copy.SetInterpolationSeconds(identity->InterpolationSeconds());
+                        duplicateComponent = &copy;
                     }
                     else if (const auto* nativeScript =
                         dynamic_cast<
@@ -3729,6 +3772,7 @@ namespace LamaPon
 
     void Scene::Clear() noexcept
     {
+        ++m_contentRevision;
         m_mainCamera = nullptr;
         m_gameObjects.clear();
         m_nextId = 1;

@@ -13,6 +13,8 @@
 #include "LamaPon/Input/InputSystem.h"
 #include "LamaPon/Online/OnlinePersistenceCoordinator.h"
 #include "LamaPon/Online/OnlineServices.h"
+#include "LamaPon/Online/NetworkSession.h"
+#include "LamaPon/Online/NetworkSceneBridge.h"
 #include "LamaPon/Scene/Scene.h"
 #include "LamaPon/Scene/SceneManager.h"
 #include "LamaPon/Scripting/GameModuleHost.h"
@@ -149,6 +151,9 @@ namespace LamaPon
         }
         m_window.SetMessageCallback({});
         m_layer.reset();
+        if (m_networkSceneBridge) m_networkSceneBridge->Reset();
+        m_networkSceneBridge.reset();
+        m_networkSession.reset();
         m_scene.reset();
         m_gameModule.reset();
         m_onlineServices.reset();
@@ -211,9 +216,13 @@ namespace LamaPon
         m_window.SetResizeCallback(
             [this](const std::uint32_t width, const std::uint32_t height)
             {
-                if (m_graphics.IsInitialized())
+                if (width != 0 && height != 0)
                 {
-                    m_graphics.Resize(width, height);
+                    // Win32のメッセージ処理中にはGPU資源を作り直さず、
+                    // 次の描画前に最後のサイズだけを適用します。
+                    m_pendingWidth = width;
+                    m_pendingHeight = height;
+                    m_resizePending = true;
                 }
             });
 
@@ -233,6 +242,7 @@ namespace LamaPon
             m_window.ClientHeight(),
             requestedApi,
             startupProfile);
+        m_resizePending = false;
         m_graphics.Assets().SetAssetRoot(
             executableDirectory / L"assets");
         // 書き出し時に同梱した事前コンパイル済みシェーダー。これが
@@ -294,6 +304,56 @@ namespace LamaPon
                 "Game Moduleを読み込みました。");
         }
         m_scene = std::make_unique<Scene>(m_graphics);
+        m_networkSession = std::make_unique<NetworkSession>();
+        m_networkSceneBridge = std::make_unique<NetworkSceneBridge>(*m_scene, *m_networkSession);
+        SetActiveNetworkSession(m_networkSession.get());
+        SetActiveNetworkSceneBridge(m_networkSceneBridge.get());
+        m_scene->SetWindowSizeCallbacks(
+            [this](const std::uint32_t width, const std::uint32_t height)
+            {
+                return SetWindowSize(width, height);
+            },
+            [this]
+            {
+                return WindowSize();
+            });
+    }
+
+    bool Application::SetWindowSize(
+        const std::uint32_t width,
+        const std::uint32_t height)
+    {
+        if (width == 0 || height == 0
+            || width > 16384 || height > 16384)
+        {
+            return false;
+        }
+        if (m_layer)
+        {
+            return m_layer->IsPlaying()
+                && m_layer->SetGameViewSize(width, height);
+        }
+        return m_window.SetClientSize(width, height);
+    }
+
+    std::pair<std::uint32_t, std::uint32_t>
+        Application::WindowSize() const noexcept
+    {
+        if (m_layer && m_layer->IsPlaying())
+        {
+            return m_layer->GameViewSize();
+        }
+        return { m_window.ClientWidth(), m_window.ClientHeight() };
+    }
+
+    void Application::ApplyPendingResize()
+    {
+        if (!m_resizePending || !m_graphics.IsInitialized())
+        {
+            return;
+        }
+        m_graphics.Resize(m_pendingWidth, m_pendingHeight);
+        m_resizePending = false;
     }
 
     void Application::AttachLayer(
@@ -344,6 +404,16 @@ namespace LamaPon
                 continue;
             }
 
+            // ホストが最小化されてもゲームと通信を進めます。
+            if (m_window.IsMinimized()
+                && (!m_networkSession || m_networkSession->State() == NetworkState::Stopped
+                    || m_networkSession->State() == NetworkState::Error))
+            {
+                WaitMessage();
+                previousTime = std::chrono::steady_clock::now();
+                continue;
+            }
+
             const auto currentTime = std::chrono::steady_clock::now();
             const std::chrono::duration<float> elapsed = currentTime - previousTime;
             previousTime = currentTime;
@@ -372,6 +442,7 @@ namespace LamaPon
             }
             {
                 LAMAPON_PROFILE_SCOPE("Online");
+                if (m_networkSession) m_networkSession->Update(rawDeltaTime);
                 if (m_onlineServices)
                 {
                     m_onlineServices->Update(rawDeltaTime);
@@ -387,7 +458,7 @@ namespace LamaPon
 
             {
                 LAMAPON_PROFILE_SCOPE("Editor");
-                if (m_layer)
+                if (m_layer && !m_window.IsMinimized())
                 {
                     m_layer->BeginFrame();
                     m_layer->Draw();
@@ -423,12 +494,16 @@ namespace LamaPon
                 {
                     // timeScale適用済みのdeltaTimeで
                     // ゲームプレイを進めます。
+                    if (m_networkSceneBridge) m_networkSceneBridge->BeforeSimulation(rawDeltaTime);
                     m_scene->Update(Time::DeltaTime());
+                    if (m_networkSceneBridge) m_networkSceneBridge->AfterSimulation(rawDeltaTime);
                 }
             }
 
+            if (!m_window.IsMinimized())
             {
                 LAMAPON_PROFILE_SCOPE("Render");
+                ApplyPendingResize();
                 if (m_layer)
                 {
                     // シーン描画の例外はここで処理し、エディターUIを
@@ -467,11 +542,12 @@ namespace LamaPon
                         m_scene->Render2D();
                         const auto& scenes =
                             m_scene->Scenes();
+                        // 遷移の覆いと読み込み画面はUIの上へ重ねます。
+                        m_graphics.DrawSceneTransition(
+                            scenes.TransitionFrame(),
+                            scenes.LoadingScreen());
                         if (scenes.IsLoading())
                         {
-                            m_graphics.DrawLoadingScreen(
-                                scenes.LoadProgress(),
-                                scenes.LoadingScreen());
                             if (m_startupSplashScreenEnabled)
                             {
                                 m_graphics.DrawStartupLogo();
@@ -515,10 +591,11 @@ namespace LamaPon
                 rawDeltaTime,
                 cpuMilliseconds);
             Profiler::Instance().EndFrame();
-            PaceFrame(
-                currentTime,
-                m_graphics.Settings()
-                    .targetFrameRate);
+            const auto requestedRate = m_graphics.Settings().targetFrameRate;
+            // 最小化中はPresentのVSync待ちが無いので、通信と物理を60Hzに抑えます。
+            const auto frameRate = m_window.IsMinimized()
+                ? (requestedRate == 0 ? 60u : std::min(requestedRate, 60u)) : requestedRate;
+            PaceFrame(currentTime, frameRate);
         }
 
         return static_cast<int>(message.wParam);
@@ -595,5 +672,19 @@ namespace LamaPon
         m_clearColor[1] = green;
         m_clearColor[2] = blue;
         m_clearColor[3] = alpha;
+    }
+}
+
+namespace LamaPon
+{
+    NetworkSession& Application::Network() const
+    {
+        if (!m_networkSession) throw std::logic_error("Application is not initialized.");
+        return *m_networkSession;
+    }
+    NetworkSceneBridge& Application::NetworkScene() const
+    {
+        if (!m_networkSceneBridge) throw std::logic_error("Application is not initialized.");
+        return *m_networkSceneBridge;
     }
 }

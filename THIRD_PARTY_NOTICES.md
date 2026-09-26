@@ -114,3 +114,13 @@ included at `third_party/ufbx/LICENSE.txt`.
 `assets/models/AnimatedSausage.fbx` is derived from the ufbx repository test
 asset `data/blender_279_sausage_7400_binary.fbx` and is distributed under the
 same MIT License.
+
+## Epic Online Services SDK (optional)
+
+The EOS SDK is not bundled with this repository. Developers obtain it from
+Epic Games and opt in with LAMAPON_EOS_SDK_ROOT. SDK binaries and their
+redistribution are subject to the terms supplied by Epic with the SDK;
+LamaPon's MIT license does not relicense them. Check those terms and include
+any required notices when distributing an EOS-enabled game.
+
+Official SDK and documentation: https://dev.epicgames.com/docs/epic-online-services

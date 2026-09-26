@@ -20,6 +20,7 @@
 #include "LamaPon/Components/NavMeshAgentComponent.h"
 #include "LamaPon/Components/NavMeshComponent.h"
 #include "LamaPon/Components/NativeScriptComponent.h"
+#include "LamaPon/Components/NetworkIdentityComponent.h"
 #include "LamaPon/Components/ParticleSystemComponent.h"
 #include "LamaPon/Components/SpriteParticles2DComponent.h"
 #include "LamaPon/Components/UICanvasComponent.h"
@@ -927,7 +928,13 @@ namespace
             { "enabled", component.IsEnabled() }
         };
 
-        if (const auto* camera = dynamic_cast<const LamaPon::CameraComponent*>(&component))
+        if (const auto* identity = dynamic_cast<const LamaPon::NetworkIdentityComponent*>(&component))
+        {
+            result["sceneKey"] = identity->SceneKey();
+            result["hostOnlySimulation"] = identity->HostOnlySimulation();
+            result["interpolationSeconds"] = identity->InterpolationSeconds();
+        }
+        else if (const auto* camera = dynamic_cast<const LamaPon::CameraComponent*>(&component))
         {
             result["verticalFieldOfView"] = camera->VerticalFieldOfView();
             result["nearPlane"] = camera->NearPlane();
@@ -1387,6 +1394,14 @@ namespace
                 button->ReloadCurrentScene();
             result["loadTargetAdditive"] =
                 button->LoadTargetAdditive();
+            // 独自の遷移を使うボタンだけ保存します。無いボタンは
+            // プロジェクト既定の遷移を使います。
+            if (button->UseCustomTransition())
+            {
+                result["transition"] =
+                    LamaPon::SceneTransitionToJson(
+                        button->Transition());
+            }
             result["clickEvent"] =
                 button->ClickEventName();
             result["sortOrder"] =
@@ -2065,7 +2080,15 @@ namespace
         const auto type = value.at("type").get<std::string>();
         LamaPon::Component* component{};
 
-        if (type == "Camera")
+        if (type == "NetworkIdentity")
+        {
+            auto& identity = gameObject.AddComponent<LamaPon::NetworkIdentityComponent>(
+                value.value("sceneKey", std::string{}));
+            identity.SetHostOnlySimulation(value.value("hostOnlySimulation", true));
+            identity.SetInterpolationSeconds(value.value("interpolationSeconds", 0.1f));
+            component = &identity;
+        }
+        else if (type == "Camera")
         {
             auto& camera =
                 gameObject.AddComponent<LamaPon::CameraComponent>(
@@ -2701,6 +2724,17 @@ namespace
                 value.value(
                     "loadTargetAdditive",
                     false));
+            if (const auto transition =
+                    value.find("transition");
+                transition != value.end()
+                && transition->is_object())
+            {
+                button.SetTransition(
+                    LamaPon::SceneTransitionFromJson(
+                        *transition,
+                        button.Transition()));
+                button.SetUseCustomTransition(true);
+            }
             button.SetClickEventName(
                 value.value(
                     "clickEvent",

@@ -304,7 +304,15 @@ namespace LamaPon
                 ImGui::EndTabItem();
             }
 
-            if (ImGui::BeginTabItem("ゲーム"))
+            const ImGuiTabItemFlags gameTabFlags =
+                m_selectGameViewportRequested
+                    ? ImGuiTabItemFlags_SetSelected
+                    : ImGuiTabItemFlags_None;
+            m_selectGameViewportRequested = false;
+            if (ImGui::BeginTabItem(
+                    "ゲーム",
+                    nullptr,
+                    gameTabFlags))
             {
                 drawGameViewport = true;
                 ImGui::EndTabItem();
@@ -1107,6 +1115,48 @@ namespace LamaPon
         }
 
         ImGui::EndPopup();
+    }
+
+    bool EditorLayer::SetGameViewSize(
+        const std::uint32_t width,
+        const std::uint32_t height)
+    {
+        if (!m_playing || width < 16 || height < 16
+            || width > 8192 || height > 8192)
+        {
+            return false;
+        }
+        if (!m_scriptGameViewSizeChanged)
+        {
+            m_savedGameViewFixedResolution =
+                m_gameViewFixedResolution;
+            m_savedGameViewResolutionWidth =
+                m_gameViewResolutionWidth;
+            m_savedGameViewResolutionHeight =
+                m_gameViewResolutionHeight;
+            m_savedGameViewResolutionScale =
+                m_gameViewResolutionScale;
+            m_scriptGameViewSizeChanged = true;
+        }
+        m_gameViewFixedResolution = true;
+        m_gameViewResolutionWidth = static_cast<int>(width);
+        m_gameViewResolutionHeight = static_cast<int>(height);
+        m_gameViewResolutionScale = 1.0f;
+        return true;
+    }
+
+    std::pair<std::uint32_t, std::uint32_t>
+        EditorLayer::GameViewSize() const noexcept
+    {
+        if (m_gameViewFixedResolution)
+        {
+            return {
+                static_cast<std::uint32_t>(m_gameViewResolutionWidth),
+                static_cast<std::uint32_t>(m_gameViewResolutionHeight)
+            };
+        }
+        return { m_gameRenderTarget.Width(),
+            m_gameRenderTarget.Height() };
     }
 
     void EditorLayer::DrawGameViewport()

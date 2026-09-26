@@ -71,6 +71,23 @@ Create／Destroy、関数ポインター、ホットリロード用の保存、G
 
 Script基底クラスには、`Owner()`や`GetScene()`を書かずに主要な操作を呼べるショートカットがあります。
 
+### 実行中のゲーム画面サイズ
+
+スクリプトから`SetWindowSize(width, height)`でゲーム画面の論理サイズを変更できます。戻り値は変更を受け付けたとき`true`です。`WindowSize()`は現在の幅と高さを`std::pair`で返します。
+
+```cpp
+void Start() override
+{
+    if (!SetWindowSize(1080, 1920))
+    {
+        // サイズを変更できない場合の処理
+    }
+    const auto [width, height] = WindowSize();
+}
+```
+
+書き出したWindowsゲームではクライアント領域を変更し、エディターの再生中はゲームビューを固定解像度へ切り替えます。再生停止時には元のゲームビュー設定に戻ります。エディターのパネルを自由サイズで表示している場合、`WindowSize()`はゲームビューの描画サイズを返します。エディター再生中に指定できる幅と高さは各16〜8192、書き出したゲームでは各1〜16384です。変更後の描画バッファは次の描画前に更新されます。最小化中は描画を停止し、復元後に現在のサイズへ合わせます。
+
 ```cpp
 // 自分のGameObjectを操作
 GetTransform().position.y += 1.0f;
@@ -364,7 +381,7 @@ DLLがまだない新規プロジェクトも通常どおり開け、最初の�
 
 サンプルの`samples/GameModule/SampleGameModule.cpp`には、従来どおり`Sample.FloatingAccent`も登録されています。
 
-### データアセット（ScriptableObject相当）
+### データアセット
 
 GameObjectへ付けずに持つデータ（敵の性能表、カードの一覧など）は、
 `LAMAPON_DATA_ASSET`で型を宣言し、`*.asset.json`として作ります。
@@ -413,6 +430,11 @@ void EnemySpawner::OnUpdate(float deltaTime)
 
 バックエンドが別途必要です。設定、API一覧、安全上の注意、通信契約は
 [Discordログイン、クラウドセーブ、Rich Presence](online-services.md)を参照してください。
+
+プレイヤーホストの通信には、`Network()`、`HostNetwork()`、`JoinNetwork()`、
+`StopNetwork()`、`NetworkSpawn()`、`NetworkDespawn()`、`FindNetworkObject()`を使います。
+入力の所有権検証、ホストでのゲーム進行、Scene同期と協力プレイ例は
+[プレイヤーがホストになるP2P通信](online-p2p.md)を参照してください。
 
 エンジンはDLLを`.lamapon-hot-reload`へシャドウコピーして読み込むため、エディターを終了せずに`LamaPonGameModule`を再ビルドできます。
 更新は約0.5秒ごとに検出され、実行中インスタンスをSerializeして破棄した後、新しいDLLで復元します。

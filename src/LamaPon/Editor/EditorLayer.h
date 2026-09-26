@@ -1,5 +1,7 @@
 #pragma once
 
+#include "LamaPon/Editor/NetworkConnectionPanel.h"
+
 #include "LamaPon/Editor/EditorExtensionRegistry.h"
 #include "LamaPon/Editor/UIComponentInspectors.h"
 
@@ -139,6 +141,10 @@ namespace LamaPon
         [[nodiscard]] bool ConsumeInputSnapshot(
             InputSnapshot& snapshot) noexcept override;
         [[nodiscard]] bool WantsKeyboard() const noexcept override;
+        [[nodiscard]] bool SetGameViewSize(
+            std::uint32_t width, std::uint32_t height) override;
+        [[nodiscard]] std::pair<std::uint32_t, std::uint32_t>
+            GameViewSize() const noexcept override;
         // 閉じる前に未保存のシーン変更を確認します
         // （保存して閉じる／保存せずに閉じる／キャンセル）。
         [[nodiscard]] bool ConfirmClose() override;
@@ -565,7 +571,13 @@ namespace LamaPon
         void DrawProjectSettingsScriptingSection();
         void DrawProjectSettingsBuildSection();
         void DrawProjectSettingsOnlineSection();
+        void DrawProjectSettingsNetworkSection();
         void DrawProjectSettingsDiscordPresenceSection();
+        void DrawProjectSettingsSceneTransitionSection();
+        // シーンを切り替えずに遷移演出をGameビューで再生します
+        // （Inspectorとプロジェクト設定のプレビューボタン）。
+        void PreviewSceneTransition(
+            const SceneTransitionSettings& transition);
         [[nodiscard]] bool SaveProjectSettingsDraft();
         void BrowseForScriptEditor();
         [[nodiscard]] std::filesystem::path ProjectSettingsPath() const;
@@ -816,7 +828,11 @@ namespace LamaPon
         std::array<char, 512> m_projectGameIconBuffer{};
         std::array<int, 2> m_projectWindowSize{ 1280, 720 };
         bool m_projectSplashScreenDraft{ true };
+        SceneTransitionSettings m_projectSceneTransitionDraft;
+        SceneLoadingScreenSettings m_projectLoadingScreenDraft;
         OnlineProjectSettings m_projectOnlineDraft;
+        NetworkConfiguration m_projectNetworkDraft;
+        NetworkConnectionPanel m_networkConnectionPanel;
         std::array<char, 2049>
             m_projectOnlineServiceBaseUrlBuffer{};
         std::array<char, 129> m_projectOnlineGameIdBuffer{};
@@ -989,6 +1005,11 @@ namespace LamaPon
         // 固定解像度の描画スケール（0.5/0.75/1.0）。アスペクト比を
         // 保ったまま描画負荷を下げるために使います。
         float m_gameViewResolutionScale{ 1.0f };
+        bool m_scriptGameViewSizeChanged{};
+        bool m_savedGameViewFixedResolution{};
+        int m_savedGameViewResolutionWidth{};
+        int m_savedGameViewResolutionHeight{};
+        float m_savedGameViewResolutionScale{};
         DirectX::XMFLOAT3 m_sceneCameraPosition{ 0.0f, 1.8f, 7.0f };
         DirectX::XMFLOAT3 m_sceneCameraRotation{ -0.12f, 0.0f, 0.0f };
         DirectX::XMFLOAT3 m_scene3DCameraPosition{ 0.0f, 1.8f, 7.0f };
@@ -1003,6 +1024,8 @@ namespace LamaPon
         DirectX::XMFLOAT2 m_viewportPosition{};
         DirectX::XMFLOAT2 m_viewportSize{};
         ViewportMode m_activeViewport{ ViewportMode::None };
+        // 次のフレームでビューポートのゲームタブを選択します。
+        bool m_selectGameViewportRequested{};
         GizmoOperation m_gizmoOperation{ GizmoOperation::Translate };
         float m_gridSpacing{ 1.0f };
         float m_gridExtent{ 20.0f };

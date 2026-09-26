@@ -231,12 +231,17 @@ namespace LamaPon
             return;
         }
 
+        if (m_state->m_width == width
+            && m_state->m_height == height)
+        {
+            return;
+        }
+
+        m_state->m_backend->Resize(width, height);
         m_state->m_width = width;
         m_state->m_height = height;
         m_state->m_uiWidth = width;
         m_state->m_uiHeight = height;
-
-        m_state->m_backend->Resize(m_state->m_width, m_state->m_height);
     }
 
     void GraphicsDevice::BeginFrame(const float clearColor[4])

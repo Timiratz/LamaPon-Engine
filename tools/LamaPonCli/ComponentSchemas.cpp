@@ -104,6 +104,7 @@ namespace LamaPon::Cli
                         field("interactable", "bool", true),
                         field("reloadCurrentScene", "bool", false),
                         field("loadTargetAdditive", "bool", false),
+                        field("transition", "object", nlohmann::json::object()),
                         field("clickEvent", "string", ""),
                         field("sortOrder", "integer", 0),
                         field("texture", "asset", ""),
