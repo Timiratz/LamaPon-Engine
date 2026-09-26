@@ -7479,6 +7479,341 @@ namespace
     }
 }
 
+namespace
+{
+    // シーン遷移の覆いを、D3D11とD3D12の実際のSprite描画（WARP）で
+    // 描きます。矩形・builtin/circle・builtin/iris・回転した帯・組み込みの
+    // Shader演出と、そのシェーダーが無いときのFade代用までを1組にします。
+    struct SceneTransitionCase final
+    {
+        const char* name{};
+        LamaPon::SceneTransitionSettings settings;
+        float coverage{};
+        bool revealing{};
+        float loadingScreenAlpha{};
+    };
+
+    constexpr float TransitionClearColor[4]{ 0.08f, 0.12f, 0.18f, 1.0f };
+
+    [[nodiscard]] std::vector<SceneTransitionCase> SceneTransitionCases()
+    {
+        using LamaPon::SceneTransitionEffect;
+        const DirectX::XMFLOAT4 red{ 1.0f, 0.0f, 0.0f, 1.0f };
+        const DirectX::XMFLOAT4 yellow{ 1.0f, 0.9f, 0.1f, 1.0f };
+        std::vector<SceneTransitionCase> cases;
+
+        auto iris = LamaPon::MakeSceneTransition(
+            SceneTransitionEffect::Iris, 0.4f, red);
+        iris.accentColor = yellow;
+        cases.push_back({ "iris", iris, 0.5f, false, 0.0f });
+
+        auto wipe = LamaPon::MakeSceneTransition(
+            SceneTransitionEffect::Wipe, 0.4f, red);
+        wipe.direction =
+            LamaPon::SceneTransitionDirection::TopLeftToBottomRight;
+        wipe.softness = 0.1f;
+        cases.push_back({ "diagonal wipe", wipe, 0.5f, false, 0.0f });
+
+        auto diamondTiles = LamaPon::MakeSceneTransition(
+            SceneTransitionEffect::DiamondTiles, 0.4f, red);
+        diamondTiles.accentColor = yellow;
+        diamondTiles.divisions = 8;
+        cases.push_back(
+            { "diamond tiles", diamondTiles, 0.5f, false, 0.0f });
+
+        auto dots = LamaPon::MakeSceneTransition(
+            SceneTransitionEffect::Dots, 0.4f, red);
+        dots.divisions = 8;
+        cases.push_back({ "dots", dots, 0.7f, true, 0.0f });
+
+        auto diamond = LamaPon::MakeSceneTransition(
+            SceneTransitionEffect::Diamond, 0.4f, red);
+        cases.push_back({ "diamond iris", diamond, 0.5f, false, 0.0f });
+
+        auto heart = LamaPon::MakeSceneTransition(
+            SceneTransitionEffect::Shader, 0.4f, red);
+        heart.shaderPattern = LamaPon::SceneTransitionShaderPattern::Heart;
+        cases.push_back({ "shader heart", heart, 0.6f, false, 0.0f });
+
+        auto dissolve = LamaPon::MakeSceneTransition(
+            SceneTransitionEffect::Shader, 0.4f, red);
+        dissolve.shaderPattern =
+            LamaPon::SceneTransitionShaderPattern::Dissolve;
+        dissolve.accentColor = yellow;
+        cases.push_back({ "shader dissolve", dissolve, 0.5f, false, 0.0f });
+
+        auto missing = LamaPon::MakeSceneTransition(
+            SceneTransitionEffect::Shader, 0.4f, red);
+        missing.shader = "shaders/does-not-exist-transition.hlsl";
+        cases.push_back(
+            { "missing shader fallback", missing, 0.5f, false, 0.0f });
+
+        // 覆い終えた後に重ねる読み込み画面（フェード途中）です。
+        auto covered = LamaPon::MakeSceneTransition(
+            SceneTransitionEffect::Fade, 0.4f, red);
+        cases.push_back({ "loading overlay", covered, 1.0f, false, 0.5f });
+        return cases;
+    }
+
+    [[nodiscard]] std::vector<Capture> RenderSceneTransitionCaptures(
+        const LamaPon::RenderingApi api,
+        const LamaPon::GraphicsStartupProfile profile)
+    {
+        HiddenWindow window{ CanvasWidth, CanvasHeight };
+        LamaPon::GraphicsDevice graphics;
+        graphics.Initialize(
+            window.Get(),
+            CanvasWidth,
+            CanvasHeight,
+            api,
+            profile);
+        Require(
+            graphics.ActiveRenderingApi() == api,
+            "The scene transition test did not start the requested API");
+        // 組み込みのLamaPonSceneTransition.hlslはassets/shadersから読みます。
+        graphics.Assets().SetAssetRoot(LAMAPON_TEST_ASSET_DIR);
+
+        LamaPon::SceneLoadingScreenSettings loading;
+        loading.message = "Loading";
+        loading.hint = "Hint";
+        loading.showSpinner = true;
+        std::vector<Capture> captures;
+        for (const auto& transitionCase : SceneTransitionCases())
+        {
+            LamaPon::SceneTransitionFrame frame;
+            frame.settings = transitionCase.settings;
+            frame.phase = transitionCase.coverage >= 1.0f
+                ? LamaPon::SceneTransitionPhase::Covered
+                : transitionCase.revealing
+                    ? LamaPon::SceneTransitionPhase::Revealing
+                    : LamaPon::SceneTransitionPhase::Covering;
+            frame.coverage = transitionCase.coverage;
+            frame.loadingScreenAlpha = transitionCase.loadingScreenAlpha;
+            frame.loadingProgress = 0.4f;
+            frame.loadingScreenTime = 0.3f;
+            graphics.BeginFrame(TransitionClearColor);
+            graphics.DrawSceneTransition(frame, loading);
+            Capture capture;
+            capture.pixels = graphics.CaptureBackBuffer(
+                capture.width,
+                capture.height);
+            graphics.EndFrame();
+            captures.push_back(std::move(capture));
+        }
+        return captures;
+    }
+
+    [[nodiscard]] std::array<int, 3> TransitionPixel(
+        const Capture& capture,
+        const std::uint32_t x,
+        const std::uint32_t y)
+    {
+        const auto offset =
+            (static_cast<std::size_t>(y) * capture.width + x) * 4u;
+        Require(
+            offset + 2u < capture.pixels.size(),
+            "A scene transition pixel is outside the capture");
+        return {
+            static_cast<int>(capture.pixels[offset]),
+            static_cast<int>(capture.pixels[offset + 1u]),
+            static_cast<int>(capture.pixels[offset + 2u])
+        };
+    }
+
+    [[nodiscard]] bool IsTransitionClear(
+        const std::array<int, 3>& pixel) noexcept
+    {
+        // TransitionClearColorの(20, 31, 46)です。
+        return std::abs(pixel[0] - 20) <= 3
+            && std::abs(pixel[1] - 31) <= 3
+            && std::abs(pixel[2] - 46) <= 3;
+    }
+
+    [[nodiscard]] bool IsTransitionRed(
+        const std::array<int, 3>& pixel) noexcept
+    {
+        return pixel[0] >= 250 && pixel[1] <= 5 && pixel[2] <= 5;
+    }
+
+    [[nodiscard]] std::string DescribeTransitionPixel(
+        const std::array<int, 3>& pixel)
+    {
+        return "(" + std::to_string(pixel[0]) + ", "
+            + std::to_string(pixel[1]) + ", "
+            + std::to_string(pixel[2]) + ")";
+    }
+
+    void RequireSceneTransitionCaptures(
+        const LamaPon::RenderingApi api,
+        const std::vector<Capture>& captures)
+    {
+        const auto cases = SceneTransitionCases();
+        Require(
+            captures.size() == cases.size(),
+            "The scene transition captures are incomplete");
+        const std::string apiName =
+            api == LamaPon::RenderingApi::DirectX11
+                ? "DirectX 11"
+                : "DirectX 12";
+        const std::uint32_t centerX = CanvasWidth / 2u;
+        const std::uint32_t centerY = CanvasHeight / 2u;
+        const auto require = [&](
+                const std::size_t index,
+                const bool condition,
+                const std::string& message)
+            {
+                Require(
+                    condition,
+                    std::string("Scene transition '") + cases[index].name
+                        + "' on " + apiName + ": " + message);
+            };
+        for (std::size_t index{}; index < cases.size(); ++index)
+        {
+            const auto& capture = captures[index];
+            require(
+                index,
+                capture.width == CanvasWidth
+                    && capture.height == CanvasHeight
+                    && capture.pixels.size()
+                        == static_cast<std::size_t>(CanvasWidth)
+                            * CanvasHeight * 4u,
+                "unexpected capture size");
+            const std::string name = cases[index].name;
+            const auto center = TransitionPixel(capture, centerX, centerY);
+            const auto corner = TransitionPixel(capture, 2u, 2u);
+            const auto farCorner = TransitionPixel(
+                capture,
+                CanvasWidth - 3u,
+                CanvasHeight - 3u);
+            if (name == "iris"
+                || name == "diamond iris"
+                || name == "shader heart")
+            {
+                // 中心だけが残り、画面の角は覆われます。シェーダーが
+                // 使えずFadeで代用すると中心も半透明に覆われます。
+                require(
+                    index,
+                    IsTransitionClear(center),
+                    "the center must stay visible, got "
+                        + DescribeTransitionPixel(center));
+                require(
+                    index,
+                    IsTransitionRed(corner) && IsTransitionRed(farCorner),
+                    "the corners must be covered, got "
+                        + DescribeTransitionPixel(corner) + " and "
+                        + DescribeTransitionPixel(farCorner));
+            }
+            else if (name == "diagonal wipe")
+            {
+                require(
+                    index,
+                    IsTransitionRed(corner)
+                        && IsTransitionClear(farCorner),
+                    "the wipe must start from the top-left, got "
+                        + DescribeTransitionPixel(corner) + " and "
+                        + DescribeTransitionPixel(farCorner));
+            }
+            else if (name == "shader dissolve")
+            {
+                std::size_t covered{};
+                std::size_t clear{};
+                for (std::uint32_t y{ 1u }; y < CanvasHeight; y += 4u)
+                {
+                    for (std::uint32_t x{ 1u }; x < CanvasWidth; x += 4u)
+                    {
+                        const auto pixel = TransitionPixel(capture, x, y);
+                        covered += IsTransitionRed(pixel) ? 1u : 0u;
+                        clear += IsTransitionClear(pixel) ? 1u : 0u;
+                    }
+                }
+                // Fadeへの代用なら一様な中間色になり、どちらも0です。
+                require(
+                    index,
+                    covered > 64u && clear > 64u,
+                    "the dissolve must mix covered and visible pixels ("
+                        + std::to_string(covered) + " covered, "
+                        + std::to_string(clear) + " visible)");
+            }
+            else if (name == "missing shader fallback")
+            {
+                // Fadeで半分覆い、代替シェーダーの赤紫は出しません。
+                const bool uniform =
+                    std::abs(center[0] - corner[0]) <= 2
+                    && std::abs(center[1] - corner[1]) <= 2
+                    && std::abs(center[2] - corner[2]) <= 2;
+                require(
+                    index,
+                    uniform
+                        && center[0] > 110 && center[0] < 150
+                        && center[1] < 30,
+                    "a missing shader must fall back to a fade, got "
+                        + DescribeTransitionPixel(center) + " and "
+                        + DescribeTransitionPixel(corner));
+            }
+            else if (name == "loading overlay")
+            {
+                // 覆い終えた赤の上へ、読み込み画面の背景が半分重なります。
+                require(
+                    index,
+                    corner[0] < 250 && corner[0] > 60,
+                    "the loading screen must fade over the cover, got "
+                        + DescribeTransitionPixel(corner));
+            }
+        }
+    }
+
+    // D3D11とD3D12の同じ遷移を比べます。回転した帯の縁は頂点計算の
+    // 丸め差で数画素だけ変わることがあるため、ごく一部の画素の差は
+    // 許容します。
+    void RequireMatchingSceneTransitionCaptures(
+        const std::vector<Capture>& d3d11,
+        const std::vector<Capture>& d3d12)
+    {
+        const auto cases = SceneTransitionCases();
+        Require(
+            d3d11.size() == cases.size() && d3d12.size() == cases.size(),
+            "The scene transition captures are incomplete");
+        for (std::size_t index{}; index < cases.size(); ++index)
+        {
+            const auto& left = d3d11[index];
+            const auto& right = d3d12[index];
+            Require(
+                left.pixels.size() == right.pixels.size(),
+                std::string("Scene transition '") + cases[index].name
+                    + "' captures have different sizes");
+            std::size_t mismatched{};
+            int largest{};
+            for (std::size_t pixel{};
+                pixel * 4u + 3u < left.pixels.size();
+                ++pixel)
+            {
+                int difference{};
+                for (std::size_t channel{}; channel < 3u; ++channel)
+                {
+                    difference = std::max(
+                        difference,
+                        std::abs(
+                            static_cast<int>(
+                                left.pixels[pixel * 4u + channel])
+                            - static_cast<int>(
+                                right.pixels[pixel * 4u + channel])));
+                }
+                largest = std::max(largest, difference);
+                mismatched += difference > 2 ? 1u : 0u;
+            }
+            const std::size_t allowed =
+                static_cast<std::size_t>(CanvasWidth) * CanvasHeight / 200u;
+            Require(
+                mismatched <= allowed,
+                std::string("Scene transition '") + cases[index].name
+                    + "' differs between DirectX 11 and DirectX 12: "
+                    + std::to_string(mismatched)
+                    + " pixels, largest channel difference "
+                    + std::to_string(largest));
+        }
+    }
+}
+
 int main()
 {
     // AssetManagerのWIC / DirectWrite factoryと文字textureはCOMを使います。
@@ -7501,6 +7836,12 @@ int main()
         const auto d3d11 = RenderCapture(
             LamaPon::RenderingApi::DirectX11,
             LamaPon::GraphicsStartupProfile::FullRenderer);
+        const auto d3d11SceneTransitions = RenderSceneTransitionCaptures(
+            LamaPon::RenderingApi::DirectX11,
+            LamaPon::GraphicsStartupProfile::FullRenderer);
+        RequireSceneTransitionCaptures(
+            LamaPon::RenderingApi::DirectX11,
+            d3d11SceneTransitions);
         const auto d3d11PostProcess = RenderPostProcessCaptures(
             LamaPon::RenderingApi::DirectX11,
             LamaPon::GraphicsStartupProfile::FullRenderer);
@@ -7601,6 +7942,10 @@ int main()
         LamaPon::Logger::Instance().Clear();
         LamaPon::GraphicsDevice::SetEnableDebugLayer(true);
         const auto d3d12 = RenderCapture(
+            LamaPon::RenderingApi::DirectX12Experimental,
+            LamaPon::GraphicsStartupProfile::
+                AllowD3D12ExperimentalBootstrap);
+        const auto d3d12SceneTransitions = RenderSceneTransitionCaptures(
             LamaPon::RenderingApi::DirectX12Experimental,
             LamaPon::GraphicsStartupProfile::
                 AllowD3D12ExperimentalBootstrap);
@@ -7731,6 +8076,12 @@ int main()
         // compile errorの診断はdebug layerの検査と分けて確かめます。
         RequireD3D12CustomShaderFailures();
         RequireMatchingCaptures(d3d11, d3d12);
+        RequireSceneTransitionCaptures(
+            LamaPon::RenderingApi::DirectX12Experimental,
+            d3d12SceneTransitions);
+        RequireMatchingSceneTransitionCaptures(
+            d3d11SceneTransitions,
+            d3d12SceneTransitions);
         RequireMatchingPostProcessCaptures(
             d3d11PostProcess,
             d3d12PostProcess);
