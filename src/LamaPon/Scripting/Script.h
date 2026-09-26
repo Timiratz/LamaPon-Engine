@@ -2,6 +2,9 @@
 
 #include "LamaPon/Core/PlayerPrefs.h"
 #include "LamaPon/Online/OnlineServices.h"
+#include "LamaPon/Online/NetworkSession.h"
+#include "LamaPon/Online/NetworkSceneBridge.h"
+#include "LamaPon/Components/NetworkIdentityComponent.h"
 #include "LamaPon/Scripting/Coroutine.h"
 #include "LamaPon/Scripting/GameModule.h"
 // 初心者向けショートカット（GetComponent/Find/Instantiate等）を
@@ -540,6 +543,66 @@ namespace LamaPon
             {
                 online->CancelDiscordSignIn();
             }
+        }
+
+        // P2PはDiscordログイン・クラウドセーブとは独立しています。
+        [[nodiscard]] NetworkSession* Network() const noexcept { return ActiveNetworkSession(); }
+        [[nodiscard]] bool IsNetworkHost() const noexcept
+        {
+            const auto* session = Network();
+            return session && session->IsHost();
+        }
+        bool HostNetwork(std::string name = "Host", std::string address = "127.0.0.1") const
+        {
+            auto* session = Network();
+            return session && session->Host(std::move(name), std::move(address));
+        }
+        bool JoinNetwork(std::string address, std::string name = "Player") const
+        {
+            auto* session = Network();
+            return session && session->Join(std::move(address), std::move(name));
+        }
+        bool JoinDirectNetwork(std::string endpoint, std::string accessKey, std::string name = "Player") const
+        {
+            auto* session = Network();
+            return session && session->JoinDirect(std::move(endpoint), std::move(accessKey), std::move(name));
+        }
+        bool JoinNetworkRoom(const NetworkRoom& room, std::string name = "Player") const
+        {
+            auto* session = Network();
+            return session && session->JoinRoom(room, std::move(name));
+        }
+        bool SendNetworkCommand(std::string name, std::string data) const
+        {
+            auto* session = Network();
+            return session && session->SendCommand(std::move(name), std::move(data));
+        }
+        bool SetNetworkSessionState(std::string data) const
+        {
+            auto* session = Network();
+            return session && session->SetSessionState(std::move(data));
+        }
+        void StopNetwork() const
+        {
+            // 自分自身が同期PrefabのScriptでも、コールバック終了前に
+            // GameObjectを破棄しません。Scene Bridgeが更新後に復元します。
+            if (auto* session = Network()) session->Stop();
+        }
+        [[nodiscard]] GameObject* NetworkSpawn(std::string_view prefabKey,
+            const NetworkTransform& transform = {}, NetworkPeerId owner = 1) const
+        {
+            auto* bridge = ActiveNetworkSceneBridge();
+            return bridge ? bridge->Spawn(prefabKey, transform, owner) : nullptr;
+        }
+        bool NetworkDespawn(NetworkObjectId id) const
+        {
+            auto* bridge = ActiveNetworkSceneBridge();
+            return bridge && bridge->Despawn(id);
+        }
+        [[nodiscard]] GameObject* FindNetworkObject(NetworkObjectId id) const noexcept
+        {
+            auto* bridge = ActiveNetworkSceneBridge();
+            return bridge ? bridge->Find(id) : nullptr;
         }
 
         void SignOutOnline() const

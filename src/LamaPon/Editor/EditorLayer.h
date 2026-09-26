@@ -1,5 +1,7 @@
 #pragma once
 
+#include "LamaPon/Editor/NetworkConnectionPanel.h"
+
 #include "LamaPon/Editor/EditorExtensionRegistry.h"
 #include "LamaPon/Editor/UIComponentInspectors.h"
 
@@ -569,6 +571,7 @@ namespace LamaPon
         void DrawProjectSettingsScriptingSection();
         void DrawProjectSettingsBuildSection();
         void DrawProjectSettingsOnlineSection();
+        void DrawProjectSettingsNetworkSection();
         void DrawProjectSettingsDiscordPresenceSection();
         [[nodiscard]] bool SaveProjectSettingsDraft();
         void BrowseForScriptEditor();
@@ -821,6 +824,8 @@ namespace LamaPon
         std::array<int, 2> m_projectWindowSize{ 1280, 720 };
         bool m_projectSplashScreenDraft{ true };
         OnlineProjectSettings m_projectOnlineDraft;
+        NetworkConfiguration m_projectNetworkDraft;
+        NetworkConnectionPanel m_networkConnectionPanel;
         std::array<char, 2049>
             m_projectOnlineServiceBaseUrlBuffer{};
         std::array<char, 129> m_projectOnlineGameIdBuffer{};

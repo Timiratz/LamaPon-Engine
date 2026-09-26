@@ -73,6 +73,7 @@ int WINAPI wWinMain(
         application.Initialize(
             instance,
             settings.graphics.renderingApi);
+        static_cast<void>(application.Network().Configure(settings.network));
         const bool d3d12ExperimentalRenderer =
             application.Graphics().IsD3D12ExperimentalRenderer();
         // 無人の配布検証では外部サービスへ接続しません。通常起動時だけ、

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "LamaPon/Input/InputSystem.h"
+#include "LamaPon/Online/NetworkSession.h"
 #include "LamaPon/Graphics/GraphicsQuality.h"
 #include "LamaPon/Physics/PhysicsSettings.h"
 
@@ -131,6 +132,8 @@ namespace LamaPon
         bool splashScreenEnabled{ true };
         // ABIを保つため、新しい設定は必ず末尾へ追加します。
         OnlineProjectSettings online;
+        // 部屋の作成・参加は明示操作で開始し、自動接続は行いません。
+        NetworkConfiguration network;
     };
 
     void ValidateProjectSettings(

@@ -12,6 +12,7 @@ LamaPonのプロジェクト作成、C++スクリプト、エディター操作�
 | [学習ロードマップ](learning-path.md) | ゲームループ、C++、ゲーム制作、検証とデバッグを学ぶ手順 |
 | [入門チュートリアル](getting-started.md) | プロジェクト作成からエクスポートまでを30〜60分で体験 |
 | [プロジェクト管理とビルド](project.md) | LamaPon Hub、プロジェクト設定、エクスポート、ビルド方法 |
+| [プレイヤーがホストになるP2P通信](online-p2p.md) | 2〜4人、直接接続、LAN検索、Scene／Prefab・ターン状態同期、通信試験 |
 | [Discordログイン、クラウドセーブ、Rich Presence](online-services.md) | Windowsゲームのアカウント連携、同期、競合復旧、Rich Presence、バックエンド通信契約 |
 | [WebGLエクスポート](web-export.md) | C++ゲームを単一HTMLへ変換する対応機能、自動代替、拒否条件 |
 | [書き出したゲームの保護](export-protection.md) | 配布物の暗号化、書き出しごとに生成する配布物固有鍵、改ざん検知と、その限界 |
@@ -25,7 +26,7 @@ LamaPonのプロジェクト作成、C++スクリプト、エディター操作�
 | [コマンドライン（LamaPonCli）](cli.md) | エディターなしで作成・撮影・ビルド・書き出し。JSONレポート付き |
 | [ゲームを作る](ai-agent.md) | CLI・エディター・リモート操作を使った制作手順 |
 | [コード一覧](code-reference.md) | 使える機能を宣言・引数・サンプル付きで一覧 |
-| [データアセット](data-assets.md) | ScriptableObject相当。GameObjectに依存しないデータをエディターで編集して読む |
+| [データアセット](data-assets.md) | GameObjectに依存しないデータをエディターで編集して読む |
 | [パッケージ](packages.md) | 公式パッケージのワンクリック導入・更新・削除 |
 | [エディター拡張](editor-extensions.md) | パネル、拡張メニュー、ライフサイクルの登録API |
 

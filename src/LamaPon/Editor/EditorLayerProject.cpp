@@ -11,6 +11,8 @@
 #include "LamaPon/Editor/GameExportDialog.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Online/OnlineServices.h"
+#include "LamaPon/Online/NetworkSession.h"
+#include "LamaPon/Online/NetworkSceneBridge.h"
 #include "LamaPon/Scene/Scene.h"
 #include "LamaPon/Scene/SceneManager.h"
 
@@ -344,6 +346,7 @@ namespace LamaPon
         m_projectInspectorDecimalsDraft =
             static_cast<int>(
                 m_projectSettings.inspectorDecimals);
+        m_projectNetworkDraft = m_projectSettings.network;
         m_projectOnlineDraft = m_projectSettings.online;
         strncpy_s(
             m_projectOnlineServiceBaseUrlBuffer.data(),
@@ -548,6 +551,7 @@ namespace LamaPon
     {
         ImGui::TextUnformatted("オンライン");
         ImGui::Separator();
+        DrawProjectSettingsNetworkSection();
         ImGui::SeparatorText("アカウント連携");
         ImGui::Checkbox(
             "Discordアカウント連携を有効にする",
@@ -2069,6 +2073,7 @@ namespace LamaPon
                         m_projectInspectorDecimalsDraft,
                         0,
                         6));
+            settings.network = m_projectNetworkDraft;
             settings.online = m_projectOnlineDraft;
             settings.online.serviceBaseUrl =
                 m_projectOnlineServiceBaseUrlBuffer.data();
@@ -2116,6 +2121,10 @@ namespace LamaPon
             }
 
             m_projectSettings = std::move(settings);
+            if (auto* network = ActiveNetworkSession())
+            {
+                static_cast<void>(network->Configure(m_projectSettings.network));
+            }
             SaveProjectConfiguration();
             m_graphics.Input().SetActions(
                 m_projectSettings.inputActions);
@@ -2331,6 +2340,9 @@ namespace LamaPon
             {
                 CloseAnimationTimeline(true);
             }
+            if (auto* bridge = ActiveNetworkSceneBridge()) bridge->Reset();
+            if (auto* network = ActiveNetworkSession())
+                static_cast<void>(network->Configure(m_projectSettings.network));
             m_playSnapshot = m_scene.SerializeToJson();
             if (!m_scenePath.empty())
             {
@@ -2404,6 +2416,7 @@ namespace LamaPon
     {
         try
         {
+            if (auto* bridge = ActiveNetworkSceneBridge()) bridge->Reset();
             m_scene.LoadFromJson(m_playSnapshot);
             m_scene.Scenes().
                 CancelPending();

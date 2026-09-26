@@ -369,8 +369,8 @@ std::shared_ptr<const LamaPon::DataAsset> LoadDataAsset(
 
 **概略**
 
-データアセット（`*.asset.json`）を読み込みます。UnityのScriptableObject
-に相当する、GameObjectへぶら下がらないデータの入れ物です。
+データアセット（`*.asset.json`）を読み込みます。
+GameObjectに依存せず、単体で存在するデータの入れ物です。
 型は`LAMAPON_DATA_ASSET`で宣言し、値はエディターのインスペクターで
 編集します。詳しくは[データアセット](data-assets.md)を参照してください。
 

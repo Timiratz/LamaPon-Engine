@@ -36,6 +36,7 @@
 #include "LamaPon/Components/RigidbodyComponent.h"
 #include "LamaPon/Components/BillboardComponent.h"
 #include "LamaPon/Components/RotatorComponent.h"
+#include "LamaPon/Components/NetworkIdentityComponent.h"
 #include "LamaPon/Components/SphereCollider3DComponent.h"
 #include "LamaPon/Components/SpotLightComponent.h"
 #include "LamaPon/Components/SpriteAnimatorComponent.h"
@@ -10968,6 +10969,26 @@ namespace LamaPon
                     "向くのは再生中だけです"
                     "（シーンビューでは編集した向きのまま）");
             }
+            else if (auto* identity = dynamic_cast<NetworkIdentityComponent*>(component.get()))
+            {
+                std::array<char, 65> key{};
+                strncpy_s(key.data(), key.size(), identity->SceneKey().c_str(), _TRUNCATE);
+                ImGui::BeginDisabled(m_playing);
+                if (ImGui::InputText("Scene Key", key.data(), key.size()))
+                {
+                    try { identity->SetSceneKey(key.data()); RecordHistory(); }
+                    catch (const std::exception& error) { SetStatus(error.what(), true); }
+                }
+                bool hostOnly = identity->HostOnlySimulation();
+                if (ImGui::Checkbox("ホストだけで移動・物理・Scriptを実行", &hostOnly))
+                { identity->SetHostOnlySimulation(hostOnly); RecordHistory(); }
+                float interpolation = identity->InterpolationSeconds();
+                if (ImGui::SliderFloat("補間時間（秒）", &interpolation, 0, 1))
+                { identity->SetInterpolationSeconds(interpolation); RecordHistory(); }
+                ImGui::EndDisabled();
+                ImGui::TextWrapped("固定オブジェクトは双方で同じ一意なScene Keyを指定します。同期Prefabでは空にします。rootに配置してください。");
+                ImGui::Text("通信ID: %u / 所有者: %u", identity->NetworkId(), identity->OwnerPeer());
+            }
             else if (auto* rotator = dynamic_cast<RotatorComponent*>(component.get()))
             {
                 auto velocity = rotator->AngularVelocity();
@@ -13121,6 +13142,16 @@ namespace LamaPon
 
         if (beginCategorySection("Gameplay"))
         {
+            ImGui::BeginDisabled(gameObject.GetComponent<NetworkIdentityComponent>() != nullptr);
+            if (showComponent("Network Identity", "Gameplay") && ImGui::Selectable("Network Identity"))
+            {
+                auto& identity = gameObject.AddComponent<NetworkIdentityComponent>();
+                identity.SetSceneKey("object." + std::to_string(gameObject.Id()));
+                RecordHistory();
+                SetStatus("Network Identityを追加しました");
+            }
+            ImGui::EndDisabled();
+
             ImGui::BeginDisabled(hasInputMover);
             if (showComponent("Input Mover", "Gameplay")
                 && ImGui::Selectable("Input Mover"))

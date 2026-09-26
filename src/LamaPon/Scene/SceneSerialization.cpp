@@ -20,6 +20,7 @@
 #include "LamaPon/Components/NavMeshAgentComponent.h"
 #include "LamaPon/Components/NavMeshComponent.h"
 #include "LamaPon/Components/NativeScriptComponent.h"
+#include "LamaPon/Components/NetworkIdentityComponent.h"
 #include "LamaPon/Components/ParticleSystemComponent.h"
 #include "LamaPon/Components/SpriteParticles2DComponent.h"
 #include "LamaPon/Components/UICanvasComponent.h"
@@ -927,7 +928,13 @@ namespace
             { "enabled", component.IsEnabled() }
         };
 
-        if (const auto* camera = dynamic_cast<const LamaPon::CameraComponent*>(&component))
+        if (const auto* identity = dynamic_cast<const LamaPon::NetworkIdentityComponent*>(&component))
+        {
+            result["sceneKey"] = identity->SceneKey();
+            result["hostOnlySimulation"] = identity->HostOnlySimulation();
+            result["interpolationSeconds"] = identity->InterpolationSeconds();
+        }
+        else if (const auto* camera = dynamic_cast<const LamaPon::CameraComponent*>(&component))
         {
             result["verticalFieldOfView"] = camera->VerticalFieldOfView();
             result["nearPlane"] = camera->NearPlane();
@@ -2065,7 +2072,15 @@ namespace
         const auto type = value.at("type").get<std::string>();
         LamaPon::Component* component{};
 
-        if (type == "Camera")
+        if (type == "NetworkIdentity")
+        {
+            auto& identity = gameObject.AddComponent<LamaPon::NetworkIdentityComponent>(
+                value.value("sceneKey", std::string{}));
+            identity.SetHostOnlySimulation(value.value("hostOnlySimulation", true));
+            identity.SetInterpolationSeconds(value.value("interpolationSeconds", 0.1f));
+            component = &identity;
+        }
+        else if (type == "Camera")
         {
             auto& camera =
                 gameObject.AddComponent<LamaPon::CameraComponent>(

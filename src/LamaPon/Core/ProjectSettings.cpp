@@ -4,6 +4,7 @@
 #include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Online/DiscordPresence.h"
 #include "LamaPon/Online/OnlineHttpValidation.h"
+#include "LamaPon/Online/NetworkSettingsJson.h"
 
 #include <nlohmann/json.hpp>
 
@@ -251,6 +252,7 @@ namespace LamaPon
             }
         }
         ValidateInputActions(settings.inputActions);
+        ValidateNetworkConfiguration(settings.network);
 
         if (!settings.online.serviceBaseUrl.empty())
         {
@@ -360,6 +362,10 @@ namespace LamaPon
             document.value(
                 "inspectorDecimals",
                 settings.inspectorDecimals);
+        if (const auto network = document.find("network"); network != document.end())
+        {
+            settings.network = Detail::NetworkSettingsFromJson(*network);
+        }
         if (const auto online = document.find("online");
             online != document.end())
         {
@@ -774,6 +780,7 @@ namespace LamaPon
             },
             { "version", 1 },
             { "gameName", settings.gameName },
+            { "network", Detail::NetworkSettingsToJson(settings.network) },
             {
                 "window",
                 {
