@@ -507,6 +507,7 @@ namespace LamaPon
             return *m_sceneManager;
         }
 
+        [[nodiscard]] std::uint64_t ContentRevision() const noexcept { return m_contentRevision; }
         void Clear() noexcept;
         void SaveToFile(const std::filesystem::path& path) const;
         void LoadFromFile(const std::filesystem::path& path);
@@ -723,6 +724,9 @@ namespace LamaPon
             ExtractPersistentObjects();
         void MergePersistentObjects(
             PersistentTransfer transfer);
+        // Sceneの再読み込みによるGameObject IDの再利用を識別します。
+        std::uint64_t m_contentRevision{};
+
         // LoadFromJsonとMergeFromJsonの共通処理です。additiveが
         // trueならClear()せず、読み込んだGameObjectへ新しい
         // ハンドルを割り当てます。

@@ -18,6 +18,8 @@ namespace LamaPon
     class GameModuleHost;
     class InputSystem;
     class OnlineServices;
+    class NetworkSession;
+    class NetworkSceneBridge;
     class PlayerPrefs;
     class SaveDataStore;
     class Scene;
@@ -72,6 +74,8 @@ namespace LamaPon
             Preferences() const;
         [[nodiscard]] LAMAPON_API SaveDataStore& Saves() const;
         [[nodiscard]] LAMAPON_API OnlineServices& Online() const;
+        [[nodiscard]] LAMAPON_API NetworkSession& Network() const;
+        [[nodiscard]] LAMAPON_API NetworkSceneBridge& NetworkScene() const;
         [[nodiscard]] const DirectX::Keyboard::State&
             KeyboardState() const;
 
@@ -98,6 +102,8 @@ namespace LamaPon
         std::unique_ptr<PlayerPrefs> m_playerPrefs;
         std::unique_ptr<SaveDataStore> m_saveData;
         std::unique_ptr<OnlineServices> m_onlineServices;
+        std::unique_ptr<NetworkSession> m_networkSession;
+        std::unique_ptr<NetworkSceneBridge> m_networkSceneBridge;
         std::string m_persistenceName;
         bool m_startupSplashScreenEnabled{};
         // 直前に知らせた描画エラー。同じ内容は繰り返し出しません。

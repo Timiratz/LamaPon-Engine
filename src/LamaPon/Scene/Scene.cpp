@@ -21,6 +21,7 @@
 #include "LamaPon/Components/NavMeshAgentComponent.h"
 #include "LamaPon/Components/NavMeshComponent.h"
 #include "LamaPon/Components/NativeScriptComponent.h"
+#include "LamaPon/Components/NetworkIdentityComponent.h"
 #include "LamaPon/Components/ParticleSystemComponent.h"
 #include "LamaPon/Components/UICanvasComponent.h"
 #include "LamaPon/Components/UIRectTransformComponent.h"
@@ -2663,6 +2664,20 @@ namespace LamaPon
                                     lodGroup->
                                         CullDistance());
                     }
+                    else if (const auto* identity = dynamic_cast<const NetworkIdentityComponent*>(sourceComponent.get()))
+                    {
+                        std::string key = identity->SceneKey();
+                        if (!key.empty())
+                        {
+                            const auto suffix = ".copy" + std::to_string(duplicate.Id());
+                            key.resize(std::min(key.size(), 64 - suffix.size()));
+                            key += suffix;
+                        }
+                        auto& copy = duplicate.AddComponent<NetworkIdentityComponent>(key);
+                        copy.SetHostOnlySimulation(identity->HostOnlySimulation());
+                        copy.SetInterpolationSeconds(identity->InterpolationSeconds());
+                        duplicateComponent = &copy;
+                    }
                     else if (const auto* nativeScript =
                         dynamic_cast<
                             const NativeScriptComponent*>(
@@ -3757,6 +3772,7 @@ namespace LamaPon
 
     void Scene::Clear() noexcept
     {
+        ++m_contentRevision;
         m_mainCamera = nullptr;
         m_gameObjects.clear();
         m_nextId = 1;

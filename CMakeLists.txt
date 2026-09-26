@@ -153,7 +153,22 @@ target_compile_options(ImGuizmo PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
 )
 
+include(cmake/LamaPonNetworking.cmake)
+
+set(LAMAPON_NETWORK_SOURCES
+    src/LamaPon/Online/NetworkSession.cpp
+    src/LamaPon/Online/LanNetworkTransport.cpp
+    src/LamaPon/Online/EpicNetworkTransport.cpp
+)
+
 set(LAMAPON_RUNTIME_SOURCES
+    ${LAMAPON_NETWORK_SOURCES}
+    src/LamaPon/Online/NetworkSession.h
+    src/LamaPon/Online/NetworkTransport.h
+    src/LamaPon/Online/NetworkSceneBridge.h
+    src/LamaPon/Online/NetworkSceneBridge.cpp
+    src/LamaPon/Components/NetworkIdentityComponent.h
+    src/LamaPon/Components/NetworkIdentityComponent.cpp
     src/LamaPon/Animation/AnimationClip.cpp
     src/LamaPon/Animation/AnimationClip.h
     src/LamaPon/Animation/AnimatorController.cpp
@@ -525,6 +540,7 @@ set(LAMAPON_RUNTIME_SOURCES
 )
 
 set(LAMAPON_EDITOR_SOURCES
+    src/LamaPon/Editor/NetworkProjectSettingsPanel.cpp
     src/LamaPon/Editor/Editor.cpp
     src/LamaPon/Editor/Editor.h
     src/LamaPon/Editor/EditorExtensionRegistry.cpp
@@ -672,8 +688,10 @@ target_link_libraries(LamaPonRuntime
         shell32
         windowscodecs
         winhttp
+        ws2_32
 )
 lamapon_enable_release_symbols(LamaPonRuntime)
+lamapon_configure_network_backend(LamaPonRuntime)
 
 # 任意配布するD3D12 Backendの安定ABIプロバイダー。現段階では
 # capability/ABIの検証を担い、描画実装はLamaPonRuntimeへ委譲します。
@@ -1008,6 +1026,36 @@ set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT L
 include(CTest)
 
 if(BUILD_TESTING)
+    add_executable(LamaPonNetworkSceneTests tests/NetworkSceneTests.cpp)
+    target_link_libraries(LamaPonNetworkSceneTests PRIVATE LamaPonRuntime)
+    target_compile_options(LamaPonNetworkSceneTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    add_test(NAME OnlineP2PScene COMMAND LamaPonNetworkSceneTests
+        "${CMAKE_CURRENT_BINARY_DIR}/network-test-data")
+    set_tests_properties(OnlineP2PScene PROPERTIES LABELS "online;p2p;scene" TIMEOUT 60)
+
+    add_executable(LamaPonNetworkSessionTests
+        tests/NetworkSessionTests.cpp
+        ${LAMAPON_NETWORK_SOURCES}
+    )
+    target_include_directories(LamaPonNetworkSessionTests PRIVATE src)
+    target_compile_definitions(LamaPonNetworkSessionTests PRIVATE
+        LAMAPON_RUNTIME_BUILD NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00
+    )
+    target_compile_options(LamaPonNetworkSessionTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<CXX_COMPILER_ID:MSVC>:/permissive->
+        $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
+    )
+    target_link_libraries(LamaPonNetworkSessionTests PRIVATE LamaPonJson ws2_32)
+    lamapon_configure_network_backend(LamaPonNetworkSessionTests)
+    add_test(NAME OnlineP2PSession COMMAND LamaPonNetworkSessionTests)
+    set_tests_properties(OnlineP2PSession PROPERTIES
+        LABELS "online;p2p;network" TIMEOUT 60
+    )
     find_package(Python3 3.11 REQUIRED COMPONENTS Interpreter)
     if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC" AND CMAKE_GENERATOR MATCHES "^Ninja")
         add_test(NAME MsvcHeaderDependencies
@@ -2347,6 +2395,9 @@ install(
         PATTERN "CloudSaveSynchronizer.h" EXCLUDE
         PATTERN "LocalPersistenceDocuments.h" EXCLUDE
         PATTERN "OnlineHttpValidation.h" EXCLUDE
+        PATTERN "NetworkTransport.h" EXCLUDE
+        PATTERN "NetworkSettingsJson.h" EXCLUDE
+        PATTERN "EpicNetworkTransportSdk.h" EXCLUDE
         PATTERN "OnlinePersistenceCoordinator.h" EXCLUDE
         PATTERN "SaveSlotValidation.h" EXCLUDE
         PATTERN "OnlineServicesTesting.h" EXCLUDE
@@ -2362,6 +2413,10 @@ install(
     DESTINATION third_party
     FILES_MATCHING PATTERN "*.hpp"
 )
+if(LAMAPON_EOS_SDK_ROOT)
+    install(FILES "${LAMAPON_EOS_RUNTIME}" DESTINATION ".")
+endif()
+
 install(
     DIRECTORY third_party/DirectXTK/include
     DESTINATION third_party/DirectXTK

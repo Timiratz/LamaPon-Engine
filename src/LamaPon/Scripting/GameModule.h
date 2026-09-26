@@ -13,12 +13,13 @@ namespace LamaPon
     // Game ModuleとRuntimeのABIを識別します。公開構造体のレイアウトや
     // 公開関数のシグネチャを変更した場合は、この値も更新してください。
     // GameModuleHostは完全一致を要求し、互換性のないDLLを読み込みません。
+    // API 77ではP2P通信とSceneの再読み込み世代を追加しました。
     // API 76ではSceneにゲーム画面サイズのコールバックが加わりました。
     // API 75ではフレームデバッガー（Component::DescribeDrawEvent）、
     // 物理デバッガーの接触記録（Scene）、プロファイラーの階層区間
     // （ProfileScope / ProfileSample）、テクスチャのGPU量（TextureAsset）
     // により公開レイアウトが変わりました。ゲーム用DLLの再ビルドが必要です。
-    inline constexpr std::uint32_t GameModuleApiVersion = 76;
+    inline constexpr std::uint32_t GameModuleApiVersion = 77;
 
     using NativeScriptCreateFunction = void* (*)(
         GameObject* owner,

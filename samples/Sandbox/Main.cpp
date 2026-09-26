@@ -420,6 +420,7 @@ int WINAPI wWinMain(
             // Editor GUI、モデルプレビュー、grid／gizmoを含むD3D12
             // rendererを起動します。初期化失敗時はD3D11へ戻ります。
             projectSettings.graphics.renderingApi);
+        static_cast<void>(application.Network().Configure(projectSettings.network));
         // セーフモードと自動UI検証では、保存済みセッションの復元を含む
         // 外部通信を開始しません。通常のEditor起動だけで有効化します。
         if (!safeMode

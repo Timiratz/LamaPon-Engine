@@ -431,6 +431,11 @@ void EnemySpawner::OnUpdate(float deltaTime)
 バックエンドが別途必要です。設定、API一覧、安全上の注意、通信契約は
 [Discordログイン、クラウドセーブ、Rich Presence](online-services.md)を参照してください。
 
+プレイヤーホストの通信には、`Network()`、`HostNetwork()`、`JoinNetwork()`、
+`StopNetwork()`、`NetworkSpawn()`、`NetworkDespawn()`、`FindNetworkObject()`を使います。
+入力の所有権検証、ホストでのゲーム進行、Scene同期と協力プレイ例は
+[プレイヤーがホストになるP2P通信](online-p2p.md)を参照してください。
+
 エンジンはDLLを`.lamapon-hot-reload`へシャドウコピーして読み込むため、エディターを終了せずに`LamaPonGameModule`を再ビルドできます。
 更新は約0.5秒ごとに検出され、実行中インスタンスをSerializeして破棄した後、新しいDLLで復元します。
 Inspectorの「Moduleを再読み込み」から手動実行することもできます。

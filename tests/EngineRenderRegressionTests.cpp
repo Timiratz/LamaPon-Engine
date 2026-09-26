@@ -1232,8 +1232,8 @@ int main(const int argumentCount, char** arguments)
             !HasPublicDisplayUnorderedAccessView<LamaPon::RenderTarget>);
         static_assert(!HasPublicDisplayTexture<LamaPon::RenderTarget>);
         static_assert(
-            LamaPon::GameModuleApiVersion == 76,
-            "The Scene window size callbacks require Game Module API 76");
+            LamaPon::GameModuleApiVersion == 77,
+            "The Scene networking revision requires Game Module API 77");
         static_assert(
             sizeof(LamaPon::RenderTarget) <= 128,
             "RenderTarget leaked native backend state into its public layout");

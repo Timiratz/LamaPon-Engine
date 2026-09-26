@@ -64,6 +64,15 @@ namespace
         std::filesystem::path m_path;
     };
 
+    // TEMPを許可済みのリポジトリ配下へ向けても検証できるよう、
+    // テスト用生成に限って既存のサンプル作成overrideを使います。
+    // 通常のHubの作成制限はVerifyEngineTreeGuardで別に確認します。
+    void CreateFixtureProject(const std::filesystem::path& root,
+        const std::string& name, const LamaPon::Hub::ProjectTemplate projectTemplate)
+    {
+        LamaPon::Hub::CreateProject(root, name, projectTemplate, true);
+    }
+
     void VerifyTemplate(
         const std::filesystem::path& parent,
         const wchar_t* folder,
@@ -73,7 +82,7 @@ namespace
         const bool expectsCamera)
     {
         const auto root = parent / folder;
-        LamaPon::Hub::CreateProject(
+        CreateFixtureProject(
             root,
             projectName,
             projectTemplate);
@@ -198,7 +207,7 @@ namespace
         bool rejectedOverwrite = false;
         try
         {
-            LamaPon::Hub::CreateProject(
+            CreateFixtureProject(
                 root,
                 projectName,
                 projectTemplate);
@@ -269,7 +278,7 @@ namespace
         const std::filesystem::path& parent)
     {
         const auto root = parent / L"Learning";
-        LamaPon::Hub::CreateProject(
+        CreateFixtureProject(
             root,
             "はじめてのゲーム",
             LamaPon::Hub::ProjectTemplate::LearningThreeDimensional);
@@ -362,7 +371,7 @@ namespace
         const std::filesystem::path& parent)
     {
         const auto root = parent / L"Retrofit";
-        LamaPon::Hub::CreateProject(
+        CreateFixtureProject(
             root,
             "既存ゲーム",
             LamaPon::Hub::ProjectTemplate::ThreeDimensional);
@@ -393,7 +402,7 @@ namespace
         const std::filesystem::path& parent)
     {
         const auto root = parent / L"Learning2D";
-        LamaPon::Hub::CreateProject(
+        CreateFixtureProject(
             root,
             "2D学習ゲーム",
             LamaPon::Hub::ProjectTemplate::LearningTwoDimensional);

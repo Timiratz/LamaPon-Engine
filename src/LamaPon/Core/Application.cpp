@@ -13,6 +13,8 @@
 #include "LamaPon/Input/InputSystem.h"
 #include "LamaPon/Online/OnlinePersistenceCoordinator.h"
 #include "LamaPon/Online/OnlineServices.h"
+#include "LamaPon/Online/NetworkSession.h"
+#include "LamaPon/Online/NetworkSceneBridge.h"
 #include "LamaPon/Scene/Scene.h"
 #include "LamaPon/Scene/SceneManager.h"
 #include "LamaPon/Scripting/GameModuleHost.h"
@@ -149,6 +151,9 @@ namespace LamaPon
         }
         m_window.SetMessageCallback({});
         m_layer.reset();
+        if (m_networkSceneBridge) m_networkSceneBridge->Reset();
+        m_networkSceneBridge.reset();
+        m_networkSession.reset();
         m_scene.reset();
         m_gameModule.reset();
         m_onlineServices.reset();
@@ -299,6 +304,10 @@ namespace LamaPon
                 "Game Moduleを読み込みました。");
         }
         m_scene = std::make_unique<Scene>(m_graphics);
+        m_networkSession = std::make_unique<NetworkSession>();
+        m_networkSceneBridge = std::make_unique<NetworkSceneBridge>(*m_scene, *m_networkSession);
+        SetActiveNetworkSession(m_networkSession.get());
+        SetActiveNetworkSceneBridge(m_networkSceneBridge.get());
         m_scene->SetWindowSizeCallbacks(
             [this](const std::uint32_t width, const std::uint32_t height)
             {
@@ -395,7 +404,10 @@ namespace LamaPon
                 continue;
             }
 
-            if (m_window.IsMinimized())
+            // ホストが最小化されてもゲームと通信を進めます。
+            if (m_window.IsMinimized()
+                && (!m_networkSession || m_networkSession->State() == NetworkState::Stopped
+                    || m_networkSession->State() == NetworkState::Error))
             {
                 WaitMessage();
                 previousTime = std::chrono::steady_clock::now();
@@ -430,6 +442,7 @@ namespace LamaPon
             }
             {
                 LAMAPON_PROFILE_SCOPE("Online");
+                if (m_networkSession) m_networkSession->Update(rawDeltaTime);
                 if (m_onlineServices)
                 {
                     m_onlineServices->Update(rawDeltaTime);
@@ -445,7 +458,7 @@ namespace LamaPon
 
             {
                 LAMAPON_PROFILE_SCOPE("Editor");
-                if (m_layer)
+                if (m_layer && !m_window.IsMinimized())
                 {
                     m_layer->BeginFrame();
                     m_layer->Draw();
@@ -481,10 +494,13 @@ namespace LamaPon
                 {
                     // timeScale適用済みのdeltaTimeで
                     // ゲームプレイを進めます。
+                    if (m_networkSceneBridge) m_networkSceneBridge->BeforeSimulation(rawDeltaTime);
                     m_scene->Update(Time::DeltaTime());
+                    if (m_networkSceneBridge) m_networkSceneBridge->AfterSimulation(rawDeltaTime);
                 }
             }
 
+            if (!m_window.IsMinimized())
             {
                 LAMAPON_PROFILE_SCOPE("Render");
                 ApplyPendingResize();
@@ -574,10 +590,11 @@ namespace LamaPon
                 rawDeltaTime,
                 cpuMilliseconds);
             Profiler::Instance().EndFrame();
-            PaceFrame(
-                currentTime,
-                m_graphics.Settings()
-                    .targetFrameRate);
+            const auto requestedRate = m_graphics.Settings().targetFrameRate;
+            // 最小化中はPresentのVSync待ちが無いので、通信と物理を60Hzに抑えます。
+            const auto frameRate = m_window.IsMinimized()
+                ? (requestedRate == 0 ? 60u : std::min(requestedRate, 60u)) : requestedRate;
+            PaceFrame(currentTime, frameRate);
         }
 
         return static_cast<int>(message.wParam);
@@ -654,5 +671,19 @@ namespace LamaPon
         m_clearColor[1] = green;
         m_clearColor[2] = blue;
         m_clearColor[3] = alpha;
+    }
+}
+
+namespace LamaPon
+{
+    NetworkSession& Application::Network() const
+    {
+        if (!m_networkSession) throw std::logic_error("Application is not initialized.");
+        return *m_networkSession;
+    }
+    NetworkSceneBridge& Application::NetworkScene() const
+    {
+        if (!m_networkSceneBridge) throw std::logic_error("Application is not initialized.");
+        return *m_networkSceneBridge;
     }
 }
