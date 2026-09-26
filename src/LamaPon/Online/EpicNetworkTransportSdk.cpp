@@ -68,6 +68,7 @@ namespace LamaPon::Detail
             {
                 Stop(); m_error.clear(); m_host = host; m_name = name;
                 m_socket = {}; m_socket.ApiVersion = EOS_P2P_SOCKETID_API_LATEST;
+                std::string remoteHostKey;
                 if (host)
                 {
                     const auto socketName = NewSocketName();
@@ -79,9 +80,9 @@ namespace LamaPon::Detail
                     const auto split = address.find(':');
                     if (split == std::string::npos || split == 0 || address.size() - split - 1 != 26)
                     { m_error = "ホストのEOS部屋IDをそのまま入力してください。"; return false; }
-                    m_remoteHost = EOS_ProductUserId_FromString(address.substr(0, split).c_str());
+                    remoteHostKey = address.substr(0, split);
                     const auto socketName = address.substr(split + 1);
-                    if (!EOS_ProductUserId_IsValid(m_remoteHost) || socketName.substr(0, 2) != "LP"
+                    if (socketName.substr(0, 2) != "LP"
                         || !std::ranges::all_of(socketName.substr(2), [](char c)
                             { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }))
                     { m_error = "EOS部屋IDの形式が正しくありません。"; return false; }
@@ -106,6 +107,13 @@ namespace LamaPon::Detail
                 { m_error = "EOS runtime DLLを実行ファイルの横へ配置してください。"; ClearSecret(); return false; }
                 if (!AcquireSdk()) { m_error = "EOS SDKを初期化できません。"; ClearSecret(); return false; }
                 m_acquired = true;
+                // ID変換もSDK APIなので、DLL読み込みと初期化の後に行います。
+                if (!host)
+                {
+                    m_remoteHost = EOS_ProductUserId_FromString(remoteHostKey.c_str());
+                    if (!EOS_ProductUserId_IsValid(m_remoteHost))
+                    { m_error = "EOS部屋IDのユーザー形式が正しくありません。"; Stop(); return false; }
+                }
                 EOS_Platform_Options options{};
                 options.ApiVersion = EOS_PLATFORM_OPTIONS_API_LATEST;
                 options.ProductId = configuration.eosProductId.c_str();
