@@ -1694,7 +1694,7 @@ namespace LamaPon
         {
             // カテゴリー名はDrawProjectSettingsDialogと同じ順にします。
             // ASCIIだけを扱う自動化スクリプト向けに別名も受け付けます。
-            constexpr std::array<const char*, 9>
+            constexpr std::array<const char*, 10>
                 categories{
                     "ゲーム",
                     "グラフィック",
@@ -1704,9 +1704,10 @@ namespace LamaPon
                     "入力",
                     "スクリプト",
                     "ビルドプロファイル",
-                    "オンライン"
+                    "オンライン",
+                    "シーン遷移"
                 };
-            constexpr std::array<const char*, 9>
+            constexpr std::array<const char*, 10>
                 aliases{
                     "game",
                     "graphics",
@@ -1716,7 +1717,8 @@ namespace LamaPon
                     "input",
                     "scripts",
                     "build",
-                    "online"
+                    "online",
+                    "scene-transition"
                 };
             const std::string category =
                 show.substr(settingsPrefix.size());
@@ -2185,14 +2187,20 @@ namespace LamaPon
                 m_scene.PostProcessFrameData());
             m_scene.Render2D();
 
-            const auto& scenes =
+            auto& scenes =
                 m_scene.Scenes();
-            if (m_playing
-                && scenes.IsLoading())
+            if (!m_playing && scenes.IsTransitioning())
             {
-                // ローディング表示もUIと同様にポストエフェクト後へ重ねる。
-                m_graphics.DrawLoadingScreen(
-                    scenes.LoadProgress(),
+                // 編集中はSceneを更新しないため、Inspectorから再生した
+                // 遷移のプレビューだけをここで実時間で進めます。
+                scenes.AdvanceTransition(Time::UnscaledDeltaTime());
+            }
+            if (m_playing || scenes.IsTransitioning())
+            {
+                // 遷移の覆いとローディング表示もUIと同様に
+                // ポストエフェクト後へ重ねる。
+                m_graphics.DrawSceneTransition(
+                    scenes.TransitionFrame(),
                     scenes.LoadingScreen(),
                     m_gameRenderTarget.Width(),
                     m_gameRenderTarget.Height());

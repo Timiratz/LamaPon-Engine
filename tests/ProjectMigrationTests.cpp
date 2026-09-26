@@ -742,6 +742,12 @@ int main()
                 ~(1u << 2);
             settings.physics.collisionMatrix[2] &=
                 ~(1u << 1);
+            settings.sceneTransition = LamaPon::MakeSceneTransition(
+                LamaPon::SceneTransitionEffect::Iris,
+                0.55f);
+            settings.sceneTransition.focus = { 0.2f, 0.8f };
+            settings.loadingScreen.message = "移動中...";
+            settings.loadingScreen.showSpinner = true;
             LamaPon::ValidateProjectSettings(settings);
 
             for (const auto fileType : {
@@ -759,6 +765,21 @@ int main()
                 Require(
                     !loaded.splashScreenEnabled,
                     "the startup splash setting must survive the"
+                    " round trip");
+                // 遷移と読み込み画面は書き出したゲームでも使うため、
+                // Project／GamePackageの両方で往復します。
+                Require(
+                    loaded.sceneTransition.effect
+                            == LamaPon::SceneTransitionEffect::Iris
+                        && std::abs(
+                            loaded.sceneTransition.coverDuration
+                            - 0.55f) < 1e-6f
+                        && std::abs(
+                            loaded.sceneTransition.focus.y
+                            - 0.8f) < 1e-6f
+                        && loaded.loadingScreen.message == "移動中..."
+                        && loaded.loadingScreen.showSpinner,
+                    "scene transition settings must survive the"
                     " round trip");
                 if (fileType
                     == LamaPon::ProjectSettingsFileType::Project)

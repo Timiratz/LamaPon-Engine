@@ -318,6 +318,15 @@ namespace LamaPon
         void SetBusVolume(AudioBus bus, float volume);
         [[nodiscard]] float BusVolume(
             AudioBus bus) const noexcept;
+        // シーン遷移などが一時的に掛ける音量の倍率（0～1）です。
+        // SetBusVolumeの値（プレイヤーの設定）は変えずに掛け合わせる
+        // ため、設定画面の音量表示には影響しません。
+        void SetBusFade(AudioBus bus, float gain);
+        [[nodiscard]] float BusFade(
+            AudioBus bus) const noexcept;
+        // BusVolume × BusFade。再生中のボイスへ実際に掛ける値です。
+        [[nodiscard]] float EffectiveBusVolume(
+            AudioBus bus) const noexcept;
         [[nodiscard]] bool IsDevicePresent() const noexcept;
         [[nodiscard]] std::size_t CachedSoundCount() const noexcept
         {
@@ -353,5 +362,9 @@ namespace LamaPon
             float,
             static_cast<std::size_t>(AudioBus::Count)>
             m_busVolumes{ 1.0f, 1.0f };
+        std::array<
+            float,
+            static_cast<std::size_t>(AudioBus::Count)>
+            m_busFades{ 1.0f, 1.0f };
     };
 }

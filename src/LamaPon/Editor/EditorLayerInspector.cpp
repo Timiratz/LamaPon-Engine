@@ -7098,6 +7098,10 @@ namespace LamaPon
                 [this](const char* id, const std::string& current)
                 {
                     return DrawRenderTexturePicker(id, current);
+                },
+                [this](const SceneTransitionSettings& transition)
+                {
+                    PreviewSceneTransition(transition);
                 } }))
             {
                 // UI固有の編集は担当へ委譲。削除・並び替えとUndoの

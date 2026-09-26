@@ -708,6 +708,22 @@ namespace LamaPon
                     std::move(action));
             }
         }
+        // 無い古い設定ファイルでは、従来どおり遷移なし・標準の
+        // 読み込み画面のままにします。
+        if (const auto transition = document.find("sceneTransition");
+            transition != document.end())
+        {
+            settings.sceneTransition = SceneTransitionFromJson(
+                *transition,
+                settings.sceneTransition);
+        }
+        if (const auto loadingScreen = document.find("loadingScreen");
+            loadingScreen != document.end())
+        {
+            settings.loadingScreen = SceneLoadingScreenFromJson(
+                *loadingScreen,
+                settings.loadingScreen);
+        }
         const auto fileType = document.value(
             "format",
             std::string{}) == "LamaPonGame"
@@ -1033,6 +1049,12 @@ namespace LamaPon
                 settings.inspectorDecimals;
         }
         document["tags"] = settings.tags;
+        // 遷移と読み込み画面は配布用のLamaPonGame.jsonにも書き、
+        // 書き出したゲームの起動時に適用します。
+        document["sceneTransition"] =
+            SceneTransitionToJson(settings.sceneTransition);
+        document["loadingScreen"] =
+            SceneLoadingScreenToJson(settings.loadingScreen);
         document["inputActions"] =
             nlohmann::json::array();
         for (const auto& action : settings.inputActions)

@@ -1394,6 +1394,14 @@ namespace
                 button->ReloadCurrentScene();
             result["loadTargetAdditive"] =
                 button->LoadTargetAdditive();
+            // 独自の遷移を使うボタンだけ保存します。無いボタンは
+            // プロジェクト既定の遷移を使います。
+            if (button->UseCustomTransition())
+            {
+                result["transition"] =
+                    LamaPon::SceneTransitionToJson(
+                        button->Transition());
+            }
             result["clickEvent"] =
                 button->ClickEventName();
             result["sortOrder"] =
@@ -2716,6 +2724,17 @@ namespace
                 value.value(
                     "loadTargetAdditive",
                     false));
+            if (const auto transition =
+                    value.find("transition");
+                transition != value.end()
+                && transition->is_object())
+            {
+                button.SetTransition(
+                    LamaPon::SceneTransitionFromJson(
+                        *transition,
+                        button.Transition()));
+                button.SetUseCustomTransition(true);
+            }
             button.SetClickEventName(
                 value.value(
                     "clickEvent",

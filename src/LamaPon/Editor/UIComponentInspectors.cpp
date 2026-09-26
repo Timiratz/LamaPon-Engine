@@ -1,5 +1,6 @@
 #include "LamaPon/Editor/UIComponentInspectors.h"
 #include "LamaPon/Editor/EditorLayerShared.h"
+#include "LamaPon/Editor/SceneTransitionEditor.h"
 #include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Components/UICanvasComponent.h"
 #include "LamaPon/Components/UIRectTransformComponent.h"
@@ -551,6 +552,51 @@ namespace
                 "オンにすると、今のSceneを消さずに移動先を"
                 "重ねて読み込みます。ポーズ画面や設定画面に"
                 "向いています");
+        }
+        if (reloadCurrent
+            || (!button.TargetScene().empty()
+                && !button.LoadTargetAdditive()))
+        {
+            ImGui::SeparatorText(
+                "シーン遷移の演出");
+            bool customTransition =
+                button.UseCustomTransition();
+            if (ImGui::Checkbox(
+                    "このボタン専用の演出を使う",
+                    &customTransition))
+            {
+                button.SetUseCustomTransition(
+                    customTransition);
+                context.recordHistory();
+            }
+            ShowItemTooltip(
+                "オフのときはProject Settingsの"
+                "「シーン遷移」で決めた既定の演出を使います");
+            if (customTransition)
+            {
+                ImGui::PushID("UIButtonTransition");
+                auto transition = button.Transition();
+                const auto edited =
+                    DrawSceneTransitionEditor(
+                        transition,
+                        static_cast<bool>(
+                            context.previewTransition));
+                if (edited.changed)
+                {
+                    button.SetTransition(transition);
+                }
+                if (edited.committed)
+                {
+                    context.recordHistory();
+                }
+                if (edited.previewRequested
+                    && context.previewTransition)
+                {
+                    context.previewTransition(
+                        button.Transition());
+                }
+                ImGui::PopID();
+            }
         }
 
         auto buttonSortOrder =

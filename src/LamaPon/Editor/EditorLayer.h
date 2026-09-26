@@ -573,6 +573,11 @@ namespace LamaPon
         void DrawProjectSettingsOnlineSection();
         void DrawProjectSettingsNetworkSection();
         void DrawProjectSettingsDiscordPresenceSection();
+        void DrawProjectSettingsSceneTransitionSection();
+        // シーンを切り替えずに遷移演出をGameビューで再生します
+        // （Inspectorとプロジェクト設定のプレビューボタン）。
+        void PreviewSceneTransition(
+            const SceneTransitionSettings& transition);
         [[nodiscard]] bool SaveProjectSettingsDraft();
         void BrowseForScriptEditor();
         [[nodiscard]] std::filesystem::path ProjectSettingsPath() const;
@@ -823,6 +828,8 @@ namespace LamaPon
         std::array<char, 512> m_projectGameIconBuffer{};
         std::array<int, 2> m_projectWindowSize{ 1280, 720 };
         bool m_projectSplashScreenDraft{ true };
+        SceneTransitionSettings m_projectSceneTransitionDraft;
+        SceneLoadingScreenSettings m_projectLoadingScreenDraft;
         OnlineProjectSettings m_projectOnlineDraft;
         NetworkConfiguration m_projectNetworkDraft;
         NetworkConnectionPanel m_networkConnectionPanel;
@@ -1017,6 +1024,8 @@ namespace LamaPon
         DirectX::XMFLOAT2 m_viewportPosition{};
         DirectX::XMFLOAT2 m_viewportSize{};
         ViewportMode m_activeViewport{ ViewportMode::None };
+        // 次のフレームでビューポートのゲームタブを選択します。
+        bool m_selectGameViewportRequested{};
         GizmoOperation m_gizmoOperation{ GizmoOperation::Translate };
         float m_gridSpacing{ 1.0f };
         float m_gridExtent{ 20.0f };

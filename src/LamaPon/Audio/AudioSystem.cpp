@@ -404,6 +404,34 @@ namespace LamaPon
             : 1.0f;
     }
 
+    void AudioSystem::SetBusFade(
+        const AudioBus bus,
+        const float gain)
+    {
+        const auto index = static_cast<std::size_t>(bus);
+        if (index < m_busFades.size())
+        {
+            m_busFades[index] = std::isfinite(gain)
+                ? std::clamp(gain, 0.0f, 1.0f)
+                : 1.0f;
+        }
+    }
+
+    float AudioSystem::BusFade(
+        const AudioBus bus) const noexcept
+    {
+        const auto index = static_cast<std::size_t>(bus);
+        return index < m_busFades.size()
+            ? m_busFades[index]
+            : 1.0f;
+    }
+
+    float AudioSystem::EffectiveBusVolume(
+        const AudioBus bus) const noexcept
+    {
+        return BusVolume(bus) * BusFade(bus);
+    }
+
     std::shared_ptr<AudioStreamVoice>
         AudioSystem::CreateStream(
             AssetManager& assets,

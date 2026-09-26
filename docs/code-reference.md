@@ -1281,6 +1281,7 @@ const std::string& LastError() const noexcept;
 
 切り替えは**次のフレームの先頭**で実行されます（更新中にオブジェクトを壊さないため）。
 大きなシーンは`Async`版を使うと、読み込み中も現在のシーンが動き続け、標準のローディング画面が出ます。
+引数なしの`Async`版はProject Settingsの「シーン遷移」で決めた既定の演出（`DefaultTransition()`）で切り替えます。
 
 **サンプル**
 
@@ -1302,6 +1303,71 @@ void Update(float) override
     if (scenes.IsLoading())
     {
         const float progress = scenes.LoadProgress();  // 0〜1
+    }
+}
+```
+
+---
+
+### シーン遷移の演出
+
+**宣言**
+
+```cpp
+[[nodiscard]] bool RequestLoadAsync(
+    std::filesystem::path scenePath,
+    const SceneTransitionSettings& transition);
+[[nodiscard]] bool RequestLoad(
+    std::filesystem::path scenePath,
+    const SceneTransitionSettings& transition);
+[[nodiscard]] bool PlayTransition(const SceneTransitionSettings& transition);
+void SetDefaultTransition(const SceneTransitionSettings& settings);
+bool IsTransitioning() const noexcept;
+bool IsInputBlocked() const noexcept;
+SceneTransitionSettings MakeSceneTransition(
+    SceneTransitionEffect effect,
+    float durationSeconds = 0.4f,
+    const DirectX::XMFLOAT4& color = { 0, 0, 0, 1 });
+```
+
+**概略**
+
+フェードやワイプなどで旧シーンを覆ってから新シーンへ切り替えます。
+`PlayTransition`はシーンを切り替えずに覆って開く演出（部屋の移動など）です。
+
+**引数**
+
+| 引数 | 説明 |
+|---|---|
+| `transition` | 演出（`effect`）、時間、色、向きなど。`MakeSceneTransition`で作ると簡単です |
+| `effect` | `Fade`、`Wipe`、`Iris`、`Diamond`、`Blinds`、`Tiles`、`DiamondTiles`、`Dots`、`Shutter`、`Shader`、`None` |
+
+**戻り値**
+
+要求を受け付ければtrue。falseのときは`LastError()`に理由が入ります。
+
+**解説**
+
+読み込みは覆っている間に進み、新シーンの有効化は画面を覆い終えてから行います。
+各段階で`SceneTransition.Started`／`Covered`／`Finished`イベントが発行されます。
+遷移中は`IsInputBlocked()`がtrueになり、UI Buttonはクリックを受け付けません。
+詳しくは[SceneとPrefab](scenes.md#シーン遷移演出)を参照してください。
+
+**サンプル**
+
+```cpp
+void OnGoal()
+{
+    auto wipe = LamaPon::MakeSceneTransition(
+        LamaPon::SceneTransitionEffect::Wipe,
+        0.35f);
+    wipe.direction = LamaPon::SceneTransitionDirection::TopLeftToBottomRight;
+    wipe.accentColor = { 1.0f, 0.85f, 0.2f, 1.0f };
+
+    auto& scenes = GetScene().Scenes();
+    if (!scenes.RequestLoadAsync("scenes/result.scene.json", wipe))
+    {
+        LamaPon::Logger::Instance().Error(scenes.LastError());
     }
 }
 ```

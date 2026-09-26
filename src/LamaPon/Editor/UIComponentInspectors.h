@@ -9,6 +9,7 @@
 namespace LamaPon
 {
     class Component;
+    struct SceneTransitionSettings;
 
     struct RenderTexturePickerResult final
     {
@@ -29,6 +30,10 @@ namespace LamaPon
         std::function<void(const std::string&, bool)> setStatus;
         std::function<RenderTexturePickerResult(const char*, const std::string&)>
             pickRenderTexture;
+        // 空でなければ、シーン遷移の設定にGameビューでのプレビュー
+        // ボタンを表示し、押されたときに呼びます。
+        std::function<void(const SceneTransitionSettings&)>
+            previewTransition;
     };
 
     // 呼び出し側がImGuiのウィンドウ・ComponentのID・編集可否を設定し、

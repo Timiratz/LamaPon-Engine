@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### シーン遷移演出
+
+- Scene切り替えへ遷移演出を追加。Fade、Wipe（8方向・境界のぼかし）、Iris（円）、Diamond（ひし形）、Blinds、Tiles、DiamondTiles、Dots、Shutter、Shaderから選べ、覆う・保持・開くの時間、イージング、覆いの色、先端や縁に入る差し色、開くときに通り抜けるか巻き戻すかを設定できる。旧Sceneを覆い終えてから新Sceneを有効化し、非同期読み込みは覆っている間に並行して進める。遷移はtimeScaleに影響されない実時間で進み、読み込みの失敗・キャンセル時は今の覆い具合から開き直して元のSceneへ戻る。
+- ピクセルシェーダーで画素ごとに覆う順番を決めるShader演出と、組み込みの`shaders/LamaPonSceneTransition.hlsl`（ルール画像、ディゾルブ、時計、渦巻き、波紋、六角形、ハート）を追加。独自の`.hlsl`へ差し替えられ、シェーダーを使えない場合はFadeで代わりに覆ってログへ一度だけ理由を残す。Irisの滑らかな縁のため組み込みテクスチャ`builtin/iris`を追加した。
+- `SceneManager`へ遷移付きの`RequestLoad`／`RequestLoadAsync`／`RequestReload`／`RequestReloadAsync`、既定の遷移（`SetDefaultTransition`）、Sceneを切り替えない`PlayTransition`、`IsTransitioning`／`TransitionPhase`／`TransitionCoverage`／`IsInputBlocked`を追加。各段階で`SceneTransition.Started`／`Covered`／`Finished`イベントを発行する。既定の遷移はNoneで、従来のプロジェクトとC++の動作は変わらない。
+- 遷移中はUI Buttonのクリックを受け付けず、二重に遷移を要求しない。UI Buttonへボタン専用の遷移演出を追加し、Inspectorから設定・プレビューできるようにした。
+- 遷移に合わせてMusicバスの音量を下げて戻す`fadeMusic`を追加。プレイヤーが設定したバス音量とは別の倍率（`AudioSystem::SetBusFade`）として掛け合わせる。
+- 標準の読み込み画面へヒント文、背景画像、回転インジケーター、進捗バーの平滑化、遷移と組み合わせたときのフェード表示を追加。覆い終えても読み込みが続く場合だけ表示するため、速い読み込みではちらつかない。追加項目は既定では従来の見た目のまま。
+- Project Settingsへ「シーン遷移」カテゴリーを追加し、既定の遷移演出と読み込み画面を保存・プレビューできるようにした。設定は書き出したゲームのLamaPonGame.jsonと再生モードにも反映する。新規作成したプロジェクトの既定は短いFade。
+- 公開構造体（`SceneManager`、`UIButtonComponent`、`AudioSystem`、`ProjectSettings`）の項目追加に伴いGame Module APIを79へ更新。
+
 ### ドキュメントと表記
 
 - P2P接続画面と利用ガイドの製品名入り表記、他エンジンとの比較を整理し、LamaPon自身の機能と接続方式を説明する表記へ変更。認証・SDK連携の説明も実際の構成に合わせた。
