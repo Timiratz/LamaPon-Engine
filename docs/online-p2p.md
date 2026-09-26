@@ -206,3 +206,25 @@ SDKの読み込み・初期化・終了・再開始も確認します。この�
 自動テストのプレイヤー間通信はLAN方式の検証です。EOSのインターネット接続を検証したことにはなりません。
 SDK導入後は、異なる回線の2台で、部屋作成→参加→移動→途中参加→切断→再作成を確認し、
 直接接続・中継・回線断の結果を記録してください。
+
+1台のPCでEOSへの認証とホストの開始・停止・再作成だけを確認する場合は、
+SDK対応の試験プログラムを明示的なオプションで起動します。これは通常のCTestには含まれません。
+実行プロセスの環境に次の値を設定してください。Client Secretをチャット、Git、ログへ載せないでください。
+
+| 環境変数 | 値 |
+|---|---|
+| `LAMAPON_EOS_PRODUCT_ID` | 製品のProduct ID |
+| `LAMAPON_EOS_SANDBOX_ID` | Sandbox ID |
+| `LAMAPON_EOS_DEPLOYMENT_ID` | Deployment ID |
+| `LAMAPON_EOS_CLIENT_ID` | ConnectとP2Pを許可したゲーム用Client ID |
+| `LAMAPON_EOS_CLIENT_SECRET` | そのクライアントのClient Secret |
+
+```bat
+out\build\windows-debug\LamaPonNetworkSessionTests.exe --eos-host-smoke
+out\build\windows-release\LamaPonNetworkSessionTests.exe --eos-host-smoke
+```
+
+実際のConnectログイン後にホストがReadyへ到達すること、部屋IDの形式、停止時の解放、
+再開始時の新しい部屋IDを2回の起動で確認します。ログには資格情報と部屋IDを出しません。
+EOSへ接続し端末ユーザーを作成する試験ですが、参加者同士の通信、NAT越え、中継は検証しません。
+その確認には異なる端末と回線が必要です。

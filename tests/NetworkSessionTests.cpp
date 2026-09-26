@@ -256,6 +256,68 @@ namespace
         }
     }
 
+    std::string VerificationSetting(const char* name)
+    {
+        char* value{};
+        std::size_t size{};
+        if (_dupenv_s(&value, &size, name) != 0 || !value || size <= 1)
+        {
+            if (value) std::free(value);
+            throw std::runtime_error(std::string("Missing verification environment: ") + name);
+        }
+        std::string setting(value);
+        SecureZeroMemory(value, size);
+        std::free(value);
+        return setting;
+    }
+
+    void EpicHostSmoke()
+    {
+        using namespace LamaPon;
+        Require(HasEpicNetworkBackend(), "Configure an EOS SDK build before this manual test.");
+        NetworkConfiguration config;
+        config.backend = NetworkBackend::EpicOnlineServices;
+        config.gameId = "LamaPon.EOS.Verification";
+        config.gameVersion = "1";
+        config.timeoutSeconds = 60;
+        config.eosProductId = VerificationSetting("LAMAPON_EOS_PRODUCT_ID");
+        config.eosSandboxId = VerificationSetting("LAMAPON_EOS_SANDBOX_ID");
+        config.eosDeploymentId = VerificationSetting("LAMAPON_EOS_DEPLOYMENT_ID");
+        config.eosClientId = VerificationSetting("LAMAPON_EOS_CLIENT_ID");
+        NetworkSession host;
+        Require(host.Configure(config), "EOS host verification configuration");
+        std::string previousRoom;
+        for (int attempt = 0; attempt < 2; ++attempt)
+        {
+            if (!host.Host("Verification"))
+                throw std::runtime_error("EOS host start: " + host.LastError());
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(45);
+            auto previousTick = std::chrono::steady_clock::now();
+            while (!host.IsHost())
+            {
+                const auto now = std::chrono::steady_clock::now();
+                host.Update(std::chrono::duration<float>(now - previousTick).count());
+                previousTick = now;
+                if (host.State() == NetworkState::Error)
+                    throw std::runtime_error("EOS host login: " + host.LastError());
+                if (now > deadline) throw std::runtime_error("EOS host login timed out after 45 seconds.");
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            const auto room = host.RoomAddress();
+            Require(room.size() == 59 && room.substr(32, 3) == ":LP"
+                && host.Members().size() == 1 && host.LocalPeer() == 1,
+                "EOS host ready state and room format");
+            if (!previousRoom.empty()) Require(room != previousRoom, "EOS restart uses a new room");
+            previousRoom = room;
+            // 部屋ID・資格情報をログに載せず、実際のReady到達だけを記録します。
+            std::cout << "EOS online login and host ready passed (" << attempt + 1 << "/2).\n";
+            host.Stop();
+            Require(host.State() == NetworkState::Stopped && host.RoomAddress().empty()
+                && host.Members().empty(), "EOS host stop releases session");
+        }
+        std::cout << "EOS online host creation, stop and restart passed. Peer connection is not tested.\n";
+    }
+
     void EpicSdkLifecycle()
     {
         using namespace LamaPon;
@@ -336,10 +398,18 @@ namespace
     }
 }
 
-int main()
+int main(const int argc, char* argv[])
 {
     try
     {
+        // 通常のCTestは資格情報や外部サービスを使いません。
+        // この明示的なオプションだけが実際のEOS認証と部屋作成を行います。
+        if (argc == 2 && std::string_view(argv[1]) == "--eos-host-smoke")
+        {
+            EpicHostSmoke();
+            return 0;
+        }
+        if (argc != 1) throw std::runtime_error("Usage: LamaPonNetworkSessionTests [--eos-host-smoke]");
         ConnectionAndReplication(); IncompatibleGames(); Bounds(); MalformedTraffic(); TimeoutAndBackendAvailability(); EpicSdkLifecycle();
         std::cout << "P2P connection, baseline, ownership, replication, events, limits, departure and restart passed.\n";
         return 0;
