@@ -29,7 +29,7 @@ namespace LamaPon
         ImGui::BeginDisabled(active);
         int backend = m_projectNetworkDraft.backend == NetworkBackend::Direct ? 0
             : (m_projectNetworkDraft.backend == NetworkBackend::Lan ? 1 : 2);
-        if (ImGui::Combo("接続方式", &backend, "直接接続（Epic不要・暗号化）\0LAN / 同じPC（従来方式）\0インターネット（EOS）\0"))
+        if (ImGui::Combo("接続方式", &backend, "直接接続（暗号化）\0LAN / 同じPC（従来方式）\0インターネット（EOS）\0"))
         {
             m_projectNetworkDraft.backend = backend == 0 ? NetworkBackend::Direct
                 : (backend == 1 ? NetworkBackend::Lan : NetworkBackend::EpicOnlineServices);

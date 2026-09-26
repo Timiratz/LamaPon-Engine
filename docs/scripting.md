@@ -381,7 +381,7 @@ DLLがまだない新規プロジェクトも通常どおり開け、最初の�
 
 サンプルの`samples/GameModule/SampleGameModule.cpp`には、従来どおり`Sample.FloatingAccent`も登録されています。
 
-### データアセット（ScriptableObject相当）
+### データアセット
 
 GameObjectへ付けずに持つデータ（敵の性能表、カードの一覧など）は、
 `LAMAPON_DATA_ASSET`で型を宣言し、`*.asset.json`として作ります。

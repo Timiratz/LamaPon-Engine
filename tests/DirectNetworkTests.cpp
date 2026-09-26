@@ -253,7 +253,7 @@ int main()
     {
         CryptoVectors(); EndpointAndSettings(); MappingOwnership(); DirectConnection("127.0.0.1"); DirectConnection("::1");
         TurnBasedGame(); RoomDiscovery();
-        std::cout << "Epic-free authenticated IPv4/IPv6, crypto vectors, tamper/replay, turn-based state, LAN discovery and lease ownership passed.\n";
+        std::cout << "Direct authenticated IPv4/IPv6, crypto vectors, tamper/replay, turn-based state, LAN discovery and lease ownership passed.\n";
         return 0;
     }
     catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }

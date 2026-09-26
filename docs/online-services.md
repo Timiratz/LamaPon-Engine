@@ -648,20 +648,16 @@ read要求は`{"protocolVersion":1,"resource":{...}}`、PUT要求はそれに`by
 未存在、412は競合、429は`Retry-After`に基づく再試行に使います。408、425、5xxは一時障害として
 再試行されます。応答スキーマ、ETag、ハッシュ、サイズが一致しない応答は安全のため拒否されます。
 
-## UnityのDiscord SDKとの違い
+## 認証とSDK連携の構成
 
-ネットで見かけるUnity対応は、Discordの**Social SDK Unity package**についての情報です。
-公式にはUnity 2021.3以降を対象に、認証、フレンド、プレゼンスなどを提供しています。
-[Unity導入ガイド](https://docs.discord.com/developers/discord-social-sdk/getting-started/using-unity)と
-[対応プラットフォーム](https://docs.discord.com/developers/discord-social-sdk/core-concepts/platform-compatibility)を参照してください。
+LamaPonのログインは、標準OAuth2のWeb Flowを自前バックエンド経由で使います。
+ゲームはSocial SDKを組み込まなくても、このログイン機能を利用できます。
+[OAuth2ドキュメント](https://docs.discord.com/developers/topics/oauth2)を参照してください。
 
-LamaPonはUnityではなくC++エンジンであり、このブランチはSocial SDKを同梱していません。
-ログインは、Discordが案内する標準OAuth2のWeb Flowを自前バックエンド経由で使う構成です。
-Rich Presenceは、Social SDKのアダプターを差し込める形だけをLamaPonが用意します
+Rich Presenceは、Social SDKのアダプターを通じて表示します
 （[Presenceアダプター](#7-presenceアダプター)を参照）。
-[Discord OAuth2ドキュメント](https://docs.discord.com/developers/topics/oauth2)も参照してください。
-このため、Social SDK側が対応するプラットフォームと、LamaPonのオンライン機能の対応範囲は別です。
-現在のLamaPonオンライン機能はWindows x64だけを対象とします。
+SDK本体はリポジトリに同梱せず、利用者が入手して組み込みます。
+LamaPonのオンライン機能はWindows x64を対象とします。
 
 ## 配布前チェック
 

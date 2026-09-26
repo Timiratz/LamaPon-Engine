@@ -77,7 +77,7 @@ ctest --preset windows-release
 - [グラフィックス](docs/graphics.md) / [DirectX 12 Experimental](docs/directx12.md) / [物理](docs/physics.md) / [UIと2D](docs/ui-2d.md) / [Animation](docs/animation.md)
 - [SceneとPrefab](docs/scenes.md) / [オーディオ](docs/audio.md) / [入力](docs/input.md) / [NavMesh](docs/navigation.md)
 - [プロジェクト管理とビルド](docs/project.md)
-- [プレイヤーがホストになるP2P通信](docs/online-p2p.md) — 2〜4人、Epic不要の暗号化IPv4 / IPv6、LAN検索、ジャンル別同期
+- [プレイヤーがホストになるP2P通信](docs/online-p2p.md) — 2〜4人、暗号化IPv4 / IPv6、LAN検索、ジャンル別同期
 - [Discordログイン、クラウドセーブ、Rich Presence](docs/online-services.md) — Windowsゲームのアカウント連携、同期、プレイ状況の表示、バックエンド契約
 - [WebGLエクスポート](docs/web-export.md) — 通常のLamaPonプロジェクトをC++／Wasm／WebGLの単一HTMLへ変換
 - [コマンドライン（LamaPonCli）](docs/cli.md) — エディターなしで撮影とJSONレポート
@@ -92,7 +92,7 @@ ctest --preset windows-release
 - **物理と移動** — 2D／3D Collider、Rigidbody、CCD、Joint、Raycast、Character Controller、NavMesh
 - **アニメーションと音声** — Animation Clip、Animator Controller、WAV／OGG、3D音声、ストリーミング、ミキサー
 - **アセット管理** — GUID付き`.meta`、参照を保つ改名・移動、Material、データアセット、非同期読み込み
-- **オンライン（Windows x64）** — プレイヤーホストの2〜4人P2P（Epic不要の暗号化IPv4 / IPv6、LAN、任意のEOS）、Scene／Prefab・ターン状態同期、バックエンド経由のDiscordログイン、アカウント別ローカル保存、クラウドセーブ同期と競合復旧、ログイン不要のDiscord Rich Presence
+- **オンライン（Windows x64）** — プレイヤーホストの2〜4人P2P（暗号化IPv4 / IPv6、LAN、任意のEOS）、Scene／Prefab・ターン状態同期、バックエンド経由のDiscordログイン、アカウント別ローカル保存、クラウドセーブ同期と競合復旧、ログイン不要のDiscord Rich Presence
 - **配布と検証** — Windowsゲーム、ポータブルWebGL、CTest、描画回帰、CLIによる検証と自動プレイテスト
 - **診断** — Console、CPU／GPUプロファイラー（フレーム履歴と呼び出し階層）、プロファイル分析、メモリプロファイラー、フレームデバッガー、物理デバッガー、PIX／RenderDoc用イベント、クラッシュダンプ、ゲーム内デバッグオーバーレイ
 

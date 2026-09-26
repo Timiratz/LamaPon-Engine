@@ -1,15 +1,16 @@
 # プレイヤーがホストになるオンライン通信（P2P）
 
 Windows x64ゲームで、プレイヤーのPCをホストにして2〜4人で接続します。
-`Direct`方式ならEpicアカウント・EOS SDK・専用ゲームサーバーは不要です。
+`Direct`方式はWindows標準の通信・暗号機能を使用します。
+外部サービスのアカウント・SDK・専用ゲームサーバーの準備は不要です。
 到達可能な数値IPv4またはIPv6へ直接接続し、ホストがゲームの進行を決定します。
 参加方法と同期方法は別々に選べるため、招待専用のゲームに限定されません。
 
 | 接続方式 | 用途 | 必要な準備 |
 | --- | --- | --- |
-| Direct（Epic不要・暗号化） | 同じPC、LAN、到達可能なインターネット接続先 | 標準Windowsビルド。別回線では公開接続先とTCPポート転送、または到達可能なIPv6 |
+| Direct（暗号化） | 同じPC、LAN、到達可能なインターネット接続先 | 標準Windowsビルド。別回線では公開接続先とTCPポート転送、または到達可能なIPv6 |
 | LAN（従来方式） | 信頼できる同じPC・LAN内の互換接続 | 標準ビルド。数値IPv4 / IPv6とポート。暗号化・参加認証なし |
-| EOS（任意） | Epicの接続支援・中継を使うゲーム | 公式EOS SDK、Developer Portalの製品設定、SDK対応ビルド |
+| EOS（任意） | 接続支援・中継サービスを使うゲーム | 公式EOS SDK、Developer Portalの製品設定、SDK対応ビルド |
 
 DirectはTCPの順序付き通信です。共有アクセスキーで接続を認証し、Windows CNGの
 ECDH-P256、HKDF-SHA256、AES-256-GCMで暗号化・改ざん検出を行います。
@@ -25,7 +26,7 @@ Discordログイン、クラウドセーブ、Rich Presenceは独立した既存
 
 1. 両方に同じScene・Prefab・ゲームコードを用意します。
 2. エディターの「プロジェクト設定」→「プレイヤー同士の通信（P2P）」で
-   「直接接続（Epic不要・暗号化）」を選びます。ゲームID・通信バージョン・シーンIDを揃えます。
+   「直接接続（暗号化）」を選びます。ゲームID・通信バージョン・シーンIDを揃えます。
 3. 設定を保存し、再生を開始します。ホストの待受先は`127.0.0.1`のまま「部屋を作成」を押します。
 4. ホストの「接続情報をコピー」を押し、別のゲームプロセスの「接続情報 / 接続先 / EOS部屋ID」へ貼り付け、
    プレイヤー名を入力して「部屋に参加」を押します。
@@ -239,7 +240,7 @@ EOS SDKはリポジトリに含めません。SDKなしでもDirect・LANとエ�
 EOSを選ぶと明確なエラーになります。EOS SDKは公式配布ページから取得できます。
 
 1. [公式SDK配布ページ](https://onlineservices.epicgames.com/sdk)からC SDKを取得し、
-   [Epic Developer Portal](https://dev.epicgames.com/portal/)で製品を用意します。
+   [開発者ポータル](https://dev.epicgames.com/portal/)で製品を用意します。
    `Include`、`Lib`、`Bin`が入ったSDKの場所を指定します。
 2. 製品のProduct ID、Sandbox ID、Deployment ID、ゲームクライアント用Client IDを
    プロジェクト設定へ入力します。両端末で同じDeploymentを使います。
@@ -264,7 +265,7 @@ Windows書き出しではこのDLLも配布先へコピーします。EOS設定�
 無い場合は書き出しを中止します。EOSのライセンス・配布条件は公式SDKの条件を確認してください。
 
 端末IDを使う[EOS Connect](https://dev.epicgames.com/docs/epic-online-services/eos-fundamentals/connect-interface)でログインするため、
-Epicアカウントのログイン画面は出しません。同じPC上の複数プロセスは同一端末ユーザーになり得ます。
+アカウントのログイン画面は出しません。同じPC上の複数プロセスは同一端末ユーザーになり得ます。
 EOSの実動作確認には異なる2台のPCを使います。
 
 ホストの部屋IDは`ProductUserId:ランダムなSocket名`です。参加者へそのまま共有します。
