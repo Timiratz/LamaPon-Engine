@@ -1,4 +1,4 @@
-# EOS SDKは利用者が公式Developer Portalから取得します。SDKや資格情報を
+# EOS SDKは公式配布ページから取得します。SDKや資格情報を
 # リポジトリへ同梱せず、未設定でもLANバックエンドはビルドできます。
 set(LAMAPON_EOS_SDK_ROOT "" CACHE PATH "EOS SDK root containing Include, Lib and Bin")
 

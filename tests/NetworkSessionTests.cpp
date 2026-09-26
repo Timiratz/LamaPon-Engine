@@ -3,6 +3,7 @@
 #include "LamaPon/Online/NetworkSession.h"
 
 #include <chrono>
+#include <cstdlib>
 #include <iostream>
 #include <stdexcept>
 #include <thread>
@@ -255,6 +256,59 @@ namespace
         }
     }
 
+    void EpicSdkLifecycle()
+    {
+        using namespace LamaPon;
+        if (!HasEpicNetworkBackend()) return;
+        // 本物のSDKでDLL読み込み・初期化・ID検証・終了を通します。
+        // 製品の資格情報もネット接続も使わない試験です。
+        constexpr auto variable = "LAMAPON_EOS_TEST_DUMMY_SECRET";
+        struct EnvironmentGuard
+        {
+            const char* name;
+            std::string previous;
+            bool existed{};
+            explicit EnvironmentGuard(const char* key) : name(key)
+            {
+                char* value{};
+                std::size_t size{};
+                if (_dupenv_s(&value, &size, name) == 0 && value)
+                {
+                    previous = value;
+                    existed = true;
+                    SecureZeroMemory(value, size);
+                    std::free(value);
+                }
+            }
+            ~EnvironmentGuard()
+            {
+                _putenv_s(name, existed ? previous.c_str() : "");
+                if (!previous.empty()) SecureZeroMemory(previous.data(), previous.size());
+            }
+        } restore(variable);
+        NetworkConfiguration config;
+        config.backend = NetworkBackend::EpicOnlineServices;
+        config.eosProductId = config.eosSandboxId = config.eosDeploymentId = config.eosClientId = "test";
+        config.eosClientSecretEnvironment = variable;
+        NetworkSession session;
+        Require(session.Configure(config), "EOS SDK configuration");
+        Require(_putenv_s(variable, "") == 0, "Clear test environment");
+        Require(!session.Host() && session.State() == NetworkState::Error
+            && session.LastError().find("環境変数") != std::string::npos, "EOS missing credential");
+        Require(_putenv_s(variable, "offline-test-placeholder") == 0, "Set dummy credential");
+        for (int attempt = 0; attempt < 16; ++attempt)
+        {
+            const auto started = session.Join("not-a-product-user:LP0123456789abcdef01234567");
+            if (started || session.State() != NetworkState::Error
+                || session.LastError().find("ユーザー形式") == std::string::npos)
+                throw std::runtime_error("EOS SDK lifecycle attempt " + std::to_string(attempt)
+                    + ": " + session.LastError());
+            session.Stop();
+            Require(session.State() == NetworkState::Stopped, "EOS restart after SDK validation failure");
+        }
+        std::cout << "EOS SDK real DLL initialization and shutdown (16 restarts) passed.\n";
+    }
+
     void TimeoutAndBackendAvailability()
     {
         using namespace LamaPon;
@@ -286,7 +340,7 @@ int main()
 {
     try
     {
-        ConnectionAndReplication(); IncompatibleGames(); Bounds(); MalformedTraffic(); TimeoutAndBackendAvailability();
+        ConnectionAndReplication(); IncompatibleGames(); Bounds(); MalformedTraffic(); TimeoutAndBackendAvailability(); EpicSdkLifecycle();
         std::cout << "P2P connection, baseline, ownership, replication, events, limits, departure and restart passed.\n";
         return 0;
     }

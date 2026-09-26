@@ -133,10 +133,11 @@ LAMAPON_SCRIPT(CoopManager)
 ## EOSを有効にする
 
 EOS SDKはリポジトリに含めません。SDKなしでもLANとエディターをビルドできますが、
-EOSを選ぶと明確なエラーになります。SDKを使った部分はSDK導入後のビルド確認が必要です。
+EOSを選ぶと明確なエラーになります。EOS SDKは公式配布ページから取得できます。
 
-1. [Epic Developer Portal](https://dev.epicgames.com/portal/)で製品を用意し、
-   EOS SDKのWindows版を取得します。`Include`、`Lib`、`Bin`が入ったSDKの場所を指定します。
+1. [公式SDK配布ページ](https://onlineservices.epicgames.com/sdk)からC SDKを取得し、
+   [Epic Developer Portal](https://dev.epicgames.com/portal/)で製品を用意します。
+   `Include`、`Lib`、`Bin`が入ったSDKの場所を指定します。
 2. 製品のProduct ID、Sandbox ID、Deployment ID、ゲームクライアント用Client IDを
    プロジェクト設定へ入力します。両端末で同じDeploymentを使います。
 3. [Client Policy](https://dev.epicgames.com/docs/epic-online-services/eos-fundamentals/client-and-client-policy/client-policy-guide)を
@@ -199,6 +200,9 @@ ctest --preset windows-release
 送信過多、再接続を確認します。`OnlineP2PScene`はScene保存・補間・Prefab生成/削除、
 参加者の物理とScriptの抑制、停止時復元、Scene差し替え、即時再接続、協力プレイ例を確認します。
 
-EOS SDKなしのテストはLAN方式の検証です。インターネット接続を検証したことにはなりません。
+EOS SDK 1.19.2.1でDebug・Releaseのコンパイルを確認しています。
+SDK対応ビルドでは、本物のEOS DLLで資格情報の未設定と、不正な部屋ユーザーIDを使った
+SDKの読み込み・初期化・終了・再開始も確認します。この試験は資格情報もインターネット接続も使いません。
+自動テストのプレイヤー間通信はLAN方式の検証です。EOSのインターネット接続を検証したことにはなりません。
 SDK導入後は、異なる回線の2台で、部屋作成→参加→移動→途中参加→切断→再作成を確認し、
 直接接続・中継・回線断の結果を記録してください。

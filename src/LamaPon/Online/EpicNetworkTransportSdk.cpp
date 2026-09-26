@@ -30,8 +30,8 @@ namespace LamaPon::Detail
             options.ProductName = "LamaPon";
             options.ProductVersion = "1";
             const auto result = EOS_Initialize(&options);
-            if (result != EOS_Success && result != EOS_AlreadyConfigured) return false;
-            ownsSdk = result == EOS_Success;
+            if (result != EOS_EResult::EOS_Success && result != EOS_EResult::EOS_AlreadyConfigured) return false;
+            ownsSdk = result == EOS_EResult::EOS_Success;
             sdkUsers = 1;
             return true;
         }
@@ -44,7 +44,7 @@ namespace LamaPon::Detail
         {
             std::array<char, EOS_PRODUCTUSERID_MAX_LENGTH + 1> text{};
             int32_t length = static_cast<int32_t>(text.size());
-            if (EOS_ProductUserId_ToString(user, text.data(), &length) != EOS_Success) return {};
+            if (EOS_ProductUserId_ToString(user, text.data(), &length) != EOS_EResult::EOS_Success) return {};
             return text.data();
         }
         std::string NewSocketName()
@@ -111,7 +111,13 @@ namespace LamaPon::Detail
                 if (!host)
                 {
                     m_remoteHost = EOS_ProductUserId_FromString(remoteHostKey.c_str());
-                    if (!EOS_ProductUserId_IsValid(m_remoteHost))
+                    // FromString/IsValidは文字列形式を検証しません。
+                    // 共有する部屋IDのユーザー部分は32桁の16進IDに限定します。
+                    if (remoteHostKey.size() != EOS_PRODUCTUSERID_MAX_LENGTH
+                        || !std::ranges::all_of(remoteHostKey, [](char c)
+                            { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
+                                || (c >= 'A' && c <= 'F'); })
+                        || !EOS_ProductUserId_IsValid(m_remoteHost))
                     { m_error = "EOS部屋IDのユーザー形式が正しくありません。"; Stop(); return false; }
                 }
                 EOS_Platform_Options options{};
@@ -187,8 +193,8 @@ namespace LamaPon::Detail
                     uint8_t channel{}; uint32_t length{};
                     const auto received = EOS_P2P_ReceivePacket(m_p2p, &options, &sender,
                         &socket, &channel, buffer.data(), &length);
-                    if (received == EOS_NotFound) break;
-                    if (received != EOS_Success) { Fail("EOSの受信処理に失敗しました。"); break; }
+                    if (received == EOS_EResult::EOS_NotFound) break;
+                    if (received != EOS_EResult::EOS_Success) { Fail("EOSの受信処理に失敗しました。"); break; }
                     if (channel != 0 || std::strcmp(socket.SocketName, m_socket.SocketName) != 0) continue;
                     const auto key = UserKey(sender);
                     const auto peer = std::ranges::find_if(m_peers, [&key](const auto& value) { return UserKey(value.second) == key; });
@@ -212,11 +218,11 @@ namespace LamaPon::Detail
                 send.SocketId = &m_socket; send.Channel = 0;
                 send.DataLengthBytes = static_cast<uint32_t>(packet.size()); send.Data = packet.data();
                 send.bAllowDelayedDelivery = EOS_TRUE;
-                send.Reliability = EOS_PR_ReliableOrdered;
+                send.Reliability = EOS_EPacketReliability::EOS_PR_ReliableOrdered;
                 send.bDisableAutoAcceptConnection = EOS_TRUE;
                 // EOSの送信キューが満杯ならSessionが接続を終了します。
                 // 無制限のアプリ側再送キューは作りません。
-                return EOS_P2P_SendPacket(m_p2p, &send) == EOS_Success;
+                return EOS_P2P_SendPacket(m_p2p, &send) == EOS_EResult::EOS_Success;
             }
 
             void Disconnect(const TransportPeer peer) override
@@ -257,7 +263,7 @@ namespace LamaPon::Detail
                 // EOSの非同期APIへ渡す文字列はTransportが所有します。
                 EOS_Connect_Credentials credentials{};
                 credentials.ApiVersion = EOS_CONNECT_CREDENTIALS_API_LATEST;
-                credentials.Type = EOS_ECT_DEVICEID_ACCESS_TOKEN;
+                credentials.Type = EOS_EExternalCredentialType::EOS_ECT_DEVICEID_ACCESS_TOKEN;
                 EOS_Connect_UserLoginInfo user{};
                 user.ApiVersion = EOS_CONNECT_USERLOGININFO_API_LATEST; user.DisplayName = m_name.c_str();
                 EOS_Connect_LoginOptions options{};
@@ -272,14 +278,14 @@ namespace LamaPon::Detail
                 m_local = local;
                 EOS_P2P_SetRelayControlOptions relay{};
                 relay.ApiVersion = EOS_P2P_SETRELAYCONTROL_API_LATEST;
-                relay.RelayControl = EOS_RC_AllowRelays;
-                if (EOS_P2P_SetRelayControl(m_p2p, &relay) != EOS_Success)
+                relay.RelayControl = EOS_ERelayControl::EOS_RC_AllowRelays;
+                if (EOS_P2P_SetRelayControl(m_p2p, &relay) != EOS_EResult::EOS_Success)
                 { Fail("EOS中継を設定できません。"); return; }
                 EOS_P2P_SetPacketQueueSizeOptions queue{};
                 queue.ApiVersion = EOS_P2P_SETPACKETQUEUESIZE_API_LATEST;
                 queue.IncomingPacketQueueMaxSizeBytes = 256 * 1024;
                 queue.OutgoingPacketQueueMaxSizeBytes = 256 * 1024;
-                if (EOS_P2P_SetPacketQueueSize(m_p2p, &queue) != EOS_Success)
+                if (EOS_P2P_SetPacketQueueSize(m_p2p, &queue) != EOS_EResult::EOS_Success)
                 { Fail("EOS通信キューを設定できません。"); return; }
                 EOS_P2P_AddNotifyPeerConnectionRequestOptions request{};
                 request.ApiVersion = EOS_P2P_ADDNOTIFYPEERCONNECTIONREQUEST_API_LATEST;
@@ -309,7 +315,7 @@ namespace LamaPon::Detail
                     EOS_P2P_AcceptConnectionOptions accept{};
                     accept.ApiVersion = EOS_P2P_ACCEPTCONNECTION_API_LATEST;
                     accept.LocalUserId = local; accept.RemoteUserId = m_remoteHost; accept.SocketId = &m_socket;
-                    if (EOS_P2P_AcceptConnection(m_p2p, &accept) != EOS_Success)
+                    if (EOS_P2P_AcceptConnection(m_p2p, &accept) != EOS_EResult::EOS_Success)
                     { Fail("EOSホストへの接続を開始できません。"); return; }
                     m_peers.emplace(1, m_remoteHost);
                     Queue({ TransportEventKind::Connected, 1, {} });
@@ -319,14 +325,14 @@ namespace LamaPon::Detail
             static void EOS_CALL DeviceCreated(const EOS_Connect_CreateDeviceIdCallbackInfo* info)
             {
                 auto& self = *static_cast<EpicTransport*>(info->ClientData);
-                if (info->ResultCode == EOS_Success || info->ResultCode == EOS_DuplicateNotAllowed) self.Login();
+                if (info->ResultCode == EOS_EResult::EOS_Success || info->ResultCode == EOS_EResult::EOS_DuplicateNotAllowed) self.Login();
                 else self.Fail("EOS端末アカウントを準備できません。ConnectのClient Policyを確認してください。");
             }
             static void EOS_CALL LoggedIn(const EOS_Connect_LoginCallbackInfo* info)
             {
                 auto& self = *static_cast<EpicTransport*>(info->ClientData);
-                if (info->ResultCode == EOS_Success) self.Ready(info->LocalUserId);
-                else if (info->ResultCode == EOS_InvalidUser && info->ContinuanceToken)
+                if (info->ResultCode == EOS_EResult::EOS_Success) self.Ready(info->LocalUserId);
+                else if (info->ResultCode == EOS_EResult::EOS_InvalidUser && info->ContinuanceToken)
                 {
                     EOS_Connect_CreateUserOptions options{};
                     options.ApiVersion = EOS_CONNECT_CREATEUSER_API_LATEST;
@@ -338,7 +344,7 @@ namespace LamaPon::Detail
             static void EOS_CALL UserCreated(const EOS_Connect_CreateUserCallbackInfo* info)
             {
                 auto& self = *static_cast<EpicTransport*>(info->ClientData);
-                if (info->ResultCode == EOS_Success) self.Ready(info->LocalUserId);
+                if (info->ResultCode == EOS_EResult::EOS_Success) self.Ready(info->LocalUserId);
                 else { self.m_loggingIn = false; self.Fail("EOSのユーザー作成に失敗しました。"); }
             }
             static void EOS_CALL Requested(const EOS_P2P_OnIncomingConnectionRequestInfo* info)
@@ -354,7 +360,7 @@ namespace LamaPon::Detail
                 options.ApiVersion = EOS_P2P_ACCEPTCONNECTION_API_LATEST;
                 options.LocalUserId = self.m_local; options.RemoteUserId = info->RemoteUserId;
                 options.SocketId = &self.m_socket;
-                if (EOS_P2P_AcceptConnection(self.m_p2p, &options) != EOS_Success) return;
+                if (EOS_P2P_AcceptConnection(self.m_p2p, &options) != EOS_EResult::EOS_Success) return;
                 const auto peer = self.m_nextPeer++;
                 self.m_peers.emplace(peer, info->RemoteUserId);
                 self.Queue({ TransportEventKind::Connected, peer, {} });
@@ -372,7 +378,7 @@ namespace LamaPon::Detail
             { static_cast<EpicTransport*>(info->ClientData)->Login(); }
             static void EOS_CALL StatusChanged(const EOS_Connect_LoginStatusChangedCallbackInfo* info)
             {
-                if (info->CurrentStatus == EOS_LS_NotLoggedIn)
+                if (info->CurrentStatus == EOS_ELoginStatus::EOS_LS_NotLoggedIn)
                     static_cast<EpicTransport*>(info->ClientData)->Fail("EOSのログインセッションが終了しました。");
             }
 
