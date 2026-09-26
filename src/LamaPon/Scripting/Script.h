@@ -562,6 +562,26 @@ namespace LamaPon
             auto* session = Network();
             return session && session->Join(std::move(address), std::move(name));
         }
+        bool JoinDirectNetwork(std::string endpoint, std::string accessKey, std::string name = "Player") const
+        {
+            auto* session = Network();
+            return session && session->JoinDirect(std::move(endpoint), std::move(accessKey), std::move(name));
+        }
+        bool JoinNetworkRoom(const NetworkRoom& room, std::string name = "Player") const
+        {
+            auto* session = Network();
+            return session && session->JoinRoom(room, std::move(name));
+        }
+        bool SendNetworkCommand(std::string name, std::string data) const
+        {
+            auto* session = Network();
+            return session && session->SendCommand(std::move(name), std::move(data));
+        }
+        bool SetNetworkSessionState(std::string data) const
+        {
+            auto* session = Network();
+            return session && session->SetSessionState(std::move(data));
+        }
         void StopNetwork() const
         {
             // 自分自身が同期PrefabのScriptでも、コールバック終了前に

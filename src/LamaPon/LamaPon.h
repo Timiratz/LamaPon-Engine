@@ -89,6 +89,8 @@
 #include "LamaPon/Online/DiscordPresence.h"
 #include "LamaPon/Online/OnlineServices.h"
 #include "LamaPon/Online/NetworkSession.h"
+#include "LamaPon/Online/NetworkRoomBrowser.h"
+#include "LamaPon/Online/NetworkRoomDirectory.h"
 #include "LamaPon/Online/NetworkSceneBridge.h"
 #include "LamaPon/Components/NetworkIdentityComponent.h"
 #include "LamaPon/Physics/Raycast.h"

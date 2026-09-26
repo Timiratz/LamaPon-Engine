@@ -158,6 +158,10 @@ include(cmake/LamaPonNetworking.cmake)
 set(LAMAPON_NETWORK_SOURCES
     src/LamaPon/Online/NetworkSession.cpp
     src/LamaPon/Online/LanNetworkTransport.cpp
+    src/LamaPon/Online/DirectNetworkTransport.cpp
+    src/LamaPon/Online/NetworkCrypto.cpp
+    src/LamaPon/Online/NetworkPortMapping.cpp
+    src/LamaPon/Online/NetworkRoomBrowser.cpp
     src/LamaPon/Online/EpicNetworkTransport.cpp
 )
 
@@ -541,6 +545,8 @@ set(LAMAPON_RUNTIME_SOURCES
 
 set(LAMAPON_EDITOR_SOURCES
     src/LamaPon/Editor/NetworkProjectSettingsPanel.cpp
+    src/LamaPon/Editor/NetworkConnectionPanel.cpp
+    src/LamaPon/Editor/NetworkConnectionPanel.h
     src/LamaPon/Editor/Editor.cpp
     src/LamaPon/Editor/Editor.h
     src/LamaPon/Editor/EditorExtensionRegistry.cpp
@@ -1056,6 +1062,17 @@ if(BUILD_TESTING)
     set_tests_properties(OnlineP2PSession PROPERTIES
         LABELS "online;p2p;network" TIMEOUT 60
     )
+    add_executable(LamaPonDirectNetworkTests tests/DirectNetworkTests.cpp ${LAMAPON_NETWORK_SOURCES})
+    target_include_directories(LamaPonDirectNetworkTests PRIVATE src)
+    target_compile_definitions(LamaPonDirectNetworkTests PRIVATE
+        LAMAPON_RUNTIME_BUILD NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
+    target_compile_options(LamaPonDirectNetworkTests PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4> $<$<CXX_COMPILER_ID:MSVC>:/permissive-> $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
+    target_link_libraries(LamaPonDirectNetworkTests PRIVATE LamaPonJson ws2_32)
+    lamapon_configure_network_backend(LamaPonDirectNetworkTests)
+    add_test(NAME OnlineP2PDirect COMMAND LamaPonDirectNetworkTests)
+    set_tests_properties(OnlineP2PDirect PROPERTIES LABELS "online;p2p;network" TIMEOUT 60)
+
     find_package(Python3 3.11 REQUIRED COMPONENTS Interpreter)
     if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC" AND CMAKE_GENERATOR MATCHES "^Ninja")
         add_test(NAME MsvcHeaderDependencies

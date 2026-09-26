@@ -1,5 +1,7 @@
 #include "LamaPon/Online/NetworkSession.h"
 #include "LamaPon/Online/NetworkTransport.h"
+#include "LamaPon/Online/NetworkRoomAdvertiser.h"
+#include "LamaPon/Online/NetworkRoomDirectory.h"
 
 #include <nlohmann/json.hpp>
 
@@ -9,6 +11,7 @@
 #include <limits>
 #include <map>
 #include <stdexcept>
+#include <set>
 
 namespace LamaPon
 {
@@ -99,7 +102,10 @@ namespace LamaPon
             || configuration.tickRate > 60 || !std::isfinite(configuration.timeoutSeconds)
             || configuration.timeoutSeconds < 5 || configuration.timeoutSeconds > 120
             || (configuration.backend != NetworkBackend::Lan
-                && configuration.backend != NetworkBackend::EpicOnlineServices))
+                && configuration.backend != NetworkBackend::EpicOnlineServices
+                && configuration.backend != NetworkBackend::Direct)
+            || (configuration.syncMode != NetworkSyncMode::Continuous && configuration.syncMode != NetworkSyncMode::OnChange)
+            || configuration.discoveryPort == 0 || configuration.roomName.empty() || !Text(configuration.roomName, 64))
         {
             throw std::invalid_argument("P2P設定: IDは1〜64文字の英数字・._-、人数は2〜4、送信頻度は1〜60Hz、タイムアウトは5〜120秒です。");
         }
@@ -147,6 +153,10 @@ namespace LamaPon
         };
         NetworkConfiguration configuration;
         std::unique_ptr<Detail::INetworkTransport> transport;
+        Detail::NetworkRoomAdvertiser advertiser;
+        std::set<NetworkObjectId> dirty;
+        std::string sessionState;
+        std::uint32_t stateRevision{};
         NetworkState state{ NetworkState::Stopped };
         std::uint64_t generation{};
         bool host{};
@@ -178,6 +188,7 @@ namespace LamaPon
         {
             ++generation;
             if (transport) transport->Stop();
+            advertiser.Stop(); sessionState.clear(); stateRevision = 0; dirty.clear();
             peers.clear();
             members.clear();
             objects.clear();
@@ -277,7 +288,7 @@ namespace LamaPon
                 if (op == "hello" && host && found->second.id == 0)
                 {
                     const auto incomingName = packet.at("name").get<std::string>();
-                    if (ReadId(packet.at("protocol")) != 1 || packet.at("game") != configuration.gameId
+                    if (ReadId(packet.at("protocol")) != 2 || packet.at("game") != configuration.gameId
                         || packet.at("version") != configuration.gameVersion
                         || packet.at("scene") != configuration.sceneId
                         || !Text(incomingName, 32) || incomingName.empty()
@@ -290,18 +301,19 @@ namespace LamaPon
                     const auto id = nextPeer++;
                     found->second.id = id;
                     members.push_back({ id, incomingName });
-                    Send(peer, { { "op", "welcome" }, { "protocol", 1 }, { "peer", id },
+                    Send(peer, { { "op", "welcome" }, { "protocol", 2 }, { "peer", id },
                         { "game", configuration.gameId }, { "version", configuration.gameVersion },
                         { "scene", configuration.sceneId } });
                     SendMembers();
                     for (const auto& object : objects) Send(peer, ObjectPacket(object));
+                    Send(peer, { { "op", "state" }, { "revision", stateRevision }, { "data", sessionState } });
                     Send(peer, { { "op", "ready" } });
                     Event({ NetworkEventKind::Joined, id, 0, incomingName, {} });
                 }
                 else if (op == "welcome" && !host && local == 0 && state == NetworkState::Connecting)
                 {
                     const auto id = ReadId(packet.at("peer"));
-                    if (ReadId(packet.at("protocol")) != 1 || packet.at("game") != configuration.gameId
+                    if (ReadId(packet.at("protocol")) != 2 || packet.at("game") != configuration.gameId
                         || packet.at("version") != configuration.gameVersion
                         || packet.at("scene") != configuration.sceneId || id < 2) throw std::invalid_argument("Welcome");
                     local = id;
@@ -373,6 +385,25 @@ namespace LamaPon
                         || !Event({ NetworkEventKind::Input, found->second.id, id, action, payload }))
                         throw std::invalid_argument("Input owner/queue");
                 }
+                else if (op == "command" && host)
+                {
+                    const auto action = packet.at("name").get<std::string>();
+                    const auto payload = packet.at("data").get<std::string>();
+                    if (!Key(action) || payload.size() > 256
+                        || !Event({ NetworkEventKind::Command, found->second.id, 0, action, payload }))
+                        throw std::invalid_argument("Command queue");
+                }
+                else if (op == "state" && !host)
+                {
+                    const auto revision = ReadId(packet.at("revision"));
+                    const auto payload = packet.at("data").get<std::string>();
+                    if (payload.size() > 256 || revision < stateRevision) throw std::invalid_argument("State revision");
+                    if (revision > stateRevision || sessionState != payload)
+                    {
+                        if (!Event({ NetworkEventKind::SessionState, 1, 0, {}, payload })) throw std::invalid_argument("State queue");
+                        sessionState = payload; stateRevision = revision;
+                    }
+                }
                 else if (op == "event" && !host && state == NetworkState::Connected)
                 {
                     const auto action = packet.at("name").get<std::string>();
@@ -429,8 +460,8 @@ namespace LamaPon
         if (name.empty() || !Text(name, 32)) { m_impl->error = "表示名は1〜32バイトです。"; return false; }
         Stop();
         auto& impl = *m_impl;
-        impl.transport = impl.configuration.backend == NetworkBackend::Lan
-            ? Detail::CreateLanTransport() : Detail::CreateEpicTransport();
+        impl.transport = impl.configuration.backend == NetworkBackend::Lan ? Detail::CreateLanTransport()
+            : (impl.configuration.backend == NetworkBackend::Direct ? Detail::CreateDirectTransport() : Detail::CreateEpicTransport());
         if (!impl.transport) { impl.Fail("このビルドにはEOS SDKがありません。LAN通信は利用できます。"); return false; }
         if (!impl.transport->Start(impl.configuration, true, address, name))
         { impl.Fail(impl.transport->Error()); return false; }
@@ -443,12 +474,12 @@ namespace LamaPon
     bool NetworkSession::Join(std::string address, std::string name)
     {
         if (m_impl->state != NetworkState::Stopped && m_impl->state != NetworkState::Error) return false;
-        if (name.empty() || !Text(name, 32) || address.empty() || address.size() > 128)
+        if (name.empty() || !Text(name, 32) || address.empty() || address.size() > 256)
         { m_impl->error = "接続先と1〜32バイトの表示名を指定してください。"; return false; }
         Stop();
         auto& impl = *m_impl;
-        impl.transport = impl.configuration.backend == NetworkBackend::Lan
-            ? Detail::CreateLanTransport() : Detail::CreateEpicTransport();
+        impl.transport = impl.configuration.backend == NetworkBackend::Lan ? Detail::CreateLanTransport()
+            : (impl.configuration.backend == NetworkBackend::Direct ? Detail::CreateDirectTransport() : Detail::CreateEpicTransport());
         if (!impl.transport) { impl.Fail("このビルドにはEOS SDKがありません。LAN通信は利用できます。"); return false; }
         if (!impl.transport->Start(impl.configuration, false, address, name))
         { impl.Fail(impl.transport->Error()); return false; }
@@ -464,6 +495,7 @@ namespace LamaPon
         ++impl.generation;
         if (impl.transport) impl.transport->Stop();
         impl.transport.reset();
+        impl.advertiser.Stop(); impl.dirty.clear(); impl.sessionState.clear(); impl.stateRevision = 0;
         impl.peers.clear(); impl.members.clear(); impl.objects.clear(); impl.events.clear();
         impl.state = NetworkState::Stopped; impl.host = false; impl.local = 0;
         impl.nextPeer = 2; impl.nextObject = 1; impl.age = 0; impl.tick = 0;
@@ -498,13 +530,15 @@ namespace LamaPon
                     impl.state = NetworkState::Hosting; impl.local = 1;
                     impl.members.push_back({ 1, impl.name });
                     impl.Event({ NetworkEventKind::Started, 1, 0, {}, {} });
+                    if (impl.configuration.advertiseLan && !impl.advertiser.Start(impl.configuration))
+                        impl.error = "LANへの部屋公開を開始できません。検索ポートとファイアウォールを確認してください。";
                 }
                 break;
             case Detail::TransportEventKind::Connected:
                 impl.peers.emplace(event.peer, Implementation::Peer{});
                 if (!impl.host)
                 {
-                    impl.Send(event.peer, { { "op", "hello" }, { "protocol", 1 },
+                    impl.Send(event.peer, { { "op", "hello" }, { "protocol", 2 },
                         { "game", impl.configuration.gameId }, { "version", impl.configuration.gameVersion },
                         { "scene", impl.configuration.sceneId }, { "name", impl.name } });
                 }
@@ -540,8 +574,12 @@ namespace LamaPon
         {
             // フレーム遅延後に過去の送信をまとめて再生しません。
             impl.tick = 0;
-            for (const auto& object : impl.objects) impl.Broadcast(ObjectPacket(object));
+            for (const auto& object : impl.objects)
+                if (impl.configuration.syncMode == NetworkSyncMode::Continuous || impl.dirty.contains(object.id))
+                    impl.Broadcast(ObjectPacket(object));
+            impl.dirty.clear();
         }
+        impl.advertiser.Update(*this);
     }
 
     NetworkState NetworkSession::State() const noexcept { return m_impl->state; }
@@ -591,6 +629,7 @@ namespace LamaPon
             || found->prefabKey != object.prefabKey) return false;
         try { if (ObjectPacket(object).dump().size() > Detail::NetworkPacketMaxBytes) return false; }
         catch (const std::exception&) { return false; }
+        if (*found != object) impl.dirty.insert(object.id);
         *found = std::move(object);
         return true;
     }
@@ -632,6 +671,56 @@ namespace LamaPon
             return true;
         }
         catch (const std::exception&) { return false; }
+    }
+
+    bool NetworkSession::SendCommand(std::string name, std::string data)
+    {
+        if (!Key(name) || data.size() > 256) return false;
+        try
+        {
+            const Json packet{ { "op", "command" }, { "name", name }, { "data", data } };
+            if (packet.dump().size() > Detail::NetworkPacketMaxBytes) return false;
+            if (IsHost()) return m_impl->Event({ NetworkEventKind::Command, 1, 0, std::move(name), std::move(data) });
+            return State() == NetworkState::Connected && !m_impl->peers.empty()
+                && m_impl->Send(m_impl->peers.begin()->first, packet);
+        }
+        catch (...) { return false; }
+    }
+    bool NetworkSession::SetSessionState(std::string data)
+    {
+        auto& impl = *m_impl;
+        if (!IsHost() || data.size() > 256 || impl.stateRevision == std::numeric_limits<std::uint32_t>::max()) return false;
+        if (impl.sessionState == data) return true;
+        try
+        {
+            const Json packet{ { "op", "state" }, { "revision", impl.stateRevision + 1 }, { "data", data } };
+            if (packet.dump().size() > Detail::NetworkPacketMaxBytes
+                || !impl.Event({ NetworkEventKind::SessionState, 1, 0, {}, data })) return false;
+            impl.sessionState = std::move(data); ++impl.stateRevision; impl.Broadcast(packet);
+            return true;
+        }
+        catch (...) { return false; }
+    }
+    const std::string& NetworkSession::SessionState() const noexcept { return m_impl->sessionState; }
+    bool NetworkSession::JoinDirect(std::string endpoint, std::string accessKey, std::string name)
+    {
+        if (m_impl->configuration.backend != NetworkBackend::Direct) return false;
+        return Join("LPD1|" + endpoint + "|" + accessKey, std::move(name));
+    }
+    std::string NetworkSession::AccessKey() const { return m_impl->transport ? m_impl->transport->AccessKey() : std::string{}; }
+    std::string NetworkSession::ConnectionCode(std::string endpoint) const
+    {
+        return m_impl->transport ? m_impl->transport->ConnectionCode(endpoint) : std::string{};
+    }
+    std::string NetworkSession::ConnectionStatus() const { return m_impl->transport ? m_impl->transport->Status() : std::string{}; }
+    std::string NetworkSession::LocalAddress() const { return m_impl->transport ? m_impl->transport->LocalAddress() : std::string{}; }
+    bool NetworkSession::JoinRoom(const NetworkRoom& room, std::string name)
+    {
+        const auto& game = m_impl->configuration;
+        if (room.gameId != game.gameId || room.gameVersion != game.gameVersion || room.sceneId != game.sceneId
+            || room.capacity < 2 || room.capacity > 4 || room.players >= room.capacity) return false;
+        auto settings = game; settings.backend = room.backend;
+        return Configure(std::move(settings)) && Join(room.connection, std::move(name));
     }
 
     std::string_view NetworkStateName(const NetworkState state) noexcept

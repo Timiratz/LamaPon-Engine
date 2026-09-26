@@ -2,6 +2,7 @@
 #include <WS2tcpip.h>
 
 #include "LamaPon/Online/NetworkTransport.h"
+#include "LamaPon/Online/NetworkEndpoint.h"
 
 #include <algorithm>
 #include <array>
@@ -20,29 +21,6 @@ namespace LamaPon::Detail
         {
             u_long enabled = 1;
             return ioctlsocket(socket, FIONBIO, &enabled) == 0;
-        }
-
-        bool ParseEndpoint(const std::string& text, const std::uint16_t defaultPort,
-            sockaddr_in& address)
-        {
-            std::string ip = text;
-            std::uint32_t port = defaultPort;
-            if (const auto split = ip.find(':'); split != std::string::npos)
-            {
-                const auto number = ip.substr(split + 1);
-                const auto result = std::from_chars(number.data(),
-                    number.data() + number.size(), port);
-                if (result.ec != std::errc{} || result.ptr != number.data() + number.size()
-                    || port == 0 || port > 65535)
-                {
-                    return false;
-                }
-                ip.resize(split);
-            }
-            if (ip == "localhost") ip = "127.0.0.1";
-            address.sin_family = AF_INET;
-            address.sin_port = htons(static_cast<u_short>(port));
-            return InetPtonA(AF_INET, ip.c_str(), &address.sin_addr) == 1;
         }
 
         struct Connection final
@@ -65,11 +43,11 @@ namespace LamaPon::Detail
             {
                 Stop();
                 m_error.clear();
-                sockaddr_in endpoint{};
-                if (!ParseEndpoint(address, configuration.port, endpoint)
-                    || (!host && endpoint.sin_port == 0))
+                NetworkEndpoint endpoint{};
+                if (!NetworkEndpoint::Parse(address, configuration.port, endpoint)
+                    || (!host && (endpoint.Port() == 0 || !endpoint.Unicast())))
                 {
-                    m_error = "数値IPv4とポートを指定してください（例: 192.168.1.10:27840）。";
+                    m_error = "数値IPv4:port または [IPv6]:port を指定してください。";
                     return false;
                 }
                 WSADATA data{};
@@ -79,7 +57,7 @@ namespace LamaPon::Detail
                     return false;
                 }
                 m_initialized = true;
-                const SOCKET socket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+                const SOCKET socket = ::socket(endpoint.Family(), SOCK_STREAM, IPPROTO_TCP);
                 if (socket == INVALID_SOCKET || !Nonblocking(socket))
                 {
                     if (socket != INVALID_SOCKET) closesocket(socket);
@@ -87,6 +65,15 @@ namespace LamaPon::Detail
                     Stop();
                     return false;
                 }
+                // IPv6の待受はIPv6専用です。IPv4との区別を診断と招待に残します。
+                if (endpoint.Family() == AF_INET6)
+                {
+                    const DWORD onlyV6 = 1;
+                    setsockopt(socket, IPPROTO_IPV6, IPV6_V6ONLY,
+                        reinterpret_cast<const char*>(&onlyV6), sizeof(onlyV6));
+                }
+                m_packetLimit = NetworkPacketMaxBytes
+                    + (configuration.backend == NetworkBackend::Direct ? 128 : 0);
                 if (host)
                 {
                     // WindowsでSO_REUSEADDRを使うと、他のプロセスが同じ
@@ -94,8 +81,7 @@ namespace LamaPon::Detail
                     const BOOL exclusive = TRUE;
                     setsockopt(socket, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
                         reinterpret_cast<const char*>(&exclusive), sizeof(exclusive));
-                    if (bind(socket, reinterpret_cast<const sockaddr*>(&endpoint),
-                            sizeof(endpoint)) != 0 || listen(socket, 8) != 0)
+                    if (bind(socket, endpoint.Address(), endpoint.size) != 0 || listen(socket, 8) != 0)
                     {
                         closesocket(socket);
                         m_error = "待受できません。ポートの使用状況とファイアウォールを確認してください。";
@@ -103,12 +89,9 @@ namespace LamaPon::Detail
                         return false;
                     }
                     m_listener = socket;
-                    int length = sizeof(endpoint);
-                    getsockname(socket, reinterpret_cast<sockaddr*>(&endpoint), &length);
-                    std::array<char, INET_ADDRSTRLEN> ip{};
-                    InetNtopA(AF_INET, &endpoint.sin_addr, ip.data(), ip.size());
-                    m_address = std::string(ip.data()) + ":"
-                        + std::to_string(ntohs(endpoint.sin_port));
+                    int length = endpoint.size;
+                    getsockname(socket, endpoint.Address(), &length);
+                    m_address = endpoint.Text();
                     m_pending.push_back({ TransportEventKind::Ready, 0, {} });
                 }
                 else
@@ -118,8 +101,7 @@ namespace LamaPon::Detail
                     const BOOL noDelay = TRUE;
                     setsockopt(socket, IPPROTO_TCP, TCP_NODELAY,
                         reinterpret_cast<const char*>(&noDelay), sizeof(noDelay));
-                    if (connect(socket, reinterpret_cast<const sockaddr*>(&endpoint),
-                            sizeof(endpoint)) != 0)
+                    if (connect(socket, endpoint.Address(), endpoint.size) != 0)
                     {
                         if (WSAGetLastError() != WSAEWOULDBLOCK)
                         {
@@ -222,7 +204,7 @@ namespace LamaPon::Detail
             {
                 const auto found = m_connections.find(peer);
                 if (found == m_connections.end() || packet.empty()
-                    || packet.size() > NetworkPacketMaxBytes) return false;
+                    || packet.size() > m_packetLimit) return false;
                 auto& connection = found->second;
                 if (connection.queuedBytes + packet.size() + 4 > QueueLimit) return false;
                 std::string framed(4, '\0');
@@ -249,7 +231,7 @@ namespace LamaPon::Detail
             std::string Error() const override { return m_error; }
 
         private:
-            static bool Receive(Connection& connection, const TransportPeer id,
+            bool Receive(Connection& connection, const TransportPeer id,
                 std::vector<TransportEvent>& events)
             {
                 std::array<char, 4096> buffer{};
@@ -266,7 +248,7 @@ namespace LamaPon::Detail
                             length = (length << 8)
                                 | static_cast<unsigned char>(connection.incoming[byte]);
                         }
-                        if (length == 0 || length > NetworkPacketMaxBytes) return false;
+                        if (length == 0 || length > m_packetLimit) return false;
                         if (connection.incoming.size() < length + 4) break;
                         events.push_back({ TransportEventKind::Message, id,
                             std::string(connection.incoming.begin() + 4,
@@ -318,6 +300,7 @@ namespace LamaPon::Detail
                 closesocket(found->second.socket);
                 m_connections.erase(found);
             }
+            std::size_t m_packetLimit{ NetworkPacketMaxBytes };
             bool m_initialized{};
             SOCKET m_listener{ INVALID_SOCKET };
             TransportPeer m_nextPeer{ 1 };

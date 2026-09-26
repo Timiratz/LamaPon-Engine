@@ -27,9 +27,14 @@ namespace LamaPon
         const bool active = session && session->State() != NetworkState::Stopped
             && session->State() != NetworkState::Error;
         ImGui::BeginDisabled(active);
-        int backend = m_projectNetworkDraft.backend == NetworkBackend::Lan ? 0 : 1;
-        if (ImGui::Combo("接続方式", &backend, "LAN / 同じPC\0インターネット（EOS）\0"))
-            m_projectNetworkDraft.backend = backend == 0 ? NetworkBackend::Lan : NetworkBackend::EpicOnlineServices;
+        int backend = m_projectNetworkDraft.backend == NetworkBackend::Direct ? 0
+            : (m_projectNetworkDraft.backend == NetworkBackend::Lan ? 1 : 2);
+        if (ImGui::Combo("接続方式", &backend, "直接接続（Epic不要・暗号化）\0LAN / 同じPC（従来方式）\0インターネット（EOS）\0"))
+        {
+            m_projectNetworkDraft.backend = backend == 0 ? NetworkBackend::Direct
+                : (backend == 1 ? NetworkBackend::Lan : NetworkBackend::EpicOnlineServices);
+            m_networkConnectionPanel.StopSearch();
+        }
         EditNetworkText("ゲームID##P2P", m_projectNetworkDraft.gameId);
         EditNetworkText("通信バージョン", m_projectNetworkDraft.gameVersion);
         EditNetworkText("シーンID", m_projectNetworkDraft.sceneId);
@@ -39,13 +44,32 @@ namespace LamaPon
         int rate = static_cast<int>(m_projectNetworkDraft.tickRate);
         if (ImGui::SliderInt("状態送信の頻度（Hz）", &rate, 1, 60))
             m_projectNetworkDraft.tickRate = static_cast<std::uint32_t>(rate);
+        int syncMode = m_projectNetworkDraft.syncMode == NetworkSyncMode::OnChange ? 1 : 0;
+        if (ImGui::Combo("オブジェクトの同期", &syncMode, "定期送信（アクションなど）\0変更時だけ（ターン制など）\0"))
+            m_projectNetworkDraft.syncMode = syncMode == 0 ? NetworkSyncMode::Continuous : NetworkSyncMode::OnChange;
+        ImGui::TextWrapped("操作要求・部屋全体の状態・ゲームイベントも使えます。ジャンルに合わせてゲーム側で組み合わせます。");
         ImGui::SliderFloat("切断待ち時間（秒）", &m_projectNetworkDraft.timeoutSeconds, 5, 120);
-        if (m_projectNetworkDraft.backend == NetworkBackend::Lan)
+        if (m_projectNetworkDraft.backend != NetworkBackend::EpicOnlineServices)
         {
             int port = m_projectNetworkDraft.port;
             if (ImGui::InputInt("待受ポート", &port))
                 m_projectNetworkDraft.port = static_cast<std::uint16_t>(std::clamp(port, 0, 65535));
-            ImGui::TextWrapped("LAN方式は同じネットワーク内の信頼できる参加者向けです。インターネットで遊ぶ場合はEOSを選択してください。ポート0は空いているポートを自動選択します。");
+            ImGui::TextWrapped("ポート0は空いているポートを自動選択します。IPv6の接続先は [アドレス]:port の形式です。");
+            EditNetworkText("部屋の名前", m_projectNetworkDraft.roomName);
+            ImGui::Checkbox("LAN内の部屋検索へ公開する", &m_projectNetworkDraft.advertiseLan);
+            if (m_projectNetworkDraft.advertiseLan)
+            {
+                ImGui::TextWrapped("LAN内の参加者が一覧から接続できる公開部屋になります。非公開で遊ぶ場合はOFFにしてください。");
+                int discoveryPort = m_projectNetworkDraft.discoveryPort;
+                if (ImGui::InputInt("LAN検索ポート", &discoveryPort))
+                    m_projectNetworkDraft.discoveryPort = static_cast<std::uint16_t>(std::clamp(discoveryPort, 1, 65535));
+            }
+            if (m_projectNetworkDraft.backend == NetworkBackend::Direct)
+            {
+                ImGui::Checkbox("ルーターの自動ポート設定を利用する（UPnP）", &m_projectNetworkDraft.automaticPortMapping);
+                ImGui::TextWrapped("ONの場合だけ、対応IPv4ルーターへ120秒のTCPポート転送を要求し、接続中は更新、終了時は解除します。永久的な設定は残しません。Windowsファイアウォールは自動変更しません。");
+            }
+            else ImGui::TextWrapped("従来LAN方式には暗号化・参加認証がありません。信頼できるLAN内で使ってください。");
         }
         else
         {
@@ -83,41 +107,7 @@ namespace LamaPon
         }
         ImGui::EndDisabled();
 
-        ImGui::SeparatorText("接続の動作確認");
-        ImGui::TextWrapped("エディター再生中に接続できます。設定を保存すると、次回の再生と配布ゲームにも反映されます。");
-        ImGui::BeginDisabled(!m_playing || active || !session);
-        ImGui::InputText("プレイヤー名", m_networkPlayerName.data(), m_networkPlayerName.size());
-        if (m_projectNetworkDraft.backend == NetworkBackend::Lan)
-        {
-            ImGui::InputText("ホストの待受IPv4", m_networkListenAddress.data(), m_networkListenAddress.size());
-            ImGui::TextWrapped("127.0.0.1は同じPCだけ、0.0.0.0はLANからの参加も受け付けます。LANの相手にはホストPCのLAN IPv4を伝えてください。");
-        }
-        if (ImGui::Button("部屋を作成") && session && session->Configure(m_projectNetworkDraft))
-            static_cast<void>(session->Host(m_networkPlayerName.data(), m_networkListenAddress.data()));
-        ImGui::InputText("接続先（IPv4:port / EOS部屋ID）", m_networkJoinAddress.data(), m_networkJoinAddress.size());
-        if (ImGui::Button("部屋に参加") && session && session->Configure(m_projectNetworkDraft))
-            static_cast<void>(session->Join(m_networkJoinAddress.data(), m_networkPlayerName.data()));
-        ImGui::EndDisabled();
-        if (session)
-        {
-            ImGui::Text("状態: %s", NetworkStateName(session->State()).data());
-            const auto room = session->RoomAddress();
-            if (!room.empty())
-            {
-                ImGui::TextWrapped("部屋: %s", room.c_str());
-                if (ImGui::SmallButton("部屋IDをコピー")) ImGui::SetClipboardText(room.c_str());
-            }
-            for (const auto& member : session->Members())
-                ImGui::BulletText("%u: %s", member.id, member.name.c_str());
-            const auto statistics = session->Statistics();
-            ImGui::Text("往復: %.1fms / 同期オブジェクト: %zu", statistics.roundTripMilliseconds, session->Objects().size());
-            if (!session->LastError().empty()) ImGui::TextWrapped("%s", session->LastError().c_str());
-            if (active && ImGui::Button("接続を終了"))
-            {
-                if (auto* bridge = ActiveNetworkSceneBridge()) bridge->Reset();
-                else session->Stop();
-            }
-        }
-        ImGui::Spacing();
+        m_networkConnectionPanel.Draw(session, ActiveNetworkSceneBridge(), m_playing, m_projectNetworkDraft);
+
     }
 }

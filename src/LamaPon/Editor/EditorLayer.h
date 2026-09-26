@@ -1,5 +1,7 @@
 #pragma once
 
+#include "LamaPon/Editor/NetworkConnectionPanel.h"
+
 #include "LamaPon/Editor/EditorExtensionRegistry.h"
 #include "LamaPon/Editor/UIComponentInspectors.h"
 
@@ -823,9 +825,7 @@ namespace LamaPon
         bool m_projectSplashScreenDraft{ true };
         OnlineProjectSettings m_projectOnlineDraft;
         NetworkConfiguration m_projectNetworkDraft;
-        std::array<char, 129> m_networkJoinAddress{};
-        std::array<char, 33> m_networkPlayerName{ "Player" };
-        std::array<char, 65> m_networkListenAddress{ "127.0.0.1" };
+        NetworkConnectionPanel m_networkConnectionPanel;
         std::array<char, 2049>
             m_projectOnlineServiceBaseUrlBuffer{};
         std::array<char, 129> m_projectOnlineGameIdBuffer{};

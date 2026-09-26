@@ -19,7 +19,7 @@ namespace LamaPon
     // 物理デバッガーの接触記録（Scene）、プロファイラーの階層区間
     // （ProfileScope / ProfileSample）、テクスチャのGPU量（TextureAsset）
     // により公開レイアウトが変わりました。ゲーム用DLLの再ビルドが必要です。
-    inline constexpr std::uint32_t GameModuleApiVersion = 77;
+    inline constexpr std::uint32_t GameModuleApiVersion = 78;
 
     using NativeScriptCreateFunction = void* (*)(
         GameObject* owner,

@@ -165,6 +165,9 @@ namespace
 
         hostScene.Clear(); clientScene.Clear();
         hostBridge.BeforeSimulation(0); clientBridge.BeforeSimulation(0);
+        configuration.backend = NetworkBackend::Direct;
+        configuration.syncMode = NetworkSyncMode::OnChange;
+        Require(host.Configure(configuration) && client.Configure(configuration), "Secure cooperative configuration");
         Require(host.Host(), "Cooperative sample host"); host.Update(0);
         Require(client.Join(host.RoomAddress()), "Cooperative sample join");
         Samples::P2PCooperativeController hostController, clientController;
@@ -193,7 +196,8 @@ namespace
         SaveProjectSettings(path, settings, ProjectSettingsFileType::Project);
         const auto loaded = LoadProjectSettings(path);
         Require(loaded.network.prefabs.size() == 1 && loaded.network.port == 0
-            && loaded.network.prefabs[0].key == "player", "Network settings round trip");
+            && loaded.network.prefabs[0].key == "player" && loaded.network.backend == NetworkBackend::Direct
+            && loaded.network.syncMode == NetworkSyncMode::OnChange, "Network settings round trip");
     }
 }
 

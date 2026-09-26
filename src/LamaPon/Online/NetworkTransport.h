@@ -36,8 +36,13 @@ namespace LamaPon::Detail
         virtual void Disconnect(TransportPeer peer) = 0;
         virtual std::string Address() const = 0;
         virtual std::string Error() const = 0;
+        virtual std::string AccessKey() const { return {}; }
+        virtual std::string ConnectionCode(const std::string&) const { return Address(); }
+        virtual std::string Status() const { return {}; }
+        virtual std::string LocalAddress() const { return Address(); }
     };
 
     std::unique_ptr<INetworkTransport> CreateLanTransport();
     std::unique_ptr<INetworkTransport> CreateEpicTransport();
+    std::unique_ptr<INetworkTransport> CreateDirectTransport();
 }

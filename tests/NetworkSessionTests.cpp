@@ -193,7 +193,7 @@ namespace
     void MalformedTraffic()
     {
         using namespace LamaPon;
-        constexpr auto hello = R"({"op":"hello","protocol":1,"game":"lamapon.game","version":"1","scene":"main","name":"Raw"})";
+        constexpr auto hello = R"({"op":"hello","protocol":2,"game":"lamapon.game","version":"1","scene":"main","name":"Raw"})";
         const std::vector<std::string> attacks{
             "{broken", R"({"op":"unknown"})", R"({"op":"input","id":1,"name":"move","data":"1"})",
             R"({"op":"input","id":-1,"name":"move","data":"1"})",

@@ -19,6 +19,7 @@ if(LAMAPON_EOS_SDK_ROOT)
 endif()
 
 function(lamapon_configure_network_backend target)
+    target_link_libraries(${target} PRIVATE bcrypt ole32 oleaut32 iphlpapi uuid)
     if(NOT LAMAPON_EOS_SDK_ROOT)
         return()
     endif()

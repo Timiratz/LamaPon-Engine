@@ -14,7 +14,8 @@ namespace LamaPon
     using NetworkPeerId = std::uint32_t;
     using NetworkObjectId = std::uint32_t;
 
-    enum class NetworkBackend : std::uint8_t { Lan, EpicOnlineServices };
+    enum class NetworkBackend : std::uint8_t { Lan, EpicOnlineServices, Direct };
+    enum class NetworkSyncMode : std::uint8_t { Continuous, OnChange };
     enum class NetworkState : std::uint8_t
     {
         Stopped, Starting, Hosting, Connecting, Connected, Error
@@ -37,6 +38,13 @@ namespace LamaPon
         float timeoutSeconds{ 15.0f };
         std::uint16_t port{ 27840 };
         NetworkBackend backend{ NetworkBackend::Lan };
+        NetworkSyncMode syncMode{ NetworkSyncMode::Continuous };
+        // 対応するIPv4ルーターで短期のポート転送を要求します。既定では変更しません。
+        bool automaticPortMapping{};
+        // LAN検索への公開はゲーム側で選びます。公開した部屋はLAN参加者が接続できます。
+        bool advertiseLan{};
+        std::string roomName{ "Room" };
+        std::uint16_t discoveryPort{ 27841 };
         std::string eosProductId;
         std::string eosSandboxId;
         std::string eosDeploymentId;
@@ -47,11 +55,14 @@ namespace LamaPon
         std::vector<NetworkPrefabRegistration> prefabs;
     };
 
+    struct NetworkRoom;
+
     struct NetworkTransform final
     {
         std::array<float, 3> position{ 0, 0, 0 };
         std::array<float, 4> rotation{ 0, 0, 0, 1 };
         std::array<float, 3> scale{ 1, 1, 1 };
+        bool operator==(const NetworkTransform&) const = default;
     };
 
     struct NetworkObjectState final
@@ -65,6 +76,7 @@ namespace LamaPon
         NetworkTransform transform;
         bool enabled{ true };
         std::string data;
+        bool operator==(const NetworkObjectState&) const = default;
     };
 
     struct NetworkMember final
@@ -75,7 +87,7 @@ namespace LamaPon
 
     enum class NetworkEventKind : std::uint8_t
     {
-        Started, Joined, Left, Input, GameEvent, Stopped, Error
+        Started, Joined, Left, Input, GameEvent, Stopped, Error, Command, SessionState
     };
 
     struct NetworkEvent final
@@ -108,10 +120,10 @@ namespace LamaPon
         NetworkSession& operator=(const NetworkSession&) = delete;
 
         LAMAPON_API bool Configure(NetworkConfiguration configuration);
-        // LANは数値IPv4を指定します。ホストの既定は同じPCからの接続だけです。
+        // TCPは数値IPv4またはIPv6。ホストの既定は同じPCからの接続だけです。
         LAMAPON_API bool Host(std::string name = "Host",
             std::string address = "127.0.0.1");
-        // LAN: IPv4、EOS: ホストが表示した部屋ID。
+        // LAN: 接続先、Direct: 接続情報、EOS: ホストが表示した部屋ID。
         LAMAPON_API bool Join(std::string address, std::string name = "Player");
         LAMAPON_API void Stop();
         // Scene同期など継続できないエラーを接続状態とイベントに残します。
@@ -140,6 +152,18 @@ namespace LamaPon
         LAMAPON_API bool SendInput(NetworkObjectId object,
             std::string name, std::string data);
         LAMAPON_API bool BroadcastEvent(std::string name, std::string data);
+        // オブジェクトを持たないターン操作など。ホストが送信者とゲームのルールを検証します。
+        LAMAPON_API bool SendCommand(std::string name, std::string data);
+        // ターン・盤面など部屋全体の256バイト以下の状態。途中参加にも送ります。
+        LAMAPON_API bool SetSessionState(std::string data);
+        [[nodiscard]] LAMAPON_API const std::string& SessionState() const noexcept;
+        // 接続先と秘密部分を別々に受け取れるため、招待UIに限定されません。
+        LAMAPON_API bool JoinDirect(std::string endpoint, std::string accessKey, std::string name = "Player");
+        [[nodiscard]] LAMAPON_API std::string AccessKey() const;
+        [[nodiscard]] LAMAPON_API std::string ConnectionCode(std::string endpoint = {}) const;
+        [[nodiscard]] LAMAPON_API std::string ConnectionStatus() const;
+        [[nodiscard]] LAMAPON_API std::string LocalAddress() const;
+        LAMAPON_API bool JoinRoom(const NetworkRoom& room, std::string name = "Player");
 
     private:
         struct Implementation;
