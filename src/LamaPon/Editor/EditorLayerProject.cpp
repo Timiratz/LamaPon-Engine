@@ -2418,6 +2418,18 @@ namespace LamaPon
                 m_selectedObjectId = 0;
             }
             m_playing = false;
+            if (m_scriptGameViewSizeChanged)
+            {
+                m_gameViewFixedResolution =
+                    m_savedGameViewFixedResolution;
+                m_gameViewResolutionWidth =
+                    m_savedGameViewResolutionWidth;
+                m_gameViewResolutionHeight =
+                    m_savedGameViewResolutionHeight;
+                m_gameViewResolutionScale =
+                    m_savedGameViewResolutionScale;
+                m_scriptGameViewSizeChanged = false;
+            }
             m_paused = false;
             m_stepRequested = false;
             m_remoteInputSnapshot.reset();
