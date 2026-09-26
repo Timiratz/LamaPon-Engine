@@ -211,9 +211,13 @@ namespace LamaPon
         m_window.SetResizeCallback(
             [this](const std::uint32_t width, const std::uint32_t height)
             {
-                if (m_graphics.IsInitialized())
+                if (width != 0 && height != 0)
                 {
-                    m_graphics.Resize(width, height);
+                    // Win32のメッセージ処理中にはGPU資源を作り直さず、
+                    // 次の描画前に最後のサイズだけを適用します。
+                    m_pendingWidth = width;
+                    m_pendingHeight = height;
+                    m_resizePending = true;
                 }
             });
 
@@ -233,6 +237,7 @@ namespace LamaPon
             m_window.ClientHeight(),
             requestedApi,
             startupProfile);
+        m_resizePending = false;
         m_graphics.Assets().SetAssetRoot(
             executableDirectory / L"assets");
         // 書き出し時に同梱した事前コンパイル済みシェーダー。これが
@@ -294,6 +299,52 @@ namespace LamaPon
                 "Game Moduleを読み込みました。");
         }
         m_scene = std::make_unique<Scene>(m_graphics);
+        m_scene->SetWindowSizeCallbacks(
+            [this](const std::uint32_t width, const std::uint32_t height)
+            {
+                return SetWindowSize(width, height);
+            },
+            [this]
+            {
+                return WindowSize();
+            });
+    }
+
+    bool Application::SetWindowSize(
+        const std::uint32_t width,
+        const std::uint32_t height)
+    {
+        if (width == 0 || height == 0
+            || width > 16384 || height > 16384)
+        {
+            return false;
+        }
+        if (m_layer)
+        {
+            return m_layer->IsPlaying()
+                && m_layer->SetGameViewSize(width, height);
+        }
+        return m_window.SetClientSize(width, height);
+    }
+
+    std::pair<std::uint32_t, std::uint32_t>
+        Application::WindowSize() const noexcept
+    {
+        if (m_layer && m_layer->IsPlaying())
+        {
+            return m_layer->GameViewSize();
+        }
+        return { m_window.ClientWidth(), m_window.ClientHeight() };
+    }
+
+    void Application::ApplyPendingResize()
+    {
+        if (!m_resizePending || !m_graphics.IsInitialized())
+        {
+            return;
+        }
+        m_graphics.Resize(m_pendingWidth, m_pendingHeight);
+        m_resizePending = false;
     }
 
     void Application::AttachLayer(
@@ -341,6 +392,13 @@ namespace LamaPon
             {
                 TranslateMessage(&message);
                 DispatchMessageW(&message);
+                continue;
+            }
+
+            if (m_window.IsMinimized())
+            {
+                WaitMessage();
+                previousTime = std::chrono::steady_clock::now();
                 continue;
             }
 
@@ -429,6 +487,7 @@ namespace LamaPon
 
             {
                 LAMAPON_PROFILE_SCOPE("Render");
+                ApplyPendingResize();
                 if (m_layer)
                 {
                     // シーン描画の例外はここで処理し、エディターUIを

@@ -100,6 +100,52 @@ namespace LamaPon
         UpdateWindow(m_handle);
     }
 
+    bool Window::SetClientSize(
+        const std::uint32_t width,
+        const std::uint32_t height)
+    {
+        if (width == 0 || height == 0
+            || width > 16384 || height > 16384)
+        {
+            return false;
+        }
+        if (m_handle == nullptr)
+        {
+            m_clientWidth = width;
+            m_clientHeight = height;
+            return true;
+        }
+
+        if (IsZoomed(m_handle) || IsIconic(m_handle))
+        {
+            ShowWindow(m_handle, SW_RESTORE);
+        }
+
+        RECT rectangle{ 0, 0,
+            static_cast<LONG>(width),
+            static_cast<LONG>(height) };
+        const auto style = static_cast<DWORD>(
+            GetWindowLongPtrW(m_handle, GWL_STYLE));
+        const auto extendedStyle = static_cast<DWORD>(
+            GetWindowLongPtrW(m_handle, GWL_EXSTYLE));
+        if (!AdjustWindowRectExForDpi(
+                &rectangle, style, GetMenu(m_handle) != nullptr,
+                extendedStyle, GetDpiForWindow(m_handle))
+            || !SetWindowPos(
+                m_handle, nullptr, 0, 0,
+                rectangle.right - rectangle.left,
+                rectangle.bottom - rectangle.top,
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE))
+        {
+            return false;
+        }
+        // WM_SIZEで実測値と描画サイズが更新されます。
+        RECT client{};
+        return GetClientRect(m_handle, &client)
+            && client.right - client.left == static_cast<LONG>(width)
+            && client.bottom - client.top == static_cast<LONG>(height);
+    }
+
     LRESULT CALLBACK Window::WindowProcedure(
         const HWND window,
         const UINT message,
@@ -176,6 +222,27 @@ namespace LamaPon
             break;
         }
 
+        if (message == WM_SIZE)
+        {
+            m_minimized = wParam == SIZE_MINIMIZED;
+            if (!m_minimized)
+            {
+                RECT client{};
+                if (GetClientRect(m_handle, &client))
+                {
+                    m_clientWidth = static_cast<std::uint32_t>(
+                        client.right - client.left);
+                    m_clientHeight = static_cast<std::uint32_t>(
+                        client.bottom - client.top);
+                    if (m_resizeCallback)
+                    {
+                        m_resizeCallback(
+                            m_clientWidth, m_clientHeight);
+                    }
+                }
+            }
+        }
+
         if (m_messageCallback
             && m_messageCallback(m_handle, message, wParam, lParam))
         {
@@ -185,16 +252,6 @@ namespace LamaPon
         switch (message)
         {
         case WM_SIZE:
-            if (wParam != SIZE_MINIMIZED)
-            {
-                m_clientWidth = static_cast<std::uint32_t>(LOWORD(lParam));
-                m_clientHeight = static_cast<std::uint32_t>(HIWORD(lParam));
-
-                if (m_resizeCallback)
-                {
-                    m_resizeCallback(m_clientWidth, m_clientHeight);
-                }
-            }
             return 0;
 
         case WM_CLOSE:

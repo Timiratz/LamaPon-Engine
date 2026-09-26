@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 
 namespace LamaPon
 {
@@ -58,6 +59,12 @@ namespace LamaPon
         {
             return m_window.Handle();
         }
+        // 実行中のゲーム画面のクライアント領域を変更・取得します。
+        // エディター再生中はゲームビューに反映します。
+        [[nodiscard]] LAMAPON_API bool SetWindowSize(
+            std::uint32_t width, std::uint32_t height);
+        [[nodiscard]] LAMAPON_API std::pair<std::uint32_t, std::uint32_t>
+            WindowSize() const noexcept;
         [[nodiscard]] LAMAPON_API InputSystem& Input() const;
         [[nodiscard]] LAMAPON_API GameModuleHost&
             GameModule() const;
@@ -79,6 +86,7 @@ namespace LamaPon
         // 続けるので、知らせないと「絵が出ない理由が分からない」に
         // なります。
         void ReportRenderFailure(const std::string& message);
+        void ApplyPendingResize();
 
         Window m_window;
         GraphicsDevice m_graphics;
@@ -96,5 +104,8 @@ namespace LamaPon
         std::string m_lastRenderFailure;
         float m_clearColor[4]{ 0.025f, 0.035f, 0.055f, 1.0f };
         bool m_comInitialized{};
+        bool m_resizePending{};
+        std::uint32_t m_pendingWidth{};
+        std::uint32_t m_pendingHeight{};
     };
 }

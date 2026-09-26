@@ -1561,6 +1561,34 @@ namespace LamaPon
 
     Scene::~Scene() = default;
 
+    bool Scene::SetWindowSize(
+        const std::uint32_t width,
+        const std::uint32_t height)
+    {
+        return width != 0 && height != 0
+            && width <= 16384 && height <= 16384
+            && m_windowSizeSetter
+            && m_windowSizeSetter(width, height);
+    }
+
+    std::pair<std::uint32_t, std::uint32_t>
+        Scene::WindowSize() const
+    {
+        if (m_windowSizeGetter)
+        {
+            return m_windowSizeGetter();
+        }
+        return { m_graphics.Width(), m_graphics.Height() };
+    }
+
+    void Scene::SetWindowSizeCallbacks(
+        std::function<bool(std::uint32_t, std::uint32_t)> setter,
+        std::function<std::pair<std::uint32_t, std::uint32_t>()> getter)
+    {
+        m_windowSizeSetter = std::move(setter);
+        m_windowSizeGetter = std::move(getter);
+    }
+
     GameObject& Scene::CreateGameObject(std::string name)
     {
         auto gameObject = std::make_unique<GameObject>(m_nextId++, std::move(name));

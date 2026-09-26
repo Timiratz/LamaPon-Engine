@@ -278,6 +278,21 @@ namespace LamaPon
             return *m_graphics;
         }
 
+        // ゲーム画面の論理サイズ。エディター再生中はゲームビュー、
+        // 書き出し後はウィンドウのクライアント領域を変更します。
+        [[nodiscard]] bool SetWindowSize(
+            const std::uint32_t width,
+            const std::uint32_t height)
+        {
+            return GetScene().SetWindowSize(width, height);
+        }
+
+        [[nodiscard]] std::pair<std::uint32_t, std::uint32_t>
+            WindowSize() const
+        {
+            return GetScene().WindowSize();
+        }
+
         // 初心者向けショートカット
         // Owner()やGetScene()を書かずに主要な操作を直接呼べます。
 
