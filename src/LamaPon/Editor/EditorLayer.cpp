@@ -1694,7 +1694,7 @@ namespace LamaPon
         {
             // カテゴリー名はDrawProjectSettingsDialogと同じ順にします。
             // ASCIIだけを扱う自動化スクリプト向けに別名も受け付けます。
-            constexpr std::array<const char*, 9>
+            constexpr std::array<const char*, 10>
                 categories{
                     "ゲーム",
                     "グラフィック",
@@ -1704,9 +1704,10 @@ namespace LamaPon
                     "入力",
                     "スクリプト",
                     "ビルドプロファイル",
-                    "オンライン"
+                    "オンライン",
+                    "サービス連携"
                 };
-            constexpr std::array<const char*, 9>
+            constexpr std::array<const char*, 10>
                 aliases{
                     "game",
                     "graphics",
@@ -1716,7 +1717,8 @@ namespace LamaPon
                     "input",
                     "scripts",
                     "build",
-                    "online"
+                    "online",
+                    "services"
                 };
             const std::string category =
                 show.substr(settingsPrefix.size());

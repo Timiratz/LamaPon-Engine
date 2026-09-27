@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../packages/src/network-session-workflow/NetworkProfile.h"
+#include "LamaPon/Online/NetworkSettingsJson.h"
 
 inline void TestNetworkWorkflowPackage(LamaPon::GraphicsDevice& graphics,
     const std::filesystem::path& sourceRoot, const std::filesystem::path& outputRoot)

@@ -1,10 +1,13 @@
 #pragma once
 
 #include "LamaPon/Assets/DataAsset.h"
-#include "LamaPon/Online/NetworkSettingsJson.h"
+#include "LamaPon/Online/NetworkSession.h"
 
+#include <nlohmann/json.hpp>
 #include <cmath>
+#include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace LamaPonNetworkWorkflow
 {
@@ -43,32 +46,52 @@ namespace LamaPonNetworkWorkflow
         {
             if (asset.TypeName() != ProfileType || asset.IsEmpty())
                 throw std::invalid_argument("通信設定アセットの型または内容が不正です。");
-            auto defaults = LamaPon::NetworkConfiguration{};
-            defaults.backend = LamaPon::NetworkBackend::Direct;
-            defaults.port = 0;
-            auto values = LamaPon::Detail::NetworkSettingsToJson(defaults);
+            const LamaPon::NetworkConfiguration defaults;
             const auto source = nlohmann::json::parse(asset.SerializeToJson()).at("values");
-            for (const auto* key : {"backend", "sceneId", "maxPlayers", "tickRate",
-                "syncMode", "timeoutSeconds", "port", "roomName", "advertiseLan",
-                "discoveryPort", "automaticPortMapping", "prefabs"})
-            {
-                if (source.contains(key)) values[key] = source.at(key);
-            }
+            auto configuration = shared;
+            const auto backend = source.value("backend", std::string("Direct"));
+            if (backend != "Direct" && backend != "Lan" && backend != "EOS")
+                throw std::invalid_argument("未知の接続方式です。");
+            configuration.backend = backend == "Direct" ? LamaPon::NetworkBackend::Direct
+                : (backend == "Lan" ? LamaPon::NetworkBackend::Lan : LamaPon::NetworkBackend::EpicOnlineServices);
+            const auto mode = source.value("syncMode", std::string("Continuous"));
+            if (mode != "Continuous" && mode != "OnChange")
+                throw std::invalid_argument("未知の同期方式です。");
+            configuration.syncMode = mode == "OnChange" ? LamaPon::NetworkSyncMode::OnChange
+                : LamaPon::NetworkSyncMode::Continuous;
             // DataAssetは整数もdoubleとして保持します。丸めて設定を変えず、
             // 非整数・範囲外は接続前に拒否します。
-            for (const auto* key : {"maxPlayers", "tickRate", "port", "discoveryPort"})
+            const auto integer = [&source](const char* key, const std::uint32_t fallback)
             {
-                const auto& field = values.at(key);
+                if (!source.contains(key)) return fallback;
+                const auto& field = source.at(key);
                 if (!field.is_number()) throw std::invalid_argument("通信設定の整数項目が不正です。");
                 const auto number = field.get<double>();
                 if (!std::isfinite(number) || number < 0 || number > 65535
                     || std::floor(number) != number)
                     throw std::invalid_argument("通信設定の整数項目が範囲外です。");
-                values[key] = static_cast<std::uint32_t>(number);
+                return static_cast<std::uint32_t>(number);
+            };
+            configuration.maxPlayers = integer("maxPlayers", defaults.maxPlayers);
+            configuration.tickRate = integer("tickRate", defaults.tickRate);
+            configuration.port = static_cast<std::uint16_t>(integer("port", 0));
+            configuration.discoveryPort = static_cast<std::uint16_t>(integer("discoveryPort", defaults.discoveryPort));
+            configuration.sceneId = source.value("sceneId", defaults.sceneId);
+            configuration.timeoutSeconds = source.value("timeoutSeconds", defaults.timeoutSeconds);
+            configuration.roomName = source.value("roomName", defaults.roomName);
+            configuration.advertiseLan = source.value("advertiseLan", defaults.advertiseLan);
+            configuration.automaticPortMapping = source.value("automaticPortMapping", defaults.automaticPortMapping);
+            configuration.prefabs.clear();
+            if (source.contains("prefabs"))
+            {
+                const auto& prefabs = source.at("prefabs");
+                if (!prefabs.is_array() || prefabs.size() > 64)
+                    throw std::invalid_argument("同期Prefabは64個まで登録できます。");
+                for (const auto& prefab : prefabs)
+                    configuration.prefabs.push_back({prefab.at("key").get<std::string>(),
+                        prefab.at("assetPath").get<std::string>()});
             }
-            const auto common = LamaPon::Detail::NetworkSettingsToJson(shared);
-            for (const auto* key : {"gameId", "gameVersion", "eos"}) values[key] = common.at(key);
-            auto configuration = LamaPon::Detail::NetworkSettingsFromJson(values);
+            LamaPon::ValidateNetworkConfiguration(configuration);
             output = std::move(configuration);
             error.clear();
             return true;

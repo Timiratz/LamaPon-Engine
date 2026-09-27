@@ -113,9 +113,17 @@ namespace LamaPon
         ImGui::SetNextWindowSize(ImVec2{ 680.0f, 600.0f }, ImGuiCond_FirstUseEver);
         if (ImGui::Begin("オンライン診断", &open))
             m_onlineDiagnosticsPanel.Draw(ActiveNetworkSession(), ActiveNetworkSceneBridge(),
-                m_playing, m_onlineServices, m_projectSettings.online);
+                m_playing);
         else m_onlineDiagnosticsPanel.StopSearch();
         ImGui::End();
         if (!open) m_onlineDiagnosticsPanel.StopSearch();
+    }
+
+    void EditorLayer::DrawServiceDiagnosticsPanel(bool& open)
+    {
+        ImGui::SetNextWindowSize(ImVec2{ 680.0f, 400.0f }, ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("サービス連携の診断", &open))
+            m_serviceDiagnosticsPanel.Draw(m_onlineServices, m_projectSettings.online);
+        ImGui::End();
     }
 }

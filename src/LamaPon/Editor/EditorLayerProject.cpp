@@ -546,7 +546,14 @@ namespace LamaPon
         ImGui::TextUnformatted("オンライン");
         ImGui::Separator();
         DrawProjectSettingsNetworkSection();
-        ImGui::SeparatorText("アカウント連携");
+    }
+
+    void EditorLayer::DrawProjectSettingsServicesSection()
+    {
+        ImGui::TextUnformatted("サービス連携");
+        ImGui::Separator();
+        ImGui::TextWrapped("外部サービスのアカウント認証・クラウドセーブ・プレイ状況表示を設定します。");
+        ImGui::SeparatorText("Discordアカウント連携 / クラウドセーブ");
         ImGui::Checkbox(
             "Discordアカウント連携を有効にする",
             &m_projectOnlineDraft.enabled);
@@ -659,7 +666,7 @@ namespace LamaPon
             ImGui::PopStyleColor();
         }
 
-        ImGui::TextDisabled("テスト表示と接続状態は「ウィンドウ > オンライン診断」で確認できます。");
+        ImGui::TextDisabled("テスト表示と接続状態は「ウィンドウ > サービス連携の診断」で確認できます。");
     }
 
     void EditorLayer::DrawProjectSettingsBuildSection()
@@ -2142,7 +2149,7 @@ namespace LamaPon
         }
 
         // 左のカテゴリー一覧と右の内容ペインへ分割します。
-        constexpr std::array<const char*, 9> categories{
+        constexpr std::array<const char*, 10> categories{
             "ゲーム",
             "グラフィック",
             "ビューポート設定",
@@ -2151,7 +2158,8 @@ namespace LamaPon
             "入力",
             "スクリプト",
             "ビルドプロファイル",
-            "オンライン"
+            "オンライン",
+            "サービス連携"
         };
         ImGui::BeginChild(
             "ProjectSettingsCategories",
@@ -2214,6 +2222,9 @@ namespace LamaPon
             break;
         case 8:
             DrawProjectSettingsOnlineSection();
+            break;
+        case 9:
+            DrawProjectSettingsServicesSection();
             break;
         default:
             DrawProjectSettingsGameSection();

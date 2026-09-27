@@ -24,8 +24,9 @@ UnityのScriptableObjectとSceneの管理コンポーネントを組み合わせ
 | 接続方式、人数、送信頻度、同期方式、ポート、部屋名、検索公開、同期Prefab | 通信設定アセットのInspector |
 | アセット参照、プレイヤー名、ホスト待受先、ホスト・参加・退出のイベント名 | Sceneの通信セッション管理Script |
 | NetworkIdentity / NetworkTransform / NetworkStateなど | 同期対象のGameObject |
-| 接続の動作確認、部屋検索、接続情報コピー、Discordテスト表示 | ウィンドウ > オンライン診断 |
-| アカウント連携のURL・環境ID、Discord Application ID | プロジェクト設定 > オンライン |
+| 接続の動作確認、部屋検索、接続情報コピー | ウィンドウ > オンライン診断 |
+| アカウント連携のURL・環境ID、Discord Application ID | プロジェクト設定 > サービス連携 |
+| Discordのテスト表示 | ウィンドウ > サービス連携の診断 |
 
 アセットの条件はScriptが有効化されたときに適用します。再生開始だけでは接続しません。
 無効化・破棄・Scene終了時は担当する接続を終了します。アプリのセッションは作り直しません。

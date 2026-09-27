@@ -50,6 +50,13 @@ namespace LamaPon
                 [this](bool& open) { DrawOnlineDiagnosticsPanel(open); }
             },
             EditorPanelDefinition{
+                std::string{ ServiceDiagnosticsPanelId },
+                "サービス連携の診断",
+                false,
+                true,
+                [this](bool& open) { DrawServiceDiagnosticsPanel(open); }
+            },
+            EditorPanelDefinition{
                 std::string{ AssetBrowserPanelId },
                 "アセット",
                 true,

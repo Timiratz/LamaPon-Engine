@@ -59,8 +59,8 @@
       "activation": "Immediate",
       "target": "Project",
       "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/network-session-workflow-0.1.0.zip",
-      "sizeBytes": 13048,
-      "sha256": "c7be519f579b415671b6ae61224d3c56bfa980ecd88258a5c435ea509ef3eed0"
+      "sizeBytes": 13393,
+      "sha256": "a1f403752fbefde5d8e3b41271999d661cfe934121f522619c40f0467fcfe711"
     }
   ],
   "version": 1
