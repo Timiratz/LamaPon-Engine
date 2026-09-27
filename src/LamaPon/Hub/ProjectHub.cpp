@@ -805,11 +805,8 @@ namespace LamaPon::Hub
         ProjectSettings settings;
         settings.gameName = projectName;
         settings.startupScene = L"scenes/Main.scene.json";
-        // 新しいプロジェクトでは、シーン移動を短いフェードでつなぎます
-        // （既存プロジェクトは設定が無いので従来どおり切り替えます）。
-        settings.sceneTransition = MakeSceneTransition(
-            SceneTransitionEffect::Fade,
-            0.3f);
+        // 演出はSceneのScriptとデータアセットから明示的に指定します。
+        // 新規プロジェクト全体へ暗黙のフェードを追加しません。
         if (projectTemplate == ProjectTemplate::TwoDimensional
             || projectTemplate
                 == ProjectTemplate::LearningTwoDimensional)

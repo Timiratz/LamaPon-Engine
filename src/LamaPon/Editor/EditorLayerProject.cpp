@@ -945,14 +945,19 @@ namespace LamaPon
 
     }
 
-    // プロジェクト設定「シーン遷移」カテゴリー。
+    // 既存プロジェクトの設定を編集する互換用の折りたたみ欄です。
     void EditorLayer::DrawProjectSettingsSceneTransitionSection()
     {
-        ImGui::SeparatorText("既定の遷移演出");
         ImGui::TextWrapped(
-            "UI Buttonによるシーン移動、ゲームの起動シーン、C++の"
-            "RequestLoadAsync(path)で使う演出です。旧シーンを覆い終えてから"
-            "新シーンへ切り替え、読み込みは覆っている間に進めます。");
+            "新しい演出はscene-transition-showcaseパッケージの"
+            "遷移プリセット（データアセット）と、Sceneの"
+            "「シーン遷移コントローラー」Scriptで設定します。"
+            "この欄は以前のプロジェクト全体の設定を編集するためのものです。");
+        if (!ImGui::CollapsingHeader("従来の遷移・読み込み設定"))
+        {
+            return;
+        }
+        ImGui::SeparatorText("プロジェクト全体の既定の演出");
         ImGui::PushID("ProjectSceneTransition");
         const auto transition = DrawSceneTransitionEditor(
             m_projectSceneTransitionDraft,
@@ -2227,7 +2232,7 @@ namespace LamaPon
         }
 
         // 左のカテゴリー一覧と右の内容ペインへ分割します。
-        constexpr std::array<const char*, 10> categories{
+        constexpr std::array<const char*, 9> categories{
             "ゲーム",
             "グラフィック",
             "ビューポート設定",
@@ -2236,8 +2241,7 @@ namespace LamaPon
             "入力",
             "スクリプト",
             "ビルドプロファイル",
-            "オンライン",
-            "シーン遷移"
+            "オンライン"
         };
         ImGui::BeginChild(
             "ProjectSettingsCategories",
@@ -2301,11 +2305,10 @@ namespace LamaPon
         case 8:
             DrawProjectSettingsOnlineSection();
             break;
-        case 9:
-            DrawProjectSettingsSceneTransitionSection();
-            break;
         default:
             DrawProjectSettingsGameSection();
+            ImGui::Spacing();
+            DrawProjectSettingsSceneTransitionSection();
             break;
         }
         ImGui::EndChild();

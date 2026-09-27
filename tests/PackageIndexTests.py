@@ -47,7 +47,8 @@ ALLOWED_NATIVE_KEYS = {
     "defines",
 }
 # バイナリはCRLFを含み得るため、テキスト改行の検証対象から外します。
-BINARY_SUFFIXES = {".a", ".dll", ".dylib", ".exe", ".lib", ".pdb", ".so"}
+BINARY_SUFFIXES = {".a", ".dll", ".dylib", ".exe", ".lib", ".pdb", ".so",
+                   ".png", ".jpg", ".jpeg", ".dds"}
 
 
 def load_index() -> dict:
@@ -136,6 +137,27 @@ class PackageIndexTests(unittest.TestCase):
                     set(),
                     "元ファイルが無い.metaがあります。",
                 )
+
+    def test_transition_asset_importers(self):
+        entry = next(item for item in self.packages
+                     if item["name"] == "scene-transition-showcase")
+        with zipfile.ZipFile(PACKAGES_ROOT / entry["downloadUrl"].rsplit("/", 1)[-1]) as archive:
+            for name in archive.namelist():
+                if name.endswith(".asset.json"):
+                    expected = "DataAsset"
+                elif name.endswith(".scene.json"):
+                    expected = "Scene"
+                elif name.endswith(".hlsl"):
+                    expected = "Shader"
+                elif name.endswith(".png"):
+                    expected = "Texture"
+                elif name.endswith(".cpp"):
+                    expected = "CppScript"
+                else:
+                    continue
+                with self.subTest(asset=name):
+                    meta = json.loads(archive.read(name + ".meta"))
+                    self.assertEqual(meta["importer"], expected)
 
     def test_archives_have_no_path_escape(self):
         for entry in self.packages:

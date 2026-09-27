@@ -22,10 +22,14 @@ OUTPUT_ROOT = REPOSITORY_ROOT / "packages"
 
 # AssetDatabase::ImporterFor と同じ対応です。今のパッケージが使う
 # 拡張子だけを見ます。
-IMPORTERS = {".cpp": "CppScript"}
+IMPORTERS = {".cpp": "CppScript", ".hlsl": "Shader", ".png": "Texture"}
 
 
 def importer_for(path: pathlib.Path) -> str:
+    if path.name.lower().endswith(".scene.json"):
+        return "Scene"
+    if path.name.lower().endswith(".asset.json"):
+        return "DataAsset"
     return IMPORTERS.get(path.suffix.lower(), "Default")
 
 

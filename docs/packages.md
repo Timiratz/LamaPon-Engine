@@ -44,6 +44,7 @@ C++スクリプト、Prefab、アセットをパッケージとしてまとめ�
 
 | パッケージ | 内容 |
 |---|---|
+| **Scene Transition Showcase**（`scene-transition-showcase`） | 16種類の編集可能な遷移プリセット（データアセット）を、SceneのScriptから参照して実行。[使い方](../packages/src/scene-transition-showcase/README.md) |
 | **Easing & Tween**（`easing-tween`） | 動きに緩急をつけるイージング関数28種と、位置・回転・拡縮を時間をかけて動かす「Tween」コンポーネント。`Easing.h`をincludeすれば自分のScriptからも使えます |
 | **Discord Rich Presence (Social SDK)**（`discord-presence-sdk`） | [Discord Rich Presence](online-services.md#discord-rich-presence)を実際にDiscordへ表示するためのアダプター。ライセンス上SDK本体は同梱できないので、Discordから入手して`sdk/`へ置く形です（手順はパッケージのREADME）。Discordログインとは無関係で、ログインしなくても使えます |
 | **DirectX 12 Renderer**（`directx12-renderer`） | DirectX 12 Experimental描画バックエンド。導入後、Project Settingsの「グラフィック」で`DirectX 12 Experimental`を選び、エディターまたはゲームを再起動すると有効になります |

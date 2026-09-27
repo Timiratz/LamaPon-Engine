@@ -466,6 +466,11 @@ namespace
                 "クリック時にこの名前のイベントを発行します。"
                 "C++ Scriptの On(\"イベント名\", ...) で受信できます");
         }
+        ImGui::TextWrapped(
+            "遷移プリセットを使うときは、Sceneのシーン遷移"
+            "コントローラーへ移動先を指定し、このボタンの"
+            "クリックイベント名をコントローラーと揃えます。"
+            "ボタンの移動先Sceneは空にしてください。");
         ImGui::SeparatorText(
             "クリック時のScene操作");
         bool reloadCurrent =
@@ -557,45 +562,47 @@ namespace
             || (!button.TargetScene().empty()
                 && !button.LoadTargetAdditive()))
         {
-            ImGui::SeparatorText(
-                "シーン遷移の演出");
-            bool customTransition =
-                button.UseCustomTransition();
-            if (ImGui::Checkbox(
-                    "このボタン専用の演出を使う",
-                    &customTransition))
+            if (ImGui::TreeNode("従来のボタン専用の遷移設定"))
             {
-                button.SetUseCustomTransition(
-                    customTransition);
-                context.recordHistory();
-            }
-            ShowItemTooltip(
-                "オフのときはProject Settingsの"
-                "「シーン遷移」で決めた既定の演出を使います");
-            if (customTransition)
-            {
-                ImGui::PushID("UIButtonTransition");
-                auto transition = button.Transition();
-                const auto edited =
-                    DrawSceneTransitionEditor(
-                        transition,
-                        static_cast<bool>(
-                            context.previewTransition));
-                if (edited.changed)
+                bool customTransition =
+                    button.UseCustomTransition();
+                if (ImGui::Checkbox(
+                        "このボタン専用の演出を使う",
+                        &customTransition))
                 {
-                    button.SetTransition(transition);
-                }
-                if (edited.committed)
-                {
+                    button.SetUseCustomTransition(
+                        customTransition);
                     context.recordHistory();
                 }
-                if (edited.previewRequested
-                    && context.previewTransition)
+                ShowItemTooltip(
+                    "オフのときはプロジェクト設定の「ゲーム」にある"
+                    "従来の遷移設定を使います");
+                if (customTransition)
                 {
-                    context.previewTransition(
-                        button.Transition());
+                    ImGui::PushID("UIButtonTransition");
+                    auto transition = button.Transition();
+                    const auto edited =
+                        DrawSceneTransitionEditor(
+                            transition,
+                            static_cast<bool>(
+                                context.previewTransition));
+                    if (edited.changed)
+                    {
+                        button.SetTransition(transition);
+                    }
+                    if (edited.committed)
+                    {
+                        context.recordHistory();
+                    }
+                    if (edited.previewRequested
+                        && context.previewTransition)
+                    {
+                        context.previewTransition(
+                            button.Transition());
+                    }
+                    ImGui::PopID();
                 }
-                ImGui::PopID();
+                ImGui::TreePop();
             }
         }
 

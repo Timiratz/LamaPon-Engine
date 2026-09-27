@@ -11,5 +11,10 @@ packages/src/** text eol=lf
 # 利用者が自分で置いたSDKのバイナリを誤って壊さないための保険です。
 packages/src/**/*.lib binary
 packages/src/**/*.dll binary
+# プレビューとルール画像にも改行変換を適用しません。
+packages/src/**/*.png binary
+packages/src/**/*.jpg binary
+packages/src/**/*.jpeg binary
+packages/src/**/*.dds binary
 # 配布Zipはバイト列そのものです。
 packages/*.zip binary

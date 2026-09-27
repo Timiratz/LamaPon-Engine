@@ -96,6 +96,9 @@ namespace
         const auto settings = LamaPon::LoadProjectSettings(
             root / L".lamapon" / L"project.json");
         Require(
+            settings.sceneTransition.effect == LamaPon::SceneTransitionEffect::None,
+            "New projects must opt into transitions through scene scripts.");
+        Require(
             settings.startupScene == L"scenes/Main.scene.json",
             "Generated startup scene path is incorrect.");
 

@@ -2283,6 +2283,7 @@ if(BUILD_TESTING)
         LamaPonProjectGameModuleLoadTests
         PRIVATE
             LamaPonRuntime
+            ole32
     )
     target_compile_options(LamaPonProjectGameModuleLoadTests PRIVATE
         $<$<CXX_COMPILER_ID:MSVC>:/W4>
