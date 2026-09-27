@@ -152,6 +152,23 @@ const float rate = enemy->GetFloatAt("dropRates", 0);
 
 ## 他のアセットを参照する（asset）
 
+stringに `options` を指定すると、自由入力の代わりに選択欄が表示されます。
+Scriptの公開プロパティでも同じ指定を使えます。
+
+```json
+{ "name": "effect", "displayName": "演出", "type": "string",
+  "default": "fade",
+  "options": [
+    { "value": "fade", "displayName": "フェード" },
+    { "value": "wipe", "displayName": "ワイプ" }
+  ] }
+```
+
+文字列だけの選択肢（`"options": ["fade", "wipe"]`）も使えます。
+defaultを省略すると最初の有効な選択肢で作成します。
+未知の保存値は選び直すまで維持し、壊れた選択肢と重複値は無視します。
+
+
 `"type": "asset"`の欄は、インスペクターで一覧から選ぶか、アセット
 ウィンドウからドラッグ＆ドロップして指定します。値はassetsフォルダー
 からの相対パスで保存されます。

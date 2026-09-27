@@ -35,6 +35,19 @@
       "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/directx12-renderer-0.1.0.zip",
       "sizeBytes": 8989,
       "sha256": "0781e5b1dfcab07063b15618864173c53ea4d7d3484516ce784af33d3d62a271"
+    },
+    {
+      "name": "scene-transition-showcase",
+      "displayName": "Scene Transition Showcase",
+      "description": "16種類の編集可能な遷移プリセットと、データアセットを参照してSceneを切り替えるScriptです。",
+      "author": "LamaPon Community",
+      "version": "0.2.0",
+      "minimumEngineVersion": "0.1.0",
+      "activation": "Immediate",
+      "target": "Project",
+      "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/scene-transition-showcase-0.2.0.zip",
+      "sizeBytes": 158169,
+      "sha256": "4d521e1e4521b66845d8ab0ec43a64f6b18867d403482004c70e01c760b3045c"
     }
   ],
   "version": 1

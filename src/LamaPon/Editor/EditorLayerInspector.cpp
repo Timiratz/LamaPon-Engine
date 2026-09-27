@@ -489,26 +489,64 @@ namespace
         }
         else if (type == "string")
         {
-            std::string value = field.value(
-                "default",
-                std::string{});
+            const auto initial = LamaPon::EditorDetail::SchemaDefaultValue(field);
+            std::string value = initial.is_string()
+                ? initial.get<std::string>() : std::string{};
             if (slot.Has() && slot.Get().is_string())
             {
                 value = slot.Get().get<std::string>();
             }
-            std::array<char, 512> buffer{};
-            strncpy_s(
-                buffer.data(),
-                buffer.size(),
-                value.c_str(),
-                _TRUNCATE);
-            itemChanged = ImGui::InputText(
-                controlId.c_str(),
-                buffer.data(),
-                buffer.size());
-            if (itemChanged)
+            const auto options = LamaPon::EditorDetail::SchemaStringOptions(field);
+            if (!options.empty())
             {
-                slot.Set(std::string{ buffer.data() });
+                std::string preview = value;
+                for (const auto& option : options)
+                {
+                    if (option.value == value)
+                    {
+                        preview = option.displayName;
+                        break;
+                    }
+                }
+                // 未知の既存値は表示・保存を保ち、選び直すまで変更しません。
+                if (ImGui::BeginCombo(controlId.c_str(), preview.c_str()))
+                {
+                    for (std::size_t index = 0; index < options.size(); ++index)
+                    {
+                        const auto& option = options[index];
+                        const bool selected = option.value == value;
+                        ImGui::PushID(static_cast<int>(index));
+                        if (ImGui::Selectable(option.displayName.c_str(), selected))
+                        {
+                            slot.Set(option.value);
+                            itemChanged = true;
+                            immediateCommit = true;
+                        }
+                        if (selected)
+                        {
+                            ImGui::SetItemDefaultFocus();
+                        }
+                        ImGui::PopID();
+                    }
+                    ImGui::EndCombo();
+                }
+            }
+            else
+            {
+                std::array<char, 512> buffer{};
+                strncpy_s(
+                    buffer.data(),
+                    buffer.size(),
+                    value.c_str(),
+                    _TRUNCATE);
+                itemChanged = ImGui::InputText(
+                    controlId.c_str(),
+                    buffer.data(),
+                    buffer.size());
+                if (itemChanged)
+                {
+                    slot.Set(std::string{ buffer.data() });
+                }
             }
         }
         else if (type == "asset")

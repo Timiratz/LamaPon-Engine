@@ -1281,7 +1281,7 @@ const std::string& LastError() const noexcept;
 
 切り替えは**次のフレームの先頭**で実行されます（更新中にオブジェクトを壊さないため）。
 大きなシーンは`Async`版を使うと、読み込み中も現在のシーンが動き続け、標準のローディング画面が出ます。
-引数なしの`Async`版はProject Settingsの「シーン遷移」で決めた既定の演出（`DefaultTransition()`）で切り替えます。
+引数なしの`Async`版はProject Settingsの「ゲーム」→「従来の遷移・読み込み設定」で決めた既定の演出（`DefaultTransition()`）で切り替えます。
 
 **サンプル**
 

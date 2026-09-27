@@ -5,12 +5,24 @@
 #include <cstddef>
 #include <string>
 #include <string_view>
+#include <vector>
 
 // データアセット（*.asset.json）のスキーマを解釈する小さな関数です。
 // 「新規作成時の初期値」と「Inspectorでlistへ要素を足したときの
 // 初期値」は同じ規則である必要があるため、ここに1つだけ置きます。
 namespace LamaPon::EditorDetail
 {
+    struct SchemaStringOption final
+    {
+        std::string value;
+        std::string displayName;
+    };
+
+    // stringのoptionsは文字列、またはvalue/displayNameの組です。
+    // 壊れた項目と重複を除き、保存する値と表示名を分けて返します。
+    [[nodiscard]] std::vector<SchemaStringOption> SchemaStringOptions(
+        const nlohmann::json& field);
+
     // vec2/vec3/vec4/color3/color4の成分数です。
     [[nodiscard]] std::size_t SchemaComponentCount(
         std::string_view type) noexcept;

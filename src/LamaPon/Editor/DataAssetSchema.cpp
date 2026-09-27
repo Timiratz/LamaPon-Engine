@@ -40,6 +40,45 @@ namespace LamaPon::EditorDetail
         return 4;
     }
 
+    std::vector<SchemaStringOption> SchemaStringOptions(
+        const nlohmann::json& field)
+    {
+        std::vector<SchemaStringOption> result;
+        if (!field.is_object() || !field.contains("options")
+            || !field.at("options").is_array())
+        {
+            return result;
+        }
+        for (const auto& option : field.at("options"))
+        {
+            SchemaStringOption entry;
+            if (option.is_string())
+            {
+                entry.value = option.get<std::string>();
+                entry.displayName = entry.value;
+            }
+            else if (option.is_object() && option.contains("value")
+                && option.at("value").is_string())
+            {
+                entry.value = option.at("value").get<std::string>();
+                entry.displayName = option.contains("displayName")
+                        && option.at("displayName").is_string()
+                    ? option.at("displayName").get<std::string>()
+                    : entry.value;
+            }
+            else
+            {
+                continue;
+            }
+            if (std::ranges::none_of(result, [&entry](const auto& existing)
+                { return existing.value == entry.value; }))
+            {
+                result.push_back(std::move(entry));
+            }
+        }
+        return result;
+    }
+
     nlohmann::json SchemaDefaultValue(
         const nlohmann::json& field)
     {
@@ -77,6 +116,14 @@ namespace LamaPon::EditorDetail
         if (field.is_object() && field.contains("default"))
         {
             return field.at("default");
+        }
+        if (type == "string")
+        {
+            const auto options = SchemaStringOptions(field);
+            if (!options.empty())
+            {
+                return options.front().value;
+            }
         }
         if (type == "bool")
         {

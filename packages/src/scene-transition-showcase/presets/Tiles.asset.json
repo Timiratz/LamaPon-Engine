@@ -1,0 +1,40 @@
+{
+  "format": "LamaPonDataAsset",
+  "version": 1,
+  "type": "SceneTransition.Preset",
+  "values": {
+    "accentColor": [
+      1.0,
+      1.0,
+      1.0,
+      0.0
+    ],
+    "accentWidth": 0.03,
+    "blockInput": true,
+    "color": [
+      1.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "coverDuration": 0.4,
+    "direction": "leftToRight",
+    "divisions": 8,
+    "easing": "easeInOutCubic",
+    "effect": "tiles",
+    "fadeMusic": true,
+    "focus": [
+      0.5,
+      0.5
+    ],
+    "holdDuration": 0.1,
+    "passThrough": true,
+    "revealDuration": 0.4,
+    "ruleTexture": "",
+    "shader": "",
+    "shaderPattern": "dissolve",
+    "showLoadingScreen": true,
+    "softness": 0.0,
+    "stagger": 0.5
+  }
+}

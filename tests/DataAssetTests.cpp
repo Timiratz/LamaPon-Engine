@@ -272,6 +272,28 @@ int main()
                 "New list elements must use the item defaults.");
         }
 
+        // 選択肢の表示名は保存値と独立し、未知の既定値も失いません。
+        {
+            const auto field = nlohmann::json::parse(R"({
+                "type":"string","options":[null,1,{},{"value":2},
+                    {"value":"fade","displayName":"フェード"},
+                    "wipe",{"value":"fade","displayName":"重複"}]
+            })");
+            const auto options = LamaPon::EditorDetail::SchemaStringOptions(field);
+            Require(options.size() == 2 && options[0].value == "fade"
+                && options[0].displayName == "フェード" && options[1].value == "wipe",
+                "String options must skip malformed and duplicate entries.");
+            Require(LamaPon::EditorDetail::SchemaDefaultValue(field) == "fade",
+                "An option field without a default must use its first valid option.");
+            auto explicitDefault = field;
+            explicitDefault["default"] = "futureEffect";
+            Require(LamaPon::EditorDetail::SchemaDefaultValue(explicitDefault)
+                == "futureEffect", "Unknown saved defaults must survive.");
+            Require(LamaPon::EditorDetail::SchemaStringOptions(
+                nlohmann::json{{"options", "broken"}}).empty(),
+                "Malformed option containers must remain plain string fields.");
+        }
+
         std::cout << "Data asset tests passed.\n";
         return 0;
     }

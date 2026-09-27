@@ -1,0 +1,10 @@
+{
+  "name": "scene-transition-showcase",
+  "displayName": "Scene Transition Showcase",
+  "description": "16種類の編集可能な遷移プリセットと、データアセットを参照してSceneを切り替えるScriptです。",
+  "author": "LamaPon Community",
+  "version": "0.2.0",
+  "minimumEngineVersion": "0.1.0",
+  "activation": "Immediate",
+  "target": "Project"
+}
