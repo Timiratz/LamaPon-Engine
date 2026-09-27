@@ -22,21 +22,32 @@ namespace LamaPon
 
     void EditorLayer::DrawProjectSettingsNetworkSection()
     {
-        ImGui::SeparatorText("プレイヤー同士の通信（P2P）");
-        auto* session = ActiveNetworkSession();
-        const bool active = session && session->State() != NetworkState::Stopped
-            && session->State() != NetworkState::Error;
-        ImGui::BeginDisabled(active);
+        ImGui::SeparatorText("通信サービス共通設定");
+        ImGui::TextWrapped("ゲームごとのIDとサービス設定を保存します。Sceneごとの通信条件はNetwork Session Workflowの通信設定アセットと通信セッション管理Scriptで設定します。");
+        EditNetworkText("P2PゲームID", m_projectNetworkDraft.gameId);
+        EditNetworkText("通信バージョン", m_projectNetworkDraft.gameVersion);
+        if (ImGui::TreeNode("Epic Online Services共通設定"))
+        {
+            EditNetworkText("EOS Product ID", m_projectNetworkDraft.eosProductId);
+            EditNetworkText("EOS Sandbox ID", m_projectNetworkDraft.eosSandboxId);
+            EditNetworkText("EOS Deployment ID", m_projectNetworkDraft.eosDeploymentId);
+            EditNetworkText("EOS Client ID", m_projectNetworkDraft.eosClientId);
+            EditNetworkText("EOS資格情報の環境変数名", m_projectNetworkDraft.eosClientSecretEnvironment);
+            if (!HasEpicNetworkBackend())
+                ImGui::TextColored(ImVec4{ 1, 0.65f, 0.25f, 1 }, "このビルドにはEOS SDKがありません。");
+            ImGui::TreePop();
+        }
+        ImGui::TextDisabled("接続・参加・検索は「ウィンドウ > オンライン診断」で確認できます。");
+        if (!ImGui::TreeNode("従来のP2P設定（通信管理ScriptがないScene向け）")) return;
+        ImGui::TextWrapped("保存済みの設定を引き続き使えます。通信管理Scriptを置いたSceneでは参照するアセットの条件が優先されます。変更は保存後、次の再生・書き出しに反映します。");
         int backend = m_projectNetworkDraft.backend == NetworkBackend::Direct ? 0
             : (m_projectNetworkDraft.backend == NetworkBackend::Lan ? 1 : 2);
         if (ImGui::Combo("接続方式", &backend, "直接接続（暗号化）\0LAN / 同じPC（従来方式）\0インターネット（EOS）\0"))
         {
             m_projectNetworkDraft.backend = backend == 0 ? NetworkBackend::Direct
                 : (backend == 1 ? NetworkBackend::Lan : NetworkBackend::EpicOnlineServices);
-            m_networkConnectionPanel.StopSearch();
+            m_onlineDiagnosticsPanel.StopSearch();
         }
-        EditNetworkText("ゲームID##P2P", m_projectNetworkDraft.gameId);
-        EditNetworkText("通信バージョン", m_projectNetworkDraft.gameVersion);
         EditNetworkText("シーンID", m_projectNetworkDraft.sceneId);
         int players = static_cast<int>(m_projectNetworkDraft.maxPlayers);
         if (ImGui::SliderInt("最大人数（ホストを含む）", &players, 2, 4))
@@ -71,17 +82,6 @@ namespace LamaPon
             }
             else ImGui::TextWrapped("従来LAN方式には暗号化・参加認証がありません。信頼できるLAN内で使ってください。");
         }
-        else
-        {
-            EditNetworkText("EOS Product ID", m_projectNetworkDraft.eosProductId);
-            EditNetworkText("EOS Sandbox ID", m_projectNetworkDraft.eosSandboxId);
-            EditNetworkText("EOS Deployment ID", m_projectNetworkDraft.eosDeploymentId);
-            EditNetworkText("EOS Client ID", m_projectNetworkDraft.eosClientId);
-            EditNetworkText("EOS資格情報の環境変数名", m_projectNetworkDraft.eosClientSecretEnvironment);
-            ImGui::TextWrapped("ホストの部屋IDを共有して参加します。接続にはEOSの製品設定とSDK対応ビルドが必要です。");
-            if (!HasEpicNetworkBackend())
-                ImGui::TextColored(ImVec4{ 1, 0.65f, 0.25f, 1 }, "このビルドにはEOS SDKがありません。");
-        }
         if (ImGui::TreeNode("同期Prefabの登録"))
         {
             ImGui::TextWrapped("両方のゲームに同じキーとPrefabを登録します。パスはassetsからの相対パスです。");
@@ -105,9 +105,25 @@ namespace LamaPon
                 m_projectNetworkDraft.prefabs.push_back({ "player", "prefabs/player.prefab.json" });
             ImGui::TreePop();
         }
-        ImGui::EndDisabled();
+        ImGui::TreePop();
+    }
 
-        m_networkConnectionPanel.Draw(session, ActiveNetworkSceneBridge(), m_playing, m_projectNetworkDraft);
+    void EditorLayer::DrawOnlineDiagnosticsPanel(bool& open)
+    {
+        ImGui::SetNextWindowSize(ImVec2{ 680.0f, 600.0f }, ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("オンライン診断", &open))
+            m_onlineDiagnosticsPanel.Draw(ActiveNetworkSession(), ActiveNetworkSceneBridge(),
+                m_playing);
+        else m_onlineDiagnosticsPanel.StopSearch();
+        ImGui::End();
+        if (!open) m_onlineDiagnosticsPanel.StopSearch();
+    }
 
+    void EditorLayer::DrawServiceDiagnosticsPanel(bool& open)
+    {
+        ImGui::SetNextWindowSize(ImVec2{ 680.0f, 400.0f }, ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("サービス連携の診断", &open))
+            m_serviceDiagnosticsPanel.Draw(m_onlineServices, m_projectSettings.online);
+        ImGui::End();
     }
 }

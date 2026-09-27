@@ -1,6 +1,7 @@
 #pragma once
 
-#include "LamaPon/Editor/NetworkConnectionPanel.h"
+#include "LamaPon/Editor/OnlineDiagnosticsPanel.h"
+#include "LamaPon/Editor/ServiceDiagnosticsPanel.h"
 
 #include "LamaPon/Editor/EditorExtensionRegistry.h"
 #include "LamaPon/Editor/UIComponentInspectors.h"
@@ -172,6 +173,8 @@ namespace LamaPon
             "assetBrowser" };
         static constexpr std::string_view TilePalettePanelId{
             "tilePalette" };
+        static constexpr std::string_view OnlineDiagnosticsPanelId{ "onlineDiagnostics" };
+        static constexpr std::string_view ServiceDiagnosticsPanelId{ "serviceDiagnostics" };
         static constexpr std::string_view PackagesPanelId{ "packages" };
         // 「ウィンドウ」→「解析」にまとめるデバッグ用パネルです。
         static constexpr std::string_view ProfilerPanelId{ "profiler" };
@@ -571,7 +574,10 @@ namespace LamaPon
         void DrawProjectSettingsScriptingSection();
         void DrawProjectSettingsBuildSection();
         void DrawProjectSettingsOnlineSection();
+        void DrawProjectSettingsServicesSection();
         void DrawProjectSettingsNetworkSection();
+        void DrawOnlineDiagnosticsPanel(bool& open);
+        void DrawServiceDiagnosticsPanel(bool& open);
         void DrawProjectSettingsDiscordPresenceSection();
         void DrawProjectSettingsSceneTransitionSection();
         // シーンを切り替えずに遷移演出をGameビューで再生します
@@ -832,7 +838,8 @@ namespace LamaPon
         SceneLoadingScreenSettings m_projectLoadingScreenDraft;
         OnlineProjectSettings m_projectOnlineDraft;
         NetworkConfiguration m_projectNetworkDraft;
-        NetworkConnectionPanel m_networkConnectionPanel;
+        OnlineDiagnosticsPanel m_onlineDiagnosticsPanel;
+        ServiceDiagnosticsPanel m_serviceDiagnosticsPanel;
         std::array<char, 2049>
             m_projectOnlineServiceBaseUrlBuffer{};
         std::array<char, 129> m_projectOnlineGameIdBuffer{};
@@ -844,12 +851,6 @@ namespace LamaPon
             m_projectDiscordPresenceImageKeyBuffer{};
         std::array<char, 129>
             m_projectDiscordPresenceImageTextBuffer{};
-        // Rich Presenceの動作確認用。project.jsonへは保存しません。
-        std::array<char, 129>
-            m_projectDiscordPresenceTestDetailsBuffer{};
-        std::array<char, 129>
-            m_projectDiscordPresenceTestStateBuffer{};
-        std::string m_projectDiscordPresenceTestMessage;
         // プロジェクト設定で選択中のカテゴリー（0=ゲーム）。
         int m_projectSettingsCategory{};
         std::optional<GameExportTarget>

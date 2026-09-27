@@ -1,0 +1,17 @@
+{
+  "type": "Network.ConnectionProfile",
+  "values": {
+    "backend": "EOS",
+    "sceneId": "main",
+    "maxPlayers": 4,
+    "tickRate": 20,
+    "syncMode": "Continuous",
+    "timeoutSeconds": 15,
+    "port": 0,
+    "roomName": "Room",
+    "advertiseLan": false,
+    "discoveryPort": 27841,
+    "automaticPortMapping": false,
+    "prefabs": []
+  }
+}

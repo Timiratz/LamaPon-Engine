@@ -58,6 +58,7 @@ endif()
 execute_process(
     COMMAND "${TEST_LOADER}" "${modulePath}"
         "${ENGINE_ROOT}/packages/src/scene-transition-showcase"
+        "${ENGINE_ROOT}/packages/src/network-session-workflow"
     RESULT_VARIABLE loadResult
     OUTPUT_VARIABLE loadOutput
     ERROR_VARIABLE loadError

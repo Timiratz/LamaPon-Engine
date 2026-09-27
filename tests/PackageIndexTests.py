@@ -71,6 +71,27 @@ class PackageIndexTests(unittest.TestCase):
         self.index = load_index()
         self.packages = self.index["packages"]
 
+    def test_project_packages_use_distributed_engine_headers(self):
+        # リポジトリ内だけでコンパイルできても、公開SDKで除外される内部
+        # ヘッダーを参照すると利用者が配布ZIPを使えなくなります。
+        cmake = (REPOSITORY_ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        excluded = set(re.findall(r'PATTERN "([^"/]+\.h)" EXCLUDE', cmake))
+        include = re.compile(r'^\s*#\s*include\s*[<"](LamaPon/[^">\n]+)[">]', re.MULTILINE)
+        for entry in self.packages:
+            if entry.get("target") != "Project":
+                continue
+            source = SOURCE_ROOT / entry["name"]
+            if not source.is_dir():
+                continue
+            for path in package_source_files(source):
+                if path.suffix not in {".h", ".cpp"}:
+                    continue
+                for header in include.findall(path.read_text(encoding="utf-8")):
+                    with self.subTest(package=entry["name"], file=path.name, header=header):
+                        self.assertTrue((REPOSITORY_ROOT / "src" / header).is_file())
+                        self.assertNotIn(Path(header).name, excluded,
+                                         "配布SDKに含まれないヘッダーへ依存しています。")
+
     def test_index_header(self):
         self.assertEqual(self.index["format"], "LamaPonPackageIndex")
         self.assertEqual(self.index["version"], 1)
