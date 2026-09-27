@@ -24,13 +24,14 @@ namespace LamaPon
         const bool playing, const NetworkConfiguration& configuration)
     {
         auto& ui = *m_impl;
+        ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.45f);
         const bool active = session && session->State() != NetworkState::Stopped && session->State() != NetworkState::Error;
         if (!playing || (ui.browser.IsSearching()
             && (ui.searched.gameId != configuration.gameId || ui.searched.gameVersion != configuration.gameVersion
                 || ui.searched.sceneId != configuration.sceneId || ui.searched.backend != configuration.backend
                 || ui.searched.discoveryPort != configuration.discoveryPort))) ui.browser.Stop();
         ImGui::SeparatorText("接続の動作確認");
-        ImGui::TextWrapped("エディター再生中に接続できます。設定を保存すると、次回の再生と配布ゲームにも反映されます。");
+        ImGui::TextWrapped("エディター再生中に接続できます。実行中の通信条件を使う診断操作です。Sceneの通信管理Scriptがある場合は、そのアセットの条件を使います。");
         ImGui::BeginDisabled(!playing || active || !session);
         ImGui::InputText("プレイヤー名", ui.playerName.data(), ui.playerName.size());
         if (configuration.backend != NetworkBackend::EpicOnlineServices)
@@ -41,12 +42,12 @@ namespace LamaPon
             if (ImGui::SmallButton("IPv4で外部から受付")) strcpy_s(ui.listenAddress.data(), ui.listenAddress.size(), "0.0.0.0");
             ImGui::TextWrapped("127.0.0.1は同じPC、0.0.0.0はIPv4の外部接続、::はIPv6の外部接続を受け付けます。別回線ではポート転送または到達可能なIPv6が必要です。");
         }
-        if (ImGui::Button("部屋を作成") && session && session->Configure(configuration))
+        if (ImGui::Button("部屋を作成") && session)
             static_cast<void>(session->Host(ui.playerName.data(), ui.listenAddress.data()));
         ImGui::InputText("接続情報 / 接続先 / EOS部屋ID", ui.joinAddress.data(), ui.joinAddress.size());
         if (configuration.backend == NetworkBackend::Direct)
             ImGui::InputText("アクセスキー（接続先を別に指定する場合）", ui.accessKey.data(), ui.accessKey.size(), ImGuiInputTextFlags_Password);
-        if (ImGui::Button("部屋に参加") && session && session->Configure(configuration))
+        if (ImGui::Button("部屋に参加") && session)
         {
             if (configuration.backend == NetworkBackend::Direct && ui.accessKey[0] != '\0')
                 static_cast<void>(session->JoinDirect(ui.joinAddress.data(), ui.accessKey.data(), ui.playerName.data()));
@@ -72,7 +73,7 @@ namespace LamaPon
                     ImGui::PushID(roomIndex++);
                     ImGui::Text("%s (%u/%u)", room.name.c_str(), room.players, room.capacity);
                     ImGui::SameLine(); ImGui::BeginDisabled(active || !session || room.players >= room.capacity);
-                    if (ImGui::SmallButton("参加") && session && session->Configure(configuration))
+                    if (ImGui::SmallButton("参加") && session)
                         static_cast<void>(session->JoinRoom(room, ui.playerName.data()));
                     ImGui::EndDisabled(); ImGui::PopID();
                 }
@@ -107,5 +108,6 @@ namespace LamaPon
             }
         }
         ImGui::Spacing();
+        ImGui::PopItemWidth();
     }
 }

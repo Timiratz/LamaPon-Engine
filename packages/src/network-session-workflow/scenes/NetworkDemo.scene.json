@@ -1,0 +1,286 @@
+{
+  "format": "LamaPonScene",
+  "version": 1,
+  "mainCamera": null,
+  "environment": {
+    "ambientColor": [
+      0.65,
+      0.72,
+      0.85
+    ],
+    "ambientIntensity": 0.35
+  },
+  "physics": {
+    "broadPhaseCellSize": 4.0
+  },
+  "objects": [
+    {
+      "id": 1,
+      "name": "Showcase Canvas",
+      "enabled": true,
+      "parent": null,
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "type": "UICanvas",
+          "enabled": true,
+          "referenceResolution": [
+            1280.0,
+            720.0
+          ],
+          "matchWidthOrHeight": 0.5
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Network Manager",
+      "enabled": true,
+      "parent": null,
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "components": [
+        {
+          "type": "NativeScript",
+          "enabled": true,
+          "script": "Network.SessionController",
+          "properties": {
+            "profile": "packages/network-session-workflow/profiles/DirectLocal.asset.json",
+            "playerName": "Player",
+            "listenAddress": "127.0.0.1",
+            "hostEvent": "Network.Host",
+            "joinEvent": "Network.Join",
+            "leaveEvent": "Network.Leave"
+          }
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "Host Room",
+      "enabled": true,
+      "parent": 1,
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "type": "UIRectTransform",
+          "enabled": true,
+          "anchorMin": [
+            0.5,
+            0.5
+          ],
+          "anchorMax": [
+            0.5,
+            0.5
+          ],
+          "pivot": [
+            0.5,
+            0.5
+          ],
+          "anchoredPosition": [
+            0,
+            -60
+          ],
+          "sizeDelta": [
+            320.0,
+            72.0
+          ]
+        },
+        {
+          "type": "UIButton",
+          "enabled": true,
+          "label": "部屋を作成",
+          "fontFamily": "Yu Gothic UI",
+          "fontSize": 24.0,
+          "fallbackSize": [
+            320.0,
+            72.0
+          ],
+          "normalColor": [
+            0.08,
+            0.3,
+            0.55,
+            1.0
+          ],
+          "hoveredColor": [
+            0.12,
+            0.55,
+            0.9,
+            1.0
+          ],
+          "pressedColor": [
+            0.04,
+            0.2,
+            0.4,
+            1.0
+          ],
+          "disabledColor": [
+            0.18,
+            0.2,
+            0.24,
+            0.65
+          ],
+          "textColor": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "interactable": true,
+          "texture": "",
+          "reloadCurrentScene": false,
+          "targetScene": "",
+          "clickEvent": "Network.Host",
+          "transition": {
+            "effect": "none"
+          }
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "name": "Leave Room",
+      "enabled": true,
+      "parent": 1,
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "components": [
+        {
+          "type": "UIRectTransform",
+          "enabled": true,
+          "anchorMin": [
+            0.5,
+            0.5
+          ],
+          "anchorMax": [
+            0.5,
+            0.5
+          ],
+          "pivot": [
+            0.5,
+            0.5
+          ],
+          "anchoredPosition": [
+            0,
+            60
+          ],
+          "sizeDelta": [
+            320.0,
+            72.0
+          ]
+        },
+        {
+          "type": "UIButton",
+          "enabled": true,
+          "label": "部屋から退出",
+          "fontFamily": "Yu Gothic UI",
+          "fontSize": 24.0,
+          "fallbackSize": [
+            320.0,
+            72.0
+          ],
+          "normalColor": [
+            0.08,
+            0.3,
+            0.55,
+            1.0
+          ],
+          "hoveredColor": [
+            0.12,
+            0.55,
+            0.9,
+            1.0
+          ],
+          "pressedColor": [
+            0.04,
+            0.2,
+            0.4,
+            1.0
+          ],
+          "disabledColor": [
+            0.18,
+            0.2,
+            0.24,
+            0.65
+          ],
+          "textColor": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "interactable": true,
+          "texture": "",
+          "reloadCurrentScene": false,
+          "targetScene": "",
+          "clickEvent": "Network.Leave",
+          "transition": {
+            "effect": "none"
+          }
+        }
+      ]
+    }
+  ]
+}

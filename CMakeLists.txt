@@ -549,6 +549,8 @@ set(LAMAPON_EDITOR_SOURCES
     src/LamaPon/Editor/NetworkProjectSettingsPanel.cpp
     src/LamaPon/Editor/NetworkConnectionPanel.cpp
     src/LamaPon/Editor/NetworkConnectionPanel.h
+    src/LamaPon/Editor/OnlineDiagnosticsPanel.cpp
+    src/LamaPon/Editor/OnlineDiagnosticsPanel.h
     src/LamaPon/Editor/Editor.cpp
     src/LamaPon/Editor/Editor.h
     src/LamaPon/Editor/EditorExtensionRegistry.cpp

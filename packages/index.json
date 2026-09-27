@@ -48,6 +48,19 @@
       "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/scene-transition-showcase-0.2.0.zip",
       "sizeBytes": 158169,
       "sha256": "4d521e1e4521b66845d8ab0ec43a64f6b18867d403482004c70e01c760b3045c"
+    },
+    {
+      "name": "network-session-workflow",
+      "displayName": "Network Session Workflow",
+      "description": "通信設定アセットとSceneの管理Script。P2Pの接続条件とホスト・参加・退出をゲームごとに組み合わせます。",
+      "author": "LamaPon Community",
+      "version": "0.1.0",
+      "minimumEngineVersion": "0.1.0",
+      "activation": "Immediate",
+      "target": "Project",
+      "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/network-session-workflow-0.1.0.zip",
+      "sizeBytes": 13048,
+      "sha256": "c7be519f579b415671b6ae61224d3c56bfa980ecd88258a5c435ea509ef3eed0"
     }
   ],
   "version": 1

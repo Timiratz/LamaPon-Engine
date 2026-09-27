@@ -12,6 +12,8 @@
 #include <stdexcept>
 #include <thread>
 
+#include "NetworkWorkflowPackageTests.h"
+
 int main(const int argumentCount, const char* const* argumentValues)
 {
     try
@@ -25,10 +27,10 @@ int main(const int argumentCount, const char* const* argumentValues)
             ~ComScope() { CoUninitialize(); }
         } comScope;
 
-        if (argumentCount != 3)
+        if (argumentCount != 4)
         {
             throw std::invalid_argument(
-                "A project Game Module path and package source path are required.");
+                "A project Game Module path and two package source paths are required.");
         }
         LamaPon::GameModuleHost host;
         if (!host.Load(std::filesystem::path(argumentValues[1])))
@@ -36,11 +38,13 @@ int main(const int argumentCount, const char* const* argumentValues)
             throw std::runtime_error(host.LastError());
         }
         if (host.ModuleName() != "LamaPon Project Game Module"
-            || host.RegisteredComponents().size() != 3
+            || host.RegisteredComponents().size() != 4
             || host.FindComponent("Test.ExternalScript") == nullptr
             || host.FindComponent("Game.BeginnerScript") == nullptr
             || host.FindComponent("SceneTransition.Controller") == nullptr
-            || host.FindDataAssetType("SceneTransition.Preset") == nullptr)
+            || host.FindDataAssetType("SceneTransition.Preset") == nullptr
+            || host.FindComponent("Network.SessionController") == nullptr
+            || host.FindDataAssetType("Network.ConnectionProfile") == nullptr)
         {
             throw std::runtime_error(
                 "The external project script was not registered.");
@@ -236,6 +240,8 @@ int main(const int argumentCount, const char* const* argumentValues)
         }
         graphics.Assets().SetAssetRoot(packageRoot, false);
         std::filesystem::remove(archivePath);
+        TestNetworkWorkflowPackage(graphics, std::filesystem::path(argumentValues[3]),
+            std::filesystem::absolute(argumentValues[1]).parent_path());
         std::cout << "External project Game Module test passed.\n";
         return 0;
     }

@@ -386,17 +386,6 @@ namespace LamaPon
             m_projectSettings.online.discordPresence
                 .defaultLargeImageText.c_str(),
             _TRUNCATE);
-        strncpy_s(
-            m_projectDiscordPresenceTestDetailsBuffer.data(),
-            m_projectDiscordPresenceTestDetailsBuffer.size(),
-            "Test Game",
-            _TRUNCATE);
-        strncpy_s(
-            m_projectDiscordPresenceTestStateBuffer.data(),
-            m_projectDiscordPresenceTestStateBuffer.size(),
-            "Testing Discord Presence",
-            _TRUNCATE);
-        m_projectDiscordPresenceTestMessage.clear();
         // ダイアログを開くたびに検出し直すことで、ダイアログを
         // 開いたまま新しくエディターをインストールした場合にも
         // 対応します（頻繁に呼ばれる処理ではないため許容範囲）。
@@ -670,87 +659,7 @@ namespace LamaPon
             ImGui::PopStyleColor();
         }
 
-        ImGui::Spacing();
-        ImGui::SeparatorText("動作確認");
-        ImGui::TextDisabled(
-            "このエディターからテスト表示を送ります。ここで入力した内容はproject.jsonへ保存しません。");
-        ImGui::SetNextItemWidth(360.0f);
-        ImGui::InputText(
-            "Details",
-            m_projectDiscordPresenceTestDetailsBuffer.data(),
-            m_projectDiscordPresenceTestDetailsBuffer.size());
-        ImGui::SetNextItemWidth(360.0f);
-        ImGui::InputText(
-            "State",
-            m_projectDiscordPresenceTestStateBuffer.data(),
-            m_projectDiscordPresenceTestStateBuffer.size());
-
-        if (ImGui::Button(
-            "テスト表示を送信",
-            ImVec2{ 180.0f, 0.0f }))
-        {
-            if (applicationIdMissing)
-            {
-                m_projectDiscordPresenceTestMessage =
-                    "Application IDを入力してください。";
-            }
-            else
-            {
-                DiscordPresenceConfiguration configuration;
-                configuration.enabled = true;
-                configuration.applicationId =
-                    m_projectDiscordPresenceApplicationIdBuffer
-                        .data();
-                configuration.defaultLargeImageKey =
-                    m_projectDiscordPresenceImageKeyBuffer
-                        .data();
-                configuration.defaultLargeImageText =
-                    m_projectDiscordPresenceImageTextBuffer
-                        .data();
-                m_onlineServices.ConfigureDiscordPresence(
-                    std::move(configuration));
-                auto& presence = m_onlineServices.Presence();
-                if (presence.SetActivity(
-                    m_projectDiscordPresenceTestDetailsBuffer
-                        .data(),
-                    m_projectDiscordPresenceTestStateBuffer
-                        .data()))
-                {
-                    m_projectDiscordPresenceTestMessage =
-                        "テスト表示を送信しました。";
-                }
-                else
-                {
-                    m_projectDiscordPresenceTestMessage =
-                        presence.LastError().empty()
-                            ? std::string{
-                                "テスト表示を送信できませんでした。" }
-                            : presence.LastError();
-                }
-            }
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("表示を消す", ImVec2{ 140.0f, 0.0f }))
-        {
-            m_onlineServices.Presence().ClearActivity();
-            m_projectDiscordPresenceTestMessage =
-                "表示を消しました。";
-        }
-
-        const auto stateName = DiscordPresenceStateName(
-            m_onlineServices.Presence().State());
-        ImGui::Text(
-            "状態: %.*s",
-            static_cast<int>(stateName.size()),
-            stateName.data());
-        if (!m_projectDiscordPresenceTestMessage.empty())
-        {
-            ImGui::TextWrapped(
-                "%s",
-                m_projectDiscordPresenceTestMessage.c_str());
-        }
-        ImGui::TextDisabled(
-            "Discordが起動していない、またはPresenceアダプターが未導入の場合はUnavailableのままです。ゲームはそのまま動きます。");
+        ImGui::TextDisabled("テスト表示と接続状態は「ウィンドウ > オンライン診断」で確認できます。");
     }
 
     void EditorLayer::DrawProjectSettingsBuildSection()
@@ -2180,8 +2089,9 @@ namespace LamaPon
             }
 
             m_projectSettings = std::move(settings);
-            if (auto* network = ActiveNetworkSession())
+            if (auto* network = ActiveNetworkSession(); network != nullptr && !m_playing)
             {
+                // 再生中のSceneが参照する通信設定アセットを、保存操作で上書きしません。
                 static_cast<void>(network->Configure(m_projectSettings.network));
             }
             SaveProjectConfiguration();

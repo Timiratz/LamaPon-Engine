@@ -43,6 +43,13 @@ namespace LamaPon
                 [this](bool& open) { DrawPersistencePanel(open); }
             },
             EditorPanelDefinition{
+                std::string{ OnlineDiagnosticsPanelId },
+                "オンライン診断",
+                false,
+                true,
+                [this](bool& open) { DrawOnlineDiagnosticsPanel(open); }
+            },
+            EditorPanelDefinition{
                 std::string{ AssetBrowserPanelId },
                 "アセット",
                 true,
@@ -56,6 +63,14 @@ namespace LamaPon
                 true,
                 [this](bool& open) { DrawTilePalette(open); }
             }
+        };
+
+        // メニューから閉じた場合も検索ソケットを残しません。
+        workspace.onUpdate = [this]
+        {
+            const auto* panel = m_editorExtensions.FindPanel(OnlineDiagnosticsPanelId);
+            if (!m_playing || panel == nullptr || !panel->open)
+                m_onlineDiagnosticsPanel.StopSearch();
         };
 
         std::string error;
