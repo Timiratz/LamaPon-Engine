@@ -10,6 +10,7 @@
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
+#include <string_view>
 #include <thread>
 
 #include "NetworkWorkflowPackageTests.h"
@@ -114,8 +115,14 @@ int main(const int argumentCount, const char* const* argumentValues)
             {
                 throw std::runtime_error("A preset field changed while reading its data asset.");
             }
+            // プリセットのパスはプロジェクトのassets相対なので、
+            // パッケージのフォルダー相対へ直して確かめます。
+            constexpr std::string_view installedRoot =
+                "packages/scene-transition-showcase/";
             if (!look.ruleTexture.empty()
-                && !std::filesystem::exists(packageRoot / look.ruleTexture))
+                && (!look.ruleTexture.starts_with(installedRoot)
+                    || !std::filesystem::exists(packageRoot
+                        / look.ruleTexture.substr(installedRoot.size()))))
             {
                 throw std::runtime_error("The rule image is missing.");
             }

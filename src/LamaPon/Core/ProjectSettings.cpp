@@ -1088,6 +1088,13 @@ namespace LamaPon
                         for (const auto& entry :
                             previous.items())
                         {
+                            // エンジンが使わなくなった項目（遷移演出の
+                            // 見た目を保存していたsceneTransition）は
+                            // 引き継がず、次の保存で消します。
+                            if (entry.key() == "sceneTransition")
+                            {
+                                continue;
+                            }
                             if (!document.contains(
                                 entry.key()))
                             {
