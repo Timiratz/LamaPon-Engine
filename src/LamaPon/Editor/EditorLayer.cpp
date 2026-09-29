@@ -2187,19 +2187,13 @@ namespace LamaPon
                 m_scene.PostProcessFrameData());
             m_scene.Render2D();
 
-            auto& scenes =
+            const auto& scenes =
                 m_scene.Scenes();
-            if (!m_playing && scenes.IsTransitioning())
+            if (m_playing)
             {
-                // 編集中はSceneを更新しないため、Inspectorから再生した
-                // 遷移のプレビューだけをここで実時間で進めます。
-                scenes.AdvanceTransition(Time::UnscaledDeltaTime());
-            }
-            if (m_playing || scenes.IsTransitioning())
-            {
-                // 遷移の覆いとローディング表示もUIと同様に
-                // ポストエフェクト後へ重ねる。
-                m_graphics.DrawSceneTransition(
+                // ローディング表示もUIと同様にポストエフェクト後へ重ねる。
+                // 遷移の覆いはScene側のSpriteなどが描きます。
+                m_graphics.DrawLoadingScreen(
                     scenes.TransitionFrame(),
                     scenes.LoadingScreen(),
                     m_gameRenderTarget.Width(),

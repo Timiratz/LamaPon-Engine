@@ -31,7 +31,7 @@
     "passThrough": true,
     "revealDuration": 0.4,
     "ruleTexture": "",
-    "shader": "packages/scene-transition-showcase/shaders/LamaPonSceneTransition.hlsl",
+    "shader": "",
     "shaderPattern": "clock",
     "showLoadingScreen": true,
     "softness": 0.0,

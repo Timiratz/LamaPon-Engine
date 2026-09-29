@@ -95,9 +95,15 @@ namespace
             "Generated project name did not round-trip.");
         const auto settings = LamaPon::LoadProjectSettings(
             root / L".lamapon" / L"project.json");
+        // 遷移の演出はエンジンに含めず、パッケージや自作のScriptで
+        // 追加します。新規プロジェクトへ演出の設定やシェーダーは入れません。
         Require(
-            settings.sceneTransition.effect == LamaPon::SceneTransitionEffect::None,
-            "New projects must opt into transitions through scene scripts.");
+            !LoadJson(root / L".lamapon" / L"project.json")
+                    .contains("sceneTransition")
+                && !std::filesystem::exists(
+                    root / L"assets" / L"shaders"
+                        / L"LamaPonSceneTransition.hlsl"),
+            "New projects must not ship a built-in transition effect.");
         Require(
             settings.startupScene == L"scenes/Main.scene.json",
             "Generated startup scene path is incorrect.");

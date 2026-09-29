@@ -1,7 +1,7 @@
 #include "LamaPon/Editor/EditorLayer.h"
 
 #include "LamaPon/Editor/EditorLayerShared.h"
-#include "LamaPon/Editor/SceneTransitionEditor.h"
+#include "LamaPon/Editor/SceneLoadingScreenEditor.h"
 
 #include "LamaPon/Assets/AssetManager.h"
 #include "LamaPon/Audio/AudioSystem.h"
@@ -328,8 +328,6 @@ namespace LamaPon
         };
         m_projectSplashScreenDraft =
             m_projectSettings.splashScreenEnabled;
-        m_projectSceneTransitionDraft =
-            m_projectSettings.sceneTransition;
         m_projectLoadingScreenDraft =
             m_projectSettings.loadingScreen;
         m_projectGraphicsDraft =
@@ -861,53 +859,18 @@ namespace LamaPon
 
     }
 
-    // 既存プロジェクトの設定を編集する互換用の折りたたみ欄です。
-    void EditorLayer::DrawProjectSettingsSceneTransitionSection()
+    // 非同期のシーン切り替えで重ねる標準の読み込み画面です。
+    void EditorLayer::DrawProjectSettingsLoadingScreenSection()
     {
-        ImGui::TextWrapped(
-            "新しい演出はscene-transition-showcaseパッケージの"
-            "遷移プリセット（データアセット）と、Sceneの"
-            "「シーン遷移コントローラー」Scriptで設定します。"
-            "この欄は以前のプロジェクト全体の設定を編集するためのものです。");
-        if (!ImGui::CollapsingHeader("従来の遷移・読み込み設定"))
-        {
-            return;
-        }
-        ImGui::SeparatorText("プロジェクト全体の既定の演出");
-        ImGui::PushID("ProjectSceneTransition");
-        const auto transition = DrawSceneTransitionEditor(
-            m_projectSceneTransitionDraft,
-            true);
-        if (transition.previewRequested)
-        {
-            PreviewSceneTransition(m_projectSceneTransitionDraft);
-        }
-        ImGui::PopID();
-        ImGui::TextDisabled(
-            "C++では Scenes().PlayTransition(...) で、シーンを切り替えない"
-            "演出（部屋の移動など）にも使えます。");
-
         ImGui::SeparatorText("読み込み画面");
         ImGui::PushID("ProjectLoadingScreen");
         static_cast<void>(DrawSceneLoadingScreenEditor(
             m_projectLoadingScreenDraft));
         ImGui::PopID();
-    }
-
-    void EditorLayer::PreviewSceneTransition(
-        const SceneTransitionSettings& transition)
-    {
-        auto& scenes = m_scene.Scenes();
-        if (!scenes.PreviewTransition(transition))
-        {
-            SetStatus(
-                "シーンの読み込み中は遷移をプレビューできません",
-                true);
-            return;
-        }
-        // 演出はGameビューにだけ描くので、ゲームタブを前面へ出します。
-        m_selectGameViewportRequested = true;
-        SetStatus("Gameビューで遷移演出をプレビューしています");
+        ImGui::TextWrapped(
+            "シーン遷移の演出（画面を覆う絵）はエンジンに含まれません。"
+            "Scriptで Scenes().TransitionCoverage() を読んで自分で描くか、"
+            "パッケージの演出を導入します。");
     }
 
     // プロジェクト設定「グラフィック」カテゴリー。
@@ -2023,9 +1986,6 @@ namespace LamaPon
                     m_projectGameIconBuffer.data());
             settings.splashScreenEnabled =
                 m_projectSplashScreenDraft;
-            settings.sceneTransition =
-                SanitizeSceneTransition(
-                    m_projectSceneTransitionDraft);
             settings.loadingScreen =
                 m_projectLoadingScreenDraft;
             settings.graphics =
@@ -2229,7 +2189,7 @@ namespace LamaPon
         default:
             DrawProjectSettingsGameSection();
             ImGui::Spacing();
-            DrawProjectSettingsSceneTransitionSection();
+            DrawProjectSettingsLoadingScreenSection();
             break;
         }
         ImGui::EndChild();
@@ -2332,10 +2292,11 @@ namespace LamaPon
                     SetCurrentScenePath(
                         m_scenePath);
             }
-            // 書き出したゲームと同じ既定の遷移と読み込み画面で再生します。
+            // 書き出したゲームと同じ状態で再生します。前回の再生で
+            // Scriptが既定の遷移を変えていても、すぐ切り替える遷移へ
+            // 戻します。
             m_scene.Scenes().ResetTransition();
-            m_scene.Scenes().SetDefaultTransition(
-                m_projectSettings.sceneTransition);
+            m_scene.Scenes().SetDefaultTransition({});
             m_scene.Scenes().LoadingScreen() =
                 m_projectSettings.loadingScreen;
             for (const auto& gameObject :

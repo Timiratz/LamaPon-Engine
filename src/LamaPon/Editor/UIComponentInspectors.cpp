@@ -1,6 +1,5 @@
 #include "LamaPon/Editor/UIComponentInspectors.h"
 #include "LamaPon/Editor/EditorLayerShared.h"
-#include "LamaPon/Editor/SceneTransitionEditor.h"
 #include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Components/UICanvasComponent.h"
 #include "LamaPon/Components/UIRectTransformComponent.h"
@@ -466,11 +465,6 @@ namespace
                 "クリック時にこの名前のイベントを発行します。"
                 "C++ Scriptの On(\"イベント名\", ...) で受信できます");
         }
-        ImGui::TextWrapped(
-            "遷移プリセットを使うときは、Sceneのシーン遷移"
-            "コントローラーへ移動先を指定し、このボタンの"
-            "クリックイベント名をコントローラーと揃えます。"
-            "ボタンの移動先Sceneは空にしてください。");
         ImGui::SeparatorText(
             "クリック時のScene操作");
         bool reloadCurrent =
@@ -562,48 +556,12 @@ namespace
             || (!button.TargetScene().empty()
                 && !button.LoadTargetAdditive()))
         {
-            if (ImGui::TreeNode("従来のボタン専用の遷移設定"))
-            {
-                bool customTransition =
-                    button.UseCustomTransition();
-                if (ImGui::Checkbox(
-                        "このボタン専用の演出を使う",
-                        &customTransition))
-                {
-                    button.SetUseCustomTransition(
-                        customTransition);
-                    context.recordHistory();
-                }
-                ShowItemTooltip(
-                    "オフのときはプロジェクト設定の「ゲーム」にある"
-                    "従来の遷移設定を使います");
-                if (customTransition)
-                {
-                    ImGui::PushID("UIButtonTransition");
-                    auto transition = button.Transition();
-                    const auto edited =
-                        DrawSceneTransitionEditor(
-                            transition,
-                            static_cast<bool>(
-                                context.previewTransition));
-                    if (edited.changed)
-                    {
-                        button.SetTransition(transition);
-                    }
-                    if (edited.committed)
-                    {
-                        context.recordHistory();
-                    }
-                    if (edited.previewRequested
-                        && context.previewTransition)
-                    {
-                        context.previewTransition(
-                            button.Transition());
-                    }
-                    ImGui::PopID();
-                }
-                ImGui::TreePop();
-            }
+            ImGui::TextDisabled(
+                "切り替えには既定の遷移を使います（既定はすぐ切り替え）。");
+            ShowItemTooltip(
+                "ScriptからScenes().SetDefaultTransition(...)で"
+                "覆う・開く時間を指定できます。画面を覆う絵は"
+                "Scenes().TransitionCoverage()を読んで自分で描きます");
         }
 
         auto buttonSortOrder =

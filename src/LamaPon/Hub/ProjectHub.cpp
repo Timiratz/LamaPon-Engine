@@ -805,8 +805,6 @@ namespace LamaPon::Hub
         ProjectSettings settings;
         settings.gameName = projectName;
         settings.startupScene = L"scenes/Main.scene.json";
-        // 演出はSceneのScriptとデータアセットから明示的に指定します。
-        // 新規プロジェクト全体へ暗黙のフェードを追加しません。
         if (projectTemplate == ProjectTemplate::TwoDimensional
             || projectTemplate
                 == ProjectTemplate::LearningTwoDimensional)

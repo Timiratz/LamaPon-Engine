@@ -580,8 +580,8 @@ set(LAMAPON_EDITOR_SOURCES
     src/LamaPon/Editor/EditorLayerAnalysis.cpp
     src/LamaPon/Editor/EditorLayerInspector.cpp
     src/LamaPon/Editor/UIComponentInspectors.cpp
-    src/LamaPon/Editor/SceneTransitionEditor.cpp
-    src/LamaPon/Editor/SceneTransitionEditor.h
+    src/LamaPon/Editor/SceneLoadingScreenEditor.cpp
+    src/LamaPon/Editor/SceneLoadingScreenEditor.h
     src/LamaPon/Editor/DataAssetSchema.cpp
     src/LamaPon/Editor/DataAssetSchema.h
     src/LamaPon/Editor/EditorLayerProject.cpp
@@ -1265,7 +1265,7 @@ if(BUILD_TESTING)
         PROPERTIES LABELS "scene;scene-manager"
     )
 
-    # 遷移演出の純粋ロジックはDirect3Dを使わないため、Runtime DLLを
+    # シーン遷移の時間軸はDirect3Dを使わないため、Runtime DLLを
     # 介さずに単体で検査します。
     add_executable(LamaPonSceneTransitionTests
         tests/SceneTransitionTests.cpp
@@ -1280,9 +1280,9 @@ if(BUILD_TESTING)
         $<$<CXX_COMPILER_ID:MSVC>:/permissive->
         $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
     )
-    add_test(NAME SceneTransitionEffects COMMAND LamaPonSceneTransitionTests)
+    add_test(NAME SceneTransitionTimeline COMMAND LamaPonSceneTransitionTests)
     set_tests_properties(
-        SceneTransitionEffects
+        SceneTransitionTimeline
         PROPERTIES LABELS "scene;scene-transition"
     )
 

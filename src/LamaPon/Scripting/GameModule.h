@@ -13,6 +13,9 @@ namespace LamaPon
     // Game ModuleとRuntimeのABIを識別します。公開構造体のレイアウトや
     // 公開関数のシグネチャを変更した場合は、この値も更新してください。
     // GameModuleHostは完全一致を要求し、互換性のないDLLを読み込みません。
+    // API 80ではシーン遷移の演出（見た目）をエンジンから外し、
+    // SceneTransitionSettings、UIButtonComponent、ProjectSettings、
+    // GraphicsDeviceのレイアウトと関数が変わりました。
     // API 79ではシーン遷移演出のためSceneManager、UIButtonComponent、
     // AudioSystem、ProjectSettingsへ項目を末尾追加しました。
     // API 77ではP2P通信とSceneの再読み込み世代を追加しました。
@@ -21,7 +24,7 @@ namespace LamaPon
     // 物理デバッガーの接触記録（Scene）、プロファイラーの階層区間
     // （ProfileScope / ProfileSample）、テクスチャのGPU量（TextureAsset）
     // により公開レイアウトが変わりました。ゲーム用DLLの再ビルドが必要です。
-    inline constexpr std::uint32_t GameModuleApiVersion = 79;
+    inline constexpr std::uint32_t GameModuleApiVersion = 80;
 
     using NativeScriptCreateFunction = void* (*)(
         GameObject* owner,

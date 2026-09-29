@@ -542,8 +542,9 @@ namespace LamaPon
                         m_scene->Render2D();
                         const auto& scenes =
                             m_scene->Scenes();
-                        // 遷移の覆いと読み込み画面はUIの上へ重ねます。
-                        m_graphics.DrawSceneTransition(
+                        // 読み込み画面はUIの上へ重ねます。遷移の覆いは
+                        // Scene側のSpriteなどが描きます。
+                        m_graphics.DrawLoadingScreen(
                             scenes.TransitionFrame(),
                             scenes.LoadingScreen());
                         if (scenes.IsLoading())

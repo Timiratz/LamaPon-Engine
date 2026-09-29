@@ -135,10 +135,6 @@ namespace LamaPon
         OnlineProjectSettings online;
         // 部屋の作成・参加は明示操作で開始し、自動接続は行いません。
         NetworkConfiguration network;
-        // 非同期のシーン切り替え（UI Button、起動シーン、引数なしの
-        // RequestLoadAsync）で使う既定の遷移演出です。既定はNoneで、
-        // 従来どおり読み込み画面だけを表示します。
-        SceneTransitionSettings sceneTransition;
         // 標準の読み込み画面の文言・色・背景画像などです。
         SceneLoadingScreenSettings loadingScreen;
     };

@@ -2754,53 +2754,52 @@ int RunTest(const std::string_view suite)
                             == "StartGame",
                     "Button click event did not round-trip.");
                 Require(
-                    !eventButton->UseCustomTransition()
-                        && nlohmann::json::parse(buttonJson)
-                                .dump()
-                                .find("\"transition\"")
-                            == std::string::npos,
-                    "A button without its own transition must use the project default.");
+                    nlohmann::json::parse(buttonJson)
+                            .dump()
+                            .find("\"transition\"")
+                        == std::string::npos,
+                    "Buttons must not save a transition of their own.");
 
-                // ボタン専用のシーン遷移演出の保存往復
-                auto transition = LamaPon::MakeSceneTransition(
-                    LamaPon::SceneTransitionEffect::Shader,
-                    0.6f,
-                    { 0.1f, 0.0f, 0.2f, 1.0f });
-                transition.shaderPattern =
-                    LamaPon::SceneTransitionShaderPattern::Heart;
-                transition.direction =
-                    LamaPon::SceneTransitionDirection::TopToBottom;
-                transition.focus = { 0.3f, 0.7f };
-                transition.fadeMusic = false;
-                button.SetUseCustomTransition(true);
-                button.SetTransition(transition);
-                LamaPon::Scene transitionButtonLoaded(graphics);
-                transitionButtonLoaded.LoadFromJson(
-                    buttonScene.SerializeToJson());
-                const auto* transitionButton =
-                    transitionButtonLoaded
+                // 以前の形式で保存したボタン専用の遷移（"transition"）は
+                // 読み込みで無視し、保存し直すと消えます。演出はScene側の
+                // ScriptやSpriteが描きます。
+                auto legacyButtonJson =
+                    nlohmann::json::parse(buttonJson);
+                bool injected = false;
+                for (auto& object : legacyButtonJson.at("objects"))
+                {
+                    for (auto& component : object.at("components"))
+                    {
+                        if (component.value("type", std::string{})
+                            == "UIButton")
+                        {
+                            component["transition"] = {
+                                { "effect", "iris" },
+                                { "coverDuration", 0.6 }
+                            };
+                            injected = true;
+                        }
+                    }
+                }
+                LamaPon::Scene legacyButtonLoaded(graphics);
+                legacyButtonLoaded.LoadFromJson(
+                    legacyButtonJson.dump());
+                const auto* legacyButton =
+                    legacyButtonLoaded
                         .FindGameObjectByName(
                             "開始ボタン")
                         ->GetComponent<
                             LamaPon::
                                 UIButtonComponent>();
                 Require(
-                    transitionButton != nullptr
-                        && transitionButton->UseCustomTransition()
-                        && transitionButton->Transition().effect
-                            == LamaPon::SceneTransitionEffect::Shader
-                        && transitionButton->Transition().shaderPattern
-                            == LamaPon::SceneTransitionShaderPattern::Heart
-                        && transitionButton->Transition().direction
-                            == LamaPon::SceneTransitionDirection::TopToBottom
-                        && NearlyEqual(
-                            transitionButton->Transition().coverDuration,
-                            0.6f)
-                        && NearlyEqual(
-                            transitionButton->Transition().focus.y,
-                            0.7f)
-                        && !transitionButton->Transition().fadeMusic,
-                    "Button transition settings did not round-trip.");
+                    injected
+                        && legacyButton != nullptr
+                        && legacyButton->ClickEventName()
+                            == "StartGame"
+                        && legacyButtonLoaded.SerializeToJson()
+                                .find("\"transition\"")
+                            == std::string::npos,
+                    "Legacy button transitions must load and be dropped on save.");
             }
 
             // スプライトアニメーション：コマ送り・ループ・
@@ -6518,10 +6517,8 @@ int RunTest(const std::string_view suite)
                 }
             };
 
-            auto fade = LamaPon::MakeSceneTransition(
-                LamaPon::SceneTransitionEffect::Fade,
-                0.1f);
-            fade.holdDuration = 0.0f;
+            // エンジンは覆いを描かないので、時間だけを指定します。
+            const auto fade = LamaPon::MakeSceneTransition(0.1f, 0.0f);
             Require(
                 transitionScenes.RequestLoadAsync(transitionPath, fade)
                     && transitionScenes.IsTransitioning()
@@ -6586,22 +6583,23 @@ int RunTest(const std::string_view suite)
                         == revisionBeforePlay,
                 "PlayTransition must not load a scene.");
 
-            // エディターのプレビューはイベントも入力のブロックも行いません。
-            transitionEvents.clear();
+            // blockInputを外した遷移はボタンを止めず、ResetTransitionで
+            // 途中から打ち切れます。
+            auto unblocked = fade;
+            unblocked.blockInput = false;
             Require(
-                transitionScenes.PreviewTransition(fade)
+                transitionScenes.PlayTransition(unblocked)
                     && transitionScenes.IsTransitioning()
                     && !transitionScenes.IsInputBlocked(),
-                "PreviewTransition did not start.");
+                "A transition without blockInput must not block buttons.");
             advanceFrames(3, 1.0f / 60.0f);
             transitionScenes.ResetTransition();
             Require(
-                transitionEvents.empty()
-                    && !transitionScenes.IsTransitioning()
+                !transitionScenes.IsTransitioning()
                     && NearlyEqual(
                         transitionScenes.TransitionCoverage(),
                         0.0f),
-                "Previews must be silent and ResetTransition must clear them.");
+                "ResetTransition must clear an active transition.");
 
             // 読み込みに失敗したら、覆いを開いて元のシーンへ戻ります。
             transitionEvents.clear();
@@ -6652,12 +6650,12 @@ int RunTest(const std::string_view suite)
                     && !transitionScenes.HasPendingLoad(),
                 "A synchronous transition load did not activate.");
 
-            // 引数なしの非同期読み込みは既定の遷移を使い、既定のNoneは
-            // 従来どおり読み込み画面だけを表示します。
+            // 引数なしの非同期読み込みは既定の遷移を使い、既定の
+            // すぐ切り替える遷移は従来どおり読み込み画面だけを表示します。
             Require(
-                transitionScenes.DefaultTransition().effect
-                    == LamaPon::SceneTransitionEffect::None,
-                "The default transition must stay None for compatibility.");
+                LamaPon::IsInstantSceneTransition(
+                    transitionScenes.DefaultTransition()),
+                "The default transition must stay instant for compatibility.");
             Require(
                 transitionScenes.RequestLoadAsync(transitionPath),
                 "A default transition load did not start.");
@@ -6665,7 +6663,7 @@ int RunTest(const std::string_view suite)
             Require(
                 legacyFrame.legacyLoadingScreen
                     && NearlyEqual(legacyFrame.loadingScreenAlpha, 1.0f),
-                "A load without a covering effect must show the classic loading screen.");
+                "A load without a timed transition must show the classic loading screen.");
             runUntilIdle();
             for (int attempt{};
                 attempt < 1000 && transitionScenes.IsLoading();
@@ -6676,8 +6674,9 @@ int RunTest(const std::string_view suite)
             transitionScenes.SetDefaultTransition(fade);
             Require(
                 transitionScenes.RequestReloadAsync()
-                    && transitionScenes.ActiveTransition().effect
-                        == LamaPon::SceneTransitionEffect::Fade,
+                    && NearlyEqual(
+                        transitionScenes.ActiveTransition().coverDuration,
+                        0.1f),
                 "Reloading without arguments must use the default transition.");
             runUntilIdle();
             for (int attempt{};
