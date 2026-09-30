@@ -1,0 +1,13 @@
+{
+  "type": "Ollama.ModelProfile",
+  "values": {
+    "model": "",
+    "systemPrompt": "あなたはゲームの登場人物です。日本語で、1～2文の短い返事をしてください。",
+    "temperature": 0.7,
+    "maxTokens": 128,
+    "port": 11434,
+    "fallbackReply": "（いまは返事ができません）",
+    "historyLimit": 8,
+    "keepAliveMinutes": 10
+  }
+}

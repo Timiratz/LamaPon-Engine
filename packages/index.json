@@ -61,6 +61,19 @@
       "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/network-session-workflow-0.1.0.zip",
       "sizeBytes": 13393,
       "sha256": "a1f403752fbefde5d8e3b41271999d661cfe934121f522619c40f0467fcfe711"
+    },
+    {
+      "name": "ollama-ai",
+      "displayName": "Ollama AI (Local LLM)",
+      "description": "このPCで動くOllamaのローカルモデルと、ゲームの中で会話するScriptと設定アセットです。Ollama Cloud・APIキー・サインインは使いません。Windows専用です。",
+      "author": "LamaPon Community",
+      "version": "0.1.0",
+      "minimumEngineVersion": "0.1.0",
+      "activation": "Immediate",
+      "target": "Project",
+      "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/ollama-ai-0.1.0.zip",
+      "sizeBytes": 27967,
+      "sha256": "67fe75ab43ce989a1a856e7891dd71f7eb51138556725a98ef2f4368a602e3b3"
     }
   ],
   "version": 1

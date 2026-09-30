@@ -1,3 +1,6 @@
+// OllamaPackageTests.hのテスト用サーバーが使います。Windows.hより先に読み込みます。
+#include <WinSock2.h>
+
 #include "LamaPon/LamaPon.h"
 #include "LamaPon/Assets/AssetPacker.h"
 #include "../packages/src/scene-transition-showcase/SceneTransitionOverlay.h"
@@ -14,6 +17,7 @@
 #include <thread>
 
 #include "NetworkWorkflowPackageTests.h"
+#include "OllamaPackageTests.h"
 
 int main(const int argumentCount, const char* const* argumentValues)
 {
@@ -28,10 +32,10 @@ int main(const int argumentCount, const char* const* argumentValues)
             ~ComScope() { CoUninitialize(); }
         } comScope;
 
-        if (argumentCount != 4)
+        if (argumentCount != 5)
         {
             throw std::invalid_argument(
-                "A project Game Module path and two package source paths are required.");
+                "A project Game Module path and three package source paths are required.");
         }
         LamaPon::GameModuleHost host;
         if (!host.Load(std::filesystem::path(argumentValues[1])))
@@ -39,14 +43,16 @@ int main(const int argumentCount, const char* const* argumentValues)
             throw std::runtime_error(host.LastError());
         }
         if (host.ModuleName() != "LamaPon Project Game Module"
-            || host.RegisteredComponents().size() != 5
+            || host.RegisteredComponents().size() != 6
             || host.FindComponent("Test.ExternalScript") == nullptr
             || host.FindComponent("Game.BeginnerScript") == nullptr
             || host.FindComponent("SceneTransition.Controller") == nullptr
             || host.FindComponent("SceneTransition.Overlay") == nullptr
             || host.FindDataAssetType("SceneTransition.Preset") == nullptr
             || host.FindComponent("Network.SessionController") == nullptr
-            || host.FindDataAssetType("Network.ConnectionProfile") == nullptr)
+            || host.FindDataAssetType("Network.ConnectionProfile") == nullptr
+            || host.FindComponent("Ollama.Chat") == nullptr
+            || host.FindDataAssetType("Ollama.ModelProfile") == nullptr)
         {
             throw std::runtime_error(
                 "The external project script was not registered.");
@@ -306,6 +312,8 @@ int main(const int argumentCount, const char* const* argumentValues)
         graphics.Assets().SetAssetRoot(packageRoot, false);
         std::filesystem::remove(archivePath);
         TestNetworkWorkflowPackage(graphics, std::filesystem::path(argumentValues[3]),
+            std::filesystem::absolute(argumentValues[1]).parent_path());
+        TestOllamaPackage(graphics, std::filesystem::path(argumentValues[4]),
             std::filesystem::absolute(argumentValues[1]).parent_path());
         std::cout << "External project Game Module test passed.\n";
         return 0;

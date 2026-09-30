@@ -59,6 +59,7 @@ execute_process(
     COMMAND "${TEST_LOADER}" "${modulePath}"
         "${ENGINE_ROOT}/packages/src/scene-transition-showcase"
         "${ENGINE_ROOT}/packages/src/network-session-workflow"
+        "${ENGINE_ROOT}/packages/src/ollama-ai"
     RESULT_VARIABLE loadResult
     OUTPUT_VARIABLE loadOutput
     ERROR_VARIABLE loadError
