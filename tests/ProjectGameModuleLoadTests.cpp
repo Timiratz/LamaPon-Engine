@@ -1,3 +1,6 @@
+// OllamaPackageTests.hのテスト用サーバーが使います。Windows.hより先に読み込みます。
+#include <WinSock2.h>
+
 #include "LamaPon/LamaPon.h"
 #include "LamaPon/Assets/AssetPacker.h"
 #include "../packages/src/scene-transition-showcase/SceneTransitionAssets.h"

@@ -27,7 +27,8 @@ namespace LamaPonOllama
         ModelMissing = 2,   // モデルをまだ取得していない
         Timeout = 3,        // 時間内に返答が届かなかった
         CloudRejected = 4,  // クラウドのモデル、またはこのPC以外への接続を拒否した
-        Failed = 5          // 上のどれでもない失敗
+        Failed = 5,         // 上のどれでもない失敗
+        Busy = 6            // 返答待ちの間に送ろうとした（待っている返答はそのまま届く）
     };
 
     struct ChatMessage final
@@ -58,6 +59,7 @@ namespace LamaPonOllama
         case ChatError::ModelMissing: return "ModelMissing";
         case ChatError::Timeout: return "Timeout";
         case ChatError::CloudRejected: return "CloudRejected";
+        case ChatError::Busy: return "Busy";
         case ChatError::Failed: break;
         }
         return "Failed";
@@ -77,6 +79,8 @@ namespace LamaPonOllama
                 "もう一度送っても同じなら、maxTokensを小さくするか、小さいモデルを使ってください。";
         case ChatError::CloudRejected:
             return "クラウドのモデルは使えません。このPCで動くローカルモデルを指定してください。";
+        case ChatError::Busy:
+            return "返答を待っている間は送信できません。返答が届いてから、もう一度送ってください。";
         case ChatError::Failed: break;
         }
         return "Ollamaから返答を受け取れませんでした。";
@@ -164,6 +168,26 @@ namespace LamaPonOllama
         return Detail::Dump(request);
     }
 
+    // Ollamaは、最後の要求からこの時間だけモデルをメモリに残します。
+    // 指定しないと5分で降ろされ、次の返答でまた読み込みを待つことになります。
+    [[nodiscard]] inline std::string KeepAlive(const ModelProfile& profile)
+    {
+        return std::to_string(profile.keepAliveMinutes) + "m";
+    }
+
+    // messagesが空の /api/chat は、返答を作らずにモデルを読み込むだけの要求です。
+    // 先に読み込んでおくと、最初の返答が読み込みの分だけ早く届きます。
+    [[nodiscard]] inline std::string BuildPreloadRequest(const ModelProfile& profile,
+        const std::string_view model)
+    {
+        auto request = nlohmann::json::object();
+        request["model"] = std::string(model);
+        request["messages"] = nlohmann::json::array();
+        request["stream"] = false;
+        request["keep_alive"] = KeepAlive(profile);
+        return Detail::Dump(request);
+    }
+
     // stream:false で返答を1回にまとめて受け取り、num_predictで長さを抑えます。
     // エンジンのHTTP受信は30秒で打ち切られ、途中経過も受け取れないためです。
     // think:false は、考える過程を出力するモデルがその過程だけでnum_predictを
@@ -192,6 +216,7 @@ namespace LamaPonOllama
         request["messages"] = std::move(messages);
         request["stream"] = false;
         request["think"] = false;
+        request["keep_alive"] = KeepAlive(profile);
         request["options"] = std::move(options);
         return Detail::Dump(request);
     }
@@ -244,6 +269,24 @@ namespace LamaPonOllama
         {
             return Detail::Failure(ChatError::CloudRejected,
                 "モデルの詳細に remote_host / remote_model があります。");
+        }
+        return {};
+    }
+
+    // 読み込みの応答に返答はありません。読み込めたかどうかだけを確かめます。
+    [[nodiscard]] inline ChatResult ParsePreloadResponse(const std::uint32_t statusCode,
+        const std::string_view body)
+    {
+        nlohmann::json document;
+        if (auto failure = Detail::ReadDocument(statusCode, body, true, document);
+            !failure.Succeeded())
+        {
+            return failure;
+        }
+        if (HasRemoteOrigin(document))
+        {
+            return Detail::Failure(ChatError::CloudRejected,
+                "読み込みの応答に remote_host / remote_model があります。");
         }
         return {};
     }
@@ -368,6 +411,62 @@ namespace LamaPonOllama
             responseBody = response.Text();
             return {};
         }
+
+        // 会話と事前読み込みに共通の前段です。使うモデルを決め、このPCで動く
+        // モデルかどうかを確かめます。失敗したときは /api/chat へ進みません。
+        [[nodiscard]] inline ChatResult SelectLocalModel(const ModelProfile& profile,
+            const std::stop_token stop, std::string& model)
+        {
+            std::uint32_t statusCode{};
+            std::string body;
+            model = profile.model;
+            if (model.empty())
+            {
+                if (auto failure = Request(profile.port, "/api/tags", {}, statusCode, body);
+                    !failure.Succeeded())
+                {
+                    return failure;
+                }
+                std::vector<std::string> models;
+                if (auto failure = ParseTagsResponse(statusCode, body, models);
+                    !failure.Succeeded())
+                {
+                    return failure;
+                }
+                if (models.empty())
+                {
+                    return Failure(ChatError::ModelMissing,
+                        "このPCにローカルモデルが1つもありません。");
+                }
+                model = std::move(models.front());
+            }
+            // 設定の読み込みでも拒否していますが、ここは設定アセットを通らない
+            // 呼び出しに備えた最後の確認です。
+            if (!IsLocalModelName(model))
+            {
+                return Failure(ChatError::CloudRejected, "モデル名: " + model);
+            }
+            if (stop.stop_requested())
+            {
+                return Failure(ChatError::Failed, "送信を取り消しました。");
+            }
+
+            if (auto failure = Request(profile.port, "/api/show",
+                    BuildShowRequest(model), statusCode, body);
+                !failure.Succeeded())
+            {
+                return failure;
+            }
+            if (auto failure = ParseShowResponse(statusCode, body); !failure.Succeeded())
+            {
+                return failure;
+            }
+            if (stop.stop_requested())
+            {
+                return Failure(ChatError::Failed, "送信を取り消しました。");
+            }
+            return {};
+        }
     }
 
     // 1回分の会話を最後まで実行します。応答が届くまで戻らない（最大で約30秒）
@@ -377,55 +476,13 @@ namespace LamaPonOllama
         const std::vector<ChatMessage>& history, const std::string_view userText,
         const std::stop_token stop = {})
     {
+        std::string model;
+        if (auto failure = Detail::SelectLocalModel(profile, stop, model); !failure.Succeeded())
+        {
+            return failure;
+        }
         std::uint32_t statusCode{};
         std::string body;
-        auto model = profile.model;
-        if (model.empty())
-        {
-            if (auto failure = Detail::Request(profile.port, "/api/tags", {}, statusCode, body);
-                !failure.Succeeded())
-            {
-                return failure;
-            }
-            std::vector<std::string> models;
-            if (auto failure = ParseTagsResponse(statusCode, body, models);
-                !failure.Succeeded())
-            {
-                return failure;
-            }
-            if (models.empty())
-            {
-                return Detail::Failure(ChatError::ModelMissing,
-                    "このPCにローカルモデルが1つもありません。");
-            }
-            model = std::move(models.front());
-        }
-        // 設定の読み込みでも拒否していますが、ここは設定アセットを通らない
-        // 呼び出しに備えた最後の確認です。
-        if (!IsLocalModelName(model))
-        {
-            return Detail::Failure(ChatError::CloudRejected, "モデル名: " + model);
-        }
-        if (stop.stop_requested())
-        {
-            return Detail::Failure(ChatError::Failed, "送信を取り消しました。");
-        }
-
-        if (auto failure = Detail::Request(profile.port, "/api/show",
-                BuildShowRequest(model), statusCode, body);
-            !failure.Succeeded())
-        {
-            return failure;
-        }
-        if (auto failure = ParseShowResponse(statusCode, body); !failure.Succeeded())
-        {
-            return failure;
-        }
-        if (stop.stop_requested())
-        {
-            return Detail::Failure(ChatError::Failed, "送信を取り消しました。");
-        }
-
         if (auto failure = Detail::Request(profile.port, "/api/chat",
                 BuildChatRequest(profile, model, history, userText), statusCode, body);
             !failure.Succeeded())
@@ -433,6 +490,30 @@ namespace LamaPonOllama
             return failure;
         }
         auto result = ParseChatResponse(statusCode, body);
+        result.model = std::move(model);
+        return result;
+    }
+
+    // モデルをメモリへ読み込ませます。返答は作りません。Chatと同じく、読み込みが
+    // 終わるまで戻らない（最大で約30秒）ので、ChatWorkerを通してください。
+    // 30秒で読み込み終わらない大きいモデルは、ここでもタイムアウトになります。
+    [[nodiscard]] inline ChatResult Preload(const ModelProfile& profile,
+        const std::stop_token stop = {})
+    {
+        std::string model;
+        if (auto failure = Detail::SelectLocalModel(profile, stop, model); !failure.Succeeded())
+        {
+            return failure;
+        }
+        std::uint32_t statusCode{};
+        std::string body;
+        if (auto failure = Detail::Request(profile.port, "/api/chat",
+                BuildPreloadRequest(profile, model), statusCode, body);
+            !failure.Succeeded())
+        {
+            return failure;
+        }
+        auto result = ParsePreloadResponse(statusCode, body);
         result.model = std::move(model);
         return result;
     }

@@ -7,6 +7,7 @@
     "maxTokens": 128,
     "port": 11434,
     "fallbackReply": "（いまは返事ができません）",
-    "historyLimit": 8
+    "historyLimit": 8,
+    "keepAliveMinutes": 10
   }
 }

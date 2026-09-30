@@ -2288,6 +2288,8 @@ if(BUILD_TESTING)
         PRIVATE
             LamaPonRuntime
             ole32
+            # OllamaPackageTests.hのテスト用HTTPサーバーが使います。
+            ws2_32
     )
     target_compile_options(LamaPonProjectGameModuleLoadTests PRIVATE
         $<$<CXX_COMPILER_ID:MSVC>:/W4>

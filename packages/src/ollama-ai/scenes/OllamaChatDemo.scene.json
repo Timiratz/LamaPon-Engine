@@ -80,7 +80,9 @@
             "inputObject": "Ollama Input",
             "outputObject": "Ollama Reply",
             "waitingText": "考え中...",
+            "preload": true,
             "sendEvent": "Ollama.Send",
+            "resetEvent": "Ollama.Reset",
             "replyEvent": "Ollama.Reply",
             "errorEvent": "Ollama.Error"
           }

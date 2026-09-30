@@ -72,8 +72,8 @@
       "activation": "Immediate",
       "target": "Project",
       "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/ollama-ai-0.1.0.zip",
-      "sizeBytes": 25273,
-      "sha256": "1996f5be940a7dfafedef441291550a31a38c619d97db649699dce3c09d2bcc4"
+      "sizeBytes": 27967,
+      "sha256": "67fe75ab43ce989a1a856e7891dd71f7eb51138556725a98ef2f4368a602e3b3"
     }
   ],
   "version": 1

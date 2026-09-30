@@ -361,6 +361,7 @@ class OllamaPackageTests(unittest.TestCase):
         "port",
         "fallbackReply",
         "historyLimit",
+        "keepAliveMinutes",
     }
 
     def setUp(self):
