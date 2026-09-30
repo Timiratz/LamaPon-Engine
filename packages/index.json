@@ -39,15 +39,15 @@
     {
       "name": "scene-transition-showcase",
       "displayName": "Scene Transition Showcase",
-      "description": "16種類の編集可能な遷移プリセットと、データアセットを参照してSceneを切り替えるScriptです。",
+      "description": "16種類の編集可能な遷移プリセットと、覆いを自前のシェーダーで描いてSceneを切り替えるScriptです。",
       "author": "LamaPon Community",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "minimumEngineVersion": "0.1.0",
       "activation": "Immediate",
       "target": "Project",
-      "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/scene-transition-showcase-0.2.0.zip",
-      "sizeBytes": 158169,
-      "sha256": "4d521e1e4521b66845d8ab0ec43a64f6b18867d403482004c70e01c760b3045c"
+      "downloadUrl": "https://raw.githubusercontent.com/Timiratz/LamaPon-Engine/main/packages/scene-transition-showcase-0.3.0.zip",
+      "sizeBytes": 169884,
+      "sha256": "2229004bbbbe6a9a5e23780e7e342866b3fd0ed3f618d357ba0f43d877d57ec3"
     },
     {
       "name": "network-session-workflow",

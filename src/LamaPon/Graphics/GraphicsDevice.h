@@ -124,7 +124,6 @@ namespace LamaPon
     struct ColorGradingSettings;
     struct SceneLoadingScreenSettings;
     struct SceneTransitionFrame;
-    struct SceneTransitionSettings;
     struct VolumetricLightFrame;
     struct TemporalAntiAliasingFrame;
     struct DepthOfFieldFrame;
@@ -343,14 +342,12 @@ namespace LamaPon
             const SceneLoadingScreenSettings& settings,
             std::uint32_t width = 0,
             std::uint32_t height = 0);
-        // シーン遷移の覆いと、その上へ重ねる読み込み画面を描きます。
-        // frameはSceneManager::TransitionFrame()の値です。覆いも読み込み
-        // 画面も無いフレームでは何もしません。Shader演出のシェーダーが
-        // 使えない場合はFadeで代わりに覆い、エラーを一度だけログへ
-        // 記録します。
-        void DrawSceneTransition(
+        // SceneManager::TransitionFrame()の状態に合わせて読み込み画面を
+        // 描きます（表示しないフレームでは何もしません）。遷移の覆いは
+        // 描きません。覆いはScene側のSpriteなどで自分で描きます。
+        void DrawLoadingScreen(
             const SceneTransitionFrame& frame,
-            const SceneLoadingScreenSettings& loadingScreen,
+            const SceneLoadingScreenSettings& settings,
             std::uint32_t width = 0,
             std::uint32_t height = 0);
         void DrawStartupLogo(
@@ -798,15 +795,6 @@ namespace LamaPon
         friend class Detail::GraphicsDeviceD3D12Access;
         friend struct Detail::GraphicsDeviceD3D11Resources;
         friend class Detail::SpriteRenderPassState;
-
-        // Shader演出を1枚のSpriteで描きます。シェーダーを使えない
-        // 場合は何も描かずにfalseを返します。
-        [[nodiscard]] bool DrawSceneTransitionShader(
-            const SceneTransitionSettings& settings,
-            float coverage,
-            bool revealing,
-            float canvasWidth,
-            float canvasHeight);
 
         // API 64以前のGame Moduleが旧public名を解決してAPI不一致案内へ
         // 到達できるよう、D3D11 native accessorの実装をprivate shimとして

@@ -1,5 +1,5 @@
 #include "LamaPon/LamaPon.h"
-#include "SceneTransitionAssets.h"
+#include "SceneTransitionOverlay.h"
 #include "SceneTransitionSchema.h"
 
 namespace
@@ -75,21 +75,14 @@ private:
             return;
         }
         m_autoplayPending = false;
-        LamaPon::SceneTransitionSettings transition;
-        const auto asset = LoadDataAsset(LamaPon::PathFromUtf8(m_transition));
-        if (!LamaPonSceneShowcase::ReadPreset(*asset, transition))
+        // 遷移の時間はエンジンへ渡し、覆いはパッケージのSpriteと
+        // シェーダーで描きます（SceneTransitionOverlay.h）。
+        std::string error;
+        if (!LamaPonSceneShowcase::PlayPreset(GetScene(),
+                LamaPon::PathFromUtf8(m_transition),
+                LamaPon::PathFromUtf8(m_destination), error))
         {
-            LamaPon::Logger::Instance().Warning(
-                "遷移プリセットを読み込めません: " + m_transition);
-            return;
-        }
-        const bool accepted = m_destination.empty()
-            ? scenes.PlayTransition(transition)
-            : scenes.RequestLoadAsync(LamaPon::PathFromUtf8(m_destination), transition);
-        if (!accepted)
-        {
-            LamaPon::Logger::Instance().Warning(
-                "シーン遷移を開始できません: " + scenes.LastError());
+            LamaPon::Logger::Instance().Warning(error);
         }
     }
 

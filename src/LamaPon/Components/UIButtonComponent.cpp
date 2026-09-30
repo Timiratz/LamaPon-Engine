@@ -243,10 +243,7 @@ namespace LamaPon
             auto& scenes = Owner().GetScene().Scenes();
             if (m_reloadCurrentScene)
             {
-                const bool requested = m_useCustomTransition
-                    ? scenes.RequestReloadAsync(m_transition)
-                    : scenes.RequestReloadAsync();
-                if (!requested)
+                if (!scenes.RequestReloadAsync())
                 {
                     Logger::Instance().Error(
                         "UI Buttonのシーン再読み込みに失敗しました: "
@@ -260,12 +257,8 @@ namespace LamaPon
                         ? scenes.
                             RequestLoadAdditiveAsync(
                                 m_targetScene)
-                        : m_useCustomTransition
-                            ? scenes.RequestLoadAsync(
-                                m_targetScene,
-                                m_transition)
-                            : scenes.RequestLoadAsync(
-                                m_targetScene);
+                        : scenes.RequestLoadAsync(
+                            m_targetScene);
                 if (!requested)
                 {
                     Logger::Instance().Error(

@@ -2,8 +2,6 @@
 #include "LamaPon/Graphics/GraphicsDeviceState.h"
 
 #include "LamaPon/Assets/AssetManager.h"
-#include "LamaPon/Core/Log.h"
-#include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Graphics/TextLayout.h"
 #include "LamaPon/Scene/SceneManager.h"
 #include "LamaPon/Scene/SceneTransition.h"
@@ -15,7 +13,6 @@
 #include <filesystem>
 #include <memory>
 #include <string>
-#include <vector>
 
 namespace
 {
@@ -55,7 +52,7 @@ namespace
     }
 
     // textureを読めない場合はnullptrを返します（組み込みやassetsの
-    // 画像が無い環境でも、遷移と読み込み画面は描き続けます）。
+    // 画像が無い環境でも、読み込み画面は描き続けます）。
     [[nodiscard]] std::shared_ptr<const LamaPon::TextureResourceSnapshot>
         TryLoadTextureResources(
             LamaPon::AssetManager& assets,
@@ -298,8 +295,8 @@ namespace
             {
                 // builtin/circleの円は一辺の112/256の半径なので、
                 // 直径がdotSizeになるように拡大します。
-                const float quad = dotSize
-                    / (2.0f * LamaPon::SceneTransitionCircleRadiusRatio);
+                constexpr float CircleRadiusRatio = 112.0f / 256.0f;
+                const float quad = dotSize / (2.0f * CircleRadiusRatio);
                 request.texture = dot->shaderResourceView;
                 request.position = { x - quad * 0.5f, y - quad * 0.5f };
                 request.scale = {
@@ -317,40 +314,6 @@ namespace
                 WithAlpha(settings.textColor, dotAlpha));
             static_cast<void>(pass.Draw(request));
         }
-    }
-
-    // 1枚の覆いを描きます。rectangleは白の1x1、図形はtextureの大きさ
-    // （builtinは256x256）を基準に拡大します。
-    void DrawTransitionQuad(
-        LamaPon::SpriteRenderPass& pass,
-        const LamaPon::SceneTransitionQuad& quad,
-        const LamaPon::GraphicsViewHandle& texture,
-        const float textureWidth,
-        const float textureHeight)
-    {
-        LamaPon::SpriteDrawRequest request;
-        request.texture = texture;
-        request.scale = {
-            quad.width / textureWidth,
-            quad.height / textureHeight };
-        if (quad.rotation == 0.0f)
-        {
-            request.position = { quad.x, quad.y };
-        }
-        else
-        {
-            // 回転は矩形の中心を軸にします。
-            request.position = {
-                quad.x + quad.width * 0.5f,
-                quad.y + quad.height * 0.5f };
-            request.origin = {
-                textureWidth * 0.5f,
-                textureHeight * 0.5f };
-            request.rotation = quad.rotation;
-        }
-        // Sprite passの既定はNonPremultipliedなので、色はそのまま渡します。
-        request.tint = quad.color;
-        static_cast<void>(pass.Draw(request));
     }
 }
 
@@ -388,221 +351,37 @@ namespace LamaPon
         pass.End();
     }
 
-    void GraphicsDevice::DrawSceneTransition(
+    void GraphicsDevice::DrawLoadingScreen(
         const SceneTransitionFrame& frame,
-        const SceneLoadingScreenSettings& loadingScreen,
+        const SceneLoadingScreenSettings& settings,
         const std::uint32_t width,
         const std::uint32_t height)
     {
-        const bool drawsCover =
-            frame.phase != SceneTransitionPhase::Idle
-            && frame.settings.effect != SceneTransitionEffect::None
-            && frame.coverage > 0.0f;
-        const float loadingAlpha =
-            std::clamp(frame.loadingScreenAlpha, 0.0f, 1.0f);
-        const bool drawsLoading =
-            loadingScreen.enabled && loadingAlpha > 0.0f;
-        if (!drawsCover && !drawsLoading)
+        const float alpha = frame.legacyLoadingScreen
+            ? (frame.loadingScreenAlpha > 0.0f ? 1.0f : 0.0f)
+            : std::clamp(frame.loadingScreenAlpha, 0.0f, 1.0f);
+        if (!settings.enabled || alpha <= 0.0f)
         {
             return;
         }
 
         [[maybe_unused]] auto operationLease =
             AcquireResourceLease();
-        const float canvasWidth = static_cast<float>(
-            width == 0 ? m_state->m_width : width);
-        const float canvasHeight = static_cast<float>(
-            height == 0 ? m_state->m_height : height);
-        const bool revealing =
-            frame.phase == SceneTransitionPhase::Revealing;
-
-        if (drawsCover)
-        {
-            auto settings = frame.settings;
-            bool drawn = false;
-            if (settings.effect == SceneTransitionEffect::Shader
-                && frame.coverage < 1.0f)
-            {
-                drawn = DrawSceneTransitionShader(
-                    settings,
-                    frame.coverage,
-                    revealing,
-                    canvasWidth,
-                    canvasHeight);
-            }
-            if (!drawn)
-            {
-                std::vector<SceneTransitionQuad> quads;
-                BuildSceneTransitionQuads(
-                    settings,
-                    frame.coverage,
-                    revealing,
-                    canvasWidth,
-                    canvasHeight,
-                    quads);
-                std::uint32_t circleWidth{};
-                std::uint32_t circleHeight{};
-                std::uint32_t irisWidth{};
-                std::uint32_t irisHeight{};
-                std::shared_ptr<const TextureResourceSnapshot> circle;
-                std::shared_ptr<const TextureResourceSnapshot> iris;
-                bool missingShape = false;
-                for (const auto& quad : quads)
-                {
-                    if (quad.shape == SceneTransitionShape::Circle
-                        && circle == nullptr)
-                    {
-                        circle = TryLoadTextureResources(
-                            Assets(),
-                            L"builtin/circle",
-                            circleWidth,
-                            circleHeight);
-                        missingShape = missingShape || circle == nullptr;
-                    }
-                    if (quad.shape
-                            == SceneTransitionShape::InverseCircle
-                        && iris == nullptr)
-                    {
-                        iris = TryLoadTextureResources(
-                            Assets(),
-                            L"builtin/iris",
-                            irisWidth,
-                            irisHeight);
-                        missingShape = missingShape || iris == nullptr;
-                    }
-                }
-                if (missingShape)
-                {
-                    // 円の画像を作れない場合も、画面は確実に覆います。
-                    settings.effect = SceneTransitionEffect::Fade;
-                    BuildSceneTransitionQuads(
-                        settings,
-                        frame.coverage,
-                        revealing,
-                        canvasWidth,
-                        canvasHeight,
-                        quads);
-                }
-                auto pass = BeginSpritePass();
-                for (const auto& quad : quads)
-                {
-                    switch (quad.shape)
-                    {
-                    case SceneTransitionShape::Circle:
-                        DrawTransitionQuad(
-                            pass,
-                            quad,
-                            circle->shaderResourceView,
-                            static_cast<float>(circleWidth),
-                            static_cast<float>(circleHeight));
-                        break;
-                    case SceneTransitionShape::InverseCircle:
-                        DrawTransitionQuad(
-                            pass,
-                            quad,
-                            iris->shaderResourceView,
-                            static_cast<float>(irisWidth),
-                            static_cast<float>(irisHeight));
-                        break;
-                    case SceneTransitionShape::Rectangle:
-                    default:
-                        DrawTransitionQuad(
-                            pass,
-                            quad,
-                            {},
-                            1.0f,
-                            1.0f);
-                        break;
-                    }
-                }
-                pass.End();
-            }
-        }
-
-        if (drawsLoading)
-        {
-            auto pass = BeginSpritePass();
-            DrawLoadingOverlay(
-                pass,
-                Assets(),
-                frame.loadingProgress,
-                loadingScreen,
-                frame.legacyLoadingScreen ? 1.0f : loadingAlpha,
-                frame.loadingScreenTime,
-                canvasWidth,
-                canvasHeight);
-            pass.End();
-        }
-    }
-
-    bool GraphicsDevice::DrawSceneTransitionShader(
-        const SceneTransitionSettings& settings,
-        const float coverage,
-        const bool revealing,
-        const float canvasWidth,
-        const float canvasHeight)
-    {
-        std::uint32_t ruleWidth{};
-        std::uint32_t ruleHeight{};
-        const auto rule = TryLoadTextureResources(
+        const std::uint32_t canvasWidth =
+            width == 0 ? m_state->m_width : width;
+        const std::uint32_t canvasHeight =
+            height == 0 ? m_state->m_height : height;
+        auto pass = BeginSpritePass();
+        DrawLoadingOverlay(
+            pass,
             Assets(),
-            settings.ruleTexture,
-            ruleWidth,
-            ruleHeight);
-        const auto shaderFrame = BuildSceneTransitionShaderFrame(
+            frame.loadingProgress,
             settings,
-            coverage,
-            revealing,
-            canvasWidth,
-            canvasHeight,
-            rule != nullptr);
-
-        SpritePassDescription description;
-        description.pixelShader = settings.shader.empty()
-            ? std::filesystem::path(
-                std::u8string(
-                    SceneTransitionBuiltInShader.begin(),
-                    SceneTransitionBuiltInShader.end()))
-            : settings.shader;
-        description.customParameters = shaderFrame.parameters;
-        auto pass = BeginSpritePass(description);
-        const auto status = pass.ShaderStatus();
-        if (status.fallback != SpriteShaderFallback::None
-            || !status.error.empty())
-        {
-            // 代替シェーダーで全画面を塗ると画面が一瞬で隠れるため、
-            // 何も描かずにFadeへ切り替えます。
-            pass.Abort();
-            if (m_state->m_sceneTransitionShaderError != status.error)
-            {
-                m_state->m_sceneTransitionShaderError = status.error;
-                Logger::Instance().Warning(
-                    "シーン遷移のシェーダーを使えないため、フェードで"
-                    "代用します: "
-                    + PathToUtf8(description.pixelShader)
-                    + " | "
-                    + status.error);
-            }
-            return false;
-        }
-        m_state->m_sceneTransitionShaderError.clear();
-
-        SpriteDrawRequest request;
-        if (rule != nullptr)
-        {
-            request.texture = rule->shaderResourceView;
-            request.scale = {
-                canvasWidth / static_cast<float>(ruleWidth),
-                canvasHeight / static_cast<float>(ruleHeight) };
-        }
-        else
-        {
-            request.scale = { canvasWidth, canvasHeight };
-        }
-        request.tint = shaderFrame.tint;
-        static_cast<void>(pass.Draw(request));
+            alpha,
+            frame.loadingScreenTime,
+            static_cast<float>(canvasWidth),
+            static_cast<float>(canvasHeight));
         pass.End();
-        return true;
     }
 
     void GraphicsDevice::DrawStartupLogo(

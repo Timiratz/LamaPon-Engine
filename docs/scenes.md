@@ -41,7 +41,7 @@ if (scenes.IsLoading())
 エクスポートしたゲームでは標準Loading画面が自動表示され、日本語メッセージ、進捗バー、パーセントを描画します。
 色とメッセージは変更でき、独自UIを使用する場合は`enabled`を無効にできます。
 ヒント文、背景画像、回転インジケーター、進捗バーの平滑化も選べます（追加した項目は既定では従来の見た目のままです）。
-エディターではProject Settingsの「ゲーム」→「従来の遷移・読み込み設定」で同じ項目を編集でき、書き出したゲームと再生モードに反映されます。
+エディターではProject Settingsの「ゲーム」→「読み込み画面」で同じ項目を編集でき、書き出したゲームと再生モードに反映されます。
 
 ```cpp
 auto& loading = scenes.LoadingScreen();
@@ -66,69 +66,96 @@ UI ButtonによるScene移動とゲームの起動Sceneも非同期読み込み�
 大きいテクスチャ（転送データ8MiB以上）はGPUへの転送も1フレームにまとめず、毎フレームの予算内で粗いミップから段階的にアップロードされます。
 読み込み直後は少しぼやけた状態から数フレームで鮮明になり、巨大なテクスチャを読んでもフレームが止まりません。
 
-## シーン遷移演出
+## シーン遷移
 
-Sceneを切り替えるときに、フェードやワイプなどの演出で旧Sceneを覆い、新Sceneを見せられます。
+Sceneを切り替えるときに、旧Sceneを覆ってから新Sceneを見せられます。
 流れは「覆う → 覆ったまま読み込みと有効化 → 開く」で、非同期読み込みは覆っている間に並行して進みます。
 新Sceneの有効化は**画面を覆い終えてから**行うため、切り替わりの瞬間や読み込み直後のカクつきは見えません。
 覆い終えても読み込みが続いている場合だけ、標準Loading画面をふわっと重ねます（速い読み込みでは表示しません）。
 遷移はtimeScaleの影響を受けない実時間で進むので、timeScaleを0にしたポーズメニューからの移動でも止まりません。
 
-| 演出 | 見た目 | 主な設定 |
-|---|---|---|
-| `None` | 覆わずに切り替え（従来どおりLoading画面だけ） | — |
-| `Fade` | 単色で徐々に覆う | 色 |
-| `Wipe` | 画面の端から単色が伸びる（斜めも可） | 向き、境界のぼかし、差し色 |
-| `Iris` | 円が閉じて開く | 中心（`focus`）、差し色 |
-| `Diamond` | ひし形の穴が閉じて開く | 中心、差し色 |
-| `Blinds` | ブラインドの帯が順に伸びる | 向き、本数、時間差 |
-| `Tiles` / `DiamondTiles` / `Dots` | 四角・ひし形・丸のタイルが順に現れる | 向き、個数、時間差、差し色 |
-| `Shutter` | 両側から扉のように閉じる | 軸（向き）、差し色 |
-| `Shader` | ピクセルシェーダーの模様で覆う（下記） | 模様、ルール画像、独自シェーダー |
+エンジンが持つのはこの**切り替えの仕組みだけ**です。
 
-差し色（`accentColor`）は覆いの先端や縁に入る別色の帯です。
-`passThrough`をオンにすると、開くときに覆いが同じ向きへ通り抜けます（オフなら巻き戻すように戻ります）。
-覆う・保持・開くの時間、動き方（イージング）、覆いの色も演出ごとに設定できます。
+- 覆う・保持・開くの時間と、覆い具合（`TransitionCoverage()`、0～1）の計算
+- 開始・覆い終わり・完了のイベント
+- 遷移中のUI Buttonの無効化、BGMのフェード、標準Loading画面
 
-### エディターで設定する
+**画面を覆う絵（フェードの黒、ワイプ、アイリスなど）はエンジンに含まれません。**
+覆い具合を読んで自分で描くか、演出を描くパッケージ（下記）を導入します。
+遷移を指定しない切り替えは、従来どおりすぐに切り替えてLoading画面だけを表示します。
 
-1. パッケージマネージャーで **Scene Transition Showcase** を追加します。
-2. SceneのGameObjectへ **シーン遷移コントローラー** Scriptを追加します。
-3. **遷移プリセット** にデータアセットを指定し、移動先Sceneと再生イベント名を決めます。
-4. UI Buttonの **クリック時のイベント** を同じ名前にします。ボタン側の移動先Scene・再読み込みは空にします。
-5. アセットウィンドウでプリセットを選び、Inspectorから演出・時間・色などを編集して保存します。
+### 自分でフェードを作る
 
-設定をSceneから独立したアセットとして共有できます。試すときはコントローラーの
-「再生開始時に一度実行」をオンにしてPlayします。移動先が空なら演出だけ再生します。
-詳しくは[パッケージの使い方](../packages/src/scene-transition-showcase/README.md)を参照してください。
+画面全体を覆うSpriteを、覆い具合に合わせて濃くするだけでフェードになります。
 
-新規プロジェクトは演出なし（`None`）で始まります。以前の全体設定は
-**Project Settings →「ゲーム」→「従来の遷移・読み込み設定」**、
-ボタン専用設定は **UI Button →「従来のボタン専用の遷移設定」** へ移動しました。
-保存済み設定と書き出しの動作は維持され、従来の設定欄ではGameビューでのプレビューも使えます。
+1. Sceneのルートに空のGameObjectを作り、**UI Rect Transform** を追加して
+   アンカーの最小を(0, 0)、最大を(1, 1)、サイズを(0, 0)にします（画面全体へ広がります）。
+2. **Sprite Renderer** を追加し、色を黒、Sort OrderをUIより大きい値（例: 10000）にします。
+3. 次のScriptを追加します。
 
-### C++から使う
+```cpp
+#include "LamaPon/LamaPon.h"
+
+// 遷移の覆い具合に合わせて、画面全体のSpriteを濃くします。
+class FadeCover final : public LamaPon::Script
+{
+public:
+    void Start() override
+    {
+        // Sceneを切り替えても残し、開く段階まで描き続けます
+        // （移動先に同じキーのFadeCoverがあれば、こちらが残ります）。
+        GetScene().DontDestroyOnLoad(Owner(), "FadeCover");
+        // UI Buttonの移動先Sceneなど、引数なしの切り替えにも時間を付けます。
+        GetScene().Scenes().SetDefaultTransition(
+            LamaPon::MakeSceneTransition(0.5f)); // 覆う時間と開く時間（秒）
+    }
+
+    void Update(float) override
+    {
+        auto* sprite = GetComponent<LamaPon::SpriteRendererComponent>();
+        const float coverage = GetScene().Scenes().TransitionCoverage();
+        sprite->SetEnabled(coverage > 0.0f);
+        sprite->SetColor({ 0.0f, 0.0f, 0.0f, coverage });
+    }
+};
+
+LAMAPON_SCRIPT(FadeCover)
+```
+
+`TransitionCoverage()`はイージング適用済みで、0で何も覆わず、1で全面を覆います。
+覆い終えた瞬間から新Sceneの有効化までは1のまま保たれるので、この間に切り替わりが隠れます。
+ワイプやアイリスにしたいときは、同じ値をSpriteの大きさや位置、独自のピクセルシェーダーへ渡します。
+
+### 時間を指定して切り替える
 
 ```cpp
 auto& scenes = GetScene().Scenes();
 
-// この移動だけ演出を指定する
+// この移動だけ時間を指定する
 auto transition = LamaPon::MakeSceneTransition(
-    LamaPon::SceneTransitionEffect::Iris,
-    0.5f); // 覆う時間と開く時間（秒）
-transition.accentColor = { 1.0f, 0.8f, 0.2f, 1.0f };
+    0.6f,  // 覆う時間と開く時間（秒）
+    0.2f); // 覆ったまま待つ最短時間（秒）
 if (!scenes.RequestLoadAsync("scenes/stage-02.scene.json", transition))
 {
     LamaPon::Logger::Instance().Error(scenes.LastError());
 }
 
 // 以後の非同期切り替え（UI Buttonを含む）の既定を変える
-scenes.SetDefaultTransition(
-    LamaPon::MakeSceneTransition(LamaPon::SceneTransitionEffect::Wipe));
+scenes.SetDefaultTransition(LamaPon::MakeSceneTransition(0.4f));
 ```
+
+| 項目 | 内容 |
+|---|---|
+| `coverDuration` / `holdDuration` / `revealDuration` | 覆う・覆ったまま待つ・開く時間（秒）。すべて0なら覆わずにすぐ切り替えます（既定） |
+| `easing` | 覆い具合の動き方（`Linear`、`EaseInOutCubic`など） |
+| `showLoadingScreen` | 覆っている間も読み込みが続いたら標準Loading画面を重ねる（既定オン） |
+| `blockInput` | 遷移中はUI Buttonのクリックを受け付けない（既定オン） |
+| `fadeMusic` | Musicバスの音量を覆い具合に合わせて下げて戻す（既定オン） |
 
 `RequestLoad`／`RequestReload`（同期）は、遷移を引数で渡したときだけ覆い終えるまで切り替えを待ちます。
 追加読み込み（Additive）には遷移を使いません。
+時間の設定は`SceneTransitionToJson`／`SceneTransitionFromJson`でデータアセットなどへ保存できます
+（知らないキーは無視するので、自分の演出の設定と同じJSONへまとめられます）。
 
 Sceneを切り替えない演出（部屋の移動、ワープ、場面転換）には`PlayTransition`を使います。
 覆い終えた瞬間に`SceneTransition.Covered`イベントが届くので、その間にプレイヤーを移動します。
@@ -150,10 +177,8 @@ void Start() override
 
 void Warp()
 {
-    auto iris = LamaPon::MakeSceneTransition(
-        LamaPon::SceneTransitionEffect::Iris);
-    iris.focus = { 0.5f, 0.6f }; // プレイヤーの画面位置へ向かって閉じる
-    if (GetScene().Scenes().PlayTransition(iris))
+    if (GetScene().Scenes().PlayTransition(
+            LamaPon::MakeSceneTransition(0.35f)))
     {
         m_warping = true;
     }
@@ -169,53 +194,29 @@ void Warp()
 | `SceneTransition.Finished` | 新Sceneを見せ終えた（操作の開始に安全なタイミング） |
 
 `IsTransitioning()`、`TransitionPhase()`、`TransitionCoverage()`で進み具合を確認できます。
-`blockInput`（既定オン）の遷移中は`IsInputBlocked()`がtrueになり、UI Buttonはクリックを受け付けません（二重に遷移を要求する事故を防ぎます）。
-`fadeMusic`（既定オン）の遷移では、Musicバスの音量を覆い具合に合わせて下げて戻します。
-プレイヤーが設定した`SetBusVolume`の値は変えず、別の倍率（`AudioSystem::SetBusFade`）として掛け合わせます。
+`blockInput`の遷移中は`IsInputBlocked()`がtrueになり、UI Buttonはクリックを受け付けません（二重に遷移を要求する事故を防ぎます）。
+`fadeMusic`の遷移では、プレイヤーが設定した`SetBusVolume`の値は変えず、別の倍率（`AudioSystem::SetBusFade`）として掛け合わせます。
 
 読み込みに失敗したり`CancelPending()`で取り消したりした場合は、その時点の覆い具合から開き直して元のSceneへ戻ります。
 
-### シェーダーによる遷移
+### おしゃれな演出をパッケージで追加する
 
-`SceneTransitionEffect::Shader`は、画面全体を1枚のSpriteで覆い、ピクセルシェーダーで画素ごとに「覆われる順番」を決めます。
-組み込みの`shaders/LamaPonSceneTransition.hlsl`（新規作成と既存プロジェクトの更新で配布）には次の模様があります。
+ワイプ、アイリス、ブラインド、タイル、ドット、シャッター、シェーダーの模様
+（ルール画像、ディゾルブ、時計、渦巻き、波紋、六角形、ハート）などの演出は、
+パッケージマネージャーから **Scene Transition Showcase** を導入すると使えます。
 
-| 模様（`shaderPattern`） | 見た目 |
-|---|---|
-| `RuleImage` | ルール画像の暗い画素から順に覆う（ノベルゲームで定番の方式） |
-| `Dissolve` | ノイズでまだらに溶けるように覆う |
-| `Clock` | 12時の位置から時計の針のように回る |
-| `Spiral` | 渦を巻きながら中心へ閉じる |
-| `Ripple` | 波紋のように揺らぎながら閉じる |
-| `Hexagons` | 六角形のタイルが順に現れる |
-| `Heart` | ハート形の穴が閉じる |
+1. パッケージマネージャーで **Scene Transition Showcase** を追加します。
+2. SceneのGameObjectへ **シーン遷移コントローラー** Scriptを追加します。
+3. **遷移プリセット** にデータアセットを指定し、移動先Sceneと再生イベント名を決めます。
+4. UI Buttonの **クリック時のイベント** を同じ名前にします。ボタン側の移動先Scene・再読み込みは空にします。
+5. アセットウィンドウでプリセットを選び、Inspectorから演出・時間・色などを編集して保存します。
 
-```cpp
-auto rule = LamaPon::MakeSceneTransition(
-    LamaPon::SceneTransitionEffect::Shader,
-    0.8f);
-rule.shaderPattern = LamaPon::SceneTransitionShaderPattern::RuleImage;
-rule.ruleTexture = "textures/rules/swirl.png"; // グレースケール画像
-rule.softness = 0.08f;                          // 境界のぼかし
-rule.accentColor = { 1.0f, 0.6f, 0.2f, 1.0f };  // 境界を光らせる
-```
+パッケージは上の「自分でフェードを作る」と同じ仕組みで、画面全体のSpriteと自前のシェーダーで覆いを描きます。
+中身はC++とHLSLのままなので、自分の演出を作るときの手本にもなります。
+詳しくは[パッケージの使い方](../packages/src/scene-transition-showcase/README.md)を参照してください。
 
-`shader`へ独自の`.hlsl`を指定すると、組み込みの代わりに使います。
-組み込みシェーダーを複製して`PatternOrder`だけを書き換えるのが簡単です。
-入力の並びと定数はUI用の2D Shaderと同じで、次の値が渡されます（`CustomParameters[5]`～`[7]`はエンジンが使うため読みません）。
-
-| 入力 | 内容 |
-|---|---|
-| `COLOR0` | 覆いの色 |
-| `TEXCOORD0` | 画面の左上(0,0)～右下(1,1) |
-| `SpriteTexture`（t0） | ルール画像（指定が無ければ白） |
-| `CustomParameters[0]` | coverage（0～1）、境界のぼかし幅、差し色の幅、模様の番号 |
-| `CustomParameters[1]` | 順番を反転するか（開く段階の通り抜け）、stagger、divisions |
-| `CustomParameters[2]` | 差し色 |
-| `CustomParameters[3]` | 画面の幅、高さ、中心x、中心y（ピクセル） |
-| `CustomParameters[4]` | 向きx、向きy |
-
-シェーダーが見つからない、コンパイルできない場合は、画面を確実に覆えるようFadeで代わりに描き、理由を一度だけログへ記録します。
+以前のバージョンでProject Settingsの「ゲーム」やUI Buttonへ保存した遷移演出の設定は、
+読み込み時に無視され、次に保存したときに消えます。読み込み画面の設定はそのまま使えます。
 
 旧Sceneと新Sceneの画面を直接混ぜる演出（クロスフェード、旧画面のディゾルブ）は、画面の取り込みが必要なため現在は対応していません。
 
