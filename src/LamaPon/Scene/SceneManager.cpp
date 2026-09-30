@@ -914,20 +914,7 @@ namespace LamaPon
                 "A scene load with a transition is already in progress.";
             return false;
         }
-        StartTransition(transition, {}, false, false);
-        return true;
-    }
-
-    bool SceneManager::PreviewTransition(
-        const SceneTransitionSettings& transition)
-    {
-        if (m_transitionAwaitsLoad || IsLoading())
-        {
-            m_lastError =
-                "A scene load with a transition is already in progress.";
-            return false;
-        }
-        StartTransition(transition, {}, false, true);
+        StartTransition(transition, {}, false);
         return true;
     }
 
@@ -935,7 +922,6 @@ namespace LamaPon
     {
         m_transition.Reset();
         m_transitionAwaitsLoad = false;
-        m_transitionIsPreview = false;
         m_transitionTarget.clear();
         m_loadingScreenAlpha = 0.0f;
         m_loadingScreenTime = 0.0f;
@@ -949,24 +935,18 @@ namespace LamaPon
         StartTransition(
             transition,
             PathToUtf8(destination),
-            true,
-            false);
+            true);
     }
 
     void SceneManager::StartTransition(
         const SceneTransitionSettings& transition,
         std::string target,
-        const bool awaitsLoad,
-        const bool preview)
+        const bool awaitsLoad)
     {
         m_transition.Start(transition);
         m_transitionTarget = std::move(target);
         m_transitionAwaitsLoad = awaitsLoad;
-        m_transitionIsPreview = preview;
-        if (!preview)
-        {
-            PublishTransitionEvent(SceneTransitionStartedEvent);
-        }
+        PublishTransitionEvent(SceneTransitionStartedEvent);
     }
 
     void SceneManager::FinishTransitionLoad(
@@ -992,8 +972,7 @@ namespace LamaPon
     bool SceneManager::IsInputBlocked() const noexcept
     {
         return m_transition.IsActive()
-            && m_transition.Settings().blockInput
-            && !m_transitionIsPreview;
+            && m_transition.Settings().blockInput;
     }
 
     void SceneManager::AdvanceTransition(
@@ -1038,8 +1017,9 @@ namespace LamaPon
         }
 
         const auto& settings = m_transition.Settings();
-        const bool covering =
-            settings.effect != SceneTransitionEffect::None;
+        // 時間のある遷移だけが画面を覆う想定です。すぐ切り替える遷移は
+        // 従来どおりの読み込み画面を使います（TransitionFrameを参照）。
+        const bool covering = !IsInstantSceneTransition(settings);
         if (covering)
         {
             // 覆い終えた後も読み込みが続いているときだけ、読み込み画面を
@@ -1048,8 +1028,7 @@ namespace LamaPon
                 m_transition.IsFullyCovered()
                 && loading
                 && settings.showLoadingScreen
-                && m_loadingScreen.enabled
-                && !m_transitionIsPreview;
+                && m_loadingScreen.enabled;
             const float fade = m_loadingScreen.fadeDuration;
             const float step = fade > 0.0f ? delta / fade : 1.0f;
             m_loadingScreenAlpha = wantsLoadingScreen
@@ -1066,25 +1045,17 @@ namespace LamaPon
             !m_transitionAwaitsLoad
             && (!covering || m_loadingScreenAlpha <= 0.0f);
         const auto events = m_transition.Advance(delta, ready);
-        const bool fadesMusic =
-            covering
-            && settings.fadeMusic
-            && !m_transitionIsPreview;
+        const bool fadesMusic = covering && settings.fadeMusic;
         ApplyMusicFade(
             fadesMusic && m_transition.IsActive()
                 ? 1.0f - m_transition.Coverage()
                 : 1.0f);
 
-        const bool publishes = !m_transitionIsPreview;
-        if (events.finished)
-        {
-            m_transitionIsPreview = false;
-        }
-        if (publishes && events.covered)
+        if (events.covered)
         {
             PublishTransitionEvent(SceneTransitionCoveredEvent);
         }
-        if (publishes && events.finished)
+        if (events.finished)
         {
             PublishTransitionEvent(SceneTransitionFinishedEvent);
         }
@@ -1106,7 +1077,7 @@ namespace LamaPon
         frame.loadingScreenTime = m_loadingScreenTime;
         const bool covering =
             m_transition.IsActive()
-            && frame.settings.effect != SceneTransitionEffect::None;
+            && !IsInstantSceneTransition(frame.settings);
         if (covering)
         {
             frame.loadingScreenAlpha = m_loadingScreenAlpha;

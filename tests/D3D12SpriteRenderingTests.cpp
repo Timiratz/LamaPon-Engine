@@ -10,7 +10,10 @@
 #include "LamaPon/Components/PointLightComponent.h"
 #include "LamaPon/Components/ReflectionProbeComponent.h"
 #include "LamaPon/Components/SpotLightComponent.h"
+#include "LamaPon/Components/SpriteRendererComponent.h"
+#include "LamaPon/Components/UIRectTransformComponent.h"
 #include "LamaPon/Core/Log.h"
+#include "LamaPon/Core/PathUtils.h"
 #include "LamaPon/Graphics/GraphicsDevice.h"
 #include "LamaPon/Graphics/GraphicsDeviceD3D11Access.h"
 #include "LamaPon/Graphics/LitEffect.h"
@@ -22,6 +25,7 @@
 #include "LamaPon/Scene/Scene.h"
 #include "LamaPon/Scene/SceneManager.h"
 #include "LamaPon/Scene/GameObject.h"
+#include "../packages/src/scene-transition-showcase/SceneTransitionAssets.h"
 
 #include <Windows.h>
 #include <objbase.h>
@@ -7481,13 +7485,14 @@ namespace
 
 namespace
 {
-    // シーン遷移の覆いを、D3D11とD3D12の実際のSprite描画（WARP）で
-    // 描きます。矩形・builtin/circle・builtin/iris・回転した帯・組み込みの
-    // Shader演出と、そのシェーダーが無いときのFade代用までを1組にします。
+    // エンジンは遷移の覆いを描かないため、scene-transition-showcase
+    // パッケージのシェーダーを、パッケージと同じ形（UI Rect Transformで
+    // 画面全体へ広げたSprite Renderer）でD3D11とD3D12のWARPに描きます。
+    // 覆い終えた上へ重ねるエンジンの読み込み画面も1組に含めます。
     struct SceneTransitionCase final
     {
         const char* name{};
-        LamaPon::SceneTransitionSettings settings;
+        LamaPonSceneShowcase::Look look;
         float coverage{};
         bool revealing{};
         float loadingScreenAlpha{};
@@ -7497,61 +7502,68 @@ namespace
 
     [[nodiscard]] std::vector<SceneTransitionCase> SceneTransitionCases()
     {
-        using LamaPon::SceneTransitionEffect;
+        using LamaPonSceneShowcase::Effect;
         const DirectX::XMFLOAT4 red{ 1.0f, 0.0f, 0.0f, 1.0f };
         const DirectX::XMFLOAT4 yellow{ 1.0f, 0.9f, 0.1f, 1.0f };
+        const auto make = [&red](const Effect effect)
+            {
+                LamaPonSceneShowcase::Look look;
+                look.effect = effect;
+                look.color = red;
+                return look;
+            };
         std::vector<SceneTransitionCase> cases;
 
-        auto iris = LamaPon::MakeSceneTransition(
-            SceneTransitionEffect::Iris, 0.4f, red);
+        auto iris = make(Effect::Iris);
         iris.accentColor = yellow;
         cases.push_back({ "iris", iris, 0.5f, false, 0.0f });
 
-        auto wipe = LamaPon::MakeSceneTransition(
-            SceneTransitionEffect::Wipe, 0.4f, red);
+        auto wipe = make(Effect::Wipe);
         wipe.direction =
-            LamaPon::SceneTransitionDirection::TopLeftToBottomRight;
+            LamaPonSceneShowcase::Direction::TopLeftToBottomRight;
         wipe.softness = 0.1f;
         cases.push_back({ "diagonal wipe", wipe, 0.5f, false, 0.0f });
 
-        auto diamondTiles = LamaPon::MakeSceneTransition(
-            SceneTransitionEffect::DiamondTiles, 0.4f, red);
+        auto blinds = make(Effect::Blinds);
+        blinds.direction = LamaPonSceneShowcase::Direction::TopToBottom;
+        blinds.divisions = 8;
+        blinds.stagger = 0.0f;
+        cases.push_back({ "blinds", blinds, 0.5f, false, 0.0f });
+
+        auto diamondTiles = make(Effect::DiamondTiles);
         diamondTiles.accentColor = yellow;
         diamondTiles.divisions = 8;
         cases.push_back(
             { "diamond tiles", diamondTiles, 0.5f, false, 0.0f });
 
-        auto dots = LamaPon::MakeSceneTransition(
-            SceneTransitionEffect::Dots, 0.4f, red);
+        auto dots = make(Effect::Dots);
         dots.divisions = 8;
         cases.push_back({ "dots", dots, 0.7f, true, 0.0f });
 
-        auto diamond = LamaPon::MakeSceneTransition(
-            SceneTransitionEffect::Diamond, 0.4f, red);
-        cases.push_back({ "diamond iris", diamond, 0.5f, false, 0.0f });
+        cases.push_back(
+            { "diamond iris", make(Effect::Diamond), 0.5f, false, 0.0f });
 
-        auto heart = LamaPon::MakeSceneTransition(
-            SceneTransitionEffect::Shader, 0.4f, red);
-        heart.shaderPattern = LamaPon::SceneTransitionShaderPattern::Heart;
+        auto heart = make(Effect::Shader);
+        heart.shaderPattern = LamaPonSceneShowcase::ShaderPattern::Heart;
         cases.push_back({ "shader heart", heart, 0.6f, false, 0.0f });
 
-        auto dissolve = LamaPon::MakeSceneTransition(
-            SceneTransitionEffect::Shader, 0.4f, red);
+        auto dissolve = make(Effect::Shader);
         dissolve.shaderPattern =
-            LamaPon::SceneTransitionShaderPattern::Dissolve;
+            LamaPonSceneShowcase::ShaderPattern::Dissolve;
         dissolve.accentColor = yellow;
         cases.push_back({ "shader dissolve", dissolve, 0.5f, false, 0.0f });
 
-        auto missing = LamaPon::MakeSceneTransition(
-            SceneTransitionEffect::Shader, 0.4f, red);
-        missing.shader = "shaders/does-not-exist-transition.hlsl";
+        auto rule = make(Effect::Shader);
+        rule.shaderPattern = LamaPonSceneShowcase::ShaderPattern::RuleImage;
+        rule.ruleTexture = "rules/gradient.png";
+        cases.push_back({ "rule image", rule, 0.5f, false, 0.0f });
+
         cases.push_back(
-            { "missing shader fallback", missing, 0.5f, false, 0.0f });
+            { "fade", make(Effect::Fade), 0.5f, false, 0.0f });
 
         // 覆い終えた後に重ねる読み込み画面（フェード途中）です。
-        auto covered = LamaPon::MakeSceneTransition(
-            SceneTransitionEffect::Fade, 0.4f, red);
-        cases.push_back({ "loading overlay", covered, 1.0f, false, 0.5f });
+        cases.push_back(
+            { "loading overlay", make(Effect::Fade), 1.0f, false, 0.5f });
         return cases;
     }
 
@@ -7570,8 +7582,23 @@ namespace
         Require(
             graphics.ActiveRenderingApi() == api,
             "The scene transition test did not start the requested API");
-        // 組み込みのLamaPonSceneTransition.hlslはassets/shadersから読みます。
-        graphics.Assets().SetAssetRoot(LAMAPON_TEST_ASSET_DIR);
+        // パッケージのシェーダーとルール画像はpackages/srcから読みます
+        // （.metaは作りません）。
+        graphics.Assets().SetAssetRoot(
+            std::filesystem::path{ LAMAPON_TEST_ASSET_DIR }.parent_path()
+                / "packages/src/scene-transition-showcase",
+            false);
+
+        LamaPon::Scene scene(graphics);
+        auto& overlay = scene.CreateGameObject("SceneTransition.Overlay");
+        overlay.AddComponent<LamaPon::UIRectTransformComponent>(
+            DirectX::XMFLOAT2{ 0.0f, 0.0f },
+            DirectX::XMFLOAT2{ 1.0f, 1.0f },
+            DirectX::XMFLOAT2{ 0.5f, 0.5f },
+            DirectX::XMFLOAT2{ 0.0f, 0.0f },
+            DirectX::XMFLOAT2{ 0.0f, 0.0f });
+        auto& sprite =
+            overlay.AddComponent<LamaPon::SpriteRendererComponent>();
 
         LamaPon::SceneLoadingScreenSettings loading;
         loading.message = "Loading";
@@ -7580,26 +7607,58 @@ namespace
         std::vector<Capture> captures;
         for (const auto& transitionCase : SceneTransitionCases())
         {
+            const auto& look = transitionCase.look;
+            sprite.SetShaderPath("shaders/LamaPonSceneTransition.hlsl");
+            sprite.SetTexturePath(
+                LamaPon::PathFromUtf8(look.ruleTexture));
+            sprite.SetColor(look.color);
+            const auto shaderFrame = LamaPonSceneShowcase::BuildShaderFrame(
+                look,
+                transitionCase.coverage,
+                transitionCase.revealing,
+                !look.ruleTexture.empty());
+            for (std::size_t index{};
+                index < shaderFrame.parameters.size();
+                ++index)
+            {
+                sprite.SetCustomParameter(
+                    index,
+                    shaderFrame.parameters[index]);
+            }
+
             LamaPon::SceneTransitionFrame frame;
-            frame.settings = transitionCase.settings;
+            frame.settings = LamaPon::MakeSceneTransition(0.4f);
             frame.phase = transitionCase.coverage >= 1.0f
                 ? LamaPon::SceneTransitionPhase::Covered
-                : transitionCase.revealing
-                    ? LamaPon::SceneTransitionPhase::Revealing
-                    : LamaPon::SceneTransitionPhase::Covering;
+                : LamaPon::SceneTransitionPhase::Covering;
             frame.coverage = transitionCase.coverage;
             frame.loadingScreenAlpha = transitionCase.loadingScreenAlpha;
             frame.loadingProgress = 0.4f;
             frame.loadingScreenTime = 0.3f;
             graphics.BeginFrame(TransitionClearColor);
-            graphics.DrawSceneTransition(frame, loading);
+            scene.Render2D();
+            graphics.DrawLoadingScreen(frame, loading);
             Capture capture;
             capture.pixels = graphics.CaptureBackBuffer(
                 capture.width,
                 capture.height);
             graphics.EndFrame();
+            Require(
+                sprite.ShaderError().empty(),
+                std::string("The package transition shader failed for '")
+                    + transitionCase.name + "': " + sprite.ShaderError());
             captures.push_back(std::move(capture));
         }
+
+        // シェーダーを使えないときはShaderErrorで分かります（パッケージの
+        // 覆いはこれを見てフェードへ切り替えます）。
+        sprite.SetShaderPath("shaders/does-not-exist-transition.hlsl");
+        graphics.BeginFrame(TransitionClearColor);
+        scene.Render2D();
+        graphics.EndFrame();
+        Require(
+            !sprite.ShaderError().empty(),
+            "A missing transition shader must report its error.");
         return captures;
     }
 
@@ -7713,7 +7772,9 @@ namespace
                         + DescribeTransitionPixel(corner) + " and "
                         + DescribeTransitionPixel(farCorner));
             }
-            else if (name == "shader dissolve")
+            else if (name == "shader dissolve"
+                || name == "blinds"
+                || name == "rule image")
             {
                 std::size_t covered{};
                 std::size_t clear{};
@@ -7726,17 +7787,17 @@ namespace
                         clear += IsTransitionClear(pixel) ? 1u : 0u;
                     }
                 }
-                // Fadeへの代用なら一様な中間色になり、どちらも0です。
+                // 一様なフェードになってしまうと、どちらも0です。
                 require(
                     index,
                     covered > 64u && clear > 64u,
-                    "the dissolve must mix covered and visible pixels ("
+                    "the pattern must mix covered and visible pixels ("
                         + std::to_string(covered) + " covered, "
                         + std::to_string(clear) + " visible)");
             }
-            else if (name == "missing shader fallback")
+            else if (name == "fade")
             {
-                // Fadeで半分覆い、代替シェーダーの赤紫は出しません。
+                // 画面全体が一様に半分だけ覆われます。
                 const bool uniform =
                     std::abs(center[0] - corner[0]) <= 2
                     && std::abs(center[1] - corner[1]) <= 2
@@ -7746,7 +7807,7 @@ namespace
                     uniform
                         && center[0] > 110 && center[0] < 150
                         && center[1] < 30,
-                    "a missing shader must fall back to a fade, got "
+                    "a fade must cover the screen uniformly, got "
                         + DescribeTransitionPixel(center) + " and "
                         + DescribeTransitionPixel(corner));
             }
@@ -7762,7 +7823,7 @@ namespace
         }
     }
 
-    // D3D11とD3D12の同じ遷移を比べます。回転した帯の縁は頂点計算の
+    // D3D11とD3D12の同じ遷移を比べます。図形の縁は浮動小数点の
     // 丸め差で数画素だけ変わることがあるため、ごく一部の画素の差は
     // 許容します。
     void RequireMatchingSceneTransitionCaptures(

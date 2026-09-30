@@ -12,7 +12,7 @@ namespace LamaPonSceneShowcase
             "options": [
                 {
                     "value": "none",
-                    "displayName": "なし"
+                    "displayName": "なし（すぐ切り替え）"
                 },
                 {
                     "value": "fade",
@@ -298,7 +298,7 @@ namespace LamaPonSceneShowcase
         },
         {
             "name": "shader",
-            "displayName": "独自シェーダー（空なら組み込み）",
+            "displayName": "独自シェーダー（空ならパッケージのシェーダー）",
             "type": "asset",
             "default": "",
             "assetType": "shader"

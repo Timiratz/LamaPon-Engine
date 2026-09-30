@@ -742,10 +742,6 @@ int main()
                 ~(1u << 2);
             settings.physics.collisionMatrix[2] &=
                 ~(1u << 1);
-            settings.sceneTransition = LamaPon::MakeSceneTransition(
-                LamaPon::SceneTransitionEffect::Iris,
-                0.55f);
-            settings.sceneTransition.focus = { 0.2f, 0.8f };
             settings.loadingScreen.message = "移動中...";
             settings.loadingScreen.showSpinner = true;
             LamaPon::ValidateProjectSettings(settings);
@@ -766,20 +762,12 @@ int main()
                     !loaded.splashScreenEnabled,
                     "the startup splash setting must survive the"
                     " round trip");
-                // 遷移と読み込み画面は書き出したゲームでも使うため、
+                // 読み込み画面は書き出したゲームでも使うため、
                 // Project／GamePackageの両方で往復します。
                 Require(
-                    loaded.sceneTransition.effect
-                            == LamaPon::SceneTransitionEffect::Iris
-                        && std::abs(
-                            loaded.sceneTransition.coverDuration
-                            - 0.55f) < 1e-6f
-                        && std::abs(
-                            loaded.sceneTransition.focus.y
-                            - 0.8f) < 1e-6f
-                        && loaded.loadingScreen.message == "移動中..."
+                    loaded.loadingScreen.message == "移動中..."
                         && loaded.loadingScreen.showSpinner,
-                    "scene transition settings must survive the"
+                    "loading screen settings must survive the"
                     " round trip");
                 if (fileType
                     == LamaPon::ProjectSettingsFileType::Project)
@@ -839,6 +827,39 @@ int main()
                             & (1u << 1)) != 0,
                     "the collision matrix must survive the"
                     " round trip");
+            }
+
+            // 以前保存したsceneTransition（遷移演出の見た目）は読み込みで
+            // 無視し、保存し直すと消えます。演出はScene側で描きます。
+            {
+                nlohmann::json legacy;
+                {
+                    std::ifstream input(settingsFile);
+                    input >> legacy;
+                }
+                legacy["sceneTransition"] = {
+                    { "effect", "iris" },
+                    { "coverDuration", 0.55 }
+                };
+                {
+                    std::ofstream output(settingsFile);
+                    output << legacy.dump(2);
+                }
+                const auto loaded =
+                    LamaPon::LoadProjectSettings(settingsFile);
+                LamaPon::SaveProjectSettings(
+                    settingsFile,
+                    loaded,
+                    LamaPon::ProjectSettingsFileType::Project);
+                nlohmann::json saved;
+                {
+                    std::ifstream input(settingsFile);
+                    input >> saved;
+                }
+                Require(
+                    loaded.loadingScreen.message == "移動中..."
+                        && !saved.contains("sceneTransition"),
+                    "a legacy scene transition setting must be dropped");
             }
             std::filesystem::remove(settingsFile);
         }

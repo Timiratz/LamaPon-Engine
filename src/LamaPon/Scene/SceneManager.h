@@ -58,8 +58,9 @@ namespace LamaPon
     inline constexpr std::string_view SceneTransitionFinishedEvent =
         "SceneTransition.Finished";
 
-    // 1フレーム分の遷移演出と読み込み画面の描画内容です。
-    // GraphicsDevice::DrawSceneTransitionへ渡します。
+    // 1フレーム分の遷移の状態と読み込み画面の描画内容です。
+    // GraphicsDevice::DrawLoadingScreenへ渡します。エンジンは遷移の
+    // 覆いを描かないため、coverageは自分の演出を描くときに使います。
     struct SceneTransitionFrame final
     {
         SceneTransitionSettings settings;
@@ -187,15 +188,17 @@ namespace LamaPon
         }
         [[nodiscard]] bool ProcessPending();
 
-        // シーン遷移演出です。遷移はtimeScaleの影響を受けない実時間で
+        // シーン遷移です。遷移はtimeScaleの影響を受けない実時間で
         // 進み、旧シーンを覆い終えてから新シーンを有効化します。
-        // 読み込みは覆っている間に並行して進めます。
+        // 読み込みは覆っている間に並行して進めます。エンジンは覆いを
+        // 描かないので、TransitionCoverageを読んで自分で描きます。
         //
         // 引数なしのRequestLoadAsync／RequestReloadAsync（UI Buttonと
-        // 起動シーンを含む）はDefaultTransitionを使います。既定はNoneで、
-        // 従来どおり読み込み画面だけを表示します。RequestLoad／
-        // RequestReloadは、遷移を渡した場合だけ覆い終えるまで待ちます。
-        // 追加読み込み（Additive）には遷移を使いません。
+        // 起動シーンを含む）はDefaultTransitionを使います。既定は
+        // すぐ切り替える遷移（時間がすべて0）で、従来どおり読み込み画面
+        // だけを表示します。RequestLoad／RequestReloadは、遷移を渡した
+        // 場合だけ覆い終えるまで待ちます。追加読み込み（Additive）には
+        // 遷移を使いません。
         void SetDefaultTransition(
             const SceneTransitionSettings& settings);
         [[nodiscard]] const SceneTransitionSettings&
@@ -219,15 +222,11 @@ namespace LamaPon
         // 待っている遷移がある間はfalseを返します。
         [[nodiscard]] bool PlayTransition(
             const SceneTransitionSettings& transition);
-        // PlayTransitionと同じ見た目を、イベントと音量変更なしで
-        // 再生します（エディターのプレビュー用）。
-        [[nodiscard]] bool PreviewTransition(
-            const SceneTransitionSettings& transition);
-        // 演出を打ち切り、覆いと音量を元へ戻します（再生停止時など）。
+        // 遷移を打ち切り、覆い具合と音量を元へ戻します（再生停止時など）。
         void ResetTransition() noexcept;
         // 遷移を実時間で進めます。ProcessPendingが毎回呼ぶため、通常は
-        // 呼ぶ必要はありません。Sceneを更新していない間（エディターの
-        // 編集中のプレビューなど）に演出だけを進めるときに使います。
+        // 呼ぶ必要はありません。Sceneを更新していない間（テストなど）に
+        // 遷移だけを進めるときに使います。
         void AdvanceTransition(float unscaledDeltaSeconds);
         [[nodiscard]] bool IsTransitioning() const noexcept
         {
@@ -238,6 +237,8 @@ namespace LamaPon
         {
             return m_transition.Phase();
         }
+        // 0で何も覆わず、1で全面を覆う状態です。自分の演出はこの値に
+        // 合わせて描きます（イージング適用済み）。
         [[nodiscard]] float TransitionCoverage() const noexcept
         {
             return m_transition.Coverage();
@@ -294,15 +295,15 @@ namespace LamaPon
         bool MergeStagedScene(
             const std::filesystem::path& destination,
             const std::string& json);
-        // 読み込みを伴う遷移を始めます（Noneでもイベントは発行します）。
+        // 読み込みを伴う遷移を始めます（すぐ切り替える遷移でもイベントは
+        // 発行します）。
         void StartLoadTransition(
             const SceneTransitionSettings& transition,
             const std::filesystem::path& destination);
         void StartTransition(
             const SceneTransitionSettings& transition,
             std::string target,
-            bool awaitsLoad,
-            bool preview);
+            bool awaitsLoad);
         // 遷移が待っている読み込みが終わった（成功・失敗・キャンセル）
         // ことを記録します。覆い切る前なら、そこから開き直します。
         void FinishTransitionLoad(bool revealImmediately) noexcept;
@@ -339,13 +340,12 @@ namespace LamaPon
         float m_minimumLoadingScreenDuration{
             0.2f
         };
-        // ここから下はシーン遷移演出の状態です。
+        // ここから下はシーン遷移の状態です。
         SceneTransitionSettings m_defaultTransition;
         SceneTransitionTimeline m_transition;
         std::string m_transitionTarget;
         // 遷移に紐づく読み込みがまだ有効化されていない間trueです。
         bool m_transitionAwaitsLoad{};
-        bool m_transitionIsPreview{};
         float m_loadingScreenAlpha{};
         float m_displayedProgress{};
         float m_loadingScreenTime{};

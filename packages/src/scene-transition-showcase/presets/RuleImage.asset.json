@@ -31,7 +31,7 @@
     "passThrough": true,
     "revealDuration": 0.4,
     "ruleTexture": "packages/scene-transition-showcase/rules/gradient.png",
-    "shader": "packages/scene-transition-showcase/shaders/LamaPonSceneTransition.hlsl",
+    "shader": "",
     "shaderPattern": "ruleImage",
     "showLoadingScreen": true,
     "softness": 0.0,

@@ -304,15 +304,7 @@ namespace LamaPon
                 ImGui::EndTabItem();
             }
 
-            const ImGuiTabItemFlags gameTabFlags =
-                m_selectGameViewportRequested
-                    ? ImGuiTabItemFlags_SetSelected
-                    : ImGuiTabItemFlags_None;
-            m_selectGameViewportRequested = false;
-            if (ImGui::BeginTabItem(
-                    "ゲーム",
-                    nullptr,
-                    gameTabFlags))
+            if (ImGui::BeginTabItem("ゲーム"))
             {
                 drawGameViewport = true;
                 ImGui::EndTabItem();

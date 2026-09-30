@@ -708,15 +708,9 @@ namespace LamaPon
                     std::move(action));
             }
         }
-        // 無い古い設定ファイルでは、従来どおり遷移なし・標準の
-        // 読み込み画面のままにします。
-        if (const auto transition = document.find("sceneTransition");
-            transition != document.end())
-        {
-            settings.sceneTransition = SceneTransitionFromJson(
-                *transition,
-                settings.sceneTransition);
-        }
+        // 無い古い設定ファイルでは、標準の読み込み画面のままにします。
+        // 以前保存していたsceneTransition（遷移演出の見た目）は、
+        // 演出をScene側で描く方式へ移したため読み込みません。
         if (const auto loadingScreen = document.find("loadingScreen");
             loadingScreen != document.end())
         {
@@ -1049,10 +1043,8 @@ namespace LamaPon
                 settings.inspectorDecimals;
         }
         document["tags"] = settings.tags;
-        // 遷移と読み込み画面は配布用のLamaPonGame.jsonにも書き、
+        // 読み込み画面は配布用のLamaPonGame.jsonにも書き、
         // 書き出したゲームの起動時に適用します。
-        document["sceneTransition"] =
-            SceneTransitionToJson(settings.sceneTransition);
         document["loadingScreen"] =
             SceneLoadingScreenToJson(settings.loadingScreen);
         document["inputActions"] =
@@ -1096,6 +1088,13 @@ namespace LamaPon
                         for (const auto& entry :
                             previous.items())
                         {
+                            // エンジンが使わなくなった項目（遷移演出の
+                            // 見た目を保存していたsceneTransition）は
+                            // 引き継がず、次の保存で消します。
+                            if (entry.key() == "sceneTransition")
+                            {
+                                continue;
+                            }
                             if (!document.contains(
                                 entry.key()))
                             {

@@ -1,6 +1,6 @@
 #include "LamaPon/LamaPon.h"
 #include "LamaPon/Assets/AssetPacker.h"
-#include "../packages/src/scene-transition-showcase/SceneTransitionAssets.h"
+#include "../packages/src/scene-transition-showcase/SceneTransitionOverlay.h"
 #include "../packages/src/scene-transition-showcase/SceneTransitionSchema.h"
 
 #include <objbase.h>
@@ -10,6 +10,7 @@
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
+#include <string_view>
 #include <thread>
 
 #include "NetworkWorkflowPackageTests.h"
@@ -38,10 +39,11 @@ int main(const int argumentCount, const char* const* argumentValues)
             throw std::runtime_error(host.LastError());
         }
         if (host.ModuleName() != "LamaPon Project Game Module"
-            || host.RegisteredComponents().size() != 4
+            || host.RegisteredComponents().size() != 5
             || host.FindComponent("Test.ExternalScript") == nullptr
             || host.FindComponent("Game.BeginnerScript") == nullptr
             || host.FindComponent("SceneTransition.Controller") == nullptr
+            || host.FindComponent("SceneTransition.Overlay") == nullptr
             || host.FindDataAssetType("SceneTransition.Preset") == nullptr
             || host.FindComponent("Network.SessionController") == nullptr
             || host.FindDataAssetType("Network.ConnectionProfile") == nullptr)
@@ -92,25 +94,41 @@ int main(const int argumentCount, const char* const* argumentValues)
         {
             const auto asset = scene.LoadDataAsset(
                 std::filesystem::relative(entry.path(), packageRoot));
-            LamaPon::SceneTransitionSettings settings;
-            if (!LamaPonSceneShowcase::ReadPreset(*asset, settings)
-                || settings.effect == LamaPon::SceneTransitionEffect::None)
+            LamaPon::SceneTransitionSettings timing;
+            LamaPonSceneShowcase::Look look;
+            if (!LamaPonSceneShowcase::ReadPreset(*asset, timing, look)
+                || look.effect == LamaPonSceneShowcase::Effect::None
+                || LamaPon::IsInstantSceneTransition(timing))
             {
                 throw std::runtime_error("A shipped preset could not be read.");
             }
             std::ifstream input(entry.path());
             nlohmann::json source;
             input >> source;
-            if (LamaPon::SceneTransitionToJson(settings) !=
-                LamaPon::SceneTransitionToJson(
-                    LamaPon::SceneTransitionFromJson(source.at("values"))))
+            const auto& values = source.at("values");
+            if (LamaPon::SceneTransitionToJson(timing) !=
+                    LamaPon::SceneTransitionToJson(LamaPon::SceneTransitionFromJson(
+                        values, LamaPonSceneShowcase::DefaultTiming()))
+                || LamaPonSceneShowcase::LookToJson(look) !=
+                    LamaPonSceneShowcase::LookToJson(
+                        LamaPonSceneShowcase::LookFromJson(values)))
             {
                 throw std::runtime_error("A preset field changed while reading its data asset.");
             }
-            if (!settings.ruleTexture.empty()
-                && !std::filesystem::exists(packageRoot / "rules/gradient.png"))
+            // プリセットのパスはプロジェクトのassets相対なので、
+            // パッケージのフォルダー相対へ直して確かめます。
+            constexpr std::string_view installedRoot =
+                "packages/scene-transition-showcase/";
+            if (!look.ruleTexture.empty()
+                && (!look.ruleTexture.starts_with(installedRoot)
+                    || !std::filesystem::exists(packageRoot
+                        / look.ruleTexture.substr(installedRoot.size()))))
             {
                 throw std::runtime_error("The rule image is missing.");
+            }
+            if (!look.shader.empty())
+            {
+                throw std::runtime_error("Shipped presets must use the package shader.");
             }
             ++presetCount;
         }
@@ -119,18 +137,28 @@ int main(const int argumentCount, const char* const* argumentValues)
             throw std::runtime_error("The package must contain all 16 presets.");
         }
         LamaPon::SceneTransitionSettings sanitized;
+        LamaPonSceneShowcase::Look sanitizedLook;
         const auto malformed = LamaPon::DataAsset::FromJson(R"({
             "type":"SceneTransition.Preset","values":{
                 "effect":"futureEffect","coverDuration":-9,
                 "color":"bad","divisions":999}})");
-        if (!LamaPonSceneShowcase::ReadPreset(malformed, sanitized)
-            || sanitized.effect != LamaPon::SceneTransitionEffect::None
-            || sanitized.coverDuration < 0 || sanitized.divisions != 64
+        if (!LamaPonSceneShowcase::ReadPreset(malformed, sanitized, sanitizedLook)
+            || sanitizedLook.effect != LamaPonSceneShowcase::Effect::Fade
+            || sanitized.coverDuration != 0.0f || sanitizedLook.divisions != 64
+            || sanitizedLook.color.w != 1.0f
             || LamaPonSceneShowcase::ReadPreset(
                 LamaPon::DataAsset::FromJson(R"({"type":"Other","values":{"effect":"fade"}})"),
-                sanitized))
+                sanitized, sanitizedLook))
         {
             throw std::runtime_error("Preset type checks and sanitization failed.");
+        }
+        // 「なし」は覆いを描かないので、時間を使わずにすぐ切り替えます。
+        if (!LamaPonSceneShowcase::ReadPreset(LamaPon::DataAsset::FromJson(R"({
+                "type":"SceneTransition.Preset","values":{
+                    "effect":"none","coverDuration":2}})"), sanitized, sanitizedLook)
+            || !LamaPon::IsInstantSceneTransition(sanitized))
+        {
+            throw std::runtime_error("A preset without an effect must switch instantly.");
         }
         const auto schema = nlohmann::json::parse(LamaPonSceneShowcase::PresetSchema);
         nlohmann::json defaults = nlohmann::json::object();
@@ -140,7 +168,9 @@ int main(const int argumentCount, const char* const* argumentValues)
         }
         if (!LamaPonSceneShowcase::ReadPreset(LamaPon::DataAsset::FromJson(
             nlohmann::json{{"type","SceneTransition.Preset"},{"values",defaults}}.dump()),
-            sanitized) || sanitized.effect != LamaPon::SceneTransitionEffect::Fade)
+            sanitized, sanitizedLook)
+            || sanitizedLook.effect != LamaPonSceneShowcase::Effect::Fade
+            || sanitized.coverDuration != 0.4f)
         {
             throw std::runtime_error("New preset assets must default to Fade.");
         }
@@ -171,20 +201,44 @@ int main(const int argumentCount, const char* const* argumentValues)
             throw std::runtime_error("Controller settings must round trip without autoplay.");
         }
         scene.Events().Publish("Test.Play");
+        auto* overlay = scene.FindGameObjectByName(
+            LamaPonSceneShowcase::OverlayObjectName);
+        auto* overlaySprite = overlay != nullptr
+            ? overlay->GetComponent<LamaPon::SpriteRendererComponent>()
+            : nullptr;
         if (!scene.Scenes().IsTransitioning()
-            || scene.Scenes().ActiveTransition().effect
-                != LamaPon::SceneTransitionEffect::Dots)
+            || scene.Scenes().ActiveTransition().coverDuration != 0.4f
+            || overlay == nullptr || !overlay->IsPersistent()
+            || overlaySprite == nullptr
+            || overlaySprite->SortOrder() != LamaPonSceneShowcase::OverlaySortOrder)
         {
             throw std::runtime_error("The event did not play the selected data asset.");
         }
+        // エンジンは覆いを描かないので、パッケージの覆いが覆い具合と
+        // 演出の番号をシェーダーへ渡していることを確かめます。
         scene.Scenes().AdvanceTransition(0.15f);
+        scene.Update(0.0f);
         const auto coverage = scene.Scenes().TransitionCoverage();
+        const auto parameters = overlaySprite->CustomParameter(0);
+        if (!overlaySprite->IsEnabled()
+            || std::abs(parameters.x - coverage) > 0.0001f
+            || parameters.w != static_cast<float>(LamaPonSceneShowcase::Effect::Dots)
+            || LamaPon::PathToUtf8(overlaySprite->ShaderPath())
+                != LamaPonSceneShowcase::DefaultShaderPath)
+        {
+            throw std::runtime_error("The package overlay did not follow the transition.");
+        }
         scene.Events().Publish("Test.Play");
         if (std::abs(scene.Scenes().TransitionCoverage() - coverage) > 0.0001f)
         {
             throw std::runtime_error("A second event restarted the active transition.");
         }
         scene.Scenes().ResetTransition();
+        scene.Update(0.0f);
+        if (overlaySprite->IsEnabled())
+        {
+            throw std::runtime_error("The overlay must hide after its transition.");
+        }
         script.SetEnabled(false);
         scene.Update(0.01f);
         scene.Events().Publish("Test.Play");
@@ -237,6 +291,17 @@ int main(const int argumentCount, const char* const* argumentValues)
             || scene.Events().SubscriptionCount() != 1)
         {
             throw std::runtime_error("The controller did not finish loading and unsubscribe.");
+        }
+        // 覆いはシーンを切り替えても残り、遷移が終われば隠れています。
+        overlay = scene.FindGameObjectByName(LamaPonSceneShowcase::OverlayObjectName);
+        overlaySprite = overlay != nullptr
+            ? overlay->GetComponent<LamaPon::SpriteRendererComponent>()
+            : nullptr;
+        if (overlaySprite == nullptr || overlaySprite->IsEnabled()
+            || overlaySprite->CustomParameter(0).w
+                != static_cast<float>(LamaPonSceneShowcase::Effect::Fade))
+        {
+            throw std::runtime_error("The overlay did not persist across the scene load.");
         }
         graphics.Assets().SetAssetRoot(packageRoot, false);
         std::filesystem::remove(archivePath);
