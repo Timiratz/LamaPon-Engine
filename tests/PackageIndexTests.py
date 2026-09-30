@@ -351,5 +351,94 @@ class DiscordPresencePackageTests(unittest.TestCase):
                 self.assertNotIn(forbidden, text)
 
 
+class OllamaPackageTests(unittest.TestCase):
+    NAME = "ollama-ai"
+    PROFILE_FIELDS = {
+        "model",
+        "systemPrompt",
+        "temperature",
+        "maxTokens",
+        "port",
+        "fallbackReply",
+        "historyLimit",
+    }
+
+    def setUp(self):
+        self.source = SOURCE_ROOT / self.NAME
+        self.code = {
+            path.name: path.read_text(encoding="utf-8")
+            for path in package_source_files(self.source)
+            if path.suffix in {".h", ".cpp"}
+        }
+
+    def test_code_never_reaches_ollama_cloud(self):
+        # このパッケージはOllamaのローカル実行だけを使い、有料のOllama Cloudは
+        # 無料枠も含めて使いません。クラウドの接続先、APIキー、サインインを
+        # 前提にしたAPIをコードへ書き足すと、ここで止まります。
+        self.assertTrue(self.code, "C++ソースが見つかりません。")
+        for name, text in self.code.items():
+            for forbidden in (
+                "ollama.com",
+                "https://",
+                "OLLAMA_API_KEY",
+                "Authorization",
+                "Bearer",
+                "getenv",
+                "GetEnvironmentVariable",
+                "web_search",
+                "web_fetch",
+                "signin",
+            ):
+                with self.subTest(file=name, symbol=forbidden):
+                    self.assertNotIn(forbidden, text)
+
+    def test_every_request_goes_through_the_endpoint_check(self):
+        # HttpSendはHTTPSならどこへでも送れます。呼び出しを1か所にまとめ、
+        # その直前で接続先を確かめていることを担保します。
+        callers = {
+            name: text.count("HttpSend(")
+            for name, text in self.code.items()
+            if "HttpSend(" in text
+        }
+        self.assertEqual(callers, {"OllamaClient.h": 1})
+        client = self.code["OllamaClient.h"]
+        self.assertLess(
+            client.index("IsAllowedEndpoint(url)"),
+            client.index("HttpSend("),
+        )
+
+    def test_threads_are_joined_not_detached(self):
+        # Game Moduleの差し替えではScriptを破棄してからDLLを解放します。
+        # 切り離したスレッドは解放済みのコードを実行して落ちます。
+        for name, text in self.code.items():
+            with self.subTest(file=name):
+                self.assertNotIn(".detach(", text)
+        self.assertIn("std::jthread", self.code["OllamaWorker.h"])
+
+    def test_shipped_profiles_have_no_host_or_key(self):
+        profiles = sorted((self.source / "profiles").glob("*.asset.json"))
+        self.assertTrue(profiles, "設定アセットが同梱されていません。")
+        for path in profiles:
+            with self.subTest(profile=path.name):
+                asset = json.loads(path.read_text(encoding="utf-8"))
+                self.assertEqual(asset["type"], "Ollama.ModelProfile")
+                self.assertEqual(set(asset["values"]), self.PROFILE_FIELDS)
+                self.assertEqual(asset["values"]["port"], 11434)
+                self.assertNotIn("cloud", asset["values"]["model"].lower())
+
+    def test_readme_explains_the_local_only_setup(self):
+        readme = (self.source / "README.md").read_text(encoding="utf-8")
+        for required in (
+            "OLLAMA_NO_CLOUD=1",
+            '{"disable_ollama_cloud": true}',
+            "サインインは不要",
+            "ollama pull",
+            "Windows専用",
+            "モデルのライセンス",
+        ):
+            with self.subTest(text=required):
+                self.assertIn(required, readme)
+
+
 if __name__ == "__main__":
     unittest.main()
