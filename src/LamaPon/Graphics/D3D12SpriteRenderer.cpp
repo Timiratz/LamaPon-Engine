@@ -24,70 +24,99 @@
 
 namespace
 {
-    // DirectXTK SpriteBatchと同じく、1回のdrawで送るquad数の上限です。
-    // 16bit indexをBaseVertexLocationと組み合わせて全quadへ再利用します。
+    // 1回で送信する最大矩形数
     constexpr std::size_t MaximumSpritesPerDraw = 2048u;
+    // 矩形1枚に必要な頂点数
     constexpr std::size_t VerticesPerSprite = 4u;
+    // 矩形1枚に必要な三角形索引数
     constexpr std::size_t IndicesPerSprite = 6u;
 
-    // SpriteBatchのviewport変換と同じ式で、pixel座標をclip空間へ移します。
+    // 標準スプライトと全画面効果のHLSL
     constexpr char SpriteShaderSource[] = R"(
+// VSのb0へ渡す画素変換倍率
 cbuffer SpriteViewport : register(b0)
 {
+    // 画素をNDCへ移すXY倍率
     float2 ViewportScale;
 };
 
-// 最終合成とpost-processのfullscreen passが共用するroot constantsです。
-// 意味はpixel shaderごとに異なります。
+// PSのb1へ渡す効果別の16定数
 cbuffer FullscreenPass : register(b1)
 {
+    // 効果別の第1定数ベクトル
     float4 PassPrimary;
+    // 効果別の第2定数ベクトル
     float4 PassSecondary;
+    // 効果別の第3定数ベクトル
     float4 PassTertiary;
+    // 効果別の第4定数ベクトル
     float4 PassQuaternary;
 };
 
+// TAAと動きぼかしの32行列定数
 cbuffer TemporalPass : register(b2)
 {
+    // 現在のワールド復元行列
     row_major float4x4 TemporalInverseViewProjection;
+    // 履歴を描いた合成射影行列
     row_major float4x4 TemporalPreviousViewProjection;
 };
 
+// C++の384バイトと対応するb3
 cbuffer VolumetricPass : register(b3)
 {
+    // 光の筋用のワールド復元行列
     row_major float4x4 VolumetricInverseViewProjection;
+    // 視点XYZと光の筋の最大距離
     float4 VolumetricCameraPosition;
+    // 光源方向XYZと採取点数
     float4 VolumetricLightDirection;
+    // 光源RGBと散乱係数
     float4 VolumetricLightColor;
+    // 影カスケード別の描画行列
     row_major float4x4 VolumetricCascades[4];
+    // 影の段数・バイアス・画素幅
     float4 VolumetricShadowParameters;
 };
 
+// t0の主入力画像
 Texture2D SpriteTexture : register(t0);
+// t1の履歴または光条画像
 Texture2D TemporalHistoryTexture : register(t1);
+// t2のデバイス深度画像
 Texture2D DepthTexture : register(t2);
+// t3の光の筋用の影配列
 Texture2DArray<float> VolumetricShadowTexture : register(t3);
+// s0の線形端固定サンプラー
 SamplerState SpriteSampler : register(s0);
+// s1の白境界の深度比較
 SamplerComparisonState VolumetricShadowSampler : register(s1);
 
 struct VertexInput
 {
+    // 画面内の画素座標と層深度
     float3 position : POSITION;
+    // 頂点のRGBA色
     float4 color : COLOR;
+    // 入力画像のUV座標
     float2 textureCoordinate : TEXCOORD;
 };
 
+// 外部PSMainとの互換のためCOLOR0・TEXCOORD0・SV_Positionの順を維持します。
 struct PixelInput
 {
-    // DirectXTK SpriteBatchの順序と同じに保ちます。外部の
-    // PSMainはこの入力register順を公開契約としています。
+    // 頂点のRGBA色
     float4 color : COLOR;
+    // 入力画像のUV座標
     float2 textureCoordinate : TEXCOORD;
+    // 頂点のクリップ座標
     float4 position : SV_Position;
 };
 
+// 画素位置をクリップ座標へ変換して色とUVを渡します(input: 画素位置・RGBA色・UV)。
 PixelInput SpriteVertexShader(VertexInput input)
 {
+    // 画素段へ渡す頂点出力
     PixelInput output;
     output.position = float4(
         input.position.x * ViewportScale.x - 1.0f,
@@ -99,19 +128,20 @@ PixelInput SpriteVertexShader(VertexInput input)
     return output;
 }
 
+// 主画像に頂点色を掛けたRGBAを返します(input: 色・UV・射影位置)。
 float4 SpritePixelShader(PixelInput input) : SV_Target
 {
     return SpriteTexture.Sample(SpriteSampler, input.textureCoordinate)
         * input.color;
 }
 
-// LamaPonEnvironment.hlslと同じRec.601の係数です。トーンマップの彩度と
-// FXAAの縁検出が共用するため、D3D11と同じ値を保ちます。
+// Rec.601の係数でRGBを輝度へ変換します(color: 入力RGB)。
 float Luminance(float3 color)
 {
     return dot(color, float3(0.299f, 0.587f, 0.114f));
 }
 
+// ACES近似曲線でHDRを表示範囲へ圧縮します(color: 露出補正済みのHDR値)。
 float3 ACESFilm(float3 color)
 {
     return saturate(
@@ -119,30 +149,37 @@ float3 ACESFilm(float3 color)
         / (color * (2.43f * color + 0.59f) + 0.14f));
 }
 
+// 露出・色調・周辺減光を適用し、gamma変換せずUNORMへ出力します(input: 色・画面UV・射影位置)。
 float4 ToneMappedPixelShader(PixelInput input) : SV_Target
 {
-    // 露出、コントラスト、彩度、色温度と、色合い、周辺減光、有効状態、
-    // 自動露出の補正（段数）です。
+    // x露出・y対比・z彩度・w色温度
     const float4 ColorGradePrimary = PassPrimary;
+    // x色合い・y減光・z有無・w露出補正
     const float4 ColorGradeSecondary = PassSecondary;
+    // 色調整するHDRからLDRのRGB
     float3 color = max(
         SpriteTexture.Sample(
             SpriteSampler,
             input.textureCoordinate).rgb * input.color.rgb,
         0.0f);
+    // 色調整を有効にする重み
     const float gradingEnabled = saturate(ColorGradeSecondary.z);
+    // 有効時の手動露出段数
     const float exposure = lerp(
         0.0f,
         ColorGradePrimary.x,
         gradingEnabled);
+    // 有効時の色温度補正
     const float temperature = lerp(
         0.0f,
         ColorGradePrimary.w,
         gradingEnabled);
+    // 有効時の緑と紫の色合い補正
     const float tint = lerp(
         0.0f,
         ColorGradeSecondary.x,
         gradingEnabled);
+    // 色温度と色合いのRGB倍率
     const float3 whiteBalance = max(float3(
         1.0f + temperature * 0.16f - tint * 0.05f,
         1.0f + tint * 0.10f,
@@ -151,6 +188,7 @@ float4 ToneMappedPixelShader(PixelInput input) : SV_Target
     color *= exp2(exposure + ColorGradeSecondary.w) * whiteBalance;
     color = ACESFilm(color);
 
+    // トーン変換後の輝度
     const float luminance = Luminance(color);
     color = lerp(
         luminance.xxx,
@@ -160,7 +198,9 @@ float4 ToneMappedPixelShader(PixelInput input) : SV_Target
         * lerp(1.0f, max(ColorGradePrimary.y, 0.0f), gradingEnabled)
         + 0.5f;
 
+    // 画面中心基準の正規化UV
     const float2 centered = input.textureCoordinate * 2.0f - 1.0f;
+    // 周辺を暗くする形状の倍率
     const float vignetteShape = saturate(
         1.0f - dot(centered, centered) * 0.42f);
     color *= lerp(
@@ -170,16 +210,16 @@ float4 ToneMappedPixelShader(PixelInput input) : SV_Target
             0.0f,
             saturate(ColorGradeSecondary.y),
             gradingEnabled));
-    // D3D11のPSToneMapと同じく、UNORMのバックバッファへgamma変換なしで
-    // 書きます。Tone Mapping無効時の単純copyとも明るさの基準が揃います。
+    // UNORMへgamma変換せず書き、トーン変換なしの表示と明るさの基準を合わせます。
     return float4(saturate(color), 1.0f);
 }
 
-// LamaPonEnvironment.hlslのBrightColor / PSBloomと同じ9tapです。
-// PassPrimary.xy=1/出力サイズ, z=しきい値, w=強さ, PassSecondary.x=半径。
+// しきい値を超える主画像のRGBだけを抽出します(uv: 主画像を読むUV)。
 float3 BrightColor(float2 uv)
 {
+    // 抽出対象の主画像RGB
     const float3 color = SpriteTexture.Sample(SpriteSampler, uv).rgb;
+    // RGBの最大成分で測る明るさ
     const float brightness = max(
         color.r,
         max(color.g, color.b));
@@ -188,11 +228,16 @@ float3 BrightColor(float2 uv)
         / max(brightness, 0.0001f));
 }
 
+// 高輝度RGBを9点でぼかして主画像へ加算します(input: 色・画面UV・射影位置)。
 float4 BloomPixelShader(PixelInput input) : SV_Target
 {
+    // 主画像を読むUV
     const float2 uv = input.textureCoordinate;
+    // ブルームを加える元のRGBA
     const float4 source = SpriteTexture.Sample(SpriteSampler, uv);
+    // ブルームのXY参照間隔
     const float2 offset = PassPrimary.xy * PassSecondary.x;
+    // 9点で蓄積する高輝度RGB
     float3 bloom = BrightColor(uv) * 0.2f;
     bloom += BrightColor(uv + float2(offset.x, 0.0f)) * 0.12f;
     bloom += BrightColor(uv - float2(offset.x, 0.0f)) * 0.12f;
@@ -205,32 +250,42 @@ float4 BloomPixelShader(PixelInput input) : SV_Target
     return float4(source.rgb + bloom * PassPrimary.w, source.a);
 }
 
-// LamaPonEnvironment.hlslのPSFXAAと同じ式です。PassPrimary.xy=1/出力サイズ。
+// 上下左右の輝度差に沿って色を平滑化します(input: 色・画面UV・射影位置)。
 float4 FxaaPixelShader(PixelInput input) : SV_Target
 {
+    // 主画像を読むUV
     const float2 uv = input.textureCoordinate;
+    // 出力1画素のUV幅
     const float2 texel = PassPrimary.xy;
+    // 中心の入力RGB
     const float3 center = SpriteTexture.Sample(SpriteSampler, uv).rgb;
+    // 中心の輝度
     const float lumaCenter = Luminance(center);
+    // 上隣の輝度
     const float lumaNorth = Luminance(
         SpriteTexture.Sample(
             SpriteSampler,
             uv + float2(0.0f, -texel.y)).rgb);
+    // 下隣の輝度
     const float lumaSouth = Luminance(
         SpriteTexture.Sample(
             SpriteSampler,
             uv + float2(0.0f, texel.y)).rgb);
+    // 左隣の輝度
     const float lumaWest = Luminance(
         SpriteTexture.Sample(
             SpriteSampler,
             uv + float2(-texel.x, 0.0f)).rgb);
+    // 右隣の輝度
     const float lumaEast = Luminance(
         SpriteTexture.Sample(
             SpriteSampler,
             uv + float2(texel.x, 0.0f)).rgb);
+    // 中心と4近傍の最小輝度
     const float lumaMinimum = min(
         lumaCenter,
         min(min(lumaNorth, lumaSouth), min(lumaWest, lumaEast)));
+    // 中心と4近傍の最大輝度
     const float lumaMaximum = max(
         lumaCenter,
         max(max(lumaNorth, lumaSouth), max(lumaWest, lumaEast)));
@@ -239,13 +294,16 @@ float4 FxaaPixelShader(PixelInput input) : SV_Target
         return float4(center, 1.0f);
     }
 
+    // 輝度境界に沿うUV方向
     float2 direction = float2(
         -(lumaNorth - lumaSouth),
         lumaWest - lumaEast);
+    // 境界方向の計算を安定させる値
     const float reduction = max(
         (lumaNorth + lumaSouth + lumaWest + lumaEast)
             * 0.03125f,
         0.0078125f);
+    // 方向の短い軸と補正値の逆数
     const float inverseMinimum =
         1.0f / (min(abs(direction.x), abs(direction.y)) + reduction);
     direction = clamp(
@@ -253,6 +311,7 @@ float4 FxaaPixelShader(PixelInput input) : SV_Target
         -8.0f,
         8.0f) * texel;
 
+    // 方向内側の2点平均RGB
     const float3 first =
         0.5f * (
             SpriteTexture.Sample(
@@ -261,6 +320,7 @@ float4 FxaaPixelShader(PixelInput input) : SV_Target
             + SpriteTexture.Sample(
                 SpriteSampler,
                 uv + direction * (2.0f / 3.0f - 0.5f)).rgb);
+    // 方向の両端も加えた平均RGB
     const float3 second =
         first * 0.5f
         + 0.25f * (
@@ -270,6 +330,7 @@ float4 FxaaPixelShader(PixelInput input) : SV_Target
             + SpriteTexture.Sample(
                 SpriteSampler,
                 uv + direction * 0.5f).rgb);
+    // 4点平均候補の輝度
     const float secondLuma = Luminance(second);
     return float4(
         secondLuma < lumaMinimum || secondLuma > lumaMaximum
@@ -278,14 +339,14 @@ float4 FxaaPixelShader(PixelInput input) : SV_Target
         1.0f);
 }
 
-// LamaPonEnvironment.hlslのPSLuminanceと同じく、1/4解像度の1画素が覆う
-// 4x4を4回のbilinearで平均し、対数輝度を書きます。以降の段で平均すると
-// 幾何平均輝度になります。PassPrimary.xy=1/出力サイズ。
+// 4回の線形読出しで覆う領域を平均して対数輝度を返します(input: 色・縮小先UV・射影位置)。
 float4 LuminancePixelShader(PixelInput input) : SV_Target
 {
+    // 縮小先画素のUV
     const float2 uv = input.textureCoordinate;
-    // 1/4解像度の1テクセルの1/4＝フル解像度の1テクセルぶん。
+    // フル解像度1画素分のUV幅
     const float2 offset = PassPrimary.xy * 0.25f;
+    // 4回の読出しのRGB合計
     float3 total = float3(0.0f, 0.0f, 0.0f);
     total += SpriteTexture.SampleLevel(
         SpriteSampler,
@@ -303,21 +364,27 @@ float4 LuminancePixelShader(PixelInput input) : SV_Target
         SpriteSampler,
         uv + float2(offset.x, offset.y),
         0.0f).rgb;
+    // RGB平均から求めた輝度
     const float average = Luminance(max(total * 0.25f, 0.0f));
     return log(max(average, 1e-4f)).xxxx;
 }
 
+// 深度で履歴UVを再投影し、近傍色域に制限した履歴を混ぜます(input: 色・画面UV・射影位置)。
 float4 TemporalPixelShader(PixelInput input) : SV_Target
 {
+    // 現在フレームのRGB
     const float3 current = SpriteTexture.Sample(
         SpriteSampler,
         input.textureCoordinate).rgb;
+    // 現在画素のデバイス深度
     const float depth = DepthTexture.Sample(
         SpriteSampler,
         input.textureCoordinate).r;
+    // 画面UVから復元したNDCのXY
     const float2 clip = float2(
         input.textureCoordinate.x * 2.0f - 1.0f,
         1.0f - input.textureCoordinate.y * 2.0f);
+    // 逆射影後の同次ワールド座標
     const float4 worldHomogeneous = mul(
         float4(clip, depth, 1.0f),
         TemporalInverseViewProjection);
@@ -325,8 +392,10 @@ float4 TemporalPixelShader(PixelInput input) : SV_Target
     {
         return float4(current, 1.0f);
     }
+    // 復元したワールド位置
     const float3 worldPosition =
         worldHomogeneous.xyz / worldHomogeneous.w;
+    // 履歴フレームのクリップ座標
     const float4 previousClip = mul(
         float4(worldPosition, 1.0f),
         TemporalPreviousViewProjection);
@@ -334,7 +403,9 @@ float4 TemporalPixelShader(PixelInput input) : SV_Target
     {
         return float4(current, 1.0f);
     }
+    // 履歴フレームのNDC座標
     const float3 previousProjected = previousClip.xyz / previousClip.w;
+    // 履歴画像を読むUV
     const float2 previousUv = float2(
         previousProjected.x * 0.5f + 0.5f,
         0.5f - previousProjected.y * 0.5f);
@@ -344,12 +415,17 @@ float4 TemporalPixelShader(PixelInput input) : SV_Target
         return float4(current, 1.0f);
     }
 
+    // 現在画像1画素のUV幅
     const float2 texel = PassPrimary.zw;
+    // 3×3近傍の最小RGB
     float3 minimumColor = current;
+    // 3×3近傍の最大RGB
     float3 maximumColor = current;
+    // 近傍画素の縦オフセット
     [unroll]
     for (int offsetY = -1; offsetY <= 1; ++offsetY)
     {
+        // 近傍画素の横オフセット
         [unroll]
         for (int offsetX = -1; offsetX <= 1; ++offsetX)
         {
@@ -357,6 +433,7 @@ float4 TemporalPixelShader(PixelInput input) : SV_Target
             {
                 continue;
             }
+            // 近傍画素のRGB
             const float3 neighbour = SpriteTexture.Sample(
                 SpriteSampler,
                 input.textureCoordinate
@@ -365,9 +442,12 @@ float4 TemporalPixelShader(PixelInput input) : SV_Target
             maximumColor = max(maximumColor, neighbour);
         }
     }
+    // 近傍色域の中央RGB
     const float3 middle = (minimumColor + maximumColor) * 0.5f;
+    // 許容値を掛けた色域の半幅
     const float3 extent = (maximumColor - minimumColor)
         * 0.5f * max(PassPrimary.y, 0.0f);
+    // 再投影した履歴画像のRGB
     const float3 history = TemporalHistoryTexture.Sample(
         SpriteSampler,
         previousUv).rgb;
@@ -379,17 +459,22 @@ float4 TemporalPixelShader(PixelInput input) : SV_Target
         1.0f);
 }
 
+// 再投影で得た速度方向のRGBを平均し、透過度を保持します(input: 色・画面UV・射影位置)。
 float4 MotionBlurPixelShader(PixelInput input) : SV_Target
 {
+    // ぼかす前の入力RGBA
     const float4 source = SpriteTexture.Sample(
         SpriteSampler,
         input.textureCoordinate);
+    // 現在画素のデバイス深度
     const float depth = DepthTexture.Sample(
         SpriteSampler,
         input.textureCoordinate).r;
+    // 画面UVから復元したNDCのXY
     const float2 clip = float2(
         input.textureCoordinate.x * 2.0f - 1.0f,
         1.0f - input.textureCoordinate.y * 2.0f);
+    // 逆射影後の同次ワールド座標
     const float4 worldHomogeneous = mul(
         float4(clip, depth, 1.0f),
         TemporalInverseViewProjection);
@@ -397,8 +482,10 @@ float4 MotionBlurPixelShader(PixelInput input) : SV_Target
     {
         return source;
     }
+    // 復元したワールド位置
     const float3 worldPosition =
         worldHomogeneous.xyz / worldHomogeneous.w;
+    // 前フレームのクリップ座標
     const float4 previousClip = mul(
         float4(worldPosition, 1.0f),
         TemporalPreviousViewProjection);
@@ -406,15 +493,21 @@ float4 MotionBlurPixelShader(PixelInput input) : SV_Target
     {
         return source;
     }
+    // 前フレームへ再投影したUV
     const float2 previousUv = float2(
         previousClip.x / previousClip.w * 0.5f + 0.5f,
         0.5f - previousClip.y / previousClip.w * 0.5f);
 
+    // 入力画像1画素のUV幅
     const float2 texel = float2(PassPrimary.w, PassSecondary.x);
+    // 強度を掛けた画面UV速度
     float2 velocity = (input.textureCoordinate - previousUv)
         * max(PassPrimary.x, 0.0f);
+    // 画素単位の画面速度
     const float2 velocityPixels = velocity / max(texel, 1e-6f);
+    // 画面速度の画素単位の長さ
     const float lengthPixels = length(velocityPixels);
+    // ぼかし半径の画素単位の上限
     const float limitPixels = max(PassPrimary.y, 0.0f);
     if (lengthPixels < 0.5f || limitPixels <= 0.0f)
     {
@@ -425,14 +518,20 @@ float4 MotionBlurPixelShader(PixelInput input) : SV_Target
         velocity *= limitPixels / lengthPixels;
     }
 
+    // 速度方向の採取点数
     const int sampleCount = clamp((int)PassPrimary.z, 2, 32);
+    // 採取したRGBの合計
     float3 total = source.rgb;
+    // 中心を含む採取数
     float totalWeight = 1.0f;
+    // 速度方向の採取番号
     [loop]
     for (int index = 0; index < sampleCount; ++index)
     {
+        // 中心前後の採取比率
         const float offset =
             ((float)index + 0.5f) / (float)sampleCount - 0.5f;
+        // 画面内に制限した採取UV
         const float2 uv = clamp(
             input.textureCoordinate + velocity * offset,
             0.0f,
@@ -446,21 +545,30 @@ float4 MotionBlurPixelShader(PixelInput input) : SV_Target
     return float4(total / totalWeight, source.a);
 }
 
+// 射影係数からビュー距離を復元し、遠平面は十分遠い値にします(deviceDepth: デバイス深度)。
 float DepthOfFieldSceneDistance(float deviceDepth)
 {
+    // 深度を距離へ戻す分母
     const float denominator = deviceDepth + PassTertiary.x;
     return denominator > -1e-6f
         ? 1e6f
         : PassTertiary.y / denominator;
 }
 
+// 焦点帯の前後に応じた符号付きぼけ量を返します(viewDepth: 正のビュー距離)。
 float DepthOfFieldSignedCircleOfConfusion(float viewDepth)
 {
+    // 焦点帯の中心距離
     const float focus = max(PassPrimary.x, 0.01f);
+    // 焦点帯の距離の半幅
     const float halfRange = max(PassPrimary.y, 0.0f) * 0.5f;
+    // 焦点帯の近い側の境界
     const float nearEdge = max(focus - halfRange, 0.01f);
+    // 焦点帯の遠い側の境界
     const float farEdge = focus + halfRange;
+    // 前景または背景の焦点境界
     float reference;
+    // 前景なら負・背景なら正の符号
     float direction;
     if (viewDepth < nearEdge)
     {
@@ -476,11 +584,13 @@ float DepthOfFieldSignedCircleOfConfusion(float viewDepth)
     {
         return 0.0f;
     }
+    // 焦点境界に対する距離のずれ
     const float relative = abs(
         1.0f - reference / max(viewDepth, 0.001f));
     return direction * saturate(relative * max(PassPrimary.z, 0.0f));
 }
 
+// 画素位置から採取角度用の擬似乱数を返します(pixel: 画素座標)。
 float DepthOfFieldNoise(float2 pixel)
 {
     return frac(
@@ -488,52 +598,73 @@ float DepthOfFieldNoise(float2 pixel)
         * frac(dot(pixel, float2(0.06711056f, 0.00583715f))));
 }
 
+// 深度に応じた採取重みで焦点帯の外をぼかします(input: 色・画面UV・射影位置)。
 float4 DepthOfFieldPixelShader(PixelInput input) : SV_Target
 {
+    // ぼかす前の入力RGBA
     const float4 sharp = SpriteTexture.Sample(
         SpriteSampler,
         input.textureCoordinate);
+    // 中心画素のデバイス深度
     const float centerDepth = DepthTexture.Sample(
         SpriteSampler,
         input.textureCoordinate).r;
+    // 中心画素の符号付きぼけ量
     const float centerSignedCoc = DepthOfFieldSignedCircleOfConfusion(
         DepthOfFieldSceneDistance(centerDepth));
+    // 中心画素のぼけ量の絶対値
     const float centerCoc = abs(centerSignedCoc);
+    // 採取半径の画素単位の上限
     const float maximumRadius = max(PassPrimary.w, 0.0f);
+    // ぼかし色を混ぜる比率
     const float mixAmount = saturate(centerCoc * maximumRadius);
     if (mixAmount <= 0.0f || maximumRadius <= 0.0f)
     {
         return sharp;
     }
 
+    // 円盤内の採取点数
     const int sampleCount = clamp((int)PassSecondary.x, 4, 64);
+    // 入力画像1画素のUV幅
     const float2 texel = PassSecondary.yz;
+    // 画素ごとに変える採取角度
     const float rotation = DepthOfFieldNoise(input.position.xy)
         * 6.28318531f;
+    // 採取重みを掛けたRGB合計
     float3 total = sharp.rgb;
+    // 中心を含む採取重みの合計
     float totalWeight = 1.0f;
+    // 円盤内の採取番号
     [loop]
     for (int index = 0; index < sampleCount; ++index)
     {
+        // 黄金角と画素回転を足した角度
         const float angle = (float)index * 2.39996323f + rotation;
+        // 採取点の画素単位の中心距離
         const float radius = sqrt(
             ((float)index + 0.5f) / (float)sampleCount)
             * maximumRadius;
+        // 画面内に制限した採取UV
         const float2 uv = clamp(
             input.textureCoordinate
                 + float2(cos(angle), sin(angle)) * radius * texel,
             0.0f,
             1.0f);
+        // 採取画素のデバイス深度
         const float tapDepth = DepthTexture.SampleLevel(
             SpriteSampler,
             uv,
             0.0f).r;
+        // 採取画素の符号付きぼけ量
         const float tapSignedCoc = DepthOfFieldSignedCircleOfConfusion(
             DepthOfFieldSceneDistance(tapDepth));
+        // 採取画素のぼけ量の絶対値
         const float tapCoc = abs(tapSignedCoc);
+        // 前後関係を考慮した広がり量
         const float spread = tapSignedCoc < 0.0f
             ? tapCoc
             : min(tapCoc, centerCoc);
+        // 採取半径に応じた混合重み
         const float weight = saturate(
             spread * maximumRadius - radius + 1.0f);
         total += SpriteTexture.SampleLevel(
@@ -547,26 +678,36 @@ float4 DepthOfFieldPixelShader(PixelInput input) : SV_Target
         sharp.a);
 }
 
+// 射影係数からビュー距離を復元し、遠平面を十分遠く扱います(deviceDepth: デバイス深度)。
 float OutlineSceneDistance(float deviceDepth)
 {
+    // 深度を距離へ戻す分母
     const float denominator = deviceDepth + PassTertiary.x;
     return denominator > -1e-6f
         ? 1e6f
         : PassTertiary.y / denominator;
 }
 
+// 輪郭用の画素座標を入力画像内に制限します(pixel: 参照する画素座標)。
 int2 OutlineClampPixel(int2 pixel)
 {
+    // 参照範囲を制限する画像寸法
     const int2 size = max(int2(PassQuaternary.zw), int2(1, 1));
     return clamp(pixel, int2(0, 0), size - 1);
 }
 
+// 深度と射影係数からビュー位置を復元します(pixel: 深度画像の画素座標)。
 float3 OutlineViewPosition(int2 pixel)
 {
+    // 画面内に制限した画素座標
     const int2 safePixel = OutlineClampPixel(pixel);
+    // 画素のデバイス深度
     const float depth = DepthTexture.Load(int3(safePixel, 0)).r;
+    // 復元した正のビュー距離
     const float distance = OutlineSceneDistance(depth);
+    // 画素中心の画面UV
     const float2 uv = (float2(safePixel) + 0.5f) * PassQuaternary.xy;
+    // 画素中心のNDC座標
     const float2 ndc = float2(
         uv.x * 2.0f - 1.0f,
         1.0f - uv.y * 2.0f);
@@ -576,65 +717,94 @@ float3 OutlineViewPosition(int2 pixel)
         distance);
 }
 
+// 中心との深度差が小さい側を選んで輪郭用の法線を復元します(pixel: 法線を求める画素座標)。
 float3 OutlineNormal(int2 pixel)
 {
+    // 参照範囲を制限する画像寸法
     const int2 size = max(int2(PassQuaternary.zw), int2(3, 3));
+    // 画面内に制限した画素座標
     const int2 safePixel = clamp(
         pixel,
         int2(1, 1),
         max(size - 2, int2(1, 1)));
+    // 中心画素のビュー位置
     const float3 origin = OutlineViewPosition(safePixel);
+    // 左隣画素のビュー位置
     const float3 left = OutlineViewPosition(safePixel + int2(-1, 0));
+    // 右隣画素のビュー位置
     const float3 right = OutlineViewPosition(safePixel + int2(1, 0));
+    // 上隣画素のビュー位置
     const float3 up = OutlineViewPosition(safePixel + int2(0, -1));
+    // 下隣画素のビュー位置
     const float3 down = OutlineViewPosition(safePixel + int2(0, 1));
+    // 段差が小さい側の横方向差
     const float3 horizontal = abs(left.z - origin.z)
             < abs(right.z - origin.z)
         ? origin - left
         : right - origin;
+    // 段差が小さい側の縦方向差
     const float3 vertical = abs(up.z - origin.z)
             < abs(down.z - origin.z)
         ? up - origin
         : origin - down;
+    // 近傍位置差から求めた法線
     const float3 normal = cross(vertical, horizontal);
+    // 復元法線の長さの二乗
     const float lengthSquared = dot(normal, normal);
     return lengthSquared < 1e-12f
         ? float3(0.0f, 0.0f, -1.0f)
         : normal * rsqrt(lengthSquared);
 }
 
+// 輪郭を調べる8方向の画素差
 static const int2 OutlineDirections[8] = {
     int2(-1, -1), int2(0, -1), int2(1, -1), int2(-1, 0),
     int2(1, 0), int2(-1, 1), int2(0, 1), int2(1, 1)
 };
 
+// 8方向の深度差と法線差で輪郭色を合成します(input: 色・画面UV・射影位置)。
 float4 ScreenOutlinePixelShader(PixelInput input) : SV_Target
 {
+    // 輪郭を加える元のRGBA
     const float4 source = SpriteTexture.Sample(
         SpriteSampler,
         input.textureCoordinate);
+    // 入力深度画像の幅と高さ
     const int2 screenSize = int2(PassQuaternary.zw);
     if (screenSize.x < 3 || screenSize.y < 3)
     {
         return source;
     }
+    // 中心画素の整数座標
     const int2 pixel = int2(input.position.xy);
+    // 中心画素のビュー距離
     const float centerDistance = OutlineSceneDistance(
         DepthTexture.Load(int3(OutlineClampPixel(pixel), 0)).r);
+    // 中心画素の単位法線
     const float3 centerNormal = OutlineNormal(pixel);
+    // 輪郭参照の画素単位の半径
     const int radius = clamp((int)PassSecondary.x, 1, 4);
+    // 深度の相対差のしきい値
     const float depthThreshold = max(PassSecondary.y, 0.0001f);
+    // 法線方向差のしきい値
     const float normalThreshold = max(PassSecondary.z, 0.0001f);
+    // 深度差による輪郭の強さ
     float depthEdge = 0.0f;
+    // 法線差による輪郭の強さ
     float normalEdge = 0.0f;
+    // 8方向の参照番号
     [unroll]
     for (int index = 0; index < 8; ++index)
     {
+        // 比較先の整数画素座標
         const int2 samplePixel = pixel + OutlineDirections[index] * radius;
+        // 比較先画素のビュー距離
         const float sampleDistance = OutlineSceneDistance(
             DepthTexture.Load(
                 int3(OutlineClampPixel(samplePixel), 0)).r);
+        // 中心画素が遠平面にある状態
         const bool centerIsSky = centerDistance >= 999999.0f;
+        // 比較先画素が遠平面にある状態
         const bool sampleIsSky = sampleDistance >= 999999.0f;
         if (centerIsSky != sampleIsSky)
         {
@@ -642,6 +812,7 @@ float4 ScreenOutlinePixelShader(PixelInput input) : SV_Target
         }
         else if (!centerIsSky)
         {
+            // 中心距離に対する深度差の比率
             const float relativeDifference = abs(
                 sampleDistance - centerDistance)
                 / max(centerDistance, 0.001f);
@@ -651,6 +822,7 @@ float4 ScreenOutlinePixelShader(PixelInput input) : SV_Target
                     0.35f,
                     1.0f,
                     relativeDifference / depthThreshold));
+            // 中心と比較先の法線の方向差
             const float normalDifference = 1.0f - saturate(dot(
                 centerNormal,
                 OutlineNormal(samplePixel)));
@@ -662,6 +834,7 @@ float4 ScreenOutlinePixelShader(PixelInput input) : SV_Target
                     normalDifference / normalThreshold));
         }
     }
+    // 強度を適用した輪郭の混合率
     const float edge = saturate(
         max(depthEdge, normalEdge) * saturate(PassPrimary.w));
     return float4(
@@ -669,12 +842,10 @@ float4 ScreenOutlinePixelShader(PixelInput input) : SV_Target
         source.a);
 }
 
-// LamaPonEnvironment.hlslのPSAmbientOcclusion / PSAmbientOcclusionBlurと
-// 同じ式です。PassPrimaryは遮蔽textureの1 texel・探索半径・強さ、
-// PassSecondary.xはサンプル数、PassTertiaryは深度から距離とビュー空間位置を
-// 戻す射影値（xy=_33/_43、zw=1/_11・1/_22）です。
+// 射影係数でビュー距離を復元し、遠平面を十分遠く扱います(deviceDepth: デバイス深度)。
 float AmbientOcclusionSceneDistance(float deviceDepth)
 {
+    // 深度を距離へ戻す分母
     const float denominator = deviceDepth + PassTertiary.x;
     if (denominator > -1e-6f)
     {
@@ -683,9 +854,12 @@ float AmbientOcclusionSceneDistance(float deviceDepth)
     return PassTertiary.y / denominator;
 }
 
+// UVと深度から正のZを持つビュー位置を復元します(uv: 深度画像のUV, deviceDepth: デバイス深度)。
 float3 AmbientOcclusionViewPosition(float2 uv, float deviceDepth)
 {
+    // 復元した正のビュー距離
     const float viewZ = AmbientOcclusionSceneDistance(deviceDepth);
+    // 画面UVから得るNDCのXY
     const float2 ndc = float2(
         uv.x * 2.0f - 1.0f,
         1.0f - uv.y * 2.0f);
@@ -695,6 +869,7 @@ float3 AmbientOcclusionViewPosition(float2 uv, float deviceDepth)
         viewZ);
 }
 
+// 指定UVの深度を読んでビュー位置を復元します(uv: 深度画像のUV)。
 float3 AmbientOcclusionViewPositionAt(float2 uv)
 {
     return AmbientOcclusionViewPosition(
@@ -702,28 +877,37 @@ float3 AmbientOcclusionViewPositionAt(float2 uv)
         DepthTexture.SampleLevel(SpriteSampler, uv, 0.0f).r);
 }
 
-// 上下左右のうち中心との段差が小さい側を軸ごとに選び、輪郭で手前と奥を
-// またがない法線を作ります。
+// 上下左右の段差が小さい側を選んで法線を復元します(uv: 中心の画面UV, origin: 中心のビュー位置, texelSize: 遮蔽画像1画素のUV幅)。
 float3 AmbientOcclusionReconstructNormal(
     float2 uv,
     float3 origin,
     float2 texelSize)
 {
+    // 遮蔽画像1画素の横UV差
     const float2 offsetX = float2(texelSize.x, 0.0f);
+    // 遮蔽画像1画素の縦UV差
     const float2 offsetY = float2(0.0f, texelSize.y);
+    // 左隣のビュー位置
     const float3 left = AmbientOcclusionViewPositionAt(uv - offsetX);
+    // 右隣のビュー位置
     const float3 right = AmbientOcclusionViewPositionAt(uv + offsetX);
+    // 上隣のビュー位置
     const float3 up = AmbientOcclusionViewPositionAt(uv - offsetY);
+    // 下隣のビュー位置
     const float3 down = AmbientOcclusionViewPositionAt(uv + offsetY);
+    // 段差が小さい側の横方向差
     const float3 horizontal = abs(left.z - origin.z)
             < abs(right.z - origin.z)
         ? origin - left
         : right - origin;
+    // 段差が小さい側の縦方向差
     const float3 vertical = abs(up.z - origin.z)
             < abs(down.z - origin.z)
         ? up - origin
         : origin - down;
+    // 深度から復元するビュー法線
     const float3 normal = cross(vertical, horizontal);
+    // 復元法線の長さの二乗
     const float lengthSquared = dot(normal, normal);
     if (lengthSquared < 1e-12f)
     {
@@ -732,6 +916,7 @@ float3 AmbientOcclusionReconstructNormal(
     return normal * rsqrt(lengthSquared);
 }
 
+// 画素位置から採取角度用の擬似乱数を返します(pixel: 画素座標)。
 float AmbientOcclusionNoise(float2 pixel)
 {
     return frac(
@@ -739,10 +924,12 @@ float AmbientOcclusionNoise(float2 pixel)
         * frac(dot(pixel, float2(0.06711056f, 0.00583715f))));
 }
 
-// 半解像度のRへ「残る明るさ」（1.0=遮蔽なし）を書きます。
+// 近傍の深度を探索し、残る明るさをRへ出力します(input: 色・半解像度UV・射影位置)。
 float4 AmbientOcclusionPixelShader(PixelInput input) : SV_Target
 {
+    // 遮蔽画像の画面UV
     const float2 uv = input.textureCoordinate;
+    // 中心のデバイス深度
     const float depth = DepthTexture.SampleLevel(
         SpriteSampler,
         uv,
@@ -752,29 +939,42 @@ float4 AmbientOcclusionPixelShader(PixelInput input) : SV_Target
         return float4(1.0f, 1.0f, 1.0f, 1.0f);
     }
 
+    // 中心画素のビュー位置
     const float3 origin = AmbientOcclusionViewPosition(uv, depth);
+    // 遮蔽画像1画素のUV幅
     const float2 texelSize = PassPrimary.xy;
+    // ビュー空間の遮蔽探索半径
     const float radius = PassPrimary.z;
+    // 遮蔽の強度倍率
     const float strength = PassPrimary.w;
+    // 深度から復元するビュー法線
     const float3 normal = AmbientOcclusionReconstructNormal(
         uv,
         origin,
         texelSize);
+    // ビュー距離で割った探索半径
     const float projectedRadius = radius / max(origin.z, 0.001f);
+    // 画素ごとに変える採取角度
     const float rotation = AmbientOcclusionNoise(
         uv / max(texelSize.x, 1e-6f)
             * float2(1.0f, texelSize.x / max(texelSize.y, 1e-6f)))
         * 6.2831853f;
+    // 遮蔽を探索する採取点数
     const int sampleCount = clamp(int(PassSecondary.x), 4, 32);
+    // 正規化前後の遮蔽量
     float occlusion = 0.0f;
+    // 探索点の番号
     [loop]
     for (int index = 0; index < sampleCount; ++index)
     {
-        // 黄金角のらせんで、少ない回数でも偏らせません。
+        // 採取点の正規化進行率
         const float fraction =
             (float(index) + 0.5f) / float(sampleCount);
+        // 画素回転とらせんの採取角度
         const float angle = rotation + fraction * 18.849556f;
+        // 円盤内の正規化採取半径
         const float spiralDistance = sqrt(fraction);
+        // 近傍深度を読む画面UV
         const float2 sampleUv = uv
             + float2(cos(angle), sin(angle))
                 * spiralDistance * projectedRadius * 0.5f;
@@ -782,6 +982,7 @@ float4 AmbientOcclusionPixelShader(PixelInput input) : SV_Target
         {
             continue;
         }
+        // 採取先の深度またはビュー距離
         const float sampleDepth = DepthTexture.SampleLevel(
             SpriteSampler,
             sampleUv,
@@ -790,55 +991,71 @@ float4 AmbientOcclusionPixelShader(PixelInput input) : SV_Target
         {
             continue;
         }
+        // 中心から採取位置へのビュー差
         float3 difference = AmbientOcclusionViewPosition(
             sampleUv,
             sampleDepth) - origin;
+        // 採取位置差の長さの二乗
         const float length2 = dot(difference, difference);
         if (length2 < 1e-8f)
         {
             continue;
         }
         difference *= rsqrt(length2);
+        // 中心から採取位置への距離
         const float sampleDistance = sqrt(length2);
-        // 法線より手前側にある分だけを遮蔽とし、半径の外は効かせません。
+        // 法線より手前側の遮蔽度合い
         const float facing = saturate(dot(normal, difference) - 0.06f);
+        // 探索半径の末端での減衰率
         const float falloff = saturate(
             1.0f - sampleDistance / max(radius, 0.001f));
         occlusion += facing * falloff;
     }
     occlusion = saturate(
         occlusion / float(sampleCount) * 2.4f * strength);
+    // 遮蔽後に残る明るさ
     const float visibility = 1.0f - occlusion;
     return float4(visibility, visibility, visibility, 1.0f);
 }
 
-// 中心と深度の近い画素だけを混ぜるbilateral blurで、少ないサンプルの
-// ザラつきを輪郭を越えずに均します。
+// 深度が近い画素だけを混ぜて遮蔽率を平滑化します(input: 色・半解像度UV・射影位置)。
 float4 AmbientOcclusionBlurPixelShader(PixelInput input) : SV_Target
 {
+    // 遮蔽画像の画面UV
     const float2 uv = input.textureCoordinate;
+    // 遮蔽画像1画素のUV幅
     const float2 texelSize = PassPrimary.xy;
+    // 中心画素のビュー距離
     const float centerDepth = AmbientOcclusionSceneDistance(
         DepthTexture.SampleLevel(SpriteSampler, uv, 0.0f).r);
+    // 深度差の重みを決める距離幅
     const float depthScale = max(centerDepth * 0.08f, 0.05f);
+    // 混合重みを掛けた遮蔽率合計
     float total = 0.0f;
+    // 採取先の混合重みの合計
     float weightSum = 0.0f;
+    // ブラー採取の縦方向オフセット
     [unroll]
     for (int y = -2; y <= 1; ++y)
     {
+        // ブラー採取の横方向オフセット
         [unroll]
         for (int x = -2; x <= 1; ++x)
         {
+            // 近傍深度を読む画面UV
             const float2 sampleUv = uv + float2(
                 (float(x) + 0.5f) * texelSize.x,
                 (float(y) + 0.5f) * texelSize.y);
+            // 採取先の深度またはビュー距離
             const float sampleDepth = AmbientOcclusionSceneDistance(
                 DepthTexture.SampleLevel(
                     SpriteSampler,
                     sampleUv,
                     0.0f).r);
+            // 中心からの距離差の正規化値
             const float depthRatio =
                 (sampleDepth - centerDepth) / depthScale;
+            // 深度差によるブラー混合重み
             const float weight =
                 1.0f / (1.0f + depthRatio * depthRatio);
             total += SpriteTexture.SampleLevel(
@@ -848,18 +1065,24 @@ float4 AmbientOcclusionBlurPixelShader(PixelInput input) : SV_Target
             weightSum += weight;
         }
     }
+    // 遮蔽後に残る明るさ
     const float visibility = weightSum > 0.0f
         ? total / weightSum
         : SpriteTexture.SampleLevel(SpriteSampler, uv, 0.0f).r;
     return float4(visibility, visibility, visibility, 1.0f);
 }
 
+// 散乱計算に使う円周率
 static const float VolumetricPi = 3.14159265f;
 
+// Henyey–Greenstein位相関数で散乱方向の重みを返します(cosineAngle: 視線と光方向のcos, scattering: 前方散乱の係数)。
 float VolumetricPhase(float cosineAngle, float scattering)
 {
+    // 上限0.95に制限した散乱係数
     const float g = clamp(scattering, 0.0f, 0.95f);
+    // 散乱係数の二乗
     const float gSquared = g * g;
+    // 位相関数の角度依存の分母
     const float denominator =
         1.0f + gSquared - 2.0f * g * cosineAngle;
     return (1.0f - gSquared)
@@ -867,9 +1090,12 @@ float VolumetricPhase(float cosineAngle, float scattering)
             * pow(max(denominator, 0.0001f), 1.5f));
 }
 
+// 投影内に入る最初のカスケードで光の可視率を読みます(worldPosition: 光の筋を採取する位置)。
 float VolumetricShadowAt(float3 worldPosition)
 {
+    // 影の有効カスケード数
     const int cascadeCount = (int)VolumetricShadowParameters.x;
+    // 影を調べるカスケード番号
     [loop]
     for (int cascade = 0; cascade < 4; ++cascade)
     {
@@ -877,6 +1103,7 @@ float VolumetricShadowAt(float3 worldPosition)
         {
             break;
         }
+        // 採取位置のライト射影座標
         const float4 lightPosition = mul(
             float4(worldPosition, 1.0f),
             VolumetricCascades[cascade]);
@@ -884,7 +1111,9 @@ float VolumetricShadowAt(float3 worldPosition)
         {
             continue;
         }
+        // ライトのNDC座標
         const float3 projected = lightPosition.xyz / lightPosition.w;
+        // 影配列を読むUV
         const float2 shadowUv =
             projected.xy * float2(0.5f, -0.5f) + 0.5f;
         if (shadowUv.x < 0.0f || shadowUv.x > 1.0f
@@ -901,17 +1130,22 @@ float VolumetricShadowAt(float3 worldPosition)
     return 1.0f;
 }
 
+// 視点レイ上の影を平均して散乱光を加算します(input: 色・画面UV・射影位置)。
 float4 VolumetricLightPixelShader(PixelInput input) : SV_Target
 {
+    // 光の筋を加える元のRGBA
     const float4 sceneColor = SpriteTexture.Sample(
         SpriteSampler,
         input.textureCoordinate);
+    // 画素のデバイス深度
     const float depth = DepthTexture.Sample(
         SpriteSampler,
         input.textureCoordinate).r;
+    // 画面UVから得るNDCのXY
     const float2 clip = float2(
         input.textureCoordinate.x * 2.0f - 1.0f,
         1.0f - input.textureCoordinate.y * 2.0f);
+    // 逆射影後の同次ワールド座標
     const float4 worldHomogeneous = mul(
         float4(clip, depth, 1.0f),
         VolumetricInverseViewProjection);
@@ -919,43 +1153,60 @@ float4 VolumetricLightPixelShader(PixelInput input) : SV_Target
     {
         return sceneColor;
     }
+    // 復元した画素のワールド位置
     const float3 worldPosition =
         worldHomogeneous.xyz / worldHomogeneous.w;
+    // 視点のワールド位置
     const float3 cameraPosition = VolumetricCameraPosition.xyz;
+    // 視点から画素への位置差
     const float3 toPixel = worldPosition - cameraPosition;
+    // 視点から画素までの距離
     const float pixelDistance = length(toPixel);
     if (pixelDistance <= 0.0001f)
     {
         return sceneColor;
     }
+    // 視点から画素への単位方向
     const float3 rayDirection = toPixel / pixelDistance;
+    // 最大距離で制限した探索長
     const float marchDistance = min(
         pixelDistance,
         VolumetricCameraPosition.w);
+    // レイ上の光の採取点数
     const int sampleCount = (int)max(VolumetricLightDirection.w, 1.0f);
+    // レイ上の採取点の間隔
     const float stepLength = marchDistance / (float)sampleCount;
+    // 画素ごとの開始位置の乱数
     const float dither = frac(
         52.9829189f
         * frac(dot(
             input.position.xy,
             float2(0.06711056f, 0.00583715f))));
+    // 視点から採取点までの距離
     float travelled = stepLength * (0.5f + dither * 0.5f);
+    // 視線と入射光方向のcos
     const float cosineAngle = dot(
         rayDirection,
         -normalize(VolumetricLightDirection.xyz));
+    // 視線方向の散乱重み
     const float phase = VolumetricPhase(
         cosineAngle,
         VolumetricLightColor.w);
+    // 採取点の光の可視率合計
     float accumulated = 0.0f;
+    // レイ上の採取番号
     [loop]
     for (int step = 0; step < sampleCount; ++step)
     {
+        // 光を調べるワールド位置
         const float3 samplePosition =
             cameraPosition + rayDirection * travelled;
         accumulated += VolumetricShadowAt(samplePosition);
         travelled += stepLength;
     }
+    // レイ上で平均した光の可視率
     const float visibility = accumulated / (float)sampleCount;
+    // 距離・影・位相を適用したRGB
     const float3 scatter = VolumetricLightColor.rgb
         * visibility
         * phase
@@ -963,19 +1214,20 @@ float4 VolumetricLightPixelShader(PixelInput input) : SV_Target
     return float4(sceneColor.rgb + max(scatter, 0.0f), sceneColor.a);
 }
 
-// LamaPonEnvironment.hlslのScreen Space Lens Flareと同じ処理です。
-// PassPrimary=texel/threshold/intensity、PassSecondary=ghost/halo/
-// chromatic/streak intensity、PassTertiary.x=streak length、
-// PassQuaternary=stride/directions/angle/first passです。
+// 画面内のしきい値以上のRGBを滑らかに抽出します(uv: 主画像を読むUV)。
 float3 LensFlareBright(float2 uv)
 {
     if (any(uv < 0.0f) || any(uv > 1.0f))
     {
         return 0.0f;
     }
+    // 高輝度抽出する元のRGB
     const float3 color = SpriteTexture.Sample(SpriteSampler, uv).rgb;
+    // 元RGBの最大成分
     const float brightness = max(color.r, max(color.g, color.b));
+    // 高輝度抽出のしきい値
     const float threshold = max(PassPrimary.z, 0.0f);
+    // しきい値付近の抽出混合率
     const float gate = smoothstep(
         threshold,
         threshold + max(threshold * 0.35f, 0.25f),
@@ -983,40 +1235,62 @@ float3 LensFlareBright(float2 uv)
     return color * gate;
 }
 
+// 方向に沿うRGB別のUV差で色収差を付けます(uv: 採取中心のUV, direction: 色をずらす方向)。
 float3 LensFlareChromaticSample(float2 uv, float2 direction)
 {
+    // 色収差でずらすUVの幅
     const float chromatic = saturate(PassSecondary.z) * 0.015f;
+    // 色収差を付けるUV差
     const float2 offset = direction * chromatic;
+    // 正方向へずらした採取RGB
     const float3 red = LensFlareBright(uv + offset);
+    // 中心で採取したRGB
     const float3 green = LensFlareBright(uv);
+    // 負方向へずらした採取RGB
     const float3 blue = LensFlareBright(uv - offset);
     return float3(red.r, green.g, blue.b);
 }
 
+// 指定方向の5点フィルターで光条を伸ばします(input: 色・画面UV・射影位置)。
 float4 LensFlareStreakPixelShader(PixelInput input) : SV_Target
 {
+    // 光条の採取間隔のUV幅
     const float stride = PassQuaternary.x;
+    // 光条を伸ばす方向の数
     const int directionCount = clamp((int)PassQuaternary.y, 1, 4);
+    // 光条の基準角度
     const float baseAngle = PassQuaternary.z;
+    // 元画像から高輝度を抽出する段
     const bool firstPass = PassQuaternary.w > 0.5f;
+    // 方向別の重み付きRGB合計
     float3 total = 0.0f;
+    // 光条採取重みの合計
     float weightTotal = 0.0f;
+    // 光条方向またはゴーストの番号
     [loop]
     for (int index = 0; index < directionCount; ++index)
     {
+        // 光条を伸ばす採取角度
         const float angle = baseAngle
             + 3.14159265f * (float)index / (float)directionCount;
+        // 光条の単位UV方向
         const float2 axis = float2(cos(angle), sin(angle));
+        // 光条の中心前後の採取番号
         [unroll]
         for (int tap = -2; tap <= 2; ++tap)
         {
+            // 入力画像を読む画面UV
             const float2 uv = clamp(
                 input.textureCoordinate + axis * ((float)tap * stride),
                 0.0f,
                 1.0f);
+            // 中心からの距離による採取重み
             const float weight = 1.0f - abs((float)tap) * 0.22f;
+            // 光条に付ける色分散の強さ
             const float dispersion = saturate(PassSecondary.z);
+            // 採取点による赤青の強度差
             const float shift = (float)tap / 2.0f * dispersion;
+            // 光条の採取RGB
             float3 sample = firstPass
                 ? LensFlareBright(uv)
                 : SpriteTexture.SampleLevel(SpriteSampler, uv, 0.0f).rgb;
@@ -1032,35 +1306,53 @@ float4 LensFlareStreakPixelShader(PixelInput input) : SV_Target
     return float4(total, 1.0f);
 }
 
+// 4個のゴースト・ハロー・光条を主画像へ加算します(input: 色・画面UV・射影位置)。
 float4 LensFlareCompositePixelShader(PixelInput input) : SV_Target
 {
+    // 入力画像を読む画面UV
     const float2 uv = input.textureCoordinate;
+    // フレアを加える元のRGBA
     const float4 source = SpriteTexture.Sample(SpriteSampler, uv);
+    // 画面中心のUV座標
     const float2 center = float2(0.5f, 0.5f);
+    // 画面中心からのUV差
     const float2 fromCenter = uv - center;
+    // 画面中心からのUV距離
     const float radius = length(fromCenter);
+    // 画面中心からの単位UV方向
     const float2 direction = radius > 0.0001f
         ? fromCenter / radius
         : float2(1.0f, 0.0f);
+    // ゴースト・ハロー・光条のRGB
     float3 flare = LensFlareBright(uv) * 0.22f;
+    // ゴーストの広がり倍率
     const float dispersal = max(PassSecondary.x, 0.01f);
+    // 光条方向またはゴーストの番号
     [unroll]
     for (int index = 1; index <= 4; ++index)
     {
+        // 対象ゴーストの中心反転倍率
         const float scale = dispersal * (float)index;
+        // 対象ゴーストを読むUV
         const float2 ghostUv = center - fromCenter * scale;
+        // 対象ゴーストのRGB混合重み
         const float ghostWeight = 0.23f - (float)index * 0.025f;
         flare += LensFlareChromaticSample(ghostUv, direction)
             * max(ghostWeight, 0.05f);
     }
+    // ハロー円周のUV半径
     const float haloRadius = clamp(PassSecondary.y, 0.05f, 1.5f);
+    // ハロー円周からのUV距離
     const float haloDistance = abs(radius - haloRadius);
+    // ハロー円周近傍の混合率
     const float halo = 1.0f - smoothstep(
         0.015f,
         0.10f + haloRadius * 0.18f,
         haloDistance);
+    // ハローの反対側を読むUV
     const float2 haloUv = center - direction * haloRadius;
     flare += LensFlareChromaticSample(haloUv, direction) * halo * 0.32f;
+    // 別パスで生成した光条RGB
     const float3 streak = TemporalHistoryTexture.SampleLevel(
         SpriteSampler,
         uv,
@@ -1071,19 +1363,20 @@ float4 LensFlareCompositePixelShader(PixelInput input) : SV_Target
         source.a);
 }
 
-// LamaPonEnvironment.hlslのPSReflectionDepthLinearize /
-// PSReflectionDepthDownsampleと同じSSRのHi-Z深度ピラミッドです。
-// mip 0はPassPrimary.xy=射影の_33/_43で深度をカメラからの距離へ直し、
-// 空（遠平面）は十分遠い値にします。
+// 深度をビュー距離へ変換してHi-Z最下段へ出力します(input: 色・画面UV・射影位置)。
 float4 ReflectionDepthLinearizePixelShader(PixelInput input) : SV_Target
 {
+    // 深度を読む整数画素座標
     const int2 pixel = int2(input.position.xy);
+    // 入力画像のデバイス深度
     const float deviceDepth = SpriteTexture.Load(int3(pixel, 0)).r;
+    // 深度を距離へ戻す分母
     const float denominator = deviceDepth + PassPrimary.x;
     if (denominator > -1e-6f)
     {
         return float4(1e6f, 1e6f, 1e6f, 1e6f);
     }
+    // 復元した正のビュー距離
     const float sceneDistance = PassPrimary.y / denominator;
     return float4(
         sceneDistance,
@@ -1092,23 +1385,31 @@ float4 ReflectionDepthLinearizePixelShader(PixelInput input) : SV_Target
         sceneDistance);
 }
 
-// mip N+1は親ミップの2x2の最小値です。PassPrimary.xyは親ミップの
-// 大きさで、辺が奇数のときは端の子が余った列（行）も読み、最も手前の
-// 面を取りこぼしません。
+// 親段の最小距離を求め、奇数寸法の余剰行列も取り込みます(input: 色・縮小先UV・射影位置)。
 float4 ReflectionDepthDownsamplePixelShader(PixelInput input) : SV_Target
 {
+    // 親ミップの幅と高さ
     const int2 parentSize = int2(PassPrimary.xy);
+    // 縮小元の2×2領域の左上
     const int2 parent = int2(input.position.xy) * 2;
+    // 親ミップの最後の画素座標
     const int2 last = parentSize - 1;
+    // 縮小領域の左上の距離
     const float a = SpriteTexture.Load(int3(min(parent, last), 0)).r;
+    // 縮小領域の右上の距離
     const float b = SpriteTexture.Load(
         int3(min(parent + int2(1, 0), last), 0)).r;
+    // 縮小領域の左下の距離
     const float c = SpriteTexture.Load(
         int3(min(parent + int2(0, 1), last), 0)).r;
+    // 縮小領域の右下の距離
     const float d = SpriteTexture.Load(
         int3(min(parent + int2(1, 1), last), 0)).r;
+    // 領域内で最も手前の距離
     float nearest = min(min(a, b), min(c, d));
+    // 親段の幅が奇数の状態
     const bool oddWidth = (parentSize.x & 1) != 0;
+    // 親段の高さが奇数の状態
     const bool oddHeight = (parentSize.y & 1) != 0;
     if (oddWidth)
     {
@@ -1133,56 +1434,69 @@ float4 ReflectionDepthDownsamplePixelShader(PixelInput input) : SV_Target
 }
 )";
 
-    // LamaPonEnvironment.hlslのPSSkyと同じグラデーションまたはcubemapの
-    // 空です。Spriteのroot signatureに合わせ、4色をb1、逆view-projection・
-    // カメラ・太陽の向き・cubemapの有無をb2のroot constants、cubemapをt1で
-    // 受け取ります。uvはviewport全体を覆うquadのTEXCOORDで、D3D11の
-    // フルスクリーン三角形と同じ画素中心の値です。
+    // b1の4色・b2の視線・t1の空HLSL
     constexpr char SkyShaderSource[] = R"(
+// 空のb1へ渡す4色の定数
 cbuffer SkyColors : register(b1)
 {
-    // rgb=天頂の色, a=明るさ
+    // 天頂RGBと空の強度
     float4 TopColor;
+    // 水平線のRGB
     float4 HorizonColor;
+    // 地面側のRGB
     float4 GroundColor;
-    // rgb=太陽の色×強さ, w=0より大きければ描く。
+    // 太陽RGBと円盤の有無
     float4 SunDiskColor;
 };
 
+// 空のb2へ渡す視線用32定数
 cbuffer SkyView : register(b2)
 {
+    // 視線復元用の逆合成射影行列
     row_major float4x4 InverseViewProjection;
+    // 視点のワールド位置
     float4 CameraPosition;
-    // xyz=太陽へ向かう向き, w=角半径（ラジアン）。
+    // 太陽方向XYZと角半径
     float4 SunDirection;
-    // x=キューブマップ使用, y/z/w=予約
+    // キューブ使用指定と予約成分
     float4 SkyOptions;
 };
 
+// t1の空のキューブ画像
 TextureCube SkyCubemap : register(t1);
+// s0の線形端固定サンプラー
 SamplerState SkySampler : register(s0);
 
 struct PixelInput
 {
+    // 頂点色または空の合成RGB
     float4 color : COLOR;
+    // 画面全体を覆うUV
     float2 textureCoordinate : TEXCOORD;
+    // 頂点のクリップ座標
     float4 position : SV_Position;
 };
 
+// 視線方向のキューブまたは空グラデーションと太陽を描きます(input: 色・画面UV・射影位置)。
 float4 SkyPixelShader(PixelInput input) : SV_Target
 {
+    // 画面UVから得るNDCのXY
     const float2 clip = float2(
         input.textureCoordinate.x * 2.0f - 1.0f,
         1.0f - input.textureCoordinate.y * 2.0f);
+    // 遠平面の同次ワールド座標
     const float4 farPosition = mul(
         float4(clip, 1.0f, 1.0f),
         InverseViewProjection);
+    // 遠平面のワールド位置
     const float3 worldPosition =
         farPosition.xyz / max(abs(farPosition.w), 0.00001f);
+    // 視点から遠平面への単位方向
     const float3 direction = normalize(
         worldPosition - CameraPosition.xyz);
     if (SkyOptions.x > 0.5f)
     {
+        // キューブから読んだ空のRGB
         const float3 cubeColor = SkyCubemap.SampleLevel(
             SkySampler,
             direction,
@@ -1191,10 +1505,13 @@ float4 SkyPixelShader(PixelInput input) : SV_Target
             cubeColor * max(TopColor.a, 0.0f),
             1.0f);
     }
+    // 水平線から天頂への混合率
     const float above = smoothstep(
         -0.03f, 0.85f, direction.y);
+    // 水平線から地面側への混合率
     const float below = smoothstep(
         0.0f, 0.65f, -direction.y);
+    // 頂点色または空の合成RGB
     float3 color = lerp(
         HorizonColor.rgb,
         TopColor.rgb,
@@ -1203,17 +1520,22 @@ float4 SkyPixelShader(PixelInput input) : SV_Target
 
     if (SunDiskColor.a > 0.0f)
     {
+        // 視線と太陽方向のcos
         const float cosine = dot(direction, SunDirection.xyz);
+        // 太陽円盤の角半径
         const float radius = max(SunDirection.w, 0.0001f);
+        // 太陽円盤の内側の混合率
         const float disk = smoothstep(
             cos(radius * 1.05f),
             cos(radius * 0.95f),
             cosine);
+        // 太陽周囲の光彩の強度
         const float glow = pow(
             saturate(
                 (cosine - cos(radius * 30.0f))
                 / max(1.0f - cos(radius * 30.0f), 0.0001f)),
             4.0f);
+        // 太陽高度に応じた表示率
         const float horizonFade = smoothstep(
             -0.12f, 0.02f, SunDirection.y);
         color += SunDiskColor.rgb * glow * 0.35f * horizonFade;
@@ -1226,6 +1548,7 @@ float4 SkyPixelShader(PixelInput input) : SV_Target
 }
 )";
 
+    // 失敗HRESULTを操作名付きの例外へ変換します(result: 呼出し結果, operation: 失敗を報告する操作名)。
     void ThrowIfFailed(
         const HRESULT result,
         const char* const operation)
@@ -1239,15 +1562,20 @@ float4 SkyPixelShader(PixelInput input) : SV_Target
         }
     }
 
+    // 埋め込みHLSLを最適化付きでコンパイルし、診断を例外にします(entryPoint: 入口関数名, target: シェーダー形式, source: HLSLソース文字列)。
     [[nodiscard]] Microsoft::WRL::ComPtr<ID3DBlob> CompileSpriteShader(
+        // 描画元のRGB・透過度の係数
         const char* const entryPoint,
         const char* const target,
         const std::string_view source = std::string_view{
             SpriteShaderSource,
             sizeof(SpriteShaderSource) - 1u })
     {
+        // コンパイル済みシェーダー
         Microsoft::WRL::ComPtr<ID3DBlob> bytecode;
+        // コンパイラーの診断文字列
         Microsoft::WRL::ComPtr<ID3DBlob> errors;
+        // コンパイル結果または交差矩形
         const HRESULT result = D3DCompile(
             source.data(),
             source.size(),
@@ -1263,6 +1591,7 @@ float4 SkyPixelShader(PixelInput input) : SV_Target
             errors.GetAddressOf());
         if (FAILED(result))
         {
+            // 例外へ渡すコンパイル診断
             std::string message =
                 std::string("D3DCompile(") + entryPoint + ") failed";
             if (errors != nullptr && errors->GetBufferSize() > 0)
@@ -1277,11 +1606,13 @@ float4 SkyPixelShader(PixelInput input) : SV_Target
         return bytecode;
     }
 
+    // DirectXTK互換の合成係数をRGBと透過度に設定します(blend: 合成方式)。
     [[nodiscard]] D3D12_BLEND_DESC MakeBlendDescription(
         const LamaPon::SpriteBlendMode blend)
     {
-        // DirectXTK CommonStatesと同じ係数を、色とalphaの両方へ使います。
+        // 描画元のRGB・透過度の係数
         D3D12_BLEND source = D3D12_BLEND_ONE;
+        // 描画先のRGB・透過度の係数
         D3D12_BLEND destination = D3D12_BLEND_ZERO;
         switch (blend)
         {
@@ -1303,6 +1634,7 @@ float4 SkyPixelShader(PixelInput input) : SV_Target
                 "The sprite blend mode is invalid.");
         }
 
+        // 描画先1枚の合成状態
         D3D12_RENDER_TARGET_BLEND_DESC target{};
         target.BlendEnable =
             source != D3D12_BLEND_ONE || destination != D3D12_BLEND_ZERO;
@@ -1316,9 +1648,11 @@ float4 SkyPixelShader(PixelInput input) : SV_Target
         target.LogicOp = D3D12_LOGIC_OP_NOOP;
         target.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
 
+        // 作成する合成・面・深度の状態
         D3D12_BLEND_DESC description{};
         description.AlphaToCoverageEnable = FALSE;
         description.IndependentBlendEnable = FALSE;
+        // 合成状態を設定する描画先
         for (auto& renderTarget : description.RenderTarget)
         {
             renderTarget = target;
@@ -1326,11 +1660,11 @@ float4 SkyPixelShader(PixelInput input) : SV_Target
         return description;
     }
 
+    // 通常は裏面を除去し、クリップ時は両面を描きます(scissored: クリップを使う指定)。
     [[nodiscard]] D3D12_RASTERIZER_DESC MakeRasterizerDescription(
         const bool scissored) noexcept
     {
-        // 通常passはSpriteBatch既定の反時計回りcull、scissor passはD3D11の
-        // UI clipping rasterizerと同じくcullしません。
+        // 作成する合成・面・深度の状態
         D3D12_RASTERIZER_DESC description{};
         description.FillMode = D3D12_FILL_MODE_SOLID;
         description.CullMode = scissored
@@ -1350,15 +1684,18 @@ float4 SkyPixelShader(PixelInput input) : SV_Target
         return description;
     }
 
+    // 深度とステンシルを読まず書かない状態を作ります。
     [[nodiscard]] D3D12_DEPTH_STENCIL_DESC
         MakeDepthStencilDescription() noexcept
     {
+        // ステンシル値を維持する設定
         const D3D12_DEPTH_STENCILOP_DESC keep{
             D3D12_STENCIL_OP_KEEP,
             D3D12_STENCIL_OP_KEEP,
             D3D12_STENCIL_OP_KEEP,
             D3D12_COMPARISON_FUNC_ALWAYS
         };
+        // 作成する合成・面・深度の状態
         D3D12_DEPTH_STENCIL_DESC description{};
         description.DepthEnable = FALSE;
         description.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
@@ -1371,6 +1708,7 @@ float4 SkyPixelShader(PixelInput input) : SV_Target
         return description;
     }
 
+    // XY成分がすべて有限か判定します(value: 検査する2成分)。
     [[nodiscard]] bool IsFinite(
         const DirectX::XMFLOAT2& value) noexcept
     {
@@ -1378,6 +1716,7 @@ float4 SkyPixelShader(PixelInput input) : SV_Target
             && std::isfinite(value.y);
     }
 
+    // RGBA成分がすべて有限か判定します(value: 検査する4成分)。
     [[nodiscard]] bool IsFinite(
         const DirectX::XMFLOAT4& value) noexcept
     {
@@ -1387,6 +1726,7 @@ float4 SkyPixelShader(PixelInput input) : SV_Target
             && std::isfinite(value.w);
     }
 
+    // クリップ矩形の全境界が有限か判定します(value: 検査する矩形)。
     [[nodiscard]] bool IsFinite(
         const LamaPon::SpriteClipRectangle& value) noexcept
     {
@@ -1396,11 +1736,12 @@ float4 SkyPixelShader(PixelInput input) : SV_Target
             && std::isfinite(value.maximumY);
     }
 
-    // D3D11のUI scissorと同じく、外側のclipとの交差へ畳み込みます。
+    // 非負整数のクリップ矩形を作り、外側の範囲と交差させます(rectangle: 新しいクリップ指定, stack: 外側のクリップの積み重ね)。
     [[nodiscard]] D3D12_RECT MakeScissorRectangle(
         const LamaPon::SpriteClipRectangle& rectangle,
         const std::vector<D3D12_RECT>& stack)
     {
+        // 非負LONGの範囲へ制限して整数に変換します(value: 画素境界の浮動小数値)。
         const auto clampLong = [](const float value) noexcept
         {
             return static_cast<LONG>(
@@ -1410,6 +1751,7 @@ float4 SkyPixelShader(PixelInput input) : SV_Target
                     static_cast<double>(
                         (std::numeric_limits<LONG>::max)())));
         };
+        // コンパイル結果または交差矩形
         D3D12_RECT result{
             clampLong(rectangle.minimumX),
             clampLong(rectangle.minimumY),
@@ -1417,6 +1759,7 @@ float4 SkyPixelShader(PixelInput input) : SV_Target
             clampLong(rectangle.maximumY) };
         if (!stack.empty())
         {
+            // 交差させる外側のクリップ矩形
             const auto& outer = stack.back();
             result.left = std::max(result.left, outer.left);
             result.top = std::max(result.top, outer.top);
@@ -1428,8 +1771,7 @@ float4 SkyPixelShader(PixelInput input) : SV_Target
         return result;
     }
 
-    // EnvironmentRenderer::ApplyBloom / ApplyFXAAと同じく、target全体の
-    // 1 texel寸法をUV単位で求めます。
+    // 対象の幅と高さの逆数をUV単位で返します(target: 寸法の取得元)。
     [[nodiscard]] std::array<float, 2> TexelSize(
         const LamaPon::RenderTarget& target) noexcept
     {
@@ -1451,6 +1793,7 @@ namespace LamaPon::Detail
                 "The DirectX 12 sprite renderer requires an initialized "
                 "backend.");
         }
+        // 初期化済みバックエンドのデバイス
         auto* const device = backend.Device();
 
         m_vertexShader = CompileSpriteShader(
@@ -1511,6 +1854,7 @@ namespace LamaPon::Detail
                 SkyShaderSource,
                 sizeof(SkyShaderSource) - 1u });
 
+        // 主画像t0のSRV範囲
         D3D12_DESCRIPTOR_RANGE textureRange{};
         textureRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
         textureRange.NumDescriptors = 1;
@@ -1518,13 +1862,17 @@ namespace LamaPon::Detail
         textureRange.RegisterSpace = 0;
         textureRange.OffsetInDescriptorsFromTableStart = 0;
 
+        // 履歴・空画像t1のSRV範囲
         D3D12_DESCRIPTOR_RANGE historyRange = textureRange;
         historyRange.BaseShaderRegister = 1;
+        // 深度画像t2のSRV範囲
         D3D12_DESCRIPTOR_RANGE depthRange = textureRange;
         depthRange.BaseShaderRegister = 2;
+        // 影配列t3のSRV範囲
         D3D12_DESCRIPTOR_RANGE shadowRange = textureRange;
         shadowRange.BaseShaderRegister = 3;
 
+        // 標準・全画面の9ルート引数
         std::array<D3D12_ROOT_PARAMETER, 9> parameters{};
         parameters[0].ParameterType =
             D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
@@ -1572,9 +1920,9 @@ namespace LamaPon::Detail
         parameters[8].Descriptor.RegisterSpace = 0;
         parameters[8].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-        // SpriteBatch既定のLinearClampと、D3D11 Volumetric Lightと同じ
-        // 範囲外を照射済みとする比較samplerです。
+        // 素材と影比較の2サンプラー
         std::array<D3D12_STATIC_SAMPLER_DESC, 2> samplers{};
+        // s0の線形端固定サンプラー
         auto& sampler = samplers[0];
         sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
         sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
@@ -1589,6 +1937,7 @@ namespace LamaPon::Detail
         sampler.ShaderRegister = 0;
         sampler.RegisterSpace = 0;
         sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        // s1の白境界の深度比較
         auto& shadowSampler = samplers[1];
         shadowSampler.Filter =
             D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
@@ -1605,6 +1954,7 @@ namespace LamaPon::Detail
         shadowSampler.RegisterSpace = 0;
         shadowSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
+        // 標準描画のルート署名の定義
         D3D12_ROOT_SIGNATURE_DESC rootDescription{};
         rootDescription.NumParameters =
             static_cast<UINT>(parameters.size());
@@ -1614,8 +1964,11 @@ namespace LamaPon::Detail
         rootDescription.pStaticSamplers = samplers.data();
         rootDescription.Flags =
             D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+        // 標準描画の直列化ルート署名
         Microsoft::WRL::ComPtr<ID3DBlob> serializedRoot;
+        // 標準署名の直列化診断
         Microsoft::WRL::ComPtr<ID3DBlob> rootErrors;
+        // 標準ルート署名の直列化結果
         const HRESULT serialized = D3D12SerializeRootSignature(
             &rootDescription,
             D3D_ROOT_SIGNATURE_VERSION_1,
@@ -1623,6 +1976,7 @@ namespace LamaPon::Detail
             rootErrors.GetAddressOf());
         if (FAILED(serialized))
         {
+            // 例外へ渡す署名直列化診断
             std::string message =
                 "D3D12SerializeRootSignature(sprite) failed";
             if (rootErrors != nullptr && rootErrors->GetBufferSize() > 0)
@@ -1643,22 +1997,26 @@ namespace LamaPon::Detail
                 IID_PPV_ARGS(m_rootSignature.ReleaseAndGetAddressOf())),
             "ID3D12Device::CreateRootSignature(sprite)");
 
-        // ScreenEffectはフルスクリーン三角形用のVSMainも差し替える
-        // ため、Spriteのviewport変換とは分離した小さなrootを使います。
+        // 画面効果t0～t3のSRV範囲
         std::array<D3D12_DESCRIPTOR_RANGE, 4> screenTextureRanges{};
+        // 画面効果のルート引数番号
         for (UINT index{}; index < screenTextureRanges.size(); ++index)
         {
+            // 設定する画面効果SRV範囲
             auto& range = screenTextureRanges[index];
             range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
             range.NumDescriptors = 1;
             range.BaseShaderRegister = index;
         }
+        // 画面効果の5ルート引数
         std::array<D3D12_ROOT_PARAMETER, 5> screenParameters{};
         screenParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
         screenParameters[0].Descriptor.ShaderRegister = 0;
         screenParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        // 画面効果のルート引数番号
         for (std::size_t index{}; index < screenTextureRanges.size(); ++index)
         {
+            // 設定する画面効果ルート引数
             auto& parameter = screenParameters[index + 1u];
             parameter.ParameterType =
                 D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
@@ -1667,6 +2025,7 @@ namespace LamaPon::Detail
                 &screenTextureRanges[index];
             parameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
         }
+        // 画面効果のs0線形繰返し
         D3D12_STATIC_SAMPLER_DESC screenSampler{};
         screenSampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
         screenSampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
@@ -1676,6 +2035,7 @@ namespace LamaPon::Detail
         screenSampler.MaxLOD = D3D12_FLOAT32_MAX;
         screenSampler.ShaderRegister = 0;
         screenSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        // 画面効果のルート署名の定義
         D3D12_ROOT_SIGNATURE_DESC screenRootDescription{};
         screenRootDescription.NumParameters =
             static_cast<UINT>(screenParameters.size());
@@ -1684,8 +2044,11 @@ namespace LamaPon::Detail
         screenRootDescription.pStaticSamplers = &screenSampler;
         screenRootDescription.Flags =
             D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+        // 画面効果の直列化ルート署名
         Microsoft::WRL::ComPtr<ID3DBlob> serializedScreenRoot;
+        // 画面効果署名の直列化診断
         Microsoft::WRL::ComPtr<ID3DBlob> screenRootErrors;
+        // 画面効果署名の直列化結果
         const HRESULT serializedScreen = D3D12SerializeRootSignature(
             &screenRootDescription,
             D3D_ROOT_SIGNATURE_VERSION_1,
@@ -1693,6 +2056,7 @@ namespace LamaPon::Detail
             screenRootErrors.GetAddressOf());
         if (FAILED(serializedScreen))
         {
+            // 例外へ渡す署名直列化診断
             std::string message =
                 "D3D12SerializeRootSignature(screen effect) failed";
             if (screenRootErrors != nullptr
@@ -1715,15 +2079,18 @@ namespace LamaPon::Detail
                     m_screenEffectRootSignature.ReleaseAndGetAddressOf())),
             "ID3D12Device::CreateRootSignature(screen effect)");
 
+        // 2048枚共通索引のバイト数
         const auto indexBytes =
             MaximumSpritesPerDraw * IndicesPerSprite
             * sizeof(std::uint16_t);
+        // CPU書込み可能な索引用ヒープ
         D3D12_HEAP_PROPERTIES uploadHeap{};
         uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
         uploadHeap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
         uploadHeap.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
         uploadHeap.CreationNodeMask = 1;
         uploadHeap.VisibleNodeMask = 1;
+        // 共通索引バッファの作成情報
         D3D12_RESOURCE_DESC indexDescription{};
         indexDescription.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
         indexDescription.Width = indexBytes;
@@ -1742,17 +2109,22 @@ namespace LamaPon::Detail
                 nullptr,
                 IID_PPV_ARGS(m_indexBuffer.ReleaseAndGetAddressOf())),
             "ID3D12Device::CreateCommittedResource(sprite indices)");
+        // 索引バッファのCPU書込み先
         void* mapped{};
+        // CPUから読まないMap範囲
         const D3D12_RANGE noRead{};
         ThrowIfFailed(
             m_indexBuffer->Map(0, &noRead, &mapped),
             "ID3D12Resource::Map(sprite indices)");
+        // 16ビットの共通頂点索引列
         auto* const indices = static_cast<std::uint16_t*>(mapped);
+        // 索引を生成する矩形番号
         for (std::size_t sprite{}; sprite < MaximumSpritesPerDraw; ++sprite)
         {
-            // SpriteBatchと同じ三角形の並びです。
+            // 矩形の先頭頂点番号
             const auto first =
                 static_cast<std::uint16_t>(sprite * VerticesPerSprite);
+            // 矩形1枚分の索引書込み先
             auto* const quad = indices + sprite * IndicesPerSprite;
             quad[0] = first;
             quad[1] = static_cast<std::uint16_t>(first + 1u);
@@ -1789,6 +2161,7 @@ namespace LamaPon::Detail
                 "The sprite blend mode is invalid.");
         }
 
+        // 開始時のカスタムPS準備結果
         SpriteShaderStatus preparedStatus;
         m_activeCustomShader = nullptr;
         if (!description.pixelShader.empty())
@@ -1801,6 +2174,7 @@ namespace LamaPon::Detail
                         "A custom DirectX 12 sprite shader requires an "
                         "asset manager.");
                 }
+                // 正規化したカスタムPSのパス
                 const auto shaderPath = assets->ResolvePath(
                     description.pixelShader).lexically_normal();
                 if (!assets->FileExists(shaderPath))
@@ -1809,12 +2183,15 @@ namespace LamaPon::Detail
                         "Sprite shader file was not found: "
                         + PathToUtf8(shaderPath));
                 }
+                // 今回取得したコンパイル済みPS
                 auto byteCode = CompileShaderCached(
                     *assets,
                     shaderPath,
                     "PSMain",
                     "ps_5_0");
+                // パス別のカスタムPSキャッシュ
                 auto& entry = m_customShaders[shaderPath];
+                // PSバイトコードが変わった状態
                 const bool changed = entry.pixelShader == nullptr
                     || byteCode->GetBufferSize()
                         != entry.pixelShader->GetBufferSize()
@@ -1825,6 +2202,7 @@ namespace LamaPon::Detail
                 if (changed)
                 {
                     entry.pixelShader = std::move(byteCode);
+                    // 変更されたPSに依存するPSO
                     for (auto& pipeline : entry.pipelineStates)
                     {
                         pipeline.Reset();
@@ -1839,8 +2217,7 @@ namespace LamaPon::Detail
                 m_spriteLighting = description.lighting;
                 m_activeCustomShader = &entry;
 
-                // PSO作成もBegin中に検証し、ShaderStatusが成功を返した
-                // 後にEndで初めて失敗する状態を作らないようにします。
+                // PSO作成もBegin中に検証し、ShaderStatusが成功を返した後にEndで初めて失敗する状態を作らないようにします。
                 static_cast<void>(PipelineState(
                     description.blend,
                     false,
@@ -1849,6 +2226,7 @@ namespace LamaPon::Detail
                     FullscreenProgram::None));
                 preparedStatus.generation = entry.generation;
             }
+            // exception: カスタムPSの読込み・PSO作成失敗。
             catch (const std::exception& exception)
             {
                 m_activeCustomShader = nullptr;
@@ -1857,6 +2235,7 @@ namespace LamaPon::Detail
                 preparedStatus.error = exception.what();
             }
         }
+        // 今回のパスの非ゼロ識別番号
         auto token = m_nextToken++;
         if (token == 0)
         {
@@ -1900,37 +2279,53 @@ namespace LamaPon::Detail
             return false;
         }
 
+        // 指定画像または未指定時の代替
         const auto& view = request.texture
             ? request.texture
             : m_fallbackTexture;
+        // 描画画像のGPU参照
         const auto binding = m_backend->TryResolveShaderResource(view);
         if (!binding)
         {
             return false;
         }
 
-        // DirectXTK SpriteBatchと同じ演算順で、source rectangleの有無ごとに
-        // 正規化UV、原点、表示寸法を求めます。
+        // 描画画像の幅の画素数
         const float textureWidth = static_cast<float>(binding->width);
+        // 描画画像の高さの画素数
         const float textureHeight = static_cast<float>(binding->height);
+        // 描画画像の幅の逆数
         const float inverseTextureWidth = 1.0f / textureWidth;
+        // 描画画像の高さの逆数
         const float inverseTextureHeight = 1.0f / textureHeight;
+        // 入力領域の左端UV
         float sourceX = 0.0f;
+        // 入力領域の上端UV
         float sourceY = 0.0f;
+        // 入力領域のUV幅
         float sourceWidth = 1.0f;
+        // 入力領域のUV高さ
         float sourceHeight = 1.0f;
+        // 入力幅で正規化した横原点
         float originX{};
+        // 入力高さで正規化した縦原点
         float originY{};
+        // 倍率を適用した描画幅
         float destinationWidth{};
+        // 倍率を適用した描画高さ
         float destinationHeight{};
         if (request.hasSourceRectangle)
         {
+            // 入力領域の左端画素
             const auto left =
                 static_cast<float>(request.sourceRectangle.left);
+            // 入力領域の上端画素
             const auto top =
                 static_cast<float>(request.sourceRectangle.top);
+            // 入力領域の幅の画素数
             const float texelWidth =
                 static_cast<float>(request.sourceRectangle.right) - left;
+            // 入力領域の高さの画素数
             const float texelHeight =
                 static_cast<float>(request.sourceRectangle.bottom) - top;
             destinationWidth = request.scale.x * texelWidth;
@@ -1950,8 +2345,11 @@ namespace LamaPon::Detail
             originY = request.origin.y * inverseTextureHeight;
         }
 
+        // 描画回転角のsin
         float rotationSin = 0.0f;
+        // 描画回転角のcos
         float rotationCos = 1.0f;
+        // 回転変換を使う状態
         const bool rotated = request.rotation != 0.0f;
         if (rotated)
         {
@@ -1961,8 +2359,7 @@ namespace LamaPon::Detail
                 request.rotation);
         }
 
-        // flipはcorner表のindexをbitで入れ替え、頂点位置は変えずにUVだけを
-        // 反転します（Horizontal=1、Vertical=2）。
+        // 左上・右上・左下・右下の隅座標
         static constexpr std::array<DirectX::XMFLOAT2, VerticesPerSprite>
             CornerOffsets{ {
                 { 0.0f, 0.0f },
@@ -1970,18 +2367,24 @@ namespace LamaPon::Detail
                 { 0.0f, 1.0f },
                 { 1.0f, 1.0f }
             } };
+        // UV隅を交換する反転ビット
         const auto mirrorBits =
             static_cast<std::size_t>(request.flip) & 3u;
 
+        // 命令記録まで画像を保持する矩形
         QueuedSprite sprite;
         sprite.texture = binding->descriptor;
         sprite.view = view;
+        // 矩形の隅の番号
         for (std::size_t corner{}; corner < VerticesPerSprite; ++corner)
         {
+            // 原点基準の隅の横座標
             const float cornerX =
                 (CornerOffsets[corner].x - originX) * destinationWidth;
+            // 原点基準の隅の縦座標
             const float cornerY =
                 (CornerOffsets[corner].y - originY) * destinationHeight;
+            // 設定する矩形の頂点
             auto& vertex = sprite.vertices[corner];
             if (rotated)
             {
@@ -1999,6 +2402,7 @@ namespace LamaPon::Detail
             }
             vertex.position.z = request.layerDepth;
             vertex.color = request.tint;
+            // 反転を適用したUV側の隅
             const auto& textureCorner = CornerOffsets[corner ^ mirrorBits];
             vertex.textureCoordinate = {
                 textureCorner.x * sourceWidth + sourceX,
@@ -2018,11 +2422,11 @@ namespace LamaPon::Detail
         {
             return false;
         }
+        // 送信成功後に置換するクリップ列
         auto nextScissors = m_scissorStack;
         nextScissors.push_back(
             MakeScissorRectangle(rectangle, nextScissors));
-        // D3D11と同じく、それまでのSpriteを現在のclipで確定してから
-        // 次のclipへ切り替えます。
+        // 予約矩形を現在のクリップで送信できた場合だけ、新しいクリップへ切り替えます。
         FlushOrFail();
         m_scissorStack.swap(nextScissors);
         return true;
@@ -2110,7 +2514,7 @@ namespace LamaPon::Detail
         {
             return;
         }
-        // EnvironmentRenderer::ApplyBloomと同じ範囲へ丸めます。
+        // 描画先1画素のUV幅
         const auto texel = TexelSize(target);
         ApplyPostProcessPass(
             target,
@@ -2137,9 +2541,13 @@ namespace LamaPon::Detail
         {
             return;
         }
+        // 描画先1画素のUV幅
         const auto texel = TexelSize(target);
+        // 制限済みの光条の最長UV距離
         const float longest = std::clamp(settings.streakLength, 0.0f, 1.0f);
+        // 光条第1段の採取間隔
         const float baseStride = longest / 42.0f;
+        // 光条と合成で共通の12定数
         const std::array<float, 12> shared{
             texel[0],
             texel[1],
@@ -2156,12 +2564,15 @@ namespace LamaPon::Detail
         };
         try
         {
+            // 光条を4倍ずつ広げる段番号
             for (std::uint32_t pass{}; pass < 3u; ++pass)
             {
+                // 処理前の主入力画像
                 const auto source =
                     m_backend->BeginOffscreenLensFlareStreakPass(
                         target,
                         pass);
+                // 効果別の16個のb1定数
                 std::array<float, 16> constants{};
                 std::copy(shared.begin(), shared.end(), constants.begin());
                 constants[12] = baseStride
@@ -2183,11 +2594,14 @@ namespace LamaPon::Detail
             m_backend->AbortOffscreenLensFlareStreaks(target);
             throw;
         }
+        // 3段の伸長で作成した光条画像
         const auto streak =
             m_backend->EndOffscreenLensFlareStreaks(target);
+        // 処理前の主入力画像
         const auto source = m_backend->BeginOffscreenPostProcess(target);
         try
         {
+            // 効果別の16個のb1定数
             std::array<float, 16> constants{};
             std::copy(shared.begin(), shared.end(), constants.begin());
             DrawFullscreen(
@@ -2209,6 +2623,7 @@ namespace LamaPon::Detail
         RenderTarget& target,
         const GraphicsViewHandle& fallbackTexture)
     {
+        // 描画先1画素のUV幅
         const auto texel = TexelSize(target);
         ApplyPostProcessPass(
             target,
@@ -2227,9 +2642,12 @@ namespace LamaPon::Detail
         {
             return;
         }
+        // 描画先の履歴とGPU資源状態
         const auto* const state =
             RenderTargetBackendAccess::Get(target);
+        // TAA用の前フレーム画像
         const auto history = target.TemporalHistoryViewHandle();
+        // 深度効果の入力デバイス深度
         const auto depth = target.DepthViewHandle();
         if (state == nullptr
             || !state->m_temporalHistoryValid
@@ -2239,6 +2657,7 @@ namespace LamaPon::Detail
             return;
         }
 
+        // 現在の逆射影と履歴射影の32値
         std::array<float, 32> matrices{};
         static_assert(
             sizeof(inputs.inverseViewProjection) == sizeof(float) * 16u);
@@ -2253,7 +2672,9 @@ namespace LamaPon::Detail
             matrices.data() + 16u,
             &state->m_temporalHistoryViewProjection,
             sizeof(state->m_temporalHistoryViewProjection));
+        // 描画先1画素のUV幅
         const auto texel = TexelSize(target);
+        // 処理前の主入力画像
         const auto source = m_backend->BeginOffscreenPostProcess(target);
         try
         {
@@ -2288,6 +2709,7 @@ namespace LamaPon::Detail
         const VolumetricLightSettings& settings,
         const VolumetricLightInputs& inputs)
     {
+        // 深度効果の入力デバイス深度
         const auto depth = target.DepthViewHandle();
         if (!settings.enabled
             || settings.intensity <= 0.0f
@@ -2330,6 +2752,7 @@ namespace LamaPon::Detail
             1.0f / std::max(inputs.shadowResolution, 1.0f),
             0.0f };
 
+        // 処理前の主入力画像
         const auto source = m_backend->BeginOffscreenPostProcess(target);
         try
         {
@@ -2360,12 +2783,15 @@ namespace LamaPon::Detail
         {
             return;
         }
+        // 深度効果の入力デバイス深度
         const auto depth = target.DepthViewHandle();
         if (!m_backend->TryResolveShaderResource(depth))
         {
             return;
         }
+        // 描画先1画素のUV幅
         const auto texel = TexelSize(target);
+        // 処理前の主入力画像
         const auto source = m_backend->BeginOffscreenPostProcess(target);
         try
         {
@@ -2415,11 +2841,13 @@ namespace LamaPon::Detail
         {
             return;
         }
+        // 深度効果の入力デバイス深度
         const auto depth = target.DepthViewHandle();
         if (!m_backend->TryResolveShaderResource(depth))
         {
             return;
         }
+        // 現在の逆射影と履歴射影の32値
         std::array<float, 32> matrices{};
         static_assert(
             sizeof(inverseViewProjection) == sizeof(float) * 16u);
@@ -2433,7 +2861,9 @@ namespace LamaPon::Detail
             matrices.data() + 16u,
             &previousViewProjection,
             sizeof(previousViewProjection));
+        // 描画先1画素のUV幅
         const auto texel = TexelSize(target);
+        // 処理前の主入力画像
         const auto source = m_backend->BeginOffscreenPostProcess(target);
         try
         {
@@ -2476,12 +2906,15 @@ namespace LamaPon::Detail
         {
             return;
         }
+        // 深度効果の入力デバイス深度
         const auto depth = target.DepthViewHandle();
         if (!m_backend->TryResolveShaderResource(depth))
         {
             return;
         }
+        // 描画先1画素のUV幅
         const auto texel = TexelSize(target);
+        // 処理前の主入力画像
         const auto source = m_backend->BeginOffscreenPostProcess(target);
         try
         {
@@ -2527,6 +2960,7 @@ namespace LamaPon::Detail
         {
             return false;
         }
+        // 深度効果の入力デバイス深度
         const auto depth = target.DepthViewHandle();
         if (!m_backend->TryResolveShaderResource(depth))
         {
@@ -2534,11 +2968,12 @@ namespace LamaPon::Detail
         }
         try
         {
+            // 処理前の主入力画像
             const auto source =
                 m_backend->BeginOffscreenAmbientOcclusionPass(target, false);
+            // 半解像度AOのビューポート
             const auto& viewport = m_backend->ActiveViewport();
-            // D3D11のRenderAmbientOcclusionと同じく1 texelは遮蔽textureの
-            // 寸法で、ブラーも同じ定数を読みます。
+            // 効果別の16個のb1定数
             const std::array<float, 16> constants{
                 1.0f / viewport.Width,
                 1.0f / viewport.Height,
@@ -2563,6 +2998,7 @@ namespace LamaPon::Detail
                 FullscreenProgram::AmbientOcclusion,
                 constants,
                 { GraphicsViewHandle{}, depth });
+            // ブラー前の遮蔽率画像
             const auto occlusion =
                 m_backend->BeginOffscreenAmbientOcclusionPass(target, true);
             DrawFullscreen(
@@ -2587,6 +3023,7 @@ namespace LamaPon::Detail
         const float projectionZ,
         const float projectionW)
     {
+        // Hi-Z距離画像の全段数
         const auto mipCount = target.ReflectionDepthPyramidMipCount();
         if (mipCount == 0u
             || !m_backend->TryResolveShaderResource(target.DepthViewHandle())
@@ -2595,21 +3032,26 @@ namespace LamaPon::Detail
         {
             return false;
         }
+        // 開始前が深度専用の描画状態
         const bool depthOnly =
             m_backend->IsOffscreenTargetBoundDepthOnly(target);
+        // Hi-Z最下段の幅
         const std::uint32_t width = std::max(target.Width(), 1u);
+        // Hi-Z最下段の高さ
         const std::uint32_t height = std::max(target.Height(), 1u);
         try
         {
+            // Hi-Zを作成するミップ番号
             for (std::uint32_t mip{}; mip < mipCount; ++mip)
             {
+                // 処理前の主入力画像
                 const auto source =
                     m_backend->BeginOffscreenReflectionDepthPass(target, mip);
-                // mip 0は射影の_33/_43、以降は1段細かい親ミップの
-                // 大きさです。
+                // 最下段は射影係数・以降は親幅
                 const float parameterX = mip == 0u
                     ? projectionZ
                     : static_cast<float>(std::max(width >> (mip - 1u), 1u));
+                // 最下段は距離係数・以降は親高
                 const float parameterY = mip == 0u
                     ? projectionW
                     : static_cast<float>(
@@ -2642,25 +3084,27 @@ namespace LamaPon::Detail
         const SkySunDescription* const sun,
         const GraphicsViewHandle& fallbackTexture)
     {
-        // 深度プリパス中のように色の描画先が無いときは、D3D11で
-        // RTV無しに描いた場合と同じく何も残しません。
+        // 深度プリパス中のように色の描画先が無いときは、D3D11でRTV無しに描いた場合と同じく何も残しません。
         if (!settings.enabled
             || m_backend->ActiveColorFormat() == DXGI_FORMAT_UNKNOWN)
         {
             return;
         }
         using namespace DirectX;
-        // EnvironmentRenderer::DrawSkyと同じ値を、b1の4色とb2の逆
-        // view-projection・カメラ位置・太陽の向きへ詰めます。
+        // 逆行列計算で受け取る行列式
         XMVECTOR determinant{};
+        // 空の視線を復元する逆射影
         XMFLOAT4X4 inverseViewProjection{};
         XMStoreFloat4x4(
             &inverseViewProjection,
             XMMatrixInverse(&determinant, view * projection));
+        // 空のカメラ位置を得る逆ビュー
         const XMMATRIX inverseView = XMMatrixInverse(&determinant, view);
+        // 空を描く視点のワールド位置
         XMFLOAT4 cameraPosition{};
         XMStoreFloat4(&cameraPosition, inverseView.r[3]);
 
+        // 天頂・水平線・地面・太陽の色
         std::array<float, 16> colors{
             settings.topColor.x,
             settings.topColor.y,
@@ -2679,6 +3123,7 @@ namespace LamaPon::Detail
             0.0f,
             0.0f
         };
+        // 空の逆射影・視点・太陽の32値
         std::array<float, 32> viewConstants{};
         std::memcpy(
             viewConstants.data(),
@@ -2690,10 +3135,12 @@ namespace LamaPon::Detail
             sizeof(cameraPosition));
         if (sun != nullptr)
         {
+            // 太陽方向ベクトルの長さ
             const auto length = std::sqrt(
                 sun->directionToSun.x * sun->directionToSun.x
                 + sun->directionToSun.y * sun->directionToSun.y
                 + sun->directionToSun.z * sun->directionToSun.z);
+            // 太陽方向を正規化する倍率
             const float scale =
                 length > 0.0001f ? 1.0f / length : 0.0f;
             viewConstants[20] = sun->directionToSun.x * scale;
@@ -2706,9 +3153,10 @@ namespace LamaPon::Detail
             colors[14] = sun->color.z;
             colors[15] = 1.0f;
         }
-        // TextureCubeでないcubemapはD3D11と同じくグラデーションへ戻します。
+        // 空キューブ画像のGPU参照
         const auto cubemapBinding =
             m_backend->TryResolveShaderResource(cubemap);
+        // 有効キューブ画像を使う状態
         const bool useCubemap = cubemapBinding.has_value()
             && cubemapBinding->dimension == D3D12_SRV_DIMENSION_TEXTURECUBE;
         viewConstants[24] = useCubemap ? 1.0f : 0.0f;
@@ -2729,17 +3177,20 @@ namespace LamaPon::Detail
         RenderTarget& target,
         const GraphicsViewHandle& fallbackTexture)
     {
+        // 対数輝度を縮小する段数
         const auto levelCount =
             m_backend->OffscreenLuminanceLevelCount(target);
         try
         {
+            // 対数輝度の縮小段番号
             for (std::uint32_t level{}; level < levelCount; ++level)
             {
+                // 処理前の主入力画像
                 const auto source =
                     m_backend->BeginOffscreenLuminancePass(target, level);
+                // 半解像度AOのビューポート
                 const auto& viewport = m_backend->ActiveViewport();
-                // 1段目はPSLuminance、以降はGenerateMipsと同じく前段の
-                // 2x2をbilinear 1回で平均します。
+                // 1段目はPSLuminance、以降はGenerateMipsと同じく前段の2x2をbilinear 1回で平均します。
                 DrawFullscreen(
                     source,
                     fallbackTexture,
@@ -2786,24 +3237,30 @@ namespace LamaPon::Detail
             return false;
         }
 
+        // 正規化した画面効果HLSLパス
         const auto absolutePath =
             assets.ResolvePath(shaderPath).lexically_normal();
+        // パス別の画面効果キャッシュ
         auto& entry = m_screenShaders[absolutePath];
 
-        // D3D11のQueueScreenEffectと同じく、保存の確認は250ミリ秒ごとに
-        // 行い、時刻か有無が変わったときだけ作り直します。
+        // 変更を確認する現在時刻
         const auto now = std::chrono::steady_clock::now();
         if (!entry.observed
             || entry.forceReload
             || now >= entry.nextCheck)
         {
             entry.nextCheck = now + std::chrono::milliseconds(250);
+            // 資産がアーカイブ内にある状態
             const bool archived = assets.IsArchived();
+            // ソース更新時刻取得のエラー
             std::error_code fileError;
+            // 画面効果ソースが存在する状態
             const bool sourceExists = assets.FileExists(absolutePath);
+            // 今回観測したソース更新時刻
             const auto writeTime = (sourceExists && !archived)
                 ? std::filesystem::last_write_time(absolutePath, fileError)
                 : std::filesystem::file_time_type{};
+            // 画面効果を再コンパイルする条件
             const bool changed = !entry.observed
                 || entry.forceReload
                 || entry.sourceExists != sourceExists
@@ -2826,11 +3283,13 @@ namespace LamaPon::Detail
                 {
                     try
                     {
+                        // 候補のコンパイル済みVS
                         auto vertexShader = CompileShaderCached(
                             assets,
                             absolutePath,
                             "VSMain",
                             "vs_5_0");
+                        // 候補のコンパイル済みPS
                         auto pixelShader = CompileShaderCached(
                             assets,
                             absolutePath,
@@ -2838,6 +3297,7 @@ namespace LamaPon::Detail
                             "ps_5_0");
                         entry.vertexShader = std::move(vertexShader);
                         entry.pixelShader = std::move(pixelShader);
+                        // 旧シェーダーに依存するPSO
                         for (auto& pipeline : entry.pipelineStates)
                         {
                             pipeline.Reset();
@@ -2849,6 +3309,7 @@ namespace LamaPon::Detail
                         }
                         entry.error.clear();
                     }
+                    // exception: 候補VS・PSの読込み失敗。
                     catch (const std::exception& exception)
                     {
                         // 再compileに失敗しても、直前の正常版は維持します。
@@ -2882,8 +3343,10 @@ namespace LamaPon::Detail
         const DirectX::XMFLOAT4& depthParameters,
         const DirectX::XMFLOAT4& depthUnprojection)
     {
+        // 正規化した画面効果HLSLパス
         const auto absolutePath =
             assets.ResolvePath(shaderPath).lexically_normal();
+        // 準備済み画面効果の検索結果
         const auto found = m_screenShaders.find(absolutePath);
         if (found == m_screenShaders.end()
             || found->second.vertexShader == nullptr
@@ -2893,9 +3356,11 @@ namespace LamaPon::Detail
                 "The DirectX 12 screen effect was not prepared.");
         }
 
+        // 処理前の主入力画像
         const auto source = m_backend->BeginOffscreenPostProcess(target);
         try
         {
+            // 主画像・補助2画像・深度の参照
             std::array<GraphicsViewHandle, 4> views{
                 source,
                 auxiliaryTextures[0]
@@ -2908,9 +3373,12 @@ namespace LamaPon::Detail
                     ? target.DepthViewHandle()
                     : fallbackTexture
             };
+            // t0～t3へ渡すGPU画像枠
             std::array<D3D12_GPU_DESCRIPTOR_HANDLE, 4> descriptors{};
+            // t0～t3の画像参照番号
             for (std::size_t index{}; index < views.size(); ++index)
             {
+                // 入力画像のGPU参照の解決結果
                 const auto binding =
                     m_backend->TryResolveShaderResource(views[index]);
                 if (!binding)
@@ -2921,6 +3389,7 @@ namespace LamaPon::Detail
                 }
                 descriptors[index] = binding->descriptor;
             }
+            // 画像SRVを持つGPUヒープ
             auto* const descriptorHeap =
                 m_backend->ShaderResourceDescriptorHeap();
             if (descriptorHeap == nullptr)
@@ -2930,6 +3399,7 @@ namespace LamaPon::Detail
                     "descriptor heap.");
             }
 
+            // b0の176バイト画面効果定数
             ScreenEffectConstants constants;
             constants.parameters = parameters;
             constants.screenSize = {
@@ -2940,12 +3410,15 @@ namespace LamaPon::Detail
             };
             constants.depthParameters = depthParameters;
             constants.depthUnprojection = depthUnprojection;
+            // フレームが保持するb0転送領域
             const auto upload = m_backend->AllocateFrameUpload(
                 sizeof(constants),
                 D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
             std::memcpy(upload.data, &constants, sizeof(constants));
 
+            // 画面効果を記録するコマンド列
             auto* const commandList = m_backend->BeginFrameCommands();
+            // 描画に設定するSRVヒープ
             ID3D12DescriptorHeap* heaps[]{ descriptorHeap };
             commandList->SetGraphicsRootSignature(
                 m_screenEffectRootSignature.Get());
@@ -2956,13 +3429,16 @@ namespace LamaPon::Detail
             commandList->SetGraphicsRootConstantBufferView(
                 0,
                 upload.gpuAddress);
+            // t0～t3の画像参照番号
             for (std::size_t index{}; index < descriptors.size(); ++index)
             {
                 commandList->SetGraphicsRootDescriptorTable(
                     static_cast<UINT>(index + 1u),
                     descriptors[index]);
             }
+            // 現在の描画先のビューポート
             const auto& viewport = m_backend->ActiveViewport();
+            // 現在の描画先のクリップ矩形
             const auto& scissor = m_backend->ActiveScissorRectangle();
             commandList->RSSetViewports(1, &viewport);
             commandList->RSSetScissorRects(1, &scissor);
@@ -2990,7 +3466,7 @@ namespace LamaPon::Detail
         }
         try
         {
-            // D3D11と同じく、直前の正常版は作り直せるまで残します。
+            // 準備済み画面効果の検索結果
             const auto found = m_screenShaders.find(
                 assets.ResolvePath(shaderPath).lexically_normal());
             if (found != m_screenShaders.end())
@@ -3009,6 +3485,7 @@ namespace LamaPon::Detail
         const FullscreenProgram program,
         const std::array<float, 16>& constants)
     {
+        // 処理前の主入力画像
         const auto source = m_backend->BeginOffscreenPostProcess(target);
         try
         {
@@ -3034,7 +3511,9 @@ namespace LamaPon::Detail
         const std::array<GraphicsViewHandle, 3>& auxiliaryViews,
         const std::array<float, 32>& matrixConstants)
     {
+        // 主入力画像のGPU参照
         const auto binding = m_backend->TryResolveShaderResource(texture);
+        // 全画面を覆う描画先の寸法
         const auto& viewport = m_backend->ActiveViewport();
         if (!binding
             || binding->width == 0u
@@ -3046,9 +3525,12 @@ namespace LamaPon::Detail
                 "A DirectX 12 fullscreen pass requires a current texture "
                 "and output viewport.");
         }
+        // 不透明合成の全画面パス指定
         SpritePassDescription description;
         description.blend = SpriteBlendMode::Opaque;
+        // 全画面パスの開始結果
         SpriteShaderStatus status;
+        // 開始した全画面パスの識別番号
         const auto token = Begin(
             description,
             fallbackTexture,
@@ -3060,8 +3542,10 @@ namespace LamaPon::Detail
         m_auxiliaryViews = auxiliaryViews;
         if (program == FullscreenProgram::Temporal)
         {
+            // TAAの履歴または深度の枠番号
             for (std::size_t index{}; index < 2u; ++index)
             {
+                // TAA補助画像のGPU参照
                 const auto auxiliary = m_backend->TryResolveShaderResource(
                     m_auxiliaryViews[index]);
                 if (!auxiliary)
@@ -3076,6 +3560,7 @@ namespace LamaPon::Detail
         }
         else if (program == FullscreenProgram::LensFlareComposite)
         {
+            // レンズフレア光条のGPU参照
             const auto streak = m_backend->TryResolveShaderResource(
                 m_auxiliaryViews[0]);
             if (!streak)
@@ -3089,8 +3574,10 @@ namespace LamaPon::Detail
         }
         else if (program == FullscreenProgram::VolumetricLight)
         {
+            // 深度効果画像のGPU参照
             const auto depth = m_backend->TryResolveShaderResource(
                 m_auxiliaryViews[1]);
+            // 光の筋用の影配列のGPU参照
             const auto shadow = m_backend->TryResolveShaderResource(
                 m_auxiliaryViews[2]);
             if (!depth || !shadow)
@@ -3105,8 +3592,7 @@ namespace LamaPon::Detail
         }
         else if (program == FullscreenProgram::Sky)
         {
-            // cubemapを使わないときも、shaderのt1へnull TextureCubeを
-            // 置きます。
+            // 空キューブ画像のGPU参照
             const auto cubemap = m_backend->TryResolveShaderResource(
                 m_auxiliaryViews[0]);
             try
@@ -3128,6 +3614,7 @@ namespace LamaPon::Detail
             || program == FullscreenProgram::AmbientOcclusion
             || program == FullscreenProgram::AmbientOcclusionBlur)
         {
+            // 深度効果画像のGPU参照
             const auto depth = m_backend->TryResolveShaderResource(
                 m_auxiliaryViews[1]);
             if (!depth)
@@ -3141,6 +3628,7 @@ namespace LamaPon::Detail
         }
         try
         {
+            // 描画先全体を覆う矩形要求
             SpriteDrawRequest request;
             request.texture = texture;
             request.scale = {
@@ -3191,6 +3679,7 @@ namespace LamaPon::Detail
         m_sprites.clear();
         m_scissorStack.clear();
         m_fallbackTexture.Reset();
+        // 解放する補助入力の保持参照
         for (auto& view : m_auxiliaryViews)
         {
             view.Reset();
@@ -3212,7 +3701,9 @@ namespace LamaPon::Detail
             return;
         }
 
+        // 予約矩形を記録するコマンド列
         auto* const commandList = m_backend->BeginFrameCommands();
+        // 画像SRVを持つGPUヒープ
         auto* const descriptorHeap =
             m_backend->ShaderResourceDescriptorHeap();
         if (descriptorHeap == nullptr)
@@ -3221,6 +3712,7 @@ namespace LamaPon::Detail
                 "The DirectX 12 sprite renderer requires a shader resource "
                 "descriptor heap.");
         }
+        // 予約した全矩形の頂点バイト数
         const std::uint64_t vertexBytes =
             static_cast<std::uint64_t>(m_sprites.size())
             * sizeof(QueuedSprite::vertices);
@@ -3229,6 +3721,7 @@ namespace LamaPon::Detail
             throw std::length_error(
                 "The DirectX 12 sprite batch is too large.");
         }
+        // 合成・クリップ・効果に対応するPSO
         auto* const pipelineState = PipelineState(
             m_blend,
             !m_scissorStack.empty(),
@@ -3236,10 +3729,13 @@ namespace LamaPon::Detail
             m_backend->ActiveDepthFormat(),
             m_program);
 
+        // フレームが保持する全頂点の領域
         const auto upload = m_backend->AllocateFrameUpload(
             vertexBytes,
             alignof(Vertex));
+        // 矩形頂点の転送先ポインター
         auto* vertexData = upload.data;
+        // 順序を保って転送する予約矩形
         for (const auto& sprite : m_sprites)
         {
             std::memcpy(
@@ -3249,19 +3745,24 @@ namespace LamaPon::Detail
             vertexData += sizeof(sprite.vertices);
         }
 
+        // 現在の描画先のビューポート
         const auto& viewport = m_backend->ActiveViewport();
+        // 画素座標をNDCへ移すXY倍率
         const std::array<float, 2> viewportScale{
             viewport.Width > 0.0f ? 2.0f / viewport.Width : 0.0f,
             viewport.Height > 0.0f ? 2.0f / viewport.Height : 0.0f
         };
+        // 現在のクリップまたは全体矩形
         const D3D12_RECT scissor = m_scissorStack.empty()
             ? m_backend->ActiveScissorRectangle()
             : m_scissorStack.back();
+        // 予約矩形の頂点バッファビュー
         const D3D12_VERTEX_BUFFER_VIEW vertexBufferView{
             upload.gpuAddress,
             static_cast<UINT>(vertexBytes),
             static_cast<UINT>(sizeof(Vertex))
         };
+        // 2048枚共通の16ビット索引ビュー
         const D3D12_INDEX_BUFFER_VIEW indexBufferView{
             m_indexBuffer->GetGPUVirtualAddress(),
             static_cast<UINT>(
@@ -3269,6 +3770,7 @@ namespace LamaPon::Detail
                 * sizeof(std::uint16_t)),
             DXGI_FORMAT_R16_UINT
         };
+        // 描画に設定するSRVヒープ
         ID3D12DescriptorHeap* descriptorHeaps[]{ descriptorHeap };
 
         commandList->SetGraphicsRootSignature(m_rootSignature.Get());
@@ -3283,6 +3785,7 @@ namespace LamaPon::Detail
             0);
         if (m_activeCustomShader != nullptr)
         {
+            // カスタムPSのb0転送領域
             const auto parameters = m_backend->AllocateFrameUpload(
                 sizeof(m_customParameters),
                 D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
@@ -3290,6 +3793,7 @@ namespace LamaPon::Detail
                 parameters.data,
                 m_customParameters.data(),
                 sizeof(m_customParameters));
+            // カスタムPSのb1照明転送領域
             const auto lighting = m_backend->AllocateFrameUpload(
                 sizeof(m_spriteLighting),
                 D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
@@ -3306,6 +3810,7 @@ namespace LamaPon::Detail
         }
         else if (m_program != FullscreenProgram::None)
         {
+            // 効果別のb1またはb3転送領域
             const auto constants = m_backend->AllocateFrameUpload(
                 sizeof(m_passConstants),
                 D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
@@ -3339,6 +3844,7 @@ namespace LamaPon::Detail
         }
         else if (m_program == FullscreenProgram::VolumetricLight)
         {
+            // 効果別のb1またはb3転送領域
             const auto constants = m_backend->AllocateFrameUpload(
                 sizeof(m_volumetricConstants),
                 D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
@@ -3391,10 +3897,11 @@ namespace LamaPon::Detail
         commandList->IASetIndexBuffer(&indexBufferView);
         commandList->RSSetScissorRects(1, &scissor);
 
-        // Deferred順を保ったまま、同じtextureが連続する範囲だけをまとめます。
+        // 同じ画像が続く範囲の先頭番号
         std::size_t first{};
         while (first < m_sprites.size())
         {
+            // 最大2048枚で区切る範囲の末尾
             std::size_t end = first + 1u;
             while (end < m_sprites.size()
                 && end - first < MaximumSpritesPerDraw
@@ -3406,6 +3913,7 @@ namespace LamaPon::Detail
             commandList->SetGraphicsRootDescriptorTable(
                 1,
                 m_sprites[first].texture);
+            // 16ビット索引をBaseVertexLocationでずらし、各送信範囲に再利用します。
             commandList->DrawIndexedInstanced(
                 static_cast<UINT>((end - first) * IndicesPerSprite),
                 1,
@@ -3414,7 +3922,7 @@ namespace LamaPon::Detail
                 0);
             first = end;
         }
-        // 後続の描画へSprite用のclipを残しません。
+        // 後続描画へ戻す全体クリップ
         const auto& fullScissor = m_backend->ActiveScissorRectangle();
         commandList->RSSetScissorRects(1, &fullScissor);
         m_sprites.clear();
@@ -3424,6 +3932,7 @@ namespace LamaPon::Detail
         ScreenShaderEntry& shader,
         const DXGI_FORMAT colorFormat)
     {
+        // 出力色形式のPSO配列番号
         const std::size_t formatIndex = colorFormat
                 == D3D12Backend::PrimaryColorFormat
             ? 0u
@@ -3436,12 +3945,14 @@ namespace LamaPon::Detail
                         : throw std::invalid_argument(
                             "The active DirectX 12 screen effect target "
                             "format is unsupported.");
+        // 描画条件に対応するPSOキャッシュ
         auto& pipeline = shader.pipelineStates[formatIndex];
         if (pipeline != nullptr)
         {
             return pipeline.Get();
         }
 
+        // GPUへ渡すPSO作成情報
         D3D12_GRAPHICS_PIPELINE_STATE_DESC description{};
         description.pRootSignature = m_screenEffectRootSignature.Get();
         description.VS = {
@@ -3478,6 +3989,7 @@ namespace LamaPon::Detail
         const DXGI_FORMAT depthFormat,
         const FullscreenProgram program)
     {
+        // 合成方式の配列番号
         const auto blendIndex = static_cast<std::size_t>(blend);
         if (blend > SpriteBlendMode::Opaque)
         {
@@ -3489,8 +4001,7 @@ namespace LamaPon::Detail
             throw std::invalid_argument(
                 "The sprite pixel program is invalid.");
         }
-        // SSAOの遮蔽とブラーは半解像度のR8へ、SSRのHi-Z深度ピラミッドは
-        // R32Fへ書きます。
+        // 出力色形式のPSO配列番号
         const std::size_t formatIndex = colorFormat
                 == D3D12Backend::PrimaryColorFormat
             ? 0u
@@ -3503,8 +4014,7 @@ namespace LamaPon::Detail
                         : throw std::invalid_argument(
                             "The active DirectX 12 sprite target format "
                             "is unsupported.");
-        // 自動露出の縮小段とSSAOは深度bufferを持たないため、DSV無しの
-        // PSOを別に作ります。
+        // 深度あり・なしの配列番号
         const std::size_t depthIndex = depthFormat
                 == D3D12Backend::PrimaryDepthFormat
             ? 0u
@@ -3513,11 +4023,13 @@ namespace LamaPon::Detail
                 : throw std::invalid_argument(
                     "The active DirectX 12 sprite depth format is "
                     "unsupported.");
+        // 深度・色・合成・クリップの番号
         const auto variantIndex =
             (depthIndex * ColorFormatVariants + formatIndex)
                 * BlendVariants
             + blendIndex * 2u
             + (scissored ? 1u : 0u);
+        // 描画条件に対応するPSOキャッシュ
         auto& pipeline = m_activeCustomShader != nullptr
                 && program == FullscreenProgram::None
             ? m_activeCustomShader->pipelineStates[variantIndex]
@@ -3532,6 +4044,7 @@ namespace LamaPon::Detail
             return pipeline.Get();
         }
 
+        // 位置・色・UVのスプライト入力配置
         static const std::array<D3D12_INPUT_ELEMENT_DESC, 3>
             InputElements{ {
                 {
@@ -3563,6 +4076,7 @@ namespace LamaPon::Detail
                 }
             } };
 
+        // 効果またはカスタムPSの借用参照
         ID3DBlob* pixelShader = m_activeCustomShader != nullptr
                 && program == FullscreenProgram::None
             ? m_activeCustomShader->pixelShader.Get()
@@ -3620,6 +4134,7 @@ namespace LamaPon::Detail
         case FullscreenProgram::None:
             break;
         }
+        // GPUへ渡すPSO作成情報
         D3D12_GRAPHICS_PIPELINE_STATE_DESC description{};
         description.pRootSignature = m_rootSignature.Get();
         description.VS = {
@@ -3641,8 +4156,7 @@ namespace LamaPon::Detail
         description.PrimitiveTopologyType =
             D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
         description.NumRenderTargets = 1;
-        // Primary outputには深度bufferもbindされるため、深度testを使わない
-        // Spriteでもformatだけは一致させます。
+        // Primary outputには深度bufferもbindされるため、深度testを使わないSpriteでもformatだけは一致させます。
         description.RTVFormats[0] = colorFormat;
         description.DSVFormat = depthFormat;
         description.SampleDesc.Count = 1;

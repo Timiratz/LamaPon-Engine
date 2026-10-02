@@ -11,37 +11,43 @@ namespace LamaPon
         struct ClusteredLightsBackendState;
     }
 
-    // クラスタライトカリング（Forward+）のAPI-neutralな公開facadeです。
-    // 視錐台を16×9×24のクラスタに分割する契約だけを公開し、Compute
-    // Shaderやbufferなどのnative資源はBackend専用stateが所有します。
-    // 従来の「シーン全体で先着16灯」の定数バッファは、自作Shaderと
-    // DirectXTKフォールバックの互換のため引き続き別経路に残ります。
+    // 視錐台を16×9×24へ分割するクラスタ照明の公開窓口。
     class ClusteredLights final
     {
     public:
-        // グリッドの分割数。シェーダー側と一致させてください。
+        // HLSL側のグリッド分割数と一致させる。
+        // グリッドの横分割数
         static constexpr std::uint32_t GridWidth = 16;
+        // グリッドの縦分割数
         static constexpr std::uint32_t GridHeight = 9;
+        // グリッドの奥行分割数
         static constexpr std::uint32_t GridDepth = 24;
+        // クラスタの総数
         static constexpr std::uint32_t ClusterCount =
             GridWidth * GridHeight * GridDepth;
-        // 1クラスタに入るライトの上限。超えた分は落とします。
+        // クラスタの上限を超えたライトは除く。
+        // クラスタごとの保持ライト上限
         static constexpr std::uint32_t
             MaximumLightsPerCluster = 32;
 
+        // バックエンド状態を持たないクラスタ照明を作成する。
         ClusteredLights() noexcept;
+        // 所有するバックエンド状態を解放する。
         ~ClusteredLights() noexcept;
 
+        // 所有状態のコピーを禁止する。
         ClusteredLights(const ClusteredLights&) = delete;
+        // 所有状態のコピー代入を禁止する。
         ClusteredLights& operator=(const ClusteredLights&) = delete;
+        // 公開窓口の移動を禁止する。
         ClusteredLights(ClusteredLights&&) = delete;
+        // 公開窓口の移動代入を禁止する。
         ClusteredLights& operator=(ClusteredLights&&) = delete;
 
     private:
         friend struct Detail::ClusteredLightsBackendAccess;
 
-        // Backendはnative資源と3本のneutral viewを完成させてから、
-        // stateを一度に公開します。作成失敗時に部分状態を残しません。
+        // 全ビューを作成してから公開する所有状態
         std::unique_ptr<Detail::ClusteredLightsBackendState>
             m_backendState;
     };

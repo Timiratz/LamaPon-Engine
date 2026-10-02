@@ -44,38 +44,45 @@ namespace LamaPon
 
     struct ShaderPropertyField final
     {
-        // CustomParameters[parameterIndex] のどこへ入れるか。
-        // Textureのときは追加テクスチャの番号（t7が0番）です。
+        // 定数配列番号・textureならt7起点
         std::size_t parameterIndex{};
-        // 使用する成分（0=x, 1=y, 2=z, 3=w）。componentCount個ぶん有効。
+        // 有効成分の番号・xからwは0から3
         std::array<std::size_t, 4> components{};
+        // 有効な成分の数
         std::size_t componentCount{ 1 };
+        // Inspectorの入力形式
         ShaderPropertyKind kind{ ShaderPropertyKind::Float };
+        // Inspectorに表示する入力名
         std::string name;
+        // 範囲付き数値入力の下限
         float minimum{ 0.0f };
+        // 範囲付き数値入力の上限
         float maximum{ 1.0f };
+        // 有効な入力範囲が指定されたか
         bool hasRange{};
-        // 「既定値に戻す」で書き込む値（宣言があるときだけ）。
+        // 宣言された復元用の既定値
         std::optional<std::array<float, 4>> defaultValue;
     };
 
     struct ShaderProperties final
     {
-        // 宣言ブロックがあったか（無ければ従来のUIを使います）。
+        // 宣言が存在し名前付きUIを使うか
         bool declared{};
+        // 解釈できたプロパティの入力情報
         std::vector<ShaderPropertyField> fields;
-        // 宣言が壊れている場合の理由（Inspectorへ表示します）。
+        // Inspectorへ表示する宣言エラー
         std::string error;
     };
 
-    // ImGuiの値変更frameとドラッグを離した確定frameは一致しないことが
-    // あります。Inspector側で両方を保持し、Undo履歴を確定frameにだけ
-    // 追加するための結果です。
+    // 変更と操作終了を別々に集め、Inspectorは確定frameだけをUndoへ追加する。
     struct ShaderPropertyEditResult final
     {
+        // 値が変更されたframeがあるか
         bool changed{};
+        // Undoへ確定するframeがあるか
         bool committed{};
 
+        // 変更と確定の通知を同じ編集結果へ集める(valueChanged: このframeで値が変わったか, editCommitted: このframeで操作が確定したか)。
         void Observe(
             const bool valueChanged,
             const bool editCommitted) noexcept
@@ -85,17 +92,15 @@ namespace LamaPon
         }
     };
 
-    // HLSLのテキストから宣言ブロックを読み取ります。例外は投げません。
+    // HLSL内の最初のプロパティ配列を読み入力情報と解釈エラーを返す(shaderSource: 読み取るHLSL文書)。
     [[nodiscard]] ShaderProperties ParseShaderProperties(
         std::string_view shaderSource);
 
-    // Manifestのpropertiesを、既存のInspector用表現へ変換します。
-    // targetを省略したpropertyは、明示targetを避けながら定数成分または
-    // 追加Texture枠へ宣言順に自動配置します。
+    // 明示targetを先に予約し省略項目を宣言順に自動配置する(properties: Manifestのプロパティ宣言一覧)。
     [[nodiscard]] ShaderProperties ConvertShaderManifestProperties(
         const std::vector<ShaderPropertyDesc>& properties);
 
-    // ファイルから読み取ります。読めない場合は declared=false を返します。
+    // HLSLを読みプロパティを解釈し読込できなければ未宣言として返す(shaderPath: 読み取るHLSL文書のパス)。
     [[nodiscard]] ShaderProperties LoadShaderProperties(
         const std::filesystem::path& shaderPath);
 }

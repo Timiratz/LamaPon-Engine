@@ -6,6 +6,7 @@
 
 namespace
 {
+    // 失敗したHRESULTを例外として伝える(result: 操作結果, operation: 診断に表示する操作名)。
     void ThrowIfFailed(
         const HRESULT result,
         const char* operation)
@@ -51,6 +52,7 @@ namespace LamaPon::Detail
             ? 6u
             : std::clamp(cascadeCount, 1u, 4u);
 
+        // 影深度テクスチャの作成設定
         D3D11_TEXTURE2D_DESC textureDescription{};
         textureDescription.Width = m_resolution;
         textureDescription.Height = m_resolution;
@@ -75,12 +77,14 @@ namespace LamaPon::Detail
                 m_texture.ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateTexture2D(shadow map)");
 
+        // 配列面の深度書込ビュー設定
         D3D11_DEPTH_STENCIL_VIEW_DESC depthViewDescription{};
         depthViewDescription.Format = DXGI_FORMAT_D32_FLOAT;
         depthViewDescription.ViewDimension =
             D3D11_DSV_DIMENSION_TEXTURE2DARRAY;
         depthViewDescription.Texture2DArray.ArraySize = 1;
         m_depthStencilViews.resize(m_cascadeCount);
+        // 深度ビューを作成する配列面
         for (std::uint32_t index = 0;
             index < m_cascadeCount;
             ++index)
@@ -96,6 +100,7 @@ namespace LamaPon::Detail
                 "ID3D11Device::CreateDepthStencilView(shadow cascade)");
         }
 
+        // 影深度の読込ビュー設定
         D3D11_SHADER_RESOURCE_VIEW_DESC resourceViewDescription{};
         resourceViewDescription.Format = DXGI_FORMAT_R32_FLOAT;
         if (cube)
@@ -147,10 +152,12 @@ namespace LamaPon::Detail
             m_savedRenderTarget.ReleaseAndGetAddressOf(),
             m_savedDepthStencil.ReleaseAndGetAddressOf());
 
+        // 取得するビューポート数
         UINT viewportCount = 1;
         context->RSGetViewports(&viewportCount, &m_savedViewport);
         m_hasSavedViewport = viewportCount != 0;
 
+        // PSのt2～t5を解除するヌル配列
         ID3D11ShaderResourceView* nullShadow[]{
             nullptr, nullptr, nullptr, nullptr };
         context->PSSetShaderResources(2, 4, nullShadow);
@@ -175,6 +182,7 @@ namespace LamaPon::Detail
             return;
         }
 
+        // 復元する最初の描画ターゲット
         ID3D11RenderTargetView* renderTargets[]{
             m_savedRenderTarget.Get()
         };

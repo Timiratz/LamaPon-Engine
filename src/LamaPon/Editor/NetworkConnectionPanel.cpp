@@ -9,12 +9,19 @@ namespace LamaPon
 {
     struct NetworkConnectionPanel::Implementation final
     {
+        // LANの部屋検索の所有先
         NetworkRoomBrowser browser;
+        // 検索開始時の通信条件
         NetworkConfiguration searched;
+        // 参加先の接続情報の入力
         std::array<char, 513> joinAddress{};
+        // 参加するプレイヤー名の入力
         std::array<char, 33> playerName{ "Player" };
+        // ホストの待受アドレスの入力
         std::array<char, 65> listenAddress{ "127.0.0.1" };
+        // 接続情報へ含める公開先の入力
         std::array<char, 97> publicEndpoint{};
+        // 直接接続の参加キーの入力
         std::array<char, 65> accessKey{};
     };
     NetworkConnectionPanel::NetworkConnectionPanel() : m_impl(std::make_unique<Implementation>()) {}
@@ -23,9 +30,12 @@ namespace LamaPon
     void NetworkConnectionPanel::Draw(NetworkSession* session, NetworkSceneBridge* bridge,
         const bool playing, const NetworkConfiguration& configuration)
     {
+        // 検索と入力状態の借用
         auto& ui = *m_impl;
         ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.45f);
+        // 停止・失敗以外の接続状態か
         const bool active = session && session->State() != NetworkState::Stopped && session->State() != NetworkState::Error;
+        // 再生終了または検索条件の変更で古い部屋検索を止める。
         if (!playing || (ui.browser.IsSearching()
             && (ui.searched.gameId != configuration.gameId || ui.searched.gameVersion != configuration.gameVersion
                 || ui.searched.sceneId != configuration.sceneId || ui.searched.backend != configuration.backend
@@ -52,6 +62,7 @@ namespace LamaPon
             if (configuration.backend == NetworkBackend::Direct && ui.accessKey[0] != '\0')
                 static_cast<void>(session->JoinDirect(ui.joinAddress.data(), ui.accessKey.data(), ui.playerName.data()));
             else static_cast<void>(session->Join(ui.joinAddress.data(), ui.playerName.data()));
+            // 参加操作後は入力した秘密キーをバッファに残さない。
             std::fill(ui.accessKey.begin(), ui.accessKey.end(), '\0');
         }
         ImGui::EndDisabled();
@@ -67,7 +78,9 @@ namespace LamaPon
             {
                 ui.browser.Update(ImGui::GetIO().DeltaTime);
                 if (ImGui::SmallButton("検索を終了")) ui.browser.Stop();
+                // 検索した部屋のUI識別番号
                 int roomIndex{};
+                // 検索した部屋または接続情報
                 for (const auto& room : ui.browser.Rooms())
                 {
                     ImGui::PushID(roomIndex++);
@@ -89,6 +102,7 @@ namespace LamaPon
                 ImGui::InputText("相手に伝える接続先（任意）", ui.publicEndpoint.data(), ui.publicEndpoint.size());
                 ImGui::TextWrapped("LAN IPv4・公開IPv4・IPv6を指定して接続情報を作れます。空欄では自動設定の公開先、またはこのPC用の接続先を使います。秘密部分を含むため、参加者だけへ共有してください。");
             }
+            // 検索した部屋または接続情報
             const auto room = session->Configuration().backend == NetworkBackend::Direct
                 ? session->ConnectionCode(ui.publicEndpoint.data()) : session->RoomAddress();
             if (!room.empty())
@@ -96,8 +110,10 @@ namespace LamaPon
                 if (session->Configuration().backend != NetworkBackend::Direct) ImGui::TextWrapped("部屋: %s", room.c_str());
                 if (ImGui::SmallButton("接続情報をコピー")) ImGui::SetClipboardText(room.c_str());
             }
+            // 接続中のプレイヤー情報
             for (const auto& member : session->Members())
                 ImGui::BulletText("%u: %s", member.id, member.name.c_str());
+            // 往復時間等の通信統計
             const auto statistics = session->Statistics();
             ImGui::Text("往復: %.1fms / 同期オブジェクト: %zu", statistics.roundTripMilliseconds, session->Objects().size());
             if (!session->LastError().empty()) ImGui::TextWrapped("%s", session->LastError().c_str());

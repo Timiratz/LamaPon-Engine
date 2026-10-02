@@ -16,23 +16,28 @@
 
 namespace
 {
+    // Require(condition: 成立条件, message: 失敗理由): 条件不成立を検査失敗にする。
     void Require(const bool condition, const char* message)
     {
+        // 検査条件の不成立を検出する。
         if (!condition)
         {
             throw std::runtime_error(message);
         }
     }
 
+    // WriteFile(path: 出力先, contents: 書込内容): 親ディレクトリを作ってバイナリ保存する。
     void WriteFile(
         const std::filesystem::path& path,
         const std::string& contents)
     {
         std::filesystem::create_directories(
             path.parent_path());
+        // 作成するテストファイル
         std::ofstream output(
             path,
             std::ios::binary | std::ios::trunc);
+        // ファイル作成の失敗を検出する。
         if (!output)
         {
             throw std::runtime_error(
@@ -41,9 +46,11 @@ namespace
         output << contents;
     }
 
+    // ReadFile(path: 読込元): ファイル全体を文字列として読む。
     std::string ReadFile(
         const std::filesystem::path& path)
     {
+        // 読み込むテストファイル
         std::ifstream input(path, std::ios::binary);
         Require(
             static_cast<bool>(input),
@@ -53,17 +60,19 @@ namespace
             std::istreambuf_iterator<char>{});
     }
 
-    // Windows標準のtarでフォルダーをZipへ固めてバイト列を返します。
+    // ZipDirectory(directory: 圧縮元, zipPath: アーカイブ先): tarでフォルダーをZip化して読む。
     std::vector<std::uint8_t> ZipDirectory(
         const std::filesystem::path& directory,
         const std::filesystem::path& zipPath)
     {
+        // tarへ渡すアーカイブ作成コマンド
         const std::wstring command =
             L"tar -a -cf \"" + zipPath.wstring()
             + L"\" -C \"" + directory.wstring() + L"\" .";
         Require(
             _wsystem(command.c_str()) == 0,
             "tar must create the test archive.");
+        // 生成したZipアーカイブ
         std::ifstream input(zipPath, std::ios::binary);
         Require(
             static_cast<bool>(input),
@@ -73,13 +82,16 @@ namespace
             std::istreambuf_iterator<char>{});
     }
 
+    // Sha256Of(bytes: ハッシュ対象): バイト列のSHA-256を16進文字列にする。
     std::string Sha256Of(const std::vector<std::uint8_t>& bytes)
     {
         return LamaPon::Crypto::Sha256Hex(bytes.data(), bytes.size());
     }
 
+    // TestParsing(): パッケージインデックスの解析と互換性を検証する。
     void TestParsing()
     {
+        // 有効な項目だけを含む解析結果
         const auto packages = LamaPon::ParsePackageIndex(
             R"({
                 "format": "LamaPonPackageIndex",
@@ -173,13 +185,16 @@ namespace
                     == LamaPon::PackageActivation::Immediate,
             "package activation names must be backward compatible");
 
+        // 不明な形式の拒否結果
         bool rejected = false;
+        // 不明なインデックス形式を検査する。
         try
         {
             static_cast<void>(
                 LamaPon::ParsePackageIndex(
                     R"({"format":"Unknown","version":9})"));
         }
+        // 形式拒否を記録する。
         catch (const std::exception&)
         {
             rejected = true;
@@ -195,6 +210,7 @@ namespace
             "an empty index must parse to an empty list");
     }
 
+    // TestValidation(): パッケージ名、URL、SHA-256の検証規則を確認する。
     void TestValidation()
     {
         Require(
@@ -227,7 +243,9 @@ namespace
                     "http://raw.githubusercontent.com/Timiratz/LamaPon-Engine/a.zip"),
             "package URL allowlist");
 
+        // 分割されたHTTPSホスト名
         std::wstring host;
+        // 分割されたHTTPSパス
         std::wstring path;
         Require(
             LamaPon::SplitHttpsUrl(
@@ -249,17 +267,20 @@ namespace
             "invalid URLs must be rejected");
     }
 
+    // TestInstallRoundTrip(): パッケージの導入、更新、退避、削除を検証する。
     void TestInstallRoundTrip()
     {
+        // テストファイルの保存先
         const auto root =
             std::filesystem::current_path()
             / "test-output"
             / "package-manager";
         std::filesystem::remove_all(root);
+        // インストール対象のアセットルート
         const auto assetRoot = root / "assets";
         std::filesystem::create_directories(assetRoot);
 
-        // パッケージの中身（スクリプトとデータ）を作ってZip化。
+        // 圧縮するパッケージファイル群
         const auto source = root / "source";
         WriteFile(
             source / "FollowCamera.cpp",
@@ -267,10 +288,12 @@ namespace
         WriteFile(
             source / "data" / "readme.txt",
             "hello package");
+        // 圧縮した初回パッケージ
         const auto zipBytes = ZipDirectory(
             source,
             root / "package.zip");
 
+        // 初回インストール対象のパッケージ情報
         LamaPon::PackageInfo package;
         package.name = "camera-follow";
         package.displayName = "カメラ追従";
@@ -281,14 +304,16 @@ namespace
             "https://raw.githubusercontent.com/Timiratz/"
             "LamaPon-Engine/main/packages/a.zip";
 
-        // ハッシュの無い、または一致しないZipは展開前に拒否し、
-        // 何も残さないこと。
+        // rejectsWithoutInstalling(sha256: 検査用ハッシュ): 不正ZIPが導入前に拒否されるか調べる。
         const auto rejectsWithoutInstalling =
             [&assetRoot, &package, &zipBytes](const std::string& sha256)
         {
+            // 検査用の複製パッケージ情報
             auto candidate = package;
             candidate.sha256 = sha256;
+            // インストール拒否結果
             bool rejected = false;
+            // ハッシュ不一致のインストールを検査する。
             try
             {
                 LamaPon::InstallPackage(
@@ -296,6 +321,7 @@ namespace
                     candidate,
                     zipBytes);
             }
+            // 不正ハッシュの拒否を記録する。
             catch (const std::exception&)
             {
                 rejected = true;
@@ -306,6 +332,7 @@ namespace
                         assetRoot,
                         package.name));
         };
+        // Zipとの不一致を作った検査用ハッシュ
         auto tamperedHash = Sha256Of(zipBytes);
         tamperedHash[0] = tamperedHash[0] == '0' ? '1' : '0';
         Require(
@@ -319,6 +346,7 @@ namespace
             assetRoot,
             package,
             zipBytes);
+        // 初回インストール先
         const auto installed =
             LamaPon::PackageInstallDirectory(
                 assetRoot,
@@ -349,13 +377,15 @@ namespace
                     .value("target", std::string{}) == "Project",
             "a synthesized manifest must preserve the target");
 
-        // 更新: 新しい版で置き換え、古いファイルが残らないこと。
+        // 新版パッケージでファイルを置き換える。
         std::filesystem::remove(
             source / "data" / "readme.txt");
         WriteFile(source / "NewFile.cpp", "// v2");
+        // 更新後のパッケージマニフェスト
         auto manifest = std::string(
             R"({"name":"camera-follow","version":"1.1"})");
         WriteFile(source / "package.json", manifest);
+        // 2回目に圧縮したパッケージ
         const auto zipBytes2 = ZipDirectory(
             source,
             root / "package2.zip");
@@ -377,12 +407,7 @@ namespace
                     installed / "NewFile.cpp"),
             "updates must fully replace the old install");
 
-        // 更新の前に手を入れていたファイルは、退避（1世代）に
-        // 残ること。更新はフォルダーごと置き換える仕様なので、
-        // これが改造の唯一の逃げ道になります。
-        // 退避はassets/の外にあること（ゲームモジュールが
-        // assets/*.cppを丸ごとコンパイルするため、assets/内へ
-        // 旧版のC++が残ると二重定義でビルドが壊れます）。
+        // 手編集ファイルを1世代バックアップし、assets外へ退避する。
         const auto backup = root
             / ".lamapon"
             / "package-backups"
@@ -390,9 +415,11 @@ namespace
         WriteFile(
             installed / "NewFile.cpp",
             "// edited by user");
+        // 3回目の更新に使うマニフェスト
         auto manifest3 = std::string(
             R"({"name":"camera-follow","version":"1.2"})");
         WriteFile(source / "package.json", manifest3);
+        // 3回目に圧縮したパッケージ
         const auto zipBytes3 = ZipDirectory(
             source,
             root / "package3.zip");
@@ -414,16 +441,18 @@ namespace
                     == "// edited by user",
             "the replaced version, edits included, must survive in the backup");
 
-        // ファイルを開いたままにしてフォルダーの移動を失敗させ、
-        // 更新に失敗しても旧版が損なわれないことを検証します。
+        // ロックした導入ファイルを使って置換失敗を作る。
         {
+            // 移動を妨げるロック対象
             std::ifstream lock(
                 installed / "NewFile.cpp",
                 std::ios::binary);
             Require(
                 static_cast<bool>(lock),
                 "the lock file must open");
+            // 置換失敗の検出結果
             bool failed = false;
+            // ロック中パッケージの更新を試す。
             try
             {
                 LamaPon::InstallPackage(
@@ -431,6 +460,7 @@ namespace
                     package,
                     zipBytes3);
             }
+            // 置換失敗を記録する。
             catch (const std::exception&)
             {
                 failed = true;
@@ -461,7 +491,9 @@ namespace
                 package.name).empty(),
             "uninstalled packages report no version");
 
+        // 危険な名前の拒否結果
         bool unsafeRejected = false;
+        // インストール先のパストラバーサルを検査する。
         try
         {
             LamaPon::InstallPackage(
@@ -469,6 +501,7 @@ namespace
                 LamaPon::PackageInfo{ "../escape" },
                 zipBytes);
         }
+        // 危険な名前の拒否を記録する。
         catch (const std::exception&)
         {
             unsafeRejected = true;
@@ -481,29 +514,35 @@ namespace
     // ネイティブ依存の宣言は、assets/へ入る前に検証します。
     void TestNativeManifestIsValidatedOnInstall()
     {
+        // テストファイルの保存先
         const auto root =
             std::filesystem::current_path()
             / "test-output"
             / "package-manager-native";
         std::filesystem::remove_all(root);
+        // SDK検証用のアセットルート
         const auto assetRoot = root / "assets";
         std::filesystem::create_directories(assetRoot);
 
+        // インストール対象のSDK情報
         LamaPon::PackageInfo package;
         package.name = "my-sdk";
         package.displayName = "My SDK";
         package.version = "1.0";
         package.minimumEngineVersion = "2026.7.31";
 
+        // install(manifest: パッケージJSON, folder: 作業名): ZIPを作ってSDK依存を検証し導入する。
         const auto install =
             [&assetRoot, &package, &root](
                 const std::string& manifest,
                 const char* const folder)
         {
+            // ZIP作成用の一時ソースディレクトリ
             const auto source = root / folder;
             std::filesystem::remove_all(source);
             WriteFile(source / "Adapter.cpp", "// adapter");
             WriteFile(source / "package.json", manifest);
+            // 圧縮したSDKパッケージ
             const auto zipBytes = ZipDirectory(
                 source,
                 root / (std::string{ folder } + ".zip"));
@@ -514,7 +553,9 @@ namespace
                 zipBytes);
         };
 
+        // パストラバーサル定義の拒否結果
         bool rejected = false;
+        // パッケージ外を指すSDK定義を導入する。
         try
         {
             install(
@@ -522,6 +563,7 @@ namespace
                 R"("libraries":["../../escape.lib"]}})",
                 "escaping");
         }
+        // 不正SDK定義の拒否を記録する。
         catch (const std::exception&)
         {
             rejected = true;
@@ -544,6 +586,7 @@ namespace
             R"("runtimeFiles":["sdk/bin/my_sdk.dll"],)"
             R"("defines":["MY_SDK_ENABLED"]}})",
             "valid");
+        // 有効なSDKパッケージの導入先
         const auto installed =
             LamaPon::PackageInstallDirectory(
                 assetRoot,
@@ -553,13 +596,16 @@ namespace
                 installed / "package.json"),
             "a valid native package must install");
 
-        // 作者が書いたnativeは、パッケージを作り直しても残します。
+        // 作者が宣言したnative設定を保って再構築する。
+        // 再構築した配布パッケージ
         const auto built = LamaPon::BuildPackage(
             assetRoot,
             package,
             root / "dist");
         {
+            // ZIP内容を読む入力ストリーム
             std::ifstream builtInput(built.zipPath, std::ios::binary);
+            // 再構築ZIPの全バイト
             const std::vector<std::uint8_t> builtBytes(
                 std::istreambuf_iterator<char>{ builtInput },
                 std::istreambuf_iterator<char>{});
@@ -570,6 +616,7 @@ namespace
                 "a built package's index entry must carry the"
                 " zip's SHA-256");
         }
+        // インストール済みパッケージマニフェスト
         const auto manifest = nlohmann::json::parse(
             ReadFile(installed / "package.json"));
         Require(
@@ -581,6 +628,7 @@ namespace
                     == package.version,
             "rebuilding a package must keep its native block");
 
+        // 導入済みnative依存の走査結果
         const auto scan =
             LamaPon::ScanPackageNativeDependencies(assetRoot);
         Require(
@@ -595,16 +643,21 @@ namespace
             "an installed native package must be discoverable");
     }
 
+    // TestGraphicsBackendPackageInspection(): 描画バックエンドの検査、再構築、読込を確認する。
     void TestGraphicsBackendPackageInspection()
     {
+        // テストファイルの保存先
         const auto root = std::filesystem::current_path()
             / "test-output"
             / "graphics-backend-package";
         std::filesystem::remove_all(root);
+        // 描画バックエンド検査用アセットルート
         const auto assetRoot = root / "assets";
+        // DirectX 12パッケージの場所
         const auto packageRoot = assetRoot / "packages"
             / LamaPon::DirectX12BackendPackageName;
 
+        // 組み込みDirectX 11の検査結果
         const auto builtIn = LamaPon::InspectGraphicsBackendPackage(
             assetRoot,
             LamaPon::RenderingApi::DirectX11,
@@ -658,6 +711,7 @@ namespace
         WriteFile(
             packageRoot / "runtime" / "LamaPonGraphicsD3D12.dll",
             "test fixture");
+        // DLL配置後のバックエンド検査結果
         const auto ready = LamaPon::InspectGraphicsBackendPackage(
             assetRoot,
             LamaPon::RenderingApi::DirectX12Experimental,
@@ -669,14 +723,17 @@ namespace
                     == LamaPon::GraphicsBackendPackageAbiVersion,
             "a compatible backend package must be ready");
 
+        // 再構築するDirectX 12パッケージ情報
         LamaPon::PackageInfo buildInfo;
         buildInfo.name = LamaPon::DirectX12BackendPackageName;
         buildInfo.displayName = "DirectX 12 Renderer";
         buildInfo.version = "1.0.1";
+        // 再構築した描画バックエンドパッケージ
         const auto built = LamaPon::BuildPackage(
             assetRoot,
             buildInfo,
             root / "dist");
+        // 再構築後のマニフェスト
         const auto rebuiltManifest = nlohmann::json::parse(
             ReadFile(packageRoot / "package.json"));
         Require(
@@ -711,7 +768,9 @@ namespace
                 == LamaPon::GraphicsBackendPackageState::IncompatibleAbi,
             "an incompatible backend ABI must be rejected");
 
+        // ABI配置テスト用アセットルート
         const auto activationRoot = root / "activation" / "assets";
+        // ABI配置テスト用パッケージの場所
         const auto activationPackage = activationRoot / "packages"
             / LamaPon::DirectX12BackendPackageName;
         WriteFile(
@@ -734,6 +793,7 @@ namespace
             activationPackage / "runtime" / "LamaPonGraphicsD3D12.dll",
             std::filesystem::copy_options::overwrite_existing);
         LamaPon::SetGraphicsBackendPackageAssetRoot(activationRoot);
+        // 読み込んだバックエンドの有効化結果
         const auto activated = LamaPon::ActivateGraphicsBackendPackage(
             LamaPon::RenderingApi::DirectX12Experimental,
             "1.0.0");
@@ -744,8 +804,10 @@ namespace
     }
 }
 
+// main(): パッケージ管理とnative依存テストを実行する。
 int main()
 {
+    // テスト失敗を終了コードへ変換する。
     try
     {
         TestParsing();
@@ -756,6 +818,7 @@ int main()
         std::cout << "Package manager tests passed.\n";
         return 0;
     }
+    // 例外(exception: テスト失敗情報)を標準エラーへ出力する。
     catch (const std::exception& exception)
     {
         std::cerr << exception.what() << '\n';

@@ -13,9 +13,13 @@ namespace LamaPon
 {
     struct RuntimeServices::ReinitializationState final
     {
+        // 引き継ぐアセットのルートパス
         std::optional<std::filesystem::path> assetRoot;
+        // 段階アップロードの閾値バイト数
         std::optional<std::size_t> progressiveUploadThreshold;
+        // 文字キャッシュの上限バイト数
         std::optional<std::size_t> textCacheBudgetBytes;
+        // 引き継ぐ入力アクション定義
         std::optional<std::vector<InputActionDefinition>> inputActions;
     };
 
@@ -34,6 +38,7 @@ namespace LamaPon
         }
         try
         {
+            // 現在のアセットルートへの参照
             const auto& root = m_assets->AssetRoot();
             if (root.empty())
             {
@@ -50,8 +55,7 @@ namespace LamaPon
         }
         catch (...)
         {
-            // A failed snapshot must not make noexcept teardown fail. Values
-            // captured by an earlier successful transition remain available.
+            // 終了処理を継続し、既に保存できた設定を保持します。
         }
     }
 
@@ -124,6 +128,7 @@ namespace LamaPon
                 "or PrepareForGraphicsReinitialization first.");
         }
         CaptureAssetSettings();
+        // 生成に成功してから交換する管理
         auto assets = backend != nullptr
             ? std::make_unique<AssetManager>(
                 device,
@@ -134,9 +139,11 @@ namespace LamaPon
                 context);
         assets->SetRuntimeTextureCompressionEnabled(textureCompression);
         RestoreAssetSettings(*assets);
+        // 未生成時だけ新規作成する音声
         auto audio = m_audio
             ? std::unique_ptr<AudioSystem>{}
             : std::make_unique<AudioSystem>();
+        // ウィンドウへ結び付ける入力
         auto input = std::make_unique<InputSystem>(window);
         if (m_reinitializationState
             && m_reinitializationState->inputActions)
@@ -163,8 +170,6 @@ namespace LamaPon
 
     void RuntimeServices::PrepareForGraphicsReinitialization() noexcept
     {
-        // AssetManagerは旧Device / Contextを借りています。Inputも
-        // Windowへ登録されるため作り直しますが、Audioは再利用します。
         QuiesceGraphicsWork();
         CaptureAssetSettings();
         if (m_input
@@ -177,8 +182,7 @@ namespace LamaPon
             }
             catch (...)
             {
-                // Keep the previous snapshot when allocation fails during
-                // noexcept teardown.
+                // 保存に失敗しても前回の入力設定を保持し、解放を続けます。
             }
         }
         m_input.reset();
@@ -187,8 +191,6 @@ namespace LamaPon
 
     void RuntimeServices::Shutdown() noexcept
     {
-        // 入力と再生を終了してから、それらが参照するアセットを解放します。
-        // 複数回呼べるため、明示終了後のデストラクタとも共存できます。
         QuiesceGraphicsWork();
         m_input.reset();
         m_audio.reset();
@@ -237,6 +239,7 @@ namespace LamaPon
     {
         if (!m_assets)
         {
+            // 生成に成功してから交換する管理
             auto assets = backend != nullptr
                 ? std::make_unique<AssetManager>(
                     device,

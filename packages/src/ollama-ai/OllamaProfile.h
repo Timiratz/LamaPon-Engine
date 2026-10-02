@@ -13,14 +13,14 @@
 
 namespace LamaPonOllama
 {
+    // Data Assetへ登録するProfile型名
     inline constexpr auto ProfileType = "Ollama.ModelProfile";
+    // 配布する初期Model Profile
     inline constexpr auto DefaultProfilePath =
         "packages/ollama-ai/profiles/Default.asset.json";
 
-    // 接続先のホストとAPIキーの欄はありません。接続先はこのPCに固定で、
-    // 変えられるのはポートだけです。
-    // maxTokensの既定が小さいのは、エンジンのHTTP受信が30秒で打ち切られ、
-    // 返答を少しずつ受け取ることもできないためです。
+    // 接続先はLoopback固定で、API key欄を持たないModel Profileです。
+    // maxTokens既定値は30秒の同期HTTP受信上限に合わせています。
     inline constexpr char ProfileSchema[] = R"schema({"fields":[
         {"name":"model","displayName":"モデル名（空なら最初のローカルモデル）","type":"string","default":"",
          "tooltip":"ollama list に出る名前です。cloud が付くモデルは使えません。"},
@@ -39,21 +39,27 @@ namespace LamaPonOllama
 
     struct ModelProfile final
     {
+        // 空なら最初のローカルモデルを選択
         std::string model;
+        // モデルへ渡す会話の役割指示
         std::string systemPrompt{
             "あなたはゲームの登場人物です。日本語で、1～2文の短い返事をしてください。" };
+        // 応答のランダム性
         double temperature{ 0.7 };
+        // 応答の最大生成Token数
         std::uint32_t maxTokens{ 128 };
+        // Loopback接続ポート
         std::uint16_t port{ DefaultPort };
+        // 失敗時に表示する返答
         std::string fallbackReply{ "（いまは返事ができません）" };
+        // 会話へ保持する発言数
         std::uint32_t historyLimit{ 8 };
+        // Ollamaがモデルを保持する分数
         std::uint32_t keepAliveMinutes{ 10 };
     };
 
-    // 不正な設定は1項目も適用せず、outputを変えません。クラウドのモデル名は
-    // ここで拒否するので、通信を始める前に気付けます。スキーマにない項目も
-    // 拒否します。"host"や"apiKey"を書き足しても効かないことを、黙って
-    // 無視せずエラーで伝えるためです。
+    // Profileを検証して読み込みます(asset: 入力アセット, output: 出力先, error: 失敗理由)。
+    // 不正項目・Cloud名・未定義keyを拒否し、失敗時はoutputを保持します。
     [[nodiscard]] inline bool ReadProfile(const LamaPon::DataAsset& asset,
         ModelProfile& output, std::string& error)
     {
@@ -63,10 +69,14 @@ namespace LamaPonOllama
             {
                 throw std::invalid_argument("Ollama設定アセットの型または内容が不正です。");
             }
+            // Assetに保存されたvalues
             const auto source = nlohmann::json::parse(asset.SerializeToJson()).at("values");
+            // 許可されたProfile項目を照合します(item: keyと値の組)。
             for (const auto& item : source.items())
             {
+                // 検査するProfile項目名
                 const std::string_view key = item.key();
+                // 未定義項目を拒否します。
                 if (key != "model" && key != "systemPrompt" && key != "temperature"
                     && key != "maxTokens" && key != "port" && key != "fallbackReply"
                     && key != "historyLimit" && key != "keepAliveMinutes")
@@ -76,14 +86,18 @@ namespace LamaPonOllama
                 }
             }
 
+            // 検証中のProfile
             ModelProfile profile;
+            // 文字列項目を検証します(key: 欄名, fallback: 未設定値, maxBytes: 最大長)。
             const auto text = [&source](const char* key, std::string fallback,
                 const std::size_t maxBytes)
             {
+                // 未設定項目は既定値を返します。
                 if (!source.contains(key))
                 {
                     return fallback;
                 }
+                // 検証対象のJSON値
                 const auto& field = source.at(key);
                 if (!field.is_string() || field.get_ref<const std::string&>().size() > maxBytes)
                 {
@@ -91,21 +105,24 @@ namespace LamaPonOllama
                 }
                 return field.get<std::string>();
             };
-            // DataAssetは整数もdoubleとして保持します。丸めて設定を変えず、
-            // 非整数・範囲外は拒否します。
+            // 整数項目を検証します(key: 欄名, fallback: 既定値, minimum/maximum: 許容範囲)。
             const auto integer = [&source](const char* key, const std::uint32_t fallback,
                 const std::uint32_t minimum, const std::uint32_t maximum)
             {
+                // 未設定項目は既定値を返します。
                 if (!source.contains(key))
                 {
                     return fallback;
                 }
+                // 検証対象のJSON値
                 const auto& field = source.at(key);
                 if (!field.is_number())
                 {
                     throw std::invalid_argument("Ollama設定の整数項目が不正です。");
                 }
+                // 整数性と範囲を検査する数値
                 const auto number = field.get<double>();
+                // 小数・範囲外は丸めず拒否します。
                 if (!std::isfinite(number) || number < minimum || number > maximum
                     || std::floor(number) != number)
                 {
@@ -114,20 +131,24 @@ namespace LamaPonOllama
                 return static_cast<std::uint32_t>(number);
             };
 
+            // モデル名を読み込みます。
             profile.model = text("model", profile.model, 128);
             if (HasCloudTag(profile.model))
             {
                 throw std::invalid_argument("クラウドのモデルは使えません: " + profile.model
                     + "（このPCで動くローカルモデルを指定してください）");
             }
+            // 空欄以外はローカルモデル名として検証します。
             if (!profile.model.empty() && !IsLocalModelName(profile.model))
             {
                 throw std::invalid_argument("モデル名に使えない文字があります: " + profile.model);
             }
             profile.systemPrompt = text("systemPrompt", profile.systemPrompt, 4000);
             profile.fallbackReply = text("fallbackReply", profile.fallbackReply, 400);
+            // Temperatureが設定されている場合は数値範囲を検証します。
             if (source.contains("temperature"))
             {
+                // JSONのTemperature値
                 const auto& field = source.at("temperature");
                 if (!field.is_number())
                 {
@@ -149,6 +170,7 @@ namespace LamaPonOllama
             error.clear();
             return true;
         }
+        // Profile検証の失敗理由
         catch (const std::exception& exception)
         {
             error = exception.what();

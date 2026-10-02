@@ -3,8 +3,6 @@
 #include "LamaPon/Graphics/EnvironmentRenderer.h"
 #include "LamaPon/Graphics/ScreenEffect.h"
 
-// 自動露出がミップの1x1（RGBA16F）をCPUで読むため、
-// half→floatの変換が必要です。
 #include <DirectXPackedVector.h>
 
 #include <algorithm>
@@ -14,6 +12,7 @@
 
 namespace
 {
+    // 失敗したHRESULTを例外に変える(result: 実行結果, operation: 操作名)。
     void ThrowIfFailed(const HRESULT result, const char* operation)
     {
         if (FAILED(result))
@@ -74,7 +73,9 @@ namespace LamaPon
         const std::uint32_t width,
         const std::uint32_t height)
     {
+        // 一以上に補正した要求幅
         const std::uint32_t requestedWidth = std::max(width, 1u);
+        // 一以上に補正した要求高さ
         const std::uint32_t requestedHeight = std::max(height, 1u);
         if (requestedWidth == m_width
             && requestedHeight == m_height
@@ -129,13 +130,11 @@ namespace LamaPon
         m_luminanceShaderResourceView.Reset();
         m_luminanceStagingTexture.Reset();
         m_luminanceMipLevels = 0;
-        // 大きさが変わったら測定中の値は捨てます。次に測れた値へ
-        // そのまま飛ぶので、露出が数秒かけて追いつく必要はありません。
+        // 資源の再生成時は測定を破棄し、次の測定値から露出を開始する。
         m_luminanceStagingReady = false;
         m_adaptedLuminance = 0.0f;
         m_autoExposureStops = 0.0f;
-        // 前フレームの行列も無効です（画面の大きさが変わった直後に
-        // 使うと画面全体が伸びます）。
+        // サイズ変更前の行列による過剰なブラーを防ぐため、履歴を無効にする。
         m_motionBlurPreviousViewProjection = {};
         m_motionBlurPreviousValid = false;
         m_historyTexture.Reset();
@@ -151,32 +150,30 @@ namespace LamaPon
         m_temporalHistoryShaderResourceView.Reset();
         m_temporalHistoryValid = false;
         m_temporalHistoryViewProjection = {};
-        // 大きさが変わったら前フレームの絵は使えません。
+        // サイズ変更前のカラー履歴を無効にする。
         m_historyValid = false;
 
         m_width = requestedWidth;
         m_height = requestedHeight;
         m_occlusionWidth = std::max(m_width / 2u, 1u);
         m_occlusionHeight = std::max(m_height / 2u, 1u);
-        // 筋は輪郭が要らないので1/4で十分です。ここを上げても
-        // 見た目はほぼ変わらず、タップ数だけ増えます。
+        // フレアの筋は四分の一解像度で生成する。
         m_streakWidth = std::max(m_width / 4u, 1u);
         m_streakHeight = std::max(m_height / 4u, 1u);
-        // DoFのぼかしは半解像度。1/4まで落とすとぼけの縁が階段状に
-        // 見えるので、ここはSSAOと同じ半分に留めます。
+        // ぼけの縁の段差を抑えるため、被写界深度の作業資源は半解像度にする。
         m_depthOfFieldWidth = std::max(m_width / 2u, 1u);
         m_depthOfFieldHeight = std::max(m_height / 2u, 1u);
-        // 明るさの測定は1/4解像度。以降の平均はミップ連鎖に任せるので、
-        // ここを上げても結果はほぼ変わらず、転送量だけ増えます。
+        // 輝度を四分の一解像度で測定し、ミップ生成で平均する。
         m_luminanceWidth = std::max(m_width / 4u, 1u);
         m_luminanceHeight = std::max(m_height / 4u, 1u);
 
+        // HDRカラー資源の仕様
         D3D11_TEXTURE2D_DESC colorDescription{};
         colorDescription.Width = m_width;
         colorDescription.Height = m_height;
         colorDescription.MipLevels = 1;
         colorDescription.ArraySize = 1;
-        // ブルームとトーンマッピングが終わるまで、1.0を超える値を保ちます。
+        // トーン変換まで一を超える色を保持するため、HDR形式を使う。
         colorDescription.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
         colorDescription.SampleDesc.Count = 1;
         colorDescription.Usage = D3D11_USAGE_DEFAULT;
@@ -201,8 +198,8 @@ namespace LamaPon
                 nullptr,
                 m_shaderResourceView.ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateShaderResourceView(offscreen)");
-        // SSR用に前フレームの色を保持します。描画先にはしないため、
-        // D3D11_BIND_SHADER_RESOURCEだけを指定します。
+        // HDR履歴はコピーだけで更新するため、描画先のバインドフラグを付けない。
+        // HDR色履歴の仕様
         D3D11_TEXTURE2D_DESC historyDescription =
             colorDescription;
         historyDescription.BindFlags =
@@ -222,7 +219,7 @@ namespace LamaPon
             "ID3D11Device::CreateShaderResourceView"
             "(SSR history)");
 
-        // TAAの履歴もSSRの履歴と同じくSRVだけを作成します。
+
         ThrowIfFailed(
             device->CreateTexture2D(
                 &historyDescription,
@@ -239,7 +236,8 @@ namespace LamaPon
             "ID3D11Device::CreateShaderResourceView"
             "(TAA history)");
 
-        // SSAO用の半解像度バッファ（遮蔽率だけなので1チャンネル）。
+
+        // 半解像度の遮蔽資源の仕様
         D3D11_TEXTURE2D_DESC occlusionDescription{};
         occlusionDescription.Width = m_occlusionWidth;
         occlusionDescription.Height = m_occlusionHeight;
@@ -291,8 +289,8 @@ namespace LamaPon
                     .ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateShaderResourceView(SSAO blur)");
 
-        // レンズフレアの筋（1/4解像度のping-pong）。HDRのまま
-        // 扱うので形式はカラーと同じです。
+        // フレアの筋はHDR形式の二つの作業資源を交互に使う。
+        // フレアの筋資源の仕様
         D3D11_TEXTURE2D_DESC streakDescription{};
         streakDescription.Width = m_streakWidth;
         streakDescription.Height = m_streakHeight;
@@ -351,8 +349,8 @@ namespace LamaPon
             "ID3D11Device::CreateShaderResourceView"
             "(lens flare streak blur)");
 
-        // 被写界深度の作業用（半解像度）。アルファへ符号付きCoCを
-        // 入れるので、形式はカラーと同じRGBA16Fです。
+        // 符号付きの錯乱円半径をアルファへ持つため、RGBA16F形式を使う。
+        // 被写界深度の作業資源仕様
         D3D11_TEXTURE2D_DESC depthOfFieldDescription{};
         depthOfFieldDescription.Width = m_depthOfFieldWidth;
         depthOfFieldDescription.Height = m_depthOfFieldHeight;
@@ -412,11 +410,8 @@ namespace LamaPon
             "ID3D11Device::CreateShaderResourceView"
             "(depth of field blur)");
 
-        // 自動露出の明るさ測定（1/4解像度）。MipLevels=0で全ミップを
-        // 作らせ、GENERATE_MIPSを付けてGenerateMipsで平均させます。
-        // 形式をカラーと同じRGBA16Fにしているのは、ミップの自動生成が
-        // 確実に使える形式に揃えるためです（1チャンネル形式は環境に
-        // よって自動生成に対応しません）。
+        // 全ミップの自動生成で対数輝度を平均するため、RGBA16F形式を使う。
+        // 対数輝度資源の仕様
         D3D11_TEXTURE2D_DESC luminanceDescription{};
         luminanceDescription.Width = m_luminanceWidth;
         luminanceDescription.Height = m_luminanceHeight;
@@ -437,12 +432,13 @@ namespace LamaPon
                 nullptr,
                 m_luminanceTexture.ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateTexture2D(luminance)");
-        // 実際に作られたミップ数を控えます。1/4解像度は2のべき乗とは
-        // 限らないので、自分で計算せずデバイスに聞くのが確実です。
+        // 非二冪の寸法にも対応するため、生成後の資源からミップ数を取得する。
+        // 生成された輝度資源の仕様
         D3D11_TEXTURE2D_DESC createdLuminance{};
         m_luminanceTexture->GetDesc(&createdLuminance);
         m_luminanceMipLevels = createdLuminance.MipLevels;
-        // 描画先はミップ0だけです（以降はGenerateMipsが埋めます）。
+        // 最初のミップだけへ描画し、残りはミップ生成で埋める。
+        // 対数輝度の描画先仕様
         D3D11_RENDER_TARGET_VIEW_DESC luminanceTargetDescription{};
         luminanceTargetDescription.Format =
             luminanceDescription.Format;
@@ -456,9 +452,7 @@ namespace LamaPon
                 m_luminanceRenderTargetView
                     .ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateRenderTargetView(luminance)");
-        // SRVは全ミップを見るものにします。GenerateMipsはこの
-        // ビューの範囲しか埋めないので、ミップ0だけのビューを渡すと
-        // 何も起きません。
+        // GenerateMipsが全段を埋められるよう、全ミップの参照を作る。
         ThrowIfFailed(
             device->CreateShaderResourceView(
                 m_luminanceTexture.Get(),
@@ -466,8 +460,8 @@ namespace LamaPon
                 m_luminanceShaderResourceView
                     .ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateShaderResourceView(luminance)");
-        // 1x1ミップをCPUへ渡すためのSTAGING。読むのは4チャンネル
-        // ぶんの8バイトだけです。
+
+        // 一画素の輝度読取資源の仕様
         D3D11_TEXTURE2D_DESC luminanceStaging{};
         luminanceStaging.Width = 1;
         luminanceStaging.Height = 1;
@@ -504,12 +498,8 @@ namespace LamaPon
                 m_postShaderResourceView.ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateShaderResourceView(post process)");
 
-        // 表示専用テクスチャ。ポスト処理のswapに左右されない
-        // 安定したSRVをImGui等へ渡すために使います。
-        //
-        // Compute Shaderの書き込み先にするときだけUAVフラグを追加します。
-        // 通常の描画先には不要なバインドフラグを付けず、ドライバーの
-        // 最適化を妨げないようにします。
+        // 表示面をポスト処理の切替えから独立させ、必要な場合だけ計算書込みを許可する。
+        // 表示面の資源仕様
         D3D11_TEXTURE2D_DESC displayDescription =
             colorDescription;
         if (m_computeWritable)
@@ -531,6 +521,7 @@ namespace LamaPon
             "ID3D11Device::CreateShaderResourceView(display)");
         if (m_computeWritable)
         {
+            // 表示面の計算書込み参照仕様
             D3D11_UNORDERED_ACCESS_VIEW_DESC accessView{};
             accessView.Format = displayDescription.Format;
             accessView.ViewDimension =
@@ -545,13 +536,13 @@ namespace LamaPon
                 "(display)");
         }
 
+        // 深度資源の仕様
         D3D11_TEXTURE2D_DESC depthDescription{};
         depthDescription.Width = m_width;
         depthDescription.Height = m_height;
         depthDescription.MipLevels = 1;
         depthDescription.ArraySize = 1;
-        // SSAOがシェーダーから深度を読むため、TYPELESSで作って
-        // 深度ビューとシェーダービューの両方を張ります。
+        // 深度を描画と読取の両方に使うため、互換形式を持つTYPELESS資源で作る。
         depthDescription.Format = DXGI_FORMAT_R24G8_TYPELESS;
         depthDescription.SampleDesc.Count = 1;
         depthDescription.Usage = D3D11_USAGE_DEFAULT;
@@ -565,6 +556,7 @@ namespace LamaPon
                 nullptr,
                 m_depthTexture.ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateTexture2D(offscreen depth)");
+        // 深度ステンシル描画先の仕様
         D3D11_DEPTH_STENCIL_VIEW_DESC depthViewDescription{};
         depthViewDescription.Format =
             DXGI_FORMAT_D24_UNORM_S8_UINT;
@@ -576,10 +568,8 @@ namespace LamaPon
                 &depthViewDescription,
                 m_depthStencilView.ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateDepthStencilView(offscreen)");
-        // SSR用の深度コピー。Litパス中は深度がDSVとして刺さって
-        // いるため、同じリソースをSRVとしても読むことはできません
-        // （D3D11がSRVを黙ってnullにします）。プリパスの直後に
-        // ここへ複製して、読む側はこちらを見ます。
+        // 深度の描画と同時に読むSSRには、プリパス後に複製した資源を使う。
+        // 複製深度資源の仕様
         D3D11_TEXTURE2D_DESC depthCopyDescription =
             depthDescription;
         depthCopyDescription.BindFlags =
@@ -592,6 +582,7 @@ namespace LamaPon
                     .ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateTexture2D(SSR depth)");
 
+        // 深度読取参照の仕様
         D3D11_SHADER_RESOURCE_VIEW_DESC depthResourceDescription{};
         depthResourceDescription.Format =
             DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
@@ -614,12 +605,11 @@ namespace LamaPon
                     .ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateShaderResourceView(offscreen depth)");
 
-        // SSRのHi-Z用の深度ピラミッド。深度を「カメラからの距離」へ
-        // 直した値を全ミップで持ち、各ミップは2x2の最小値です。
-        // レイは「この区画の最も手前よりレイ全体が手前」なら区画ごと
-        // 飛ばせるので、何も無い空間を大股で越えられます。
+        // Hi-Zにはカメラからの距離を持ち、各ミップは前段の二対二画素の最小値を使う。
         {
+            // Hi-Zに必要なミップ段数
             std::uint32_t mipCount = 1;
+            // ミップ計算中の辺長
             for (std::uint32_t size =
                     std::max(m_width, m_height);
                 size > 1;
@@ -627,6 +617,7 @@ namespace LamaPon
             {
                 ++mipCount;
             }
+            // Hi-Z深度資源の仕様
             D3D11_TEXTURE2D_DESC pyramidDescription{};
             pyramidDescription.Width = m_width;
             pyramidDescription.Height = m_height;
@@ -655,10 +646,13 @@ namespace LamaPon
                 "(hi-z pyramid)");
             m_reflectionDepthPyramidTargets.resize(mipCount);
             m_reflectionDepthPyramidMipViews.resize(mipCount);
+            // 作成するミップ番号
             for (std::uint32_t mip = 0;
+                // Hi-Zに必要なミップ段数
                 mip < mipCount;
                 ++mip)
             {
+                // 各ミップの描画先仕様
                 D3D11_RENDER_TARGET_VIEW_DESC
                     targetDescription{};
                 targetDescription.Format =
@@ -675,6 +669,7 @@ namespace LamaPon
                             .ReleaseAndGetAddressOf()),
                     "ID3D11Device::CreateRenderTargetView"
                     "(hi-z pyramid)");
+                // 各ミップの読取参照仕様
                 D3D11_SHADER_RESOURCE_VIEW_DESC
                     mipViewDescription{};
                 mipViewDescription.Format =
@@ -733,7 +728,7 @@ namespace LamaPon
         {
             return;
         }
-        // 同じ形式・同じ大きさなので丸ごとコピーで済みます。
+
         context->CopyResource(
             m_historyTexture.Get(),
             m_colorTexture.Get());
@@ -772,9 +767,11 @@ namespace LamaPon
 
     void Detail::D3D11RenderTargetState::Bind(ID3D11DeviceContext* context) const
     {
+        // カラー読取の解除用参照
         ID3D11ShaderResourceView* nullResource[]{ nullptr };
         context->PSSetShaderResources(0, 1, nullResource);
 
+        // 設定するカラー描画先
         ID3D11RenderTargetView* renderTargets[]{ m_renderTargetView.Get() };
         context->OMSetRenderTargets(1, renderTargets, m_depthStencilView.Get());
         context->RSSetViewports(1, &m_viewport);
@@ -783,10 +780,8 @@ namespace LamaPon
     void Detail::D3D11RenderTargetState::BindDepthOnly(
         ID3D11DeviceContext* context) const
     {
-        // 深度とSSAOのテクスチャを読んだままにしていると、この後の
-        // プリパスとSSAOでそれらを描画先にできません（同じリソースの
-        // 読みと書きは同時にできず、D3D11が黙って読み側を外します）。
-        // Litシェーダーが使うt0〜t15をまとめて外しておきます。
+        // 深度の読取と書込が競合しないよう、Litが読むPSのt0〜t15を先に解除する。
+        // 深度描画前の解除用参照列
         ID3D11ShaderResourceView* nullResources[16]{};
         context->PSSetShaderResources(
             0,
@@ -875,8 +870,7 @@ namespace LamaPon
         {
             return;
         }
-        // 先に1/4解像度で筋を作ります。ストライドを4倍ずつ広げて
-        // 3回書き戻すので、ping-pongで受け渡します。
+        // 四分の一解像度の二資源を交互に使い、筋の探索幅を広げる。
         renderer.BuildLensFlareStreaks(
             m_shaderResourceView.Get(),
             m_streakRenderTargetView.Get(),
@@ -921,15 +915,14 @@ namespace LamaPon
             return;
         }
 
-        // 深度はこのターゲットのものを使います。ポスト処理の時点では
-        // 深度が描画先として外れているので、そのまま読めます。
+        // ポスト処理前に深度の描画先を外し、この描画先の深度を読む。
+        // 描画先の資源を補った入力
         auto resolved = inputs;
         resolved.depth = m_depthView;
         resolved.history = m_temporalHistoryValid
             ? m_temporalHistoryView
             : GraphicsViewHandle{};
-        // 前フレームの行列はこのビューが自分で覚えているものを
-        // 使います（ビューをまたいで共有すると壊れます）。
+        // 他のビューの履歴を混ぜないよう、この描画先の前回行列を使う。
         resolved.previousViewProjection =
             m_temporalHistoryViewProjection;
         resolved.previousValid = m_temporalHistoryValid;
@@ -957,8 +950,8 @@ namespace LamaPon
         {
             return;
         }
-        // 深度はこのターゲットが持っているものを使います
-        // （呼ぶ側が知らなくて良いように、ここで差し込みます）。
+
+        // 描画先の資源を補った入力
         auto resolved = inputs;
         resolved.depth = m_depthView;
         if (!renderer.ApplyVolumetricLight(
@@ -986,8 +979,8 @@ namespace LamaPon
         {
             return;
         }
-        // 深度と作業用テクスチャはこのターゲットが持っているものを
-        // 使います（呼ぶ側が知らなくて良いように、ここで差し込みます）。
+
+        // 描画先の作業資源を持つ入力
         EnvironmentRenderer::DepthOfFieldInputs inputs{};
         inputs.depth = m_depthShaderResourceView.Get();
         inputs.projection = projection;
@@ -1030,13 +1023,12 @@ namespace LamaPon
         }
         if (!settings.enabled)
         {
-            // 切っている間に控え続けると、入れ直した最初のフレームで
-            // 「何十フレームぶんも動いた」ことになって画面全体が
-            // 一瞬伸びます。無効にします。
+            // 再有効化時の過剰なブラーを防ぐため、無効な間は行列の履歴を捨てる。
             m_motionBlurPreviousValid = false;
             return;
         }
 
+        // 描画先の作業資源を持つ入力
         EnvironmentRenderer::MotionBlurInputs inputs{};
         inputs.depth = m_depthShaderResourceView.Get();
         inputs.inverseViewProjection = inverseViewProjection;
@@ -1056,8 +1048,7 @@ namespace LamaPon
             SwapPostProcessBuffers();
         }
 
-        // エフェクトを適用しなかった初回も行列を保存し、
-        // 次フレームのモーション判定に使える状態にします。
+        // 効果を適用しなかった初回も行列を保存し、次のフレームで使う。
         m_motionBlurPreviousViewProjection = viewProjection;
         m_motionBlurPreviousValid = true;
     }
@@ -1077,21 +1068,21 @@ namespace LamaPon
         }
         if (!settings.enabled)
         {
-            // 順応をやめたら読み残しと状態を捨てます
-            // （理由はAutoExposureAdaptation.hを参照）。
+            // 自動露出を無効にした場合は、読み残しと順応状態を破棄する。
             m_luminanceStagingReady = false;
             ResetAutoExposure(*this);
             return 0.0f;
         }
 
-        // 順応の式はD3D12と共有します。
+
+        // 順応後の露出補正段数
         const float exposureStops = AdvanceAutoExposure(
             *this,
             measuredLuminance,
             settings,
             deltaSeconds);
 
-        // 現在のフレームを測定し、結果を次のフレームで読みます。
+        // 輝度を描いた後に読取コピーを発行し、結果は後のフレームで読む。
         renderer.RenderLuminance(
             m_shaderResourceView.Get(),
             m_luminanceRenderTargetView.Get(),
@@ -1112,7 +1103,9 @@ namespace LamaPon
             return std::nullopt;
         }
 
+        // CPU読取領域の情報
         D3D11_MAPPED_SUBRESOURCE mapped{};
+        // 輝度領域の読取結果
         const HRESULT mapResult = context->Map(
             m_luminanceStagingTexture.Get(),
             0,
@@ -1124,15 +1117,16 @@ namespace LamaPon
             return std::nullopt;
         }
 
+        // 読み戻した半精度の値列
         const auto* const halfValues =
             static_cast<const DirectX::PackedVector::HALF*>(
                 mapped.pData);
+        // 平均対数輝度
         const float averageLogLuminance =
             DirectX::PackedVector::XMConvertHalfToFloat(
                 halfValues[0]);
         context->Unmap(m_luminanceStagingTexture.Get(), 0);
-        // 輝度シェーダーは対数平均を格納するため、Backendの共通契約へ
-        // 渡す前に線形空間へ戻します。
+        // 対数平均から線形輝度へ戻して、描画基盤の共通契約に合わせる。
         return std::exp(averageLogLuminance);
     }
 
@@ -1147,8 +1141,7 @@ namespace LamaPon
             return;
         }
 
-        // いちばん小さいミップ（1x1、RGBA16Fの8バイト）だけを
-        // 次フレームでCPUから読めるstaging資源へ控えます。
+        // 一画素の最小ミップだけをCPU読取用の資源へコピーする。
         context->CopySubresourceRegion(
             m_luminanceStagingTexture.Get(),
             0,
@@ -1176,8 +1169,7 @@ namespace LamaPon
             return false;
         }
 
-        // (1)半解像度で遮蔽を求めます。射影が復元不能な場合などは
-        // falseが返るので、遮蔽なしとして扱います。
+        // 遮蔽の生成に失敗した場合は、遮蔽なしとして扱う。
         if (!renderer.RenderAmbientOcclusion(
             m_depthShaderResourceView.Get(),
             m_occlusionRenderTargetView.Get(),
@@ -1190,8 +1182,7 @@ namespace LamaPon
             return false;
         }
 
-        // (2)深度を見るブラーでザラつきを均します。ここまでで完成で、
-        // カラーへの反映はLitシェーダーが環境光項に対して行います。
+        // 深度を考慮して遮蔽を平滑化し、Litが環境光へ反映する。
         renderer.BlurAmbientOcclusion(
             m_occlusionShaderResourceView.Get(),
             m_depthShaderResourceView.Get(),
@@ -1214,8 +1205,7 @@ namespace LamaPon
         {
             return;
         }
-        // ここはポスト処理なのでDSVは外れています。深度をコピー
-        // せずそのまま読めるのはそのためです。
+        // ポスト処理前に深度描画先を外し、深度を直接読む。
         effect.Apply(
             m_shaderResourceView.Get(),
             auxiliaryTextures,

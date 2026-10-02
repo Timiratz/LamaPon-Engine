@@ -17,6 +17,7 @@
 
 namespace
 {
+    // 四数値のRGBA色を読み、不正なら例外を送出する(value: 色のJSON配列)。
     DirectX::XMFLOAT4 ReadColor(const nlohmann::json& value)
     {
         if (!value.is_array() || value.size() != 4)
@@ -33,8 +34,8 @@ namespace
         };
     }
 
-    // 発光色のようなRGB（3要素）用。ReadColorはRGBA固定なので
-    // 別に用意します。
+
+    // 三数値のRGB色を読み、不正なら例外を送出する(value: 色のJSON配列, field: エラーに付ける項目名)。
     DirectX::XMFLOAT3 ReadColor3(
         const nlohmann::json& value,
         const char* field)
@@ -53,6 +54,7 @@ namespace
         };
     }
 
+    // 四数値の独自定数を読み、不正なら例外を送出する(value: 定数のJSON配列, field: エラーに付ける項目名)。
     DirectX::XMFLOAT4 ReadFloat4(
         const nlohmann::json& value,
         const char* field)
@@ -79,6 +81,7 @@ namespace LamaPon
         const AssetDatabase* database,
         AssetManager* assets)
     {
+        // 読み込んだ材質のJSON列
         std::vector<std::uint8_t> bytes;
         if (assets != nullptr)
         {
@@ -92,6 +95,7 @@ namespace LamaPon
         }
         else
         {
+            // 直接読む材質ファイル
             std::ifstream input(path, std::ios::binary);
             if (!input)
             {
@@ -104,6 +108,7 @@ namespace LamaPon
                 std::istreambuf_iterator<char>());
         }
 
+        // 材質のJSON値
         const auto value =
             nlohmann::json::parse(bytes.begin(), bytes.end());
         if (value.value("type", std::string{}) != "LamaPonLitMaterial")
@@ -113,15 +118,19 @@ namespace LamaPon
                 + PathToUtf8(path));
         }
 
+        // GUIDを優先して参照パスを読む(field: JSONのフィールド名)。
         const auto readReference =
             [&value, database](
                 const std::string_view field)
             {
+                // 参照パスのJSON項目名
                 const std::string fieldName(field);
+                // GUID未解決時の参照パス
                 const auto fallback = PathFromUtf8(
                     value.value(
                         fieldName,
                         std::string{}));
+                // 参照先のGUID
                 const auto guid = value.value(
                     fieldName + "Guid",
                     std::string{});
@@ -133,6 +142,7 @@ namespace LamaPon
                     : fallback;
             };
 
+        // 読み込む材質
         LitMaterial material{
             value.contains("baseColor")
                 ? ReadColor(value.at("baseColor"))
@@ -142,11 +152,10 @@ namespace LamaPon
             value.value("roughness", 0.5f),
             value.value("normalStrength", 1.0f)
         };
-        // 旧アセットには存在しないため既定0で後方互換。
+        // 旧アセットにない金属度はゼロとして読み込む。
         material.SetMetallic(
             value.value("metallic", 0.0f));
-        // PBRマップと発光も旧アセットには無いので、未指定なら
-        // 未設定（発光は黒＝発光なし）のままにします。
+        // 未指定のPBR画像は空、発光色は黒として旧アセットとの互換性を保つ。
         material.SetRoughnessTexture(
             readReference("roughnessTexture"));
         material.SetMetallicTexture(
@@ -165,19 +174,23 @@ namespace LamaPon
                     "Material emissiveColor"));
         }
         material.SetShader(readReference("shader"));
-        // カスタムShaderの追加テクスチャ（t7以降）。旧アセットには
-        // 無いため、無ければ未設定のままです。
+        // 旧アセットで追加画像が省略されている場合は未設定のままにする。
+        // 追加画像のJSON配列
         if (const auto textures = value.find("customTextures");
             textures != value.end()
             && textures->is_array())
         {
+            // 読み込む要素数の上限
             const auto count = std::min(
                 textures->size(),
                 LitMaterial::CustomTextureCount);
+            // 追加画像・定数の番号
             for (std::size_t index = 0;
+                // 読み込む要素数の上限
                 index < count;
                 ++index)
             {
+                // 追加画像のJSON要素
                 const auto& entry = textures->at(index);
                 if (!entry.is_string())
                 {
@@ -189,12 +202,15 @@ namespace LamaPon
                         entry.get<std::string>()));
             }
         }
+        // 追加定数のJSON配列
         if (const auto found = value.find("customParameters");
             found != value.end() && found->is_array())
         {
+            // 読み込む要素数の上限
             const auto count = std::min(
                 found->size(),
                 LitMaterial::CustomParameterCount);
+            // 追加画像・定数の番号
             for (std::size_t index = 0; index < count; ++index)
             {
                 material.SetCustomParameter(
@@ -218,7 +234,9 @@ namespace LamaPon
                 "Material asset path is empty.");
         }
 
+        // 保存する材質の基準色
         const auto& color = material.BaseColor();
+        // 材質のJSON値
         nlohmann::json value{
             { "type", "LamaPonLitMaterial" },
             { "version", 2 },
@@ -254,6 +272,7 @@ namespace LamaPon
         value["emissiveTexture"] =
             PathToUtf8(material.EmissiveTexture());
         {
+            // 保存する発光色
             const auto& emissive = material.EmissiveColor();
             value["emissiveColor"] = nlohmann::json::array({
                 emissive.x,
@@ -263,12 +282,14 @@ namespace LamaPon
         }
         value["shader"] = PathToUtf8(material.Shader());
         value["customTextures"] = nlohmann::json::array();
+        // 保存する追加画像のパス
         for (const auto& texture : material.CustomTextures())
         {
             value["customTextures"].push_back(
                 PathToUtf8(texture));
         }
         value["customParameters"] = nlohmann::json::array();
+        // 保存する追加定数
         for (const auto& parameter : material.CustomParameters())
         {
             value["customParameters"].push_back(
@@ -281,6 +302,7 @@ namespace LamaPon
         }
         if (database != nullptr)
         {
+            // 基準色画像のGUID
             const auto albedoGuid =
                 database->GuidForPath(
                     material.AlbedoTexture());
@@ -289,6 +311,7 @@ namespace LamaPon
                 value["albedoTextureGuid"] =
                     albedoGuid;
             }
+            // 法線画像のGUID
             const auto normalGuid =
                 database->GuidForPath(
                     material.NormalTexture());
@@ -297,14 +320,15 @@ namespace LamaPon
                 value["normalTextureGuid"] =
                     normalGuid;
             }
+            // シェーダーのGUID
             const auto shaderGuid =
                 database->GuidForPath(material.Shader());
             if (!shaderGuid.empty())
             {
                 value["shaderGuid"] = shaderGuid;
             }
-            // PBRマップと発光マップも、移動・改名で参照が切れない
-            // ようGUIDを残します。
+            // 画像の移動や改名に追従できるよう、パスと一緒にGUIDを保存する。
+            // GUIDを保存するPBR画像の組
             const std::pair<
                 const char*,
                 const std::filesystem::path*> pbrReferences[]{
@@ -325,9 +349,11 @@ namespace LamaPon
                     &material.EmissiveTexture()
                 }
             };
+            // field: GUIDのJSON項目名、texturePath: 参照画像のパス
             for (const auto& [field, texturePath] :
                 pbrReferences)
             {
+                // 参照先のGUID
                 const auto guid =
                     database->GuidForPath(*texturePath);
                 if (!guid.empty())
@@ -337,6 +363,7 @@ namespace LamaPon
             }
         }
 
+        // 上書き保存する材質ファイル
         std::ofstream output(
             path,
             std::ios::binary | std::ios::trunc);

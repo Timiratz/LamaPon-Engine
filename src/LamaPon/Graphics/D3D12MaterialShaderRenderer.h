@@ -1,9 +1,5 @@
 #pragma once
 
-// DirectX 12 ExperimentalでMesh RendererのMaterial custom shaderを描く
-// pipelineです。D3D11のLitEffectと同じb0／b1／b2／b3、t0〜t25、s0／s1の
-// 契約で、VSMain／PSMain（とGSMain）を実行します。Runtime内部headerで、
-// SDKにはinstallしません。
 #include "LamaPon/Graphics/GraphicsRenderServices.h"
 #include "LamaPon/Graphics/GraphicsResource.h"
 #include "LamaPon/Graphics/MaterialShaderDrawRequest.h"
@@ -33,30 +29,36 @@ namespace LamaPon
 
 namespace LamaPon::Detail
 {
-    // 描画するShaderです。GraphicsDeviceがD3D11のMaterialShaderと同じく
-    // 宣言に無いkeywordを落とし、「パス?キーワード」のcache keyを作ります。
+    // 宣言にないキーワードを除いた「パス?キーワード」のキーを呼び出し側で渡します。
     struct MaterialShaderSource final
     {
+        // シェーダーの絶対パス
         std::filesystem::path path;
+        // キーワード別の識別キー
         std::filesystem::path cacheKey;
+        // 有効なキーワード
         std::vector<std::string> keywords;
+        // 失敗文を整える関数(message: 元の失敗文)。
         std::function<std::string(const char*)> describeFailure;
     };
 
     class D3D12MaterialShaderRenderer final
     {
     public:
+        // 描画器を作ります(backend: 描画器より長く生存するバックエンド)。
         explicit D3D12MaterialShaderRenderer(D3D12Backend& backend);
+        // 所有するシェーダーと描画資源を破棄します。
         ~D3D12MaterialShaderRenderer() noexcept;
 
+        // 描画器のコピーを禁止します。
         D3D12MaterialShaderRenderer(
             const D3D12MaterialShaderRenderer&) = delete;
+        // 描画器のコピー代入を禁止します。
         D3D12MaterialShaderRenderer& operator=(
             const D3D12MaterialShaderRenderer&) = delete;
 
-        // D3D11と同じく保存を250ミリ秒ごとに確かめて作り直し、失敗した
-        // Shaderはplaceholder（マゼンタ）で描きます。prepassはD3D11の
-        // 深度プリパスと同じく、深度を書かない宣言のShaderを飛ばします。
+        // マテリアルを描きます(assets: シェーダー取得元, shader: 描画するシェーダー, placeholder: 失敗時の代替, prepass: 深度プリパスの除外判定, request: 描画条件, vertices: 頂点列, indices: 頂点番号列, material: 素材・骨・追加パス, lighting: ライト情報)。
+        // 深度プリパスは骨変形を除き宣言付き半透明・深度書き込みなしを省き、深度描画には開始済みの深度パスが必要です。
         [[nodiscard]] MaterialShaderDrawResult Draw(
             AssetManager& assets,
             const MaterialShaderSource& shader,
@@ -67,16 +69,13 @@ namespace LamaPon::Detail
             std::span<const std::uint32_t> indices,
             const MaterialShaderDrawRequest& material,
             const LightingState& lighting);
-        // shaderPath（絶対パス）から作ったすべてのkeyword variantを、次の
-        // 描画で保存時刻に関係なく作り直させます。
+        // 全キーワードの次回再読込を要求します(shaderPath: シェーダーの絶対パス)。
         void Invalidate(const std::filesystem::path& shaderPath) noexcept;
-        // cache済みで使えるShaderの描画状態です。
+        // 準備済み通常シェーダーの描画状態を返します(cacheKey: キーワード別のキー, state: 成功時の出力)。
         [[nodiscard]] bool TryGetRenderState(
             const std::filesystem::path& cacheKey,
             ShaderRenderState& state) const noexcept;
-        // D3D11のLitEffect::HasOutline／HasOccludedPassと同じく、Shaderが
-        // 輪郭と遮蔽表示の入口を持つかです。まだ用意していないShaderは
-        // ここでcompileします。
+        // 通常シェーダーを準備して追加パスの有無を返します(assets: 取得元, shader: 準備するシェーダー)。
         [[nodiscard]] MaterialShaderPasses PreparePasses(
             AssetManager& assets,
             const MaterialShaderSource& shader);
@@ -84,86 +83,116 @@ namespace LamaPon::Detail
     private:
         struct PipelineKey final
         {
+            // カラー出力形式
             DXGI_FORMAT colorFormat{ DXGI_FORMAT_UNKNOWN };
+            // 深度出力形式
             DXGI_FORMAT depthFormat{ DXGI_FORMAT_UNKNOWN };
+            // 合成方式
             std::uint8_t blend{};
+            // 深度状態
             std::uint8_t depth{};
+            // 面の除外方式
             std::uint8_t cull{};
+            // 深度のみの描画
             bool depthOnly{};
+            // 最近傍の補間
             bool pointSampler{};
+            // 骨変形の描画
             bool skinned{};
-            // VSInstancedMainとslot 1のworld／colorを使います。
+            // 複数インスタンス描画
             bool instanced{};
-            // HSMain／DSMainを束ね、4制御点パッチで描くpipelineです。
+            // 4制御点パッチの描画
             bool tessellated{};
-            // MaterialShaderPassです。
+            // マテリアルパス番号
             std::uint8_t pass{};
-            // DirectXTKのCommonStates::Wireframeと同じく辺だけを描きます。
+            // 辺だけの描画
             bool wireframe{};
 
+            // 描画状態のキーを比較します。
             [[nodiscard]] auto operator<=>(
                 const PipelineKey&) const = default;
         };
 
         struct ShaderEntry final
         {
+            // 通常の頂点シェーダー
             Microsoft::WRL::ComPtr<ID3DBlob> vertexShader;
+            // 通常の画素シェーダー
             Microsoft::WRL::ComPtr<ID3DBlob> pixelShader;
+            // 複数描画の頂点シェーダー
             Microsoft::WRL::ComPtr<ID3DBlob> instancedVertexShader;
+            // 形状シェーダー
             Microsoft::WRL::ComPtr<ID3DBlob> geometryShader;
-            // HSMainとDSMainが両方あるときだけ持ちます。
+            // パッチ分割シェーダー
             Microsoft::WRL::ComPtr<ID3DBlob> hullShader;
+            // 分割面の頂点シェーダー
             Microsoft::WRL::ComPtr<ID3DBlob> domainShader;
-            // VSOutlineとPSOutlineが両方あるときだけ持ちます。
+            // 輪郭の頂点シェーダー
             Microsoft::WRL::ComPtr<ID3DBlob> outlineVertexShader;
+            // 輪郭の画素シェーダー
             Microsoft::WRL::ComPtr<ID3DBlob> outlinePixelShader;
+            // 遮蔽表示の画素シェーダー
             Microsoft::WRL::ComPtr<ID3DBlob> occludedPixelShader;
-            // PSSkinnedOccludedが無くPSOccludedへ戻った場合は、段間signatureを
-            // 合わせるためVSSkinnedMainと組み合わせます。
+            // PSSkinnedOccludedがなくPSOccludedへ戻る場合はVSSkinnedMainと組み合わせます。
             bool occludedUsesMaterialVertexShader{};
-            // 輪郭／遮蔽表示のpipelineを作れず、そのpassを止めた説明です。
+            // 追加パスの失敗理由
             std::string passError;
+            // 描画状態ごとのPSO
             std::map<
                 PipelineKey,
                 Microsoft::WRL::ComPtr<ID3D12PipelineState>> pipelines;
+            // 宣言された描画状態
             ShaderRenderState renderState;
-            // b0〜b3のうち、いずれかのstageが読むconstant bufferです。
+            // 使用するb0～b3
             std::array<bool, 4> constantBuffers{};
+            // パッチ分割の有無
             bool hasTessellation{};
+            // シェーダーの世代番号
             std::uint64_t generation{};
+            // 準備の失敗理由
             std::string error;
-            // D3D11のMaterialShaderEntryと同じ保存監視の状態です。
+            // 次の保存時刻確認
             std::chrono::steady_clock::time_point nextCheck{};
+            // 前回確認した保存時刻
             std::filesystem::file_time_type writeTime{};
+            // 保存状態の確認済み
             bool observed{};
+            // 次回の強制再読込
             bool forceReload{};
+            // 前回の元ファイル存在
             bool sourceExists{};
         };
 
-        // skinnedはVSSkinnedMain／PSSkinnedMainを別のcacheで用意します。
+        // 世代別シェーダーを準備します(assets: 取得元, source: パスとキーワード, skinned: 骨変形の別キャッシュ指定)。
+        // 元ファイルを250msごとに確認し、変更・無効化・コンパイル失敗では旧PSOを外します。
+        // HSMain/DSMainと輪郭のVS/PSはそれぞれ両方そろう場合だけ使用します。
         [[nodiscard]] ShaderEntry& Prepare(
             AssetManager& assets,
             const MaterialShaderSource& source,
             bool skinned);
+        // 描画状態に合うPSOを取得・生成します(entry: 準備済みシェーダー, key: 出力形式と描画状態)。
         [[nodiscard]] ID3D12PipelineState* PipelineState(
             ShaderEntry& entry,
             const PipelineKey& key);
 
+        // 借用する描画バックエンド
         D3D12Backend* m_backend{};
+        // 線形補間のルート署名
         Microsoft::WRL::ComPtr<ID3D12RootSignature> m_linearRootSignature;
+        // 最近傍補間のルート署名
         Microsoft::WRL::ComPtr<ID3D12RootSignature> m_pointRootSignature;
-        // LitEffectのフラット法線（R=G=0.5, B=1）と同じ1x1です。
+        // 既定の平坦法線ビュー
         GraphicsViewHandle m_flatNormalView;
-        // DirectXTK SkinnedEffectと同じ計算でglTF／FBXの骨を変形する
-        // エンジン内蔵の頂点シェーダーです。
+        // 内蔵の骨変形頂点シェーダー
         Microsoft::WRL::ComPtr<ID3DBlob> m_skinnedVertexShader;
-        // スキニング経路の代替表示です。LamaPonShaderError.hlslの
-        // PSSkinnedMainは入力をSV_Positionだけに絞っており、D3D12では内蔵
-        // 頂点シェーダーの出力と繋げられないため、同じマゼンタを内蔵します。
+        // 骨変形出力に合う内蔵マゼンタ表示
         ShaderEntry m_skinnedErrorShader;
+        // 通常描画のシェーダー群
         std::unordered_map<std::filesystem::path, ShaderEntry> m_shaders;
+        // 骨変形のシェーダー群
         std::unordered_map<std::filesystem::path, ShaderEntry>
             m_skinnedShaders;
+        // 次の世代番号
         std::uint64_t m_nextGeneration{ 1 };
     };
 }

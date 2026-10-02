@@ -4,16 +4,20 @@ namespace LamaPon
 {
     namespace
     {
+        // 未接続・非対応時に返す空の区間一覧を借用する。
         [[nodiscard]] const std::vector<GpuSectionTime>&
             EmptySections() noexcept
         {
+            // 返却する空のGPU区間一覧
             static const std::vector<GpuSectionTime> sections;
             return sections;
         }
 
+        // 未接続・非対応時に返す無効な処理量を借用する。
         [[nodiscard]] const GpuPipelineStatistics&
             EmptyPipelineStatistics() noexcept
         {
+            // 返却する無効なGPU処理量
             static const GpuPipelineStatistics statistics;
             return statistics;
         }
@@ -30,6 +34,7 @@ namespace LamaPon
         profiler.BeginSection(name);
     }
 
+    // 構築時の深さまで区間を閉じる。
     GpuProfiler::SectionScope::~SectionScope() noexcept
     {
         End();
@@ -79,10 +84,10 @@ namespace LamaPon
     void GpuProfiler::BeginSection(
         const std::string_view name)
     {
-        // 以降の副作用より前に確保し、登録できない区間の開始だけが
-        // 各通知先へ残ることを防ぎます。
+        // 通知前に保存領域を確保し、登録できない区間の開始だけが残ることを防ぐ。
         m_sections.reserve(m_sections.size() + 1);
 
+        // 開始・終了する区間の状態
         OpenSection section;
         if (IsSupported())
         {
@@ -95,8 +100,7 @@ namespace LamaPon
                 ++m_timedDepth;
             }
         }
-        // ここから先は例外を送出しないため、開始した通知先は
-        // 必ずm_sectionsから終了されます。
+        // 開始に成功した通知先を区間状態に記録し、終了時に対応させる。
         if (m_backend != nullptr)
         {
             section.marker = m_backend->BeginMarker(name);
@@ -117,7 +121,7 @@ namespace LamaPon
         }
         catch (...)
         {
-            // CPU計測の失敗で描画パスを止めません。
+            // CPU計測の失敗は描画パスへ伝播させない。
             section.cpuScope = {};
         }
         m_sections.push_back(section);
@@ -134,6 +138,7 @@ namespace LamaPon
 
     void GpuProfiler::EndTopSection() noexcept
     {
+        // 開始・終了する区間の状態
         const auto section = m_sections.back();
         m_sections.pop_back();
         if (section.cpuScope.IsValid())

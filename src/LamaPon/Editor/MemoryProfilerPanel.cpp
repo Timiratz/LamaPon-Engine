@@ -13,6 +13,7 @@ namespace LamaPon
 {
     namespace
     {
+        // 比較枠の表示名
         constexpr std::array<const char*, 2> SlotNames{
             "A（前）",
             "B（後）"
@@ -28,14 +29,15 @@ namespace LamaPon
             ColumnTotal
         };
 
+        // 静的に保持された分類名を返します(category: メモリ分類)。
         [[nodiscard]] const char* CategoryLabel(
             const MemoryCategory category)
         {
-            // MemoryCategoryNameは静的な文字列を返すため、c_strの代わりに
-            // dataをそのまま使えます。
+            // MemoryCategoryNameは静的な文字列を返すため、c_strの代わりにdataをそのまま使えます。
             return MemoryCategoryName(category).data();
         }
 
+        // 大文字小文字を区別して部分一致を判定します(filter: 検索文字列・空なら全件, name: 検索対象の資源名)。
         [[nodiscard]] bool MatchesFilter(
             const std::string& filter,
             const std::string& name)
@@ -44,9 +46,10 @@ namespace LamaPon
                 || name.find(filter) != std::string::npos;
         }
 
-        // 合計に対する割合を細い棒で示します。
+        // 全資源量に対する割合を描画します(value: 分類の資源量・byte, total: 全分類の資源量・byte)。
         void DrawShareBar(const std::uint64_t value, const std::uint64_t total)
         {
+            // 全資源量に対する比率
             const float fraction = total == 0
                 ? 0.0f
                 : static_cast<float>(
@@ -58,6 +61,7 @@ namespace LamaPon
                 FormatMemoryBytes(value).c_str());
         }
 
+        // プロセスと取得可能なVRAMの量を表示します(process: プロセスのメモリ統計)。
         void DrawProcessTotals(const MemoryProcessTotals& process)
         {
             ImGui::Text(
@@ -76,6 +80,7 @@ namespace LamaPon
         }
     }
 
+    // 取得・通知・ファイル選択処理を保持します。
     MemoryProfilerPanel::MemoryProfilerPanel(
         CaptureFunction capture,
         StatusSink status,
@@ -86,6 +91,7 @@ namespace LamaPon
     {
     }
 
+    // 登録された状態通知へ内容を渡します。
     void MemoryProfilerPanel::SetStatus(
         std::string message,
         const bool error) const
@@ -96,19 +102,20 @@ namespace LamaPon
         }
     }
 
+    // 取得結果と比較枠を更新します。
     void MemoryProfilerPanel::TakeSnapshot()
     {
         if (!m_capture)
         {
             return;
         }
+        // 新たに取得したメモリ内訳
         auto snapshot = m_capture();
         snapshot.capturedAt = DebugCaptureFiles::LocalTimestamp();
         snapshot.label = m_label.empty()
             ? snapshot.capturedAt
             : m_label;
-        // 直前の現在をA、新しい方をBに置くと、取り直すだけで
-        // 「何が増えたか」を比べられます。
+        // 新しい取得結果をB、直前の現在をAへ移して比較を更新します。
         if (m_current)
         {
             m_slots[0].snapshot = std::move(m_current);
@@ -118,6 +125,7 @@ namespace LamaPon
         m_comparisonDirty = true;
     }
 
+    // 現在の取得結果を重複しない保存パスへ書き出します。
     bool MemoryProfilerPanel::SaveCurrent(
         const std::filesystem::path& captureDirectory)
     {
@@ -132,6 +140,7 @@ namespace LamaPon
                 true);
             return false;
         }
+        // 保存先または選択ファイル
         const auto path = DebugCaptureFiles::UniqueCapturePath(
             captureDirectory,
             "memory",
@@ -146,11 +155,14 @@ namespace LamaPon
         return true;
     }
 
+    // JSONの読込に成功した場合だけ比較枠を更新します。
     void MemoryProfilerPanel::LoadSlot(
         const std::size_t slot,
         const std::filesystem::path& path)
     {
+        // 読込先の取得結果
         MemorySnapshot snapshot;
+        // 読込の失敗理由
         std::string error;
         if (!LoadMemorySnapshotJson(path, snapshot, &error))
         {
@@ -168,6 +180,7 @@ namespace LamaPon
         m_comparisonDirty = true;
     }
 
+    // 資源別の内訳と比較タブを描画します。
     void MemoryProfilerPanel::Draw(
         const char* const title,
         bool& open,
@@ -204,6 +217,7 @@ namespace LamaPon
         ImGui::End();
     }
 
+    // 取得名の入力と取得・保存操作を描画します。
     void MemoryProfilerPanel::DrawToolbar(
         const std::filesystem::path& captureDirectory)
     {
@@ -216,6 +230,7 @@ namespace LamaPon
             "取り直すと直前の記録と比較できます。");
         ImGui::SameLine();
         ImGui::SetNextItemWidth(160.0f);
+        // 取得名の入力バッファ
         char label[64]{};
         m_label.copy(label, sizeof(label) - 1);
         if (ImGui::InputTextWithHint(
@@ -237,6 +252,7 @@ namespace LamaPon
             "現在のスナップショットを.lamapon/memoryへJSONで保存します。");
     }
 
+    // 資源量を集計し、分類と名前による絞り込みを表示します。
     void MemoryProfilerPanel::DrawCurrentView()
     {
         if (!m_current)
@@ -246,6 +262,7 @@ namespace LamaPon
                 "内訳を記録します。");
             return;
         }
+        // 現在の取得結果
         const auto& snapshot = *m_current;
         ImGui::Text(
             "%s（%s）",
@@ -253,8 +270,11 @@ namespace LamaPon
             snapshot.capturedAt.c_str());
         DrawProcessTotals(snapshot.process);
 
+        // 分類別の集計結果
         const auto totals = SummarizeMemorySnapshot(snapshot);
+        // 全資源のCPUとGPU合計・byte
         std::uint64_t grandTotal{};
+        // 分類別の資源量
         for (const auto& total : totals)
         {
             grandTotal += total.gpuBytes + total.cpuBytes;
@@ -286,13 +306,16 @@ namespace LamaPon
                 "合計（割合）",
                 ImGuiTableColumnFlags_WidthStretch);
             ImGui::TableHeadersRow();
+            // メモリ分類の添字
             for (std::size_t index{}; index < totals.size(); ++index)
             {
+                // 分類別の資源量
                 const auto& total = totals[index];
                 if (total.count == 0)
                 {
                     continue;
                 }
+                // 表示するメモリ分類
                 const auto category = static_cast<MemoryCategory>(index);
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
@@ -326,6 +349,7 @@ namespace LamaPon
 
         ImGui::SeparatorText("資源");
         ImGui::SetNextItemWidth(220.0f);
+        // 資源名の入力バッファ
         char filter[128]{};
         m_filter.copy(filter, sizeof(filter) - 1);
         if (ImGui::InputTextWithHint(
@@ -345,8 +369,10 @@ namespace LamaPon
             }
         }
 
+        // 絞り込み後の資源への借用参照
         std::vector<const MemorySnapshotEntry*> rows;
         rows.reserve(snapshot.entries.size());
+        // 表示する資源の内訳
         for (const auto& entry : snapshot.entries)
         {
             if ((m_categoryFilter < 0
@@ -407,24 +433,30 @@ namespace LamaPon
             ColumnTotal);
         ImGui::TableHeadersRow();
 
+        // 表で指定された並べ替え条件
         if (const auto* specs = ImGui::TableGetSortSpecs();
             specs != nullptr && specs->SpecsCount > 0)
         {
+            // 先頭列の並べ替え条件
             const auto& spec = specs->Specs[0];
+            // 昇順で並べるか
             const bool ascending =
                 spec.SortDirection == ImGuiSortDirection_Ascending;
+            // 先頭の指定列で資源を安定整列します(left: 左の資源, right: 右の資源)。
             std::ranges::stable_sort(
                 rows,
                 [&spec, ascending](
                     const MemorySnapshotEntry* left,
                     const MemorySnapshotEntry* right)
                 {
+                    // 指定方向で値を比較します(a: 左の比較値, b: 右の比較値)。
                     const auto compare = [ascending](
                         const auto& a,
                         const auto& b)
                     {
                         return ascending ? a < b : b < a;
                     };
+                    // 指定列に対応する比較値を選びます。
                     switch (spec.ColumnUserID)
                     {
                     case ColumnCategory:
@@ -445,14 +477,17 @@ namespace LamaPon
                 });
         }
 
+        // 可視行だけを描画する範囲
         ImGuiListClipper clipper;
         clipper.Begin(static_cast<int>(rows.size()));
         while (clipper.Step())
         {
+            // 表示対象の行添字
             for (int row = clipper.DisplayStart;
                 row < clipper.DisplayEnd;
                 ++row)
             {
+                // 表示する資源の内訳
                 const auto& entry = *rows[static_cast<std::size_t>(row)];
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
@@ -476,10 +511,12 @@ namespace LamaPon
         ImGui::EndTable();
     }
 
+    // 現在または保存済みの取得結果を比較枠へ設定します。
     void MemoryProfilerPanel::DrawSlotSelector(
         const std::size_t slot,
         const std::filesystem::path& captureDirectory)
     {
+        // 選択中の比較枠
         auto& target = m_slots[slot];
         ImGui::PushID(static_cast<int>(slot));
         ImGui::Text(
@@ -512,8 +549,10 @@ namespace LamaPon
             {
                 ImGui::TextDisabled("保存したスナップショットがありません。");
             }
+            // 保存済み取得結果のパス
             for (const auto& file : m_captureFiles)
             {
+                // 保存ファイルの表示名
                 const auto name = PathToUtf8(file.filename());
                 if (ImGui::Selectable(name.c_str()))
                 {
@@ -526,6 +565,7 @@ namespace LamaPon
         ImGui::BeginDisabled(!m_openFile);
         if (ImGui::SmallButton("参照..."))
         {
+            // 保存先または選択ファイル
             if (const auto path = m_openFile(captureDirectory))
             {
                 LoadSlot(slot, *path);
@@ -535,6 +575,7 @@ namespace LamaPon
         ImGui::PopID();
     }
 
+    // 枠が変わった場合だけ再計算し、AからBへの増減を表示します。
     void MemoryProfilerPanel::DrawComparisonView(
         const std::filesystem::path& captureDirectory)
     {
@@ -544,6 +585,7 @@ namespace LamaPon
                 ImGuiTableFlags_BordersInnerV
                     | ImGuiTableFlags_SizingStretchSame))
         {
+            // 比較枠の添字・0はA、1はB
             for (std::size_t slot{}; slot < m_slots.size(); ++slot)
             {
                 ImGui::TableNextColumn();
@@ -566,6 +608,7 @@ namespace LamaPon
                 *m_slots[1].snapshot);
             m_comparisonDirty = false;
         }
+        // 再計算済みの比較結果
         const auto& comparison = *m_comparison;
         ImGui::Text(
             "プロセス private %s  working set %s  VRAM %s",
@@ -583,17 +626,22 @@ namespace LamaPon
             ImGui::TableSetupColumn("B");
             ImGui::TableSetupColumn("差");
             ImGui::TableHeadersRow();
+            // メモリ分類の添字
             for (std::size_t index{};
                 index < comparison.before.size();
                 ++index)
             {
+                // 変更前の分類別資源量
                 const auto& before = comparison.before[index];
+                // 変更後の分類別資源量
                 const auto& after = comparison.after[index];
                 if (before.count == 0 && after.count == 0)
                 {
                     continue;
                 }
+                // 変更前のCPUとGPU合計・byte
                 const auto beforeBytes = before.gpuBytes + before.cpuBytes;
+                // 変更後のCPUとGPU合計・byte
                 const auto afterBytes = after.gpuBytes + after.cpuBytes;
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
@@ -610,6 +658,7 @@ namespace LamaPon
                     FormatMemoryBytes(afterBytes).c_str(),
                     after.count);
                 ImGui::TableSetColumnIndex(3);
+                // 変更後から変更前を引いた量・byte
                 const auto delta =
                     static_cast<std::int64_t>(afterBytes)
                     - static_cast<std::int64_t>(beforeBytes);
@@ -627,6 +676,7 @@ namespace LamaPon
         }
 
         ImGui::SetNextItemWidth(220.0f);
+        // 資源名の入力バッファ
         char filter[128]{};
         m_filter.copy(filter, sizeof(filter) - 1);
         if (ImGui::InputTextWithHint(
@@ -670,6 +720,7 @@ namespace LamaPon
             ImGuiTableColumnFlags_WidthFixed,
             90.0f);
         ImGui::TableHeadersRow();
+        // 表示する資源の増減
         for (const auto& entry : comparison.entries)
         {
             if (!MatchesFilter(m_filter, entry.name))
@@ -678,6 +729,7 @@ namespace LamaPon
             }
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
+            // 資源の追加・解放・変更を区別して表示します。
             switch (entry.change)
             {
             case MemoryEntryChange::Added:

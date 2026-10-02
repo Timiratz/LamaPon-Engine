@@ -8,6 +8,7 @@
 
 namespace
 {
+    // 登録するウィンドウクラス名
     constexpr wchar_t WindowClassName[] = L"LamaPonWindow";
 }
 
@@ -41,6 +42,7 @@ namespace LamaPon
     {
         m_instance = instance;
 
+        // アイコンと処理関数の登録設定
         WNDCLASSEXW windowClass{};
         windowClass.cbSize = sizeof(windowClass);
         windowClass.style = CS_HREDRAW | CS_VREDRAW;
@@ -69,6 +71,7 @@ namespace LamaPon
             throw std::runtime_error("RegisterClassExW failed.");
         }
 
+        // 装飾を含む初期ウィンドウ矩形
         RECT windowRectangle{
             0,
             0,
@@ -121,11 +124,14 @@ namespace LamaPon
             ShowWindow(m_handle, SW_RESTORE);
         }
 
+        // 指定クライアント領域からの矩形
         RECT rectangle{ 0, 0,
             static_cast<LONG>(width),
             static_cast<LONG>(height) };
+        // 現在のウィンドウスタイル
         const auto style = static_cast<DWORD>(
             GetWindowLongPtrW(m_handle, GWL_STYLE));
+        // 現在の拡張ウィンドウスタイル
         const auto extendedStyle = static_cast<DWORD>(
             GetWindowLongPtrW(m_handle, GWL_EXSTYLE));
         if (!AdjustWindowRectExForDpi(
@@ -140,6 +146,7 @@ namespace LamaPon
             return false;
         }
         // WM_SIZEで実測値と描画サイズが更新されます。
+        // 実測するクライアント領域の矩形
         RECT client{};
         return GetClientRect(m_handle, &client)
             && client.right - client.left == static_cast<LONG>(width)
@@ -152,10 +159,12 @@ namespace LamaPon
         const WPARAM wParam,
         const LPARAM lParam)
     {
+        // 受信ウィンドウに対応する所有者
         Window* self = nullptr;
 
         if (message == WM_NCCREATE)
         {
+            // 作成時に渡されたウィンドウ情報
             const auto* create = reinterpret_cast<CREATESTRUCTW*>(lParam);
             self = static_cast<Window*>(create->lpCreateParams);
             self->m_handle = window;
@@ -197,9 +206,7 @@ namespace LamaPon
                 static_cast<std::int64_t>(lParam));
             break;
 
-        // マウスイベントはメッセージコールバックより先に転送します。
-        // エディターUIがメッセージを消費しても、1フレーム未満の押下が
-        // ゲーム側へ届くようにするためです。
+        // UIが消費しても短い押下を拾えるよう、ゲーム入力を先に転送します。
         case WM_LBUTTONDOWN:
         case WM_LBUTTONUP:
         case WM_RBUTTONDOWN:
@@ -227,6 +234,7 @@ namespace LamaPon
             m_minimized = wParam == SIZE_MINIMIZED;
             if (!m_minimized)
             {
+                // 変更後のクライアント領域の矩形
                 RECT client{};
                 if (GetClientRect(m_handle, &client))
                 {
@@ -255,8 +263,7 @@ namespace LamaPon
             return 0;
 
         case WM_CLOSE:
-            // 閉じてよいかをアプリ側へ確認します（未保存の警告など）。
-            // falseが返ったら閉じるのを中止します。
+            // 確認先がfalseを返した場合は終了要求を取り消します。
             if (m_closeCallback && !m_closeCallback())
             {
                 return 0;

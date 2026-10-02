@@ -2,6 +2,7 @@
 
 namespace LamaPonSceneShowcase
 {
+    // SceneTransition.Presetの編集欄と既定値
     inline constexpr char PresetSchema[] = R"schema({
     "fields": [
         {

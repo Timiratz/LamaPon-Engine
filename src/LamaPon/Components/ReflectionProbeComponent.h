@@ -8,20 +8,12 @@
 
 namespace LamaPon
 {
-    // リフレクションプローブ（ローカルIBL）。
-    //
-    // Skyboxの環境反射はシーン全体で1つなので、屋内の金属が屋外の
-    // 空を映してしまいます。プローブを置くと、その位置から見た
-    // シーンをキューブマップへ焼き（ベイク）、範囲内のオブジェクトの
-    // 反射と環境光がそれに置き換わります。
-    //
-    // ベイクはシーン読み込み後に自動で1回走ります。物を動かしたら
-    // Inspectorの「ベイクし直す」を押してください（実行中の自動
-    // 再ベイクはしません。6面ぶんの再描画が走るためです）。
-    // 焼いた結果はGPUメモリー上だけに持ち、ファイルへは保存しません。
+    // 読み込み時はキャッシュ復元またはベイクを行い、シーン変更後は明示的な再ベイクが必要です。
+    // 結果はディスクの環境キャッシュにも保存し、数値設定には有限値を指定します。
     class ReflectionProbeComponent final : public Component
     {
     public:
+        // ローカル環境光プローブを作ります(range: 影響半径ワールド単位, intensity: 環境光強度)。
         explicit ReflectionProbeComponent(
             const float range = 10.0f,
             const float intensity = 1.0f) noexcept
@@ -30,34 +22,29 @@ namespace LamaPon
             SetIntensity(intensity);
         }
 
-        // 影響範囲（半径、ワールド単位）。中心がこの範囲に入っている
-        // オブジェクトへ適用されます。
+        // 影響半径を0.1以上に制限して設定します(range: ワールド単位の半径)。
         void SetRange(const float range) noexcept
         {
             m_range = std::max(range, 0.1f);
         }
+        // 影響半径をワールド単位で返します。
         [[nodiscard]] float Range() const noexcept
         {
             return m_range;
         }
 
-        // 反射の強さ（SkyのIBL強度と同じ扱い）。
+        // 強度を非負に制限して設定します(intensity: 環境光強度)。
         void SetIntensity(const float intensity) noexcept
         {
             m_intensity = std::max(intensity, 0.0f);
         }
+        // 環境光の強度を返します。
         [[nodiscard]] float Intensity() const noexcept
         {
             return m_intensity;
         }
 
-        // ボックス射影の箱の半径（各軸、プローブ中心から）。
-        //
-        // キューブマップは「無限遠の景色」として作られるので、
-        // これを指定しないと部屋の壁が無限に遠くにあるように映り、
-        // カメラを動かしても壁の映り込みが動きません。部屋の
-        // 大きさを入れると、壁・床・天井が正しい距離で映ります。
-        // 0を含む場合は補正しません（屋外や空を映す用途）。
+        // ボックス射影の半幅を非負に制限して設定します(extents: ワールドXYZ半幅)。
         void SetBoxExtents(
             const DirectX::XMFLOAT3& extents) noexcept
         {
@@ -67,12 +54,13 @@ namespace LamaPon
                 std::max(extents.z, 0.0f)
             };
         }
+        // ボックス射影のワールドXYZ半幅を返します。
         [[nodiscard]] const DirectX::XMFLOAT3&
             BoxExtents() const noexcept
         {
             return m_boxExtents;
         }
-        // 3軸すべてが正のときだけボックス射影が効きます。
+        // XYZ半幅がすべて正でボックス射影を使うか返します。
         [[nodiscard]] bool
             UsesBoxProjection() const noexcept
         {
@@ -81,102 +69,101 @@ namespace LamaPon
                 && m_boxExtents.z > 0.0f;
         }
 
-        // 隣のプローブと混ぜ始める距離（範囲の内側から測った厚み）。
-        //
-        // 0にすると混ぜません（境界で切り替わる従来の挙動）。値を
-        // 入れると、範囲の縁からこの厚みのあいだで少しずつ隣の
-        // プローブへ移るので、境界をまたいだ瞬間に映り込みが飛ぶのを
-        // 防げます。範囲より大きい値を入れても範囲までに収めます。
+        // 混合を始める内側の厚みを設定します(distance: 非負に制限するワールド距離で0は混合なし)。
         void SetBlendDistance(const float distance) noexcept
         {
             m_blendDistance = std::max(distance, 0.0f);
         }
+        // 影響半径以下に制限した混合距離を返します。
         [[nodiscard]] float BlendDistance() const noexcept
         {
             return std::min(m_blendDistance, m_range);
         }
 
-        // この位置に対する影響度（0＝範囲の外、1＝混ぜ始める距離より
-        // 内側）。プローブを選ぶときと混ぜる比率の両方に使います。
+        // 範囲外で0、混合域で線形に減る影響度を返します(position: 評価するワールド位置)。
         [[nodiscard]] float InfluenceAt(
             const DirectX::XMFLOAT3& position)
             const noexcept;
 
-        // 箱の中心にも使うワールド位置。
+        // プローブ中心のワールド位置を返します。
         [[nodiscard]] DirectX::XMFLOAT3
             WorldPosition() const noexcept;
 
-        // ベイクを要求します（次の描画フレームの頭で実行されます）。
+        // 次のシーン描画時のベイクを要求します。
         void RequestBake() noexcept
         {
             m_bakeRequested = true;
         }
+        // ベイクが要求されているか返します。
         [[nodiscard]] bool IsBakeRequested() const noexcept
         {
             return m_bakeRequested;
         }
+        // 保持する環境ビューが有効か返します。
         [[nodiscard]] bool IsBaked() const noexcept
         {
             return m_baked.IsValid();
         }
 
-        // Sceneのベイク処理だけが使います。
+        // シーンのベイク結果を保持して要求を解除します(baked: 生成した環境ビュー)。
         void SetBakedEnvironment(
             PrefilteredEnvironmentViews baked) noexcept
         {
             m_baked = std::move(baked);
             m_bakeRequested = false;
         }
+        // 保持する環境ビューへの参照を返します。
         [[nodiscard]] const PrefilteredEnvironmentViews&
             BakedEnvironment() const noexcept
         {
             return m_baked;
         }
 
+        // 保存用のコンポーネント型名を返します。
         [[nodiscard]] std::string_view
             TypeName() const noexcept override
         {
             return "ReflectionProbe";
         }
 
-        // シーンファイルから読み込まれたプローブであることの印。
-        // ディスクの環境キャッシュから復元してよいのは、この印が
-        // あるものだけです（スクリプトが実行中に作ったプローブは、
-        // 過去の別の絵を映すべきではないため）。
+        // シーン読み込み由来と記録して初回キャッシュ復元を許可します。
         void MarkLoadedFromScene() noexcept
         {
             m_loadedFromScene = true;
         }
+        // シーン読み込み由来か返します。
         [[nodiscard]] bool IsLoadedFromScene() const noexcept
         {
             return m_loadedFromScene;
         }
 
-        // ディスクからの復元を一度試したかどうか。外れても毎フレーム
-        // ファイルを開き直さないための印で、Sceneのベイク処理だけが
-        // 使います。
+        // シーンが初回のキャッシュ復元を試みたと記録します。
         void MarkRestoreAttempted() noexcept
         {
             m_restoreAttempted = true;
         }
+        // 初回のキャッシュ復元を試みたか返します。
         [[nodiscard]] bool RestoreAttempted() const noexcept
         {
             return m_restoreAttempted;
         }
 
     private:
+        // 影響半径ワールド単位
         float m_range{ 10.0f };
+        // 環境光の強度
         float m_intensity{ 1.0f };
-        // 既定は0（補正なし＝空や屋外を映す従来の挙動）。
+        // 射影箱のワールドXYZ半幅
         DirectX::XMFLOAT3 m_boxExtents{};
-        // 既定は0（混ぜない＝境界で切り替わる従来の挙動）。
+        // 混合域の厚みワールド単位
         float m_blendDistance{};
-        // 初期状態でベイク待ち。シーン読み込みでコンポーネントが
-        // 作り直されると自動的にベイク待ちへ戻ります（その最初の
-        // 1回は、ディスクのキャッシュに残っていれば復元で済みます）。
+        // ベイク要求の有無
         bool m_bakeRequested{ true };
+        // シーン読み込み由来の指定
         bool m_loadedFromScene{};
+        // 初回キャッシュ復元試行済み
         bool m_restoreAttempted{};
+        // 保持するベイク環境ビュー
         PrefilteredEnvironmentViews m_baked;
     };
 }

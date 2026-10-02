@@ -8,8 +8,10 @@
 
 namespace
 {
+    // 描画状態のJSON識別子
     constexpr std::string_view BlockName = "LAMAPON_RENDER_STATE";
 
+    // 合成方式名を変換し、未知なら不透明を返す(name: 合成方式名)。
     [[nodiscard]] LamaPon::ShaderBlendMode BlendFromName(
         const std::string& name)
     {
@@ -28,6 +30,7 @@ namespace
         return LamaPon::ShaderBlendMode::Opaque;
     }
 
+    // カリング名を変換し、未知なら裏面省略を返す(name: カリング方式名)。
     [[nodiscard]] LamaPon::ShaderCullMode CullFromName(
         const std::string& name)
     {
@@ -48,7 +51,9 @@ namespace LamaPon
     ShaderRenderState ParseShaderRenderState(
         const std::string_view shaderSource)
     {
+        // 解析結果または作成する状態
         ShaderRenderState state;
+        // 宣言識別子の出現位置
         const auto blockPosition =
             shaderSource.find(BlockName);
         if (blockPosition == std::string_view::npos)
@@ -56,8 +61,8 @@ namespace LamaPon
             return state;
         }
 
-        // ブロック名の後ろの最初の '{' 〜 対応する '}' をJSONとして
-        // 読みます（コメント内に書かれる前提です）。
+        // 識別子の後ろで最初のJSONオブジェクトを読み取る。
+        // JSONオブジェクトの開始位置
         const auto objectStart =
             shaderSource.find('{', blockPosition);
         if (objectStart == std::string_view::npos)
@@ -65,13 +70,18 @@ namespace LamaPon
             return state;
         }
 
+        // JSONの波括弧の深さ
         std::size_t depth = 0;
+        // JSONオブジェクトの終了位置
         std::size_t objectEnd = std::string_view::npos;
+        // JSON文字列の解析中フラグ
         bool inString = false;
+        // ソース内の解析位置
         for (std::size_t index = objectStart;
             index < shaderSource.size();
             ++index)
         {
+            // 解析中の一文字
             const char character = shaderSource[index];
             if (inString)
             {
@@ -108,6 +118,7 @@ namespace LamaPon
             return state;
         }
 
+        // 構文解析したJSON文書
         const auto document = nlohmann::json::parse(
             shaderSource.substr(
                 objectStart,
@@ -129,8 +140,7 @@ namespace LamaPon
             document.value("depthWrite", true);
         state.depthTest =
             document.value("depthTest", true);
-        // 半透明で指定がない場合は、重ね合わせを保つため深度へ
-        // 書き込まない設定を使います。
+        // 不透明以外で深度書込の指定がなければ書込を無効にする。
         if (state.blend != ShaderBlendMode::Opaque
             && !document.contains("depthWrite"))
         {
@@ -142,20 +152,22 @@ namespace LamaPon
     Microsoft::WRL::ComPtr<ID3D11BlendState>
         CreateAdditiveBlendPreservingAlpha(ID3D11Device* device)
     {
+        // 解析結果または作成する状態
         Microsoft::WRL::ComPtr<ID3D11BlendState> state;
         if (device == nullptr)
         {
             return state;
         }
+        // 純加算の合成状態設定
         D3D11_BLEND_DESC description{};
+        // 先頭描画先の合成設定
         auto& target = description.RenderTarget[0];
         target.BlendEnable = TRUE;
-        // RGBは純加算（発光）。SrcAlpha加重にしないのは、宣言側の
-        // シェーダーが強さを自分でRGBへ乗せる約束のため。
+        // 合成強度はシェーダー側のRGBへ反映し、合成時はアルファで重み付けしない。
         target.SrcBlend = D3D11_BLEND_ONE;
         target.DestBlend = D3D11_BLEND_ONE;
         target.BlendOp = D3D11_BLEND_OP_ADD;
-        // アルファは書き込み先を保存する。
+        // 描画先のアルファを保存する。
         target.SrcBlendAlpha = D3D11_BLEND_ZERO;
         target.DestBlendAlpha = D3D11_BLEND_ONE;
         target.BlendOpAlpha = D3D11_BLEND_OP_ADD;

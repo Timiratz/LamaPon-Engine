@@ -49,7 +49,9 @@ namespace LamaPon
         const std::string_view key,
         const std::int64_t fallback) const noexcept
     {
+        // キーに対応する値の非所有参照
         const auto* value = Find(key);
+        // 要求型が一致した場合の値参照
         const auto* result = value != nullptr
             ? std::get_if<std::int64_t>(value)
             : nullptr;
@@ -60,7 +62,9 @@ namespace LamaPon
         const std::string_view key,
         const double fallback) const noexcept
     {
+        // キーに対応する値の非所有参照
         const auto* value = Find(key);
+        // 要求型が一致した場合の値参照
         const auto* result = value != nullptr
             ? std::get_if<double>(value)
             : nullptr;
@@ -71,7 +75,9 @@ namespace LamaPon
         const std::string_view key,
         const bool fallback) const noexcept
     {
+        // キーに対応する値の非所有参照
         const auto* value = Find(key);
+        // 要求型が一致した場合の値参照
         const auto* result = value != nullptr
             ? std::get_if<bool>(value)
             : nullptr;
@@ -82,7 +88,9 @@ namespace LamaPon
         const std::string_view key,
         std::string fallback) const
     {
+        // キーに対応する値の非所有参照
         const auto* value = Find(key);
+        // 要求型が一致した場合の値参照
         const auto* result = value != nullptr
             ? std::get_if<std::string>(value)
             : nullptr;
@@ -93,6 +101,8 @@ namespace LamaPon
         RuntimeGameState::Find(
             const std::string_view key) const noexcept
     {
+        // storedKey: 登録済みのキー名
+        // value: 登録済みの値
         for (const auto& [storedKey, value] : m_values)
         {
             if (storedKey == key)
@@ -112,8 +122,11 @@ namespace LamaPon
     std::vector<std::pair<std::string, RuntimeGameState::Value>>
         RuntimeGameState::Snapshot() const
     {
+        // キーと値のコピーを格納する一覧
         std::vector<std::pair<std::string, Value>> values;
         values.reserve(m_values.size());
+        // key: コピーするキー名
+        // value: コピーする値
         for (const auto& [key, value] : m_values)
         {
             values.emplace_back(key, value);

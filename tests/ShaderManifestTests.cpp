@@ -23,55 +23,66 @@
 
 namespace
 {
+    // Require(condition: 成否, message: 失敗理由) は不成立時に例外を送出する。
     void Require(
         const bool condition,
         const char* message)
     {
+        // 条件を満たさない場合はテストを失敗させる。
         if (!condition)
         {
+            // 失敗理由を例外として呼び出し元へ伝える。
             throw std::runtime_error(message);
         }
     }
 
+    // Contains(value: 診断文, expected: 検索語) は部分文字列の有無を返す。
     [[nodiscard]] bool Contains(
         const std::string& value,
         const std::string_view expected)
     {
+        // 検索語の有無を戻り値で示す。
         return value.find(expected) != std::string::npos;
     }
 
+    // RequireThrowsContaining(callback: 実行処理, expectedError: 期待語, message: 失敗理由) は例外診断を検証する。
     template<typename Callback>
     void RequireThrowsContaining(
         Callback&& callback,
         const std::string_view expectedError,
         const char* message)
     {
+        // callback実行時の例外を捕捉する。
         try
         {
             callback();
         }
+        // exception: 診断を検証し、一致時は成功で戻る。
         catch (const std::exception& exception)
         {
             Require(
                 Contains(exception.what(), expectedError),
                 "exception did not contain the expected diagnostic");
+            // 診断一致後に正常終了する。
             return;
         }
+        // 期待例外が出なければ失敗を通知する。
         throw std::runtime_error(message);
     }
 
-    // Parse failures are transactional so a failed hot reload cannot replace
-    // the last valid description with a partially parsed manifest.
+    // RequireRejected(json: 不正manifest, expectedError: 期待診断) は拒否と出力保持を確認する。
     void RequireRejected(
         const std::string_view json,
         const std::string_view expectedError)
     {
+        // 解析失敗時の出力manifest基準
         LamaPon::ShaderAssetDesc description;
         description.version = 77;
         description.name = "unchanged";
         description.source = "unchanged.hlsl";
         description.passes.emplace_back();
 
+        // parserの診断文
         std::string error;
         Require(
             !LamaPon::ParseShaderAssetDesc(
@@ -90,9 +101,11 @@ namespace
             "a failed parse modified the output description");
     }
 
+    // ManifestWithProperties(properties: property配列) は最小のmaterial manifestを生成する。
     [[nodiscard]] std::string ManifestWithProperties(
         const std::string_view properties)
     {
+        // 生成したmanifest文字列を返す。
         return std::string{
             R"json({"version":1,"name":"Properties","type":"material","source":"a.hlsl","properties":)json"
         } + std::string{ properties }
@@ -102,28 +115,32 @@ namespace
     class ShaderCacheStateGuard final
     {
     public:
+        // ShaderCacheStateGuard() は共有shader cacheを無効にし、終了時に元の設定へ戻す。
         ShaderCacheStateGuard()
             : m_previous(LamaPon::IsShaderCacheEnabled())
         {
-            // These checks must neither read nor write the user's shared
-            // shader cache. Every compile therefore uses the fixture source.
             LamaPon::SetShaderCacheEnabled(false);
         }
 
+        // ~ShaderCacheStateGuard() は保存していたshader cache設定を復元する。
         ~ShaderCacheStateGuard()
         {
             LamaPon::SetShaderCacheEnabled(m_previous);
         }
 
+        // コピー構築はcache復元責務を一意に保つため禁止する。
         ShaderCacheStateGuard(
             const ShaderCacheStateGuard&) = delete;
+        // コピー代入はcache復元責務を一意に保つため禁止する。
         ShaderCacheStateGuard& operator=(
             const ShaderCacheStateGuard&) = delete;
 
     private:
+        // 共有shader cacheの元設定
         bool m_previous{};
     };
 
+    // screen FX fixture
     constexpr std::string_view ValidManifest = R"json(
 {
   "version": 1,
@@ -167,9 +184,12 @@ namespace
 }
 )json";
 
+    // TestSuccessfulParseAndRetention() は解析後のmanifest項目とrender stateの保持を確認する。
     void TestSuccessfulParseAndRetention()
     {
+        // parserの出力manifest
         LamaPon::ShaderAssetDesc description;
+        // parserの診断文
         std::string error = "stale error";
         Require(
             LamaPon::ParseShaderAssetDesc(
@@ -214,13 +234,17 @@ namespace
             description.passes.size() == 1
                 && description.passes.front().name == "Main",
             "shader passes were not retained");
+        // 検査対象の先頭pass
         const auto& pass = description.passes.front();
+        // vertex stageの定義
         const auto* vertex = LamaPon::FindShaderStage(
             pass,
             LamaPon::ShaderStage::Vertex);
+        // pixel stageの定義
         const auto* pixel = LamaPon::FindShaderStage(
             pass,
             LamaPon::ShaderStage::Pixel);
+        // geometry stageの定義
         const auto* geometry = LamaPon::FindShaderStage(
             pass,
             LamaPon::ShaderStage::Geometry);
@@ -255,8 +279,10 @@ namespace
             "render state fields were not retained");
     }
 
+    // TestDefaults() はpass、render state、optional stageの既定値を確認する。
     void TestDefaults()
     {
+        // default fixture
         constexpr std::string_view manifest = R"json(
 {
   "version": 1,
@@ -272,7 +298,9 @@ namespace
 }
 )json";
 
+        // parserの出力manifest
         LamaPon::ShaderAssetDesc description;
+        // parserの診断文
         std::string error;
         Require(
             LamaPon::ParseShaderAssetDesc(
@@ -280,6 +308,7 @@ namespace
                 description,
                 error),
             "a manifest using defaults must parse");
+        // 検査対象の先頭pass
         const auto& pass = description.passes.front();
         Require(
             pass.name.empty()
@@ -291,6 +320,7 @@ namespace
                 && pass.renderState.cull == "Back"
                 && pass.renderState.blend == "Opaque",
             "render state defaults changed");
+        // vertex stageの定義
         const auto* vertex = LamaPon::FindShaderStage(
             pass,
             LamaPon::ShaderStage::Vertex);
@@ -304,9 +334,12 @@ namespace
             "an absent optional stage must not be synthesized");
     }
 
+    // TestPropertyValidation() はpropertyの型、binding、default、rangeの検証を行う。
     void TestPropertyValidation()
     {
+        // parserの出力manifest
         LamaPon::ShaderAssetDesc description;
+        // parserの診断文
         std::string error;
         Require(
             LamaPon::ParseShaderAssetDesc(
@@ -430,6 +463,7 @@ namespace
             ".default must be within");
     }
 
+    // TestValidationFailures() は不正manifestが個別診断付きで拒否されることを確認する。
     void TestValidationFailures()
     {
         RequireRejected(
@@ -552,10 +586,13 @@ namespace
         RequireRejected("{", "JSON parse failed");
     }
 
+    // TestLoad(assets: shader fixture群) は読込、role順、失敗時の出力保持を確認する。
     void TestLoad(
         LamaPon::AssetManager& assets)
     {
+        // loaded manifestの出力先
         LamaPon::ShaderAssetDesc description;
+        // loaderの診断文
         std::string error = "stale error";
         Require(
             LamaPon::LoadShaderAssetDesc(
@@ -611,10 +648,12 @@ namespace
             "a missing manifest modified the output description");
     }
 
+    // TestShaderProgram(device: WARP device, assets: shader fixture群) はstage失敗時の保持とkeywordを検証する。
     void TestShaderProgram(
         ID3D11Device* device,
         LamaPon::AssetManager& assets)
     {
+        // optional pass
         LamaPon::ShaderPassDesc optionalPass;
         optionalPass.name = "OptionalFailure";
         optionalPass.stages = {
@@ -638,7 +677,9 @@ namespace
             }
         };
 
+        // コンパイル結果の保持対象
         LamaPon::ShaderProgram program;
+        // compile errorの初期値
         std::string error = "stale error";
         Require(
             program.Compile(
@@ -656,10 +697,14 @@ namespace
                 && program.VertexShaderByteCode() != nullptr,
             "ShaderProgram created the wrong stage set");
 
+        // 失敗前のvertex shader
         auto* const previousVertex = program.VertexShader();
+        // 失敗前のpixel shader
         auto* const previousPixel = program.PixelShader();
+        // 失敗前のvertex bytecode
         auto* const previousVertexByteCode =
             program.VertexShaderByteCode();
+        // 必須stageの失敗fixture
         LamaPon::ShaderPassDesc requiredPass;
         requiredPass.name = "RequiredFailure";
         requiredPass.stages = {
@@ -689,6 +734,7 @@ namespace
                 && Contains(error, "RequiredPixelDoesNotExist")
                 && Contains(error, "ps_5_0"),
             "required stage error lacks actionable context");
+        // 必須stage失敗時の診断原文
         const std::string missingEntryError = error;
         Require(
             program.VertexShader() == previousVertex
@@ -697,6 +743,7 @@ namespace
                     == previousVertexByteCode,
             "a failed rebuild replaced the last valid program");
 
+        // 不正targetの失敗fixture
         LamaPon::ShaderPassDesc invalidTargetPass;
         invalidTargetPass.name = "InvalidTarget";
         invalidTargetPass.stages = {
@@ -722,6 +769,7 @@ namespace
                 && error != missingEntryError,
             "an invalid target lacks a distinct actionable error");
 
+        // keyword pass
         LamaPon::ShaderPassDesc keywordPass;
         keywordPass.name = "KeywordDefines";
         keywordPass.stages = {
@@ -738,6 +786,7 @@ namespace
                 false
             }
         };
+        // keyword compile結果
         LamaPon::ShaderProgram keywordProgram;
         Require(
             !keywordProgram.Compile(
@@ -761,14 +810,13 @@ namespace
             "keyword compile did not retain vertex bytecode");
     }
 
+    // TestMaterialManifestEntryPoints(device: D3D11 device, context: immediate context, assets: shader fixture群) はcustom entry、role/state切替、occludedのprimary VS固定、legacy fallbackを検証する。
     void TestMaterialManifestEntryPoints(
         ID3D11Device* device,
         ID3D11DeviceContext* context,
         LamaPon::AssetManager& assets)
     {
-        // The source deliberately requires MATERIAL_VARIANT and has no fixed
-        // legacy entries. Construction therefore proves custom entry-point,
-        // role and keyword resolution together.
+        // manifest形式のLitEffect
         LamaPon::LitEffect manifestEffect(
             device,
             context,
@@ -791,9 +839,12 @@ namespace
                     LamaPon::ShaderPassRole::Skinned) == 0,
             "static LitEffect compiled the wrong manifest role set");
 
+        // first VS bytecode
         auto* const firstVertex =
             manifestEffect.ColorPassVertexShaderByteCode(0);
+        // active VS bytecode
         const void* vertexByteCode{};
+        // vertex bytecodeの長さ
         std::size_t vertexByteCodeSize{};
         manifestEffect.GetVertexShaderBytecode(
             &vertexByteCode,
@@ -810,6 +861,7 @@ namespace
                 && !manifestEffect.HasGeometryShader(),
             "the first manifest pass or special role capability is wrong");
 
+        // 現在選択中のrender state
         const auto& state = manifestEffect.RenderState();
         Require(
             state.declared
@@ -821,6 +873,7 @@ namespace
             "manifest renderState was not converted case-insensitively");
 
         manifestEffect.SelectColorPass(1);
+        // 切替後のrender state
         const auto& secondState = manifestEffect.RenderState();
         Require(
             secondState.blend == LamaPon::ShaderBlendMode::Alpha
@@ -846,8 +899,11 @@ namespace
 
         manifestEffect.SetTessellationDrawEnabled(true);
         manifestEffect.Apply(context);
+        // 現在のhull shader
         Microsoft::WRL::ComPtr<ID3D11HullShader> boundHull;
+        // 現在のdomain shader
         Microsoft::WRL::ComPtr<ID3D11DomainShader> boundDomain;
+        // 現在のgeometry shader
         Microsoft::WRL::ComPtr<ID3D11GeometryShader> boundGeometry;
         context->HSGetShader(
             boundHull.ReleaseAndGetAddressOf(),
@@ -867,8 +923,6 @@ namespace
                 && boundGeometry != nullptr,
             "manifest geometry/tessellation stages were not bound");
 
-        // Selecting a pass without optional programmable stages must also
-        // unbind all stages left by the previous pass.
         manifestEffect.SetTessellationDrawEnabled(false);
         manifestEffect.SelectColorPass(0);
         manifestEffect.Apply(context);
@@ -923,7 +977,9 @@ namespace
                     LamaPon::ShaderPassRole::Outline),
             "outline role reported stages that it does not declare");
         manifestEffect.ApplyOutline(context);
+        // outline VS
         Microsoft::WRL::ComPtr<ID3D11VertexShader> outlineVertex;
+        // outline PS
         Microsoft::WRL::ComPtr<ID3D11PixelShader> outlinePixel;
         context->VSGetShader(
             outlineVertex.ReleaseAndGetAddressOf(),
@@ -948,20 +1004,21 @@ namespace
             "pixel-only occluded role did not expose the primary VS "
             "signature");
         manifestEffect.Apply(context);
+        // primary VS
         Microsoft::WRL::ComPtr<ID3D11VertexShader> primaryVertex;
         context->VSGetShader(
             primaryVertex.ReleaseAndGetAddressOf(),
             nullptr,
             nullptr);
-        // Occluded must use primary index 0 even if a later color pass was
-        // selected immediately before it.
         manifestEffect.SelectColorPass(1);
         manifestEffect.ApplyOccluded(context);
+        // occluded VS
         Microsoft::WRL::ComPtr<ID3D11VertexShader> occludedVertex;
         context->VSGetShader(
             occludedVertex.ReleaseAndGetAddressOf(),
             nullptr,
             nullptr);
+        // occluded PS 0
         Microsoft::WRL::ComPtr<ID3D11PixelShader> firstOccludedPixel;
         context->PSGetShader(
             firstOccludedPixel.ReleaseAndGetAddressOf(),
@@ -971,6 +1028,7 @@ namespace
             LamaPon::ShaderPassRole::Occluded,
             1);
         manifestEffect.ApplyOccluded(context);
+        // occluded PS 1
         Microsoft::WRL::ComPtr<ID3D11PixelShader> secondOccludedPixel;
         context->PSGetShader(
             secondOccludedPixel.ReleaseAndGetAddressOf(),
@@ -994,6 +1052,7 @@ namespace
             "out of range",
             "an out-of-range material pass selection was accepted");
 
+        // skinned effect
         LamaPon::LitEffect skinnedManifestEffect(
             device,
             context,
@@ -1020,8 +1079,7 @@ namespace
         skinnedManifestEffect.ApplyOutline(context);
         skinnedManifestEffect.ApplyOccluded(context);
 
-        // A direct HLSL still takes the legacy VSMain/PSMain path and probes
-        // its fixed optional entries.
+        // legacy HLSL effect
         LamaPon::LitEffect legacyEffect(
             device,
             context,
@@ -1038,6 +1096,7 @@ namespace
         RequireThrowsContaining(
             [&]
             {
+                // blend不正用effect
                 LamaPon::LitEffect invalid(
                     device,
                     context,
@@ -1051,6 +1110,7 @@ namespace
         RequireThrowsContaining(
             [&]
             {
+                // depth不正用effect
                 LamaPon::LitEffect invalid(
                     device,
                     context,
@@ -1064,6 +1124,7 @@ namespace
         RequireThrowsContaining(
             [&]
             {
+                // compute拒否用effect
                 LamaPon::LitEffect invalid(
                     device,
                     context,
@@ -1074,9 +1135,12 @@ namespace
             },
             "must not declare a compute stage",
             "a material manifest compute stage was accepted");
+        // geometry input診断の成否
         bool geometryInputDiagnosed = false;
+        // geometry stageのcompile失敗を検証する。
         try
         {
+            // geometry不正用effect
             LamaPon::LitEffect invalid(
                 device,
                 context,
@@ -1085,8 +1149,10 @@ namespace
                 false,
                 { "MATERIAL_VARIANT" });
         }
+        // exception: geometry compile診断の取得元。
         catch (const std::exception& exception)
         {
+            // geometry compile診断文
             const std::string diagnostic = exception.what();
             geometryInputDiagnosed =
                 Contains(diagnostic, "CustomMaterialPointGeometry")
@@ -1099,6 +1165,7 @@ namespace
         RequireThrowsContaining(
             [&]
             {
+                // type拒否用effect
                 LamaPon::LitEffect invalid(
                     device,
                     context,
@@ -1110,6 +1177,7 @@ namespace
         RequireThrowsContaining(
             [&]
             {
+                // skinned不正用effect
                 LamaPon::LitEffect invalid(
                     device,
                     context,
@@ -1123,21 +1191,20 @@ namespace
             "effect");
     }
 
+    // TestScreenEffectEntryPoints(device: D3D11 device, context: immediate context, assets: shader fixture群) はmanifestのcustom entryとlegacy fallbackを検証する。
     void TestScreenEffectEntryPoints(
         ID3D11Device* device,
         ID3D11DeviceContext* context,
         LamaPon::AssetManager& assets)
     {
-        // The manifest fixture deliberately has no VSMain or PSMain, so
-        // construction can only succeed when its custom entries are used.
+        // manifest effect
         LamaPon::ScreenEffect manifestEffect(
             device,
             context,
             assets,
             "valid-screen-effect.lamashader.json");
 
-        // This fixture has only VSMain and PSMain, proving direct .hlsl paths
-        // retain the legacy fixed-entry fallback.
+        // legacy HLSL effect
         LamaPon::ScreenEffect legacyEffect(
             device,
             context,
@@ -1147,13 +1214,17 @@ namespace
         static_cast<void>(legacyEffect);
     }
 
+    // TestComputeManifestEntryPoints(device: D3D11 device, context: immediate context, assets: shader fixture群) はoptional先頭passを飛ばすentry選択、dispatch出力、legacy fallbackを検証する。
     void TestComputeManifestEntryPoints(
         ID3D11Device* device,
         ID3D11DeviceContext* context,
         LamaPon::AssetManager& assets)
     {
+        // 出力textureの幅
         constexpr std::uint32_t width = 3;
+        // 出力textureの高さ
         constexpr std::uint32_t height = 2;
+        // GPU出力textureの設定
         D3D11_TEXTURE2D_DESC outputDescription{};
         outputDescription.Width = width;
         outputDescription.Height = height;
@@ -1164,6 +1235,7 @@ namespace
         outputDescription.Usage = D3D11_USAGE_DEFAULT;
         outputDescription.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
 
+        // 計算shaderの出力texture
         Microsoft::WRL::ComPtr<ID3D11Texture2D> outputTexture;
         Require(
             SUCCEEDED(device->CreateTexture2D(
@@ -1171,6 +1243,7 @@ namespace
                 nullptr,
                 outputTexture.ReleaseAndGetAddressOf())),
             "compute manifest output texture creation failed");
+        // output UAV
         Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView> outputView;
         Require(
             SUCCEEDED(device->CreateUnorderedAccessView(
@@ -1179,15 +1252,18 @@ namespace
                 outputView.ReleaseAndGetAddressOf())),
             "compute manifest output UAV creation failed");
 
+        // dispatchAndRequireColor(shaderPath: HLSL path, expected: RGBA) runs dispatch and checks one pixel.
         auto dispatchAndRequireColor =
             [&](const std::filesystem::path& shaderPath,
                 const DirectX::XMFLOAT4& expected)
         {
+            // 実行するComputeEffect
             LamaPon::ComputeEffect effect(
                 device,
                 context,
                 assets,
                 shaderPath);
+            // compute parameters
             LamaPon::ComputeEffect::CustomParameters parameters{};
             parameters[0] = expected;
             effect.Dispatch(
@@ -1197,10 +1273,12 @@ namespace
                 height,
                 parameters);
 
+            // staging desc
             auto stagingDescription = outputDescription;
             stagingDescription.Usage = D3D11_USAGE_STAGING;
             stagingDescription.BindFlags = 0;
             stagingDescription.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+            // readback texture
             Microsoft::WRL::ComPtr<ID3D11Texture2D> staging;
             Require(
                 SUCCEEDED(device->CreateTexture2D(
@@ -1210,6 +1288,7 @@ namespace
                 "compute manifest staging texture creation failed");
             context->CopyResource(staging.Get(), outputTexture.Get());
 
+            // CPU読込用のmap結果
             D3D11_MAPPED_SUBRESOURCE mapped{};
             Require(
                 SUCCEEDED(context->Map(
@@ -1219,7 +1298,9 @@ namespace
                     0,
                     &mapped)),
                 "compute manifest output readback failed");
+            // readback先のRGBA pixel
             const auto* pixel = static_cast<const float*>(mapped.pData);
+            // 期待色との比較結果
             const bool matches =
                 std::abs(pixel[0] - expected.x) < 0.0001f
                 && std::abs(pixel[1] - expected.y) < 0.0001f
@@ -1231,9 +1312,6 @@ namespace
                 "compute effect did not write the expected output color");
         };
 
-        // The first manifest pass is only an optional probe. The source has
-        // no CSMain, proving selection of the first non-optional compute
-        // declaration and use of its custom entry point.
         dispatchAndRequireColor(
             "valid-compute.lamashader.json",
             { 0.25f, 0.5f, 0.75f, 0.0f });
@@ -1246,6 +1324,7 @@ namespace
         RequireThrowsContaining(
             [&]
             {
+                // wrong type
                 LamaPon::ComputeEffect invalid(
                     device,
                     context,
@@ -1257,6 +1336,7 @@ namespace
         RequireThrowsContaining(
             [&]
             {
+                // 混在stage拒否を検証するeffect
                 LamaPon::ComputeEffect invalid(
                     device,
                     context,
@@ -1266,17 +1346,22 @@ namespace
             "unsupported pixel stage",
             "ComputeEffect accepted a mixed graphics/compute pass");
 
+        // compute compile診断の成否
         bool compileFailureDiagnosed = false;
+        // compute shaderのcompile失敗を検証する。
         try
         {
+            // missing entry
             LamaPon::ComputeEffect invalid(
                 device,
                 context,
                 assets,
                 "invalid-compute-entry.lamashader.json");
         }
+        // exception: compute compile診断の取得元。
         catch (const std::exception& exception)
         {
+            // compute compile診断文
             const std::string diagnostic = exception.what();
             compileFailureDiagnosed =
                 Contains(diagnostic, "required compute")
@@ -1290,6 +1375,7 @@ namespace
             "required compute failure omitted its entry or target");
     }
 
+    // RunTests() はWARP deviceを作成し、parserとGPU entry-point testsを実行する。
     void RunTests()
     {
         TestSuccessfulParseAndRetention();
@@ -1297,6 +1383,7 @@ namespace
         TestPropertyValidation();
         TestValidationFailures();
 
+        // shader fixture root
         const std::filesystem::path fixtureRoot{
             LAMAPON_SHADER_MANIFEST_FIXTURE_ROOT
         };
@@ -1304,9 +1391,13 @@ namespace
             std::filesystem::is_directory(fixtureRoot),
             "shader manifest fixture root does not exist");
 
+        // WARP graphics device
         Microsoft::WRL::ComPtr<ID3D11Device> device;
+        // D3D11 context
         Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
+        // D3D feature level
         D3D_FEATURE_LEVEL featureLevel{};
+        // WARP HRESULT
         const HRESULT result = D3D11CreateDevice(
             nullptr,
             D3D_DRIVER_TYPE_WARP,
@@ -1325,6 +1416,7 @@ namespace
             featureLevel >= D3D_FEATURE_LEVEL_11_0,
             "the WARP device does not support Shader Model 5");
 
+        // fixture assets
         LamaPon::AssetManager assets(device.Get(), context.Get());
         assets.SetAssetRoot(fixtureRoot);
         TestLoad(assets);
@@ -1344,15 +1436,21 @@ namespace
     }
 }
 
+// main() はCOMとshader cacheを設定し、test結果を返す。
 int main()
 {
+    // COM初期化のHRESULT
     const HRESULT comResult =
         CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    // COM終了が必要な状態
     const bool uninitialize = SUCCEEDED(comResult);
 
+    // process exit status
     int status = 0;
+    // COM初期化後のtest例外を捕捉する。
     try
     {
+        // cache restore guard
         ShaderCacheStateGuard cacheGuard;
         Require(
             !LamaPon::IsShaderCacheEnabled(),
@@ -1360,6 +1458,7 @@ int main()
         RunTests();
         std::cout << "Shader manifest tests passed.\n";
     }
+    // exception: test失敗の原因を表示する。
     catch (const std::exception& exception)
     {
         std::cerr << "Shader manifest test failed: "
@@ -1367,9 +1466,11 @@ int main()
         status = 1;
     }
 
+    // 初期化に成功した場合はCOMを終了する。
     if (uninitialize)
     {
         CoUninitialize();
     }
+    // test結果をprocess exit statusで返す。
     return status;
 }

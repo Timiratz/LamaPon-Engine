@@ -60,6 +60,7 @@ namespace LamaPon
     void TilemapComponent::SetTexturePath(
         std::filesystem::path texturePath)
     {
+        // 読み込み後に差し替える画像
         std::shared_ptr<const TextureAsset> texture;
         if (m_assets != nullptr
             && !texturePath.empty())
@@ -76,6 +77,7 @@ namespace LamaPon
         const int x,
         const int y) const noexcept
     {
+        // 検索した配置セル
         const auto cell = m_cells.find({ x, y });
         return cell == m_cells.end()
             ? -1
@@ -93,6 +95,7 @@ namespace LamaPon
                 "Tile index is outside the atlas grid.");
         }
 
+        // 更新前の配置セル
         const auto existing =
             m_cells.find({ x, y });
         if (existing != m_cells.end()
@@ -116,26 +119,32 @@ namespace LamaPon
     std::vector<TilemapComponent::CollisionRect>
         TilemapComponent::ComputeCollisionRects() const
     {
+        // 生成する衝突矩形の一覧
         std::vector<CollisionRect> rects;
         if (m_cells.empty())
         {
             return rects;
         }
 
+        // 矩形にまとめていないセル集合
         std::set<CellCoordinate> remaining;
+        // 配置座標を集合に追加する(coordinate: セル座標, tileIndex: 未使用のタイル番号)。
         for (const auto& [coordinate, tileIndex] : m_cells)
         {
             remaining.insert(coordinate);
         }
 
-        // 未処理セルを1つ選び、右方向・下方向へ矩形が崩れない範囲まで
-        // 貪欲に拡張してから未処理集合から取り除く、を繰り返します。
+        // X、Yの順で最小の未処理セルから横幅を決め、全幅が埋まる行だけ縦に広げる。
         while (!remaining.empty())
         {
+            // 次の矩形の開始セル
             const auto start = *remaining.begin();
+            // 矩形の開始X座標
             const int startX = start.first;
+            // 矩形の開始Y座標
             const int startY = start.second;
 
+            // 矩形の横方向のセル数
             int width = 1;
             while (remaining.contains(
                 { startX + width, startY }))
@@ -143,10 +152,13 @@ namespace LamaPon
                 ++width;
             }
 
+            // 矩形の縦方向のセル数
             int height = 1;
+            // 次の行まで矩形を伸ばせるか
             bool canExpand = true;
             while (canExpand)
             {
+                // 検査または削除するセルX座標
                 for (int x = startX; x < startX + width; ++x)
                 {
                     if (!remaining.contains(
@@ -162,8 +174,10 @@ namespace LamaPon
                 }
             }
 
+            // 削除するセルY座標
             for (int y = startY; y < startY + height; ++y)
             {
+                // 検査または削除するセルX座標
                 for (int x = startX; x < startX + width; ++x)
                 {
                     remaining.erase({ x, y });
@@ -193,19 +207,24 @@ namespace LamaPon
     {
         using namespace DirectX;
 
+        // 所有者のワールド行列
         XMFLOAT4X4 world{};
         XMStoreFloat4x4(
             &world,
             Owner().WorldMatrix());
 
+        // ワールドX軸のXY上の拡縮率
         const float worldScaleX = std::sqrt(
             world._11 * world._11
             + world._12 * world._12);
+        // ワールドY軸のXY上の拡縮率
         const float worldScaleY = std::sqrt(
             world._21 * world._21
             + world._22 * world._22);
+        // ワールドX軸からのZ回転角
         const float rotation =
             std::atan2(world._12, world._11);
+        // アルファ乗算済みの描画色
         const XMFLOAT4 premultipliedColor{
             m_color.x * m_color.w,
             m_color.y * m_color.w,
@@ -213,14 +232,17 @@ namespace LamaPon
             m_color.w
         };
 
+        // アトラスの1セルの画像幅
         const float sourceWidth = m_texture
             ? static_cast<float>(m_texture->width)
                 / static_cast<float>(m_atlasColumns)
             : 1.0f;
+        // アトラスの1セルの画像高さ
         const float sourceHeight = m_texture
             ? static_cast<float>(m_texture->height)
                 / static_cast<float>(m_atlasRows)
             : 1.0f;
+        // タイル画像から表示への拡縮率
         const XMFLOAT2 scale{
             m_tileSize.x / sourceWidth
                 * worldScaleX,
@@ -228,9 +250,11 @@ namespace LamaPon
                 * worldScaleY
         };
 
+        // タイル画像の描画ビュー
         GraphicsViewHandle textureView;
         if (m_texture)
         {
+            // 画像のGPU資源の借用
             const auto resources =
                 m_texture->resources.Acquire();
             textureView = resources
@@ -238,6 +262,7 @@ namespace LamaPon
                 : GraphicsViewHandle{};
         }
 
+        // 配置セルを描く(coordinate: セル座標, tileIndex: アトラスのタイル番号)。
         for (const auto& [coordinate, tileIndex] :
             m_cells)
         {
@@ -246,12 +271,15 @@ namespace LamaPon
                 continue;
             }
 
+            // セル左上のローカルX座標
             const float localX =
                 static_cast<float>(coordinate.first)
                 * m_tileSize.x;
+            // セル左上のローカルY座標
             const float localY =
                 static_cast<float>(coordinate.second)
                 * m_tileSize.y;
+            // 表示オフセット適用後の位置
             const XMFLOAT2 position{
                 world._41
                     + localX * world._11
@@ -267,6 +295,7 @@ namespace LamaPon
                         : 0.0f)
             };
 
+            // セルのスプライト描画指定
             SpriteDrawRequest request;
             request.texture = textureView;
             request.position = position;
@@ -275,8 +304,10 @@ namespace LamaPon
             request.scale = scale;
             if (m_texture)
             {
+                // タイル番号のアトラス列
                 const std::uint32_t column =
                     tileIndex % m_atlasColumns;
+                // タイル番号のアトラス行
                 const std::uint32_t row =
                     tileIndex / m_atlasColumns;
                 request.hasSourceRectangle = true;

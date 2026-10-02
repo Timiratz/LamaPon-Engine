@@ -1,29 +1,12 @@
-// LamaPonのDiscord Rich Presenceを、Discord公式のSocial SDKへ
-// つなぐアダプターです。
-//
-//   Game / Script -> LamaPon::DiscordPresence
-//                 -> LamaPon::DiscordPresenceBackend   ← この実装
-//                 -> discordpp::Client (Discord Social SDK)
-//
-// ゲーム側のコードがこのヘッダーをincludeする必要はありません。
-// パッケージを入れるだけで、Game Moduleの読み込み時にアダプターが
-// 自動登録されます。
-//
-// Discordアカウント連携（ログイン）とは独立しています。このアダプター
-// はDiscordのOAuthを一切行わず、Application IDだけでRich Presenceを
-// 表示します。access tokenもrefresh tokenも扱いません。
+// Game ModuleのDiscord Rich Presenceを公式Social SDKへ中継します。
+// OAuthなしでApplication IDだけを使います。
 #pragma once
 
-// SDKが未配置のままGame Moduleへ紛れ込んでも、リンクエラーではなく
-// 「何も持たないファイル」になるようにします。このマクロは
-// package.jsonのnative.definesから渡されます。
+// package.jsonのnative.definesでSDKの利用有無を切り替えます。
 #if defined(LAMAPON_DISCORD_SOCIAL_SDK)
 
 #include "LamaPon/Online/DiscordPresence.h"
 
-// SDK本体のヘッダーです。package.jsonのnative.includeDirectories
-// （sdk/include）が通っていれば見つかります。前方宣言にすると
-// SDK側のclass/structの綴りへ依存してしまうため、素直に読みます。
 #include <discordpp.h>
 
 #include <cstdint>
@@ -33,36 +16,46 @@
 
 namespace LamaPonPackages
 {
-    // すべてApplicationを動かすスレッドから呼ばれます。Tick()は毎
-    // フレーム呼ばれるため、ブロックしません。
+        // SDK呼び出しはApplicationスレッドで行い、Tickでは待機しません。
     class DiscordSocialPresenceBackend final
         : public LamaPon::DiscordPresenceBackend
     {
     public:
+        // SDKアダプターを生成します。
         DiscordSocialPresenceBackend();
+        // SDK接続と応答コールバックを終了します。
         ~DiscordSocialPresenceBackend() override;
 
+        // Discord接続を初期化します(applicationId: 10進数のApplication ID)。
         [[nodiscard]] bool Initialize(
             std::string_view applicationId) override;
+        // SDK接続を終了します。
         void Shutdown() noexcept override;
 
+        // Discord表示を更新します(activity: 表示内容)。
         [[nodiscard]] bool SetActivity(
             const LamaPon::DiscordActivity& activity) override;
+        // Discord表示を消去します。
         void ClearActivity() noexcept override;
 
+        // SDK応答を処理します(elapsedSeconds: 経過秒数)。
         void Tick(float elapsedSeconds) noexcept override;
 
+        // SDKが利用可能か返します。
         [[nodiscard]] bool IsAvailable() const noexcept override;
+        // 最後に発生したエラーを返します。
         [[nodiscard]] std::string_view
             LastError() const noexcept override;
 
     private:
-        // UpdateRichPresenceの結果はcallbackで後から届きます。
-        // callbackはRunCallbacks()の中、つまり同じスレッドから
-        // 呼ばれるので、追加の排他は要りません。
+        // UpdateRichPresenceの応答はRunCallbacksと同じスレッドで処理します。
+        // 非同期応答を受け取るSDKクライアント
         std::shared_ptr<discordpp::Client> m_client;
+        // 破棄後の応答を無効にする共有フラグ
         std::shared_ptr<bool> m_alive;
+        // 最後のSDKエラー
         std::string m_lastError;
+        // 現在の接続可用性
         bool m_available{};
     };
 }

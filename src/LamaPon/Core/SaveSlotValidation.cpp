@@ -10,20 +10,25 @@
 
 namespace
 {
+    // ASCII制御文字かを返します(value: 判定するバイト)。
     bool IsAsciiControl(const unsigned char value) noexcept
     {
         return value < 0x20 || value == 0x7f;
     }
 
+    // Windows予約名に該当するかを返します(slot: 保存スロット名)。
     bool IsReservedDeviceName(std::string_view slot)
     {
+        // 最初の拡張子区切り位置
         const auto dot = slot.find('.');
+        // 予約名と照合する拡張子前の部分
         std::string stem(slot.substr(0, dot));
         while (!stem.empty()
             && (stem.back() == ' ' || stem.back() == '.'))
         {
             stem.pop_back();
         }
+        // ASCIIの小文字を大文字へ変換します(value: 名前の各バイト)。
         std::ranges::transform(
             stem,
             stem.begin(),
@@ -104,7 +109,9 @@ namespace LamaPon::Detail
         }
         try
         {
+            // 比較元のUTF-16スロット名
             const auto wideLeft = Utf8ToWide(left);
+            // 比較先のUTF-16スロット名
             const auto wideRight = Utf8ToWide(right);
             return CompareStringOrdinal(
                 wideLeft.data(),

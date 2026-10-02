@@ -31,6 +31,7 @@ namespace LamaPon
     DirectX::XMFLOAT2
         SpriteMaskComponent::WorldPosition() const noexcept
     {
+        // 中心のワールドXYZ位置
         DirectX::XMFLOAT3 translation{};
         DirectX::XMStoreFloat3(
             &translation,
@@ -43,14 +44,19 @@ namespace LamaPon
         DirectX::FXMMATRIX view,
         DirectX::CXMMATRIX projection)
     {
+        // マスクのワールドXY中心
         const auto center = WorldPosition();
+        // 輪郭のデバッグRGBA色
         const DirectX::XMVECTOR color =
             DirectX::XMVectorSet(1.0f, 0.35f, 0.85f, 1.0f);
 
         if (m_shape == SpriteMaskShape::Rectangle)
         {
+            // 矩形のワールドX半幅
             const float halfWidth = m_size.x * 0.5f;
+            // 矩形のワールドY半幅
             const float halfHeight = m_size.y * 0.5f;
+            // 矩形輪郭の線分端点列
             const std::array<DirectX::XMFLOAT3, 8> lines{
                 DirectX::XMFLOAT3{
                     center.x - halfWidth,
@@ -82,19 +88,26 @@ namespace LamaPon
             return;
         }
 
+        // 円のワールド半径
         const float radius = m_size.x * 0.5f;
+        // 円の輪郭の分割数
         constexpr int SegmentCount = 24;
+        // 円の輪郭の線分端点列
         std::array<
             DirectX::XMFLOAT3,
             SegmentCount * 2> lines{};
+        // 円の輪郭の線分番号
         for (int segment = 0;
+            // 円の輪郭の分割数
             segment < SegmentCount;
             ++segment)
         {
+            // 線分始点の角度ラジアン
             const float angleA =
                 DirectX::XM_2PI
                 * static_cast<float>(segment)
                 / static_cast<float>(SegmentCount);
+            // 線分終点の角度ラジアン
             const float angleB =
                 DirectX::XM_2PI
                 * static_cast<float>(segment + 1)

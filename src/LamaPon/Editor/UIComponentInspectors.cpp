@@ -21,6 +21,7 @@ using namespace LamaPon::EditorDetail;
 
 namespace
 {
+    // 無効な項目も含め、ホバーした項目の説明を表示します(text: 表示する説明)。
     void ShowItemTooltip(const char* text)
     {
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled | ImGuiHoveredFlags_DelayNormal))
@@ -29,8 +30,10 @@ namespace
         }
     }
 
+    // キャンバスの基準解像度と追従比率を編集します(canvas: 編集対象, context: 描画中だけ借用する操作)。
     void Draw(UICanvasComponent& canvas, const UIInspectorContext& context)
     {
+        // キャンバスの基準解像度・px
         auto resolution =
             canvas.
                 ReferenceResolution();
@@ -52,6 +55,7 @@ namespace
             context.recordHistory();
         }
 
+        // 幅0・高さ1の解像度追従比率
         float match =
             canvas.
                 MatchWidthOrHeight();
@@ -77,8 +81,10 @@ namespace
             "子UIのアンカーとサイズを画面解像度へ追従させます。");
     }
 
+    // UI矩形のアンカー・位置・寸法を編集します(uiTransform: 編集対象, context: 描画中だけ借用する操作)。
     void Draw(UIRectTransformComponent& uiTransform, const UIInspectorContext& context)
     {
+        // アンカープリセットの表示名
         const char* presets[]{
             "中央",
             "左上",
@@ -87,6 +93,7 @@ namespace
             "右下",
             "全画面Stretch"
         };
+        // 選択プリセットの番号
         int selectedPreset = -1;
         if (ImGui::Combo(
                 "アンカープリセット",
@@ -95,8 +102,10 @@ namespace
                 static_cast<int>(
                     std::size(presets))))
         {
+            // プリセットのアンカー位置
             DirectX::XMFLOAT2 anchor{
                 0.5f, 0.5f };
+            // プリセットに応じてアンカーを設定します。
             switch (selectedPreset)
             {
             case 1:
@@ -140,6 +149,7 @@ namespace
             }
         }
 
+        // アンカー領域の左上
         auto anchorMin =
             uiTransform.AnchorMin();
         if (ImGui::DragFloat2(
@@ -159,6 +169,7 @@ namespace
         {
             context.recordHistory();
         }
+        // アンカー領域の右下
         auto anchorMax =
             uiTransform.AnchorMax();
         if (ImGui::DragFloat2(
@@ -178,6 +189,7 @@ namespace
         {
             context.recordHistory();
         }
+        // 矩形内の基準点
         auto pivot =
             uiTransform.Pivot();
         if (ImGui::DragFloat2(
@@ -196,6 +208,7 @@ namespace
         {
             context.recordHistory();
         }
+        // アンカーからの位置・px
         auto anchoredPosition =
             uiTransform.
                 AnchoredPosition();
@@ -216,6 +229,7 @@ namespace
         {
             context.recordHistory();
         }
+        // アンカー領域との差分寸法・px
         auto sizeDelta =
             uiTransform.SizeDelta();
         if (ImGui::DragFloat2(
@@ -236,12 +250,14 @@ namespace
             context.recordHistory();
         }
 
+        // 表示領域で解決した矩形
         const auto preview =
             uiTransform.Resolve(
                 static_cast<float>(
                     context.viewportWidth),
                 static_cast<float>(
                     context.viewportHeight));
+        // 解決後の矩形寸法・px
         const auto previewSize =
             preview.Size();
         ImGui::TextDisabled(
@@ -252,8 +268,10 @@ namespace
             previewSize.y);
     }
 
+    // ボタンの外観とクリック時の動作を編集します(button: 編集対象, context: 描画中だけ借用する操作)。
     void Draw(UIButtonComponent& button, const UIInspectorContext& context)
     {
+        // ボタンのラベル入力バッファ
         std::array<char, 256>
             labelBuffer{};
         strncpy_s(
@@ -275,6 +293,7 @@ namespace
             context.recordHistory();
         }
 
+        // 文字の表示サイズ・px
         float fontSize =
             button.FontSize();
         if (ImGui::SliderFloat(
@@ -293,6 +312,7 @@ namespace
             context.recordHistory();
         }
 
+        // ボタンを操作できるか
         bool interactable =
             button.Interactable();
         if (ImGui::Checkbox(
@@ -304,6 +324,7 @@ namespace
             context.recordHistory();
         }
 
+        // ボタンの通常色RGBA
         auto normal =
             button.NormalColor();
         if (ImGui::ColorEdit4(
@@ -319,6 +340,7 @@ namespace
         {
             context.recordHistory();
         }
+        // ボタンのホバー色RGBA
         auto hovered =
             button.HoveredColor();
         if (ImGui::ColorEdit4(
@@ -334,6 +356,7 @@ namespace
         {
             context.recordHistory();
         }
+        // ボタンの押下色RGBA
         auto pressed =
             button.PressedColor();
         if (ImGui::ColorEdit4(
@@ -349,6 +372,7 @@ namespace
         {
             context.recordHistory();
         }
+        // ボタンの無効色RGBA
         auto disabled =
             button.DisabledColor();
         if (ImGui::ColorEdit4(
@@ -364,6 +388,7 @@ namespace
         {
             context.recordHistory();
         }
+        // ボタンの文字色RGBA
         auto textColor =
             button.TextColor();
         if (ImGui::ColorEdit4(
@@ -389,6 +414,7 @@ namespace
                     : button.IsHovered()
                         ? "Hovered"
                         : "Normal");
+        // 背景画像パスの表示文字列
         const auto buttonTexture =
             PathToUtf8(
                 button.TexturePath());
@@ -402,10 +428,12 @@ namespace
             ImVec2{ -1.0f, 0.0f });
         if (ImGui::BeginDragDropTarget())
         {
+            // ドロップされた資産のデータ
             if (const ImGuiPayload* payload =
                 ImGui::AcceptDragDropPayload(
                     AssetPayload))
             {
+                // ドロップされた資産パス
                 const auto dropped =
                     PathFromUtf8(
                         static_cast<
@@ -420,6 +448,7 @@ namespace
                                 dropped);
                         context.recordHistory();
                     }
+                    // 画像設定の失敗を通知します(exception: 失敗理由)。
                     catch (const std::exception&
                         exception)
                     {
@@ -441,6 +470,7 @@ namespace
         ImGui::SeparatorText(
             "クリック時のイベント");
         {
+            // クリック時のイベント名入力
             std::array<char, 64> eventBuffer{};
             strncpy_s(
                 eventBuffer.data(),
@@ -467,6 +497,7 @@ namespace
         }
         ImGui::SeparatorText(
             "クリック時のScene操作");
+        // 現在のシーンを再読込するか
         bool reloadCurrent =
             button.
                 ReloadCurrentScene();
@@ -481,6 +512,7 @@ namespace
         }
         if (!reloadCurrent)
         {
+            // 移動先シーンの表示パス
             const auto targetScene =
                 PathToUtf8(
                     button.TargetScene());
@@ -495,12 +527,14 @@ namespace
             if (ImGui::
                 BeginDragDropTarget())
             {
+                // ドロップされた資産のデータ
                 if (const ImGuiPayload*
                     payload =
                         ImGui::
                             AcceptDragDropPayload(
                                 AssetPayload))
                 {
+                    // ドロップされた資産パス
                     const auto dropped =
                         PathFromUtf8(
                             static_cast<
@@ -535,6 +569,7 @@ namespace
                     {});
                 context.recordHistory();
             }
+            // 移動先を追加読込するか
             bool loadAdditive =
                 button.
                     LoadTargetAdditive();
@@ -564,6 +599,7 @@ namespace
                 "Scenes().TransitionCoverage()を読んで自分で描きます");
         }
 
+        // ボタンの描画順
         auto buttonSortOrder =
             button.SortOrder();
         if (ImGui::InputInt(
@@ -585,6 +621,7 @@ namespace
             "C++: button.ConsumeClick() でクリックを取得できます。");
     }
 
+    // 画像と9-slice境界を編集します(image: 編集対象, context: 描画中だけ借用する操作)。
     void Draw(UIImageComponent& image, const UIInspectorContext& context)
     {
         if (!image.TexturePath().empty())
@@ -605,6 +642,7 @@ namespace
             ImGui::TextDisabled(
                 "テクスチャ未設定（白で塗りつぶし）");
         }
+        // 画像選択の変更値とUndo確定
         const auto pickedImageTexture =
             context.pickRenderTexture(
                 "UIImageRenderTexture",
@@ -618,6 +656,7 @@ namespace
         {
             context.recordHistory();
         }
+        // 画像の表示色RGBA
         auto imageColor = image.Color();
         if (ImGui::ColorEdit4(
                 "色##UIImage",
@@ -630,6 +669,7 @@ namespace
         {
             context.recordHistory();
         }
+        // 左上右下の9-slice境界・px
         auto border = image.Border();
         if (ImGui::DragFloat4(
                 "9-slice境界",
@@ -648,6 +688,7 @@ namespace
         }
         ImGui::TextDisabled(
             "左・上・右・下の順。0で通常描画");
+        // 画像の描画順
         auto imageSortOrder =
             image.SortOrder();
         if (ImGui::InputInt(
@@ -664,8 +705,10 @@ namespace
         }
     }
 
+    // トグルの値と外観を編集します(toggle: 編集対象, context: 描画中だけ借用する操作)。
     void Draw(UIToggleComponent& toggle, const UIInspectorContext& context)
     {
+        // トグルがオンか
         bool isOn = toggle.IsOn();
         if (ImGui::Checkbox(
                 "オン##UIToggle",
@@ -674,6 +717,7 @@ namespace
             toggle.SetIsOn(isOn);
             context.recordHistory();
         }
+        // トグルのラベル入力バッファ
         std::array<char, 256>
             toggleLabel{};
         strncpy_s(
@@ -694,6 +738,7 @@ namespace
         {
             context.recordHistory();
         }
+        // トグルを操作できるか
         bool toggleInteractable =
             toggle.Interactable();
         if (ImGui::Checkbox(
@@ -704,6 +749,7 @@ namespace
                 toggleInteractable);
             context.recordHistory();
         }
+        // トグルのボックス色RGBA
         auto boxColor = toggle.BoxColor();
         if (ImGui::ColorEdit4(
                 "ボックス色",
@@ -716,6 +762,7 @@ namespace
         {
             context.recordHistory();
         }
+        // トグルのチェック色RGBA
         auto checkColor =
             toggle.CheckColor();
         if (ImGui::ColorEdit4(
@@ -730,6 +777,7 @@ namespace
         {
             context.recordHistory();
         }
+        // トグルの描画順
         auto toggleSortOrder =
             toggle.SortOrder();
         if (ImGui::InputInt(
@@ -748,10 +796,13 @@ namespace
             "C++: toggle.ConsumeValueChanged() / IsOn()");
     }
 
+    // スライダーの値域と外観を編集します(slider: 編集対象, context: 描画中だけ借用する操作)。
     void Draw(UISliderComponent& slider, const UIInspectorContext& context)
     {
+        // スライダーの最小値
         float minimumValue =
             slider.MinimumValue();
+        // スライダーの最大値
         float maximumValue =
             slider.MaximumValue();
         if (ImGui::DragFloat(
@@ -782,6 +833,7 @@ namespace
         {
             context.recordHistory();
         }
+        // スライダーの現在値
         float sliderValue = slider.Value();
         if (ImGui::SliderFloat(
                 "値##UISlider",
@@ -796,6 +848,7 @@ namespace
         {
             context.recordHistory();
         }
+        // スライダーを整数値にするか
         bool wholeNumbers =
             slider.WholeNumbers();
         if (ImGui::Checkbox(
@@ -806,6 +859,7 @@ namespace
                 wholeNumbers);
             context.recordHistory();
         }
+        // スライダーを操作できるか
         bool sliderInteractable =
             slider.Interactable();
         if (ImGui::Checkbox(
@@ -816,6 +870,7 @@ namespace
                 sliderInteractable);
             context.recordHistory();
         }
+        // スライダーのフィル色RGBA
         auto fillColor =
             slider.FillColor();
         if (ImGui::ColorEdit4(
@@ -829,6 +884,7 @@ namespace
         {
             context.recordHistory();
         }
+        // スライダーの描画順
         auto sliderSortOrder =
             slider.SortOrder();
         if (ImGui::InputInt(
@@ -847,8 +903,10 @@ namespace
             "C++: slider.Value() / ConsumeValueChanged()");
     }
 
+    // テキスト欄の値と入力制約を編集します(inputField: 編集対象, context: 描画中だけ借用する操作)。
     void Draw(UIInputFieldComponent& inputField, const UIInspectorContext& context)
     {
+        // テキスト入力用バッファ
         std::array<char, 512> textBuffer{};
         strncpy_s(
             textBuffer.data(),
@@ -868,6 +926,7 @@ namespace
         {
             context.recordHistory();
         }
+        // 未入力時の表示文字列バッファ
         std::array<char, 256>
             placeholderBuffer{};
         strncpy_s(
@@ -889,6 +948,7 @@ namespace
         {
             context.recordHistory();
         }
+        // 入力文字数の上限
         int maxLength = static_cast<int>(
             inputField.MaxLength());
         if (ImGui::InputInt(
@@ -904,6 +964,7 @@ namespace
         {
             context.recordHistory();
         }
+        // テキスト欄を操作できるか
         bool fieldInteractable =
             inputField.Interactable();
         if (ImGui::Checkbox(
@@ -914,6 +975,7 @@ namespace
                 fieldInteractable);
             context.recordHistory();
         }
+        // テキスト欄の描画順
         auto fieldSortOrder =
             inputField.SortOrder();
         if (ImGui::InputInt(
@@ -932,8 +994,10 @@ namespace
             "C++: field.Text() / ConsumeSubmit()");
     }
 
+    // 子UIの配置方向と余白を編集します(layoutGroup: 編集対象, context: 描画中だけ借用する操作)。
     void Draw(UILayoutGroupComponent& layoutGroup, const UIInspectorContext& context)
     {
+        // 配置方向・0水平、1垂直
         int axis = layoutGroup.Axis()
             == UILayoutAxis::Horizontal
             ? 0
@@ -949,6 +1013,7 @@ namespace
                     : UILayoutAxis::Vertical);
             context.recordHistory();
         }
+        // 子要素の間隔・px
         float spacing =
             layoutGroup.Spacing();
         if (ImGui::DragFloat(
@@ -966,6 +1031,7 @@ namespace
         {
             context.recordHistory();
         }
+        // 左上右下の余白・px
         auto padding =
             layoutGroup.Padding();
         if (ImGui::DragFloat4(
@@ -985,6 +1051,7 @@ namespace
         }
         ImGui::TextDisabled(
             "左・上・右・下の順");
+        // 子要素の揃え位置
         int alignment = static_cast<int>(
             layoutGroup.ChildAlignment());
         if (ImGui::Combo(
@@ -1002,12 +1069,14 @@ namespace
             "直下の子のUI Rect Transformを自動整列します");
     }
 
+    // スクロールの速度と外観を編集します(scrollView: 編集対象, context: 描画中だけ借用する操作)。
     void Draw(UIScrollViewComponent& scrollView, const UIInspectorContext& context)
     {
         ImGui::TextDisabled(
             "コンテンツ高さ: %.0f / スクロール: %.0f",
             scrollView.ContentHeight(),
             scrollView.ScrollOffset());
+        // ホイール一操作の移動量・px
         float scrollSpeed =
             scrollView.ScrollSpeed();
         if (ImGui::DragFloat(
@@ -1026,6 +1095,7 @@ namespace
         {
             context.recordHistory();
         }
+        // スクロール領域を操作できるか
         bool scrollInteractable =
             scrollView.Interactable();
         if (ImGui::Checkbox(
@@ -1036,6 +1106,7 @@ namespace
                 scrollInteractable);
             context.recordHistory();
         }
+        // スクロール領域の背景色RGBA
         auto scrollBackground =
             scrollView.BackgroundColor();
         if (ImGui::ColorEdit4(
@@ -1050,6 +1121,7 @@ namespace
         {
             context.recordHistory();
         }
+        // スクロールバーの色RGBA
         auto scrollbarColor =
             scrollView.ScrollbarColor();
         if (ImGui::ColorEdit4(
@@ -1064,6 +1136,7 @@ namespace
         {
             context.recordHistory();
         }
+        // スクロール領域の描画順
         auto scrollSortOrder =
             scrollView.SortOrder();
         if (ImGui::InputInt(
@@ -1086,48 +1159,58 @@ namespace
 
 namespace LamaPon
 {
+    // 対応するUI型のInspectorを描画し、未対応なら変更せずfalseを返します。
     bool DrawUIComponentInspector(Component& component, const UIInspectorContext& context)
     {
+        // 対応型へ変換済みの借用参照
         if (auto* typed = dynamic_cast<UICanvasComponent*>(&component))
         {
             Draw(*typed, context);
             return true;
         }
+        // 対応型へ変換済みの借用参照
         if (auto* typed = dynamic_cast<UIRectTransformComponent*>(&component))
         {
             Draw(*typed, context);
             return true;
         }
+        // 対応型へ変換済みの借用参照
         if (auto* typed = dynamic_cast<UIButtonComponent*>(&component))
         {
             Draw(*typed, context);
             return true;
         }
+        // 対応型へ変換済みの借用参照
         if (auto* typed = dynamic_cast<UIImageComponent*>(&component))
         {
             Draw(*typed, context);
             return true;
         }
+        // 対応型へ変換済みの借用参照
         if (auto* typed = dynamic_cast<UIToggleComponent*>(&component))
         {
             Draw(*typed, context);
             return true;
         }
+        // 対応型へ変換済みの借用参照
         if (auto* typed = dynamic_cast<UISliderComponent*>(&component))
         {
             Draw(*typed, context);
             return true;
         }
+        // 対応型へ変換済みの借用参照
         if (auto* typed = dynamic_cast<UIInputFieldComponent*>(&component))
         {
             Draw(*typed, context);
             return true;
         }
+        // 対応型へ変換済みの借用参照
         if (auto* typed = dynamic_cast<UILayoutGroupComponent*>(&component))
         {
             Draw(*typed, context);
             return true;
         }
+        // 対応型へ変換済みの借用参照
         if (auto* typed = dynamic_cast<UIScrollViewComponent*>(&component))
         {
             Draw(*typed, context);

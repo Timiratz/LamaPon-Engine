@@ -1,9 +1,5 @@
 #pragma once
 
-// 3D Materialのcustom shaderでPrimitiveを描く、Runtime内部の要求と結果です。
-// 公開のPrimitiveDrawRequestのlayoutを変えずに、D3D11のLitEffectと同じ
-// Material値・custom texture・描画状態の入力を渡します。SDKには
-// installしません。
 #include "LamaPon/Graphics/GraphicsRenderServices.h"
 #include "LamaPon/Graphics/GraphicsResource.h"
 #include "LamaPon/Graphics/LitMaterial.h"
@@ -22,36 +18,36 @@ namespace LamaPon::Detail
     // VSInstancedMainのslot 1へ渡す、D3D11のInstanceDataと同じ80 bytesです。
     using MaterialShaderInstanceData = PrimitiveInstanceData;
 
-    // Model RendererのglTF／FBXです。D3D11はDirectXTK SkinnedEffectの
-    // 頂点シェーダーで骨を変形し、PSSkinnedMainだけを差し替えて描きます。
+    // D3D11ではSkinnedEffectの頂点変形と独自のPSSkinnedMainを組み合わせる。
     struct SkinnedMaterialShaderGeometry final
     {
-        // ImportedModelVertexと同じ60 bytesの頂点列です。
+        // 60バイト形式の頂点列
         std::span<const std::uint8_t> vertices;
+        // 一頂点のバイト数
         std::uint32_t vertexStride{};
+        // 三角形の頂点番号列
         std::span<const std::uint32_t> indices;
-        // meshの逆行列まで掛けた、行ベクトル規約のbone行列です（72本まで）。
+        // メッシュ逆行列適用済み骨行列
+        // 骨行列は行ベクトル規約とし、72本以下を渡す。
         std::span<const DirectX::XMFLOAT4X4> bones;
-        // D3D11のSkeletalModelと同じく、半透明passと両面描画から既定の
-        // 合成・深度・カリングを決めます。
+        // 半透明の描画パス
         bool alphaPass{};
+        // 両面を描画する
         bool doubleSided{};
     };
 
-    // Model RendererのCMO／SDKMESH／VBOのpartです。D3D11のModelMesh::
-    // PrepareForRenderingと同じく、半透明passと三角形の向きから既定の
-    // 合成・深度・カリングを決めます。
+    // DirectXTKのモデル部分と同じく、透過と三角形の向きで描画状態を決める。
     struct DirectXTKModelPartState final
     {
+        // 半透明の描画パス
         bool alphaPass{};
-        // DirectXTKのModelLoader_PremultipledAlphaで読んだmeshです。
+        // 乗算済みアルファの材質
         bool premultipliedAlpha{};
-        // DirectXTKのModelLoader_CounterClockwiseで読んだmeshです。
+        // 反時計回りの三角形
         bool counterClockwise{};
     };
 
-    // D3D11のLitEffect::Apply／ApplyOutline／ApplyOccludedに当たる、
-    // CMO／SDKMESH／VBOのpartを描くpassです。
+    // DirectXTKのモデル部分に適用する主描画・輪郭・遮蔽表示のパス。
     enum class MaterialShaderPass : std::uint8_t
     {
         Main,
@@ -61,56 +57,60 @@ namespace LamaPon::Detail
         Occluded
     };
 
-    // Shaderが持つ追加passです（D3D11のLitEffect::HasOutline／
-    // HasOccludedPass）。
+    // シェーダーが持つ追加描画パスを示す。
     struct MaterialShaderPasses final
     {
+        // 輪郭描画の入口がある
         bool outline{};
+        // 遮蔽表示の入口がある
         bool occluded{};
+        // 一括描画の入口がある
         bool instanced{};
     };
 
     struct MaterialShaderDrawRequest final
     {
-        // custom値、custom vector、色などの定数を読むMaterialです。
-        // 描画の同期呼び出し中だけ参照します。
+        // 定数を読む借用材質
+        // 材質・形状情報・各列は描画の同期呼出し中だけ借用する。
         const LitMaterial* material{};
-        // Shaderとkeywordを読むMaterialです。nullptrならmaterialを使います。
+        // シェーダーを読む借用材質
+        // 未指定ならmaterialからシェーダーとキーワードを読む。
         const LitMaterial* shaderMaterial{};
-        // 指定したときはglTF／FBXのスキニング経路で描きます。
+        // 任意の骨変形用借用情報
         const SkinnedMaterialShaderGeometry* skinned{};
-        // 指定したときはCMO／SDKMESH／VBOのpartの描画状態で描きます。
+        // 任意のモデル部分の借用状態
         const DirectXTKModelPartState* directXTKPart{};
-        // directXTKPartを描くpassです。追加のpassは、Shaderにその入口が
-        // 無ければ何も描きません。
+        // モデル部分に適用するパス
+        // シェーダーに追加パスの入口がなければ、そのパスは描画しない。
         MaterialShaderPass pass{ MaterialShaderPass::Main };
-        // Mesh RendererのPlane／Cubeの4制御点パッチです（D3D11の
-        // BuildTessellationPatchesと同じ並び）。テセレーションShaderは
-        // これを索引なしで描き、空ならパッチへ分けられない形として扱います。
+        // 四制御点単位のパッチ列
+        // テセレーションでは索引を使わず、空の列はパッチ化できない形状として扱う。
         std::span<const PrimitiveRenderVertex> tessellationPatches;
-        // 空でなければVSInstancedMainとslot 1を使って一度に描きます。
+        // 一括描画する個体情報列
         std::span<const MaterialShaderInstanceData> instances;
-        // t7〜t10です。emptyの枠は白になります。
+        // t7〜t10の追加テクスチャ参照
+        // 未指定の参照は白テクスチャへ戻す。
         std::array<GraphicsViewHandle, LitMaterial::CustomTextureCount>
             customTextures{};
-        // 深度を無視して非プレマルチプライド透過で重ねる描画です。
+        // 深度を無視した透過の重ね描き
         bool worldOverlay{};
-        // Componentが明示したcull modeです。Shader宣言より優先します。
+        // 宣言より優先する任意の面除去
         std::optional<ShaderCullMode> cullOverride;
     };
 
     struct MaterialShaderDrawResult final
     {
+        // 元シェーダーの世代番号
         std::uint64_t generation{};
-        // compile失敗などの説明です。空なら正常です。
+        // 元シェーダーの失敗説明
         std::string error;
-        // 輪郭／遮蔽表示のpipelineを作れず、そのpassを止めた説明です。
-        // 通常の描画は続けます。
+        // 追加パスの無効化理由
         std::string passError;
-        // 実際に使ったShaderの描画状態です。
+        // 実際に使った描画状態
         ShaderRenderState renderState;
+        // 描画要求を処理できた
         bool drawn{};
-        // マゼンタの代替表示で描いたときtrueです。
+        // 代替表示を使った
         bool placeholder{};
     };
 }

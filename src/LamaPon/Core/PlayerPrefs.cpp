@@ -28,6 +28,7 @@ namespace
         Value,
         std::less<>>;
 
+    // 設定キーの文字コードと長さを検証します(key: UTF-8の設定キー)。
     void ValidateKey(const std::string_view key)
     {
         if (key.empty()
@@ -41,6 +42,7 @@ namespace
         }
     }
 
+    // 設定文書をフラッシュ後の置換で永続化します(path: 保存先, text: 保存文書の全文)。
     void WriteAtomically(
         const std::filesystem::path& path,
         const std::string_view text)
@@ -48,11 +50,16 @@ namespace
         LamaPon::Detail::DurablePublishLocalDocument(path, text);
     }
 
+    // 設定ファイルを検証してキーと値を返します(filePath: 読み込み元のパス)。
+    // ファイルがなければ空の設定とし、不正な文書や読み込み失敗は例外とします。
     ValueMap ReadValues(
         const std::filesystem::path& filePath)
     {
+        // 読み込んだ設定キーと値の一覧
         ValueMap values;
+        // 保存先ファイルの種別確認エラー
         std::error_code statusError;
+        // リンクを追わない保存先の種別
         const auto status = std::filesystem::symlink_status(
             filePath,
             statusError);
@@ -77,6 +84,7 @@ namespace
                 + LamaPon::PathToUtf8(filePath));
         }
 
+        // 設定文書を読む入力ファイル
         std::ifstream input(filePath, std::ios::binary);
         if (!input)
         {
@@ -85,6 +93,7 @@ namespace
                 + LamaPon::PathToUtf8(filePath));
         }
 
+        // ファイルから読み込む設定文書
         nlohmann::json document;
         input >> document;
         static_cast<void>(
@@ -98,10 +107,13 @@ namespace
                 "Unsupported PlayerPrefs file: "
                 + LamaPon::PathToUtf8(filePath));
         }
+        // key: 設定キー
+        // entry: 型名付きのJSON値
         for (const auto& [key, entry] :
             document["values"].items())
         {
             ValidateKey(key);
+            // 記録された設定値の型名
             const auto type =
                 entry.value("type", std::string{});
             if (type == "integer")
@@ -111,6 +123,7 @@ namespace
             }
             else if (type == "number")
             {
+                // 有限性を検証する設定の実数値
                 const double value =
                     entry.at("value").get<double>();
                 if (!std::isfinite(value))
@@ -138,14 +151,20 @@ namespace
         return values;
     }
 
+    // 厳格な保存文書の検証後にキーと値を返します(text: 保存文書の全文)。
     ValueMap ReadStrictValues(const std::string_view text)
     {
         LamaPon::Detail::ValidatePlayerPrefsFullDocument(text);
+        // 厳格検証済みの設定JSON文書
         const auto document = nlohmann::json::parse(text);
+        // 読み込んだ設定キーと値の一覧
         ValueMap values;
+        // key: 設定キー
+        // entry: 型名付きのJSON値
         for (const auto& [key, entry] : document.at("values").items())
         {
             ValidateKey(key);
+            // 記録された設定値の型名
             const auto type = entry.at("type").get<std::string>();
             if (type == "integer")
             {
@@ -153,6 +172,7 @@ namespace
             }
             else if (type == "number")
             {
+                // 有限性を検証する設定の実数値
                 const auto value = entry.at("value").get<double>();
                 if (!std::isfinite(value))
                 {
@@ -173,17 +193,21 @@ namespace
         return values;
     }
 
+    // ゲーム名から保存先のディレクトリ名を生成します(applicationName: ゲーム名)。
     std::wstring SafeDirectoryName(
         const std::string_view applicationName)
     {
+        // 禁則文字を置換する保存先名
         std::wstring value =
             LamaPon::Utf8ToWide(applicationName);
         if (value.empty())
         {
             value = L"LamaPonGame";
         }
+        // ファイル名へ使えない記号一覧
         constexpr std::wstring_view invalid =
             L"<>:\"/\\|?*";
+        // 禁則文字かを照合する各文字
         for (auto& character : value)
         {
             if (character < 32
@@ -215,10 +239,16 @@ namespace LamaPon
 {
     struct PlayerPrefs::Implementation final
     {
+        // 現在の設定ファイルのパス
         std::filesystem::path filePath;
+        // 読み込んだ設定キーと値の一覧
+        // 設定キーと具体値の一覧
         ValueMap values;
+        // 保存先の固定権の所有者識別子
         const void* bindingLeaseOwner{};
+        // 未保存の変更があるか
         bool dirty{};
+        // 読み込み失敗で上書き禁止か
         bool loadFailure{};
     };
 
@@ -246,6 +276,7 @@ namespace LamaPon
                 "PlayerPrefs is blocked after a load failure; use an explicit recovery operation.");
         }
 
+        // 成功後に交換する設定の準備状態
         auto replacement =
             std::make_unique<Implementation>();
         replacement->filePath =
@@ -278,6 +309,7 @@ namespace LamaPon
                 "PlayerPrefs does not have a load failure to recover.");
         }
 
+        // 成功後に交換する設定の準備状態
         auto replacement =
             std::make_unique<Implementation>();
         replacement->filePath =
@@ -319,6 +351,7 @@ namespace LamaPon
                 "PlayerPrefs must be saved or reloaded before rebinding.");
         }
 
+        // 成功後に交換する設定の準備状態
         auto replacement =
             std::make_unique<Implementation>();
         replacement->filePath = std::move(filePath);
@@ -382,6 +415,7 @@ namespace LamaPon
         const std::string_view fullDocument,
         const bool missing)
     {
+        // 成功後に交換する設定の準備状態
         auto replacement = std::make_unique<Implementation>();
         replacement->filePath = m_implementation->filePath;
         replacement->bindingLeaseOwner =
@@ -403,15 +437,20 @@ namespace LamaPon
 
     std::string PlayerPrefs::SerializeToJson() const
     {
+        // 設定キーと型名と値の保存文書
         nlohmann::json document{
             { "format", "LamaPonPlayerPrefs" },
             { "version", 1 },
             { "values", nlohmann::json::object() }
         };
+        // key: 設定キー
+        // value: メモリー内の設定値
         for (const auto& [key, value] :
             m_implementation->values)
         {
+            // 型名と具体値を格納するJSON項目
             nlohmann::json entry;
+            // 型名と値をJSONへ格納します(typedValue: variant内の具体型の設定値)。
             std::visit(
                 [&entry](const auto& typedValue)
                 {
@@ -453,6 +492,7 @@ namespace LamaPon
             throw std::logic_error(
                 "PlayerPrefs cannot be saved after a load failure without explicit recovery.");
         }
+        // 永続化後の設定保存の通知内容
         const Detail::LocalPersistenceCommitEvent event{
             Detail::LocalPersistenceResourceKind::PlayerPrefs,
             this,
@@ -470,6 +510,7 @@ namespace LamaPon
     void PlayerPrefs::ApplyRemoteDocumentAtomically(
         const std::string_view fullDocument)
     {
+        // 成功後に交換する設定の準備状態
         auto replacement = std::make_unique<Implementation>();
         replacement->filePath = m_implementation->filePath;
         replacement->bindingLeaseOwner =
@@ -481,6 +522,7 @@ namespace LamaPon
 
     void PlayerPrefs::DeleteRemoteDocumentAtomically()
     {
+        // 成功後に交換する設定の準備状態
         auto replacement = std::make_unique<Implementation>();
         replacement->filePath = m_implementation->filePath;
         replacement->bindingLeaseOwner =
@@ -493,11 +535,13 @@ namespace LamaPon
         const std::string_view fullDocument,
         const Detail::LocalPersistenceDocument& observed)
     {
+        // 成功後に交換する設定の準備状態
         auto replacement = std::make_unique<Implementation>();
         replacement->filePath = m_implementation->filePath;
         replacement->bindingLeaseOwner =
             m_implementation->bindingLeaseOwner;
         replacement->values = ReadStrictValues(fullDocument);
+        // 観測状態を照合した永続操作の結果
         const auto result =
             Detail::DurablePublishLocalDocumentIfUnchanged(
                 replacement->filePath,
@@ -516,10 +560,12 @@ namespace LamaPon
     bool PlayerPrefs::DeleteRemoteDocumentAtomicallyIfUnchanged(
         const Detail::LocalPersistenceDocument& observed)
     {
+        // 成功後に交換する設定の準備状態
         auto replacement = std::make_unique<Implementation>();
         replacement->filePath = m_implementation->filePath;
         replacement->bindingLeaseOwner =
             m_implementation->bindingLeaseOwner;
+        // 観測状態を照合した永続操作の結果
         const auto result =
             Detail::DurableDeleteLocalDocumentIfUnchanged(
                 replacement->filePath,
@@ -555,9 +601,12 @@ namespace LamaPon
     std::vector<std::string>
         PlayerPrefs::Keys() const
     {
+        // 辞書順に返す設定キーの一覧
         std::vector<std::string> keys;
         keys.reserve(
             m_implementation->values.size());
+        // key: 設定キー
+        // value: メモリー内の設定値
         for (const auto& [key, value] :
             m_implementation->values)
         {
@@ -571,6 +620,7 @@ namespace LamaPon
         const std::string_view key) const
     {
         ValidateKey(key);
+        // 指定キーに対応する設定値の位置
         const auto iterator =
             m_implementation->values.find(key);
         if (iterator
@@ -579,6 +629,7 @@ namespace LamaPon
             throw std::out_of_range(
                 "PlayerPrefs key was not found.");
         }
+        // 設定値に対応する型を返します(value: variant内の具体型の設定値)。
         return std::visit(
             [](const auto& value)
             {
@@ -638,6 +689,7 @@ namespace LamaPon
         const std::int64_t defaultValue) const
     {
         ValidateKey(key);
+        // 指定キーに対応する設定値の位置
         const auto iterator =
             m_implementation->values.find(key);
         if (iterator
@@ -671,6 +723,7 @@ namespace LamaPon
         const double defaultValue) const
     {
         ValidateKey(key);
+        // 指定キーに対応する設定値の位置
         const auto iterator =
             m_implementation->values.find(key);
         if (iterator
@@ -698,6 +751,7 @@ namespace LamaPon
         const bool defaultValue) const
     {
         ValidateKey(key);
+        // 指定キーに対応する設定値の位置
         const auto iterator =
             m_implementation->values.find(key);
         if (iterator
@@ -731,6 +785,7 @@ namespace LamaPon
         std::string defaultValue) const
     {
         ValidateKey(key);
+        // 指定キーに対応する設定値の位置
         const auto iterator =
             m_implementation->values.find(key);
         if (iterator
@@ -747,11 +802,14 @@ namespace LamaPon
     std::filesystem::path UserDataDirectory(
         const std::string_view applicationName)
     {
+        // ユーザー用データ領域のパス
         std::wstring localAppData(32768, L'\0');
+        // 環境変数から取得した文字数
         const DWORD length = GetEnvironmentVariableW(
             L"LOCALAPPDATA",
             localAppData.data(),
             static_cast<DWORD>(localAppData.size()));
+        // ゲーム保存先の親ディレクトリ
         std::filesystem::path root;
         if (length > 0
             && length < localAppData.size())
@@ -771,9 +829,8 @@ namespace LamaPon
 
     namespace
     {
-        // ここに実体を1つだけ置きます。ヘッダのinline staticにすると
-        // EXE側とDLL側で別々の実体になり、Scriptからの保存が無言で
-        // 消えます（PhysicsSettingsで同じ罠を踏んでいます）。
+        // スクリプトが借用する設定管理
+        // EXEとDLLで共有登録が分離しないよう、実体をCPPの1か所に置きます。
         PlayerPrefs* g_activePlayerPrefs{};
     }
 

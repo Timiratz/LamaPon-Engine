@@ -8,8 +8,7 @@
 
 namespace LamaPon
 {
-    // パッケージを利用可能にするタイミング。既存パッケージは
-    // Immediateのままなので、古いmanifest/indexとも互換です。
+    // パッケージの反映タイミング・省略時はImmediate
     enum class PackageActivation : std::uint8_t
     {
         Immediate,
@@ -17,112 +16,125 @@ namespace LamaPon
         RestartAndRebuild
     };
 
+    // 反映時期の保存用文字列を返します(activation: 反映タイミング)。
     [[nodiscard]] std::string_view PackageActivationName(
         PackageActivation activation) noexcept;
+    // 反映時期を読み、未知名や省略値はImmediateにします(name: 保存された反映時期)。
     [[nodiscard]] PackageActivation PackageActivationFromName(
         std::string_view name) noexcept;
+    // 反映に再起動が必要か返します(activation: 反映タイミング)。
     [[nodiscard]] bool PackageRequiresRestart(
         PackageActivation activation) noexcept;
 
-    // 追加先。反映タイミング（activation）とは独立した分類です。
+    // パッケージの追加先・反映タイミングとは独立
     enum class PackageTarget : std::uint8_t
     {
         Project,
         Engine
     };
 
+    // 追加先の保存用文字列を返します(target: パッケージの追加先)。
     [[nodiscard]] std::string_view PackageTargetName(
         PackageTarget target) noexcept;
+    // 追加先を読み、未知名や省略値はProjectにします(name: 保存された追加先)。
     [[nodiscard]] PackageTarget PackageTargetFromName(
         std::string_view name) noexcept;
 
     // 配布リポジトリのパッケージ一覧（index.json）に載る1件分。
     struct PackageInfo final
     {
-        // フォルダー名になる識別子（英小文字・数字・-・_のみ）。
+        // 保存先名・小文字数字と-_のみ
         std::string name;
+        // 一覧表示用の名前
         std::string displayName;
+        // パッケージの説明
         std::string description;
+        // パッケージの作者名
         std::string author;
+        // パッケージのバージョン
         std::string version;
-        // このパッケージが必要とする最低エンジンバージョン。
+        // 必須の最低エンジンバージョン
         std::string minimumEngineVersion;
+        // 配布ZIPの取得URL
         std::string downloadUrl;
+        // 配布ZIPのサイズ・byte
         std::uint64_t sizeBytes{};
-        // Zip全体のSHA-256（英小文字16進64桁）。一覧から得た
-        // パッケージでは必須で、インストール前に照合します。
+        // 照合用SHA-256・小文字16進64桁
         std::string sha256;
+        // 反映するタイミング
         PackageActivation activation{ PackageActivation::Immediate };
+        // パッケージの追加先
         PackageTarget target{ PackageTarget::Project };
     };
 
-    // 一覧JSONの取得先（配布リポジトリのpackages/index.json）。
+    // 配布一覧の取得先ホスト
     inline constexpr wchar_t PackageIndexHost[] =
         L"raw.githubusercontent.com";
+    // 配布一覧の取得先パス
     inline constexpr wchar_t PackageIndexPath[] =
         L"/Timiratz/LamaPon-Engine/main/packages/index.json";
 
-    // 一覧JSONを解釈します。形式不正は例外、パッケージ0件は空を
-    // 返します。name不正・URL不許可・sha256の無いエントリは
-    // 除外します。
+
+    // 一覧の形式を検証して読み、不正な項目を除外します(indexJson: 配布一覧のJSON全文)。
     [[nodiscard]] std::vector<PackageInfo> ParsePackageIndex(
         std::string_view indexJson);
 
-    // インストール先フォルダー名として安全か
-    // （英小文字・数字・-・_のみ、1～64文字）。
+
+    // 小文字・数字・ハイフン・下線の1から64文字か判定します(name: インストール先の名前)。
     [[nodiscard]] bool IsPackageNameSafe(
         std::string_view name) noexcept;
 
-    // 英小文字16進64桁のSHA-256表記か。
+
+    // 小文字16進64桁のSHA-256か判定します(value: 検証するハッシュ表記)。
     [[nodiscard]] bool IsCanonicalPackageSha256(
         std::string_view value) noexcept;
 
-    // ダウンロードURLとして許可するか（配布リポジトリ配下のみ）。
+
+    // 配布リポジトリ配下の許可URL接頭辞を持つか返します(url: 検証する取得先URL)。
     [[nodiscard]] bool IsAllowedPackageUrl(
         std::string_view url) noexcept;
 
-    // "https://host/path" をWinHTTP用のホストとパスへ分解します。
+
+    // HTTPSのURLをホストとパスへ分けます(url: 分割するURL, host: ホスト名の出力先, path: パスの出力先)。
     [[nodiscard]] bool SplitHttpsUrl(
         std::string_view url,
         std::wstring& host,
         std::wstring& path);
 
-    // パッケージのインストール先（assets/packages/<name>）。
+
+    // assets/packages配下の保存パスを作ります(assetRoot: assetsの基準ディレクトリ, name: 検証済みのパッケージ名)。
     [[nodiscard]] std::filesystem::path
         PackageInstallDirectory(
             const std::filesystem::path& assetRoot,
             std::string_view name);
 
-    // インストール済みバージョン（未インストールなら空文字）。
-    // assets/packages/<name>/package.json の version を読みます。
+
+    // インストール済みのバージョンを読み、名前不正・未配置・読込失敗なら空を返します(assetRoot: assetsの基準ディレクトリ, name: 調べるパッケージ名)。
     [[nodiscard]] std::string InstalledPackageVersion(
         const std::filesystem::path& assetRoot,
         std::string_view name);
 
-    // manifestにactivationが無い既存パッケージはImmediateです。
+
+    // 反映時期を読み、読込失敗や省略値はImmediateにします(assetRoot: assetsの基準ディレクトリ, name: 調べるパッケージ名)。
     [[nodiscard]] PackageActivation InstalledPackageActivation(
         const std::filesystem::path& assetRoot,
         std::string_view name) noexcept;
 
-    // 手元のZipファイルからインストールします（作者から直接
-    // 受け取った自作パッケージ用）。中のpackage.jsonから名前と
-    // バージョンを読み、無ければファイル名から推測します。
-    // 失敗時は例外を投げます。
+
+    // 手元のZIPのmanifestかファイル名から情報を取り出して配置します(assetRoot: assetsの基準ディレクトリ, zipPath: 利用者が選択したZIPパス)。
     [[nodiscard]] PackageInfo InstallPackageFromFile(
         const std::filesystem::path& assetRoot,
         const std::filesystem::path& zipPath);
 
-    // Zipバイト列を検証・展開してインストールします。
-    // package.sha256とZipのSHA-256が一致しない場合は展開前に
-    // 例外にします（sha256が空・不正な形式の場合も拒否します）。
-    // 展開はステージングフォルダーで行い、成功時のみ既存を
-    // 置き換えるため途中失敗で壊れたパッケージを残しません。
+
+    // ZIPのSHA-256とnative宣言を検証してから既存を置換します(assetRoot: assetsの基準ディレクトリ, package: 配置情報と期待するハッシュ, zipBytes: 配置するZIPのバイト列)。
     void InstallPackage(
         const std::filesystem::path& assetRoot,
         const PackageInfo& package,
         const std::vector<std::uint8_t>& zipBytes);
 
-    // インストール済みパッケージを削除します。
+
+    // 検証済みのパッケージを削除し、未配置なら何もしません(assetRoot: assetsの基準ディレクトリ, name: 削除するパッケージ名)。
     void UninstallPackage(
         const std::filesystem::path& assetRoot,
         std::string_view name);
@@ -130,18 +142,20 @@ namespace LamaPon
     // 自作パッケージの書き出し結果。
     struct PackageBuildResult final
     {
+        // 書き出したZIPのパス
         std::filesystem::path zipPath;
+        // 更新したpackage.jsonのパス
         std::filesystem::path manifestPath;
+        // ZIP元の通常ファイル数
         std::size_t fileCount{};
+        // 書き出したZIPのサイズ・byte
         std::uint64_t sizeBytes{};
-        // 配布リポジトリのindex.jsonへ貼り付ける1件分のJSON。
+        // 配布一覧用JSON・URLは仮値
         std::string indexEntryJson;
     };
 
-    // assets/packages/<name> を配布用のZipへ書き出します。
-    // package.json（名前・表示名・説明・作者・バージョン・
-    // 対応エンジン）はフォルダー内へ生成／更新してから含めます。
-    // 失敗時は例外を投げます。
+
+    // manifestを更新してZIPと配布一覧用JSONを作ります(assetRoot: assetsの基準ディレクトリ, package: 名前と配布情報, outputDirectory: ZIPの保存先)。
     [[nodiscard]] PackageBuildResult BuildPackage(
         const std::filesystem::path& assetRoot,
         const PackageInfo& package,

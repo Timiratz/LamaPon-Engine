@@ -13,8 +13,10 @@ namespace
 {
     using Json = nlohmann::json;
 
+    // 128文字以内の安全なエラー識別子かを判定する(value: 検査する識別子)。
     bool IsSafeErrorCode(const std::string_view value)
     {
+        // エラー識別子用の文字かを調べる(character: 検査するバイト)。
         return !value.empty()
             && value.size() <= 128
             && std::ranges::all_of(
@@ -29,16 +31,19 @@ namespace
                 });
     }
 
+    // 上限内の文字列を取り出し、欠落・型違い・超過時は空を返す(value: 応答JSON, key: 項目名, maxBytes: 上限バイト数)。
     std::string LimitedText(
         const Json& value,
         const char* key,
         const std::size_t maxBytes)
     {
+        // JSON内の文字列項目の位置
         const auto found = value.find(key);
         if (found == value.end() || !found->is_string())
         {
             return {};
         }
+        // 取り出した文字列または応答結果
         const auto result = found->get<std::string>();
         if (result.size() > maxBytes)
         {
@@ -47,6 +52,7 @@ namespace
         return result;
     }
 
+    // HTTP状態と安全な識別子から診断を作る(response: HTTP応答, code: エラー識別子の出力先, message: 診断文の出力先)。
     void ReadServiceError(
         const LamaPon::HttpResponse& response,
         std::string& code,
@@ -57,38 +63,46 @@ namespace
             + std::to_string(response.statusCode) + ".";
         try
         {
+            // 受信した応答JSON
             const auto json = Json::parse(response.Text());
+            // エラーJSONの参照先
             const auto* error = &json;
+            // errorオブジェクトの検索結果
             if (const auto nested = json.find("error");
                 nested != json.end() && nested->is_object())
             {
                 error = &*nested;
             }
+            // 安全なエラー識別子の候補
             if (auto parsed = LimitedText(*error, "code", 128);
                 IsSafeErrorCode(parsed))
             {
                 code = std::move(parsed);
             }
         }
+        // 応答本文を診断へ含めず、解析できない場合もHTTP状態を使います。
         catch (const std::exception&)
         {
-            // HTML等でもステータスだけで安全に診断できます。
         }
     }
 
+    // tokenとプロフィールを検証してセッションを読む(json: 応答JSON, session: セッションの出力先, error: 検証失敗の出力先)。
     bool ParseSession(
         const Json& json,
         LamaPon::Detail::OnlineSession& session,
         std::string& error)
     {
+        // サービスのアクセスtoken
         const auto accessToken = LimitedText(
             json,
             "accessToken",
             8192);
+        // セッション更新用token
         const auto refreshToken = LimitedText(
             json,
             "refreshToken",
             8192);
+        // プレイヤーJSONの位置
         const auto player = json.find("player");
         if (!LamaPon::Detail::IsSafeOnlineBearerToken(accessToken)
             || !LamaPon::Detail::IsSafeOnlineOpaqueValue(refreshToken, 8192)
@@ -99,6 +113,7 @@ namespace
             return false;
         }
 
+        // 検証するプレイヤー情報
         LamaPon::Detail::OnlinePlayerProfile profile;
         profile.playerId = LimitedText(*player, "id", 128);
         profile.displayName = LimitedText(
@@ -138,6 +153,7 @@ namespace
         return true;
     }
 
+    // 通信失敗の理由を取り出し、理由なしなら共通文を返す(response: HTTP応答)。
     std::string TransportMessage(
         const LamaPon::HttpResponse& response)
     {
@@ -177,6 +193,7 @@ namespace LamaPon::Detail
         const std::string_view json,
         const std::string_view bearerToken) const
     {
+        // リダイレクトなしのHTTP要求
         HttpRequest request;
         request.url = Utf8ToWide(
             m_serviceBaseUrl + std::string(path));
@@ -209,12 +226,15 @@ namespace LamaPon::Detail
 
     DiscordLoginStartResult DiscordAuthClient::BeginLogin() const
     {
+        // 取り出した文字列または応答結果
         DiscordLoginStartResult result;
+        // 認証APIへ送るJSON本文
         const Json requestBody{
             { "provider", "discord" },
             { "platform", "windows" },
             { "protocolVersion", 1 }
         };
+        // バックエンドからのHTTP応答
         const auto response = PostJson(
             "/v1/auth/login/start",
             requestBody.dump());
@@ -235,6 +255,7 @@ namespace LamaPon::Detail
 
         try
         {
+            // 受信した応答JSON
             const auto json = Json::parse(response.Text());
             result.transaction.transactionId = LimitedText(
                 json,
@@ -284,6 +305,7 @@ namespace LamaPon::Detail
         const std::string_view transactionId,
         const std::string_view pollToken) const
     {
+        // 取り出した文字列または応答結果
         DiscordLoginPollResult result;
         if (!IsSafeOnlineOpaqueValue(transactionId, 512)
             || !IsSafeOnlineOpaqueValue(pollToken, 2048))
@@ -292,10 +314,12 @@ namespace LamaPon::Detail
             result.errorMessage = "Login transaction is invalid.";
             return result;
         }
+        // 認証APIへ送るJSON本文
         const Json requestBody{
             { "transactionId", transactionId },
             { "pollToken", pollToken }
         };
+        // バックエンドからのHTTP応答
         const auto response = PostJson(
             "/v1/auth/login/complete",
             requestBody.dump());
@@ -308,7 +332,9 @@ namespace LamaPon::Detail
 
         try
         {
+            // 受信した応答JSON
             const auto json = Json::parse(response.Text());
+            // ログイン要求の進行状態
             const auto status = LimitedText(json, "status", 32);
             if (response.statusCode == 202 && status == "pending")
             {
@@ -321,6 +347,7 @@ namespace LamaPon::Detail
             }
             if (response.statusCode == 200 && status == "authorized")
             {
+                // セッション解析の失敗理由
                 std::string parseError;
                 if (!ParseSession(json, result.session, parseError))
                 {
@@ -346,9 +373,9 @@ namespace LamaPon::Detail
                 return result;
             }
         }
+        // 応答本文やtokenをログに出さず、共通のサービスエラーへ落とします。
         catch (const std::exception&)
         {
-            // 共通エラーへ落とし、応答本文やtokenをログへ出しません。
         }
         ReadServiceError(
             response,
@@ -360,6 +387,7 @@ namespace LamaPon::Detail
     OnlineSessionResult DiscordAuthClient::RefreshSession(
         const std::string_view refreshToken) const
     {
+        // 取り出した文字列または応答結果
         OnlineSessionResult result;
         if (!IsSafeOnlineOpaqueValue(refreshToken, 8192))
         {
@@ -367,9 +395,11 @@ namespace LamaPon::Detail
             result.errorMessage = "Refresh token is invalid.";
             return result;
         }
+        // 認証APIへ送るJSON本文
         const Json requestBody{
             { "refreshToken", refreshToken }
         };
+        // バックエンドからのHTTP応答
         const auto response = PostJson(
             "/v1/auth/session/refresh",
             requestBody.dump());
@@ -389,6 +419,7 @@ namespace LamaPon::Detail
         }
         try
         {
+            // 受信した応答JSON
             const auto json = Json::parse(response.Text());
             if (!ParseSession(
                     json,
@@ -414,6 +445,7 @@ namespace LamaPon::Detail
         {
             return false;
         }
+        // バックエンドからのHTTP応答
         const auto response = PostJson(
             "/v1/auth/session/logout",
             "{}",

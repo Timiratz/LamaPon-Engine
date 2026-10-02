@@ -1,4 +1,4 @@
-#include "LamaPon/Editor/EditorLayer.h"
+﻿#include "LamaPon/Editor/EditorLayer.h"
 
 #include "LamaPon/Editor/EditorLayerShared.h"
 #include "LamaPon/Editor/DataAssetSchema.h"
@@ -86,8 +86,10 @@ using namespace LamaPon::EditorDetail;
 
 namespace
 {
+    // Inspectorの既定幅
     constexpr float InspectorWidth = 360.0f;
 
+    // Materialへ割り当て可能か調べます(assets: アセット管理, path: シェーダーパス, error: 任意のエラー出力)。
     [[nodiscard]] bool IsAssignableMaterialShaderAsset(
         LamaPon::AssetManager& assets,
         const std::filesystem::path& path,
@@ -106,7 +108,9 @@ namespace
             return false;
         }
 
+        // シェーダー定義
         LamaPon::ShaderAssetDesc manifest;
+        // シェーダー読込エラー
         std::string manifestError;
         if (!LamaPon::LoadShaderAssetDesc(
                 assets,
@@ -132,13 +136,14 @@ namespace
         return true;
     }
 
-    // レイヤーの表示名（"番号: 名前"、無名なら番号だけ）。
+    // 番号とレイヤー名を組み合わせます(names: レイヤー名一覧, layerIndex: 表示する番号)。
     [[nodiscard]] std::string CollisionLayerLabel(
         const std::array<
             std::string,
             LamaPon::CollisionLayerCount>& names,
         const std::uint32_t layerIndex)
     {
+        // レイヤーの表示名
         std::string label = std::to_string(layerIndex);
         if (!names[layerIndex & 31u].empty())
         {
@@ -148,9 +153,7 @@ namespace
         return label;
     }
 
-    // コライダーの「レイヤー」をドロップダウンで選びます。
-    // プロジェクト設定で付けた名前を表示します。名前を設定していない
-    // 番号も選択でき、既存シーンとの互換性を保ちます。
+    // 衝突レイヤーを選択します(label: 入力欄ID, names: レイヤー名一覧, layer: 選択番号入出力)。
     [[nodiscard]] bool DrawCollisionLayerCombo(
         const char* label,
         const std::array<
@@ -158,15 +161,19 @@ namespace
             LamaPon::CollisionLayerCount>& names,
         std::uint32_t& layer)
     {
+        // レイヤー変更の有無
         bool changed = false;
+        // 選択中のレイヤー名
         const std::string preview =
             CollisionLayerLabel(names, layer & 31u);
         if (ImGui::BeginCombo(label, preview.c_str()))
         {
+            // 選択候補のレイヤー番号
             for (std::uint32_t index = 0;
                 index < LamaPon::CollisionLayerCount;
                 ++index)
             {
+                // 現在の選択候補か
                 const bool selected = index == layer;
                 if (ImGui::Selectable(
                         CollisionLayerLabel(
@@ -187,10 +194,7 @@ namespace
         return changed;
     }
 
-    // コライダーの「衝突マスク」をチェックリストで編集します。
-    // 一覧に出すのは名前の付いたレイヤーだけです（既定のマスクは
-    // 全ビットONなので、無名の32個を全部並べると升目で埋まるため）。
-    // 無名レイヤーのビットはここでは触らず、そのまま残ります。
+    // 衝突対象のビットを編集します(label: 入力欄ID, names: レイヤー名一覧, mask: 衝突マスク入出力)。
     [[nodiscard]] bool DrawCollisionMaskCombo(
         const char* label,
         const std::array<
@@ -198,7 +202,9 @@ namespace
             LamaPon::CollisionLayerCount>& names,
         std::uint32_t& mask)
     {
+        // マスク変更の有無
         bool changed = false;
+        // 衝突対象数の表示
         std::string preview;
         if (mask == 0xFFFFFFFFu)
         {
@@ -210,7 +216,9 @@ namespace
         }
         else
         {
+            // 衝突対象のレイヤー数
             int enabled = 0;
+            // 衝突レイヤー番号
             for (std::uint32_t index = 0;
                 index < LamaPon::CollisionLayerCount;
                 ++index)
@@ -220,6 +228,7 @@ namespace
             }
             preview = std::to_string(enabled) + "個";
         }
+        // 「すべて／なし」は無名レイヤーも含む全ビットを変更します。
         if (ImGui::BeginCombo(label, preview.c_str()))
         {
             if (ImGui::Selectable(
@@ -239,6 +248,7 @@ namespace
                 changed = true;
             }
             ImGui::Separator();
+            // 衝突レイヤー番号
             for (std::uint32_t index = 0;
                 index < LamaPon::CollisionLayerCount;
                 ++index)
@@ -248,6 +258,7 @@ namespace
                 {
                     continue;
                 }
+                // 衝突対象の有効状態
                 bool on = ((mask >> index) & 1u) != 0;
                 if (ImGui::Checkbox(
                     CollisionLayerLabel(
@@ -271,6 +282,7 @@ namespace
         return changed;
     }
 
+    // 形状の表示名を返します(shape: プリミティブ形状)。
     const char* ShapeName(const LamaPon::PrimitiveShape shape) noexcept
     {
         switch (shape)
@@ -288,9 +300,11 @@ namespace
         }
     }
 
+    // 値の表示を120バイトで省略します(value: 表示する値)。
     std::string TruncatePrefabValue(
         std::string value)
     {
+        // 省略前の最大バイト数
         constexpr std::size_t MaximumLength = 120;
         if (value.size() > MaximumLength)
         {
@@ -302,22 +316,29 @@ namespace
 
     struct NativePropertyEditResult final
     {
+        // スキーマの有効性
         bool hasSchema{};
+        // 値の変更有無
         bool changed{};
+        // 編集の確定有無
         bool committed{};
+        // スキーマ編集のエラー
         std::string error;
     };
 
-    // 値の置き場所（objectのキー、またはarrayの添字）を1つに
-    // まとめた参照です。同じ描画コードを、公開プロパティ本体と
-    // listの要素の両方へ使えるようにするためのものです。
+    // JSONのキーまたは配列添字を介して値を読み書きします。
     struct SchemaValueSlot final
     {
+        // 借用するJSON格納先
         nlohmann::json* container{};
+        // オブジェクトのキー
         std::string key;
+        // 配列要素の添字
         std::size_t index{};
+        // 配列要素を参照するか
         bool isArrayElement{};
 
+        // 参照先のキーまたは添字が存在するか調べます。
         [[nodiscard]] bool Has() const
         {
             if (container == nullptr)
@@ -331,6 +352,7 @@ namespace
                     && container->contains(key);
         }
 
+        // 値を借用します; Has()で存在を確認してから呼び出します。
         [[nodiscard]] const nlohmann::json& Get() const
         {
             return isArrayElement
@@ -338,6 +360,7 @@ namespace
                 : container->at(key);
         }
 
+        // 未設定の値を補い参照を返します(fallback: 未設定時の値)。
         [[nodiscard]] nlohmann::json& GetOrCreate(
             nlohmann::json fallback) const
         {
@@ -350,6 +373,7 @@ namespace
                 : container->at(key);
         }
 
+        // 参照先へ値を設定します(value: 保存する値)。
         void Set(nlohmann::json value) const
         {
             if (container == nullptr)
@@ -373,9 +397,7 @@ namespace
         }
     };
 
-    // アセット参照欄（type: "asset"）の描画はアセット一覧を持つ
-    // EditorLayer側へ委ねます。スキーマの解釈はここで完結させ、
-    // 一覧とドラッグ＆ドロップだけを外から差し込む形です。
+    // アセット参照を編集します(controlId: 入力欄ID, field: 項目定義, value: 参照パス入出力)。
     using AssetFieldDrawer = std::function<bool(
         const char* controlId,
         const nlohmann::json& field,
@@ -383,18 +405,20 @@ namespace
 
     struct SchemaFieldEdit final
     {
+        // 値の変更有無
         bool changed{};
+        // 編集の確定有無
         bool committed{};
     };
 
+    // 定義順にプロパティを編集します(properties: 値入出力, fields: 項目定義一覧, idPrefix: 入力欄ID接頭辞, drawAssetField: アセット編集処理)。
     SchemaFieldEdit DrawSchemaFields(
         nlohmann::json& properties,
         const nlohmann::json& fields,
         const std::string& idPrefix,
         const AssetFieldDrawer& drawAssetField);
 
-    // 1フィールドぶんの入力欄です。値の読み書きはslot経由で行うため、
-    // listの要素にも同じコードをそのまま使えます。
+    // 型に応じて項目を編集します(slot: 値の参照先, field: 項目定義, controlId: 入力欄ID, type: 型名, drawAssetField: アセット編集処理)。
     SchemaFieldEdit DrawSchemaValue(
         const SchemaValueSlot& slot,
         const nlohmann::json& field,
@@ -402,12 +426,16 @@ namespace
         const std::string& type,
         const AssetFieldDrawer& drawAssetField)
     {
+        // 項目の編集結果
         SchemaFieldEdit result;
+        // 入力値の変更有無
         bool itemChanged{};
+        // 即時確定する変更か
         bool immediateCommit{};
 
         if (type == "bool")
         {
+            // 入力する項目の値
             bool value = field.value("default", false);
             if (slot.Has() && slot.Get().is_boolean())
             {
@@ -424,6 +452,7 @@ namespace
         }
         else if (type == "int")
         {
+            // 入力する項目の値
             int value = field.value("default", 0);
             if (slot.Has()
                 && slot.Get().is_number_integer())
@@ -433,7 +462,9 @@ namespace
             if (field.contains("min")
                 && field.contains("max"))
             {
+                // 入力値の下限
                 const int minimum = field.at("min").get<int>();
+                // 入力値の上限
                 const int maximum = field.at("max").get<int>();
                 itemChanged = ImGui::SliderInt(
                     controlId.c_str(),
@@ -443,6 +474,7 @@ namespace
             }
             else
             {
+                // ドラッグの変更量
                 const float step = field.value("step", 1.0f);
                 itemChanged = ImGui::DragInt(
                     controlId.c_str(),
@@ -456,6 +488,7 @@ namespace
         }
         else if (type == "float")
         {
+            // 入力する項目の値
             float value = field.value("default", 0.0f);
             if (slot.Has() && slot.Get().is_number())
             {
@@ -464,8 +497,10 @@ namespace
             if (field.contains("min")
                 && field.contains("max"))
             {
+                // 入力値の下限
                 const float minimum =
                     field.at("min").get<float>();
+                // 入力値の上限
                 const float maximum =
                     field.at("max").get<float>();
                 itemChanged = ImGui::SliderFloat(
@@ -476,6 +511,7 @@ namespace
             }
             else
             {
+                // ドラッグの変更量
                 const float step = field.value("step", 0.1f);
                 itemChanged = ImGui::DragFloat(
                     controlId.c_str(),
@@ -489,17 +525,22 @@ namespace
         }
         else if (type == "string")
         {
+            // スキーマの既定値
             const auto initial = LamaPon::EditorDetail::SchemaDefaultValue(field);
+            // 入力する項目の値
             std::string value = initial.is_string()
                 ? initial.get<std::string>() : std::string{};
             if (slot.Has() && slot.Get().is_string())
             {
                 value = slot.Get().get<std::string>();
             }
+            // 文字列の選択候補
             const auto options = LamaPon::EditorDetail::SchemaStringOptions(field);
             if (!options.empty())
             {
+                // 選択中の候補表示
                 std::string preview = value;
+                // 文字列の候補
                 for (const auto& option : options)
                 {
                     if (option.value == value)
@@ -511,9 +552,12 @@ namespace
                 // 未知の既存値は表示・保存を保ち、選び直すまで変更しません。
                 if (ImGui::BeginCombo(controlId.c_str(), preview.c_str()))
                 {
+                    // 要素または候補の添字
                     for (std::size_t index = 0; index < options.size(); ++index)
                     {
+                        // 文字列の候補
                         const auto& option = options[index];
+                        // 現在の選択候補か
                         const bool selected = option.value == value;
                         ImGui::PushID(static_cast<int>(index));
                         if (ImGui::Selectable(option.displayName.c_str(), selected))
@@ -533,6 +577,7 @@ namespace
             }
             else
             {
+                // 文字列の入力バッファ
                 std::array<char, 512> buffer{};
                 strncpy_s(
                     buffer.data(),
@@ -551,6 +596,7 @@ namespace
         }
         else if (type == "asset")
         {
+            // 入力する項目の値
             std::string value = field.value(
                 "default",
                 std::string{});
@@ -585,14 +631,17 @@ namespace
             || type == "color3"
             || type == "color4")
         {
+            // ベクトルの成分数
             const std::size_t count =
                 SchemaComponentCount(type);
+            // 入力する項目の値
             std::array<float, 4> value{
                 0.0f,
                 0.0f,
                 0.0f,
                 type.starts_with("color") ? 1.0f : 0.0f
             };
+            // 数値要素を表示成分へ読み込みます(array: 値の配列)。
             const auto readArray =
                 [&value, count](const nlohmann::json& array)
                 {
@@ -600,6 +649,7 @@ namespace
                     {
                         return;
                     }
+                    // 要素または候補の添字
                     for (std::size_t index = 0;
                         index < count && index < array.size();
                         ++index)
@@ -652,8 +702,11 @@ namespace
             }
             if (itemChanged)
             {
+                // 保存する成分配列
                 auto array = nlohmann::json::array();
+                // 要素または候補の添字
                 for (std::size_t index = 0;
+                    // ベクトルの成分数
                     index < count;
                     ++index)
                 {
@@ -664,6 +717,7 @@ namespace
         }
         else if (type == "object")
         {
+            // 借用する子オブジェクト
             auto& child = slot.GetOrCreate(
                 SchemaDefaultValue(field));
             if (!child.is_object())
@@ -674,6 +728,7 @@ namespace
                 && field.at("fields").is_array())
             {
                 ImGui::Indent();
+                // 子項目の編集結果
                 const auto edit = DrawSchemaFields(
                     child,
                     field.at("fields"),
@@ -697,9 +752,7 @@ namespace
         return result;
     }
 
-    // 可変長の並び（type: "list"）です。要素の型は"item"で指定し、
-    // 数値・文字列だけでなく"object"（フィールドの集まり）も
-    // 入れられます。
+    // 可変長リストを編集します(properties: 値入出力, name: プロパティ名, field: 項目定義, controlId: 入力欄ID, drawAssetField: アセット編集処理)。
     SchemaFieldEdit DrawSchemaList(
         nlohmann::json& properties,
         const std::string& name,
@@ -707,13 +760,17 @@ namespace
         const std::string& controlId,
         const AssetFieldDrawer& drawAssetField)
     {
+        // リストの編集結果
         SchemaFieldEdit result;
+        // 未指定時の要素定義
         static const nlohmann::json defaultItem =
             nlohmann::json{ { "type", "float" } };
+        // 借用する要素定義
         const auto& item = field.contains("item")
                 && field.at("item").is_object()
             ? field.at("item")
             : defaultItem;
+        // 要素の型名
         const std::string itemType = item.contains("type")
                 && item.at("type").is_string()
             ? Lowercase(item.at("type").get<std::string>())
@@ -724,6 +781,7 @@ namespace
         {
             properties[name] = nlohmann::json::array();
         }
+        // 借用する編集対象配列
         auto& values = properties.at(name);
 
         if (ImGui::SmallButton(
@@ -739,13 +797,17 @@ namespace
             "%zu件",
             values.size());
 
+        // 削除対象なしの添字
         constexpr std::size_t NoRemoval =
             static_cast<std::size_t>(-1);
+        // 描画後に削除する添字
         std::size_t removeIndex = NoRemoval;
+        // 編集する要素の添字
         for (std::size_t index = 0;
             index < values.size();
             ++index)
         {
+            // 要素入力欄のID
             const std::string elementId = controlId
                 + "_"
                 + std::to_string(index);
@@ -759,16 +821,19 @@ namespace
             ImGui::SameLine();
             ImGui::SetNextItemWidth(-1.0f);
 
+            // 配列要素への参照
             const SchemaValueSlot slot{
                 &values,
                 {},
                 index,
                 true
             };
+            // 要素の編集結果
             SchemaFieldEdit edit;
             if (itemType == "object")
             {
                 ImGui::NewLine();
+                // 借用する要素オブジェクト
                 auto& element = slot.GetOrCreate(
                     SchemaDefaultValue(item));
                 if (!element.is_object())
@@ -802,6 +867,7 @@ namespace
                 result.committed || edit.committed;
         }
 
+        // 配列の参照と添字を保つため、要素の削除は全項目の描画後に行います。
         if (removeIndex != NoRemoval
             && removeIndex < values.size())
         {
@@ -814,14 +880,18 @@ namespace
         return result;
     }
 
+    // 定義順にプロパティを編集します(properties: 値入出力, fields: 項目定義一覧, idPrefix: 入力欄ID接頭辞, drawAssetField: アセット編集処理)。
     SchemaFieldEdit DrawSchemaFields(
         nlohmann::json& properties,
         const nlohmann::json& fields,
         const std::string& idPrefix,
         const AssetFieldDrawer& drawAssetField)
     {
+        // 全項目の編集結果
         SchemaFieldEdit result;
+        // 項目定義の添字
         std::size_t fieldIndex{};
+        // 項目の定義
         for (const auto& field : fields)
         {
             if (!field.is_object()
@@ -834,6 +904,7 @@ namespace
                 continue;
             }
 
+            // 保存するプロパティ名
             const std::string name =
                 field.at("name").get<std::string>();
             if (name.empty())
@@ -841,11 +912,14 @@ namespace
                 ++fieldIndex;
                 continue;
             }
+            // 小文字化した型名
             const std::string type = Lowercase(
                 field.at("type").get<std::string>());
+            // 項目の表示名
             const std::string displayName = field.value(
                 "displayName",
                 name);
+            // 項目入力欄のID
             const std::string controlId = idPrefix
                 + "_"
                 + std::to_string(fieldIndex)
@@ -855,6 +929,7 @@ namespace
             ImGui::TextUnformatted(displayName.c_str());
             ImGui::SetNextItemWidth(-1.0f);
 
+            // 項目の編集結果
             SchemaFieldEdit edit;
             if (type == "list")
             {
@@ -867,6 +942,7 @@ namespace
             }
             else
             {
+                // プロパティへの参照
                 const SchemaValueSlot slot{
                     &properties,
                     name,
@@ -899,11 +975,13 @@ namespace
         return result;
     }
 
+    // スキーマで公開プロパティを編集します(properties: 値入出力, schemaJson: 定義JSON, drawAssetField: 任意のアセット編集処理)。
     NativePropertyEditResult DrawNativeScriptProperties(
         nlohmann::json& properties,
         const std::string_view schemaJson,
         const AssetFieldDrawer& drawAssetField = {})
     {
+        // 公開プロパティ編集結果
         NativePropertyEditResult result;
         if (schemaJson.empty())
         {
@@ -912,6 +990,7 @@ namespace
 
         try
         {
+            // 公開プロパティの定義
             const auto schema = nlohmann::json::parse(schemaJson);
             if (!schema.is_object()
                 || !schema.contains("fields")
@@ -923,6 +1002,7 @@ namespace
             }
 
             result.hasSchema = true;
+            // 公開項目の編集結果
             const auto edit = DrawSchemaFields(
                 properties,
                 schema.at("fields"),
@@ -931,6 +1011,7 @@ namespace
             result.changed = edit.changed;
             result.committed = edit.committed;
         }
+        // スキーマ読込・編集時の失敗理由
         catch (const std::exception& exception)
         {
             result.hasSchema = false;
@@ -939,6 +1020,7 @@ namespace
         return result;
     }
 
+    // コンポーネントの表示名を返します(typeName: 終端済みの型名文字列)。
     const char* ComponentDisplayName(const std::string_view typeName) noexcept
     {
         if (typeName == "Camera")
@@ -1127,14 +1209,17 @@ namespace
 
 namespace LamaPon
 {
+    // 設定桁数を最大6桁に制限した小数表示書式を返します。
     std::string EditorLayer::InspectorFloatFormat() const
     {
+        // 小数表示の桁数
         const auto decimals = std::min(
             m_projectSettings.inspectorDecimals,
             6u);
         return "%." + std::to_string(decimals) + "f";
     }
 
+    // 選択Materialを編集用に読み込み、読込失敗を保持します。
     void EditorLayer::LoadMaterialInspectorDraft()
     {
         m_materialInspectorAsset = m_selectedAsset;
@@ -1156,12 +1241,14 @@ namespace LamaPon
                 &m_graphics.Assets());
             m_materialInspectorLoaded = true;
         }
+        // 読込・編集処理の例外
         catch (const std::exception& exception)
         {
             m_materialInspectorError = exception.what();
         }
     }
 
+    // Shaderエラーとコードを開くボタンを描画します(shaderPath: 元のパス, error: 診断内容, identifier: UI識別子)。
     void EditorLayer::DrawShaderError(
         const std::filesystem::path& shaderPath,
         const std::string_view error,
@@ -1177,22 +1264,31 @@ namespace LamaPon
             "Shader Error: %s",
             std::string{ error }.c_str());
 
+        // 開くシェーダーのパス
         std::filesystem::path asset = shaderPath;
+        // エラー行番号
         std::uint32_t line{};
+        // エラー列番号
         std::uint32_t column{};
+        // 解析したエラー位置
         if (const auto location =
                 ParseShaderDiagnosticLocation(error))
         {
+            // ルートパスの検証エラー
             std::error_code pathError;
+            // 正規化したアセットルート
             const auto root = std::filesystem::weakly_canonical(
                 m_graphics.Assets().AssetRoot(),
                 pathError);
+            // エラー内の参照パス
             auto candidate = location->path;
             if (!pathError && !candidate.is_absolute())
             {
+                // シェーダー隣の候補パス
                 const auto besideShader =
                     m_graphics.Assets().ResolvePath(
                         shaderPath.parent_path() / candidate);
+                // 候補ファイルの検証エラー
                 std::error_code regularFileError;
                 candidate = std::filesystem::is_regular_file(
                         besideShader,
@@ -1201,7 +1297,9 @@ namespace LamaPon
                     ? besideShader
                     : m_graphics.Assets().ResolvePath(candidate);
             }
+            // 参照パスの正規化エラー
             std::error_code canonicalError;
+            // 正規化した参照パス
             const auto resolved = std::filesystem::weakly_canonical(
                 candidate,
                 canonicalError);
@@ -1238,6 +1336,7 @@ namespace LamaPon
         ImGui::PopID();
     }
 
+    // 選択FBXのメタデータから編集用倍率を読み込みます。
     void EditorLayer::LoadModelInspectorDraft()
     {
         m_modelInspectorAsset = m_selectedAsset;
@@ -1253,6 +1352,7 @@ namespace LamaPon
 
         try
         {
+            // モデルメタデータのパス
             const std::filesystem::path metaPath(
                 m_graphics.Assets()
                     .ResolvePath(m_modelInspectorAsset)
@@ -1260,10 +1360,13 @@ namespace LamaPon
                 + L".meta");
             if (std::filesystem::is_regular_file(metaPath))
             {
+                // メタデータの入力
                 std::ifstream input(metaPath, std::ios::binary);
                 if (input)
                 {
+                    // 読込済みのメタデータ
                     nlohmann::json document;
+                    // 読込済みのメタデータ
                     input >> document;
                     m_modelImportScaleDraft =
                         static_cast<float>(
@@ -1274,12 +1377,14 @@ namespace LamaPon
             }
             m_modelInspectorLoaded = true;
         }
+        // 読込・編集処理の例外
         catch (const std::exception& exception)
         {
             m_modelInspectorError = exception.what();
         }
     }
 
+    // 選択FBXの倍率を編集・保存して共有モデルへ反映します。
     void EditorLayer::DrawModelAssetInspector()
     {
         if (m_modelInspectorAsset != m_selectedAsset)
@@ -1287,6 +1392,7 @@ namespace LamaPon
             LoadModelInspectorDraft();
         }
 
+        // モデルのファイル名
         const std::string assetName = PathToUtf8(
             m_selectedAsset.filename());
         ImGui::SeparatorText("Model Asset (FBX)");
@@ -1363,22 +1469,27 @@ namespace LamaPon
         ImGui::TextDisabled(
             "cm→mの取り違えなら「100倍」を押してください。");
 
+        // モデル倍率を保存して共有モデルを再読込します。
         const auto saveModelScale = [this]()
         {
             try
             {
+                // モデルメタデータのパス
                 const std::filesystem::path metaPath(
                     m_graphics.Assets()
                         .ResolvePath(m_selectedAsset)
                         .wstring()
                     + L".meta");
+                // 保存するメタデータ
                 nlohmann::json document;
                 {
+                    // 既存メタデータの入力
                     std::ifstream input(
                         metaPath,
                         std::ios::binary);
                     if (input)
                     {
+                        // 保存するメタデータ
                         input >> document;
                     }
                 }
@@ -1389,6 +1500,7 @@ namespace LamaPon
                 document["importScale"] =
                     m_modelImportScaleDraft;
 
+                // メタデータの出力
                 std::ofstream output(
                     metaPath,
                     std::ios::binary | std::ios::trunc);
@@ -1407,6 +1519,7 @@ namespace LamaPon
                         + PathToUtf8(m_selectedAsset));
                 }
 
+                // 再読込に失敗しても、書込み済みの倍率は元に戻りません。
                 ReloadSharedModel(m_selectedAsset);
                 m_modelInspectorDirty = false;
                 m_modelInspectorError.clear();
@@ -1415,6 +1528,7 @@ namespace LamaPon
                     + PathToUtf8(m_selectedAsset));
                 return true;
             }
+            // 保存・再読込処理の例外
             catch (const std::exception& exception)
             {
                 m_modelInspectorError = exception.what();
@@ -1438,14 +1552,18 @@ namespace LamaPon
         }
     }
 
+    // シェーダーを選択します(label: 入力欄ID, shaderPath: 参照入出力, allowMaterialManifests: Material定義も含めるか)。
     bool EditorLayer::DrawShaderAssetSelector(
         const char* label,
         std::filesystem::path& shaderPath,
         const bool allowMaterialManifests)
     {
+        // 選択可能なシェーダー一覧
         std::vector<std::filesystem::path> shaders;
+        // シェーダー候補のパス
         for (const auto& asset : m_assetFiles)
         {
+            // HLSL形式の候補か
             const bool legacyShader = IsShaderAsset(asset);
             if (!legacyShader
                 && (!allowMaterialManifests
@@ -1456,23 +1574,10 @@ namespace LamaPon
                 continue;
             }
 
-            // HLSLの選択肢には、VSMain/PSMainを持つ利用者向けShaderだけを
-            // 表示します。エンジン内部用Shaderはファイル名で除外するため、
-            // 内部用Shaderを追加する場合は下の条件にも追加します。
-            //   LamaPonLit         … エンジンが標準として直接使う
-            //                        （「LamaPon Lit (Default)」が
-            //                        その入口なので二重に出さない）
-            //   LamaPonEnvironment … 空・Bloom・トーンマップなどの
-            //                        全画面パス専用
-            //   LamaPonLightCulling… Compute Shader専用（CSMainだけ)。
-            //                        選ぶとVSMain/PSMainが無くて
-            //                        コンパイルに失敗する
-            //   LamaPonShaderError … コンパイルに失敗したときの
-            //   LamaPonSpriteError   代役（3D／2D）。自分で選べて
-            //                        しまうと「壊れている印」が
-            //                        意味を失う
+            // 標準描画・内部処理・エラー代替のHLSLは候補から除外します。
             if (legacyShader)
             {
+                // 小文字化したファイル名
                 const std::string filename = Lowercase(
                     LamaPon::PathToUtf8(asset.filename()));
                 if (filename == "lamaponlit.hlsl"
@@ -1485,6 +1590,7 @@ namespace LamaPon
             }
             shaders.push_back(asset);
         }
+        // パスを大文字小文字を区別せず比較します(left: 左の候補, right: 右の候補)。
         std::ranges::sort(
             shaders,
             [](const auto& left, const auto& right)
@@ -1493,12 +1599,15 @@ namespace LamaPon
                     < Lowercase(PathToUtf8(right));
             });
 
+        // 現在のシェーダー表示
         const std::string preview = shaderPath.empty()
             ? "LamaPon Lit (Default)"
             : PathToUtf8(shaderPath);
+        // 参照変更の有無
         bool changed = false;
         if (ImGui::BeginCombo(label, preview.c_str()))
         {
+            // 標準シェーダーを選択中か
             const bool standardSelected = shaderPath.empty();
             if (ImGui::Selectable(
                     "LamaPon Lit (Default)",
@@ -1513,10 +1622,13 @@ namespace LamaPon
                 ImGui::SetItemDefaultFocus();
             }
 
+            // 選択候補のシェーダー
             for (const auto& shader : shaders)
             {
+                // 候補パスの表示
                 const std::string shaderLabel =
                     PathToUtf8(shader);
+                // 現在の選択候補か
                 const bool selected = IsSameAssetReference(
                     shaderPath,
                     shader);
@@ -1538,11 +1650,14 @@ namespace LamaPon
         return changed;
     }
 
+    // テクスチャを選択します(label: 入力欄ID, texturePath: 参照入出力)。
     bool EditorLayer::DrawTextureAssetSelector(
         const char* label,
         std::filesystem::path& texturePath)
     {
+        // 選択可能なテクスチャ一覧
         std::vector<std::filesystem::path> textures;
+        // テクスチャ候補のパス
         for (const auto& asset : m_assetFiles)
         {
             if (IsTextureAsset(asset))
@@ -1550,6 +1665,7 @@ namespace LamaPon
                 textures.push_back(asset);
             }
         }
+        // パスを大文字小文字を区別せず比較します(left: 左の候補, right: 右の候補)。
         std::ranges::sort(
             textures,
             [](const auto& left, const auto& right)
@@ -1558,12 +1674,15 @@ namespace LamaPon
                     < Lowercase(PathToUtf8(right));
             });
 
+        // 現在のテクスチャ表示
         const std::string preview = texturePath.empty()
             ? "None"
             : PathToUtf8(texturePath);
+        // 参照変更の有無
         bool changed = false;
         if (ImGui::BeginCombo(label, preview.c_str()))
         {
+            // 未割当を選択中か
             const bool noneSelected = texturePath.empty();
             if (ImGui::Selectable("None", noneSelected))
             {
@@ -1575,10 +1694,13 @@ namespace LamaPon
                 ImGui::SetItemDefaultFocus();
             }
 
+            // 選択候補のテクスチャ
             for (const auto& texture : textures)
             {
+                // 候補パスの表示
                 const std::string textureLabel =
                     PathToUtf8(texture);
+                // 現在の選択候補か
                 const bool selected = IsSameAssetReference(
                     texturePath,
                     texture);
@@ -1599,19 +1721,23 @@ namespace LamaPon
         return changed;
     }
 
+    // DDSキューブマップを選択します(label: 入力欄ID, cubemapPath: 参照入出力)。
     bool EditorLayer::DrawCubemapAssetSelector(
         const char* label,
         std::filesystem::path& cubemapPath)
     {
+        // 現在のキューブマップ表示
         const std::string preview = cubemapPath.empty()
             ? "なし"
             : PathToUtf8(cubemapPath);
+        // 参照変更の有無
         bool changed = false;
         if (!ImGui::BeginCombo(label, preview.c_str()))
         {
             return false;
         }
 
+        // 未割当を選択中か
         const bool noneSelected = cubemapPath.empty();
         if (ImGui::Selectable("なし", noneSelected))
         {
@@ -1623,6 +1749,7 @@ namespace LamaPon
             ImGui::SetItemDefaultFocus();
         }
 
+        // DDS候補のパス
         for (const auto& asset : m_assetFiles)
         {
             if (Lowercase(
@@ -1632,11 +1759,10 @@ namespace LamaPon
                 continue;
             }
 
-            // DDSでも2DテクスチャはSkyboxへ使えないため、候補から
-            // 除外します。LoadTextureのキャッシュを利用するので、
-            // コンボを開いたときだけ検証しても負荷は増えません。
+            // DDSのうちキューブマップだけを候補として表示します。
             try
             {
+                // 読込済みのDDSテクスチャ
                 const auto texture =
                     m_graphics.Assets().LoadTexture(asset);
                 if (texture == nullptr || !texture->isCube)
@@ -1649,7 +1775,9 @@ namespace LamaPon
                 continue;
             }
 
+            // 候補パスの表示
             const std::string assetLabel = PathToUtf8(asset);
+            // 現在の選択候補か
             const bool selected = IsSameAssetReference(
                 cubemapPath,
                 asset);
@@ -1670,6 +1798,7 @@ namespace LamaPon
         return changed;
     }
 
+    // 選択Materialをプレビューし、編集・保存・適用します。
     void EditorLayer::DrawMaterialAssetInspector()
     {
         if (m_materialInspectorAsset != m_selectedAsset)
@@ -1677,6 +1806,7 @@ namespace LamaPon
             LoadMaterialInspectorDraft();
         }
 
+        // Materialのファイル名
         const std::string assetName = PathToUtf8(
             m_selectedAsset.filename());
         ImGui::SeparatorText("Material Asset");
@@ -1714,6 +1844,7 @@ namespace LamaPon
         }
 
         ImGui::SeparatorText("Preview");
+        // プレビューの辺の長さ
         const float previewSize = std::clamp(
             ImGui::GetContentRegionAvail().x,
             160.0f,
@@ -1724,6 +1855,7 @@ namespace LamaPon
             static_cast<std::uint32_t>(previewSize));
         if (m_materialPreviewRenderTarget.IsValid())
         {
+            // プレビューの左余白
             const float offset = std::max(
                 (ImGui::GetContentRegionAvail().x - previewSize)
                     * 0.5f,
@@ -1745,6 +1877,7 @@ namespace LamaPon
         ImGui::BeginDisabled(m_playing);
 
         ImGui::SeparatorText("Surface");
+        // 表面の基礎色
         auto baseColor =
             m_materialInspectorDraft.BaseColor();
         if (ImGui::ColorEdit4(
@@ -1755,6 +1888,7 @@ namespace LamaPon
             m_materialInspectorDirty = true;
         }
 
+        // 表面の粗さ
         float roughness =
             m_materialInspectorDraft.Roughness();
         if (ImGui::SliderFloat(
@@ -1768,6 +1902,7 @@ namespace LamaPon
             m_materialInspectorDirty = true;
         }
 
+        // 金属の割合
         float metallic =
             m_materialInspectorDraft.Metallic();
         if (ImGui::SliderFloat(
@@ -1781,6 +1916,7 @@ namespace LamaPon
             m_materialInspectorDirty = true;
         }
 
+        // 法線マップの強さ
         float normalStrength =
             m_materialInspectorDraft.NormalStrength();
         if (ImGui::SliderFloat(
@@ -1795,6 +1931,7 @@ namespace LamaPon
             m_materialInspectorDirty = true;
         }
 
+        // 基礎色テクスチャのパス
         auto albedoTexture =
             m_materialInspectorDraft.AlbedoTexture();
         if (DrawTextureAssetSelector(
@@ -1806,6 +1943,7 @@ namespace LamaPon
             m_materialInspectorDirty = true;
         }
 
+        // 法線テクスチャのパス
         auto normalTexture =
             m_materialInspectorDraft.NormalTexture();
         if (DrawTextureAssetSelector(
@@ -1818,6 +1956,7 @@ namespace LamaPon
         }
 
         ImGui::SeparatorText("Shader");
+        // 割当シェーダーのパス
         auto shaderPath =
             m_materialInspectorDraft.Shader();
         if (DrawShaderAssetSelector(
@@ -1826,6 +1965,7 @@ namespace LamaPon
                 true))
         {
             m_materialInspectorDraft.SetShader(shaderPath);
+            // 既定パラメーターを設定します(index: 項目番号, value: 設定値)。
             ApplyShaderPropertyDefaults(
                 shaderPath,
                 [this](
@@ -1861,6 +2001,7 @@ namespace LamaPon
                 "Custom Parameters",
                 ImGuiTreeNodeFlags_DefaultOpen))
         {
+            // 独自パラメーターを編集します(index: 項目番号, value: 設定値, path: テクスチャの設定パス)。
             const auto edit = DrawCustomShaderParameters(
                 m_materialInspectorDraft.Shader(),
                 "MaterialAssetParameters",
@@ -1897,6 +2038,7 @@ namespace LamaPon
             ImGui::TreePop();
         }
 
+        // Materialを保存して共有描画へ反映します。
         const auto saveMaterial = [this]()
         {
             try
@@ -1906,6 +2048,7 @@ namespace LamaPon
                         m_selectedAsset),
                     m_materialInspectorDraft,
                     &m_graphics.Assets().Database());
+                // 再読込に失敗しても、保存済みのMaterialは元に戻りません。
                 ReloadSharedMaterial(m_selectedAsset);
                 m_materialInspectorDirty = false;
                 m_materialInspectorError.clear();
@@ -1914,6 +2057,7 @@ namespace LamaPon
                     + PathToUtf8(m_selectedAsset));
                 return true;
             }
+            // 保存・再読込処理の例外
             catch (const std::exception& exception)
             {
                 m_materialInspectorError = exception.what();
@@ -1936,8 +2080,10 @@ namespace LamaPon
             SetStatus("Materialの変更を戻しました");
         }
 
+        // 適用先の選択オブジェクト
         auto* selectedObject =
             m_scene.FindGameObject(m_selectedObjectId);
+        // Materialを適用可能か
         const bool canApply = selectedObject != nullptr
             && (selectedObject->GetComponent<
                     MeshRendererComponent>() != nullptr
@@ -1966,23 +2112,28 @@ namespace LamaPon
         ImGui::EndDisabled();
     }
 
+    // 登録データ型のスキーマを借用します(typeName: 型名)。
     const std::string* EditorLayer::FindDataAssetSchema(
         const std::string_view typeName) const noexcept
     {
+        // 現在のゲームモジュール
         const auto* host = GameModuleHost::Current();
         if (host == nullptr)
         {
             return nullptr;
         }
+        // 登録済みのデータ型
         const auto* type = host->FindDataAssetType(typeName);
         return type != nullptr
             ? &type->schemaJson
             : nullptr;
     }
 
+    // キャッシュ済みのデータ型名を返します(path: アセットパス)。
     std::string EditorLayer::DataAssetTypeOfFile(
         const std::filesystem::path& path) const
     {
+        // 型名キャッシュの検索結果
         const auto found = m_dataAssetTypeByPath.find(
             Lowercase(PathToUtf8(path)));
         return found != m_dataAssetTypeByPath.end()
@@ -1990,21 +2141,25 @@ namespace LamaPon
             : std::string{};
     }
 
+    // 条件に合うアセット参照を編集します(controlId: 入力欄ID, field: 項目定義, value: 参照パス入出力)。
     bool EditorLayer::DrawAssetReferenceField(
         const char* controlId,
         const nlohmann::json& field,
         std::string& value)
     {
+        // 参照するアセット種別
         const std::string assetType =
             field.contains("assetType")
                 && field.at("assetType").is_string()
             ? Lowercase(
                 field.at("assetType").get<std::string>())
             : std::string{ "any" };
+        // 参照するデータ型
         const std::string dataType = field.value(
             "dataType",
             std::string{});
 
+        // 参照条件に合うか判定します(path: 候補パス)。
         const auto matches =
             [this, &assetType, &dataType](
                 const std::filesystem::path& path)
@@ -2055,7 +2210,9 @@ namespace LamaPon
                 return true;
             };
 
+        // 参照変更の有無
         bool changed = false;
+        // 現在の参照パス表示
         const std::string preview = value.empty()
             ? std::string{ "なし" }
             : value;
@@ -2066,13 +2223,16 @@ namespace LamaPon
                 value.clear();
                 changed = true;
             }
+            // 参照候補のアセット
             for (const auto& asset : m_assetFiles)
             {
                 if (!matches(asset))
                 {
                     continue;
                 }
+                // 候補パスの表示
                 const auto label = PathToUtf8(asset);
+                // 現在の選択候補か
                 const bool selected = Lowercase(label)
                     == Lowercase(value);
                 if (ImGui::Selectable(
@@ -2089,12 +2249,14 @@ namespace LamaPon
             }
             ImGui::EndCombo();
         }
-        // アセットウィンドウからのドラッグ＆ドロップでも差せます。
+
         if (ImGui::BeginDragDropTarget())
         {
+            // ドロップしたアセット情報
             if (const ImGuiPayload* payload =
                     ImGui::AcceptDragDropPayload(AssetPayload))
             {
+                // ドロップしたパス
                 const auto dropped = PathFromUtf8(
                     static_cast<const char*>(payload->Data));
                 if (matches(dropped))
@@ -2115,6 +2277,7 @@ namespace LamaPon
         return changed;
     }
 
+    // 選択データJSONを読み込み、編集するvaluesをオブジェクトへ補正します。
     void EditorLayer::LoadDataAssetInspectorDraft()
     {
         m_dataAssetInspectorAsset = m_selectedAsset;
@@ -2131,12 +2294,15 @@ namespace LamaPon
 
         try
         {
+            // データアセットの内容
             const auto bytes =
                 m_graphics.Assets().ReadFileBytes(
                     m_dataAssetInspectorAsset);
+            // 編集するデータJSON
             auto document = nlohmann::json::object();
             if (!bytes.empty())
             {
+                // JSON内容の先頭位置
                 const auto* first =
                     reinterpret_cast<const char*>(
                         bytes.data());
@@ -2162,12 +2328,14 @@ namespace LamaPon
                     std::move(document));
             RefreshDataAssetJsonBuffer();
         }
+        // 読込・編集処理の例外
         catch (const std::exception& exception)
         {
             m_dataAssetInspectorError = exception.what();
         }
     }
 
+    // 編集用JSONを表示バッファへ写し、容量超過分を切り詰めます。
     void EditorLayer::RefreshDataAssetJsonBuffer()
     {
         m_dataAssetJsonBuffer.fill('\0');
@@ -2182,6 +2350,7 @@ namespace LamaPon
             _TRUNCATE);
     }
 
+    // Data Assetの下書きを保存し、成否を返します。
     bool EditorLayer::SaveDataAssetInspectorDraft()
     {
         if (m_dataAssetInspectorDraft == nullptr)
@@ -2196,9 +2365,11 @@ namespace LamaPon
             (*m_dataAssetInspectorDraft)["type"] =
                 m_dataAssetInspectorTypeName;
 
+            // 保存先のデータパス
             const auto destination =
                 m_graphics.Assets().ResolvePath(
                     m_dataAssetInspectorAsset);
+            // データJSONの出力
             std::ofstream output(
                 destination,
                 std::ios::binary | std::ios::trunc);
@@ -2231,6 +2402,7 @@ namespace LamaPon
                 + PathToUtf8(m_dataAssetInspectorAsset));
             return true;
         }
+        // 失敗原因の詳細
         catch (const std::exception& exception)
         {
             m_dataAssetInspectorError = exception.what();
@@ -2282,9 +2454,10 @@ namespace LamaPon
 
         ImGui::BeginDisabled(m_playing);
 
-        // 型。Game Moduleを直して型名を変えたときのために、
-        // ここから付け替えられるようにしています。
+        // 型。
+        // 現在のゲームモジュール
         const auto* host = GameModuleHost::Current();
+        // 選択中のデータ型表示
         const std::string typePreview =
             m_dataAssetInspectorTypeName.empty()
                 ? std::string{ "（未設定）" }
@@ -2293,11 +2466,14 @@ namespace LamaPon
         {
             if (host != nullptr)
             {
+                // 登録済みのデータ型
                 for (const auto& type :
                     host->RegisteredDataAssets())
                 {
+                    // 現在の選択候補か
                     const bool selected = type.typeName
                         == m_dataAssetInspectorTypeName;
+                    // 候補の型名表示
                     const std::string label =
                         type.displayName
                         + "  ("
@@ -2320,8 +2496,10 @@ namespace LamaPon
             ImGui::EndCombo();
         }
 
+        // 借用するデータ型定義
         const auto* schema = FindDataAssetSchema(
             m_dataAssetInspectorTypeName);
+        // 型別入力欄を表示できるか
         bool hasTypedSchema{};
         if (schema == nullptr)
         {
@@ -2337,8 +2515,10 @@ namespace LamaPon
         else
         {
             ImGui::SeparatorText("値");
+            // 借用する編集対象の値
             auto& values =
                 (*m_dataAssetInspectorDraft)["values"];
+            // Scriptプロパティの編集結果
             const auto edit = DrawNativeScriptProperties(
                 values,
                 *schema,
@@ -2378,6 +2558,7 @@ namespace LamaPon
             SetStatus("データアセットの変更を戻しました");
         }
 
+        // JSONを直接表示するか
         const bool showRawJson = !hasTypedSchema
             || ImGui::CollapsingHeader("詳細設定 (JSON)");
         if (showRawJson)
@@ -2390,6 +2571,7 @@ namespace LamaPon
             {
                 try
                 {
+                    // 入力から解析したJSON
                     auto document = nlohmann::json::parse(
                         m_dataAssetJsonBuffer.data());
                     if (document.is_object())
@@ -2413,9 +2595,7 @@ namespace LamaPon
                 }
                 catch (const std::exception&)
                 {
-                    // 入力途中は壊れたJSONになるため、ここでは
-                    // 何もしません（保存すると直前の正しい内容が
-                    // 書かれます）。
+                    // 入力途中は壊れたJSONになるため、ここでは何もしません（保存すると直前の正しい内容が書かれます）。
                 }
             }
         }
@@ -2426,18 +2606,23 @@ namespace LamaPon
     const ShaderProperties& EditorLayer::ShaderPropertiesFor(
         const std::filesystem::path& shaderPath)
     {
+        // 宣言なしの共通結果
         static const ShaderProperties empty;
         if (shaderPath.empty())
         {
             return empty;
         }
 
+        // Manifest形式の定義か
         const bool manifestAsset =
             IsShaderManifestAsset(shaderPath);
 
+        // シェーダーの実パス
         const auto resolved =
             m_graphics.Assets().ResolvePath(shaderPath);
+        // 更新時刻の取得エラー
         std::error_code error;
+        // 定義ファイルの更新時刻
         const auto writeTime =
             std::filesystem::last_write_time(resolved, error);
         if (error)
@@ -2445,7 +2630,9 @@ namespace LamaPon
             return empty;
         }
 
+        // 実パスのキャッシュキー
         const auto key = resolved.wstring();
+        // 既存の宣言キャッシュ
         const auto entry = m_shaderPropertiesCache.find(key);
         if (entry != m_shaderPropertiesCache.end()
             && entry->second.writeTime == writeTime)
@@ -2453,14 +2640,14 @@ namespace LamaPon
             return entry->second.properties;
         }
 
-        // 保存し直されたら読み直します（Shaderのホットリロードと
-        // 同じ感覚で、宣言の変更もすぐ反映されます）。ここでは宣言だけを
-        // 更新し、Materialが既に持つ値には書き込まないため、Manifestの
-        // 保存だけで調整済みの値が既定値へ戻ることはありません。
+        // 保存し直されたら読み直します（Shaderのホットリロードと同じ感覚で、宣言の変更もすぐ反映されます）。
+        // 読み直した宣言
         CachedShaderProperties cached;
         if (manifestAsset)
         {
+            // シェーダーの定義
             ShaderAssetDesc manifest;
+            // 定義の読込エラー
             std::string manifestError;
             if (LoadShaderAssetDesc(
                     m_graphics.Assets(),
@@ -2484,6 +2671,7 @@ namespace LamaPon
             cached.properties = LoadShaderProperties(resolved);
         }
         cached.writeTime = writeTime;
+        // 更新するキャッシュ項目
         auto& stored = m_shaderPropertiesCache[key];
         stored = std::move(cached);
         return stored.properties;
@@ -2499,6 +2687,7 @@ namespace LamaPon
         {
             return false;
         }
+        // 借用するバリアント定義
         const auto& declaration =
             m_graphics.ShaderVariantsFor(shaderPath);
         if (!declaration.error.empty())
@@ -2514,20 +2703,24 @@ namespace LamaPon
             return false;
         }
 
+        // キーワード変更の有無
         bool changed = false;
         ImGui::PushID(identifier);
         ImGui::SeparatorText("バリアント");
+        // 変更後のキーワード集合
         auto next = current;
+        // 排他的な選択グループ
         for (const auto& group : declaration.groups)
         {
+            // 切替対象のキーワード
             for (const auto& keyword : group.keywords)
             {
                 if (keyword.empty())
                 {
-                    // 「どれも立てない」枠はUIに出しません
-                    // （全部のチェックを外した状態がそれです）。
+                    // 「どれも立てない」枠はUIに出しません（全部のチェックを外した状態がそれです）。
                     continue;
                 }
+                // キーワードの有効状態
                 bool enabled = next.IsEnabled(keyword);
                 if (ImGui::Checkbox(
                         keyword.c_str(),
@@ -2536,8 +2729,7 @@ namespace LamaPon
                     if (enabled)
                     {
                         // 同じグループの他のキーワードは外します。
-                        // 2つ以上立つとどちらの#defineも渡って
-                        // しまい、シェーダー側の想定が崩れます。
+                        // 同一グループの候補
                         for (const auto& other :
                             group.keywords)
                         {
@@ -2578,6 +2770,7 @@ namespace LamaPon
         {
             return;
         }
+        // 借用するパラメーター定義
         const auto& properties =
             ShaderPropertiesFor(shaderPath);
         if (!properties.declared
@@ -2586,14 +2779,15 @@ namespace LamaPon
             return;
         }
         // 宣言のある枠だけを、0から組み立て直して書き込みます。
-        // 前に割り当てていたShaderの値が成分単位で残ると、意味の
-        // 違う数字が混ざって原因不明の見え方になるためです。
+        // 枠ごとの既定値
         std::array<
             DirectX::XMFLOAT4,
             LitMaterial::CustomParameterCount> values{};
+        // 既定値を設定した枠
         std::array<
             bool,
             LitMaterial::CustomParameterCount> touched{};
+        // パラメーターの定義
         for (const auto& field : properties.fields)
         {
             if (!field.defaultValue.has_value()
@@ -2601,8 +2795,10 @@ namespace LamaPon
             {
                 continue;
             }
+            // 設定する値の先頭成分
             float* const target =
                 &values[field.parameterIndex].x;
+            // 設定する成分の添字
             for (std::size_t component = 0;
                 component < field.componentCount;
                 ++component)
@@ -2612,6 +2808,7 @@ namespace LamaPon
             }
             touched[field.parameterIndex] = true;
         }
+        // 設定する枠の番号
         for (std::size_t index = 0;
             index < values.size();
             ++index)
@@ -2623,6 +2820,7 @@ namespace LamaPon
         }
     }
 
+    // 宣言済みShader欄を編集します(shaderPath: Shader, identifier: UI識別子, getter/setter: 値操作, textureGetter/textureSetter: テクスチャ操作)。
     ShaderPropertyEditResult
         EditorLayer::DrawCustomShaderParameters(
         const std::filesystem::path& shaderPath,
@@ -2639,9 +2837,11 @@ namespace LamaPon
             std::size_t,
             std::filesystem::path)>& textureSetter)
     {
+        // パラメーターの編集結果
         ShaderPropertyEditResult result;
         ImGui::PushID(identifier);
 
+        // 借用するパラメーター定義
         const auto& properties =
             ShaderPropertiesFor(shaderPath);
         if (!properties.error.empty())
@@ -2655,16 +2855,22 @@ namespace LamaPon
             && properties.declared
             && !properties.fields.empty())
         {
+            // パラメーターの添字
             for (std::size_t index = 0;
                 index < properties.fields.size();
                 ++index)
             {
+                // パラメーターの定義
                 const auto& field = properties.fields[index];
+                // 編集する枠の値
                 auto parameter =
                     getter(field.parameterIndex);
+                // 編集する枠の先頭成分
                 float* const values = &parameter.x;
-                // 宣言された成分だけを取り出して編集し、書き戻します。
+
+                // 入力欄で編集する成分
                 std::array<float, 4> editing{};
+                // 編集する成分の添字
                 for (std::size_t component = 0;
                     component < field.componentCount;
                     ++component)
@@ -2677,8 +2883,8 @@ namespace LamaPon
                 if (field.kind
                     == ShaderPropertyKind::Texture)
                 {
-                    // 追加テクスチャ枠。画像をドロップするか、
-                    // Asset Browserで選んでから割り当てます。
+
+                    // 現在のテクスチャパス
                     const auto current = textureGetter
                         ? textureGetter(
                             field.parameterIndex)
@@ -2689,6 +2895,7 @@ namespace LamaPon
                         current.empty()
                             ? "未設定（白）"
                             : PathToUtf8(current).c_str());
+                    // テクスチャドロップ欄ID
                     const std::string dropLabel =
                         "画像をここへドロップ##CustomTexture"
                         + std::to_string(index);
@@ -2697,10 +2904,12 @@ namespace LamaPon
                         ImVec2{ -1.0f, 0.0f });
                     if (ImGui::BeginDragDropTarget())
                     {
+                        // ドロップしたアセット情報
                         if (const ImGuiPayload* payload =
                             ImGui::AcceptDragDropPayload(
                                 AssetPayload))
                         {
+                            // ドロップしたパス
                             const auto dropped =
                                 PathFromUtf8(
                                     static_cast<
@@ -2742,6 +2951,7 @@ namespace LamaPon
                     ImGui::PopID();
                     continue;
                 }
+                // 項目の変更有無
                 bool fieldChanged = false;
                 switch (field.kind)
                 {
@@ -2757,6 +2967,7 @@ namespace LamaPon
                     break;
                 case ShaderPropertyKind::Boolean:
                 {
+                    // 真偽値の有効状態
                     bool enabled = editing[0] >= 0.5f;
                     fieldChanged = ImGui::Checkbox(
                         field.name.c_str(),
@@ -2796,6 +3007,7 @@ namespace LamaPon
                             0.01f);
                     break;
                 }
+                // 項目編集の確定有無
                 const bool fieldCommitted =
                     ImGui::IsItemDeactivatedAfterEdit();
                 ImGui::PopID();
@@ -2803,6 +3015,7 @@ namespace LamaPon
 
                 if (fieldChanged)
                 {
+                    // 編集する成分の添字
                     for (std::size_t component = 0;
                         component < field.componentCount;
                         ++component)
@@ -2816,15 +3029,19 @@ namespace LamaPon
 
             if (ImGui::Button("既定値に戻す"))
             {
+                // パラメーターの定義
                 for (const auto& field : properties.fields)
                 {
                     if (!field.defaultValue.has_value())
                     {
                         continue;
                     }
+                    // 編集する枠の値
                     auto parameter =
                         getter(field.parameterIndex);
+                    // 編集する枠の先頭成分
                     float* const values = &parameter.x;
+                    // 編集する成分の添字
                     for (std::size_t component = 0;
                         component < field.componentCount;
                         ++component)
@@ -2843,18 +3060,23 @@ namespace LamaPon
         else
         {
             // 宣言が無いShaderは従来どおり生のfloat4を編集します。
+            // パラメーターの添字
             for (std::size_t index = 0;
                 index < LitMaterial::CustomParameterCount;
                 ++index)
             {
+                // 編集する枠の値
                 auto parameter = getter(index);
+                // 未宣言枠の表示名
                 const std::string label =
                     "Parameter "
                     + std::to_string(index + 1);
+                // 項目の変更有無
                 const bool fieldChanged = ImGui::DragFloat4(
                     label.c_str(),
                     &parameter.x,
                     0.01f);
+                // 項目編集の確定有無
                 const bool fieldCommitted =
                     ImGui::IsItemDeactivatedAfterEdit();
                 result.Observe(fieldChanged, fieldCommitted);
@@ -2880,9 +3102,11 @@ namespace LamaPon
             const char* id,
             const std::string& current)
     {
+        // 描画先の編集結果
         RenderTexturePickerResult result;
         ImGui::PushID(id);
 
+        // 描画先名の入力バッファ
         std::array<char, 64> buffer{};
         strncpy_s(
             buffer.data(),
@@ -2909,10 +3133,13 @@ namespace LamaPon
                 "（ミニマップ・防犯カメラ・装備プレビュー）");
         }
 
-        // シーン内のCameraが実際に使っている名前から選べます。
+
+        // 重複を除いた描画先一覧
         std::vector<std::string> names;
+        // カメラを探すオブジェクト
         for (const auto& gameObject : m_scene.GameObjects())
         {
+            // オブジェクトのカメラ
             const auto* camera =
                 gameObject->GetComponent<CameraComponent>();
             if (camera == nullptr
@@ -2947,6 +3174,7 @@ namespace LamaPon
                 result.value = std::string{};
                 result.commit = true;
             }
+            // 選択候補の描画先名
             for (const auto& name : names)
             {
                 if (ImGui::Selectable(
@@ -2972,8 +3200,10 @@ namespace LamaPon
                 ImVec2{ 430.0f, 680.0f },
                 ImGuiCond_FirstUseEver);
 
+            // 環境ウィンドウの表示フラグ
             constexpr ImGuiWindowFlags environmentFlags =
                 ImGuiWindowFlags_NoCollapse;
+            // 環境ウィンドウの表示状態
             const bool environmentVisible = ImGui::Begin(
                 "シーン環境",
                 &m_sceneEnvironmentOpen,
@@ -2982,6 +3212,7 @@ namespace LamaPon
             {
                 ImGui::BeginDisabled(m_playing);
 
+                // 環境光の色
                 auto ambientColor = m_scene.AmbientLightColor();
                 if (ImGui::ColorEdit3(
                     "環境光カラー",
@@ -2994,6 +3225,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 環境光の強度
                 float ambientIntensity =
                     m_scene.AmbientLightIntensity();
                 if (ImGui::SliderFloat(
@@ -3015,6 +3247,7 @@ namespace LamaPon
                     "3Dレンダラー共通。2D描画には影響しません。");
 
                 ImGui::SeparatorText("描画カリング");
+                // 視錐台カリング設定
                 bool frustumCulling =
                     m_scene.FrustumCullingEnabled();
                 if (ImGui::Checkbox(
@@ -3025,6 +3258,7 @@ namespace LamaPon
                         frustumCulling);
                     RecordHistory();
                 }
+                // 遮蔽カリング設定
                 bool occlusionCulling =
                     m_scene.OcclusionCullingEnabled();
                 if (ImGui::Checkbox(
@@ -3035,6 +3269,7 @@ namespace LamaPon
                         occlusionCulling);
                     RecordHistory();
                 }
+                // 現在の可視性統計
                 const auto& visibility =
                     m_scene.VisibilityStats();
                 ImGui::Text(
@@ -3049,6 +3284,7 @@ namespace LamaPon
                     visibility.lodGroupCount);
 
                 ImGui::SeparatorText("物理 Broad Phase");
+                // 物理空間の区画幅
                 float cellSize =
                     m_scene.PhysicsBroadPhaseCellSize();
                 if (ImGui::DragFloat(
@@ -3068,6 +3304,7 @@ namespace LamaPon
                 }
 
                 ImGui::SeparatorText("Skybox");
+                // 編集中のSkybox設定
                 auto sky = m_scene.Sky();
                 if (ImGui::Checkbox(
                     "空を表示",
@@ -3112,6 +3349,7 @@ namespace LamaPon
                 if (ImGui::IsItemDeactivatedAfterEdit()) RecordHistory();
 
                 {
+                    // 編集中のキューブマップパス
                     std::array<char, 512> cubemapBuffer{};
                     strncpy_s(
                         cubemapBuffer.data(),
@@ -3119,6 +3357,7 @@ namespace LamaPon
                         PathToUtf8(sky.cubemapPath).c_str(),
                         _TRUNCATE);
 
+                    // DDSを読み込み、キューブマップ形式か検証します(candidate: 候補パス, error: 検証エラー出力)。
                     const auto validateCubemap =
                         [this](
                             const std::filesystem::path& candidate,
@@ -3149,6 +3388,7 @@ namespace LamaPon
                             }
                             try
                             {
+                                // 候補パスから読み込んだテクスチャ
                                 const auto texture =
                                     m_graphics.Assets().LoadTexture(
                                         candidate);
@@ -3161,6 +3401,7 @@ namespace LamaPon
                                     return false;
                                 }
                             }
+                            // 失敗原因の詳細
                             catch (const std::exception& exception)
                             {
                                 error =
@@ -3175,12 +3416,14 @@ namespace LamaPon
                             return true;
                         };
 
+                    // 有効なキューブマップをSkyboxへ適用します(candidate: 適用するパス)。
                     const auto applyCubemap =
                         [&](std::filesystem::path candidate)
                         {
                             candidate = candidate.empty()
                                 ? std::filesystem::path{}
                                 : candidate.lexically_normal();
+                            // キューブマップ検証のエラー
                             std::string error;
                             if (!validateCubemap(candidate, error))
                             {
@@ -3221,8 +3464,7 @@ namespace LamaPon
                             cubemapBuffer.data(),
                             cubemapBuffer.size()))
                     {
-                        // 編集途中では現在のSkyboxを維持し、入力が
-                        // 確定した時点でだけ存在とキューブ形式を検証します。
+                        // 入力欄の編集中は反映せず、編集確定時に検証して適用します。
                     }
                     if (ImGui::IsItemDeactivatedAfterEdit())
                     {
@@ -3230,6 +3472,7 @@ namespace LamaPon
                             PathFromUtf8(cubemapBuffer.data()));
                     }
 
+                    // Cubemap選択の編集中パス
                     auto selectedCubemap = sky.cubemapPath;
                     if (DrawCubemapAssetSelector(
                             "アセットから選択",
@@ -3238,6 +3481,7 @@ namespace LamaPon
                         applyCubemap(std::move(selectedCubemap));
                     }
 
+                    // 選択中アセットがDDSか
                     const bool selectedDds =
                         !m_selectedAsset.empty()
                         && Lowercase(
@@ -3257,6 +3501,7 @@ namespace LamaPon
                         ImVec2{ -1.0f, 0.0f });
                     if (ImGui::BeginDragDropTarget())
                     {
+                        // ドロップしたアセット情報
                         if (const ImGuiPayload* payload =
                                 ImGui::AcceptDragDropPayload(
                                     AssetPayload))
@@ -3319,6 +3564,7 @@ namespace LamaPon
                 }
 
                 ImGui::SeparatorText("Fog");
+                // 編集中のフォグ設定
                 auto fog = m_scene.Fog();
                 if (ImGui::Checkbox(
                     "フォグを有効化",
@@ -3371,6 +3617,7 @@ namespace LamaPon
 
                 ImGui::SeparatorText(
                     "SSAO");
+                // SSAO設定の編集中コピー
                 auto occlusion = m_scene.AmbientOcclusion();
                 if (ImGui::Checkbox(
                     "SSAOを有効化",
@@ -3382,8 +3629,7 @@ namespace LamaPon
                 }
                 if (ImGui::IsItemHovered())
                 {
-                    // このラムダ（showItemTooltip）はもっと後で
-                    // 定義されるため、ここでは直接呼びます。
+
                     ImGui::SetTooltip(
                         "物が接している隙間や角を暗くして、接地感を"
                         "出します。深度だけから計算する軽量な方式です");
@@ -3420,6 +3666,7 @@ namespace LamaPon
 
                 ImGui::SeparatorText(
                     "TAA（時間的アンチエイリアス）");
+                // 編集中の時間AA設定
                 auto temporal =
                     m_scene.TemporalAntiAliasing();
                 if (ImGui::Checkbox(
@@ -3499,6 +3746,7 @@ namespace LamaPon
 
                 ImGui::SeparatorText(
                     "SSR（画面空間反射）");
+                // 編集中の画面反射設定
                 auto reflection =
                     m_scene.ScreenSpaceReflection();
                 if (ImGui::Checkbox(
@@ -3543,6 +3791,7 @@ namespace LamaPon
                             reflection);
                 }
                 if (ImGui::IsItemDeactivatedAfterEdit()) RecordHistory();
+                // 画面反射のサンプル数
                 int reflectionSteps = static_cast<int>(
                     reflection.stepCount);
                 if (ImGui::SliderInt(
@@ -3602,6 +3851,7 @@ namespace LamaPon
 
                 ImGui::SeparatorText(
                     "ベイクした間接光（GI）");
+                // 編集中の間接光設定
                 auto bakedGi =
                     m_scene.BakedGlobalIllumination();
                 if (ImGui::Checkbox(
@@ -3621,6 +3871,7 @@ namespace LamaPon
                         "そばの床がほんのり赤くなる、はね返りの光が"
                         "出ます。設定したら下のベイクを押してください");
                 }
+                // 間接光範囲の中心
                 float bakedGiCenter[3]{
                     bakedGi.center.x,
                     bakedGi.center.y,
@@ -3639,6 +3890,7 @@ namespace LamaPon
                             bakedGi);
                 }
                 if (ImGui::IsItemDeactivatedAfterEdit()) RecordHistory();
+                // 間接光範囲の大きさ
                 float bakedGiSize[3]{
                     bakedGi.size.x,
                     bakedGi.size.y,
@@ -3659,6 +3911,7 @@ namespace LamaPon
                             bakedGi);
                 }
                 if (ImGui::IsItemDeactivatedAfterEdit()) RecordHistory();
+                // 間接光格子の分割数
                 int bakedGiResolution[3]{
                     static_cast<int>(bakedGi.resolutionX),
                     static_cast<int>(bakedGi.resolutionY),
@@ -3704,6 +3957,7 @@ namespace LamaPon
                             bakedGi);
                 }
                 if (ImGui::IsItemDeactivatedAfterEdit()) RecordHistory();
+                // 間接光ベイクの進捗
                 const float bakedGiProgress =
                     m_scene
                         .BakedGlobalIlluminationBakeProgress();
@@ -3734,11 +3988,10 @@ namespace LamaPon
                         "押してください");
                 }
 
-                // 並びは実際にかかる順（SSAO→光の筋→Bloom）に
-                // 合わせています。光の筋はHDRのうちにかけるので、
-                // 明るい筋はこの後のBloomで滲みます。
+                // 描画順は実際の後処理順に合わせ、光の筋をBloomより先に適用します。
                 ImGui::SeparatorText(
                     "光の筋（ボリュメトリック）");
+                // 編集中の光線設定
                 auto volumetric = m_scene.VolumetricLight();
                 if (ImGui::Checkbox(
                     "光の筋を有効化",
@@ -3766,6 +4019,7 @@ namespace LamaPon
                         volumetric);
                 }
                 if (ImGui::IsItemDeactivatedAfterEdit()) RecordHistory();
+                // 光線のサンプル数
                 int volumetricSamples =
                     static_cast<int>(
                         volumetric.sampleCount);
@@ -3825,6 +4079,7 @@ namespace LamaPon
                 }
 
                 ImGui::SeparatorText("Bloom");
+                // 編集中のBloom設定
                 auto bloom = m_scene.Bloom();
                 if (ImGui::Checkbox(
                     "ブルームを有効化",
@@ -3865,6 +4120,7 @@ namespace LamaPon
                 if (ImGui::IsItemDeactivatedAfterEdit()) RecordHistory();
 
                 ImGui::SeparatorText("画面アウトライン");
+                // 編集中のアウトライン設定
                 auto screenOutline = m_scene.ScreenOutline();
                 if (ImGui::Checkbox(
                     "画面アウトラインを有効化",
@@ -3941,6 +4197,7 @@ namespace LamaPon
 
                 ImGui::SeparatorText(
                     "Screen Space Lens Flare");
+                // 編集中のレンズフレア設定
                 auto lensFlare = m_scene.ScreenSpaceLensFlare();
                 if (ImGui::Checkbox(
                     "レンズフレアを有効化",
@@ -4034,6 +4291,7 @@ namespace LamaPon
                         lensFlare);
                 }
                 if (ImGui::IsItemDeactivatedAfterEdit()) RecordHistory();
+                // レンズフレアの光線数
                 int streakDirections = static_cast<int>(
                     lensFlare.streakDirections);
                 if (ImGui::SliderInt(
@@ -4078,6 +4336,7 @@ namespace LamaPon
                 }
 
                 ImGui::SeparatorText("被写界深度 (DoF)");
+                // 編集中の被写界深度設定
                 auto depthOfField = m_scene.DepthOfField();
                 if (ImGui::Checkbox(
                     "被写界深度を有効化",
@@ -4169,6 +4428,7 @@ namespace LamaPon
 
                 ImGui::SeparatorText(
                     "モーションブラー");
+                // 編集中のモーションブラー設定
                 auto motionBlur = m_scene.MotionBlur();
                 if (ImGui::Checkbox(
                     "モーションブラーを有効化",
@@ -4228,6 +4488,7 @@ namespace LamaPon
                 }
 
                 ImGui::SeparatorText("自動露出");
+                // 編集中の自動露出設定
                 auto autoExposure = m_scene.AutoExposure();
                 if (ImGui::Checkbox(
                     "自動露出を有効化",
@@ -4323,9 +4584,7 @@ namespace LamaPon
                 if (ImGui::IsItemDeactivatedAfterEdit()) RecordHistory();
                 if (autoExposure.enabled)
                 {
-                    // 今どれだけ効いているかを出します。数字が動いて
-                    // いれば順応が回っていると分かるので、「効いて
-                    // いないように見える」ときの切り分けが早いです。
+                    // 現在のビューポート描画先
                     const auto& target =
                         m_activeViewport == ViewportMode::Scene
                             ? m_sceneRenderTarget
@@ -4353,6 +4612,7 @@ namespace LamaPon
                 }
 
                 ImGui::SeparatorText("Color Grading");
+                // 編集中の色調整設定
                 auto colorGrading = m_scene.ColorGrading();
                 if (ImGui::Checkbox(
                     "トーンマッピングを有効化",
@@ -4430,14 +4690,21 @@ namespace LamaPon
                 if (ImGui::IsItemDeactivatedAfterEdit()) RecordHistory();
                 ImGui::EndDisabled();
 
+                // 物理演算の実行統計
                 const auto& physics =
                     m_scene.PhysicsStats();
+                // 2D・3D合計Collider数
+                // Collider総数
                 const std::size_t totalColliders =
                     physics.colliderCount2D
                     + physics.colliderCount3D;
+                // 2D・3D合計の衝突候補数
+                // Broad Phase候補ペア総数
                 const std::size_t candidatePairs =
                     physics.candidatePairCount2D
                     + physics.candidatePairCount3D;
+                // 2D・3D合計の狭域検査数
+                // Narrow Phase検査総数
                 const std::size_t narrowTests =
                     physics.narrowPhaseTestCount2D
                     + physics.narrowPhaseTestCount3D;
@@ -4477,6 +4744,7 @@ namespace LamaPon
             ImVec2{ InspectorWidth, 640.0f },
             ImGuiCond_FirstUseEver);
 
+        // Inspectorウィンドウの表示設定
         constexpr ImGuiWindowFlags inspectorFlags =
             ImGuiWindowFlags_NoCollapse;
 
@@ -4488,9 +4756,7 @@ namespace LamaPon
             "インスペクター",
             nullptr,
             inspectorFlags);
-        // スクリーンショットモードの「:bottom」指定。下の方の
-        // コンポーネント（コライダーのレイヤー等）を撮るため、
-        // 撮影まで毎フレーム末尾へスクロールし続けます。
+        // スクリーンショット撮影までInspector末尾を表示し続けます。
         if (m_screenshotScrollToBottom
             && !m_screenshotRequest.imagePath.empty())
         {
@@ -4516,6 +4782,7 @@ namespace LamaPon
             return;
         }
 
+        // 借用する選択中オブジェクト
         auto* selected = m_scene.FindGameObject(m_selectedObjectId);
         if (selected == nullptr)
         {
@@ -4526,6 +4793,7 @@ namespace LamaPon
 
         ImGui::BeginDisabled(m_playing);
 
+        // 無効化中も項目説明を表示します(text: 説明文)。
         const auto showItemTooltip = [](const char* text)
         {
             if (ImGui::IsItemHovered(
@@ -4536,13 +4804,16 @@ namespace LamaPon
             }
         };
 
+        // GameObject名の入力バッファ
         std::array<char, 256> nameBuffer{};
         strncpy_s(
             nameBuffer.data(),
             nameBuffer.size(),
             selected->Name().c_str(),
             _TRUNCATE);
+        // GameObjectの有効状態
         bool enabled = selected->IsEnabled();
+        // シーン間の保持設定
         bool persistent = selected->IsPersistent();
         if (ImGui::BeginTable(
                 "ObjectHeader",
@@ -4614,8 +4885,8 @@ namespace LamaPon
             ImGui::EndTable();
         }
         {
-            // プロジェクト設定のタグ一覧から選択します。未登録の
-            // タグが設定されている場合は警告と登録ボタンを出します。
+            // プロジェクト設定のタグ一覧から選択します。
+            // タグが未登録として表示されるか
             const bool tagRegistered =
                 selected->Tag().empty()
                 || m_projectSettings.tags.empty()
@@ -4623,6 +4894,7 @@ namespace LamaPon
                         m_projectSettings.tags,
                         selected->Tag())
                     != m_projectSettings.tags.end();
+            // 現在のタグ表示
             const std::string tagPreview =
                 selected->Tag().empty()
                     ? std::string{ "Tag（未設定）" }
@@ -4641,9 +4913,11 @@ namespace LamaPon
                     selected->SetTag({});
                     RecordHistory();
                 }
+                // 編集対象のタグ名
                 for (const auto& tag :
                     m_projectSettings.tags)
                 {
+                    // 現在の候補タグか
                     const bool active =
                         selected->Tag() == tag;
                     if (ImGui::Selectable(
@@ -4698,11 +4972,11 @@ namespace LamaPon
                 }
             }
         }
-        // 描画カリングの設定はRenderCullingコンポーネントへ移り
-        // ました（全オブジェクトに常時出ていた項目を、必要な
-        // オブジェクトにだけ付ける形にするため）。
+        // 描画カリングの設定はRenderCullingコンポーネントへ移りました（全オブジェクトに常時出ていた項目を、必要なオブジェクトにだけ付ける形にするため）。
         if (selected->IsPersistent())
         {
+            // シーン間保持に使う識別キー。
+            // シーン間保持に使う識別キー。
             std::array<char, 256>
                 persistenceKey{};
             strncpy_s(
@@ -4721,6 +4995,7 @@ namespace LamaPon
                         *selected,
                         persistenceKey.data());
                 }
+                // 失敗原因の詳細
                 catch (const std::exception&
                     exception)
                 {
@@ -4733,7 +5008,9 @@ namespace LamaPon
             }
         }
 
+        // Prefab変更の復帰が発生したか
         bool prefabReverted = false;
+        // 借用するPrefabルート
         if (auto* prefabRoot =
                 m_scene.FindPrefabInstanceRoot(*selected);
             prefabRoot != nullptr)
@@ -4747,6 +5024,7 @@ namespace LamaPon
             if (ImGui::SmallButton(
                 "元Prefabを選択##PrefabLocate"))
             {
+                // 元Prefabアセットのパス
                 const auto prefabAsset =
                     prefabRoot->PrefabAssetPath();
                 m_selectedAsset = prefabAsset;
@@ -4774,6 +5052,7 @@ namespace LamaPon
                     prefabRoot->Name().c_str());
             }
 
+            // Prefab状態の確認時刻
             const double now = ImGui::GetTime();
             if (m_prefabStatusRootId
                     != prefabRoot->Id()
@@ -4787,11 +5066,13 @@ namespace LamaPon
                 m_prefabOverrides.clear();
                 try
                 {
+                    // Prefab差分の一覧
                     const auto overrides =
                         m_scene.GetPrefabOverrides(
                             *prefabRoot);
                     m_prefabOverrides.reserve(
                         overrides.size());
+                    // 処理対象の値
                     for (const auto& value :
                         overrides)
                     {
@@ -4810,6 +5091,7 @@ namespace LamaPon
                     m_prefabHasOverrides =
                         !m_prefabOverrides.empty();
                 }
+                // 失敗原因の詳細
                 catch (const std::exception& exception)
                 {
                     m_prefabHasOverrides = false;
@@ -4853,6 +5135,7 @@ namespace LamaPon
             ImGui::TextDisabled(
                 "Apply: 元Prefabへ反映 / Revert: 変更を破棄");
 
+            // Prefab差分件数の見出し
             const std::string overrideHeader =
                 "Override詳細 ("
                 + std::to_string(
@@ -4862,11 +5145,14 @@ namespace LamaPon
                 && ImGui::TreeNode(
                     overrideHeader.c_str()))
             {
+                // 現在処理する項目の添字
                 for (std::size_t index = 0;
                     index < m_prefabOverrides.size();
                     ++index)
                 {
+                    // 適用後に一覧走査を終了するか
                     bool stopOverrideLoop = false;
+                    // 現在表示するPrefab差分
                     const auto& entry =
                         m_prefabOverrides[index];
                     ImGui::PushID(
@@ -4923,15 +5209,13 @@ namespace LamaPon
             return;
         }
 
+        // 選択オブジェクトのTransform参照
         auto& transform = selected->GetTransform();
         if (ImGui::CollapsingHeader(
                 "Transform",
                 ImGuiTreeNodeFlags_DefaultOpen))
         {
-            // 表示桁数はプロジェクト設定で変えられます（既定は1桁）。
-            // ImGuiの既定は"%.3f"で、位置や角度をざっと見るには
-            // 桁が多くて読みにくいためです。丸めるのは表示だけで、
-            // 内部の値は変わりません。
+            // Inspectorの座標表示桁数
             const auto decimalsFormat = InspectorFloatFormat();
             ImGui::InputFloat3(
                 "位置",
@@ -4942,15 +5226,12 @@ namespace LamaPon
                 RecordHistory();
             }
 
-            // 回転の正本はクォータニオンなので、表示するオイラー角は
-            // そこから変換して作ります。ただし同じ回転を表す
-            // オイラー角は複数あるため、変換した値をそのまま
-            // 入力欄へ入れると編集中に数値が飛びます（90度付近で
-            // 別の等価な組み合わせへ切り替わる）。
-            // そこで編集中だけは入力した値を覚えておき、そちらを
-            // 表示します。
+            // 回転の正本はクォータニオンなので、表示するオイラー角はそこから変換して作ります。
+            // ただし同じ回転を表すオイラー角は複数あるため、変換した値をそのまま入力欄へ入れると編集中に数値が飛びます（90度付近で別の等価な組み合わせへ切り替わる）。
+            // 正本Quaternionから求めた表示角
             const auto currentEuler =
                 transform.EulerAngles();
+            // 編集中の度単位の回転値
             DirectX::XMFLOAT3 rotationDegrees{
                 DirectX::XMConvertToDegrees(
                     currentEuler.x),
@@ -4990,8 +5271,7 @@ namespace LamaPon
                 && m_rotationEditObjectId
                     == selected->Id())
             {
-                // 編集から離れたら、次はクォータニオンから作った
-                // 値を見せます（他の操作で回された結果を反映）。
+                // 編集から離れたら、次はクォータニオンから作った値を見せます（他の操作で回された結果を反映）。
                 m_rotationEditActive = false;
             }
 
@@ -5005,22 +5285,24 @@ namespace LamaPon
             }
         }
 
+        // 走査後に削除するComponent
         Component* componentToRemove{};
-        // コンポーネントの並び替え要求。走査中にm_componentsを
-        // 並べ替えるとfor文を壊すので、削除と同じく走査後に
-        // まとめて適用します。
+        // 表示中の走査を崩さないよう、コンポーネントの並べ替えは走査後に適用します。
         struct PendingComponentReorder final
         {
+            // 移動する借用コンポーネント
             const Component* moved{};
+            // ParallaxまたはJointの参照GameObject
             const Component* reference{};
+            // 対象コンポーネントの後へ挿入するか
             bool insertAfter{};
+            // 並べ替え要求の有無
             bool requested{};
         };
+        // 走査後に処理する並べ替え要求
         PendingComponentReorder pendingComponentReorder{};
 
-        // PBRマップ（粗さ・金属度・遮蔽・発光）と付随する値のUI。
-        // MeshRendererとModelRendererで枠の形が同じなので、1つの
-        // ラムダにまとめて両方から呼びます。
+        // PBR欄を描画します(renderer: 対象, target: 各処理の対象, path: 設定パス)。
         const auto drawPbrMapSlots =
             [this](auto* renderer)
             {
@@ -5035,13 +5317,17 @@ namespace LamaPon
 
                 struct Slot final
                 {
+                    // 入力欄またはUI要素の表示名
                     const char* label;
+                    // 対象Rendererのマップパスを読む処理
                     std::filesystem::path (*get)(
                         decltype(renderer));
+                    // 対象Rendererのマップパスを設定する処理
                     void (*set)(
                         decltype(renderer),
                         std::filesystem::path);
                 };
+                // 4種のPBRマップに共通の読込・設定処理をまとめます。
                 const Slot slots[]{
                     {
                         "粗さマップ",
@@ -5097,10 +5383,13 @@ namespace LamaPon
                     }
                 };
 
+                // PBRマップ欄
                 for (const auto& slot : slots)
                 {
                     ImGui::PushID(slot.label);
+                    // 現在割り当て中のPBRマップ
                     const auto current = slot.get(renderer);
+                    // 現在のマップパス表示
                     const auto currentText = PathToUtf8(current);
                     ImGui::TextWrapped(
                         "%s: %s",
@@ -5110,10 +5399,12 @@ namespace LamaPon
                             : currentText.c_str());
                     if (ImGui::BeginDragDropTarget())
                     {
+                        // ドロップしたアセット情報
                         if (const ImGuiPayload* payload =
                             ImGui::AcceptDragDropPayload(
                                 AssetPayload))
                         {
+                            // ドロップしたAnimationまたはControllerのパス
                             const auto droppedPath =
                                 PathFromUtf8(
                                     static_cast<const char*>(
@@ -5135,6 +5426,7 @@ namespace LamaPon
                                     SetStatus(
                                         "マップを割り当てました");
                                 }
+                                // 失敗原因の詳細
                                 catch (
                                     const std::exception&
                                         exception)
@@ -5158,6 +5450,7 @@ namespace LamaPon
                             SetStatus(
                                 "マップを割り当てました");
                         }
+                        // 失敗原因の詳細
                         catch (const std::exception& exception)
                         {
                             SetStatus(exception.what(), true);
@@ -5176,6 +5469,7 @@ namespace LamaPon
                     ImGui::PopID();
                 }
 
+                // 環境遮蔽の強さ
                 float occlusionStrength =
                     renderer->OcclusionStrength();
                 if (ImGui::SliderFloat(
@@ -5192,6 +5486,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // PBR発光色
                 auto emissive = renderer->EmissiveColor();
                 if (ImGui::ColorEdit3(
                     "発光色",
@@ -5210,18 +5505,17 @@ namespace LamaPon
                 ImGui::TreePop();
             };
 
-        // 折りたたみ状態のIDは「型名＋同じ型の中での順番」から作ります。
-        // ポインタをIDにすると、再生の停止（LoadFromJsonでの作り直し）
-        // で別アドレスになり、畳んだヘッダーが勝手に開きます
-        // （DefaultOpenが効くため）。この作り方なら作り直しでも
-        // 並べ替えでも同じIDになります。
+        // 再生成や並べ替え後も折りたたみ状態を保つ、型別の順序を記録します。
         std::unordered_map<std::string_view, int>
             componentTypeOrdinals;
 
+        // 編集対象のコンポーネント
         for (auto& component : selected->Components())
         {
+            // コンポーネントの型名
             const auto componentTypeName =
                 component->TypeName();
+            // 折りたたみ状態を保つUI識別子
             const std::string componentIdKey =
                 std::string(componentTypeName)
                 + '#'
@@ -5229,7 +5523,9 @@ namespace LamaPon
                     componentTypeOrdinals[
                         componentTypeName]++);
             ImGui::PushID(componentIdKey.c_str());
+            // コンポーネントの表示名
             std::string componentLabel;
+            // 現在編集するNative Script
             if (const auto* nativeScript =
                     dynamic_cast<
                         const NativeScriptComponent*>(
@@ -5245,7 +5541,9 @@ namespace LamaPon
                     ComponentDisplayName(
                         component->TypeName());
             }
+            // コンポーネントの有効状態
             bool componentEnabled = component->IsEnabled();
+            // コンポーネント欄の展開状態
             bool componentOpen = false;
             ImGui::Separator();
             if (ImGui::BeginTable(
@@ -5292,11 +5590,11 @@ namespace LamaPon
                         | ImGuiTreeNodeFlags_SpanAvailWidth);
 
                 // ヘッダーをつかんで並び替えられるようにします。
-                // ドラッグ中に折りたたみが切り替わらないよう、
-                // ソースにしたときはヘッダー名だけを見せます。
+                // ドラッグ中に折りたたみが切り替わらないよう、ソースにしたときはヘッダー名だけを見せます。
                 if (!m_playing
                     && ImGui::BeginDragDropSource())
                 {
+                    // 並べ替え対象の借用ポインター
                     const Component* pointer =
                         component.get();
                     ImGui::SetDragDropPayload(
@@ -5310,33 +5608,37 @@ namespace LamaPon
                 if (!m_playing
                     && ImGui::BeginDragDropTarget())
                 {
-                    // コンポーネントに「子」は無いので、行の上半分＝
-                    // 手前へ、下半分＝直後へ、の2択だけです。
+                    // コンポーネント欄の左上位置
                     const ImVec2 headerMinimum =
                         ImGui::GetItemRectMin();
+                    // コンポーネント欄の右下位置
                     const ImVec2 headerMaximum =
                         ImGui::GetItemRectMax();
+                    // 挿入位置判定に使う高さ
                     const float headerHeight = std::max(
                         headerMaximum.y - headerMinimum.y,
                         1.0f);
+                    // 対象コンポーネントの後へ挿入するか
                     const bool insertAfter =
                         (ImGui::GetMousePos().y
                             - headerMinimum.y)
                             / headerHeight
                         > 0.5f;
+                    // ドロップしたアセット情報
                     if (const ImGuiPayload* payload =
                             ImGui::AcceptDragDropPayload(
                                 ComponentPayload,
                                 ImGuiDragDropFlags_AcceptBeforeDelivery
                                     | ImGuiDragDropFlags_AcceptNoDrawDefaultRect))
                     {
-                        // 挿入位置の横線と左端の丸印
-                        // （ヒエラルキーと同じ見た目）。
+                        // ドラッグ挿入位置を描くリスト
                         auto* const drawList =
                             ImGui::GetWindowDrawList();
+                        // ドラッグ挿入位置の強調色
                         const auto highlight =
                             ImGui::GetColorU32(
                                 ImGuiCol_DragDropTarget);
+                        // 挿入位置のY座標
                         const float lineY = insertAfter
                             ? headerMaximum.y
                             : headerMinimum.y;
@@ -5353,6 +5655,7 @@ namespace LamaPon
                             highlight);
                         if (payload->IsDelivery())
                         {
+                            // ドラッグ元の借用コンポーネント
                             const Component* dragged{};
                             std::memcpy(
                                 &dragged,
@@ -5378,8 +5681,10 @@ namespace LamaPon
                 continue;
             }
 
+            // 現在編集するカメラ
             if (auto* camera = dynamic_cast<CameraComponent*>(component.get()))
             {
+                // カメラの縦方向の視野角
                 float fieldOfView = DirectX::XMConvertToDegrees(
                     camera->VerticalFieldOfView());
                 if (ImGui::SliderFloat(
@@ -5416,6 +5721,7 @@ namespace LamaPon
                 }
 
                 ImGui::SeparatorText("描画先（Render Texture）");
+                // カメラの描画先名バッファ
                 std::array<char, 64> targetName{};
                 strncpy_s(
                     targetName.data(),
@@ -5442,6 +5748,7 @@ namespace LamaPon
                     "カメラに戻ります");
                 if (camera->RendersToTexture())
                 {
+                    // Colliderまたは描画サイズ
                     int size[2]{
                         static_cast<int>(
                             camera->TargetTextureWidth()),
@@ -5465,6 +5772,7 @@ namespace LamaPon
                     {
                         RecordHistory();
                     }
+                    // 描画先のクリア色
                     auto clearColor =
                         camera->TargetClearColor();
                     if (ImGui::ColorEdit4(
@@ -5482,10 +5790,12 @@ namespace LamaPon
                         "2D/UIはテクスチャへ描かれません");
                 }
             }
+            // 現在編集する平行光源
             else if (auto* directionalLight =
                 dynamic_cast<DirectionalLightComponent*>(
                     component.get()))
             {
+                // 編集中の色
                 auto color = directionalLight->Color();
                 if (ImGui::ColorEdit3("ライト色", &color.x))
                 {
@@ -5496,6 +5806,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 編集中の光源や効果の強度
                 float intensity = directionalLight->Intensity();
                 if (ImGui::SliderFloat(
                     "強度",
@@ -5511,6 +5822,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 太陽などの見かけの角度
                 float angularDiameter =
                     directionalLight->
                         AngularDiameterDegrees();
@@ -5540,6 +5852,7 @@ namespace LamaPon
                         "ハイライトが消えたように見えます。");
                 }
 
+                // 平行光源の影設定
                 bool castsShadows =
                     directionalLight->CastsShadows();
                 if (ImGui::Checkbox(
@@ -5553,6 +5866,7 @@ namespace LamaPon
 
                 if (directionalLight->CastsShadows())
                 {
+                    // 影の描画距離
                     float shadowDistance =
                         directionalLight->ShadowDistance();
                     if (ImGui::DragFloat(
@@ -5571,6 +5885,7 @@ namespace LamaPon
                         RecordHistory();
                     }
 
+                    // 影カスケードの分割数
                     int cascadeCount = static_cast<int>(
                         directionalLight->
                             ShadowCascadeCount());
@@ -5590,6 +5905,7 @@ namespace LamaPon
                         RecordHistory();
                     }
 
+                    // 影カスケードの分割バランス
                     float splitLambda =
                         directionalLight->
                             ShadowSplitLambda();
@@ -5614,6 +5930,7 @@ namespace LamaPon
                             "0: 均等分割 / 1: 近景を高精細化");
                     }
 
+                    // 影の不透明度
                     float shadowStrength =
                         directionalLight->ShadowStrength();
                     if (ImGui::SliderFloat(
@@ -5631,6 +5948,7 @@ namespace LamaPon
                         RecordHistory();
                     }
 
+                    // 影の深度バイアス
                     float shadowBias =
                         directionalLight->ShadowBias();
                     if (ImGui::DragFloat(
@@ -5649,6 +5967,7 @@ namespace LamaPon
                         RecordHistory();
                     }
 
+                    // 影の法線バイアス
                     float normalBias =
                         directionalLight->ShadowNormalBias();
                     if (ImGui::DragFloat(
@@ -5675,6 +5994,7 @@ namespace LamaPon
                         "カメラ移動時の揺れを抑えます。");
                 }
 
+                // ワールド空間での光源方向
                 const auto direction =
                     directionalLight->WorldDirection();
                 ImGui::Text(
@@ -5686,10 +6006,12 @@ namespace LamaPon
                     "Transformの回転で方向を変更します。"
                     "有効な先頭3灯まで描画されます。");
             }
+            // 現在編集する点光源
             else if (auto* pointLight =
                 dynamic_cast<PointLightComponent*>(
                     component.get()))
             {
+                // 編集中の色
                 auto color = pointLight->Color();
                 if (ImGui::ColorEdit3("ライト色", &color.x))
                 {
@@ -5700,6 +6022,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 編集中の光源や効果の強度
                 float intensity = pointLight->Intensity();
                 if (ImGui::SliderFloat(
                     "強度",
@@ -5715,6 +6038,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Point Lightの範囲
                 float range = pointLight->Range();
                 if (ImGui::DragFloat(
                     "範囲",
@@ -5731,6 +6055,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 点光源の影設定
                 bool pointCastsShadows =
                     pointLight->CastsShadows();
                 if (ImGui::Checkbox(
@@ -5743,6 +6068,7 @@ namespace LamaPon
                 }
                 if (pointCastsShadows)
                 {
+                    // 点光源の影の濃さ
                     float pointShadowStrength =
                         pointLight->ShadowStrength();
                     if (ImGui::SliderFloat(
@@ -5760,6 +6086,7 @@ namespace LamaPon
                     {
                         RecordHistory();
                     }
+                    // 点光源の影バイアス
                     float pointShadowBias =
                         pointLight->ShadowBias();
                     if (ImGui::SliderFloat(
@@ -5785,10 +6112,12 @@ namespace LamaPon
                     "距離に応じて二次減衰します。"
                     "有効な先頭16灯まで描画されます。");
             }
+            // 現在編集する2D光源
             else if (auto* light2D =
                 dynamic_cast<Light2DComponent*>(
                     component.get()))
             {
+                // 2D光源の色
                 auto light2DColor = light2D->Color();
                 if (ImGui::ColorEdit3(
                         "ライト色##Light2D",
@@ -5801,6 +6130,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 2D光源の強度
                 float light2DIntensity =
                     light2D->Intensity();
                 if (ImGui::SliderFloat(
@@ -5818,6 +6148,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 2D光源の半径
                 float light2DRadius = light2D->Radius();
                 if (ImGui::DragFloat(
                     "半径##Light2D",
@@ -5834,6 +6165,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 2D光源がUIにも作用するか
                 bool light2DAffectsUI = light2D->AffectsUI();
                 if (ImGui::Checkbox(
                     "UIも照らす##Light2D",
@@ -5858,10 +6190,12 @@ namespace LamaPon
                     "Spriteは対象外。暗くはならず、近いほど"
                     "明るく色づきます。画面で16灯まで）。");
             }
+            // 現在編集するスポットライト
             else if (auto* spotLight =
                 dynamic_cast<SpotLightComponent*>(
                     component.get()))
             {
+                // 編集中の色
                 auto color = spotLight->Color();
                 if (ImGui::ColorEdit3("ライト色", &color.x))
                 {
@@ -5872,6 +6206,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 編集中の光源や効果の強度
                 float intensity = spotLight->Intensity();
                 if (ImGui::SliderFloat(
                     "強度",
@@ -5887,6 +6222,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Spot Lightの範囲
                 float range = spotLight->Range();
                 if (ImGui::DragFloat(
                     "範囲",
@@ -5903,6 +6239,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // スポット光の内側角度
                 float innerAngle = DirectX::XMConvertToDegrees(
                     spotLight->InnerConeAngle());
                 if (ImGui::SliderFloat(
@@ -5920,6 +6257,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // スポット光の外側角度
                 float outerAngle = DirectX::XMConvertToDegrees(
                     spotLight->OuterConeAngle());
                 if (ImGui::SliderFloat(
@@ -5937,6 +6275,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // スポット光の影設定
                 bool spotCastsShadows =
                     spotLight->CastsShadows();
                 if (ImGui::Checkbox(
@@ -5949,6 +6288,7 @@ namespace LamaPon
                 }
                 if (spotCastsShadows)
                 {
+                    // スポット光の影の濃さ
                     float spotShadowStrength =
                         spotLight->ShadowStrength();
                     if (ImGui::SliderFloat(
@@ -5966,6 +6306,7 @@ namespace LamaPon
                     {
                         RecordHistory();
                     }
+                    // スポット光の影バイアス
                     float spotShadowBias =
                         spotLight->ShadowBias();
                     if (ImGui::SliderFloat(
@@ -5992,9 +6333,11 @@ namespace LamaPon
                     "Transformの回転で方向を変更します。"
                     "有効な先頭8灯まで描画されます。");
             }
+            // 現在編集する2D Box Collider
             else if (auto* collider2D =
                 dynamic_cast<BoxCollider2DComponent*>(component.get()))
             {
+                // Colliderまたは描画サイズ
                 auto size = collider2D->Size();
                 if (ImGui::InputFloat2("サイズ", &size.x))
                 {
@@ -6005,6 +6348,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Colliderの中心位置ずれ
                 auto offset = collider2D->Offset();
                 if (ImGui::InputFloat2("オフセット", &offset.x))
                 {
@@ -6015,6 +6359,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Collider設定またはAnimation Trigger
                 bool trigger = collider2D->IsTrigger();
                 if (ImGui::Checkbox("トリガー", &trigger))
                 {
@@ -6022,6 +6367,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Colliderの衝突レイヤー
                 std::uint32_t layer = collider2D->Layer();
                 if (DrawCollisionLayerCombo(
                     "レイヤー",
@@ -6032,6 +6378,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Colliderの衝突マスク
                 std::uint32_t mask =
                     collider2D->CollisionMask();
                 if (DrawCollisionMaskCombo(
@@ -6043,6 +6390,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Colliderの物理材質
                 auto material = collider2D->Material();
                 if (ImGui::SliderFloat(
                     "摩擦係数",
@@ -6070,10 +6418,12 @@ namespace LamaPon
                     RecordHistory();
                 }
             }
+            // 現在編集する2D円Collider
             else if (auto* circle2D =
                 dynamic_cast<CircleCollider2DComponent*>(
                     component.get()))
             {
+                // 円Colliderの半径
                 float circleRadius = circle2D->Radius();
                 if (ImGui::InputFloat(
                         "半径##Circle2D",
@@ -6085,6 +6435,7 @@ namespace LamaPon
                 {
                     RecordHistory();
                 }
+                // 円Colliderの位置ずれ
                 auto circleOffset = circle2D->Offset();
                 if (ImGui::InputFloat2(
                         "オフセット##Circle2D",
@@ -6096,6 +6447,7 @@ namespace LamaPon
                 {
                     RecordHistory();
                 }
+                // 円Colliderのトリガー設定
                 bool circleTrigger =
                     circle2D->IsTrigger();
                 if (ImGui::Checkbox(
@@ -6105,6 +6457,7 @@ namespace LamaPon
                     circle2D->SetTrigger(circleTrigger);
                     RecordHistory();
                 }
+                // 円Colliderの衝突レイヤー
                 std::uint32_t circleLayer =
                     circle2D->Layer();
                 if (DrawCollisionLayerCombo(
@@ -6115,6 +6468,7 @@ namespace LamaPon
                     circle2D->SetLayer(circleLayer);
                     RecordHistory();
                 }
+                // 円Colliderの衝突マスク
                 std::uint32_t circleMask =
                     circle2D->CollisionMask();
                 if (DrawCollisionMaskCombo(
@@ -6125,6 +6479,7 @@ namespace LamaPon
                     circle2D->SetCollisionMask(circleMask);
                     RecordHistory();
                 }
+                // 円Colliderの物理材質
                 auto circleMaterial =
                     circle2D->Material();
                 if (ImGui::SliderFloat(
@@ -6155,11 +6510,13 @@ namespace LamaPon
                     RecordHistory();
                 }
             }
+            // 現在編集する2D多角形Collider
             else if (auto* polygon2D =
                 dynamic_cast<
                     PolygonCollider2DComponent*>(
                         component.get()))
             {
+                // 多角形Colliderの位置ずれ
                 auto polygonOffset = polygon2D->Offset();
                 if (ImGui::InputFloat2(
                         "オフセット##Polygon2D",
@@ -6171,6 +6528,7 @@ namespace LamaPon
                 {
                     RecordHistory();
                 }
+                // 多角形Colliderのトリガー設定
                 bool polygonTrigger =
                     polygon2D->IsTrigger();
                 if (ImGui::Checkbox(
@@ -6180,6 +6538,7 @@ namespace LamaPon
                     polygon2D->SetTrigger(polygonTrigger);
                     RecordHistory();
                 }
+                // 多角形Colliderの衝突レイヤー
                 std::uint32_t polygonLayer =
                     polygon2D->Layer();
                 if (DrawCollisionLayerCombo(
@@ -6190,6 +6549,7 @@ namespace LamaPon
                     polygon2D->SetLayer(polygonLayer);
                     RecordHistory();
                 }
+                // 多角形Colliderの衝突マスク
                 std::uint32_t polygonMask =
                     polygon2D->CollisionMask();
                 if (DrawCollisionMaskCombo(
@@ -6200,6 +6560,7 @@ namespace LamaPon
                     polygon2D->SetCollisionMask(polygonMask);
                     RecordHistory();
                 }
+                // 多角形Colliderの物理材質
                 auto polygonMaterial =
                     polygon2D->Material();
                 if (ImGui::SliderFloat(
@@ -6234,15 +6595,19 @@ namespace LamaPon
                 ImGui::Text(
                     "頂点 (%zu)",
                     polygon2D->Vertices().size());
+                // 多角形Colliderの頂点一覧
                 const auto polygonVertices =
                     polygon2D->Vertices();
+                // 削除する頂点の添字
                 int polygonRemoveIndex = -1;
+                // 現在処理する項目の添字
                 for (std::size_t index{};
                     index < polygonVertices.size();
                     ++index)
                 {
                     ImGui::PushID(
                         static_cast<int>(index));
+                    // 編集中の頂点座標
                     auto vertex = polygonVertices[index];
                     if (ImGui::DragFloat2(
                         "##polygonVertex",
@@ -6276,9 +6641,11 @@ namespace LamaPon
                     RecordHistory();
                 }
             }
+            // 現在編集する3D Box Collider
             else if (auto* collider3D =
                 dynamic_cast<BoxCollider3DComponent*>(component.get()))
             {
+                // Colliderまたは描画サイズ
                 auto size = collider3D->Size();
                 if (ImGui::InputFloat3("サイズ", &size.x))
                 {
@@ -6289,6 +6656,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Colliderの中心位置ずれ
                 auto offset = collider3D->Offset();
                 if (ImGui::InputFloat3("オフセット", &offset.x))
                 {
@@ -6299,6 +6667,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Collider設定またはAnimation Trigger
                 bool trigger = collider3D->IsTrigger();
                 if (ImGui::Checkbox("トリガー", &trigger))
                 {
@@ -6306,6 +6675,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Colliderの衝突レイヤー
                 std::uint32_t layer = collider3D->Layer();
                 if (DrawCollisionLayerCombo(
                     "レイヤー",
@@ -6316,6 +6686,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Colliderの衝突マスク
                 std::uint32_t mask =
                     collider3D->CollisionMask();
                 if (DrawCollisionMaskCombo(
@@ -6327,6 +6698,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Colliderの物理材質
                 auto material = collider3D->Material();
                 if (ImGui::SliderFloat(
                     "摩擦係数",
@@ -6354,11 +6726,13 @@ namespace LamaPon
                     RecordHistory();
                 }
             }
+            // 現在編集するカプセルCollider
             else if (auto* capsule =
                 dynamic_cast<
                     CapsuleCollider3DComponent*>(
                         component.get()))
             {
+                // ColliderまたはCharacter Controllerの半径
                 float radius = capsule->Radius();
                 if (ImGui::DragFloat(
                     "半径",
@@ -6374,6 +6748,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // ColliderまたはControllerの高さ
                 float height = capsule->Height();
                 if (ImGui::DragFloat(
                     "高さ",
@@ -6389,6 +6764,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Colliderの中心位置ずれ
                 auto offset = capsule->Offset();
                 if (ImGui::InputFloat3(
                     "オフセット",
@@ -6401,6 +6777,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Collider設定またはAnimation Trigger
                 bool trigger = capsule->IsTrigger();
                 if (ImGui::Checkbox("トリガー", &trigger))
                 {
@@ -6408,6 +6785,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Colliderの衝突レイヤー
                 std::uint32_t layer = capsule->Layer();
                 if (DrawCollisionLayerCombo(
                     "レイヤー",
@@ -6418,6 +6796,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Colliderの衝突マスク
                 std::uint32_t mask =
                     capsule->CollisionMask();
                 if (DrawCollisionMaskCombo(
@@ -6429,6 +6808,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Colliderの物理材質
                 auto material = capsule->Material();
                 if (ImGui::SliderFloat(
                     "摩擦係数",
@@ -6456,11 +6836,13 @@ namespace LamaPon
                     RecordHistory();
                 }
             }
+            // 現在編集する球Collider
             else if (auto* sphere =
                 dynamic_cast<
                     SphereCollider3DComponent*>(
                         component.get()))
             {
+                // ColliderまたはCharacter Controllerの半径
                 float radius = sphere->Radius();
                 if (ImGui::DragFloat(
                     "半径",
@@ -6476,6 +6858,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Colliderの中心位置ずれ
                 auto offset = sphere->Offset();
                 if (ImGui::InputFloat3(
                     "オフセット",
@@ -6488,6 +6871,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Collider設定またはAnimation Trigger
                 bool trigger = sphere->IsTrigger();
                 if (ImGui::Checkbox(
                     "トリガー",
@@ -6497,6 +6881,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Colliderの衝突レイヤー
                 std::uint32_t layer = sphere->Layer();
                 if (DrawCollisionLayerCombo(
                     "レイヤー",
@@ -6507,6 +6892,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Colliderの衝突マスク
                 std::uint32_t mask =
                     sphere->CollisionMask();
                 if (DrawCollisionMaskCombo(
@@ -6518,6 +6904,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Colliderの物理材質
                 auto material = sphere->Material();
                 if (ImGui::SliderFloat(
                     "摩擦係数",
@@ -6545,11 +6932,13 @@ namespace LamaPon
                     RecordHistory();
                 }
             }
+            // 現在編集する凸包Collider
             else if (auto* hull =
                 dynamic_cast<
                     ConvexHullCollider3DComponent*>(
                         component.get()))
             {
+                // 凸包Colliderの位置ずれ
                 auto hullOffset = hull->Offset();
                 if (ImGui::InputFloat3(
                     "オフセット",
@@ -6562,6 +6951,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 凸包Colliderのトリガー設定
                 bool hullTrigger = hull->IsTrigger();
                 if (ImGui::Checkbox(
                     "トリガー",
@@ -6571,6 +6961,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 凸包Colliderの衝突レイヤー
                 std::uint32_t hullLayer = hull->Layer();
                 if (DrawCollisionLayerCombo(
                     "レイヤー",
@@ -6581,6 +6972,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 凸包Colliderの衝突マスク
                 std::uint32_t hullMask =
                     hull->CollisionMask();
                 if (DrawCollisionMaskCombo(
@@ -6592,6 +6984,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 凸包Colliderの物理材質
                 auto hullMaterial = hull->Material();
                 if (ImGui::SliderFloat(
                     "摩擦係数",
@@ -6623,14 +7016,18 @@ namespace LamaPon
                 ImGui::Text(
                     "頂点 (%zu)",
                     hull->Points().size());
+                // 凸包Colliderの頂点一覧
                 const auto hullPoints = hull->Points();
+                // 削除する頂点の添字
                 int hullRemoveIndex = -1;
+                // 現在処理する項目の添字
                 for (std::size_t index{};
                     index < hullPoints.size();
                     ++index)
                 {
                     ImGui::PushID(
                         static_cast<int>(index));
+                    // 編集中の凸包頂点
                     auto point = hullPoints[index];
                     if (ImGui::DragFloat3(
                         "##hullPoint",
@@ -6664,6 +7061,7 @@ namespace LamaPon
                     RecordHistory();
                 }
             }
+            // 現在編集するMesh Collider
             else if (auto* meshCollider =
                 dynamic_cast<
                     MeshCollider3DComponent*>(
@@ -6698,6 +7096,7 @@ namespace LamaPon
                 if (ImGui::Button(
                         "ModelRendererと同期##MeshCollider"))
                 {
+                    // モデル参照元のRenderer
                     if (const auto* renderer =
                         selected->GetComponent<
                             ModelRendererComponent>())
@@ -6720,6 +7119,7 @@ namespace LamaPon
                     meshCollider->SetModelPath({});
                     RecordHistory();
                 }
+                // Mesh Colliderの位置ずれ
                 auto meshOffset =
                     meshCollider->Offset();
                 if (ImGui::DragFloat3(
@@ -6734,6 +7134,7 @@ namespace LamaPon
                 {
                     RecordHistory();
                 }
+                // Mesh Colliderのトリガー設定
                 bool meshTrigger =
                     meshCollider->IsTrigger();
                 if (ImGui::Checkbox(
@@ -6744,6 +7145,7 @@ namespace LamaPon
                         meshTrigger);
                     RecordHistory();
                 }
+                // Mesh Colliderの衝突レイヤー
                 std::uint32_t meshLayer =
                     meshCollider->Layer();
                 if (DrawCollisionLayerCombo(
@@ -6754,6 +7156,7 @@ namespace LamaPon
                     meshCollider->SetLayer(meshLayer);
                     RecordHistory();
                 }
+                // Mesh Colliderの衝突マスク
                 std::uint32_t meshMask =
                     meshCollider->CollisionMask();
                 if (DrawCollisionMaskCombo(
@@ -6765,6 +7168,7 @@ namespace LamaPon
                         meshMask);
                     RecordHistory();
                 }
+                // Mesh Colliderの摩擦係数
                 float meshFriction =
                     meshCollider->Material().friction;
                 if (ImGui::SliderFloat(
@@ -6773,6 +7177,7 @@ namespace LamaPon
                         0.0f,
                         1.0f))
                 {
+                    // Colliderの物理材質
                     auto material =
                         meshCollider->Material();
                     material.friction = meshFriction;
@@ -6783,6 +7188,7 @@ namespace LamaPon
                 {
                     RecordHistory();
                 }
+                // Mesh Colliderの反発係数
                 float meshRestitution =
                     meshCollider->Material()
                         .restitution;
@@ -6792,6 +7198,7 @@ namespace LamaPon
                         0.0f,
                         1.0f))
                 {
+                    // Colliderの物理材質
                     auto material =
                         meshCollider->Material();
                     material.restitution =
@@ -6807,11 +7214,13 @@ namespace LamaPon
                     "静的なステージ用です。Rigidbodyと"
                     "併用しないでください");
             }
+            // 現在編集するNavMesh
             else if (auto* navMesh =
                 dynamic_cast<
                     NavMeshComponent*>(
                         component.get()))
             {
+                // NavMeshの幅と奥行き
                 auto surfaceSize =
                     navMesh->SurfaceSize();
                 if (ImGui::DragFloat2(
@@ -6831,6 +7240,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // NavMesh格子のセル辺長
                 float cellSize =
                     navMesh->CellSize();
                 if (ImGui::DragFloat(
@@ -6850,6 +7260,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // NavMesh Agentの半径
                 float agentRadius =
                     navMesh->AgentRadius();
                 if (ImGui::DragFloat(
@@ -6870,6 +7281,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // NavMesh Agentの高さ
                 float agentHeight =
                     navMesh->AgentHeight();
                 if (ImGui::DragFloat(
@@ -6921,6 +7333,7 @@ namespace LamaPon
                         {
                             continue;
                         }
+                        // 有効な非トリガーBox Collider
                         const auto* collider =
                             object->GetComponent<
                                 BoxCollider3DComponent>();
@@ -6934,6 +7347,7 @@ namespace LamaPon
                                 collider->
                                     WorldBounds());
                         }
+                        // 有効な非トリガーカプセルCollider
                         const auto* obstacleCapsule =
                             object->GetComponent<
                                 CapsuleCollider3DComponent>();
@@ -6944,6 +7358,7 @@ namespace LamaPon
                             obstacles.push_back(
                                 obstacleCapsule->WorldBounds());
                         }
+                        // 有効な非トリガー球Collider
                         const auto* obstacleSphere =
                             object->GetComponent<
                                 SphereCollider3DComponent>();
@@ -6954,6 +7369,7 @@ namespace LamaPon
                             obstacles.push_back(
                                 obstacleSphere->WorldBounds());
                         }
+                        // 有効な非トリガー凸包Collider
                         const auto* obstacleHull =
                             object->GetComponent<
                                 ConvexHullCollider3DComponent>();
@@ -6964,6 +7380,7 @@ namespace LamaPon
                             obstacles.push_back(
                                 obstacleHull->WorldBounds());
                         }
+                        // メッシュ読込済みのCollider
                         const auto* obstacleMesh =
                             object->GetComponent<
                                 MeshCollider3DComponent>();
@@ -6989,11 +7406,13 @@ namespace LamaPon
                 ImGui::TextDisabled(
                     "赤=障害物、青=歩行可能。SurfaceのY位置が歩行面です。");
             }
+            // 現在編集するNavMesh Agent
             else if (auto* agent =
                 dynamic_cast<
                     NavMeshAgentComponent*>(
                         component.get()))
             {
+                // 移動またはアニメーション速度
                 float speed = agent->Speed();
                 if (ImGui::DragFloat(
                         "移動速度",
@@ -7011,6 +7430,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 目的地で停止する距離
                 float stoppingDistance =
                     agent->
                         StoppingDistance();
@@ -7032,6 +7452,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 経路へ向きを合わせるか
                 bool rotateToPath =
                     agent->RotateToPath();
                 if (ImGui::Checkbox(
@@ -7043,6 +7464,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Agentの経路目標位置
                 auto destination =
                     agent->Destination();
                 if (ImGui::InputFloat3(
@@ -7071,6 +7493,7 @@ namespace LamaPon
                         object :
                         m_scene.GameObjects())
                     {
+                        // GameObjectまたはアセット候補
                         auto* candidate =
                             object->GetComponent<
                                 NavMeshComponent>();
@@ -7138,9 +7561,9 @@ namespace LamaPon
                     return DrawRenderTexturePicker(id, current);
                 } }))
             {
-                // UI固有の編集は担当へ委譲。削除・並び替えとUndoの
-                // 適用順序は他のコンポーネントと同じ入口で管理します。
+                // UI編集後の削除・並び替え・Undoは共通処理へ委譲します。
             }
+            // 現在編集する2D Particle
             else if (auto* particles2D =
                 dynamic_cast<
                     SpriteParticles2DComponent*>(
@@ -7165,6 +7588,7 @@ namespace LamaPon
                     particles2D->Clear();
                 }
 
+                // Particle Systemの最大数
                 int maxParticles = static_cast<int>(
                     particles2D->MaxParticles());
                 if (ImGui::SliderInt(
@@ -7181,6 +7605,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 2D Particleの寿命範囲
                 auto lifetime2D = particles2D->Lifetime();
                 if (ImGui::DragFloat2(
                         "Lifetime Min / Max##SpriteParticles2D",
@@ -7197,6 +7622,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 2D Particleの初速範囲
                 auto speed2D = particles2D->StartSpeed();
                 if (ImGui::DragFloat2(
                         "Speed Min / Max##SpriteParticles2D",
@@ -7213,6 +7639,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 2D Particleの開始サイズ範囲
                 auto size2D = particles2D->StartSize();
                 if (ImGui::DragFloat2(
                         "Start Size Min / Max##SpriteParticles2D",
@@ -7229,6 +7656,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 2D Particleのサイズ増加量
                 float growth2D = particles2D->SizeGrowth();
                 if (ImGui::DragFloat(
                         "Size Growth##SpriteParticles2D",
@@ -7245,6 +7673,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 2D Particleの重力
                 auto gravity2D = particles2D->Gravity();
                 if (ImGui::DragFloat2(
                         "Gravity##SpriteParticles2D",
@@ -7261,6 +7690,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 2D Particleの空気抵抗
                 float drag2D = particles2D->Drag();
                 if (ImGui::DragFloat(
                         "Air Drag##SpriteParticles2D",
@@ -7277,6 +7707,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 2D Particleの開始色
                 auto startColor2D = particles2D->StartColor();
                 if (ImGui::ColorEdit4(
                         "Start Color##SpriteParticles2D",
@@ -7288,6 +7719,7 @@ namespace LamaPon
                 {
                     RecordHistory();
                 }
+                // 2D Particleの終了色
                 auto endColor2D = particles2D->EndColor();
                 if (ImGui::ColorEdit4(
                         "End Color##SpriteParticles2D",
@@ -7300,6 +7732,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 2D Particleの描画順
                 int sortOrder2D = particles2D->SortOrder();
                 if (ImGui::InputInt(
                         "Sort Order##SpriteParticles2D",
@@ -7312,6 +7745,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 2D Particleのテクスチャパス
                 const auto texturePath2D =
                     PathToUtf8(particles2D->TexturePath());
                 ImGui::TextWrapped(
@@ -7319,19 +7753,23 @@ namespace LamaPon
                     texturePath2D.empty()
                         ? "(white square)"
                         : texturePath2D.c_str());
+                // 2D Particleの内蔵テクスチャ候補
                 const char* builtInTextureNames2D[] = {
                     "Custom / current",
                     "builtin/circle",
                     "builtin/triangle",
                     "builtin/ring"
                 };
+                // 選択中の内蔵テクスチャ番号
                 int builtInTexture2D = 0;
+                // 比較用に正規化したテクスチャパス
                 auto normalizedTexturePath2D =
                     Lowercase(texturePath2D);
                 std::ranges::replace(
                     normalizedTexturePath2D,
                     '\\',
                     '/');
+                // 現在処理する項目の添字
                 for (int index = 1;
                     index < static_cast<int>(
                         std::size(builtInTextureNames2D));
@@ -7377,6 +7815,7 @@ namespace LamaPon
                     }
                 }
             }
+            // 現在編集するParticle System
             else if (auto* particles =
                 dynamic_cast<
                     ParticleSystemComponent*>(
@@ -7412,6 +7851,7 @@ namespace LamaPon
                     particles->Emit(32);
                 }
 
+                // Particle Systemの最大数
                 int maxParticles =
                     static_cast<int>(
                         particles->
@@ -7434,6 +7874,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 毎秒のParticle放出数
                 float emissionRate =
                     particles->
                         EmissionRate();
@@ -7455,6 +7896,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Animation Clipの長さ
                 float duration =
                     particles->Duration();
                 if (ImGui::DragFloat(
@@ -7474,6 +7916,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Particleを繰り返し再生するか
                 bool looping =
                     particles->Looping();
                 if (ImGui::Checkbox(
@@ -7484,6 +7927,7 @@ namespace LamaPon
                         looping);
                     RecordHistory();
                 }
+                // 起動時に自動再生するか
                 bool playOnStart =
                     particles->PlayOnStart();
                 if (ImGui::Checkbox(
@@ -7495,6 +7939,7 @@ namespace LamaPon
                             playOnStart);
                     RecordHistory();
                 }
+                // Particle表示またはGameObject表示
                 bool preview =
                     particles->
                         PreviewInEditor();
@@ -7507,6 +7952,7 @@ namespace LamaPon
                             preview);
                     RecordHistory();
                 }
+                // Particleを加算描画するか
                 bool additive =
                     particles->Additive();
                 if (ImGui::Checkbox(
@@ -7518,10 +7964,12 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Particle描画方向の候補
                 const char* renderModeNames[]{
                     "カメラ向き",
                     "水平（XZ平面）"
                 };
+                // 選択中のParticle描画方向
                 int selectedRenderMode =
                     static_cast<int>(
                         particles->RenderMode());
@@ -7540,11 +7988,13 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Particle放出形状の候補
                 const char* shapeNames[]{
                     "Cone",
                     "Sphere",
                     "Box"
                 };
+                // 選択中のParticle放出形状
                 int selectedShape =
                     static_cast<int>(
                         particles->
@@ -7570,6 +8020,7 @@ namespace LamaPon
                     == ParticleEmitterShape::
                         Cone)
                 {
+                    // Cone放出の角度
                     float coneDegrees =
                         DirectX::
                             XMConvertToDegrees(
@@ -7599,6 +8050,7 @@ namespace LamaPon
                     particles->EmitterShape()
                     == ParticleEmitterShape::Box)
                 {
+                    // Box放出領域のサイズ
                     auto emitterSize =
                         particles->
                             EmitterSize();
@@ -7622,6 +8074,7 @@ namespace LamaPon
                     }
                 }
 
+                // Particleの寿命範囲
                 auto lifetime =
                     particles->Lifetime();
                 if (ImGui::DragFloat2(
@@ -7641,6 +8094,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Particleの初速範囲
                 auto startSpeed =
                     particles->StartSpeed();
                 if (ImGui::DragFloat2(
@@ -7661,6 +8115,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Particleの開始サイズ範囲
                 auto startSize =
                     particles->StartSize();
                 if (ImGui::DragFloat2(
@@ -7681,6 +8136,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Particle終了サイズの倍率
                 float endSize =
                     particles->
                         EndSizeMultiplier();
@@ -7701,6 +8157,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Particle開始色
                 auto startColor =
                     particles->StartColor();
                 if (ImGui::ColorEdit4(
@@ -7718,6 +8175,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Particle終了色
                 auto endColor =
                     particles->EndColor();
                 if (ImGui::ColorEdit4(
@@ -7735,6 +8193,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // ParticleまたはControllerの重力
                 auto gravity =
                     particles->Gravity();
                 if (ImGui::DragFloat3(
@@ -7754,6 +8213,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // テクスチャの参照パス
                 const auto texturePath =
                     PathToUtf8(
                         particles->
@@ -7777,6 +8237,7 @@ namespace LamaPon
                                 AcceptDragDropPayload(
                                     AssetPayload))
                     {
+                        // ドロップしたAnimationまたはControllerのパス
                         const auto droppedPath =
                             PathFromUtf8(
                                 static_cast<
@@ -7833,6 +8294,7 @@ namespace LamaPon
                         SetStatus(
                             "Particle Textureを設定しました");
                     }
+                    // 失敗原因の詳細
                     catch (
                         const std::exception&
                             exception)
@@ -7852,6 +8314,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Particle Shaderのパス
                 auto particleShader =
                     particles->ShaderPath();
                 if (DrawShaderAssetSelector(
@@ -7895,6 +8358,7 @@ namespace LamaPon
                         "ParticleShaderError");
                 }
 
+                // Particle補助テクスチャのパス
                 const auto auxiliaryPath =
                     PathToUtf8(
                         particles->
@@ -7929,15 +8393,18 @@ namespace LamaPon
                 if (ImGui::TreeNode(
                         "Particle Shader パラメータ"))
                 {
+                    // 現在処理する項目の添字
                     for (std::size_t index = 0;
                         index
                             < ParticleSystemComponent::
                                 CustomParameterCount;
                         ++index)
                     {
+                        // ShaderまたはAnimation parameter
                         auto parameter =
                             particles->
                                 CustomParameter(index);
+                        // 入力欄またはUI要素の表示名
                         const std::string label =
                             "Parameter "
                             + std::to_string(index + 1)
@@ -7962,6 +8429,7 @@ namespace LamaPon
                     ImGui::TreePop();
                 }
             }
+            // 現在編集するMesh Renderer
             else if (auto* mesh = dynamic_cast<MeshRendererComponent*>(component.get()))
             {
                 if (mesh->HasProceduralMesh())
@@ -7977,8 +8445,10 @@ namespace LamaPon
                 {
                     ImGui::Text("形状: %s", ShapeName(mesh->Shape()));
                 }
+                // 共有Materialの参照パス
                 const auto materialPath =
                     mesh->MaterialAssetPath();
+                // Material参照の表示名
                 const auto materialLabel =
                     PathToUtf8(materialPath);
                 ImGui::TextWrapped(
@@ -7988,9 +8458,11 @@ namespace LamaPon
                         : materialLabel.c_str());
                 if (ImGui::BeginDragDropTarget())
                 {
+                    // ドロップしたアセット情報
                     if (const ImGuiPayload* payload =
                         ImGui::AcceptDragDropPayload(AssetPayload))
                     {
+                        // ドロップしたAnimationまたはControllerのパス
                         const auto droppedPath = PathFromUtf8(
                             static_cast<const char*>(
                                 payload->Data));
@@ -8004,6 +8476,7 @@ namespace LamaPon
                                 SetStatus(
                                     "Lit Materialを割り当てました");
                             }
+                            // 失敗原因の詳細
                             catch (const std::exception& exception)
                             {
                                 SetStatus(exception.what(), true);
@@ -8031,6 +8504,7 @@ namespace LamaPon
                         SetStatus(
                             "Lit Materialを割り当てました");
                     }
+                    // 失敗原因の詳細
                     catch (const std::exception& exception)
                     {
                         SetStatus(exception.what(), true);
@@ -8054,6 +8528,7 @@ namespace LamaPon
                                 "共有Materialを保存しました: "
                                 + materialLabel);
                         }
+                        // 失敗原因の詳細
                         catch (const std::exception& exception)
                         {
                             SetStatus(exception.what(), true);
@@ -8069,6 +8544,7 @@ namespace LamaPon
                             SetStatus(
                                 "Materialを再読み込みしました");
                         }
+                        // 失敗原因の詳細
                         catch (const std::exception& exception)
                         {
                             SetStatus(exception.what(), true);
@@ -8086,6 +8562,7 @@ namespace LamaPon
                         "保存すると同じMaterialを使う全オブジェクトへ反映されます。");
                 }
 
+                // 編集中の色
                 auto color = mesh->Color();
                 if (ImGui::ColorEdit4("色", &color.x))
                 {
@@ -8096,6 +8573,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 深度なし描画を有効にするか
                 bool worldOverlay = mesh->IsWorldOverlay();
                 if (ImGui::Checkbox(
                     "3Dオーバーレイ（深度なし）",
@@ -8105,6 +8583,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 材質の粗さ
                 float roughness = mesh->Roughness();
                 if (ImGui::SliderFloat(
                     "粗さ",
@@ -8120,6 +8599,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Meshの金属度
                 float meshMetallic = mesh->Metallic();
                 if (ImGui::SliderFloat(
                     "メタリック",
@@ -8135,6 +8615,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 法線マップの強さ
                 float normalStrength =
                     mesh->NormalStrength();
                 if (ImGui::SliderFloat(
@@ -8151,6 +8632,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 設定するShaderのパス
                 auto shaderSelection = mesh->ShaderPath();
                 if (DrawShaderAssetSelector(
                         "Shaderを選択##MeshRenderer",
@@ -8172,6 +8654,7 @@ namespace LamaPon
                             ? "標準Lit Shaderへ戻しました"
                             : "カスタムShaderを設定しました");
                 }
+                // 現在のShaderパス
                 const auto shaderPath =
                     PathToUtf8(mesh->ShaderPath());
                 ImGui::TextWrapped(
@@ -8181,11 +8664,14 @@ namespace LamaPon
                         : shaderPath.c_str());
                 if (ImGui::BeginDragDropTarget())
                 {
+                    // ドロップしたアセット情報
                     if (const ImGuiPayload* payload =
                         ImGui::AcceptDragDropPayload(AssetPayload))
                     {
+                        // ドロップしたAnimationまたはControllerのパス
                         const auto droppedPath = PathFromUtf8(
                             static_cast<const char*>(payload->Data));
+                        // Shader割当てのエラー
                         std::string assignmentError;
                         if (IsAssignableMaterialShaderAsset(
                                 m_graphics.Assets(),
@@ -8226,12 +8712,15 @@ namespace LamaPon
                     }
                     ImGui::EndDragDropTarget();
                 }
+                // 選択Shaderの検証エラー
                 std::string selectedShaderError;
+                // 選択Shaderを割当て可能か
                 const bool selectedShaderAssignable =
                     IsAssignableMaterialShaderAsset(
                         m_graphics.Assets(),
                         m_selectedAsset,
                         &selectedShaderError);
+                // 選択Shaderが変更対象か
                 const bool selectedShaderChanges =
                     selectedShaderAssignable
                     && IsAssetSelectionChange(
@@ -8251,8 +8740,8 @@ namespace LamaPon
                         });
                     RecordHistory();
                 }
-                // 押せない理由を出します。灰色のまま黙っていると
-                // 「壊れている」と読まれます。
+                // 押せない理由を出します。
+                // 灰色のまま黙っていると「壊れている」と読まれます。
                 if (IsShaderErrorPlaceholder(m_selectedAsset))
                 {
                     showItemTooltip(
@@ -8318,6 +8807,7 @@ namespace LamaPon
                 }
                 if (ImGui::TreeNode("カスタムShaderパラメーター"))
                 {
+                    // 公開プロパティの編集結果
                     const auto edit = DrawCustomShaderParameters(
                         mesh->ShaderPath(),
                         "MeshShaderParameters",
@@ -8354,6 +8844,7 @@ namespace LamaPon
                     ImGui::TreePop();
                 }
 
+                // アルベドテクスチャのパス
                 const auto albedoPath =
                     PathToUtf8(mesh->AlbedoTexturePath());
                 ImGui::TextWrapped(
@@ -8363,9 +8854,11 @@ namespace LamaPon
                         : albedoPath.c_str());
                 if (ImGui::BeginDragDropTarget())
                 {
+                    // ドロップしたアセット情報
                     if (const ImGuiPayload* payload =
                         ImGui::AcceptDragDropPayload(AssetPayload))
                     {
+                        // ドロップしたAnimationまたはControllerのパス
                         const auto droppedPath = PathFromUtf8(
                             static_cast<const char*>(payload->Data));
                         if (!IsTextureAsset(droppedPath))
@@ -8384,6 +8877,7 @@ namespace LamaPon
                                 SetStatus(
                                     "アルベド画像を割り当てました");
                             }
+                            // 失敗原因の詳細
                             catch (const std::exception& exception)
                             {
                                 SetStatus(exception.what(), true);
@@ -8405,6 +8899,7 @@ namespace LamaPon
                         SetStatus(
                             "アルベド画像を割り当てました");
                     }
+                    // 失敗原因の詳細
                     catch (const std::exception& exception)
                     {
                         SetStatus(exception.what(), true);
@@ -8421,6 +8916,7 @@ namespace LamaPon
                     }
                 }
 
+                // 法線マップのパス
                 const auto normalPath =
                     PathToUtf8(mesh->NormalTexturePath());
                 ImGui::TextWrapped(
@@ -8430,9 +8926,11 @@ namespace LamaPon
                         : normalPath.c_str());
                 if (ImGui::BeginDragDropTarget())
                 {
+                    // ドロップしたアセット情報
                     if (const ImGuiPayload* payload =
                         ImGui::AcceptDragDropPayload(AssetPayload))
                     {
+                        // ドロップしたAnimationまたはControllerのパス
                         const auto droppedPath = PathFromUtf8(
                             static_cast<const char*>(payload->Data));
                         if (!IsTextureAsset(droppedPath))
@@ -8451,6 +8949,7 @@ namespace LamaPon
                                 SetStatus(
                                     "法線マップを割り当てました");
                             }
+                            // 失敗原因の詳細
                             catch (const std::exception& exception)
                             {
                                 SetStatus(exception.what(), true);
@@ -8472,6 +8971,7 @@ namespace LamaPon
                         SetStatus(
                             "法線マップを割り当てました");
                     }
+                    // 失敗原因の詳細
                     catch (const std::exception& exception)
                     {
                         SetStatus(exception.what(), true);
@@ -8490,8 +8990,10 @@ namespace LamaPon
 
                 drawPbrMapSlots(mesh);
             }
+            // 現在編集するModel Renderer
             else if (auto* model = dynamic_cast<ModelRendererComponent*>(component.get()))
             {
+                // Model Rendererの参照パス
                 const auto modelPath = PathToUtf8(model->ModelPath());
                 ImGui::TextWrapped(
                     "モデル: %s",
@@ -8499,9 +9001,11 @@ namespace LamaPon
 
                 if (ImGui::BeginDragDropTarget())
                 {
+                    // ドロップしたアセット情報
                     if (const ImGuiPayload* payload =
                         ImGui::AcceptDragDropPayload(AssetPayload))
                     {
+                        // ドロップしたAnimationまたはControllerのパス
                         const std::filesystem::path droppedPath = PathFromUtf8(
                             static_cast<const char*>(payload->Data));
                         if (IsModelAsset(droppedPath))
@@ -8512,6 +9016,7 @@ namespace LamaPon
                                 RecordHistory();
                                 SetStatus("3Dモデルを割り当てました");
                             }
+                            // 失敗原因の詳細
                             catch (const std::exception& exception)
                             {
                                 SetStatus(exception.what(), true);
@@ -8523,6 +9028,7 @@ namespace LamaPon
 
                 if (model->AnimationCount() > 0)
                 {
+                    // Animator Controllerのパス
                     const auto controllerPath =
                         PathToUtf8(
                             model->AnimationControllerPath());
@@ -8538,10 +9044,12 @@ namespace LamaPon
                         ImVec2{ -1.0f, 0.0f });
                     if (ImGui::BeginDragDropTarget())
                     {
+                        // ドロップしたアセット情報
                         if (const ImGuiPayload* payload =
                                 ImGui::AcceptDragDropPayload(
                                     AssetPayload))
                         {
+                            // ドロップしたAnimationまたはControllerのパス
                             const auto droppedPath =
                                 PathFromUtf8(
                                     static_cast<const char*>(
@@ -8564,6 +9072,7 @@ namespace LamaPon
                                     SetStatus(
                                         "モデルへAnimator Controllerを割り当てました");
                                 }
+                                // 失敗原因の詳細
                                 catch (const std::exception&
                                     exception)
                                 {
@@ -8589,6 +9098,7 @@ namespace LamaPon
                             SetStatus(
                                 "モデルへAnimator Controllerを割り当てました");
                         }
+                        // 失敗原因の詳細
                         catch (const std::exception& exception)
                         {
                             SetStatus(
@@ -8608,6 +9118,7 @@ namespace LamaPon
                             SetStatus(
                                 "モデルのAnimator Controllerを再読み込みしました");
                         }
+                        // 失敗原因の詳細
                         catch (const std::exception& exception)
                         {
                             SetStatus(
@@ -8634,9 +9145,11 @@ namespace LamaPon
                             model->IsAnimationTransitioning()
                                 ? "（ブレンド中）"
                                 : "");
+                        // Collider設定またはAnimation Trigger
                         for (const auto& trigger :
                             model->AnimationTriggers())
                         {
+                            // 入力欄またはUI要素の表示名
                             const std::string label =
                                 trigger + "##ModelAnimatorTrigger";
                             if (ImGui::Button(label.c_str()))
@@ -8647,13 +9160,16 @@ namespace LamaPon
                             ImGui::SameLine();
                         }
                         ImGui::NewLine();
+                        // ShaderまたはAnimation parameter
                         for (const auto& parameter :
                             model->
                                 AnimationFloatParameters())
                         {
+                            // 処理対象の値
                             float value =
                                 model->AnimationFloat(
                                     parameter.name);
+                            // 入力欄またはUI要素の表示名
                             const std::string label =
                                 parameter.name
                                 + "##ModelAnimatorFloat";
@@ -8699,6 +9215,7 @@ namespace LamaPon
                     }
 
                     ImGui::SeparatorText("Root Motion");
+                    // Root Motionを適用するか
                     bool applyRootMotion =
                         model->ApplyRootMotion();
                     if (ImGui::Checkbox(
@@ -8709,6 +9226,7 @@ namespace LamaPon
                             applyRootMotion);
                         RecordHistory();
                     }
+                    // 選択中のRoot Motionノード
                     const std::string rootMotionPreview =
                         model->RootMotionNode().empty()
                         ? "自動（最上位ノード）"
@@ -8725,6 +9243,7 @@ namespace LamaPon
                             model->SetRootMotionNode({});
                             RecordHistory();
                         }
+                        // Skeletonのノード名候補
                         for (const auto& nodeName :
                             model->SkeletonNodeNames())
                         {
@@ -8744,8 +9263,10 @@ namespace LamaPon
                     ImGui::TextDisabled(
                         "Play中にルート移動とY回転をGameObjectへ反映します。");
 
+                    // Model所有オブジェクトの識別子
                     const auto modelObjectId =
                         model->Owner().Id();
+                    // Editorプレビューを進めるか
                     const bool editorPreviewing =
                         !m_playing
                         && m_modelAnimationPreviewObjectId
@@ -8756,6 +9277,7 @@ namespace LamaPon
                             ImGui::GetIO().DeltaTime,
                             false);
                     }
+                    // 現在選択中のクリップ名
                     const std::string currentClip(
                         model->AnimationName(
                             model->AnimationIndex()));
@@ -8765,13 +9287,16 @@ namespace LamaPon
                             "アニメーションクリップ",
                             currentClip.c_str()))
                     {
+                        // 現在処理する項目の添字
                         for (std::size_t index = 0;
                             index < model->AnimationCount();
                             ++index)
                         {
+                            // 現在の選択クリップか
                             const bool clipSelected =
                                 index
                                 == model->AnimationIndex();
+                            // アニメーションクリップ名
                             const std::string name(
                                 model->AnimationName(index));
                             if (ImGui::Selectable(
@@ -8790,6 +9315,7 @@ namespace LamaPon
                     }
                     ImGui::EndDisabled();
 
+                    // Animation再生中か
                     const bool animationUiPlaying =
                         m_playing
                             ? model->IsAnimationPlaying()
@@ -8829,6 +9355,7 @@ namespace LamaPon
                         }
                     }
 
+                    // アニメーションの再生時刻
                     float animationTime =
                         model->AnimationTime();
                     if (ImGui::SliderFloat(
@@ -8841,6 +9368,7 @@ namespace LamaPon
                         model->SetAnimationTime(
                             animationTime);
                     }
+                    // Animationの再生速度
                     float animationSpeed =
                         model->AnimationSpeed();
                     if (ImGui::DragFloat(
@@ -8855,6 +9383,7 @@ namespace LamaPon
                             animationSpeed);
                         RecordHistory();
                     }
+                    // Animationを繰り返すか
                     bool animationLoop =
                         model->AnimationLoop();
                     if (ImGui::Checkbox(
@@ -8865,6 +9394,7 @@ namespace LamaPon
                             animationLoop);
                         RecordHistory();
                     }
+                    // 起動時に自動再生するか
                     bool playOnStart =
                         model->AnimationPlayOnStart();
                     if (ImGui::Checkbox(
@@ -8877,8 +9407,10 @@ namespace LamaPon
                     }
                 }
 
+                // 共有Materialの参照パス
                 const auto materialPath =
                     model->MaterialAssetPath();
+                // Material参照の表示名
                 const auto materialLabel =
                     PathToUtf8(materialPath);
                 ImGui::TextWrapped(
@@ -8888,9 +9420,11 @@ namespace LamaPon
                         : materialLabel.c_str());
                 if (ImGui::BeginDragDropTarget())
                 {
+                    // ドロップしたアセット情報
                     if (const ImGuiPayload* payload =
                         ImGui::AcceptDragDropPayload(AssetPayload))
                     {
+                        // ドロップしたAnimationまたはControllerのパス
                         const auto droppedPath = PathFromUtf8(
                             static_cast<const char*>(
                                 payload->Data));
@@ -8904,6 +9438,7 @@ namespace LamaPon
                                 SetStatus(
                                     "Lit Materialを割り当てました");
                             }
+                            // 失敗原因の詳細
                             catch (const std::exception& exception)
                             {
                                 SetStatus(exception.what(), true);
@@ -8932,6 +9467,7 @@ namespace LamaPon
                         SetStatus(
                             "Lit Materialを割り当てました");
                     }
+                    // 失敗原因の詳細
                     catch (const std::exception& exception)
                     {
                         SetStatus(exception.what(), true);
@@ -8956,6 +9492,7 @@ namespace LamaPon
                                 "共有Materialを保存しました: "
                                 + materialLabel);
                         }
+                        // 失敗原因の詳細
                         catch (const std::exception& exception)
                         {
                             SetStatus(exception.what(), true);
@@ -8971,6 +9508,7 @@ namespace LamaPon
                             SetStatus(
                                 "Materialを再読み込みしました");
                         }
+                        // 失敗原因の詳細
                         catch (const std::exception& exception)
                         {
                             SetStatus(exception.what(), true);
@@ -8987,6 +9525,7 @@ namespace LamaPon
                         "保存すると同じMaterialを使う全オブジェクトへ反映されます。");
                 }
 
+                // ワイヤーフレーム描画を使うか
                 bool wireframe = model->IsWireframe();
                 if (ImGui::Checkbox("ワイヤーフレーム", &wireframe))
                 {
@@ -8994,6 +9533,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 個別材質の上書きを使うか
                 bool materialOverride =
                     model->IsMaterialOverrideEnabled();
                 if (ImGui::Checkbox(
@@ -9006,12 +9546,14 @@ namespace LamaPon
                             materialOverride);
                         RecordHistory();
                     }
+                    // 失敗原因の詳細
                     catch (const std::exception& exception)
                     {
                         SetStatus(exception.what(), true);
                     }
                 }
 
+                // 従来のDirectXTK描画を使うか
                 bool legacyShading =
                     model->UsesLegacyShading();
                 if (ImGui::Checkbox(
@@ -9024,6 +9566,7 @@ namespace LamaPon
                             legacyShading);
                         RecordHistory();
                     }
+                    // 失敗原因の詳細
                     catch (const std::exception& exception)
                     {
                         SetStatus(exception.what(), true);
@@ -9038,6 +9581,7 @@ namespace LamaPon
                         "オンにしてください");
                 }
 
+                // モデル内蔵色を保つか
                 bool preserveEmbeddedColor =
                     model->PreserveEmbeddedMaterialColor();
                 if (ImGui::Checkbox(
@@ -9054,10 +9598,10 @@ namespace LamaPon
                         "CMO/SDKMESH内のDiffuseColorへ上書き色を掛けます");
                 }
 
-                // 上書きの有無に関係なく実際の描画経路を出します
-                // （Litか従来のDirectXTKかが分かるように）。
+                // 上書きの有無に関係なく実際の描画経路を出します（Litか従来のDirectXTKかが分かるように）。
                 if (model->UsesLamaPonLit())
                 {
+                    // モデルの描画経路
                     const auto status =
                         model->CommonLitStatus();
                     ImGui::TextDisabled(
@@ -9073,6 +9617,7 @@ namespace LamaPon
 
                 if (model->IsMaterialOverrideEnabled())
                 {
+                    // 編集中の色
                     auto color = model->Color();
                     if (ImGui::ColorEdit3(
                         "ベースカラー",
@@ -9085,6 +9630,7 @@ namespace LamaPon
                         RecordHistory();
                     }
 
+                    // 材質の粗さ
                     float roughness = model->Roughness();
                     if (ImGui::SliderFloat(
                         "ラフネス",
@@ -9100,6 +9646,7 @@ namespace LamaPon
                         RecordHistory();
                     }
 
+                    // Modelの金属度
                     float modelMetallic =
                         model->Metallic();
                     if (ImGui::SliderFloat(
@@ -9116,6 +9663,7 @@ namespace LamaPon
                         RecordHistory();
                     }
 
+                    // 法線マップの強さ
                     float normalStrength =
                         model->NormalStrength();
                     if (ImGui::SliderFloat(
@@ -9133,6 +9681,7 @@ namespace LamaPon
                         RecordHistory();
                     }
 
+                    // 設定するShaderのパス
                     auto shaderSelection =
                         model->ShaderPath();
                     if (DrawShaderAssetSelector(
@@ -9158,6 +9707,7 @@ namespace LamaPon
                                 ? "標準Lit Shaderへ戻しました"
                                 : "モデルへカスタムShaderを設定しました");
                     }
+                    // 現在のShaderパス
                     const auto shaderPath =
                         PathToUtf8(model->ShaderPath());
                     ImGui::TextWrapped(
@@ -9167,11 +9717,14 @@ namespace LamaPon
                             : shaderPath.c_str());
                     if (ImGui::BeginDragDropTarget())
                     {
+                        // ドロップしたアセット情報
                         if (const ImGuiPayload* payload =
                             ImGui::AcceptDragDropPayload(AssetPayload))
                         {
+                            // ドロップしたAnimationまたはControllerのパス
                             const auto droppedPath = PathFromUtf8(
                                 static_cast<const char*>(payload->Data));
+                            // Shader割当てのエラー
                             std::string assignmentError;
                             if (IsAssignableMaterialShaderAsset(
                                     m_graphics.Assets(),
@@ -9216,12 +9769,15 @@ namespace LamaPon
                         }
                         ImGui::EndDragDropTarget();
                     }
+                    // 選択Shaderの検証エラー
                     std::string selectedShaderError;
+                    // 選択Shaderを割当て可能か
                     const bool selectedShaderAssignable =
                         IsAssignableMaterialShaderAsset(
                             m_graphics.Assets(),
                             m_selectedAsset,
                             &selectedShaderError);
+                    // 選択Shaderが変更対象か
                     const bool selectedShaderChanges =
                         selectedShaderAssignable
                         && IsAssetSelectionChange(
@@ -9241,8 +9797,8 @@ namespace LamaPon
                             });
                         RecordHistory();
                     }
-                    // 押せない理由を出します。灰色のまま黙っていると
-                    // 「壊れている」と読まれます。
+                    // 押せない理由を出します。
+                    // 灰色のまま黙っていると「壊れている」と読まれます。
                     if (IsShaderErrorPlaceholder(m_selectedAsset))
                     {
                         showItemTooltip(
@@ -9311,6 +9867,7 @@ namespace LamaPon
                     if (ImGui::TreeNode(
                         "モデルShaderパラメーター"))
                     {
+                        // 公開プロパティの編集結果
                         const auto edit = DrawCustomShaderParameters(
                             model->ShaderPath(),
                             "ModelShaderParameters",
@@ -9349,6 +9906,7 @@ namespace LamaPon
                         ImGui::TreePop();
                     }
 
+                    // アルベドテクスチャのパス
                     const auto albedoPath =
                         PathToUtf8(
                             model->AlbedoTexturePath());
@@ -9361,10 +9919,12 @@ namespace LamaPon
                             : albedoPath.c_str());
                     if (ImGui::BeginDragDropTarget())
                     {
+                        // ドロップしたアセット情報
                         if (const ImGuiPayload* payload =
                             ImGui::AcceptDragDropPayload(
                                 AssetPayload))
                         {
+                            // ドロップしたAnimationまたはControllerのパス
                             const auto droppedPath =
                                 PathFromUtf8(
                                     static_cast<const char*>(
@@ -9379,6 +9939,7 @@ namespace LamaPon
                                     SetStatus(
                                         "モデルのアルベド画像を割り当てました");
                                 }
+                                // 失敗原因の詳細
                                 catch (const std::exception& exception)
                                 {
                                     SetStatus(
@@ -9403,6 +9964,7 @@ namespace LamaPon
                             SetStatus(
                                 "モデルのアルベド画像を割り当てました");
                         }
+                        // 失敗原因の詳細
                         catch (const std::exception& exception)
                         {
                             SetStatus(exception.what(), true);
@@ -9419,6 +9981,7 @@ namespace LamaPon
                                 model->SetAlbedoTexturePath({});
                                 RecordHistory();
                             }
+                            // 失敗原因の詳細
                             catch (const std::exception& exception)
                             {
                                 SetStatus(exception.what(), true);
@@ -9426,6 +9989,7 @@ namespace LamaPon
                         }
                     }
 
+                    // 法線マップのパス
                     const auto normalPath =
                         PathToUtf8(
                             model->NormalTexturePath());
@@ -9445,10 +10009,12 @@ namespace LamaPon
                     }
                     if (ImGui::BeginDragDropTarget())
                     {
+                        // ドロップしたアセット情報
                         if (const ImGuiPayload* payload =
                             ImGui::AcceptDragDropPayload(
                                 AssetPayload))
                         {
+                            // ドロップしたAnimationまたはControllerのパス
                             const auto droppedPath =
                                 PathFromUtf8(
                                     static_cast<const char*>(
@@ -9463,6 +10029,7 @@ namespace LamaPon
                                     SetStatus(
                                         "モデルの法線マップを割り当てました");
                                 }
+                                // 失敗原因の詳細
                                 catch (const std::exception& exception)
                                 {
                                     SetStatus(
@@ -9487,6 +10054,7 @@ namespace LamaPon
                             SetStatus(
                                 "モデルの法線マップを割り当てました");
                         }
+                        // 失敗原因の詳細
                         catch (const std::exception& exception)
                         {
                             SetStatus(exception.what(), true);
@@ -9503,6 +10071,7 @@ namespace LamaPon
                                 model->SetNormalTexturePath({});
                                 RecordHistory();
                             }
+                            // 失敗原因の詳細
                             catch (const std::exception& exception)
                             {
                                 SetStatus(exception.what(), true);
@@ -9520,8 +10089,10 @@ namespace LamaPon
                     SetStatus("3Dモデルを解除しました");
                 }
             }
+            // 現在編集するSprite Renderer
             else if (auto* sprite = dynamic_cast<SpriteRendererComponent*>(component.get()))
             {
+                // Render Texture欄の編集結果
                 const auto pickedRenderTexture =
                     DrawRenderTexturePicker(
                         "SpriteRenderTexture",
@@ -9536,6 +10107,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Colliderまたは描画サイズ
                 auto size = sprite->Size();
                 if (ImGui::InputFloat2("サイズ", &size.x))
                 {
@@ -9546,6 +10118,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 編集中の色
                 auto color = sprite->Color();
                 if (ImGui::ColorEdit4("色", &color.x))
                 {
@@ -9556,6 +10129,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Spriteの回転基準点
                 auto pivot = sprite->Pivot();
                 if (ImGui::InputFloat2("基準点", &pivot.x))
                 {
@@ -9580,6 +10154,7 @@ namespace LamaPon
                         "回転の中心になります");
                 }
 
+                // SpriteまたはTilemapの描画順
                 auto sortOrder = sprite->SortOrder();
                 if (ImGui::InputInt("描画順", &sortOrder))
                 {
@@ -9592,11 +10167,13 @@ namespace LamaPon
                 ImGui::TextDisabled(
                     "数値が大きいほど手前に表示されます");
 
+                // Sprite Maskとの合成方法
                 const char* maskInteractionNames[]{
                     "なし",
                     "マスクの内側だけ表示",
                     "マスクの外側だけ表示"
                 };
+                // 選択中のMask合成方法
                 int selectedMaskInteraction =
                     static_cast<int>(
                         sprite->MaskInteraction());
@@ -9615,8 +10192,8 @@ namespace LamaPon
                     RecordHistory();
                 }
 
-                // 正規化ソース矩形（0～1）。SpriteAnimator使用時は
-                // 毎フレーム上書きされます。
+                // 正規化ソース矩形（0～1）。
+                // Sprite画像の切り出し領域
                 auto sourceRect = sprite->SourceRect();
                 if (ImGui::InputFloat4(
                         "切り出し矩形 (U, V, 幅, 高さ / 0～1)",
@@ -9630,6 +10207,7 @@ namespace LamaPon
                 }
                 ImGui::TextDisabled(
                     "{0,0,1,1}で画像全体を表示します");
+                // 画像全体以外を切り出すか
                 const bool hasSourceRect =
                     sourceRect.x != 0.0f
                     || sourceRect.y != 0.0f
@@ -9643,6 +10221,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Sprite Shaderのパス
                 auto spriteShader = sprite->ShaderPath();
                 if (DrawShaderAssetSelector(
                         "UIシェーダー##SpriteRenderer",
@@ -9659,6 +10238,7 @@ namespace LamaPon
                         });
                     RecordHistory();
                 }
+                // Sprite Shaderの表示パス
                 const auto spriteShaderPath =
                     PathToUtf8(sprite->ShaderPath());
                 ImGui::TextWrapped(
@@ -9691,14 +10271,17 @@ namespace LamaPon
                 if (ImGui::TreeNode(
                         "UIシェーダーパラメーター"))
                 {
+                    // 現在処理する項目の添字
                     for (std::size_t index = 0;
                         index
                             < SpriteRendererComponent::
                                 CustomParameterCount;
                         ++index)
                     {
+                        // ShaderまたはAnimation parameter
                         auto parameter =
                             sprite->CustomParameter(index);
+                        // 入力欄またはUI要素の表示名
                         const std::string label =
                             "Parameter "
                             + std::to_string(index + 1)
@@ -9722,24 +10305,29 @@ namespace LamaPon
                     ImGui::TreePop();
                 }
 
+                // テクスチャの参照パス
                 const auto texturePath = PathToUtf8(sprite->TexturePath());
                 ImGui::TextWrapped(
                     "テクスチャ: %s",
                     texturePath.empty() ? "（白）" : texturePath.c_str());
 
+                // 内蔵テクスチャ候補
                 const char* builtInTextureNames[] = {
                     "Custom / current",
                     "builtin/circle",
                     "builtin/triangle",
                     "builtin/ring"
                 };
+                // 選択中の内蔵テクスチャ
                 int builtInTexture = 0;
+                // 比較用の正規化済みパス
                 auto normalizedTexturePath =
                     Lowercase(texturePath);
                 std::ranges::replace(
                     normalizedTexturePath,
                     '\\',
                     '/');
+                // 現在処理する項目の添字
                 for (int index = 1;
                     index < static_cast<int>(
                         std::size(builtInTextureNames));
@@ -9768,9 +10356,11 @@ namespace LamaPon
 
                 if (ImGui::BeginDragDropTarget())
                 {
+                    // ドロップしたアセット情報
                     if (const ImGuiPayload* payload =
                         ImGui::AcceptDragDropPayload(AssetPayload))
                     {
+                        // ドロップしたAnimationまたはControllerのパス
                         const auto droppedPath = PathFromUtf8(
                             static_cast<const char*>(payload->Data));
                         if (!IsTextureAsset(droppedPath))
@@ -9787,6 +10377,7 @@ namespace LamaPon
                                 RecordHistory();
                                 SetStatus("スプライト画像を割り当てました");
                             }
+                            // 失敗原因の詳細
                             catch (const std::exception& exception)
                             {
                                 SetStatus(exception.what(), true);
@@ -9803,14 +10394,17 @@ namespace LamaPon
                     SetStatus("スプライト画像を解除しました");
                 }
             }
+            // 現在編集するSprite Mask
             else if (auto* spriteMask =
                 dynamic_cast<SpriteMaskComponent*>(
                     component.get()))
             {
+                // Sprite Mask形状の候補
                 const char* maskShapeNames[]{
                     "矩形",
                     "円"
                 };
+                // 選択中のMask形状
                 int selectedMaskShape =
                     static_cast<int>(spriteMask->Shape());
                 if (ImGui::Combo(
@@ -9826,6 +10420,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Sprite Maskの大きさ
                 auto maskSize = spriteMask->Size();
                 if (ImGui::InputFloat2(
                         spriteMask->Shape()
@@ -9846,10 +10441,12 @@ namespace LamaPon
                     "VisibleOutsideMaskに設定したSprite Renderer"
                     "だけがこのマスクの影響を受けます。");
             }
+            // 現在編集するReflection Probe
             else if (auto* reflectionProbe =
                 dynamic_cast<ReflectionProbeComponent*>(
                     component.get()))
             {
+                // Probeの影響範囲
                 float probeRange =
                     reflectionProbe->Range();
                 if (ImGui::DragFloat(
@@ -9870,6 +10467,7 @@ namespace LamaPon
                     "中心がこの半径に入っているオブジェクトの反射が"
                     "このプローブの結果へ置き換わります。");
 
+                // Probeの反射強度
                 float probeIntensity =
                     reflectionProbe->Intensity();
                 if (ImGui::DragFloat(
@@ -9888,6 +10486,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Probeのボックス射影範囲
                 auto boxExtents =
                     reflectionProbe->BoxExtents();
                 if (ImGui::DragFloat3(
@@ -9918,6 +10517,7 @@ namespace LamaPon
                         "正の値が必要）");
                 }
 
+                // Probe間で反射を混ぜる距離
                 float blendDistance =
                     reflectionProbe->BlendDistance();
                 if (ImGui::DragFloat(
@@ -9960,10 +10560,12 @@ namespace LamaPon
                     "シーン読み込み時に自動でベイクされます。"
                     "結果はファイルへは保存されません。");
             }
+            // 現在編集する描画カリング
             else if (auto* renderCulling =
                 dynamic_cast<RenderCullingComponent*>(
                     component.get()))
             {
+                // 常時描画する設定
                 bool alwaysVisible =
                     renderCulling->AlwaysVisible();
                 if (ImGui::Checkbox(
@@ -9978,6 +10580,7 @@ namespace LamaPon
                     "視錐台・遮蔽カリングの対象から外し、常に描画します。"
                     "広い地形や背景向けの設定です。");
 
+                // 視錐台カリングの余白
                 float cullingMargin =
                     renderCulling->CullingMargin();
                 ImGui::BeginDisabled(alwaysVisible);
@@ -10001,11 +10604,12 @@ namespace LamaPon
                     "視錐台カリングの境界をワールド単位で広げます。"
                     "0 は追加の余白なしです。");
             }
+            // 現在編集するSprite Animator
             else if (auto* spriteAnimator =
                 dynamic_cast<SpriteAnimatorComponent*>(
                     component.get()))
             {
-                // シートの分割数
+                // スプライトシートの分割数
                 int grid[2]{
                     spriteAnimator->Columns(),
                     spriteAnimator->Rows() };
@@ -10025,6 +10629,7 @@ namespace LamaPon
                     "スプライトシートを等分するコマ数です。"
                     "コマ番号は左上から右へ数えます");
 
+                // 移動またはアニメーション速度
                 float speed = spriteAnimator->Speed();
                 if (ImGui::DragFloat(
                         "再生速度",
@@ -10040,6 +10645,7 @@ namespace LamaPon
                 {
                     RecordHistory();
                 }
+                // 起動時に自動再生するか
                 bool playOnStart =
                     spriteAnimator->PlayOnStart();
                 if (ImGui::Checkbox(
@@ -10051,7 +10657,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
-                // 既定クリップの選択
+                // 既定アニメーションクリップの表示
                 const std::string defaultPreview =
                     spriteAnimator->DefaultClip().empty()
                         ? std::string{ "（先頭クリップ）" }
@@ -10070,6 +10676,7 @@ namespace LamaPon
                             {});
                         RecordHistory();
                     }
+                    // 編集中のAnimation Clip
                     for (const auto& clip :
                         spriteAnimator->Clips())
                     {
@@ -10089,16 +10696,21 @@ namespace LamaPon
                 }
 
                 ImGui::SeparatorText("クリップ");
+                // 編集するAnimation Clip一覧
                 auto& clips = spriteAnimator->Clips();
+                // 描画後に削除するClip添字
                 std::optional<std::size_t> clipToDelete;
+                // 編集中のClip添字
                 for (std::size_t clipIndex = 0;
                     clipIndex < clips.size();
                     ++clipIndex)
                 {
+                    // 編集中のAnimation Clip
                     auto& clip = clips[clipIndex];
                     ImGui::PushID(
                         static_cast<int>(clipIndex)
                         + 82000);
+                    // Animation Clip名の入力欄
                     std::array<char, 64> clipNameBuffer{};
                     strncpy_s(
                         clipNameBuffer.data(),
@@ -10134,6 +10746,7 @@ namespace LamaPon
                                     clip.name));
                         }
                     }
+                    // 開始コマとコマ数
                     int frameRange[2]{
                         clip.startFrame,
                         clip.frameCount };
@@ -10190,6 +10803,7 @@ namespace LamaPon
                 }
                 if (ImGui::Button("クリップを追加"))
                 {
+                    // 編集中のAnimation Clip
                     SpriteAnimationClip clip;
                     clip.name =
                         "clip"
@@ -10209,6 +10823,7 @@ namespace LamaPon
                         spriteAnimator->CurrentFrame());
                 }
             }
+            // 現在編集するTilemap
             else if (auto* tilemap =
                 dynamic_cast<
                     TilemapComponent*>(
@@ -10218,6 +10833,7 @@ namespace LamaPon
                     "配置セル: %zu",
                     tilemap->Cells().size());
 
+                // Tilemapの描画順
                 auto tilemapSortOrder =
                     tilemap->SortOrder();
                 if (ImGui::InputInt(
@@ -10235,6 +10851,7 @@ namespace LamaPon
                     "数値が大きいほど手前に表示されます"
                     "（背景／地形／前景の重ね順に）");
 
+                // Tilemapセルの幅と高さ
                 auto tileSize =
                     tilemap->TileSize();
                 if (ImGui::DragFloat2(
@@ -10254,6 +10871,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Tilemap画像の列数と行数
                 int atlasGrid[]{
                     static_cast<int>(
                         tilemap->
@@ -10289,6 +10907,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 編集中の色
                 auto color =
                     tilemap->Color();
                 if (ImGui::ColorEdit4(
@@ -10303,6 +10922,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // テクスチャの参照パス
                 const auto texturePath =
                     PathToUtf8(
                         tilemap->
@@ -10324,6 +10944,7 @@ namespace LamaPon
                                 AcceptDragDropPayload(
                                     AssetPayload))
                     {
+                        // ドロップしたAnimationまたはControllerのパス
                         const auto droppedPath =
                             PathFromUtf8(
                                 static_cast<
@@ -10383,10 +11004,13 @@ namespace LamaPon
                     constexpr const char*
                         GeneratedColliderName =
                             "タイルコライダー（自動生成）";
+                    // Colliderの配置先Tilemapオブジェクト
                     auto& tilemapObject =
                         tilemap->Owner();
+                    // 既存の自動生成Collider
                     std::vector<GameObject*>
                         previousColliders;
+                    // 既存Colliderの子GameObject
                     for (auto* child :
                         tilemapObject.Children())
                     {
@@ -10397,6 +11021,7 @@ namespace LamaPon
                                 .push_back(child);
                         }
                     }
+                    // 削除対象の既存Collider
                     for (auto* child :
                         previousColliders)
                     {
@@ -10404,11 +11029,14 @@ namespace LamaPon
                             *child);
                     }
 
+                    // タイルから生成するCollision矩形
                     const auto rects =
                         tilemap
                             ->ComputeCollisionRects();
+                    // 新規Colliderに変換する矩形
                     for (const auto& rect : rects)
                     {
+                        // 生成したCollider用GameObject
                         auto& colliderObject =
                             m_scene.CreateGameObject(
                                 GeneratedColliderName);
@@ -10440,14 +11068,17 @@ namespace LamaPon
                     "当たり判定不要の装飾タイルは別の"
                     "Tilemapへ分けてください。");
             }
+            // 現在編集するParallax Layer
             else if (auto* parallax =
                 dynamic_cast<
                     ParallaxLayerComponent*>(
                         component.get()))
             {
+                // ParallaxまたはJointの参照GameObject
                 const auto* reference =
                     m_scene.FindGameObject(
                         parallax->ReferenceId());
+                // 追従先のGameObject表示名
                 std::string parallaxPreview =
                     parallax->ReferenceId() == 0
                         ? "Main Camera（既定）"
@@ -10465,6 +11096,7 @@ namespace LamaPon
                         parallax->SetReferenceId(0);
                         RecordHistory();
                     }
+                    // GameObjectまたはアセット候補
                     for (const auto& candidate :
                         m_scene.GameObjects())
                     {
@@ -10472,6 +11104,7 @@ namespace LamaPon
                         {
                             continue;
                         }
+                        // 入力欄またはUI要素の表示名
                         std::string label =
                             candidate->Name()
                             + " (ID "
@@ -10491,6 +11124,7 @@ namespace LamaPon
                     ImGui::EndCombo();
                 }
 
+                // Parallax倍率の編集中コピー
                 auto parallaxFactor =
                     parallax->Factor();
                 if (ImGui::DragFloat2(
@@ -10518,6 +11152,7 @@ namespace LamaPon
                 dynamic_cast<AudioListenerComponent*>(
                     component.get()))
             {
+                // Audio Listenerが現在有効か
                 const bool isActive =
                     m_graphics.Audio().ActiveListener()
                     == listener;
@@ -10529,8 +11164,10 @@ namespace LamaPon
                 ImGui::TextDisabled(
                     "通常はメインカメラに1つ追加します");
             }
+            // 現在編集するAudio Source
             else if (auto* audio = dynamic_cast<AudioSourceComponent*>(component.get()))
             {
+                // 音声ファイルのパス
                 const auto audioPath = PathToUtf8(audio->AudioPath());
                 ImGui::TextWrapped(
                     "WAV / OGG: %s",
@@ -10538,6 +11175,7 @@ namespace LamaPon
                 ImGui::TextDisabled(
                     "アセットブラウザーから WAV / OGG をドロップできます");
 
+                // 音声をストリーミング再生するか
                 bool audioStreaming =
                     audio->IsStreaming();
                 if (ImGui::Checkbox(
@@ -10550,6 +11188,7 @@ namespace LamaPon
                             audioStreaming);
                         RecordHistory();
                     }
+                    // 失敗原因の詳細
                     catch (const std::exception&
                         exception)
                     {
@@ -10561,6 +11200,7 @@ namespace LamaPon
                 ImGui::SameLine();
                 ImGui::TextDisabled(
                     "長尺BGM向け（3D定位は非対応）");
+                // 音声の出力先
                 int audioBus = static_cast<int>(
                     audio->Bus());
                 if (ImGui::Combo(
@@ -10576,9 +11216,11 @@ namespace LamaPon
 
                 if (ImGui::BeginDragDropTarget())
                 {
+                    // ドロップしたアセット情報
                     if (const ImGuiPayload* payload =
                         ImGui::AcceptDragDropPayload(AssetPayload))
                     {
+                        // ドロップしたAnimationまたはControllerのパス
                         const auto droppedPath = PathFromUtf8(
                             static_cast<const char*>(payload->Data));
                         if (!IsAudioAsset(droppedPath))
@@ -10595,6 +11237,7 @@ namespace LamaPon
                                 RecordHistory();
                                 SetStatus("音声を割り当てました");
                             }
+                            // 失敗原因の詳細
                             catch (const std::exception& exception)
                             {
                                 SetStatus(exception.what(), true);
@@ -10615,6 +11258,7 @@ namespace LamaPon
                         RecordHistory();
                         SetStatus("音声を割り当てました");
                     }
+                    // 失敗原因の詳細
                     catch (const std::exception& exception)
                     {
                         SetStatus(exception.what(), true);
@@ -10622,6 +11266,7 @@ namespace LamaPon
                 }
                 ImGui::EndDisabled();
 
+                // 音声の音量
                 float volume = audio->Volume();
                 if (ImGui::SliderFloat(
                     "音量",
@@ -10637,6 +11282,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 音声のピッチ
                 float pitch = audio->Pitch();
                 if (ImGui::SliderFloat(
                     "ピッチ",
@@ -10652,6 +11298,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 3D位置音響を有効にするか
                 bool spatial = audio->IsSpatial();
                 if (ImGui::Checkbox("3D空間オーディオ", &spatial))
                 {
@@ -10660,12 +11307,14 @@ namespace LamaPon
                         audio->SetSpatial(spatial);
                         RecordHistory();
                     }
+                    // 失敗原因の詳細
                     catch (const std::exception& exception)
                     {
                         SetStatus(exception.what(), true);
                     }
                 }
 
+                // 2D音声の左右定位
                 float pan = audio->Pan();
                 ImGui::BeginDisabled(spatial);
                 if (ImGui::SliderFloat(
@@ -10685,6 +11334,7 @@ namespace LamaPon
 
                 if (spatial)
                 {
+                    // 3D音声の最小距離
                     float minimumDistance =
                         audio->MinimumDistance();
                     if (ImGui::DragFloat(
@@ -10703,6 +11353,7 @@ namespace LamaPon
                         RecordHistory();
                     }
 
+                    // 3D音声の最大距離
                     float maximumDistance =
                         audio->MaximumDistance();
                     if (ImGui::DragFloat(
@@ -10731,6 +11382,7 @@ namespace LamaPon
                     }
                 }
 
+                // 音声またはAnimationを繰り返すか
                 bool loop = audio->Loop();
                 if (ImGui::Checkbox("ループ", &loop))
                 {
@@ -10738,6 +11390,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 起動時に自動再生するか
                 bool playOnStart = audio->PlayOnStart();
                 if (ImGui::Checkbox(
                     "ゲーム開始時に再生",
@@ -10747,6 +11400,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 音声状態の表示名
                 const char* stateName = "停止";
                 if (audio->State() == DirectX::PLAYING)
                 {
@@ -10795,8 +11449,10 @@ namespace LamaPon
                     }
                 }
             }
+            // TextまたはAction名の入力
             else if (auto* text = dynamic_cast<TextRendererComponent*>(component.get()))
             {
+                // 表示本文の入力バッファ
                 std::array<char, 512> textBuffer{};
                 strncpy_s(
                     textBuffer.data(),
@@ -10813,6 +11469,7 @@ namespace LamaPon
                     {
                         text->SetText(textBuffer.data());
                     }
+                    // 失敗原因の詳細
                     catch (const std::exception& exception)
                     {
                         SetStatus(exception.what(), true);
@@ -10823,6 +11480,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 文字の表示サイズ
                 float fontSize = text->FontSize();
                 if (ImGui::SliderFloat(
                     "文字サイズ",
@@ -10838,6 +11496,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // テキスト領域の幅と高さ
                 auto layoutSize = text->LayoutSize();
                 if (ImGui::InputFloat2(
                     "レイアウトサイズ",
@@ -10852,6 +11511,7 @@ namespace LamaPon
                 }
                 ImGui::TextDisabled("0 はテキストに合わせた自動サイズ");
 
+                // テキストを自動折返しするか
                 bool wordWrap = text->WordWrap();
                 if (ImGui::Checkbox("自動折り返し", &wordWrap))
                 {
@@ -10863,11 +11523,13 @@ namespace LamaPon
                     ImGui::TextDisabled("折り返しにはレイアウト幅を指定してください");
                 }
 
+                // 横揃え方法の候補
                 constexpr const char* horizontalAlignmentNames[] = {
                     "左揃え",
                     "中央揃え",
                     "右揃え"
                 };
+                // 選択中の横揃え方法
                 int horizontalAlignment =
                     static_cast<int>(text->HorizontalAlignment());
                 if (ImGui::Combo(
@@ -10882,11 +11544,13 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 縦揃え方法の候補
                 constexpr const char* verticalAlignmentNames[] = {
                     "上揃え",
                     "中央揃え",
                     "下揃え"
                 };
+                // 選択中の縦揃え方法
                 int verticalAlignment =
                     static_cast<int>(text->VerticalAlignment());
                 if (ImGui::Combo(
@@ -10901,6 +11565,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 編集中の色
                 auto color = text->Color();
                 if (ImGui::ColorEdit4("文字色", &color.x))
                 {
@@ -10911,6 +11576,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Textの描画順
                 auto textSortOrder = text->SortOrder();
                 if (ImGui::InputInt("描画順", &textSortOrder))
                 {
@@ -10925,10 +11591,12 @@ namespace LamaPon
 
                 ImGui::Text("フォント: %s", text->FontFamily().c_str());
             }
+            // 現在編集するBillboard
             else if (auto* billboard =
                 dynamic_cast<BillboardComponent*>(
                     component.get()))
             {
+                // Billboardの向け方候補
                 static constexpr const char* modeNames[]{
                     "カメラの位置を向く",
                     "画面と平行（カメラの向きに合わせる）",
@@ -10936,6 +11604,7 @@ namespace LamaPon
                     "立ったまま画面の向きに合わせる",
                     "指定した座標を向く"
                 };
+                // 選択中のBillboardの向け方
                 int mode = static_cast<int>(
                     billboard->Mode());
                 if (ImGui::Combo(
@@ -10957,10 +11626,12 @@ namespace LamaPon
                     "自然）。「立ったまま」は上下に傾かないので、"
                     "木・草・頭上のHPバーに向きます。");
 
+                // Billboardの前向き候補
                 static constexpr const char* axisNames[]{
                     "上（+Y）… Planeの画像",
                     "前（+Z）… モデルの正面"
                 };
+                // Billboardの前向き
                 int axis = static_cast<int>(
                     billboard->FacingAxis());
                 if (ImGui::Combo(
@@ -10983,6 +11654,7 @@ namespace LamaPon
                 if (billboard->Mode()
                     == BillboardMode::LookAtPosition)
                 {
+                    // Billboardが向く座標
                     auto target =
                         billboard->TargetPosition();
                     if (ImGui::DragFloat3(
@@ -11007,19 +11679,24 @@ namespace LamaPon
                     "向くのは再生中だけです"
                     "（シーンビューでは編集した向きのまま）");
             }
+            // 現在編集するNetwork Identity
             else if (auto* identity = dynamic_cast<NetworkIdentityComponent*>(component.get()))
             {
+                // Scene Key
                 std::array<char, 65> key{};
                 strncpy_s(key.data(), key.size(), identity->SceneKey().c_str(), _TRUNCATE);
                 ImGui::BeginDisabled(m_playing);
                 if (ImGui::InputText("Scene Key", key.data(), key.size()))
                 {
                     try { identity->SetSceneKey(key.data()); RecordHistory(); }
+                    // 失敗原因の詳細
                     catch (const std::exception& error) { SetStatus(error.what(), true); }
                 }
+                // Network Identityをホスト専用にするか
                 bool hostOnly = identity->HostOnlySimulation();
                 if (ImGui::Checkbox("ホストだけで移動・物理・Scriptを実行", &hostOnly))
                 { identity->SetHostOnlySimulation(hostOnly); RecordHistory(); }
+                // Network補間時間
                 float interpolation = identity->InterpolationSeconds();
                 if (ImGui::SliderFloat("補間時間（秒）", &interpolation, 0, 1))
                 { identity->SetInterpolationSeconds(interpolation); RecordHistory(); }
@@ -11029,6 +11706,7 @@ namespace LamaPon
             }
             else if (auto* rotator = dynamic_cast<RotatorComponent*>(component.get()))
             {
+                // RotatorまたはRigidbodyの速度
                 auto velocity = rotator->AngularVelocity();
                 if (ImGui::InputFloat3("回転速度", &velocity.x))
                 {
@@ -11039,6 +11717,7 @@ namespace LamaPon
                     RecordHistory();
                 }
             }
+            // 現在編集するNative Script
             else if (auto* nativeScript =
                 dynamic_cast<NativeScriptComponent*>(
                     component.get()))
@@ -11082,17 +11761,21 @@ namespace LamaPon
                         _TRUNCATE);
                 }
 
+                // 型付きプロパティ欄を表示できるか
                 bool hasTypedSchema{};
+                // 公開プロパティのスキーマJSON
                 const auto schemaJson =
                     nativeScript->PropertiesSchemaJson();
                 if (!schemaJson.empty())
                 {
                     try
                     {
+                        // Native Scriptの公開値
                         auto properties = nlohmann::json::parse(
                             nativeScript->PropertiesJson());
                         ImGui::SeparatorText("公開プロパティ");
                         ImGui::BeginDisabled(m_playing);
+                        // 公開プロパティの編集結果
                         const auto edit =
                             DrawNativeScriptProperties(
                                 properties,
@@ -11135,6 +11818,7 @@ namespace LamaPon
                             RecordHistory();
                         }
                     }
+                    // 失敗原因の詳細
                     catch (const std::exception& exception)
                     {
                         SetStatus(
@@ -11143,6 +11827,7 @@ namespace LamaPon
                     }
                 }
 
+                // 生JSON欄を表示するか
                 const bool showRawJson = !hasTypedSchema
                     || ImGui::CollapsingHeader(
                         "詳細設定 (Properties JSON)");
@@ -11165,6 +11850,7 @@ namespace LamaPon
                             SetStatus(
                                 "C++ ComponentのPropertiesを更新しました");
                         }
+                        // 失敗原因の詳細
                         catch (const std::exception& exception)
                         {
                             SetStatus(
@@ -11175,6 +11861,7 @@ namespace LamaPon
                     ImGui::EndDisabled();
                 }
 
+                // 現在読み込まれているGame Module
                 if (auto* module =
                         GameModuleHost::Current();
                     module != nullptr)
@@ -11215,12 +11902,15 @@ namespace LamaPon
                     }
                 }
             }
+            // 現在編集するTransform Animator
             else if (auto* animator =
                 dynamic_cast<TransformAnimatorComponent*>(
                     component.get()))
             {
+                // Animation Clipのパス
                 const auto clipPath =
                     PathToUtf8(animator->ClipPath());
+                // Animator Controllerのパス
                 const auto controllerPath =
                     PathToUtf8(
                         animator->ControllerPath());
@@ -11242,10 +11932,12 @@ namespace LamaPon
 
                 if (ImGui::BeginDragDropTarget())
                 {
+                    // ドロップしたアセット情報
                     if (const ImGuiPayload* payload =
                         ImGui::AcceptDragDropPayload(
                             AssetPayload))
                     {
+                        // ドロップしたAnimationまたはControllerのパス
                         const auto droppedPath =
                             PathFromUtf8(
                                 static_cast<const char*>(
@@ -11285,6 +11977,7 @@ namespace LamaPon
                                 SetStatus(
                                     "Animationアセットを割り当てました");
                             }
+                            // 失敗原因の詳細
                             catch (const std::exception& exception)
                             {
                                 SetStatus(
@@ -11307,6 +12000,7 @@ namespace LamaPon
                         SetStatus(
                             "Animation Clipを再読み込みしました");
                     }
+                    // 失敗原因の詳細
                     catch (const std::exception& exception)
                     {
                         SetStatus(
@@ -11327,6 +12021,7 @@ namespace LamaPon
                         SetStatus(
                             "Animator Controllerを再読み込みしました");
                     }
+                    // 失敗原因の詳細
                     catch (const std::exception& exception)
                     {
                         SetStatus(
@@ -11372,6 +12067,7 @@ namespace LamaPon
                     }
                 }
 
+                // 移動またはアニメーション速度
                 float speed = animator->Speed();
                 if (ImGui::DragFloat(
                     "再生速度",
@@ -11385,6 +12081,7 @@ namespace LamaPon
                     {
                         animator->SetSpeed(speed);
                     }
+                    // 失敗原因の詳細
                     catch (const std::exception& exception)
                     {
                         SetStatus(exception.what(), true);
@@ -11395,6 +12092,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 音声またはAnimationを繰り返すか
                 bool loop = animator->Loop();
                 ImGui::BeginDisabled(
                     !controllerPath.empty());
@@ -11404,6 +12102,7 @@ namespace LamaPon
                     RecordHistory();
                 }
                 ImGui::EndDisabled();
+                // 起動時に自動再生するか
                 bool playOnStart =
                     animator->PlayOnStart();
                 if (ImGui::Checkbox(
@@ -11415,6 +12114,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Animation Clipの長さ
                 const float duration =
                     animator->Duration();
                 ImGui::Text(
@@ -11423,6 +12123,7 @@ namespace LamaPon
                     animator->KeyframeCount());
                 if (duration > 0.0f)
                 {
+                    // プレビュー時刻
                     float previewTime =
                         animator->Time();
                     if (ImGui::SliderFloat(
@@ -11443,10 +12144,12 @@ namespace LamaPon
                         "Play中はクリップが自動再生されます");
                 }
             }
+            // 現在編集するInput Mover
             else if (auto* inputMover =
                 dynamic_cast<InputMoverComponent*>(
                     component.get()))
             {
+                // 横移動Actionの入力欄
                 std::array<char, 96> horizontalAction{};
                 strncpy_s(
                     horizontalAction.data(),
@@ -11463,6 +12166,7 @@ namespace LamaPon
                         inputMover->SetHorizontalAction(
                             horizontalAction.data());
                     }
+                    // 失敗原因の詳細
                     catch (const std::exception& exception)
                     {
                         SetStatus(exception.what(), true);
@@ -11473,6 +12177,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 縦移動Actionの入力欄
                 std::array<char, 96> verticalAction{};
                 strncpy_s(
                     verticalAction.data(),
@@ -11489,6 +12194,7 @@ namespace LamaPon
                         inputMover->SetVerticalAction(
                             verticalAction.data());
                     }
+                    // 失敗原因の詳細
                     catch (const std::exception& exception)
                     {
                         SetStatus(exception.what(), true);
@@ -11499,6 +12205,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 移動またはアニメーション速度
                 float speed = inputMover->Speed();
                 if (ImGui::DragFloat(
                     "移動速度",
@@ -11517,10 +12224,12 @@ namespace LamaPon
                 ImGui::TextDisabled(
                     "既定: WASD またはゲームパッド左Stick");
             }
+            // 現在編集するCharacter Controller
             else if (auto* controller =
                 dynamic_cast<CharacterControllerComponent*>(
                     component.get()))
             {
+                // ColliderまたはCharacter Controllerの半径
                 float radius = controller->Radius();
                 if (ImGui::DragFloat(
                     "半径", &radius, 0.01f, 0.05f, 100.0f, "%.2f"))
@@ -11529,6 +12238,7 @@ namespace LamaPon
                 }
                 if (ImGui::IsItemDeactivatedAfterEdit()) RecordHistory();
 
+                // ColliderまたはControllerの高さ
                 float height = controller->Height();
                 if (ImGui::DragFloat(
                     "高さ", &height, 0.02f, 0.1f, 1000.0f, "%.2f"))
@@ -11537,6 +12247,7 @@ namespace LamaPon
                 }
                 if (ImGui::IsItemDeactivatedAfterEdit()) RecordHistory();
 
+                // Character Controllerの移動速度
                 float moveSpeed = controller->MoveSpeed();
                 if (ImGui::DragFloat(
                     "移動速度", &moveSpeed, 0.1f, 0.0f, 1000.0f, "%.2f"))
@@ -11545,6 +12256,7 @@ namespace LamaPon
                 }
                 if (ImGui::IsItemDeactivatedAfterEdit()) RecordHistory();
 
+                // ParticleまたはControllerの重力
                 float gravity = controller->Gravity();
                 if (ImGui::DragFloat(
                     "重力", &gravity, 0.1f, 0.0f, 1000.0f, "%.2f"))
@@ -11553,6 +12265,7 @@ namespace LamaPon
                 }
                 if (ImGui::IsItemDeactivatedAfterEdit()) RecordHistory();
 
+                // Character Controllerのジャンプ速度
                 float jumpSpeed = controller->JumpSpeed();
                 if (ImGui::DragFloat(
                     "ジャンプ速度",
@@ -11566,6 +12279,7 @@ namespace LamaPon
                 }
                 if (ImGui::IsItemDeactivatedAfterEdit()) RecordHistory();
 
+                // Character Controllerが越えられる段差
                 float stepOffset = controller->StepOffset();
                 if (ImGui::DragFloat(
                     "登れる段差",
@@ -11579,6 +12293,7 @@ namespace LamaPon
                 }
                 if (ImGui::IsItemDeactivatedAfterEdit()) RecordHistory();
 
+                // ColliderのSkin Width
                 float skinWidth = controller->SkinWidth();
                 if (ImGui::DragFloat(
                     "Skin Width",
@@ -11592,6 +12307,7 @@ namespace LamaPon
                 }
                 if (ImGui::IsItemDeactivatedAfterEdit()) RecordHistory();
 
+                // Colliderの衝突レイヤー
                 std::uint32_t layer =
                     controller->Layer();
                 if (DrawCollisionLayerCombo(
@@ -11603,6 +12319,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Colliderの衝突マスク
                 std::uint32_t mask =
                     controller->CollisionMask();
                 if (DrawCollisionMaskCombo(
@@ -11614,6 +12331,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 入力Actionを使用するか
                 bool useInput = controller->UseInput();
                 if (ImGui::Checkbox(
                     "入力アクションを使用",
@@ -11623,12 +12341,14 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Action名を編集します(label: 欄名, current: 現在値, setter: 保存処理)。
                 const auto drawAction =
                     [this](
                         const char* label,
                         const std::string& current,
                         auto&& setter)
                     {
+                        // TextまたはAction名の入力
                         std::array<char, 96> text{};
                         strncpy_s(
                             text.data(),
@@ -11644,6 +12364,7 @@ namespace LamaPon
                             {
                                 setter(std::string(text.data()));
                             }
+                            // 失敗原因の詳細
                             catch (const std::exception& exception)
                             {
                                 SetStatus(exception.what(), true);
@@ -11690,6 +12411,7 @@ namespace LamaPon
             }
             else if (auto* rigidbody = dynamic_cast<RigidbodyComponent*>(component.get()))
             {
+                // Rigidbody質量
                 float mass = rigidbody->Mass();
                 if (ImGui::DragFloat(
                     "質量",
@@ -11706,6 +12428,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // RotatorまたはRigidbodyの速度
                 auto velocity = rigidbody->Velocity();
                 if (ImGui::InputFloat3("速度", &velocity.x))
                 {
@@ -11716,6 +12439,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 角速度
                 auto angularVelocity =
                     rigidbody->AngularVelocity();
                 if (ImGui::InputFloat3(
@@ -11730,6 +12454,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // ローカル重心
                 auto centerOfMass =
                     rigidbody->CenterOfMass();
                 if (ImGui::InputFloat3(
@@ -11744,6 +12469,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 並進速度の抵抗
                 float linearDrag =
                     rigidbody->LinearDrag();
                 if (ImGui::DragFloat(
@@ -11762,6 +12488,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 角速度の抵抗
                 float angularDrag =
                     rigidbody->AngularDrag();
                 if (ImGui::DragFloat(
@@ -11780,6 +12507,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Rigidbodyへ重力を加えるか
                 bool useGravity = rigidbody->UsesGravity();
                 if (ImGui::Checkbox("重力を使用", &useGravity))
                 {
@@ -11787,6 +12515,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Rigidbodyをキネマティックにするか
                 bool kinematic = rigidbody->IsKinematic();
                 if (ImGui::Checkbox("キネマティック", &kinematic))
                 {
@@ -11813,9 +12542,11 @@ namespace LamaPon
                 }
                 ImGui::EndDisabled();
 
+                // Rigidbodyの軸固定設定
                 auto constraints =
                     rigidbody->Constraints();
                 ImGui::SeparatorText("回転の固定");
+                // 軸固定設定が変わったか
                 bool constraintsChanged{};
                 constraintsChanged |= ImGui::Checkbox(
                     "X 軸",
@@ -11849,11 +12580,13 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 衝突検出方式
                 int collisionDetection =
                     rigidbody->CollisionDetection()
                         == CollisionDetectionMode::Continuous
                     ? 1
                     : 0;
+                // 衝突検出方式の候補
                 const char* collisionModes[] = {
                     "Discrete",
                     "Continuous (CCD)"
@@ -11870,6 +12603,7 @@ namespace LamaPon
                             : CollisionDetectionMode::Discrete);
                     RecordHistory();
                 }
+                // Rigidbodyの描画補間を使うか
                 bool interpolate =
                     rigidbody->Interpolates();
                 if (ImGui::Checkbox(
@@ -11883,11 +12617,14 @@ namespace LamaPon
                 ImGui::TextDisabled(
                     "高速物体はContinuous、滑らかな表示には描画補間を使用");
             }
+            // 現在編集するJoint
             else if (auto* joint =
                 dynamic_cast<JointComponent*>(component.get()))
             {
+                // Jointの種類
                 int jointType =
                     static_cast<int>(joint->Type());
+                // Joint種類の候補
                 const char* jointTypes[] = {
                     "Fixed（固定）",
                     "Hinge（ヒンジ）",
@@ -11904,9 +12641,11 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // Joint接続先GameObject
                 const auto* connected =
                     m_scene.FindGameObject(
                         joint->ConnectedBodyId());
+                // 接続先の表示名
                 std::string connectedPreview =
                     connected != nullptr
                     ? connected->Name()
@@ -11922,6 +12661,7 @@ namespace LamaPon
                         joint->SetConnectedBodyId(0);
                         RecordHistory();
                     }
+                    // GameObjectまたはアセット候補
                     for (const auto& candidate :
                         m_scene.GameObjects())
                     {
@@ -11929,6 +12669,7 @@ namespace LamaPon
                         {
                             continue;
                         }
+                        // 入力欄またはUI要素の表示名
                         std::string label =
                             candidate->Name()
                             + " (ID "
@@ -11947,6 +12688,7 @@ namespace LamaPon
                     ImGui::EndCombo();
                 }
 
+                // Jointのローカル接続位置
                 auto anchor = joint->Anchor();
                 if (ImGui::InputFloat3(
                     "アンカー",
@@ -11959,6 +12701,7 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // 接続先のローカル位置
                 auto connectedAnchor =
                     joint->ConnectedAnchor();
                 if (ImGui::InputFloat3(
@@ -11975,6 +12718,7 @@ namespace LamaPon
 
                 if (joint->Type() == JointType::Hinge)
                 {
+                    // Billboardの前向き
                     auto axis = joint->Axis();
                     if (ImGui::InputFloat3(
                         "回転軸",
@@ -11987,6 +12731,7 @@ namespace LamaPon
                         RecordHistory();
                     }
 
+                    // Hinge角度制限を使うか
                     bool useLimits =
                         joint->UseLimits();
                     if (ImGui::Checkbox(
@@ -11999,6 +12744,7 @@ namespace LamaPon
                     }
                     if (useLimits)
                     {
+                        // Hinge角度制限
                         auto limits =
                             joint->Limits();
                         if (ImGui::DragFloat(
@@ -12036,6 +12782,7 @@ namespace LamaPon
                         }
                     }
 
+                    // Hinge Motorを使うか
                     bool useMotor =
                         joint->UseMotor();
                     if (ImGui::Checkbox(
@@ -12048,6 +12795,7 @@ namespace LamaPon
                     }
                     if (useMotor)
                     {
+                        // Hinge Motorの設定
                         auto motor =
                             joint->Motor();
                         if (ImGui::DragFloat(
@@ -12088,6 +12836,7 @@ namespace LamaPon
                 }
                 else if (joint->Type() == JointType::Spring)
                 {
+                    // Spring Jointの自然長
                     float restLength =
                         joint->RestLength();
                     if (ImGui::DragFloat(
@@ -12105,6 +12854,7 @@ namespace LamaPon
                         RecordHistory();
                     }
 
+                    // Spring Jointの強さ
                     float stiffness =
                         joint->Stiffness();
                     if (ImGui::DragFloat(
@@ -12121,6 +12871,7 @@ namespace LamaPon
                         RecordHistory();
                     }
 
+                    // Spring Jointの減衰
                     float damping = joint->Damping();
                     if (ImGui::DragFloat(
                         "減衰",
@@ -12137,6 +12888,7 @@ namespace LamaPon
                     }
                 }
 
+                // 接続した物体同士を衝突させるか
                 bool collideConnected =
                     joint->CollideConnected();
                 if (ImGui::Checkbox(
@@ -12148,10 +12900,12 @@ namespace LamaPon
                     RecordHistory();
                 }
             }
+            // 現在編集するLOD Group
             else if (auto* lodGroup =
                 dynamic_cast<LODGroupComponent*>(
                     component.get()))
             {
+                // 全LODを非表示にする距離
                 float cullDistance =
                     lodGroup->CullDistance();
                 if (ImGui::DragFloat(
@@ -12169,9 +12923,12 @@ namespace LamaPon
                     RecordHistory();
                 }
 
+                // LOD設定の編集中コピー
                 auto levels = lodGroup->Levels();
+                // ループ後に削除するLOD番号
                 std::optional<std::size_t>
                     removeLevel;
+                // 現在処理する項目の添字
                 for (std::size_t index{};
                     index < levels.size();
                     ++index)
@@ -12198,10 +12955,12 @@ namespace LamaPon
                         RecordHistory();
                     }
 
+                    // LODが参照するGameObject
                     const auto* target =
                         m_scene.FindGameObject(
                             levels[index].
                                 targetId);
+                    // 選択中のGameObject名
                     const std::string preview =
                         target != nullptr
                         ? target->Name()
@@ -12221,9 +12980,11 @@ namespace LamaPon
                                 levels);
                             RecordHistory();
                         }
+                        // GameObjectまたはアセット候補
                         for (const auto& candidate :
                             m_scene.GameObjects())
                         {
+                            // 入力欄またはUI要素の表示名
                             const std::string label =
                                 candidate->Name()
                                 + " (ID "
@@ -12266,6 +13027,7 @@ namespace LamaPon
                 if (ImGui::Button(
                     "LODレベルを追加"))
                 {
+                    // 追加LODの最大距離
                     const float distance =
                         levels.empty()
                         ? 25.0f
@@ -12296,8 +13058,7 @@ namespace LamaPon
             && pendingComponentReorder.moved != nullptr
             && pendingComponentReorder.reference != nullptr)
         {
-            // ReorderComponentは両方が自分のコンポーネントで
-            // なければfalseを返すので、そのまま渡して構いません。
+            // ReorderComponentは両方が自分のコンポーネントでなければfalseを返すので、そのまま渡して構いません。
             if (selected->ReorderComponent(
                     *pendingComponentReorder.moved,
                     *pendingComponentReorder.reference,
@@ -12316,8 +13077,11 @@ namespace LamaPon
 
     void EditorLayer::DrawAddComponent(GameObject& gameObject)
     {
+        // Component追加検索の入力値を保持します。
         static std::array<char, 128> componentSearch{};
+        // 前回選択したカテゴリを保持します。
         static std::size_t componentCategoryIndex = 0;
+        // 追加できるComponentカテゴリを並べます。
         static constexpr std::array<std::string_view, 9>
             componentCategories{
                 "All Categories",
@@ -12332,6 +13096,7 @@ namespace LamaPon
             };
 
         ImGui::Separator();
+        // メニューから開く要求があったか
         const bool openFromMenu = m_addComponentPickerRequested;
         m_addComponentPickerRequested = false;
         if (ImGui::Button(
@@ -12345,9 +13110,11 @@ namespace LamaPon
         }
         if (!m_playing && ImGui::BeginDragDropTarget())
         {
+            // ドロップしたScript情報
             if (const ImGuiPayload* payload =
                     ImGui::AcceptDragDropPayload(AssetPayload))
             {
+                // ドロップしたScriptのアセットパス
                 const auto asset = PathFromUtf8(
                     static_cast<const char*>(payload->Data));
                 if (IsCppScriptAsset(asset))
@@ -12372,6 +13139,7 @@ namespace LamaPon
         {
             ImGui::SetKeyboardFocusHere();
         }
+        // カテゴリ選択欄の幅
         const float categoryWidth = 145.0f;
         ImGui::SetNextItemWidth(
             std::max(
@@ -12390,10 +13158,12 @@ namespace LamaPon
                 "##ComponentCategory",
                 componentCategories[componentCategoryIndex].data()))
         {
+            // カテゴリ候補の添字
             for (std::size_t index = 0;
                  index < componentCategories.size();
                  ++index)
             {
+                // 現在のカテゴリ候補か
                 const bool selected =
                     componentCategoryIndex == index;
                 if (ImGui::Selectable(
@@ -12411,8 +13181,10 @@ namespace LamaPon
         }
         ImGui::Separator();
 
+        // 小文字化した検索語
         const std::string loweredSearch =
             Lowercase(componentSearch.data());
+        // 検索語を表示名に含むか調べます(name: Component名)。
         const auto matchesName =
             [&loweredSearch](const std::string_view name)
             {
@@ -12420,6 +13192,7 @@ namespace LamaPon
                     || Lowercase(std::string{ name }).find(
                         loweredSearch) != std::string::npos;
             };
+        // 選択カテゴリに一致するか調べます(category: Componentカテゴリ)。
         const auto matchesCategory =
             [](const std::string_view category)
             {
@@ -12427,7 +13200,9 @@ namespace LamaPon
                     || componentCategories[componentCategoryIndex]
                         == category;
             };
+        // 検索条件に合う候補数
         std::size_t visibleComponentCount = 0;
+        // 検索とカテゴリに合う候補だけ数えます(name: 表示名, category: 分類名)。
         const auto showComponent =
             [&matchesName,
              &matchesCategory,
@@ -12435,6 +13210,7 @@ namespace LamaPon
                 const std::string_view name,
                 const std::string_view category)
             {
+                // 名前とカテゴリに一致する候補か
                 const bool visible =
                     matchesCategory(category)
                     && matchesName(name);
@@ -12442,12 +13218,11 @@ namespace LamaPon
                 return visible;
             };
 
-        // 検索中／カテゴリー絞り込み中はカテゴリー見出しを省いて
-        // フラットな一覧にし、それ以外（All Categories・検索欄が空）
-        // ではカテゴリーごとに折りたたんで表示します。
+        // 未検索時にカテゴリ見出しを表示するか
         const bool showCategoryHeaders =
             loweredSearch.empty()
             && componentCategoryIndex == 0;
+        // 必要ならカテゴリ見出しと字下げを開始します(label: 見出し名)。
         const auto beginCategorySection =
             [showCategoryHeaders](const char* label)
             {
@@ -12455,6 +13230,7 @@ namespace LamaPon
                 {
                     return true;
                 }
+                // カテゴリ見出しの開閉状態
                 const bool open = ImGui::CollapsingHeader(label);
                 if (open)
                 {
@@ -12462,6 +13238,7 @@ namespace LamaPon
                 }
                 return open;
             };
+        // カテゴリ見出しを使う場合に字下げを戻します。
         const auto endCategorySection =
             [showCategoryHeaders]()
             {
@@ -12471,119 +13248,165 @@ namespace LamaPon
                 }
             };
 
+        // Cameraを既に追加済みか
         const bool hasCamera = gameObject.GetComponent<CameraComponent>() != nullptr;
+        // Directional Lightを追加済みか
         const bool hasDirectionalLight =
             gameObject.GetComponent<
                 DirectionalLightComponent>() != nullptr;
+        // Point Lightを追加済みか
         const bool hasPointLight =
             gameObject.GetComponent<PointLightComponent>() != nullptr;
+        // Spot Lightを追加済みか
         const bool hasSpotLight =
             gameObject.GetComponent<SpotLightComponent>() != nullptr;
+        // 2D Lightを追加済みか
         const bool hasLight2D =
             gameObject.GetComponent<Light2DComponent>() != nullptr;
+        // Box Collider 2Dを追加済みか
         const bool hasCollider2D =
             gameObject.GetComponent<BoxCollider2DComponent>() != nullptr;
+        // Circle Collider 2Dを追加済みか
         const bool hasCircleCollider2D =
             gameObject.GetComponent<
                 CircleCollider2DComponent>() != nullptr;
+        // Polygon Collider 2Dを追加済みか
         const bool hasPolygonCollider2D =
             gameObject.GetComponent<
                 PolygonCollider2DComponent>() != nullptr;
+        // Box Collider 3Dを追加済みか
         const bool hasCollider3D =
             gameObject.GetComponent<BoxCollider3DComponent>() != nullptr;
+        // Capsule Collider 3Dを追加済みか
         const bool hasCapsuleCollider3D =
             gameObject.GetComponent<
                 CapsuleCollider3DComponent>() != nullptr;
+        // Sphere Collider 3Dを追加済みか
         const bool hasSphereCollider3D =
             gameObject.GetComponent<
                 SphereCollider3DComponent>() != nullptr;
+        // 凸包Colliderを追加済みか
         const bool hasHullCollider3D =
             gameObject.GetComponent<
                 ConvexHullCollider3DComponent>() != nullptr;
+        // Mesh Colliderを追加済みか
         const bool hasMeshCollider3D =
             gameObject.GetComponent<
                 MeshCollider3DComponent>() != nullptr;
+        // NavMeshを追加済みか
         const bool hasNavMesh =
             gameObject.GetComponent<
                 NavMeshComponent>() != nullptr;
+        // NavMesh Agentを追加済みか
         const bool hasNavMeshAgent =
             gameObject.GetComponent<
                 NavMeshAgentComponent>() != nullptr;
+        // Mesh Rendererを追加済みか
         const bool hasMesh = gameObject.GetComponent<MeshRendererComponent>() != nullptr;
+        // Model Rendererを追加済みか
         const bool hasModel = gameObject.GetComponent<ModelRendererComponent>() != nullptr;
+        // Sprite Rendererを追加済みか
         const bool hasSprite = gameObject.GetComponent<SpriteRendererComponent>() != nullptr;
+        // Sprite Maskを追加済みか
         const bool hasSpriteMask =
             gameObject.GetComponent<
                 SpriteMaskComponent>() != nullptr;
+        // 描画カリングを追加済みか
         const bool hasRenderCulling =
             gameObject.GetComponent<
                 RenderCullingComponent>() != nullptr;
+        // Reflection Probeを追加済みか
         const bool hasReflectionProbe =
             gameObject.GetComponent<
                 ReflectionProbeComponent>() != nullptr;
+        // Sprite Animatorを追加済みか
         const bool hasSpriteAnimator =
             gameObject.GetComponent<
                 SpriteAnimatorComponent>() != nullptr;
+        // Tilemapを追加済みか
         const bool hasTilemap =
             gameObject.GetComponent<
                 TilemapComponent>() != nullptr;
+        // Parallax Layerを追加済みか
         const bool hasParallaxLayer =
             gameObject.GetComponent<
                 ParallaxLayerComponent>() != nullptr;
+        // Particle Systemを追加済みか
         const bool hasParticles =
             gameObject.GetComponent<
                 ParticleSystemComponent>() != nullptr;
+        // 2D Particleを追加済みか
         const bool hasSpriteParticles2D =
             gameObject.GetComponent<
                 SpriteParticles2DComponent>() != nullptr;
+        // UI Canvasを追加済みか
         const bool hasUICanvas =
             gameObject.GetComponent<
                 UICanvasComponent>() != nullptr;
+        // UI Rect Transformを追加済みか
         const bool hasUIRect =
             gameObject.GetComponent<
                 UIRectTransformComponent>() != nullptr;
+        // UI Buttonを追加済みか
         const bool hasUIButton =
             gameObject.GetComponent<
                 UIButtonComponent>() != nullptr;
+        // UI Imageを追加済みか
         const bool hasUIImage =
             gameObject.GetComponent<
                 UIImageComponent>() != nullptr;
+        // UI Toggleを追加済みか
         const bool hasUIToggle =
             gameObject.GetComponent<
                 UIToggleComponent>() != nullptr;
+        // UI Sliderを追加済みか
         const bool hasUISlider =
             gameObject.GetComponent<
                 UISliderComponent>() != nullptr;
+        // UI Input Fieldを追加済みか
         const bool hasUIInputField =
             gameObject.GetComponent<
                 UIInputFieldComponent>() != nullptr;
+        // UI Layout Groupを追加済みか
         const bool hasUILayoutGroup =
             gameObject.GetComponent<
                 UILayoutGroupComponent>() != nullptr;
+        // UI Scroll Viewを追加済みか
         const bool hasUIScrollView =
             gameObject.GetComponent<
                 UIScrollViewComponent>() != nullptr;
+        // Text Rendererを追加済みか
         const bool hasText = gameObject.GetComponent<TextRendererComponent>() != nullptr;
+        // Audio Listenerを追加済みか
         const bool hasAudioListener =
             gameObject.GetComponent<
                 AudioListenerComponent>() != nullptr;
+        // Audio Sourceを追加済みか
         const bool hasAudio = gameObject.GetComponent<AudioSourceComponent>() != nullptr;
+        // Rotatorを追加済みか
         const bool hasRotator = gameObject.GetComponent<RotatorComponent>() != nullptr;
+        // Billboardを追加済みか
         const bool hasBillboard =
             gameObject.GetComponent<
                 BillboardComponent>() != nullptr;
+        // Transform Animatorを追加済みか
         const bool hasAnimator =
             gameObject.GetComponent<
                 TransformAnimatorComponent>() != nullptr;
+        // Input Moverを追加済みか
         const bool hasInputMover =
             gameObject.GetComponent<
                 InputMoverComponent>() != nullptr;
+        // Character Controllerを追加済みか
         const bool hasCharacterController =
             gameObject.GetComponent<
                 CharacterControllerComponent>() != nullptr;
+        // Rigidbodyを追加済みか
         const bool hasRigidbody = gameObject.GetComponent<RigidbodyComponent>() != nullptr;
+        // Jointを追加済みか
         const bool hasJoint =
             gameObject.GetComponent<JointComponent>() != nullptr;
+        // LOD Groupを追加済みか
         const bool hasLODGroup =
             gameObject.GetComponent<
                 LODGroupComponent>() != nullptr;
@@ -12594,6 +13417,7 @@ namespace LamaPon
             if (showComponent("Camera", "Rendering")
                 && ImGui::Selectable("Camera"))
             {
+                // 追加したCamera
                 auto& camera = gameObject.AddComponent<CameraComponent>();
                 if (m_scene.MainCamera() == nullptr)
                 {
@@ -13183,6 +14007,7 @@ namespace LamaPon
             ImGui::BeginDisabled(gameObject.GetComponent<NetworkIdentityComponent>() != nullptr);
             if (showComponent("Network Identity", "Gameplay") && ImGui::Selectable("Network Identity"))
             {
+                // 追加したNetwork Identity
                 auto& identity = gameObject.AddComponent<NetworkIdentityComponent>();
                 identity.SetSceneKey("object." + std::to_string(gameObject.Id()));
                 RecordHistory();
@@ -13204,7 +14029,9 @@ namespace LamaPon
             endCategorySection();
         }
 
+        // 空のScript一覧を表示したか
         bool showedEmptyModuleNotice = false;
+        // 現在のGame Module
         if (auto* module = GameModuleHost::Current();
             module != nullptr
             && matchesCategory("Scripts")
@@ -13234,9 +14061,11 @@ namespace LamaPon
                             module->LastError().c_str());
                     }
                 }
+                // Game Moduleの登録Component
                 for (const auto& registration :
                     module->RegisteredComponents())
                 {
+                    // 同型Scriptを追加済みか
                     const bool alreadyAdded =
                         std::ranges::any_of(
                             gameObject.Components(),
@@ -13244,6 +14073,7 @@ namespace LamaPon
                                 const std::unique_ptr<
                                     Component>& component)
                             {
+                                // 既存Native Script
                                 const auto* script =
                                     dynamic_cast<
                                         const NativeScriptComponent*>(
@@ -13253,6 +14083,7 @@ namespace LamaPon
                                         == registration.typeName;
                             });
                     ImGui::BeginDisabled(alreadyAdded);
+                    // 検索一覧に表示するComponent名
                     const std::string label =
                         registration.displayName
                         + "##"

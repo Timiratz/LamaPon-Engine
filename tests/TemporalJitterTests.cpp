@@ -1,10 +1,3 @@
-// TAAのサブピクセルずらし（Halton列）を検査します。
-//
-// ずらし方が偏ると、そのフレームだけアンチエイリアスが効かずに
-// ちらついて見えます。ここでは「1周のあいだにピクセル内へ均等に
-// 散ること」と「射影行列への織り込みが1ピクセル分ちょうどになる
-// こと」を数値で確かめます。GPUは要りません。
-
 #include "LamaPon/Graphics/TemporalJitter.h"
 
 #include <algorithm>
@@ -14,14 +7,19 @@
 #include <string>
 #include <vector>
 
+// Halton列の分布と射影行列への適用量を検証します。
 namespace
 {
+    // 失敗したassertionの件数
     int g_failures = 0;
 
+    // 条件不成立を失敗一覧へ記録します。
+    // Require(condition: 成立条件, message: 失敗理由)
     void Require(
         const bool condition,
         const std::string& message)
     {
+        // assertion失敗を集計する
         if (!condition)
         {
             std::cerr << "FAILED: " << message << '\n';
@@ -29,6 +27,8 @@ namespace
         }
     }
 
+    // leftとrightの差がtolerance内か返します。
+    // NearlyEqual(left: 左値, right: 右値, tolerance: 許容誤差)
     [[nodiscard]] bool NearlyEqual(
         const float left,
         const float right,
@@ -38,11 +38,10 @@ namespace
     }
 }
 
+// Halton列と射影行列のジッター量を検証します。
 int main()
 {
-    // (1) Halton列の既知の値。基数2は 1/2, 1/4, 3/4, 1/8 ... と
-    // 続きます（桁を逆順に読んだ小数）。ここがずれていると列全体が
-    // 別物になります。
+    // Halton列の既知値を確認
     Require(
         NearlyEqual(
             LamaPon::HaltonSequence(1u, 2u), 0.5f),
@@ -70,12 +69,15 @@ int main()
             2.0f / 3.0f),
         "Halton(2,3) must be 2/3.");
 
-    // (2) ずらし量は必ず -0.5〜+0.5 の範囲へ収まること。範囲を
-    // 超えると隣のピクセルを描いてしまい、輪郭が太ります。
+    // jitter offsetが1ピクセルの範囲に収まることを確認
+    // 反復するjitter列の周期
     constexpr std::uint32_t period = 8u;
+    // 周期内の画面ピクセルoffset
     std::vector<DirectX::XMFLOAT2> offsets;
+    // index: 周期内のjitter位置
     for (std::uint32_t index = 0u; index < period; ++index)
     {
+        // indexに対応するサンプルoffset
         const auto offset =
             LamaPon::TemporalJitterOffset(index);
         Require(
@@ -86,10 +88,11 @@ int main()
         offsets.push_back(offset);
     }
 
-    // (3) 1周のあいだに同じ点が出ないこと。同じ点が続くと、その
-    // フレームは前と同じ絵になるのでアンチエイリアスが進みません。
+    // 1周期中に重複offsetがないことを確認
+    // left: 比較元offsetの位置
     for (std::size_t left = 0; left < offsets.size(); ++left)
     {
+        // right: leftより後ろの比較先
         for (std::size_t right = left + 1;
             right < offsets.size();
             ++right)
@@ -107,7 +110,7 @@ int main()
         }
     }
 
-    // (4) 1周すると同じ列へ戻ること（周期8）。
+    // 周期末に列の先頭offsetへ戻ることを確認
     Require(
         NearlyEqual(
             LamaPon::TemporalJitterOffset(0u).x,
@@ -117,17 +120,21 @@ int main()
             LamaPon::TemporalJitterOffset(period).y),
         "The jitter sequence must repeat with its period.");
 
-    // (5) 平均が中央（0）に近いこと。偏っていると絵全体が
-    // 半ピクセルずれて見えます。
+    // 周期内offsetの平均が画素中心に近いことを確認
+    // X方向offset合計
     float sumX = 0.0f;
+    // Y方向offset合計
     float sumY = 0.0f;
+    // offset: 周期内の各画面ピクセル変位
     for (const auto& offset : offsets)
     {
         sumX += offset.x;
         sumY += offset.y;
     }
+    // X方向offsetの周期平均
     const float averageX =
         sumX / static_cast<float>(offsets.size());
+    // Y方向offsetの周期平均
     const float averageY =
         sumY / static_cast<float>(offsets.size());
     Require(
@@ -135,26 +142,30 @@ int main()
             && std::abs(averageY) < 0.1f,
         "The jitter sequence must be centered on the pixel.");
 
-    // (6) 射影への織り込み。1ピクセルずらすと、クリップ空間では
-    // 2/幅（yは符号が逆）だけ動くはずです。ここを間違えると
-    // ずらし量が画面の解像度に応じて狂います。
+    // 1ピクセル変位が解像度に応じたclip空間量へ変換されることを確認
     {
         using namespace DirectX;
+        // 比較元の透視射影行列
         const XMMATRIX projection =
             XMMatrixPerspectiveFovLH(
                 XM_PIDIV4,
                 16.0f / 9.0f,
                 0.1f,
                 100.0f);
+        // テスト画面幅
         constexpr std::uint32_t width = 320u;
+        // テスト画面高さ
         constexpr std::uint32_t height = 180u;
+        // 1ピクセルずらしを適用した射影行列
         const XMMATRIX jittered =
             LamaPon::ApplyTemporalJitter(
                 projection,
                 XMFLOAT2{ 1.0f, 1.0f },
                 width,
                 height);
+        // 元行列の係数を比較可能な形式で保持
         XMFLOAT4X4 before{};
+        // jitter適用後の係数
         XMFLOAT4X4 after{};
         XMStoreFloat4x4(&before, projection);
         XMStoreFloat4x4(&after, jittered);
@@ -168,14 +179,14 @@ int main()
                 after._32 - before._32,
                 -2.0f / static_cast<float>(height)),
             "One pixel of jitter must move clip y by -2/height.");
-        // ずらし0なら行列は変わらないこと（無効時にバイト単位で
-        // 同じ絵になることの土台です）。
+        // zero jitterが射影行列を変更しないことを確認
         const XMMATRIX unchanged =
             LamaPon::ApplyTemporalJitter(
                 projection,
                 XMFLOAT2{ 0.0f, 0.0f },
                 width,
                 height);
+        // zero jitter適用後の係数
         XMFLOAT4X4 same{};
         XMStoreFloat4x4(&same, unchanged);
         Require(
@@ -184,6 +195,7 @@ int main()
             "Zero jitter must leave the projection untouched.");
     }
 
+    // すべて成功した場合だけ成功メッセージを表示
     if (g_failures == 0)
     {
         std::cout << "Temporal jitter tests passed." << '\n';

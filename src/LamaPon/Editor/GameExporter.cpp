@@ -36,9 +36,11 @@
 
 namespace
 {
+    // ファイル全体を読み、サイズ取得や読込の失敗は例外にします(path: 読込対象のパス)。
     std::vector<std::uint8_t> ReadAllBytes(
         const std::filesystem::path& path)
     {
+        // ファイル全体の入力ストリーム
         std::ifstream input(
             path,
             std::ios::binary | std::ios::ate);
@@ -48,8 +50,8 @@ namespace
                 "Could not open the exported file: "
                 + LamaPon::PathToUtf8(path));
         }
-        // tellg()はstd::fposなので、intと三項演算子で混ぜられません
-        // （C2445）。負値の判定を先に済ませます。
+
+        // 読込サイズまたはDLL内容の終端
         const auto end = input.tellg();
         if (end < 0)
         {
@@ -58,6 +60,7 @@ namespace
                 " file: "
                 + LamaPon::PathToUtf8(path));
         }
+        // ファイル全体の読込先
         std::vector<std::uint8_t> bytes(
             static_cast<std::size_t>(end));
         input.seekg(0);
@@ -76,10 +79,12 @@ namespace
         return bytes;
     }
 
+    // バイト列を書き込み、flushとcloseの成功を確認します(path: 書込対象のパス, bytes: 書き込む内容)。
     void WriteAllBytes(
         const std::filesystem::path& path,
         const std::vector<std::uint8_t>& bytes)
     {
+        // ファイル全体の出力ストリーム
         std::ofstream output(
             path,
             std::ios::binary | std::ios::trunc);
@@ -108,26 +113,26 @@ namespace
         }
     }
 
-    // 配布物ごとに生成した鍵を、書き出したLamaPonRuntime.dllの
-    // 鍵スロットへ埋め込みます（配置はCrypto.hを参照）。
-    // 共通鍵はソースから確認できるため、鍵を書き出しごとに分けることで、
-    // 一つの鍵が別の配布物へ流用されるのを防ぎます。
-    // 鍵スロットが見つからない場合は、既定鍵を含む配布物を生成しないよう
-    // 書き出しを中止します。
+
+    // 唯一の鍵スロットを更新し、Runtimeの更新時刻を復元します(runtimeLibrary: 出力したRuntimeのDLL, key: この配布物用の暗号鍵)。
     void EmbedArchiveKey(
         const std::filesystem::path& runtimeLibrary,
         const LamaPon::Crypto::AesKey& key)
     {
-        // 鍵の差し替えはABIを変えません。モジュールの鮮度判定に使う
-        // ビルド時刻を保ち、正常なGame Moduleを古いと誤判定させません。
-        // 時刻の取得・復元に失敗した場合も、書き出し全体を中断します。
+        // Game Moduleの鮮度判定を変えないため、鍵の埋込前のRuntime更新時刻を復元します。
+        // 鍵埋込前のRuntime更新時刻
         const auto buildTime = std::filesystem::last_write_time(runtimeLibrary);
+        // 読込済みのファイル全体
         auto bytes = ReadAllBytes(runtimeLibrary);
+        // 鍵スロットの検出用バイト列
         const auto marker =
             LamaPon::Crypto::ExpectedKeySlotMarker();
+        // Runtimeバイト列の先頭
         const auto begin = bytes.begin();
+        // 読込サイズまたはDLL内容の終端
         const auto end = bytes.end();
 
+        // 検出した鍵スロットの位置
         auto found = std::search(
             begin,
             end,
@@ -140,8 +145,7 @@ namespace
                 "The engine installation is older than this "
                 "editor; update it and export again.");
         }
-        // 2つ以上あるときは、どちらが本物か決められません
-        // （偶然一致した並びを書き換えるとDLLを壊します）。
+        // 誤った領域を書き換えないよう、鍵スロットが複数あるRuntimeは拒否します。
         if (std::search(
                 found + 1,
                 end,
@@ -154,6 +158,7 @@ namespace
                 "key slot; refusing to patch it.");
         }
 
+        // 新しい鍵を含むスロット内容
         const auto slot = LamaPon::Crypto::MakeKeySlot(key);
         if (static_cast<std::size_t>(std::distance(found, end))
             < slot.size())
@@ -167,20 +172,21 @@ namespace
         std::filesystem::last_write_time(runtimeLibrary, buildTime);
     }
 
-    // 配布物へ同梱する（アーカイブへ入らない）ファイルを、その場で
-    // 暗号化します。事前コンパイル済みシェーダーが対象です。
-    // HLSLソースを外しても、DXBCがそのまま置いてあれば逆アセンブルで
-    // 中身は読めてしまいます。
+
+    // 未暗号化ファイルを暗号化して読み直し、復号可能か検証します(directory: 暗号化する基準パス, key: この配布物用の暗号鍵)。
     std::size_t SealFilesInDirectory(
         const std::filesystem::path& directory,
         const LamaPon::Crypto::AesKey& key)
     {
+        // 検証またはファイル操作の失敗
         std::error_code error;
         if (!std::filesystem::is_directory(directory, error))
         {
             return 0;
         }
+        // 暗号化して検証済みのファイル数
         std::size_t sealed{};
+        // 走査するファイルまたはJSON要素
         for (const auto& entry :
             std::filesystem::recursive_directory_iterator(
                 directory))
@@ -189,6 +195,7 @@ namespace
             {
                 continue;
             }
+            // 読込済みのファイル全体
             const auto bytes = ReadAllBytes(entry.path());
             if (LamaPon::Crypto::IsSealed(
                     bytes.data(),
@@ -196,11 +203,13 @@ namespace
             {
                 continue;
             }
+            // 同梱ファイルの暗号化内容
             const auto sealedBytes = LamaPon::Crypto::Seal(
                 bytes.data(),
                 bytes.size(),
                 key);
             WriteAllBytes(entry.path(), sealedBytes);
+            // 暗号化後に読み直した内容
             const auto written = ReadAllBytes(entry.path());
             if (!LamaPon::Crypto::IsSealed(
                     written.data(),
@@ -219,6 +228,7 @@ namespace
         return sealed;
     }
 
+    // 絶対指定と親への遡りを含まない相対パスか判定します(path: 検証するパス)。
     bool IsRelativePathSafe(const std::filesystem::path& path)
     {
         if (path.empty()
@@ -229,6 +239,7 @@ namespace
             return false;
         }
 
+        // 相対パスの構成要素
         for (const auto& part : path)
         {
             if (part == L"..")
@@ -239,19 +250,23 @@ namespace
         return true;
     }
 
+    // 字句的に基準内の相対パスとなるか判定します(root: 基準パス, candidate: 判定するパス)。
     bool IsPathWithin(
         const std::filesystem::path& root,
         const std::filesystem::path& candidate)
     {
+        // 基準パスからの相対位置
         const auto relative = candidate.lexically_relative(root);
         return !relative.empty()
             && IsRelativePathSafe(relative);
     }
 
+    // 出力先の隣に時刻由来の作業パスを作ります(output: 完成物の出力先, label: 作業パスの用途名)。
     std::filesystem::path MakeSiblingWorkingPath(
         const std::filesystem::path& output,
         const std::wstring_view label)
     {
+        // 作業パス名の時刻識別子
         const auto suffix = std::to_wstring(
             std::chrono::steady_clock::now()
                 .time_since_epoch()
@@ -264,13 +279,17 @@ namespace
                 + suffix);
     }
 
+    // アクセス拒否を再試行して移動し、エラーでも完了済みなら成功にします(from: 移動元パス, to: 移動先パス, error: 最終の失敗状態の出力先)。
     bool RenameWithRetry(
         const std::filesystem::path& from,
         const std::filesystem::path& to,
         std::error_code& error)
     {
+        // renameの最大試行回数
         constexpr int MaxAttempts = 6;
+        // renameの試行回数
         for (int attempt = 0;
+            // renameの最大試行回数
             attempt < MaxAttempts;
             ++attempt)
         {
@@ -281,14 +300,17 @@ namespace
                 return true;
             }
 
-            // WebDAVはrenameを完了した後にERROR_NOT_SUPPORTEDを返す
-            // 場合があります。移動先だけが存在するなら操作は完了済み
-            // なので、重ねて失敗扱いにしません。
+            // WebDAVで移動完了後にエラーが返る場合は、元が無く移動先だけ存在することを確認します。
+            // renameが返した失敗状態
             const auto renameError = error;
+            // 移動元存在確認の失敗状態
             std::error_code sourceError;
+            // 移動先存在確認の失敗状態
             std::error_code destinationError;
+            // 移動元が存在するか
             const bool sourceExists =
                 std::filesystem::exists(from, sourceError);
+            // 移動先が存在するか
             const bool destinationExists =
                 std::filesystem::exists(to, destinationError);
             if (!sourceError
@@ -301,9 +323,7 @@ namespace
             }
             error = renameError;
 
-            // Windows DefenderやExplorerが直前に触ったフォルダーを
-            // 一時的に保持することがあります。アクセス拒否だけは
-            // 短く待って再試行し、それ以外のエラーはすぐ返します。
+            // アクセス拒否は短く待って再試行し、他のエラーは直ちに返します。
             if (error.value() != ERROR_ACCESS_DENIED
                 && error != std::errc::permission_denied)
             {
@@ -314,6 +334,7 @@ namespace
         return false;
     }
 
+    // 対象パスを含む書き出しエラーを作ります(message: 失敗内容, path: 失敗した対象パス)。
     std::runtime_error ExportError(
         const std::string_view message,
         const std::filesystem::path& path)
@@ -324,8 +345,8 @@ namespace
             + LamaPon::PathToUtf8(path));
     }
 
-    // エクスポート先のゲームへ同梱するVC++ランタイム。エディター
-    // （配布版エンジン）の隣に置かれたDLLをそのままコピーします。
+
+    // 同梱するVC++ RuntimeのDLL名
     constexpr std::array<std::wstring_view, 5>
         RuntimeCrtLibraries{
             L"vcruntime140.dll",
@@ -335,18 +356,21 @@ namespace
             L"msvcp140_2.dll"
         };
 
-    // JSONの中の"shaderKeywords"配列を、入れ子も含めて全部集めます。
+
+    // 入れ子のJSONからshaderKeywordsの文字列を集めます(node: 調べるJSON値, keywords: キーワードの追加先)。
     void CollectShaderKeywords(
         const nlohmann::json& node,
         std::vector<std::string>& keywords)
     {
         if (node.is_object())
         {
+            // JSON項目名と検査する値
             for (const auto& [key, value] : node.items())
             {
                 if (key == "shaderKeywords"
                     && value.is_array())
                 {
+                    // JSONで指定されたキーワード
                     for (const auto& keyword : value)
                     {
                         if (keyword.is_string())
@@ -363,6 +387,7 @@ namespace
         }
         if (node.is_array())
         {
+            // 再帰検査するJSON値
             for (const auto& value : node)
             {
                 CollectShaderKeywords(value, keywords);
@@ -393,7 +418,9 @@ namespace
         std::unordered_map<std::string, std::uint8_t>;
     struct ShaderConsumerRequirements final
     {
+        // 直接参照の必要シェーダー種別
         std::uint8_t direct{};
+        // manifestの必要シェーダー種別
         std::uint8_t manifest{};
     };
     using MaterialAssetRequirements =
@@ -403,10 +430,13 @@ namespace
 
     struct ModelRendererShaderRequirements final
     {
+        // モデルの必要な直接参照種別
         std::uint8_t direct =
             DirectShaderVertex | DirectShaderPixel;
+        // モデルの必要なmanifest種別
         std::uint8_t manifest =
             ManifestShaderMaterialForward;
+        // 検証またはファイル操作の失敗
         std::string error;
     };
     using ModelRendererRequirementCache =
@@ -414,11 +444,14 @@ namespace
             std::string,
             ModelRendererShaderRequirements>;
 
+    // 字句正規化と区切り・大小文字の統一で参照キーを作ります(path: キーへ変換するパス)。
     std::string ShaderReferenceKey(
         const std::filesystem::path& path)
     {
+        // 正規化した参照パスかJSONキー
         auto key = LamaPon::PathToUtf8(path.lexically_normal());
         std::replace(key.begin(), key.end(), '\\', '/');
+        // 参照パスを小文字へ揃えます(value: 変換する文字)。
         std::transform(
             key.begin(),
             key.end(),
@@ -430,9 +463,11 @@ namespace
         return key;
     }
 
+    // 資産の削除・再対応付け用ファイルとバックアップ名か判定します(path: 検査する資産パス)。
     bool IsTemporaryAssetFile(
         const std::filesystem::path& path)
     {
+        // 一時資産名または比較用ファイル名
         const auto name = path.filename().wstring();
         return name.find(L".lamapon-delete")
                 != std::wstring::npos
@@ -440,14 +475,18 @@ namespace
             || name.ends_with(L".bak");
     }
 
+    // リンクと開発・資格情報ファイルを拒否し、配布ファイル一覧を返します(stagingDirectory: 配布内容の検証先)。
     std::string InspectExportFiles(
         const std::filesystem::path& stagingDirectory)
     {
+        // 検証済みの配布ファイル相対パス
         std::vector<std::filesystem::path> files;
+        // 走査するファイルまたはJSON要素
         for (const auto& entry :
             std::filesystem::recursive_directory_iterator(
                 stagingDirectory))
         {
+            // 基準パスからの相対位置
             const auto relative = entry.path().lexically_relative(
                 stagingDirectory);
             if (entry.is_symlink())
@@ -460,8 +499,10 @@ namespace
             {
                 continue;
             }
+            // 一時資産名または比較用ファイル名
             const auto name = ShaderReferenceKey(
                 entry.path().filename());
+            // 小文字化したファイル拡張子
             const auto extension = ShaderReferenceKey(
                 entry.path().extension());
             if (extension == ".c" || extension == ".cc"
@@ -482,8 +523,10 @@ namespace
             files.push_back(relative);
         }
         std::sort(files.begin(), files.end());
+        // 配布ファイルの一覧通知文
         std::string inventory = "Exported loose-file inventory ("
             + std::to_string(files.size()) + " files):";
+        // 一覧へ追加する相対パス
         for (const auto& path : files)
         {
             inventory += "\n  + " + LamaPon::PathToUtf8(path);
@@ -491,12 +534,14 @@ namespace
         return inventory;
     }
 
-    // AssetDatabase::Refreshは不足.metaや依存cacheを書き得るため、exportの
-    // 検証では既存.metaだけを読み、GUID -> 現在pathの表をread-onlyで作ります。
+
+    // 元資産を変更せず既存metaから一意なGUIDの現在パスを集めます(assetDirectory: 読込対象のassets基準パス)。
     AssetGuidPaths ReadAssetGuidPaths(
         const std::filesystem::path& assetDirectory)
     {
+        // 一意なGUIDと現在パスの対応表
         AssetGuidPaths paths;
+        // 走査するファイルまたはJSON要素
         for (const auto& entry :
             std::filesystem::recursive_directory_iterator(assetDirectory))
         {
@@ -507,13 +552,17 @@ namespace
             }
             try
             {
+                // 既存metaの入力ストリーム
                 std::ifstream input(entry.path(), std::ios::binary);
                 if (!input)
                 {
                     continue;
                 }
+                // 既存metaのJSON
                 nlohmann::json metadata;
+                // 既存metaのJSON
                 input >> metadata;
+                // 既存metaの資産識別子
                 const auto guid = metadata.value(
                     "guid",
                     std::string{});
@@ -524,6 +573,7 @@ namespace
                 {
                     continue;
                 }
+                // metaに対応する資産パス
                 auto assetPath = entry.path();
                 assetPath.replace_extension();
                 if (!std::filesystem::is_regular_file(assetPath)
@@ -531,26 +581,27 @@ namespace
                 {
                     continue;
                 }
+                // 基準パスからの相対位置
                 const auto relative =
                     assetPath.lexically_relative(assetDirectory);
                 if (IsRelativePathSafe(relative))
                 {
+                    // 登録先の位置とGUIDが初回登録か
                     const auto [existing, inserted] =
                         paths.try_emplace(guid, relative);
                     if (!inserted)
                     {
-                        // 重複GUIDを走査順でどちらかへ決めません。
-                        // 後段のAssetDatabaseが明示的な重複診断を返します。
+                        // 重複GUIDは表から除外し、走査順で解決先を決めません。
                         existing->second.clear();
                     }
                 }
             }
             catch (const std::exception&)
             {
-                // 壊れた.metaは通常のAssetDatabaseと同じく無視し、JSONに
-                // 保存されたfallback pathを使います。
+                // 壊れた.metaは通常のAssetDatabaseと同じく無視し、JSONに保存されたfallback pathを使います。
             }
         }
+        // 重複して解決先が不明なGUIDを除外します(entry: GUIDと現在パスの組)。
         std::erase_if(
             paths,
             [](const auto& entry)
@@ -560,13 +611,16 @@ namespace
         return paths;
     }
 
+    // GUIDを解決できる項目だけ現在パスへ更新し、変更数を返します(node: 変換するJSON, guidPaths: GUIDと現在パスの対応表)。
     std::size_t RewriteJsonGuidReferences(
         nlohmann::json& node,
         const AssetGuidPaths& guidPaths)
     {
         if (node.is_array())
         {
+            // GUID参照のパス変更数
             std::size_t changes{};
+            // 再帰検査するJSON値
             for (auto& value : node)
             {
                 changes += RewriteJsonGuidReferences(value, guidPaths);
@@ -578,9 +632,12 @@ namespace
             return 0;
         }
 
+        // 更新するJSON項目と現在パス
         std::vector<std::pair<std::string, std::string>> replacements;
+        // JSON項目名とGUIDを表す値
         for (const auto& [key, value] : node.items())
         {
+            // 作業パス名の時刻識別子
             constexpr std::string_view suffix = "Guid";
             if (key.size() <= suffix.size()
                 || !key.ends_with(suffix)
@@ -588,6 +645,7 @@ namespace
             {
                 continue;
             }
+            // GUIDから解決した現在パス
             const auto resolved = guidPaths.find(
                 value.get<std::string>());
             if (resolved == guidPaths.end())
@@ -595,13 +653,16 @@ namespace
                 continue;
             }
 
+            // GUIDに対応するパスの項目名
             const auto field = key.substr(0, key.size() - suffix.size());
+            // JSONの元パスの検索結果
             const auto fallback = node.find(field);
             if (fallback != node.end() && !fallback->is_string())
             {
                 // 型が壊れたJSONをexportだけで黙って修復しません。
                 continue;
             }
+            // GUIDが示す現在のUTF-8パス
             const auto currentPath =
                 LamaPon::PathToUtf8(resolved->second);
             if (fallback == node.end()
@@ -611,11 +672,14 @@ namespace
             }
         }
 
+        // GUID参照のパス変更数
         std::size_t changes = replacements.size();
+        // 更新するパス項目名と現在の資産パス
         for (const auto& [field, path] : replacements)
         {
             node[field] = path;
         }
+        // 再帰検査するJSON値
         for (auto& value : node)
         {
             changes += RewriteJsonGuidReferences(value, guidPaths);
@@ -623,14 +687,14 @@ namespace
         return changes;
     }
 
-    // 配布ランタイムには.metaを同梱せず、AssetDatabaseのGUID表も
-    // 作れません。そのためGUIDで解決した現在pathを、元ファイルには
-    // 触れず、暗号化直前のJSONだけへ反映します。
+
+    // 配布先でGUID表を作れないため、暗号化前の対象JSONだけ現在パスへ変換します(relativePath: 対象資産の相対パス, contents: packする内容の更新先, guidPaths: GUIDと現在パスの対応表)。
     void RewritePackedJsonGuidReferences(
         const std::filesystem::path& relativePath,
         std::vector<std::uint8_t>& contents,
         const AssetGuidPaths& guidPaths)
     {
+        // 比較用に小文字化した資産名
         const auto filename =
             ShaderReferenceKey(relativePath.filename());
         if (!filename.ends_with(".scene.json")
@@ -642,6 +706,7 @@ namespace
         }
         try
         {
+            // 暗号化前に変換するJSON
             auto document = nlohmann::json::parse(
                 contents.begin(),
                 contents.end());
@@ -649,16 +714,17 @@ namespace
             {
                 return;
             }
+            // パス変更を反映したJSON文字列
             const auto serialized = document.dump();
             contents.assign(serialized.begin(), serialized.end());
         }
         catch (const std::exception&)
         {
-            // JSONの妥当性は各loaderの診断へ任せ、従来どおり元byteを
-            // packします。変換処理だけで無関係なassetを拒否しません。
+            // 変換に失敗したJSONは元のバイト列でpackし、妥当性の診断は各loaderへ任せます。
         }
     }
 
+    // GUIDを優先して資産パスを解決し、参照型の不正を通知します(node: 参照を持つJSON, field: パスの項目名, guidPaths: GUIDと現在パスの対応表, malformed: 不正参照かの出力先)。
     std::filesystem::path ResolveJsonAssetReference(
         const nlohmann::json& node,
         const std::string_view field,
@@ -666,8 +732,11 @@ namespace
         bool& malformed)
     {
         malformed = false;
+        // JSONで照合する資産項目名
         const std::string fieldName(field);
+        // GUID未解決時に使う元パス
         std::filesystem::path fallback;
+        // JSONの参照パスの検索結果
         const auto value = node.find(fieldName);
         if (value != node.end() && !value->is_null())
         {
@@ -688,6 +757,7 @@ namespace
             }
         }
 
+        // JSONの参照GUIDの検索結果
         const auto guid = node.find(fieldName + "Guid");
         if (guid != node.end() && !guid->is_null())
         {
@@ -696,6 +766,7 @@ namespace
                 malformed = true;
                 return {};
             }
+            // GUID表またはモデル要件の検索結果
             const auto found = guidPaths.find(
                 guid->get<std::string>());
             if (found != guidPaths.end())
@@ -706,6 +777,7 @@ namespace
         return fallback;
     }
 
+    // モデル形状から材質用途を判定し、要件と診断をキャッシュします(node: モデル参照を持つJSON, guidPaths: GUIDと現在パスの対応表, assets: モデルの読込先, cache: モデル要件の保存先, invalidReferences: 不正参照の追加先)。
     ModelRendererShaderRequirements
         ResolveModelRendererShaderRequirements(
             const nlohmann::json& node,
@@ -714,8 +786,11 @@ namespace
             ModelRendererRequirementCache& cache,
             std::vector<std::string>& invalidReferences)
     {
+        // モデルが必要とするシェーダー種別
         ModelRendererShaderRequirements result;
+        // 参照の型または変換が不正か
         bool malformed{};
+        // GUIDを優先して解決したモデル
         const auto modelPath = ResolveJsonAssetReference(
             node,
             "model",
@@ -727,8 +802,7 @@ namespace
                 "<invalid model reference> (ModelRenderer)");
             return result;
         }
-        // model未指定／load前はm_modelがnullなので、実行時と同じく
-        // 通常のMaterialShader（Forward）として扱います。
+        // モデル未指定時は実行時と同じ通常材質の要件を使います。
         if (modelPath.empty())
         {
             return result;
@@ -742,7 +816,9 @@ namespace
             return result;
         }
 
+        // 正規化した資産参照キー
         const auto key = ShaderReferenceKey(modelPath);
+        // GUID表またはモデル要件の検索結果
         if (const auto found = cache.find(key);
             found != cache.end())
         {
@@ -753,8 +829,10 @@ namespace
             return found->second;
         }
 
+        // モデルの小文字化した拡張子
         const auto extension =
             ShaderReferenceKey(modelPath.extension());
+        // 資産管理で解決したモデルパス
         const auto resolvedPath = assets.ResolvePath(modelPath);
         if (!assets.FileExists(resolvedPath))
         {
@@ -763,14 +841,14 @@ namespace
         }
         else if (extension == ".gltf" || extension == ".glb")
         {
-            // glTF/FBXはskin無しでもSkeletalModelとしてloadされるため、
-            // 従来HLSLは常にSkinnedMaterialShaderです。一方Manifestは
-            // primitiveごとにForward／Skinned roleを選びます。
+            // glTFとFBXの直接HLSLはスキニング用とし、manifestの用途はprimitiveごとに判断します。
             result.direct = DirectShaderSkinnedVertex
                 | DirectShaderSkinnedPixel;
             try
             {
+                // 通常材質を使うprimitiveがあるか
                 bool requiresForwardRole{};
+                // スキニング材質が必要か
                 const bool requiresSkinnedRole =
                     LamaPon::GltfImporter::RequiresSkinning(
                         assets,
@@ -788,6 +866,7 @@ namespace
                         ManifestShaderMaterialSkinned;
                 }
             }
+            // モデル検査の失敗を要件の診断に残します(exception: 検査の失敗理由)。
             catch (const std::exception& exception)
             {
                 result.error = LamaPon::PathToUtf8(modelPath)
@@ -801,7 +880,9 @@ namespace
                 | DirectShaderSkinnedPixel;
             try
             {
+                // 通常材質を使うprimitiveがあるか
                 bool requiresForwardRole{};
+                // スキニング材質が必要か
                 const bool requiresSkinnedRole =
                     LamaPon::FbxImporter::RequiresSkinning(
                         assets,
@@ -819,6 +900,7 @@ namespace
                         ManifestShaderMaterialSkinned;
                 }
             }
+            // モデル検査の失敗を要件の診断に残します(exception: 検査の失敗理由)。
             catch (const std::exception& exception)
             {
                 result.error = LamaPon::PathToUtf8(modelPath)
@@ -834,6 +916,7 @@ namespace
                 + " (unsupported ModelRenderer model format)";
         }
 
+        // 保存したモデル要件の位置と新規登録できたか
         const auto [stored, inserted] = cache.emplace(key, result);
         static_cast<void>(inserted);
         if (!stored->second.error.empty())
@@ -843,6 +926,7 @@ namespace
         return stored->second;
     }
 
+    // 材質資産の参照要件を累積し、参照が指定されていればtrueを返します(node: 参照を持つJSON, field: パスの項目名, expectedSuffix: 許可するファイル名末尾, required: 消費側の必要用途, guidPaths: GUIDと現在パスの対応表, requirements: 要件の追加先, invalidReferences: 不正参照の追加先)。
     bool AddReferencedAssetRequirement(
         const nlohmann::json& node,
         const std::string_view field,
@@ -852,7 +936,9 @@ namespace
         MaterialAssetRequirements& requirements,
         std::vector<std::string>& invalidReferences)
     {
+        // 参照の型または変換が不正か
         bool malformed{};
+        // GUIDを優先して解決した資産
         const auto path = ResolveJsonAssetReference(
             node,
             field,
@@ -873,9 +959,11 @@ namespace
             invalidReferences.push_back(LamaPon::PathToUtf8(path));
             return true;
         }
+        // 正規化した資産参照キー
         const auto key = ShaderReferenceKey(path);
         if (key.ends_with(expectedSuffix))
         {
+            // 累積する既存の資産用途要件
             auto& existing = requirements[key];
             existing.direct |= required.direct;
             existing.manifest |= required.manifest;
@@ -887,6 +975,7 @@ namespace
         return true;
     }
 
+    // HLSLかmanifestの参照に必要用途を追加します(path: 相対シェーダーパス, directRequired: 直接HLSLの必要種別, manifestRequired: manifestの必要用途, directRequirements: 直接参照要件の追加先, manifestRequirements: manifest要件の追加先, invalidReferences: 不正参照の追加先)。
     void AddShaderPathRequirement(
         const std::filesystem::path& path,
         const std::uint8_t directRequired,
@@ -907,6 +996,7 @@ namespace
             return;
         }
 
+        // 正規化した資産参照キー
         const auto key = ShaderReferenceKey(path);
         if (key.ends_with(".hlsl"))
         {
@@ -925,6 +1015,7 @@ namespace
                 : " (expected .hlsl or .lamashader.json)"));
     }
 
+    // JSONのシェーダー参照を解決して必要用途を追加します(node: 参照を持つJSON, directRequired: 直接HLSLの必要種別, manifestRequired: manifestの必要用途, guidPaths: GUIDと現在パスの対応表, directRequirements: 直接参照要件の追加先, manifestRequirements: manifest要件の追加先, invalidReferences: 不正参照の追加先)。
     void AddReferencedShaderRequirement(
         const nlohmann::json& node,
         const std::uint8_t directRequired,
@@ -934,7 +1025,9 @@ namespace
         ManifestShaderRequirements& manifestRequirements,
         std::vector<std::string>& invalidReferences)
     {
+        // 参照の型または変換が不正か
         bool malformed{};
+        // GUIDを優先して解決した資産
         const auto path = ResolveJsonAssetReference(
             node,
             "shader",
@@ -954,10 +1047,8 @@ namespace
             invalidReferences);
     }
 
-    // Scene／Prefabのcomponentに保存された従来の.hlsl直接参照と、
-    // そのcomponentが使うMaterial Assetを集めます。sourceを外す配布では、
-    // 用途ごとの必須entryが一つでも焼けなければ実行時に直せないため、
-    // export前に止めます。
+
+    // SceneとPrefabの用途別シェーダー・材質要件を再帰収集します(node: 調べるJSON, guidPaths: GUIDと現在パスの対応表, assets: モデルの読込先, modelRequirementCache: モデル要件の保存先, shaderRequirements: 直接HLSL要件の追加先, manifestRequirements: manifest要件の追加先, materialAssetRequirements: 材質資産要件の追加先, invalidReferences: 不正参照の追加先)。
     void CollectShaderRequirements(
         const nlohmann::json& node,
         const AssetGuidPaths& guidPaths,
@@ -970,10 +1061,15 @@ namespace
     {
         if (node.is_object())
         {
+            // 直接HLSLの必要種別マスク
             std::uint8_t shaderRequired{};
+            // manifestの必要用途マスク
             std::uint8_t manifestRequired{};
+            // 材質資産の必要用途
             ShaderConsumerRequirements materialRequired{};
+            // JSONのコンポーネント型検索結果
             const auto type = node.find("type");
+            // コンポーネントの型名
             const auto componentType =
                 type != node.end() && type->is_string()
                     ? type->get<std::string>()
@@ -990,6 +1086,7 @@ namespace
             }
             else if (componentType == "ModelRenderer")
             {
+                // モデル形状から得た必要用途
                 const auto required =
                     ResolveModelRendererShaderRequirements(
                         node,
@@ -1021,6 +1118,7 @@ namespace
                 manifestRequired = ManifestShaderCompute;
             }
 
+            // 材質資産の参照が指定済みか
             bool usesMaterialAsset{};
             if (materialRequired.direct != 0)
             {
@@ -1033,9 +1131,7 @@ namespace
                     materialAssetRequirements,
                     invalidReferences);
             }
-            // Material Assetが指定されていればOnInitializeでcomponent内の
-            // LitMaterial全体（保存済みshaderを含む）を上書きします。
-            // 使われない古いcomponent shaderを必須扱いしません。
+            // 材質資産が設定されている場合は直接指定した古いシェーダーを要件に含めません。
             if (shaderRequired != 0 && !usesMaterialAsset)
             {
                 AddReferencedShaderRequirement(
@@ -1048,6 +1144,8 @@ namespace
                     invalidReferences);
             }
 
+            // 再帰検査するJSON値
+            // JSONの参照パスの検索結果
             for (const auto& value : node)
             {
                 CollectShaderRequirements(
@@ -1064,6 +1162,8 @@ namespace
         }
         if (node.is_array())
         {
+            // 再帰検査するJSON値
+            // JSONの参照パスの検索結果
             for (const auto& value : node)
             {
                 CollectShaderRequirements(
@@ -1079,13 +1179,16 @@ namespace
         }
     }
 
+    // フォルダー階層を含むZIPを非表示で作成し、終了コードとサイズを検証します(folder: ZIPへ含めるフォルダー, zipPath: 出力するZIPパス)。
     void RunSystemTar(
         const std::filesystem::path& folder,
         const std::filesystem::path& zipPath)
     {
+        // 未完成ZIPの削除失敗状態
         std::error_code removeError;
         std::filesystem::remove(zipPath, removeError);
 
+        // Windowsのシステムディレクトリ
         wchar_t systemDirectory[MAX_PATH]{};
         if (GetSystemDirectoryW(
                 systemDirectory,
@@ -1094,6 +1197,7 @@ namespace
             throw std::runtime_error(
                 "Could not locate the Windows system directory.");
         }
+        // システムのtar実行ファイル
         const auto tarPath =
             std::filesystem::path(systemDirectory)
             / L"tar.exe";
@@ -1104,16 +1208,18 @@ namespace
                 tarPath);
         }
 
-        // -a: 拡張子からzip形式を推定 / -C: 親フォルダーへ移動して
-        // フォルダー名だけをアーカイブへ入れます。
+
+        // tarまたはsigntoolの起動引数
         std::wstring commandLine =
             L"\"" + tarPath.wstring() + L"\" -a -c -f \""
             + zipPath.wstring() + L"\" -C \""
             + folder.parent_path().wstring() + L"\" \""
             + folder.filename().wstring() + L"\"";
 
+        // 非表示プロセスの起動情報
         STARTUPINFOW startup{};
         startup.cb = sizeof(startup);
+        // 起動したプロセスのハンドル
         PROCESS_INFORMATION process{};
         if (CreateProcessW(
                 tarPath.c_str(),
@@ -1132,6 +1238,7 @@ namespace
                 tarPath);
         }
         WaitForSingleObject(process.hProcess, INFINITE);
+        // 外部ツールの終了コード
         DWORD exitCode = 1;
         GetExitCodeProcess(process.hProcess, &exitCode);
         CloseHandle(process.hThread);
@@ -1144,13 +1251,12 @@ namespace
                 zipPath);
         }
 
+        // ZIPサイズ取得の失敗状態
         std::error_code sizeError;
+        // 作成したZIPのサイズ・byte
         const auto zipSize =
             std::filesystem::file_size(zipPath, sizeError);
-        // 22 bytesは、entryが1件もないZIPのEnd of Central Directory
-        // だけを書いたサイズです。Windows tarはWebDAVの-Cを列挙できず、
-        // exit code 0の空ZIPを返すことがあるため、終了コードだけでなく
-        // 成果物も検査します。
+        // WebDAVで終了コード0の空ZIPが作られる場合もあるため、最小ヘッダーだけの22byte以下は拒否します。
         if (sizeError || zipSize <= 22)
         {
             std::filesystem::remove(zipPath, removeError);
@@ -1160,11 +1266,15 @@ namespace
         }
     }
 
+    // Windowsの引数用に引用符と末尾のバックスラッシュをエスケープします(argument: 引用する引数)。
     std::wstring QuoteSigningArgument(
         const std::wstring_view argument)
     {
+        // 引用符で囲った起動引数
         std::wstring quoted{ L'"' };
+        // 連続するバックスラッシュの数
         std::size_t backslashes = 0;
+        // 引用または名前調整する文字
         for (const wchar_t character : argument)
         {
             if (character == L'\\')
@@ -1188,23 +1298,29 @@ namespace
         return quoted;
     }
 
+    // 署名ツールを最大五分待ち、失敗を例外にします(signing: 署名ツールの設定, arguments: signかverifyの非空引数列, binary: 処理するバイナリのパス)。
     void RunSignTool(
         const LamaPon::GameSigningOptions& signing,
         const std::vector<std::wstring>& arguments,
         const std::filesystem::path& binary)
     {
+        // 署名ツールの正規化した絶対パス
         const auto signTool = std::filesystem::absolute(
             signing.signToolPath).lexically_normal();
+        // tarまたはsigntoolの起動引数
         std::wstring commandLine =
             QuoteSigningArgument(signTool.wstring());
+        // 署名ツールへ渡す引数
         for (const auto& argument : arguments)
         {
             commandLine += L" " + QuoteSigningArgument(argument);
         }
         commandLine += L" " + QuoteSigningArgument(binary.wstring());
 
+        // 非表示プロセスの起動情報
         STARTUPINFOW startup{};
         startup.cb = sizeof(startup);
+        // 起動したプロセスのハンドル
         PROCESS_INFORMATION process{};
         if (!CreateProcessW(
                 signTool.c_str(), commandLine.data(),
@@ -1214,6 +1330,7 @@ namespace
             throw ExportError(
                 "Could not start SignTool", signTool);
         }
+        // 署名ツールの待機結果
         const DWORD waitResult = WaitForSingleObject(
             process.hProcess, 300000);
         if (waitResult == WAIT_TIMEOUT)
@@ -1221,6 +1338,7 @@ namespace
             TerminateProcess(process.hProcess, 1);
             WaitForSingleObject(process.hProcess, INFINITE);
         }
+        // 外部ツールの終了コード
         DWORD exitCode = 1;
         if (waitResult == WAIT_OBJECT_0)
         {
@@ -1240,6 +1358,7 @@ namespace
         }
     }
 
+    // 有効な署名設定で各バイナリに署名し、その署名を検証します(signing: 検証済みの署名設定, binaries: 署名するバイナリの一覧)。
     void SignExportedBinaries(
         const LamaPon::GameSigningOptions& signing,
         const std::vector<std::filesystem::path>& binaries)
@@ -1248,12 +1367,15 @@ namespace
         {
             return;
         }
+        // 証明書のSHA-1を表す文字列
         const std::wstring thumbprint(
             signing.certificateSha1.begin(),
             signing.certificateSha1.end());
+        // タイムスタンプ認証のURL
         const std::wstring timestampUrl(
             signing.timestampUrl.begin(),
             signing.timestampUrl.end());
+        // 署名と検証の対象ファイル
         for (const auto& binary : binaries)
         {
             RunSignTool(signing,
@@ -1270,17 +1392,21 @@ namespace
         }
     }
 
+    // コピーしたZIPのサイズを検証し、既存を退避してから公開します(sourceZip: 完成した元ZIP, destinationZip: 公開するZIPパス)。
     void PublishZipArchive(
         const std::filesystem::path& sourceZip,
         const std::filesystem::path& destinationZip)
     {
+        // 検証する新ZIPの公開前パス
         const auto stagingZip = MakeSiblingWorkingPath(
             destinationZip,
             L"staging");
+        // 既存ZIPの一時退避パス
         const auto backupZip = MakeSiblingWorkingPath(
             destinationZip,
             L"backup");
 
+        // 配布内容かZIPのコピー失敗状態
         std::error_code copyError;
         std::filesystem::copy_file(
             sourceZip,
@@ -1288,20 +1414,24 @@ namespace
             std::filesystem::copy_options::none,
             copyError);
 
+        // 元ZIPのサイズ取得失敗状態
         std::error_code sourceSizeError;
+        // コピー先ZIPのサイズ取得失敗
         std::error_code stagingSizeError;
+        // 元ZIPのサイズ・byte
         const auto sourceSize = std::filesystem::file_size(
             sourceZip,
             sourceSizeError);
+        // コピー先ZIPのサイズ・byte
         const auto stagingSize = std::filesystem::file_size(
             stagingZip,
             stagingSizeError);
-        // WebDAVはcopy完了後に失敗コードを返すこともあるため、
-        // 最終サイズが一致していれば成功として扱います。
+        // WebDAVはcopy完了後に失敗コードを返すこともあるため、最終サイズが一致していれば成功として扱います。
         if (sourceSizeError
             || stagingSizeError
             || sourceSize != stagingSize)
         {
+            // 未完成物や退避物の削除失敗
             std::error_code cleanupError;
             std::filesystem::remove(stagingZip, cleanupError);
             if (copyError)
@@ -1317,16 +1447,19 @@ namespace
                 stagingZip);
         }
 
+        // 既存の配布ZIPがあるか
         const bool hadPreviousZip =
             std::filesystem::exists(destinationZip);
         if (hadPreviousZip)
         {
+            // ZIPの配置または退避の失敗
             std::error_code renameError;
             if (!RenameWithRetry(
                     destinationZip,
                     backupZip,
                     renameError))
             {
+                // 未完成物や退避物の削除失敗
                 std::error_code cleanupError;
                 std::filesystem::remove(stagingZip, cleanupError);
                 throw std::filesystem::filesystem_error(
@@ -1337,12 +1470,14 @@ namespace
             }
         }
 
+        // ZIPの配置または退避の失敗
         std::error_code renameError;
         if (!RenameWithRetry(
                 stagingZip,
                 destinationZip,
                 renameError))
         {
+            // 未完成物や退避物の削除失敗
             std::error_code cleanupError;
             std::filesystem::remove(stagingZip, cleanupError);
             if (hadPreviousZip
@@ -1362,18 +1497,19 @@ namespace
 
         if (hadPreviousZip)
         {
+            // 未完成物や退避物の削除失敗
             std::error_code cleanupError;
             std::filesystem::remove(backupZip, cleanupError);
         }
     }
 
-    // Windows標準のtar.exe（bsdtar）でフォルダーを.zipへ固めます。
-    // WebDAV上ではtarの-Cがexit 0の空ZIPを作るため、入力を一時的に
-    // ローカルへ複製し、完成ZIPだけをtransactionalに配布先へ移します。
+
+    // 必要に応じて入力をローカルへ複製し、完成ZIPだけを配布先へ公開します(folder: 完成したゲームフォルダー, zipPath: 公開するZIPパス)。
     void CreateZipWithSystemTar(
         const std::filesystem::path& folder,
         const std::filesystem::path& zipPath)
     {
+        // ZIP作成用のローカル作業パス
         const auto temporaryRoot =
             std::filesystem::temp_directory_path()
             / (L"LamaPonExportZip-"
@@ -1381,6 +1517,7 @@ namespace
                     std::chrono::steady_clock::now()
                         .time_since_epoch()
                         .count()));
+        // ZIP作業パス作成の失敗状態
         std::error_code directoryError;
         if (!LamaPon::EnsureDirectoryExists(
                 temporaryRoot,
@@ -1392,17 +1529,21 @@ namespace
                 directoryError);
         }
 
+        // 入力内容をローカルへ複製するか
         const bool useLocalInput =
             LamaPon::ShouldUseLocalGameModuleBuildCache(folder);
+        // ZIPへ含めるゲームフォルダー
         const auto archiveFolder = useLocalInput
             ? temporaryRoot / folder.filename()
             : folder;
+        // ローカルに作成する完成ZIP
         const auto localZip = temporaryRoot
             / (folder.filename().wstring() + L".zip");
         try
         {
             if (useLocalInput)
             {
+                // 配布内容かZIPのコピー失敗状態
                 std::error_code copyError;
                 std::filesystem::copy(
                     folder,
@@ -1424,6 +1565,7 @@ namespace
         }
         catch (...)
         {
+            // 未完成物や退避物の削除失敗
             std::error_code cleanupError;
             std::filesystem::remove_all(
                 temporaryRoot,
@@ -1431,6 +1573,7 @@ namespace
             throw;
         }
 
+        // 未完成物や退避物の削除失敗
         std::error_code cleanupError;
         std::filesystem::remove_all(
             temporaryRoot,
@@ -1440,6 +1583,7 @@ namespace
 
 namespace LamaPon
 {
+    // 署名が有効な場合だけツール・証明書・認証URLを検証します。
     void ValidateGameSigningOptions(
         const GameSigningOptions& options)
     {
@@ -1454,7 +1598,9 @@ namespace LamaPon
             throw std::invalid_argument(
                 "Signing requires an absolute path to Windows SDK signtool.exe.");
         }
+        // 小文字化する署名ツール名
         auto toolName = options.signToolPath.filename().wstring();
+        // 署名ツール名を小文字へ揃えます(character: 変換する文字)。
         std::transform(
             toolName.begin(), toolName.end(), toolName.begin(),
             [](const wchar_t character)
@@ -1466,6 +1612,7 @@ namespace LamaPon
             throw std::invalid_argument(
                 "The signing tool must be signtool.exe.");
         }
+        // 証明書のSHA-1の長さと全ての文字を検証します(character: 検証する文字)。
         if (options.certificateSha1.size() != 40
             || !std::all_of(
                 options.certificateSha1.begin(),
@@ -1478,6 +1625,7 @@ namespace LamaPon
             throw std::invalid_argument(
                 "Signing requires a 40-character hexadecimal certificate SHA-1 thumbprint.");
         }
+        // URLのスキームと許可文字を検証します(character: 検証する文字)。
         if (!options.timestampUrl.starts_with("https://")
             || options.timestampUrl.size() <= 8
             || !std::all_of(
@@ -1494,23 +1642,29 @@ namespace LamaPon
         }
     }
 
+    // 禁止文字を置換し、空白・ドットと予約デバイス名を調整します。
     std::wstring SanitizeGameFileName(
         const std::string& gameName)
     {
+        // Windowsのファイル名禁止文字
         constexpr std::wstring_view invalidCharacters =
             LR"(\/:*?"<>|)";
+        // 調整中のWindows用ファイル名
         std::wstring result;
+        // 引用または名前調整する文字
         for (const wchar_t character : Utf8ToWide(gameName))
         {
+            // ファイル名に使えない文字か
             const bool invalid = character < 0x20
                 || invalidCharacters.find(character)
                     != std::wstring_view::npos;
             result.push_back(invalid ? L'_' : character);
         }
 
-        // 先頭・末尾の空白とドットはWindowsのファイル名で
-        // 使えないため取り除きます。
+        // 先頭・末尾の空白とドットはWindowsのファイル名で使えないため取り除きます。
+        // 先頭の有効なファイル名文字位置
         const auto first = result.find_first_not_of(L" .");
+        // 末尾の有効なファイル名文字位置
         const auto last = result.find_last_not_of(L" .");
         result = first == std::wstring::npos
             ? std::wstring{}
@@ -1520,9 +1674,10 @@ namespace LamaPon
             return L"LamaPonGame";
         }
 
-        // CONやNULなどの予約デバイス名はそのまま使えないため
-        // 先頭へ「_」を付けます。
+        // CONやNULなどの予約デバイス名はそのまま使えないため先頭へ「_」を付けます。
+        // 予約名照合用の大文字表現
         std::wstring upper = result;
+        // 予約デバイス名との比較用に大文字へ揃えます(value: 変換する文字)。
         std::transform(
             upper.begin(),
             upper.end(),
@@ -1532,6 +1687,7 @@ namespace LamaPon
                 return static_cast<wchar_t>(
                     std::towupper(value));
             });
+        // Windowsの予約デバイス名
         constexpr std::array<std::wstring_view, 22>
             reservedNames{
                 L"CON", L"PRN", L"AUX", L"NUL",
@@ -1550,14 +1706,18 @@ namespace LamaPon
         return result;
     }
 
+    // 資産とシェーダーを準備して署名を検証し、完成物の公開後に任意のZIPを作成します。
     GameExportResult ExportGamePackage(
         const GameExportOptions& options)
     {
         ValidateGameSigningOptions(options.signing);
+        // 書き出し元Runtimeの基準パス
         const auto runtimeDirectory = std::filesystem::weakly_canonical(
             options.runtimeDirectory);
+        // 書き出し元assetsの基準パス
         const auto assetDirectory = std::filesystem::weakly_canonical(
             options.assetDirectory);
+        // 完成した配布フォルダーのパス
         const auto outputDirectory = std::filesystem::absolute(
             options.outputDirectory).lexically_normal();
 
@@ -1601,49 +1761,55 @@ namespace LamaPon
                 "Export directory cannot contain the runtime directory",
                 outputDirectory);
         }
-        // 開発用HTTP loopback許可を含むオンライン設定は、配布物を
-        // 作り始める前に拒否します。staging作成後まで遅らせると、
-        // 長いシェーダー処理を終えてから失敗してしまいます。
+        // 配布用設定の不正は作業フォルダーの作成前に拒否します。
         ValidateProjectSettings(
             options.projectSettings,
             ProjectSettingsFileType::GamePackage);
 
-        // パッケージが宣言したネイティブDLLは、実行ファイルの隣へ
-        // 同梱します。壊れた宣言・名前の衝突は、書き出しの作業を
-        // 始める前に止めます。SDK本体が未配置のパッケージは、Game
-        // Moduleのビルドと同じく警告してDLLを同梱しません。
+        // 作業開始前にnative宣言とDLL名を検証し、SDK未配置の依存は警告して除外します。
+        // native宣言の走査結果
         const auto packageScan =
             ScanPackageNativeDependencies(assetDirectory);
         if (!packageScan.errors.empty())
         {
+            // 検証失敗の通知文
             std::string message =
                 "パッケージのnative設定を読めません:";
+            // native宣言の個別失敗理由
             for (const auto& failure : packageScan.errors)
             {
                 message += "\n  - " + failure;
             }
             throw std::runtime_error(message);
         }
+        // 使用可能な依存と不足説明
         const auto nativeSelection =
             SelectAvailablePackageNativeDependencies(
                 packageScan.packages);
+        // 除外したnative依存の理由
         for (const auto& missing : nativeSelection.missing)
         {
             Logger::Instance().Warning(missing);
         }
+        // 同梱するnative DLLの一覧
         const auto packageRuntimeFiles =
             CollectPackageRuntimeFiles(nativeSelection.available);
 
+        // 元のゲーム実行ファイル
         const auto gameExecutable =
             runtimeDirectory / L"LamaPonGame.exe";
+        // 元のRuntime DLL
         const auto runtimeLibrary =
             runtimeDirectory / L"LamaPonRuntime.dll";
+        // 同梱するXAudio DLL
         const auto audioRuntime =
             runtimeDirectory / L"xaudio2_9redist.dll";
+        // 同梱候補のGame Module DLL
         const auto gameModule = options.gameModulePath.empty()
             ? runtimeDirectory / L"LamaPonGameModule.dll"
             : std::filesystem::absolute(
                 options.gameModulePath).lexically_normal();
+        // 起動シーンの元ファイル
         const auto startupScene =
             assetDirectory
             / options.projectSettings.startupScene;
@@ -1672,10 +1838,8 @@ namespace LamaPon
                 startupScene);
         }
 
-        // C++ Scriptを含むProjectで古い／無いGame Moduleをそのまま
-        // 梱包すると、Sceneだけは読めるのにScriptが一つも動かず、空や
-        // 背景色だけのゲームになります。配布先で初めて壊れるのではなく、
-        // 書き出し時点で理由と直し方を返します。
+        // C++ソースを含む場合はGame Moduleの欠落・古い更新時刻を配布前に拒否します。
+        // Game Moduleの再ビルド判定
         const auto moduleState = InspectGameModuleBuildState(
             assetDirectory.parent_path(),
             gameModule);
@@ -1693,11 +1857,15 @@ namespace LamaPon
         }
         if (moduleState.outputExists)
         {
+            // Module更新時刻の取得失敗
             std::error_code moduleTimeError;
+            // Runtime更新時刻の取得失敗
             std::error_code runtimeTimeError;
+            // Moduleの更新時刻
             const auto moduleTime = std::filesystem::last_write_time(
                 gameModule,
                 moduleTimeError);
+            // Runtimeの更新時刻
             const auto runtimeTime = std::filesystem::last_write_time(
                 runtimeLibrary,
                 runtimeTimeError);
@@ -1714,6 +1882,7 @@ namespace LamaPon
                     gameModule);
             }
         }
+        // ゲームアイコンの元資産
         const auto gameIconSource =
             options.projectSettings.gameIcon.empty()
                 ? std::filesystem::path{}
@@ -1728,7 +1897,9 @@ namespace LamaPon
                 gameIconSource);
         }
 
+        // 配布フォルダーの親パス
         const auto outputParent = outputDirectory.parent_path();
+        // 配布先の親パス作成失敗
         std::error_code outputParentError;
         if (!LamaPon::EnsureDirectoryExists(
                 outputParent,
@@ -1739,14 +1910,17 @@ namespace LamaPon
                 outputParent,
                 outputParentError);
         }
+        // 公開前のゲーム作成パス
         const auto stagingDirectory = MakeSiblingWorkingPath(
             outputDirectory,
             L"staging");
+        // 既存配布先の一時退避パス
         const auto backupDirectory = MakeSiblingWorkingPath(
             outputDirectory,
             L"backup");
 
-        // 実行ファイルはゲーム名を反映した名前で出力します。
+
+        // ゲーム名を反映したexe名
         const std::wstring exportedExecutableName =
             SanitizeGameFileName(
                 options.projectSettings.gameName)
@@ -1754,6 +1928,7 @@ namespace LamaPon
 
         try
         {
+            // 公開前パスの作成失敗状態
             std::error_code stagingError;
             if (!LamaPon::EnsureDirectoryExists(
                     stagingDirectory,
@@ -1773,14 +1948,16 @@ namespace LamaPon
             std::filesystem::copy_file(
                 audioRuntime,
                 stagingDirectory / audioRuntime.filename());
+            // 同梱候補のEOS Runtime DLL
             const auto eosRuntime = runtimeDirectory / "EOSSDK-Win64-Shipping.dll";
             if (options.projectSettings.network.backend == NetworkBackend::EpicOnlineServices
                 && (!HasEpicNetworkBackend() || !std::filesystem::is_regular_file(eosRuntime)))
                 throw std::runtime_error("EOS runtime DLL is missing. Build LamaPon with the official EOS SDK before exporting an EOS game.");
             if (std::filesystem::is_regular_file(eosRuntime))
                 std::filesystem::copy_file(eosRuntime, stagingDirectory / eosRuntime.filename());
-            // 実行コードに伴う通知を配布先にも残します。欠けたSDKから
-            // 不完全な配布物を作らないよう、コピー失敗時は中断します。
+            // 実行コードに伴う通知を配布先にも残します。
+            // 欠けたSDKから不完全な配布物を作らないよう、コピー失敗時は中断します。
+            // Runtimeのライセンス一覧パス
             const auto licenses = runtimeDirectory / "licenses";
             if (!std::filesystem::is_directory(licenses)
                 || std::filesystem::is_empty(licenses))
@@ -1794,18 +1971,14 @@ namespace LamaPon
                 runtimeDirectory / "THIRD_PARTY_NOTICES.md",
                 stagingDirectory / "THIRD_PARTY_NOTICES.md");
 
-            // このゲームだけのアーカイブ鍵を作り、書き出した
-            // LamaPonRuntime.dllへ焼き込みます。先に済ませるのは、
-            // 失敗したときにシェーダーの事前コンパイル（数秒）を
-            // 無駄にしないためです。
+
+            // この配布物用に生成した暗号鍵
             const auto archiveKey = LamaPon::Crypto::RandomKey();
             EmbedArchiveKey(
                 stagingDirectory / runtimeLibrary.filename(),
                 archiveKey);
 
-            // ゲームアイコンを実行ファイルへ埋め込みます
-            // （ExplorerのファイルアイコンとウィンドウのLamaPon標準
-            // アイコンが差し替わります）。
+            // ゲームアイコンを実行ファイルへ埋め込みます（ExplorerのファイルアイコンとウィンドウのLamaPon標準アイコンが差し替わります）。
             if (!gameIconSource.empty())
             {
                 ReplaceExecutableIcon(
@@ -1813,11 +1986,11 @@ namespace LamaPon
                     BuildIcoFromImageFile(gameIconSource));
             }
 
-            // VC++ランタイムを同梱し、再頒布可能パッケージ未導入の
-            // PCでもそのまま起動できるようにします（配布版エンジンの
-            // 隣にあるDLLをコピー。無ければスキップ）。
+            // 存在するVC++ランタイムDLLを同梱します。
+            // 同梱候補のVC++ Runtime名
             for (const auto crtLibrary : RuntimeCrtLibraries)
             {
+                // 同梱候補のVC++ DLLパス
                 const auto crtSource =
                     runtimeDirectory / crtLibrary;
                 if (std::filesystem::is_regular_file(
@@ -1837,9 +2010,8 @@ namespace LamaPon
                     stagingDirectory
                         / gameModule.filename());
 
-                // Game Moduleが参照するプロジェクト固有のDLLを実行ファイルの
-                // 隣へコピーし、Windowsローダーが同じ場所から解決できる
-                // ようにします。
+                // Game Moduleと同じディレクトリのDLLを、既存の配布ファイルを上書きせずに同梱します。
+                // 走査するDLL・資産・出力ファイル
                 for (const auto& entry :
                     std::filesystem::directory_iterator(
                         gameModule.parent_path()))
@@ -1848,7 +2020,9 @@ namespace LamaPon
                     {
                         continue;
                     }
+                    // 小文字化するファイル拡張子
                     auto extension = entry.path().extension().wstring();
+                    // 拡張子を小文字へ揃えます(value: 変換する文字)。
                     std::transform(
                         extension.begin(),
                         extension.end(),
@@ -1863,6 +2037,7 @@ namespace LamaPon
                         continue;
                     }
 
+                    // 同梱ファイルの配置先
                     const auto destination =
                         stagingDirectory / entry.path().filename();
                     if (!std::filesystem::exists(destination))
@@ -1874,11 +2049,11 @@ namespace LamaPon
                 }
             }
 
-            // パッケージが宣言したネイティブDLLも実行ファイルの隣へ
-            // 置きます（assets/packages/<名前>/ のままでは、Windows
-            // ローダーが見つけられません）。
+            // 宣言されたnative DLLを実行ファイルの隣へ配置し、同名の既存ファイルは拒否します。
+            // パッケージが宣言したDLL
             for (const auto& runtimeFile : packageRuntimeFiles)
             {
+                // 同梱ファイルの配置先
                 const auto destination =
                     stagingDirectory / runtimeFile.fileName;
                 if (std::filesystem::exists(destination))
@@ -1895,17 +2070,18 @@ namespace LamaPon
                     runtimeFile.source,
                     destination);
             }
-            // HLSLソースを外す設定なら、アーカイブから除きます。
-            // .hlsliも同じ（#include専用なので単体では使えませんが、
-            // 中身は読めてしまうため）。
+
+            // アーカイブから除外する拡張子
             const std::vector<std::wstring> skippedExtensions =
                 options.projectSettings.stripShaderSourceOnExport
                     ? std::vector<std::wstring>{
                         L".hlsl",
                         L".hlsli" }
                     : std::vector<std::wstring>{};
+            // GUIDと現在の資産パスの対応表
             const auto assetGuidPaths =
                 ReadAssetGuidPaths(assetDirectory);
+            // GUID解決を反映したアーカイブの生成結果(relativePath: 対象資産の相対パス, contents: packする内容の更新先)。
             const auto packResult = PackAssets(
                 assetDirectory,
                 stagingDirectory / L"assets.tpak",
@@ -1920,11 +2096,12 @@ namespace LamaPon
                         contents,
                         assetGuidPaths);
                 });
-            // アーカイブ内のファイル名索引は暗号化されたままにし、
-            // 配布内容の一覧はエディターのログで確認できるようにします。
+            // アーカイブ内のファイル名索引は暗号化されたままにし、配布内容の一覧はエディターのログで確認できるようにします。
+            // 同梱資産の一覧通知文
             std::string assetInventory =
                 "Exported asset inventory ("
                 + std::to_string(packResult.fileCount) + " files):";
+            // 同梱または除外した相対パス
             for (const auto& path : packResult.includedFiles)
             {
                 assetInventory += "\n  + " + PathToUtf8(path);
@@ -1932,8 +2109,10 @@ namespace LamaPon
             Logger::Instance().Info(std::move(assetInventory));
             if (!packResult.excludedFiles.empty())
             {
+                // 除外資産の一覧通知文
                 std::string excludedInventory =
                     "Excluded development files from asset export:";
+                // 同梱または除外した相対パス
                 for (const auto& path : packResult.excludedFiles)
                 {
                     excludedInventory += "\n  - " + PathToUtf8(path);
@@ -1941,31 +2120,27 @@ namespace LamaPon
                 Logger::Instance().Warning(std::move(excludedInventory));
             }
 
-            // シェーダーを事前にコンパイルして同梱し、プレイヤーの
-            // 初回起動時に発生するコンパイル待ちを避けます。
-            //
-            // 入口は総当たりです。VSOutlineのような「あれば使う」枠は
-            // 持っていないシェーダーのほうが多く、その失敗も覚えないと
-            // 実行時に毎回試し直されてしまいます。
-            // AssetManagerはWIC／D2Dのファクトリーを作るのでCOMが要ります。
-            // エディターからの書き出しでは既に初期化済みですが、
-            // 書き出しをテストや別プロセスから呼ぶこともあるので、
-            // ここで面倒を見ます（既に初期化済みなら何もしません）。
+
+            // AssetManagerのWICとD2Dに必要なCOMを初期化し、成功した呼び出しにだけ終了処理を対応させます。
+            // この処理のCOM初期化結果
             const HRESULT comResult = CoInitializeEx(
                 nullptr,
                 COINIT_APARTMENTTHREADED);
+            // 対応するCOM終了処理が必要か
             const bool comInitialized = SUCCEEDED(comResult);
+            // 暗号化するシェーダーcacheパス
             const auto cacheDirectory =
                 stagingDirectory / L"shader-cache";
             try
             {
+                // 元資産を変更しない読込管理
                 AssetManager exportAssets{ nullptr, nullptr };
-                // export検証はプロジェクトを変更しません。既存.metaだけを
-                // 読み、無いassetの一時GUIDはこのAssetDatabase内に限定します。
+                // metaを生成せず、欠落資産の一時GUIDはこの資産管理内だけで使います。
                 exportAssets.SetAssetRoot(
                     assetDirectory,
                     false);
 
+                // ソース同梱時は警告し、ソース除外時は例外で止めます(message: コンパイル失敗の説明)。
                 const auto reportShaderPrecompileFailure =
                     [&](std::string message)
                     {
@@ -1980,21 +2155,20 @@ namespace LamaPon
                         Logger::Instance().Warning(message);
                     };
 
-                // shader_featureのストリップ用に、プロジェクトの
-                // どこかで実際に立てられているキーワードを集めます。
-                // シーンやPrefabのJSONへ"shaderKeywords"として
-                // 保存されているものが対象です。
-                //
-                // シェーダーごとに紐付けず、プロジェクト全体の和を
-                // 取っているのは安全側だからです。別のシェーダーの
-                // キーワードが紛れても「余分に焼く」だけで済み、
-                // 必要なものを落とすことはありません。
+
+                // 全資産の使用キーワードの和
                 std::vector<std::string> usedKeywords;
+                // 直接HLSL参照の必要用途
                 DirectShaderRequirements directShaderRequirements;
+                // manifest参照の必要用途
                 ManifestShaderRequirements manifestShaderRequirements;
+                // 材質資産参照の必要用途
                 MaterialAssetRequirements materialAssetRequirements;
+                // モデル形状別の要件cache
                 ModelRendererRequirementCache modelRequirementCache;
+                // 不正な資産参照の診断一覧
                 std::vector<std::string> invalidShaderReferences;
+                // 走査するDLL・資産・出力ファイル
                 for (const auto& entry :
                     std::filesystem::recursive_directory_iterator(
                         assetDirectory))
@@ -2008,6 +2182,7 @@ namespace LamaPon
                     }
                     try
                     {
+                        // キーワードと要件を読むJSON入力
                         std::ifstream input(
                             entry.path(),
                             std::ios::binary);
@@ -2015,11 +2190,14 @@ namespace LamaPon
                         {
                             continue;
                         }
+                        // 要件を収集するJSON文書
                         nlohmann::json document;
+                        // 要件を収集するJSON文書
                         input >> document;
                         CollectShaderKeywords(
                             document,
                             usedKeywords);
+                        // 今回追加する参照診断の先頭
                         const auto invalidBegin =
                             invalidShaderReferences.size();
                         CollectShaderRequirements(
@@ -2031,6 +2209,7 @@ namespace LamaPon
                             manifestShaderRequirements,
                             materialAssetRequirements,
                             invalidShaderReferences);
+                        // 参照診断または互換性理由の添字
                         for (auto index = invalidBegin;
                             index < invalidShaderReferences.size();
                             ++index)
@@ -2042,8 +2221,7 @@ namespace LamaPon
                     }
                     catch (const std::exception&)
                     {
-                        // 読めないJSONは飛ばします。ここで失敗しても
-                        // 「絞れない＝全部焼く」になるだけです。
+                        // 読めないJSONは要件収集から除外します。
                     }
                 }
                 std::sort(
@@ -2055,23 +2233,27 @@ namespace LamaPon
                         usedKeywords.end()),
                     usedKeywords.end());
 
-                // componentのMaterial Asset参照をshader参照まで辿ります。
-                // 実行時と同じくGUIDをfallback pathより優先するため、assetを
-                // 移動してscene/materialが未保存でも正しいHLSLを検証できます。
+                // 実行時と同じくGUIDを元パスより優先し、材質資産から必要なシェーダーへ辿ります。
+                // 材質資産の参照キーと必要な用途マスク
                 for (const auto& [materialKey, required] :
                     materialAssetRequirements)
                 {
+                    // 参照する材質資産の相対パス
                     const auto materialRelative =
                         PathFromUtf8(materialKey);
+                    // 読込対象の材質資産パス
                     const auto materialPath =
                         exportAssets.ResolvePath(materialRelative);
+                    // 材質資産読込の失敗理由
                     std::string materialError;
                     try
                     {
+                        // 読込済みの材質設定
                         const auto material = LoadLitMaterialAsset(
                             materialPath,
                             &exportAssets.Database(),
                             &exportAssets);
+                        // 今回追加する参照診断の先頭
                         const auto invalidBegin =
                             invalidShaderReferences.size();
                         AddShaderPathRequirement(
@@ -2081,6 +2263,7 @@ namespace LamaPon
                             directShaderRequirements,
                             manifestShaderRequirements,
                             invalidShaderReferences);
+                        // 参照診断または互換性理由の添字
                         for (auto index = invalidBegin;
                             index < invalidShaderReferences.size();
                             ++index)
@@ -2090,6 +2273,7 @@ namespace LamaPon
                                 + invalidShaderReferences[index];
                         }
                     }
+                    // 準備失敗の理由を診断へ渡します(exception: 準備の失敗理由)。
                     catch (const std::exception& exception)
                     {
                         materialError = exception.what();
@@ -2103,6 +2287,7 @@ namespace LamaPon
                     }
                 }
 
+                // 不正な参照の診断文
                 for (const auto& reference :
                     invalidShaderReferences)
                 {
@@ -2113,7 +2298,9 @@ namespace LamaPon
                         + reference);
                 }
 
+                // コンパイル対象のHLSL数
                 std::uint32_t shaderFiles{};
+                // 走査するDLL・資産・出力ファイル
                 for (const auto& entry :
                     std::filesystem::recursive_directory_iterator(
                         assetDirectory))
@@ -2126,8 +2313,10 @@ namespace LamaPon
                     {
                         continue;
                     }
+                    // 小文字化するファイル拡張子
                     auto extension =
                         entry.path().extension().wstring();
+                    // 拡張子を小文字へ揃えます(value: 変換する文字)。
                     std::transform(
                         extension.begin(),
                         extension.end(),
@@ -2142,10 +2331,7 @@ namespace LamaPon
                     {
                         continue;
                     }
-                    // ソースを外すときは全バリアントを焼きます。
-                    // ストリップと同時にやると、取りこぼした
-                    // 組み合わせを実行時に作り直せず（ソースが
-                    // 無いので）標準Litへ落ちてしまいます。
+                    // ソースを除く配布では実行時に再生成できないため、キーワードで絞らず全バリアントを作成します。
                     static_cast<void>(PrecompileShader(
                         exportAssets,
                         entry.path(),
@@ -2156,15 +2342,15 @@ namespace LamaPon
                             ? nullptr
                             : &usedKeywords));
 
-                    // 総当たりには「入口が無い」という正常な失敗も混ざる
-                    // ため、その戻り値だけでは必須entryの成否が分かりません。
-                    // 永続化された用途と、ソースに実際に宣言された従来entryを
-                    // 個別に再検証し、sourceを外した後のlookup missを防ぎます。
+                    // 通常の総当たり結果とは別に、参照用途とソースの宣言から必要な入口の成功を検証します。
+                    // 用途と宣言から必要な入口一覧
                     std::vector<ShaderEntryPoint> requiredEntries;
+                    // 重複しない必須入口を追加します(entryPoint: 入口名, target: シェーダーのtarget名)。
                     const auto addRequiredEntry =
                         [&](const char* const entryPoint,
                             const char* const target)
                         {
+                            // 登録済みの同じ入口を検索します(candidate: 比較する登録済み入口)。
                             const auto duplicate = std::find_if(
                                 requiredEntries.begin(),
                                 requiredEntries.end(),
@@ -2184,11 +2370,14 @@ namespace LamaPon
                             }
                         };
 
+                    // コンパイルするHLSLの相対パス
                     const auto relativePath =
                         entry.path().lexically_relative(assetDirectory);
+                    // 保存された用途要件の検索結果
                     const auto referenced =
                         directShaderRequirements.find(
                             ShaderReferenceKey(relativePath));
+                    // 参照元が必要とする入口種別
                     std::uint8_t referencedRequirements{};
                     if (referenced != directShaderRequirements.end())
                     {
@@ -2227,8 +2416,10 @@ namespace LamaPon
 
                     try
                     {
+                        // 入口を検査するHLSLのバイト列
                         const auto source =
                             exportAssets.ReadFileBytes(entry.path());
+                        // HLSLで宣言された入口種別
                         const auto declared = ParseShaderEntryPoints(
                             std::string_view{
                                 reinterpret_cast<const char*>(
@@ -2271,6 +2462,7 @@ namespace LamaPon
                             addRequiredEntry("CSMain", "cs_5_0");
                         }
                     }
+                    // 準備失敗の理由を診断へ渡します(exception: 準備の失敗理由)。
                     catch (const std::exception& exception)
                     {
                         if (!requiredEntries.empty())
@@ -2283,9 +2475,12 @@ namespace LamaPon
                         }
                     }
 
+                    // 用途と宣言から必要な入口
                     for (const auto& required : requiredEntries)
                     {
+                        // 必須入口コンパイルの失敗理由
                         std::string compileError;
+                        // コンパイルできたバリアント数
                         const auto compiled = PrecompileShaderVariants(
                             exportAssets,
                             entry.path(),
@@ -2315,6 +2510,7 @@ namespace LamaPon
                     ++shaderFiles;
                 }
 
+                // 未発見のHLSL参照キーと必要な用途マスク
                 for (const auto& [missingShader, required] :
                     directShaderRequirements)
                 {
@@ -2324,15 +2520,14 @@ namespace LamaPon
                         + missingShader);
                 }
 
-                // Manifestの入口名はKnownShaderEntryPointsには含まれない
-                // ため、宣言されたsource/pass/stageを追加で焼きます。
-                // Materialは全pass、ScreenEffectは実行対象の先頭pass、
-                // Computeは最初の必須compute passが対象です。
-                // Manifest自体はJSONなので、HLSLを除外した配布物にも
-                // 残り、実行時は同じsource/entry/targetで索引を引けます。
+
+                // 必須stageを作成済みの画面効果数
                 std::uint32_t screenEffectManifests{};
+                // 必須stageを作成済みの材質数
                 std::uint32_t materialManifests{};
+                // 必須stageを作成済みのcompute数
                 std::uint32_t computeManifests{};
+                // 走査するDLL・資産・出力ファイル
                 for (const auto& entry :
                     std::filesystem::recursive_directory_iterator(
                         assetDirectory))
@@ -2343,11 +2538,14 @@ namespace LamaPon
                     {
                         continue;
                     }
+                    // 検証するmanifestの相対パス
                     const auto manifestRelative =
                         entry.path().lexically_relative(assetDirectory);
+                    // 保存された用途要件の検索結果
                     const auto referenced =
                         manifestShaderRequirements.find(
                             ShaderReferenceKey(manifestRelative));
+                    // 参照元が必要とする用途マスク
                     std::uint8_t manifestRequirements{};
                     if (referenced != manifestShaderRequirements.end())
                     {
@@ -2355,7 +2553,9 @@ namespace LamaPon
                         manifestShaderRequirements.erase(referenced);
                     }
 
+                    // 読込済みシェーダーmanifest
                     ShaderAssetDesc manifest;
+                    // manifest読込の失敗理由
                     std::string manifestError;
                     if (!LoadShaderAssetDesc(
                             exportAssets,
@@ -2363,10 +2563,7 @@ namespace LamaPon
                             manifest,
                             manifestError))
                     {
-                        // 壊れたManifestを黙って無視すると、配布物で初めて
-                        // 原因が分かります。source同梱時はファイル名と検証
-                        // 理由を警告し、source-strip時は実行時fallbackが
-                        // 無いため書き出しを止めます。
+                        // 不正なmanifestはソース同梱時は警告し、ソースを除く場合は書き出しを中止します。
                         reportShaderPrecompileFailure(
                             "Shader manifest was not precompiled for "
                             "export: "
@@ -2375,9 +2572,11 @@ namespace LamaPon
                         continue;
                     }
 
+                    // 指定用途のpassがあるか判定します(role: 調べるpassの用途)。
                     const auto hasRole =
                         [&manifest](const ShaderPassRole role)
                         {
+                            // 指定用途に合うpassを検索します(pass: 比較するpass)。
                             return std::ranges::any_of(
                                 manifest.passes,
                                 [role](const ShaderPassDesc& pass)
@@ -2385,6 +2584,7 @@ namespace LamaPon
                                     return pass.role == role;
                                 });
                         };
+                    // 参照元とmanifestの用途不一致
                     std::vector<std::string> compatibilityErrors;
                     if ((manifestRequirements
                             & ManifestShaderScreenEffect) != 0
@@ -2403,6 +2603,7 @@ namespace LamaPon
                             "referenced by ComputeEffect but does not "
                             "declare type 'compute'");
                     }
+                    // 参照元の通常・スキニング用途
                     const auto materialRequirements =
                         static_cast<std::uint8_t>(
                             manifestRequirements
@@ -2437,10 +2638,12 @@ namespace LamaPon
                     }
                     if (!compatibilityErrors.empty())
                     {
+                        // 用途またはstageの失敗通知文
                         std::string diagnostic =
                             "Shader manifest is incompatible with its "
                             "consumer: " + PathToUtf8(manifestRelative)
                             + " (";
+                        // 参照診断または互換性理由の添字
                         for (std::size_t index = 0;
                             index < compatibilityErrors.size();
                             ++index)
@@ -2456,6 +2659,7 @@ namespace LamaPon
                             std::move(diagnostic));
                     }
 
+                    // manifestが示すHLSLの読込パス
                     const auto sourcePath =
                         exportAssets.ResolvePath(manifest.source);
                     if (!exportAssets.FileExists(sourcePath))
@@ -2469,10 +2673,13 @@ namespace LamaPon
                         continue;
                     }
 
+                    // 材質は全pass、画面効果は先頭pass、computeは最初の必須compute stageを含むpassを使います。
+                    // 用途に応じてコンパイルするpass
                     std::vector<const ShaderPassDesc*> passesToCompile;
                     if (manifest.type == ShaderAssetType::Material)
                     {
                         passesToCompile.reserve(manifest.passes.size());
+                        // コンパイル候補または対象のpass
                         for (const auto& pass : manifest.passes)
                         {
                             passesToCompile.push_back(&pass);
@@ -2486,8 +2693,10 @@ namespace LamaPon
                     }
                     else
                     {
+                        // 必須computeを探す候補pass
                         for (const auto& candidate : manifest.passes)
                         {
+                            // 候補passのcompute stage
                             const auto* compute = FindShaderStage(
                                 candidate,
                                 ShaderStage::Compute);
@@ -2497,8 +2706,7 @@ namespace LamaPon
                                 break;
                             }
                         }
-                        // LoadShaderAssetDescで検証済みですが、将来の
-                        // schema変更でも空参照にならないよう守ります。
+                        // 必須compute stageを持つpassが無ければコンパイルせず診断します。
                         if (passesToCompile.empty())
                         {
                             reportShaderPrecompileFailure(
@@ -2510,16 +2718,22 @@ namespace LamaPon
                         }
                     }
 
+                    // 全必須stageが作成できたか
                     bool requiredStagesCompiled = true;
+                    // コンパイル候補または対象のpass
                     for (const auto* const pass : passesToCompile)
                     {
+                        // コンパイルするstageの宣言
                         for (const auto& stage : pass->stages)
                         {
+                            // manifestの入口名とtarget
                             const ShaderEntryPoint manifestEntry{
                                 stage.entryPoint.c_str(),
                                 stage.target.c_str()
                             };
+                            // stageコンパイルの失敗理由
                             std::string stageCompileError;
+                            // 作成できたstageバリアント数
                             const auto compiledVariants =
                                 manifest.type
                                     == ShaderAssetType::Material
@@ -2550,6 +2764,7 @@ namespace LamaPon
                                     || !stageCompileError.empty()))
                             {
                                 requiredStagesCompiled = false;
+                                // 用途またはstageの失敗通知文
                                 std::string diagnostic =
                                     "Required shader stage was not "
                                     "precompiled for "
@@ -2593,6 +2808,7 @@ namespace LamaPon
                         }
                     }
                 }
+                // 未発見のmanifest参照キーと必要な用途マスク
                 for (const auto& [missingManifest, required] :
                     manifestShaderRequirements)
                 {
@@ -2601,11 +2817,10 @@ namespace LamaPon
                         "A referenced shader manifest does not exist: "
                         + missingManifest);
                 }
-                // ソースが無いときの引き先になる索引。
+                // ソース無しで入口を解決する索引を保存します。
                 WriteShaderCacheIndex(cacheDirectory);
-                // 事前コンパイル済みのDXBCと索引を暗号化します。
-                // アーカイブの外に置くファイルなので、ここで
-                // 個別に包みます（実行時は中身を見て復号します）。
+
+                // 暗号化して検証済みのcache数
                 const auto sealedShaderFiles =
                     SealFilesInDirectory(
                         cacheDirectory,
@@ -2630,25 +2845,25 @@ namespace LamaPon
                           " the package."
                         : ""));
             }
+            // キャッシュ準備の失敗を処理します(exception: 準備の失敗理由)。
             catch (const std::exception& exception)
             {
-                // Write前に抜けた場合の保留索引も、この出力先だけ
-                // 排出して破棄します。Seal途中なら暗号化済み／平文が
-                // 混ざり得るため、どちらの場合もcache全体を残しません。
+                // この出力先の保留索引を排出し、暗号化済みと平文が混ざり得るキャッシュ全体を削除します。
                 try
                 {
                     WriteShaderCacheIndex(cacheDirectory);
                 }
                 catch (...)
                 {
-                    // 直後にdirectoryごと破棄するので、索引書込み失敗は
-                    // 元の診断を置き換えません。
+                    // 直後にdirectoryごと破棄するので、索引書込み失敗は元の診断を置き換えません。
                 }
+                // 未完成物や退避物の削除失敗
                 std::error_code cleanupError;
                 std::filesystem::remove_all(
                     cacheDirectory,
                     cleanupError);
 
+                // 検証失敗の通知文
                 const std::string message =
                     (options.projectSettings
                             .stripShaderSourceOnExport
@@ -2685,6 +2900,7 @@ namespace LamaPon
                 CoUninitialize();
             }
 
+            // 配布用設定JSONの保存パス
             const auto settingsPath =
                 stagingDirectory / L"LamaPonGame.json";
             SaveProjectSettings(
@@ -2693,6 +2909,7 @@ namespace LamaPon
                 ProjectSettingsFileType::GamePackage);
             Logger::Instance().Info(
                 InspectExportFiles(stagingDirectory));
+            // 署名するエンジン所有バイナリ
             std::vector<std::filesystem::path> ownedBinaries{
                 stagingDirectory / exportedExecutableName,
                 stagingDirectory / runtimeLibrary.filename()
@@ -2702,12 +2919,12 @@ namespace LamaPon
                 ownedBinaries.push_back(
                     stagingDirectory / gameModule.filename());
             }
-            // 鍵とアイコンを書き換え、他のファイルの配置が終わってから
-            // 署名する。検証失敗時は既存の配布先を置き換えない。
+            // 鍵とアイコンの変更・配置後に署名を検証し、成功するまで既存の配布先を置き換えません。
             SignExportedBinaries(options.signing, ownedBinaries);
         }
         catch (...)
         {
+            // 未完成物や退避物の削除失敗
             std::error_code cleanupError;
             std::filesystem::remove_all(
                 stagingDirectory,
@@ -2715,16 +2932,19 @@ namespace LamaPon
             throw;
         }
 
+        // 既存の配布フォルダーがあるか
         const bool hadPreviousExport =
             std::filesystem::exists(outputDirectory);
         if (hadPreviousExport)
         {
+            // 配布先の退避または公開の失敗
             std::error_code renameError;
             if (!RenameWithRetry(
                     outputDirectory,
                     backupDirectory,
                     renameError))
             {
+                // 未完成物や退避物の削除失敗
                 std::error_code cleanupError;
                 std::filesystem::remove_all(
                     stagingDirectory,
@@ -2737,12 +2957,14 @@ namespace LamaPon
             }
         }
 
+        // 配布先の退避または公開の失敗
         std::error_code renameError;
         if (!RenameWithRetry(
                 stagingDirectory,
                 outputDirectory,
                 renameError))
         {
+            // 未完成物や退避物の削除失敗
             std::error_code cleanupError;
             std::filesystem::remove_all(
                 stagingDirectory,
@@ -2764,16 +2986,19 @@ namespace LamaPon
 
         if (hadPreviousExport)
         {
+            // 未完成物や退避物の削除失敗
             std::error_code cleanupError;
             std::filesystem::remove_all(
                 backupDirectory,
                 cleanupError);
         }
 
+        // 完成した配布物の情報
         GameExportResult result;
         result.outputDirectory = outputDirectory;
         result.executablePath =
             outputDirectory / exportedExecutableName;
+        // 走査するDLL・資産・出力ファイル
         for (const auto& entry :
             std::filesystem::recursive_directory_iterator(
                 outputDirectory))
@@ -2788,6 +3013,7 @@ namespace LamaPon
         // 配布用ZIPは完成した出力フォルダーの隣へ作成します。
         if (options.createZipArchive)
         {
+            // 完成した配布物のZIPパス
             const auto zipPath =
                 outputDirectory.parent_path()
                 / (outputDirectory.filename().wstring()

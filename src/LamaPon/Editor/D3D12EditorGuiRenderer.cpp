@@ -27,6 +27,7 @@ namespace LamaPon
             throw std::logic_error(
                 "The DirectX 12 editor GUI renderer is already initialized.");
         }
+        // 初期化する現在のImGui context
         auto* const imguiContext = ImGui::GetCurrentContext();
         if (imguiContext == nullptr)
         {
@@ -35,7 +36,9 @@ namespace LamaPon
                 "context.");
         }
 
+        // 描画装置の再初期化を防ぐ使用権
         auto resourceLease = graphics.AcquireResourceLease();
+        // 初期化済みD3D12 backendの借用
         auto* const backend =
             Detail::GraphicsDeviceD3D12Access::Backend(graphics);
         if (backend == nullptr
@@ -54,6 +57,7 @@ namespace LamaPon
         m_imguiContext = imguiContext;
         try
         {
+            // ImGui backendの初期化設定
             ImGui_ImplDX12_InitInfo info{};
             info.Device = backend->Device();
             info.CommandQueue = backend->CommandQueue();
@@ -96,6 +100,7 @@ namespace LamaPon
         const TextureAsset& texture)
     {
         RequireCurrentContext();
+        // textureのGPU資源の所有参照
         const auto resources = texture.resources.Acquire();
         if (resources == nullptr)
         {
@@ -116,6 +121,7 @@ namespace LamaPon
     ImTextureRef D3D12EditorGuiRenderer::TextureReference(
         const GraphicsViewHandle& view)
     {
+        // 現世代のSRV descriptorの参照
         const auto binding = m_backend->TryResolveShaderResource(view);
         if (!binding.has_value())
         {
@@ -138,7 +144,9 @@ namespace LamaPon
             throw std::invalid_argument(
                 "Dear ImGui draw data must not be null.");
         }
+        // GUI命令を記録するcommand list
         auto* const commands = m_backend->BeginFrameCommands();
+        // GUI texture用descriptor heap
         auto* const heap = m_backend->ShaderResourceDescriptorHeap();
         if (commands == nullptr || heap == nullptr)
         {
@@ -161,6 +169,7 @@ namespace LamaPon
             throw std::invalid_argument(
                 "Dear ImGui requested an invalid DirectX 12 descriptor.");
         }
+        // descriptorを管理する描画処理
         auto& renderer = *static_cast<D3D12EditorGuiRenderer*>(
             info->UserData);
         if (renderer.m_backend == nullptr)
@@ -168,6 +177,7 @@ namespace LamaPon
             throw std::logic_error(
                 "The DirectX 12 editor GUI backend is unavailable.");
         }
+        // 新しく所有するdescriptor割当
         const auto allocation =
             renderer.m_backend->AllocateExternalShaderResourceDescriptor();
         try
@@ -195,8 +205,10 @@ namespace LamaPon
         {
             return;
         }
+        // descriptorを管理する描画処理
         auto& renderer = *static_cast<D3D12EditorGuiRenderer*>(
             info->UserData);
+        // 解放するdescriptorの所有記録
         const auto found = renderer.m_ownedDescriptorSlots.find(cpu.ptr);
         if (found == renderer.m_ownedDescriptorSlots.end())
         {
@@ -230,6 +242,7 @@ namespace LamaPon
     {
         if (m_backend != nullptr)
         {
+            // cpu: 所有SRVのCPU参照、slot: 解放するdescriptor番号
             for (const auto& [cpu, slot] : m_ownedDescriptorSlots)
             {
                 static_cast<void>(cpu);
@@ -243,6 +256,7 @@ namespace LamaPon
     {
         if (m_initialized)
         {
+            // 終了処理後に戻すImGui context
             auto* const previousContext = ImGui::GetCurrentContext();
             if (previousContext != m_imguiContext)
             {
@@ -260,6 +274,7 @@ namespace LamaPon
         m_backend = nullptr;
         m_imguiContext = nullptr;
         m_initialized = false;
+        // ImGui資源と自分のdescriptorを解放してから描画装置の使用権を返す。
         m_graphicsResourceLease.Reset();
     }
 }

@@ -12,6 +12,7 @@ namespace LamaPon
         {
         case GraphicsQualityPreset::Low:
         {
+            // プリセットから生成する描画設定
             GraphicsSettings settings{
                 preset,
                 0.65f,
@@ -25,7 +26,7 @@ namespace LamaPon
                 2,
                 1
             };
-            // 低スペック向けはVRAM節約を優先します。
+
             settings.runtimeTextureCompression = true;
             settings.ambientOcclusionSampleCount = 8;
             settings.depthOfFieldSampleCount = 10;
@@ -35,6 +36,7 @@ namespace LamaPon
         }
         case GraphicsQualityPreset::Medium:
         {
+            // プリセットから生成する描画設定
             GraphicsSettings settings{
                 preset,
                 0.85f,
@@ -57,6 +59,7 @@ namespace LamaPon
         }
         case GraphicsQualityPreset::Ultra:
         {
+            // プリセットから生成する描画設定
             GraphicsSettings settings{
                 preset,
                 1.0f,
@@ -85,6 +88,7 @@ namespace LamaPon
         case GraphicsQualityPreset::High:
         default:
         {
+            // プリセットから生成する描画設定
             GraphicsSettings settings{
                 preset == GraphicsQualityPreset::Custom
                     ? GraphicsQualityPreset::Custom
@@ -114,9 +118,7 @@ namespace LamaPon
     GraphicsSettings ClampGraphicsSettings(
         GraphicsSettings settings) noexcept
     {
-        // 1.0を超える値は高解像度で描いて縮小するスーパーサンプリング
-        // （SSAA）です。ギザギザには一番よく効きますが、ピクセル数が
-        // 倍率の2乗で増えるため重くなります（2.0なら4倍）。
+        // 倍率が1を超えると高解像度描画後に縮小する。
         settings.renderScale = std::clamp(
             settings.renderScale,
             0.5f,
@@ -160,8 +162,7 @@ namespace LamaPon
                 15u,
                 1000u);
         }
-        // 範囲外の値（古い保存データやC++からの直接代入）で
-        // ライティングが無効になるより、既定へ倒します。
+        // 不明な方式は既定のForwardPlusへ戻す。
         if (settings.renderingPath != RenderingPath::Forward
             && settings.renderingPath
                 != RenderingPath::ForwardPlus)
@@ -264,8 +265,7 @@ namespace LamaPon
         {
             return RenderingPath::Forward;
         }
-        // プリセット名と違って投げません。読めない名前で起動ごと
-        // 落とすより、既定へ倒して絵を出す方が親切なためです。
+        // 不明な描画方式はForwardPlusとして扱う。
         return RenderingPath::ForwardPlus;
     }
 }

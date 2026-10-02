@@ -11,8 +11,11 @@ namespace
 {
     using namespace LamaPon::Web;
 
+    // 初期化失敗を画面とコンソールへ表示する(message: UTF-8の説明)。
     EM_JS(void, ReportWebApplicationError, (const char* message), {
+        // 表示するエラー文字列
         const text = UTF8ToString(message);
+        // エラーを表示するDOM要素
         const help = document.querySelector("#help");
         if (help) {
             help.textContent = text;
@@ -25,6 +28,7 @@ namespace
         console.error("LamaPon Web: " + text);
     });
 
+    // 状態と計測値をDOMへ公開する(name: ゲーム名, status: 実行状態, currentMilliseconds: 今回の処理ms, maximumMilliseconds: 最大処理ms, fixedDeltaTime: 固定更新秒数, frameIndex: フレーム番号)。
     EM_JS(void, PublishWebApplicationState,
           (const char* name, const char* status, float currentMilliseconds,
            float maximumMilliseconds, float fixedDeltaTime,
@@ -42,22 +46,35 @@ namespace
 
     struct ApplicationLoop final
     {
+        // ループ中に借用するWebゲーム
         IWebApplication& application;
+        // 借用するWebサービス
         WebRuntime& runtime;
+        // 起動時の更新・Canvas設定
         WebApplicationConfig config;
+        // ループ開始の実時刻（秒）
         double startSeconds{};
+        // 前フレームの実時刻（秒）
         double lastFrameSeconds{};
+        // 固定更新に未消費の秒数
         float fixedAccumulator{};
+        // 起動30フレーム後の最大処理ms
         float maximumTickMilliseconds{};
+        // 計測済みのフレーム数
         std::uint32_t measuredTickCount{};
+        // 次のフレーム番号
         std::uint64_t frameIndex{};
 
+        // 入力・固定更新・フレーム更新の順に処理し、計測値を公開する。
         void Tick()
         {
+            // フレーム処理開始時刻（ms）
             const double tickStartedMilliseconds = emscripten_get_now();
             runtime.Input().BeginFrame();
 
+            // 現在の実時刻（秒）
             const double nowSeconds = tickStartedMilliseconds * 0.001;
+            // 上限適用後の経過秒数
             const float frameDelta = std::clamp(
                 static_cast<float>(nowSeconds - lastFrameSeconds),
                 0.0f,
@@ -67,6 +84,7 @@ namespace
                 config.maximumFrameDeltaTime,
                 fixedAccumulator + frameDelta);
 
+            // 固定更新前のフレーム情報
             const WebFrame beginFrame{
                 frameDelta,
                 config.fixedDeltaTime > 0.0f
@@ -77,6 +95,7 @@ namespace
             };
             application.BeginFrame(runtime, beginFrame);
 
+            // 今回実行した固定更新数
             std::uint32_t fixedSteps{};
             while (fixedAccumulator >= config.fixedDeltaTime
                    && fixedSteps < config.maximumCatchUpSteps)
@@ -85,6 +104,7 @@ namespace
                 fixedAccumulator -= config.fixedDeltaTime;
                 ++fixedSteps;
             }
+            // 固定更新の上限に達したら過去の未処理ステップを捨て、余剰時間だけ残す。
             if (fixedSteps == config.maximumCatchUpSteps
                 && fixedAccumulator >= config.fixedDeltaTime)
             {
@@ -105,6 +125,7 @@ namespace
                 });
             runtime.Input().EndFrame();
 
+            // 今回のフレーム処理時間（ms）
             const float tickMilliseconds = static_cast<float>(
                 emscripten_get_now() - tickStartedMilliseconds);
             ++measuredTickCount;
@@ -124,12 +145,14 @@ namespace
             ++frameIndex;
         }
 
+        // 登録したゲームループを進める(userData: 借用するループ状態)。
         static void Callback(void* userData)
         {
             static_cast<ApplicationLoop*>(userData)->Tick();
         }
     };
 
+    // メインループの状態所有者
     std::unique_ptr<ApplicationLoop> ActiveLoop;
 }
 
@@ -139,6 +162,7 @@ namespace LamaPon::Web
         IWebApplication& application,
         WebRuntime& runtime)
     {
+        // ゲームの起動設定
         const WebApplicationConfig config = application.Configuration();
         if (config.name == nullptr || config.name[0] == '\0'
             || config.canvasSelector == nullptr
@@ -163,6 +187,7 @@ namespace LamaPon::Web
             return 1;
         }
 
+        // 現在の実時刻（秒）
         const double nowSeconds = emscripten_get_now() * 0.001;
         ActiveLoop = std::make_unique<ApplicationLoop>(ApplicationLoop{
             application,

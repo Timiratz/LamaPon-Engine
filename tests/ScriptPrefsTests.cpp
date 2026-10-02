@@ -1,6 +1,3 @@
-// C++ ScriptからPlayerPrefsを利用できることを確認します。
-// 保存した値を別インスタンスから読み込めることと、Applicationがない
-// CLIやテスト環境でも安全に既定値を返すことを検証します。
 #include "LamaPon/Core/PlayerPrefs.h"
 #include "LamaPon/Scripting/Script.h"
 
@@ -12,17 +9,20 @@
 
 namespace
 {
+    // 条件不成立ならテストを失敗させます。
+    // Require(condition: 成立条件, message: 失敗理由)
     void Require(
         const bool condition,
         const char* message)
     {
+        // assertion失敗を例外で通知
         if (!condition)
         {
             throw std::runtime_error(message);
         }
     }
 
-    // Save/Load系はOwnerを触らないので、アタッチせずに呼べます。
+    // Save/LoadはOwner非依存で未アタッチでも利用可能
     class PrefsProbe final : public LamaPon::Script
     {
     public:
@@ -34,39 +34,52 @@ namespace
         using Script::ResolveCloudConflict;
         using Script::RestorePersistence;
 
+        // 最高得点をPlayerPrefsへ保存します。
+        // SaveBest(value: 保存する最高得点)
         void SaveBest(const std::int64_t value) const
         {
             SaveInteger("bestScore", value);
         }
+        // 保存した最高得点を返します。
+        // Best(fallback: キーがない場合の既定値)
         [[nodiscard]] std::int64_t Best(
             const std::int64_t fallback) const
         {
             return LoadInteger("bestScore", fallback);
         }
+        // 最高得点キーの保存有無を返します。
         [[nodiscard]] bool HasBest() const
         {
             return HasSaved("bestScore");
         }
+        // 最高得点キーを削除します。
         void ForgetBest() const
         {
             DeleteSaved("bestScore");
         }
+        // プレイヤー名をPlayerPrefsへ保存します。
+        // SaveName(value: 保存するプレイヤー名)
         void SaveName(std::string value) const
         {
             SaveText("playerName", std::move(value));
         }
+        // 保存した名前、未保存なら既定名を返します。
         [[nodiscard]] std::string Name() const
         {
             return LoadText("playerName", "ななし");
         }
     };
 
+    // fileへ保存し、別インスタンスでも読めることを確認します。
+    // TestSavesThroughToDisk(file: PlayerPrefs保存先)
     void TestSavesThroughToDisk(
         const std::filesystem::path& file)
     {
+        // テスト対象のPlayerPrefs
         LamaPon::PlayerPrefs prefs(file);
         LamaPon::SetActivePlayerPrefs(&prefs);
 
+        // ScriptのPlayerPrefs APIを呼ぶprobe
         const PrefsProbe probe;
         Require(
             !probe.HasBest(),
@@ -87,8 +100,8 @@ namespace
             probe.Name() == "ゆうしゃ",
             "text must round-trip (UTF-8)");
 
-        // 別インスタンスで読み直して、本当にファイルへ書けたかを見ます
-        // （Save()を忘れているとここで落ちます）。
+        // 別インスタンスでファイル保存結果を確認
+        // 保存し忘れはこの読み直しで検出する
         LamaPon::PlayerPrefs reopened(file);
         reopened.Load();
         Require(
@@ -106,7 +119,7 @@ namespace
         LamaPon::SetActivePlayerPrefs(nullptr);
     }
 
-    // Applicationが無い環境（CLIのrenderなど）でも落ちないこと。
+    // Application不在時もScriptの保存APIが安全に動くことを確認
     void TestWithoutApplicationIsHarmless()
     {
         LamaPon::SetActivePlayerPrefs(nullptr);
@@ -115,8 +128,10 @@ namespace
             LamaPon::ActivePlayerPrefs() == nullptr,
             "there must be no active prefs");
 
+        // 未接続APIを検査するprobe
         const PrefsProbe probe;
-        probe.SaveBest(999);          // 黙って無視されるだけ
+        // 保存要求はactive PlayerPrefsがなければ無視
+        probe.SaveBest(999);
         probe.ForgetBest();
         Require(
             probe.Best(42) == 42,
@@ -149,10 +164,13 @@ namespace
     }
 }
 
+// ScriptのPlayerPrefs保存APIと未接続時の既定値を検証します。
 int main()
 {
+    // テスト例外を失敗終了コードへ変換
     try
     {
+        // テスト用PlayerPrefsファイルの親領域
         const auto root =
             std::filesystem::current_path()
             / "test-output"
@@ -163,6 +181,7 @@ int main()
         TestSavesThroughToDisk(root / "PlayerPrefs.json");
         TestWithoutApplicationIsHarmless();
     }
+    // テスト例外を標準エラーと失敗終了コードへ変換
     catch (const std::exception& error)
     {
         std::cerr

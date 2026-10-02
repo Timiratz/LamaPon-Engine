@@ -1,21 +1,19 @@
-// LamaPonの2Dシェーダーでエラーを表示するための代替シェーダーです。
-// 自作の2DShader（スプライト／UI／パーティクル）がコンパイルできな
-// かったときの代役です。3D側のLamaPonShaderError.hlslと同じ役割で、
-// こちらはピクセルシェーダーだけを差し替えます。
-// マテリアルへ割り当てて使うものではありません。
+// 2D Shaderのコンパイル失敗時に、輪郭を保ってマゼンタで描く内部用の代替PS。
 
+// スプライトの表面画像
 Texture2D SpriteTexture : register(t0);
+// 表面画像の採取設定
 SamplerState SpriteSampler : register(s0);
 
-// 引数の並びはCOLOR0→TEXCOORD0→SV_Position。入力レジスタは宣言順に
-// 割り当てられるので、変えると値が静かにずれます。
+// SpriteBatchの入力順をCOLOR0・TEXCOORD0・SV_Positionに保つ。
+// 画像のAlphaを保ってエラー色を返す(color: 頂点RGBA, uv: 画像UV, position: 互換入力の画面位置)。
 float4 PSMain(
     float4 color : COLOR0,
     float2 uv : TEXCOORD0,
     float4 position : SV_Position) : SV_Target
 {
-    // 元の絵の形は残します。長方形で塗り潰すと、どのスプライトが
-    // 壊れているのかがかえって分かりにくくなるためです。
+
+    // 画像と頂点色を掛けたAlpha
     const float alpha =
         SpriteTexture.Sample(SpriteSampler, uv).a * color.a;
     clip(alpha - 0.01f);

@@ -12,6 +12,7 @@ namespace LamaPon
     }
     void NetworkIdentityComponent::SetSceneKey(std::string key)
     {
+        // 許可ASCII文字か調べます(c: 検査文字)。
         if (key.size() > 64 || !std::ranges::all_of(key, [](const char c)
             { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
                 || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-'; }))
@@ -20,6 +21,7 @@ namespace LamaPon
     }
     bool NetworkIdentityComponent::IsLocalOwner() const noexcept
     {
+        // 稼働中の通信セッション
         const auto* session = ActiveNetworkSession();
         return session && m_id != 0 && session->LocalPeer() == m_ownerPeer;
     }

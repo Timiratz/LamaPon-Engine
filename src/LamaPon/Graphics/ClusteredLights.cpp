@@ -6,19 +6,19 @@
 #include <cstring>
 #include <utility>
 
-// API 66以前のGame Moduleはversion検査より先に旧constructor importを
-// 解決します。このx64 loader互換thunkは旧layout全体を空状態にして、
-// 静的初期化された旧objectも安全に破棄できるようにします。実際の
-// ClusteredLights利用はAPI version不一致で拒否されます。
+// 旧ABIの格納領域を空状態にする(storage: API66の旧領域)。
+// 無名の引数3個は使用しない。
+// x64の旧モジュールが版検査前にコンストラクターを解決するため、旧レイアウト全体を初期化する。
 extern "C" void* LamaPonConstructLegacyClusteredLights(
     void* const storage,
     void*,
     void*,
     const void*) noexcept
 {
-    // API 66 layout: 10 ComPtr + 3 GraphicsViewHandle(shared_ptr)。
+    // API66の領域はComPtr10個と共有ビュー3個分を必要とする。
     static_assert(sizeof(LamaPon::GraphicsViewHandle)
         == 2u * sizeof(void*));
+    // API66のオブジェクト領域サイズ
     constexpr std::size_t LegacyLayoutSize =
         10u * sizeof(void*)
         + 3u * sizeof(LamaPon::GraphicsViewHandle);
@@ -31,6 +31,7 @@ extern "C" void* LamaPonConstructLegacyClusteredLights(
 
 namespace LamaPon
 {
+    // 所有する状態を借用し、未公開ならヌルを返す(clusteredLights: 参照する公開窓口)。
     Detail::ClusteredLightsBackendState*
         Detail::ClusteredLightsBackendAccess::Get(
             ClusteredLights& clusteredLights) noexcept
@@ -38,6 +39,7 @@ namespace LamaPon
         return clusteredLights.m_backendState.get();
     }
 
+    // 所有する状態を読取専用で借用し、未公開ならヌルを返す(clusteredLights: 参照する公開窓口)。
     const Detail::ClusteredLightsBackendState*
         Detail::ClusteredLightsBackendAccess::Get(
             const ClusteredLights& clusteredLights) noexcept
@@ -45,6 +47,7 @@ namespace LamaPon
         return clusteredLights.m_backendState.get();
     }
 
+    // 状態の所有権を公開窓口へ移し、既存状態を解放する(clusteredLights: 公開する窓口, state: 完成したバックエンド状態)。
     void Detail::ClusteredLightsBackendAccess::Publish(
         ClusteredLights& clusteredLights,
         std::unique_ptr<ClusteredLightsBackendState> state) noexcept

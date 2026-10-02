@@ -11,6 +11,7 @@
 
 namespace
 {
+    // 描画用にRGBへアルファを掛ける(color: アルファ乗算前のRGBA)。
     DirectX::XMFLOAT4 Premultiply(
         const DirectX::XMFLOAT4& color) noexcept
     {
@@ -22,11 +23,13 @@ namespace
         };
     }
 
+    // UI矩形またはワールドXYと代替サイズから表示範囲を求める(owner: 所有オブジェクト, graphics: 描画機器かnullptr, fallbackSize: 代替の幅と高さ)。
     LamaPon::UIRect ResolveWidgetRect(
         const LamaPon::GameObject& owner,
         const LamaPon::GraphicsDevice* graphics,
         const DirectX::XMFLOAT2& fallbackSize) noexcept
     {
+        // UI矩形の配置情報
         if (const auto* transform =
             owner.GetComponent<
                 LamaPon::UIRectTransformComponent>();
@@ -37,6 +40,7 @@ namespace
                 static_cast<float>(
                     graphics->UIHeight()));
         }
+        // 所有者のワールド行列
         DirectX::XMFLOAT4X4 world{};
         DirectX::XMStoreFloat4x4(
             &world,
@@ -78,6 +82,7 @@ namespace LamaPon
     void UISliderComponent::SetValue(
         const float value) noexcept
     {
+        // 制約適用後の設定値
         const float constrained =
             ApplyConstraints(value);
         if (constrained != m_value)
@@ -125,6 +130,7 @@ namespace LamaPon
     float UISliderComponent::NormalizedValue()
         const noexcept
     {
+        // 上限と下限の差
         const float range =
             m_maximumValue - m_minimumValue;
         return range > 0.0f
@@ -135,6 +141,7 @@ namespace LamaPon
     float UISliderComponent::ApplyConstraints(
         const float value) const noexcept
     {
+        // 範囲制限と丸め後の値
         float result = std::clamp(
             value,
             m_minimumValue,
@@ -162,12 +169,15 @@ namespace LamaPon
             return;
         }
 
+        // ポインターの状態
         const auto& pointer =
             m_graphics->Input().Pointer();
+        // スライダーの表示矩形
         const auto rect = ResolveWidgetRect(
             Owner(),
             m_graphics,
             m_fallbackSize);
+        // ポインターが矩形内か
         const bool hovered =
             pointer.valid
             && rect.Contains(pointer.position);
@@ -181,6 +191,7 @@ namespace LamaPon
         }
         if (m_dragging)
         {
+            // ドラッグ範囲の表示幅
             const float width = rect.Size().x;
             if (width > 0.0f)
             {
@@ -195,35 +206,44 @@ namespace LamaPon
     void UISliderComponent::OnRender2D(
         const SpriteDrawContext& sprites)
     {
+        // スライダーの表示矩形
         const auto rect = ResolveWidgetRect(
             Owner(),
             m_graphics,
             m_fallbackSize);
+        // スライダーの表示幅と高さ
         const auto size = rect.Size();
         if (size.x <= 0.0f || size.y <= 0.0f)
         {
             return;
         }
 
+        // 操作禁止時のアルファ倍率
         const float disabledAlpha =
             m_interactable ? 1.0f : 0.5f;
 
+        // 状態に応じた背景RGBA
         auto backgroundColor = m_backgroundColor;
         backgroundColor.w *= disabledAlpha;
+        // アルファ乗算済み背景色
         const auto premultipliedBackground =
             Premultiply(backgroundColor);
+        // 各部分のスプライト描画指定
         SpriteDrawRequest request;
         request.position = rect.minimum;
         request.tint = premultipliedBackground;
         request.scale = { size.x, size.y };
         static_cast<void>(sprites.Draw(request));
 
+        // 値まで塗りつぶす表示幅
         const float fillWidth =
             size.x * NormalizedValue();
         if (fillWidth > 0.0f)
         {
+            // 状態に応じた塗りつぶし色
             auto fillColor = m_fillColor;
             fillColor.w *= disabledAlpha;
+            // アルファ乗算済み塗りつぶし色
             const auto premultipliedFill =
                 Premultiply(fillColor);
             request.tint = premultipliedFill;
@@ -231,18 +251,23 @@ namespace LamaPon
             static_cast<void>(sprites.Draw(request));
         }
 
-        // ハンドルは高さ基準の縦長四角形で描きます。
+
+        // ハンドルの表示幅
         const float handleWidth =
             std::min(size.y * 0.6f, size.x);
+        // 値が示すハンドル中心のX座標
         const float handleCenter =
             rect.minimum.x
             + size.x * NormalizedValue();
+        // 表示範囲に収めたハンドル左端
         const float handleLeft = std::clamp(
             handleCenter - handleWidth * 0.5f,
             rect.minimum.x,
             rect.maximum.x - handleWidth);
+        // 状態に応じたハンドル色
         auto handleColor = m_handleColor;
         handleColor.w *= disabledAlpha;
+        // アルファ乗算済みハンドル色
         const auto premultipliedHandle =
             Premultiply(handleColor);
         request.position = { handleLeft, rect.minimum.y };

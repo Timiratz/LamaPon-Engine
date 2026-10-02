@@ -10,10 +10,13 @@
 
 namespace
 {
+    // 条件不成立ならテストを失敗させます。
+    // Require(condition: 成立条件, message: 失敗理由)
     void Require(
         const bool condition,
         const char* message)
     {
+        // assertion失敗を例外で通知
         if (!condition)
         {
             throw std::runtime_error(message);
@@ -21,10 +24,13 @@ namespace
     }
 }
 
+// PlayerPrefsとSaveDataの永続化契約を検証します。
 int main()
 {
+    // テスト例外を失敗終了コードへ変換
     try
     {
+        // PlayerPrefsとSaveDataのテスト領域
         const auto directory =
             std::filesystem::current_path()
             / "test-output"
@@ -32,8 +38,10 @@ int main()
         std::filesystem::remove_all(directory);
         std::filesystem::create_directories(directory);
 
+        // PlayerPrefsの保存先
         const auto preferencesPath =
             directory / "PlayerPrefs.json";
+        // 初期値を読み込む設定ストア
         LamaPon::PlayerPrefs preferences(
             preferencesPath);
         preferences.Load();
@@ -76,6 +84,7 @@ int main()
                 && !preferences.IsDirty(),
             "PlayerPrefs atomic save failed.");
 
+        // 保存内容を読み直す設定ストア
         LamaPon::PlayerPrefs restored(
             preferencesPath);
         restored.Load();
@@ -92,7 +101,9 @@ int main()
                 && restored.IsDirty(),
             "PlayerPrefs key deletion failed.");
 
+        // 非有限数の拒否状態
         bool invalidNumberRejected{};
+        // NaNを拒否する設定更新
         try
         {
             restored.SetNumber(
@@ -100,6 +111,7 @@ int main()
                 std::numeric_limits<double>::
                     quiet_NaN());
         }
+        // 非有限値エラーを拒否状態へ変換
         catch (const std::invalid_argument&)
         {
             invalidNumberRejected = true;
@@ -108,11 +120,14 @@ int main()
             invalidNumberRejected,
             "PlayerPrefs accepted a non-finite number.");
 
+        // 空キーの拒否状態
         bool invalidKeyRejected{};
+        // 空キーを拒否する設定更新
         try
         {
             restored.SetInteger("", 1);
         }
+        // 空キーエラーを拒否状態へ変換
         catch (const std::invalid_argument&)
         {
             invalidKeyRejected = true;
@@ -121,6 +136,7 @@ int main()
             invalidKeyRejected,
             "PlayerPrefs accepted an empty key.");
 
+        // セーブスロットの保存領域
         LamaPon::SaveDataStore saves(
             directory / "Saves");
         saves.SaveJson(
@@ -132,11 +148,13 @@ int main()
                 && saves.ListSlots().front()
                     == "スロット1",
             "Japanese save slot was not listed.");
+        // 読み込んだセーブJSON文字列
         const auto saveJson =
             saves.LoadJson("スロット1");
         Require(
             saveJson.has_value(),
             "Save slot could not be loaded.");
+        // JSONから解析したセーブ内容
         const auto payload =
             nlohmann::json::parse(*saveJson);
         Require(
@@ -144,13 +162,16 @@ int main()
                 && payload["name"] == "勇者",
             "Save slot payload changed.");
 
+        // パストラバーサル拒否状態
         bool traversalRejected{};
+        // プロジェクト外への保存を拒否
         try
         {
             saves.SaveJson(
                 "../escape",
                 "{}");
         }
+        // 不正パスエラーを拒否状態へ変換
         catch (const std::invalid_argument&)
         {
             traversalRejected = true;
@@ -159,13 +180,16 @@ int main()
             traversalRejected,
             "SaveData accepted path traversal.");
 
+        // 不正JSONの拒否状態
         bool invalidJsonRejected{};
+        // JSON構文エラーの保存を拒否
         try
         {
             saves.SaveJson(
                 "broken",
                 "{not json}");
         }
+        // JSON構文エラーを拒否状態へ変換
         catch (const nlohmann::json::exception&)
         {
             invalidJsonRejected = true;
@@ -180,6 +204,7 @@ int main()
                 && saves.ListSlots().empty(),
             "Save slot deletion failed.");
 
+        // 無効文字を除去したユーザーデータ先
         const auto userDirectory =
             LamaPon::UserDataDirectory(
                 "Invalid:/Game*Name");
@@ -193,6 +218,8 @@ int main()
             << "PlayerPrefs and SaveData tests passed.\n";
         return 0;
     }
+    // テスト例外を標準エラーと失敗終了コードへ変換
+    // 想定外のテスト例外を失敗終了コードへ変換
     catch (const std::exception& exception)
     {
         std::cerr << exception.what() << '\n';

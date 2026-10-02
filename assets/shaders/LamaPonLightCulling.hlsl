@@ -1,118 +1,132 @@
-// クラスタライトカリング（Forward+）のCompute Shaderです。
-//
-// ビューの視錐台を「横16×縦9×奥行き24」の格子（クラスタ）に切り、
-// クラスタごとに「届くライトの番号表」を作ります。描画側
-// （LamaPonLit.hlsl）は自分のピクセルが入っているクラスタの表だけを
-// 見てライトを計算するので、シーン全体のライト数が増えても
-// ピクセルあたりの計算量は「近くにあるライトの数」で決まります。
-//
-// 奥行きの分割は等間隔ではなく指数分割です（近くほど細かい）。
-// 画面に映る物の多くはカメラの近くにあるので、近距離に格子を
-// 集中させたほうが1クラスタあたりのライト数が減ります。
+// ビュー視錐台を奥行き方向に指数分割し、各クラスタに届くライト番号を上限まで登録する。
 
-// ライト1灯ぶん。C++側のGpuLight（ClusteredLights.h）と
-// 並びを一致させてください。
+// GpuLightの並びはC++のClusteredLights.hと一致させる。
 struct GpuLight
 {
-    // xyz=ワールド位置, w=届く距離。
+
+    // XYZ位置・W到達半径
     float4 PositionRange;
-    // rgb=色, w=強度。
+
+    // RGBライト色・W強度
     float4 ColorIntensity;
-    // xyz=向き（スポット）, w=内側コーンのcos。
+
+    // XYZ方向・W内角cos
     float4 DirectionInnerCosine;
-    // x=外側コーンのcos, y=種別（0=ポイント, 1=スポット）,
-    // z=影の参照（スポット=スロット+1, ポイント=ライト番号+1,
-    //   0=影なし）, w=予約。
+    // Y種別は0point・1spot、Z影参照はspot枠+1・point番号+1・0影なし、Wは予約。
+    // X外角cos・Y種別・Z影参照
     float4 ExtraParameters;
 };
 
+// 光源分類用のクラスタ定数
 cbuffer ClusterCullingBuffer : register(b0)
 {
-    // ワールド→ビュー変換。ライトの球をビュー空間へ移して
-    // クラスタの箱と当てます。
+
+    // 行優先のWorld→ビュー行列
     row_major float4x4 View;
-    // x=横分割数, y=縦分割数, z=奥行き分割数, w=ライト総数。
+
+    // XYZ分割数・Wライト総数
     float4 GridParameters;
-    // x=near, y=far, z=log(far/near), w=クラスタあたり上限。
+
+    // 近遠距離・対数比・灯数上限
     float4 DepthParameters;
-    // 視錐台の広がり。x=tan(横半視野), y=tan(縦半視野)。
-    // 深さdでの画面の届く範囲は x∈[-d*tanX, d*tanX] です。
+
+    // XYの半画角tan
     float4 FrustumParameters;
 };
 
+// 全ライトのGPU情報配列
 StructuredBuffer<GpuLight> Lights : register(t0);
-// クラスタ番号×上限 + 何番目、の位置へライト番号を書きます。
+
+// クラスタ番号順のライト参照列
 RWStructuredBuffer<uint> LightIndexList : register(u0);
-// クラスタごとの、表に入っているライト数。
+
+// クラスタごとの登録灯数
 RWStructuredBuffer<uint> ClusterLightCounts : register(u1);
 
-// 球と軸平行の箱（AABB）の距離判定。
+
+// 球とAABBが交差するか判定する(center: 球の中心, radius: 球の半径, aabbMinimum: AABB最小座標, aabbMaximum: AABB最大座標)。
 bool SphereIntersectsAabb(
     float3 center,
     float radius,
     float3 aabbMinimum,
     float3 aabbMaximum)
 {
+    // 球中心に最も近いAABB位置
     const float3 closest = clamp(
         center,
         aabbMinimum,
         aabbMaximum);
+    // AABB最近位置から球中心への差
     const float3 delta = center - closest;
     return dot(delta, delta) <= radius * radius;
 }
 
-// 1スレッド＝1クラスタ。スレッドが自分のクラスタの表を独占して
-// 書くので、アトミック操作は要りません。
+
+// 1Threadが1クラスタの番号表を独占して作る(dispatchId: クラスタを指定するThread ID)。
 [numthreads(64, 1, 1)]
 void CSMain(uint3 dispatchId : SV_DispatchThreadID)
 {
+    // クラスタの横分割数
     const uint gridX = (uint)GridParameters.x;
+    // クラスタの縦分割数
     const uint gridY = (uint)GridParameters.y;
+    // クラスタの奥行き分割数
     const uint gridZ = (uint)GridParameters.z;
+    // 全クラスタ数
     const uint clusterCount = gridX * gridY * gridZ;
+    // 処理するクラスタの一次元番号
     const uint clusterIndex = dispatchId.x;
     if (clusterIndex >= clusterCount)
     {
         return;
     }
 
-    // 一次元番号を(x, y, z)へ戻します。
+
+    // クラスタの奥行き番号
     const uint clusterZ = clusterIndex / (gridX * gridY);
+    // 奥行きを除いた平面番号
     const uint remainder =
         clusterIndex - clusterZ * gridX * gridY;
+    // クラスタの縦番号
     const uint clusterY = remainder / gridX;
+    // クラスタの横番号
     const uint clusterX = remainder - clusterY * gridX;
 
-    // 奥行きの範囲（指数分割）。ビュー空間は右手系でカメラの前が
-    // -Zなので、ここでは正の距離として扱い、最後に符号を付けます。
+    // ビュー前方は-Zで、指数分割の距離には正の値を使う。
+    // ビューの近クリップ距離
     const float nearPlane = DepthParameters.x;
+    // ビューの遠クリップ距離
     const float farPlane = DepthParameters.y;
+    // クラスタ近端の正の距離
     const float depthNear = nearPlane
         * pow(farPlane / nearPlane,
             (float)clusterZ / (float)gridZ);
+    // クラスタ遠端の正の距離
     const float depthFar = nearPlane
         * pow(farPlane / nearPlane,
             ((float)clusterZ + 1.0f) / (float)gridZ);
 
-    // クラスタの箱。横・縦の届く範囲は深さに比例して広がるので、
-    // 手前と奥の両方で角を求めて、それらを含む箱にします
-    // （保守的＝取りこぼしなし。多少余分に入るのは許容）。
-    // クラスタ番号はピクセル座標と同じ「左上が(0,0)」です。
-    // ビュー空間は右が+X・上が+Yなので、Yは向きを反転させます
-    // （ここを揃えないと、描画側が引くクラスタと上下逆の箱を
-    // 作ってしまい、ライトが1灯も見つからなくなります）。
+    // 左上原点のクラスタ番号を右X・上Yへ変換し、近端と遠端の両方を含むAABBを作る。
+    // クラスタ左端の画面比
     const float xRatioMinimum =
         (float)clusterX / (float)gridX * 2.0f - 1.0f;
+    // クラスタ右端の画面比
     const float xRatioMaximum =
         ((float)clusterX + 1.0f) / (float)gridX * 2.0f - 1.0f;
+    // クラスタ下端の上向き画面比
     const float yRatioMinimum =
         1.0f - ((float)clusterY + 1.0f) / (float)gridY * 2.0f;
+    // クラスタ上端の上向き画面比
     const float yRatioMaximum =
         1.0f - (float)clusterY / (float)gridY * 2.0f;
+    // 横半画角のtan
     const float tanX = FrustumParameters.x;
+    // 縦半画角のtan
     const float tanY = FrustumParameters.y;
 
+    // クラスタAABBの最小座標
     float3 aabbMinimum;
+    // クラスタAABBの最大座標
     float3 aabbMaximum;
     aabbMinimum.x = min(
         xRatioMinimum * tanX * depthNear,
@@ -126,28 +140,32 @@ void CSMain(uint3 dispatchId : SV_DispatchThreadID)
     aabbMaximum.y = max(
         yRatioMaximum * tanY * depthNear,
         yRatioMaximum * tanY * depthFar);
-    // カメラの前は-Z。
+
     aabbMinimum.z = -depthFar;
     aabbMaximum.z = -depthNear;
 
+    // クラスタに登録する灯数上限
     const uint maximumPerCluster =
         (uint)DepthParameters.w;
+    // 全ライト数
     const uint lightCount = (uint)GridParameters.w;
+    // このクラスタの登録済み灯数
     uint written = 0;
 
+    // 判定するライト番号
     [loop]
     for (uint lightIndex = 0;
         lightIndex < lightCount
             && written < maximumPerCluster;
         ++lightIndex)
     {
+        // 判定するライトのGPU情報
         const GpuLight light = Lights[lightIndex];
+        // ライト中心のビュー位置
         const float3 viewPosition = mul(
             float4(light.PositionRange.xyz, 1.0f),
             View).xyz;
-        // スポットも球として当てます（コーンの正確な判定より
-        // 余分に入りますが、取りこぼしはありません。余分な分は
-        // ピクセル側のコーン減衰で0になります）。
+        // スポットも到達半径の球で判定し、余分な寄与はPixel側のコーン減衰で除く。
         if (SphereIntersectsAabb(
                 viewPosition,
                 light.PositionRange.w,

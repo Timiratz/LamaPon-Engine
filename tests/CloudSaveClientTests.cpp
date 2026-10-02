@@ -16,32 +16,45 @@ namespace
 {
     using Json = nlohmann::json;
 
+    // 空JSONのbase64url本文
     constexpr std::string_view EmptyObjectContent = "e30";
+    // 空JSON本文のSHA-256
     constexpr std::string_view EmptyObjectHash =
         "RBNvo1WzZ4oRRq0W9-hknpT7T8If536DEMBg9hyq_4o";
+    // レベルJSONのbase64url本文
     constexpr std::string_view LevelContent = "eyJsZXZlbCI6N30";
+    // レベルJSON本文のSHA-256
     constexpr std::string_view LevelHash =
         "fUV07UsUNLX3A0GWwak_tdwTcH_rWlJ1CqBLNiwLRwY";
+    // 作成要求の冪等性キー
     constexpr std::string_view MutationId =
         "123e4567-e89b-42d3-a456-426614174000";
+    // 削除要求の冪等性キー
     constexpr std::string_view DeleteMutationId =
         "123e4567-e89b-42d3-b456-426614174001";
+    // 競合要求の冪等性キー
     constexpr std::string_view ConflictMutationId =
         "123e4567-e89b-42d3-8456-426614174002";
 
+    // 条件を満たさなければテストを失敗させます。
+    // Require(condition: 成功条件, message: 失敗理由)
     void Require(const bool condition, const char* message)
     {
+        // 失敗条件
         if (!condition)
         {
             throw std::runtime_error(message);
         }
     }
 
+    // 設定領域を表すリソースJSONを返します。
     Json PreferencesResource()
     {
         return Json{ { "kind", "preferences" } };
     }
 
+    // 指定スロットを表すリソースJSONを返します。
+    // SlotResource(slot: スロット名)
     Json SlotResource(std::string slot = "slot-1")
     {
         return Json{
@@ -50,6 +63,8 @@ namespace
         };
     }
 
+    // 有効なクラウド保存スナップショットを作ります。
+    // LiveSnapshot(resource: リソース識別子, etag: 強い版番号, content: base64url本文, hash: 本文SHA-256, byteLength: 本文バイト数, protocolVersion: 版番号を含める設定)
     Json LiveSnapshot(
         Json resource,
         std::string etag,
@@ -58,6 +73,7 @@ namespace
         const std::size_t byteLength,
         const bool protocolVersion = true)
     {
+        // 応答用スナップショットJSON
         Json result{
             { "resource", std::move(resource) },
             { "etag", std::move(etag) },
@@ -66,6 +82,7 @@ namespace
             { "sha256", hash },
             { "content", content }
         };
+        // プロトコル版を含める場合
         if (protocolVersion)
         {
             result["protocolVersion"] = 1;
@@ -73,17 +90,21 @@ namespace
         return result;
     }
 
+    // 削除済み保存を表すスナップショットを作ります。
+    // Tombstone(resource: リソース識別子, etag: 強い版番号, protocolVersion: 版番号を含める設定)
     Json Tombstone(
         Json resource,
         std::string etag,
         const bool protocolVersion = true)
     {
+        // 応答用削除済みスナップショットJSON
         Json result{
             { "resource", std::move(resource) },
             { "etag", std::move(etag) },
             { "deleted", true },
             { "byteLength", 0 }
         };
+        // プロトコル版を含める場合
         if (protocolVersion)
         {
             result["protocolVersion"] = 1;
@@ -91,13 +112,17 @@ namespace
         return result;
     }
 
+    // JSON本文とHTTPヘッダーを持つ応答を作ります。
+    // JsonResponse(status: HTTP状態コード, json: 応答JSON, etag: 強い版番号)
     LamaPon::HttpResponse JsonResponse(
         const std::uint32_t status,
         const Json& json,
         std::string_view etag = {})
     {
+        // 組み立てるHTTP応答
         LamaPon::HttpResponse response;
         response.statusCode = status;
+        // UTF-8で直列化した応答本文
         const auto text = json.dump();
         response.body.assign(text.begin(), text.end());
         response.headers.emplace_back(
@@ -106,6 +131,7 @@ namespace
         response.headers.emplace_back(
             L"Content-Length",
             std::to_wstring(response.body.size()));
+        // ETagが指定された場合のみ追加
         if (!etag.empty())
         {
             response.headers.emplace_back(
@@ -115,22 +141,29 @@ namespace
         return response;
     }
 
+    // HTTPヘッダー名をASCII大文字小文字無視で比較します。
+    // HeaderNameEquals(left: 比較元ヘッダー, right: 比較先ヘッダー)
     bool HeaderNameEquals(
         const std::wstring_view left,
         const std::wstring_view right)
     {
+        // 長さが異なれば一致しない
         if (left.size() != right.size())
         {
             return false;
         }
+        // 各文字を同じ大小文字に揃えて比較
         for (std::size_t index = 0; index < left.size(); ++index)
         {
+            // ASCII小文字へ揃える関数
+            // fold(value: 比較する文字)
             const auto fold = [](const wchar_t value)
             {
                 return value >= L'A' && value <= L'Z'
                     ? value - L'A' + L'a'
                     : value;
             };
+            // 大小文字を揃えても異なる場合
             if (fold(left[index]) != fold(right[index]))
             {
                 return false;
@@ -139,14 +172,19 @@ namespace
         return true;
     }
 
+    // 条件に一致するHTTPヘッダー数を返します。
+    // HeaderCount(request: 検索する要求, name: ヘッダー名, value: 指定時の値)
     std::size_t HeaderCount(
         const LamaPon::HttpRequest& request,
         const std::wstring_view name,
         const std::wstring_view value = {})
     {
+        // 条件一致したヘッダー数
         std::size_t count{};
+        // 要求内の各ヘッダー
         for (const auto& [headerName, headerValue] : request.headers)
         {
+            // 名前と任意の値が一致する場合
             if (HeaderNameEquals(headerName, name)
                 && (value.empty() || headerValue == value))
             {
@@ -158,24 +196,33 @@ namespace
 
     struct ScriptedBackend final
     {
+        // 次の送信呼び出しへ返す応答列
         std::deque<LamaPon::HttpResponse> responses;
+        // テスト中に送信された要求列
         std::vector<LamaPon::HttpRequest> requests;
 
+        // 要求を記録し、先頭の用意済み応答を返します。
+        // Send(request: 送信要求)
         LamaPon::HttpResponse Send(const LamaPon::HttpRequest& request)
         {
             requests.push_back(request);
+            // 予定外の要求は明示的な通信エラーを返す
             if (responses.empty())
             {
+                // 想定外要求を示す応答
                 LamaPon::HttpResponse response;
                 response.transportError = "unexpected request secret";
                 return response;
             }
+            // 次に返す応答を取り出す
             auto response = std::move(responses.front());
             responses.pop_front();
             return response;
         }
     };
 
+    // 要求を偽バックエンドへ送るテスト用クライアントを作ります。
+    // MakeClient(backend: 要求と応答を記録するバックエンド)
     LamaPon::Detail::CloudSaveClient MakeClient(
         ScriptedBackend& backend)
     {
@@ -184,14 +231,17 @@ namespace
             "game-42",
             "staging",
             false,
+            // request: テストバックエンドへ送る要求
             [&backend](const LamaPon::HttpRequest& request)
             {
                 return backend.Send(request);
             });
     }
 
+    // 読み書き削除と要求規約の正常系を検証します。
     void TestSuccessfulProtocol()
     {
+        // 要求と応答を記録するHTTPモック
         ScriptedBackend backend;
         backend.responses.push_back(JsonResponse(
             200,
@@ -256,7 +306,9 @@ namespace
             },
             "\"slot-remote\""));
 
+        // テスト対象のクラウドクライアント
         auto client = MakeClient(backend);
+        // 取得したクラウド一覧
         const auto manifest = client.FetchManifest("backend-access-token");
         Require(
             manifest.outcome.Succeeded()
@@ -265,6 +317,7 @@ namespace
                 && manifest.items[1].deleted,
             "A valid cloud manifest was not parsed.");
 
+        // 読み込んだ設定スナップショット
         const auto read = client.Read(
             "backend-access-token",
             LamaPon::CloudSaveResource::Preferences());
@@ -276,9 +329,11 @@ namespace
                     read.snapshot->content.end()) == "{}",
             "A valid cloud snapshot was not parsed.");
 
+        // 作成・更新するレベルJSONのUTF-8本文
         const std::vector<std::uint8_t> level{
             '{', '"', 'l', 'e', 'v', 'e', 'l', '"', ':', '7', '}'
         };
+        // 作成応答
         const auto put = client.Put(
             "backend-access-token",
             LamaPon::CloudSaveResource::SaveSlot("slot-1"),
@@ -290,6 +345,7 @@ namespace
                 && put.snapshot->etag == "\"slot-1\"",
             "A valid cloud create response was not parsed.");
 
+        // 削除応答
         const auto deleted = client.Delete(
             "backend-access-token",
             LamaPon::CloudSaveResource::SaveSlot("slot-1"),
@@ -301,6 +357,7 @@ namespace
                 && deleted.snapshot->deleted,
             "A valid cloud delete response was not parsed.");
 
+        // 版番号競合の応答
         const auto conflict = client.Put(
             "backend-access-token",
             LamaPon::CloudSaveResource::SaveSlot("slot-1"),
@@ -317,9 +374,11 @@ namespace
         Require(
             backend.responses.empty() && backend.requests.size() == 5,
             "The cloud client retried or omitted a request.");
+        // 送信順に期待するHTTPメソッド
         const std::array<std::wstring_view, 5> methods{
             L"GET", L"POST", L"PUT", L"DELETE", L"PUT"
         };
+        // 送信順に期待するAPIパス
         const std::array<std::wstring_view, 5> paths{
             L"/v1/cloud-saves/manifest",
             L"/v1/cloud-saves/read",
@@ -327,8 +386,10 @@ namespace
             L"/v1/cloud-saves/item",
             L"/v1/cloud-saves/item"
         };
+        // 送信された要求ごとに宛先と秘密情報の扱いを検証
         for (std::size_t index = 0; index < backend.requests.size(); ++index)
         {
+            // 今回検証する送信要求
             const auto& request = backend.requests[index];
             Require(
                 request.method == methods[index]
@@ -353,6 +414,7 @@ namespace
                         L"Cache-Control",
                         L"no-store") == 1,
                 "A cloud request violated its endpoint or secret policy.");
+            // 秘密情報混入を調べるUTF-8本文
             const std::string requestText(
                 request.body.begin(),
                 request.body.end());
@@ -396,6 +458,7 @@ namespace
                         ConflictMutationId.begin(),
                         ConflictMutationId.end())) == 1,
             "Cloud CAS or idempotency headers were incorrect.");
+        // 作成要求本文を解析したJSON
         const auto putBody = Json::parse(
             std::string(
                 backend.requests[2].body.begin(),
@@ -410,15 +473,22 @@ namespace
             "Cloud create payload was not canonical.");
     }
 
+    // 不正入力がHTTP送信へ到達しないことを検証します。
     void TestInvalidInputsDoNotSend()
     {
+        // 要求数を確認する偽バックエンド
         ScriptedBackend backend;
+        // 入力検証対象のクライアント
         auto client = MakeClient(backend);
+        // 正常なJSON本文
         const std::vector<std::uint8_t> valid{ '{', '}' };
+        // 閉じ括弧が不足したJSON本文
         const std::vector<std::uint8_t> invalid{ '{' };
+        // ネスト上限を超えるJSON文字列
         std::string tooDeepJson(65, '[');
         tooDeepJson += "null";
         tooDeepJson.append(65, ']');
+        // ネスト上限超過のUTF-8本文
         const std::vector<std::uint8_t> tooDeep(
             tooDeepJson.begin(),
             tooDeepJson.end());
@@ -458,6 +528,7 @@ namespace
                 && backend.requests.empty(),
             "Invalid cloud input reached the HTTP sender.");
 
+        // Windowsの予約名を順に拒否
         for (const std::string_view reserved : {
                 "CON", "con.txt", "NUL", "AUX.save", "PRN",
                 "CLOCK$", "CONIN$", "CONOUT$", "COM1", "LPT9.log",
@@ -475,14 +546,18 @@ namespace
             backend.requests.empty(),
             "A Windows reserved save slot reached the HTTP sender.");
 
+        // 危険な識別子の拒否結果
         bool invalidNamespaceRejected{};
+        // 不正な名前空間のコンストラクター検証
         try
         {
+            // 不正な識別子で構築する検査対象
             LamaPon::Detail::CloudSaveClient invalidClient(
                 "https://online.example.test",
                 "bad/game",
                 "production");
         }
+        // 不正な識別子に対する期待例外
         catch (const std::invalid_argument&)
         {
             invalidNamespaceRejected = true;
@@ -492,11 +567,14 @@ namespace
             "An unsafe cloud namespace was accepted.");
     }
 
+    // 用意した応答で読取結果と要求数を返します。
+    // ReadWithResponse(response: テスト応答, requestCount: 送信数の出力先, publicMessage: 公開エラーの出力先)
     LamaPon::Detail::CloudSaveWireStatus ReadWithResponse(
         LamaPon::HttpResponse response,
         std::size_t& requestCount,
         std::string& publicMessage)
     {
+        // 指定応答を一度だけ返すクライアント
         LamaPon::Detail::CloudSaveClient client(
             "https://online.example.test",
             "game",
@@ -507,6 +585,7 @@ namespace
                 ++requestCount;
                 return response;
             });
+        // 読取操作の結果
         const auto result = client.Read(
             "backend-token",
             LamaPon::CloudSaveResource::Preferences());
@@ -515,9 +594,11 @@ namespace
         return result.outcome.status;
     }
 
+    // 不正応答の拒否とHTTP状態の対応を検証します。
     void TestInvalidResponsesAndStatusMapping()
     {
         {
+            // ETag重複を含むテスト応答
             auto response = JsonResponse(
                 200,
                 LiveSnapshot(
@@ -528,7 +609,9 @@ namespace
                     2),
                 "\"v1\"");
             response.headers.emplace_back(L"etag", L"\"v1\"");
+            // 応答を受け取った要求数
             std::size_t count{};
+            // 利用者へ返すエラー文
             std::string message;
             Require(
                 ReadWithResponse(response, count, message)
@@ -537,6 +620,7 @@ namespace
                 "Duplicate response ETags were accepted.");
         }
         {
+            // 非正規base64urlを含むテスト応答
             auto response = JsonResponse(
                 200,
                 LiveSnapshot(
@@ -546,7 +630,9 @@ namespace
                     EmptyObjectHash,
                     2),
                 "\"v1\"");
+            // 応答を受け取った要求数
             std::size_t count{};
+            // 利用者へ返すエラー文
             std::string message;
             Require(
                 ReadWithResponse(response, count, message)
@@ -554,6 +640,7 @@ namespace
                 "Non-canonical base64url was accepted.");
         }
         {
+            // 不正Content-Typeを持つテスト応答
             auto response = JsonResponse(
                 200,
                 LiveSnapshot(
@@ -564,7 +651,9 @@ namespace
                     2),
                 "\"v1\"");
             response.headers[0].second = L"text/json";
+            // 応答を受け取った要求数
             std::size_t count{};
+            // 利用者へ返すエラー文
             std::string message;
             Require(
                 ReadWithResponse(response, count, message)
@@ -572,6 +661,7 @@ namespace
                 "An invalid JSON Content-Type was accepted.");
         }
         {
+            // Content-Length不一致を持つテスト応答
             auto response = JsonResponse(
                 200,
                 LiveSnapshot(
@@ -582,7 +672,9 @@ namespace
                     2),
                 "\"v1\"");
             response.headers[1].second = L"1";
+            // 応答を受け取った要求数
             std::size_t count{};
+            // 利用者へ返すエラー文
             std::string message;
             Require(
                 ReadWithResponse(response, count, message)
@@ -590,10 +682,13 @@ namespace
                 "A mismatched Content-Length was accepted.");
         }
         {
+            // 上限を超える本文を持つテスト応答
             LamaPon::HttpResponse response;
             response.statusCode = 401;
             response.body.assign(2000000, 'x');
+            // 応答を受け取った要求数
             std::size_t count{};
+            // 利用者へ返すエラー文
             std::string message;
             Require(
                 ReadWithResponse(response, count, message)
@@ -601,18 +696,22 @@ namespace
                 "A fake sender bypassed the response size cap.");
         }
         {
+            // 過大なRetry-Afterを持つテスト応答
             LamaPon::HttpResponse response;
             response.statusCode = 429;
             response.headers.emplace_back(L"Retry-After", L"999");
+            // レート制限応答を返すクライアント
             LamaPon::Detail::CloudSaveClient client(
                 "https://online.example.test",
                 "game",
                 "production",
                 false,
+                // 要求ごとに同じレート制限応答を返す
                 [response](const LamaPon::HttpRequest&)
                 {
                     return response;
                 });
+            // レート制限として分類された一覧取得結果
             const auto result = client.FetchManifest("backend-token");
             Require(
                 result.outcome.status
@@ -621,9 +720,12 @@ namespace
                 "Rate limit retry metadata was not bounded.");
         }
         {
+            // 認証失敗を表すテスト応答
             LamaPon::HttpResponse response;
             response.statusCode = 401;
+            // 応答を受け取った要求数
             std::size_t count{};
+            // 利用者へ返すエラー文
             std::string message;
             Require(
                 ReadWithResponse(response, count, message)
@@ -632,10 +734,13 @@ namespace
                 "An authorization failure was misclassified.");
         }
         {
+            // 秘密文字列のエラーコードを持つ応答
             auto response = JsonResponse(
                 401,
                 { { "error", { { "code", "backend-token" } } } });
+            // 応答を受け取った要求数
             std::size_t count{};
+            // 秘密文字列を含まない公開エラー文
             std::string message;
             Require(
                 ReadWithResponse(response, count, message)
@@ -645,6 +750,7 @@ namespace
                 "A server-controlled error code escaped through the outcome.");
         }
         {
+            // 競合応答を返す偽バックエンド
             ScriptedBackend backend;
             backend.responses.push_back(JsonResponse(
                 412,
@@ -662,8 +768,11 @@ namespace
                             false)
                     }
                 }));
+            // 競合応答の検査対象クライアント
             auto client = MakeClient(backend);
+            // 作成要求に使う正規JSON本文
             const std::vector<std::uint8_t> content{ '{', '}' };
+            // ETag欠落競合への書込結果
             const auto result = client.Put(
                 "backend-token",
                 LamaPon::CloudSaveResource::Preferences(),
@@ -677,9 +786,12 @@ namespace
                 "A conflict without a strong response ETag was accepted.");
         }
         {
+            // 対象データなしを表すテスト応答
             LamaPon::HttpResponse response;
             response.statusCode = 404;
+            // 応答を受け取った要求数
             std::size_t count{};
+            // 利用者へ返すエラー文
             std::string message;
             Require(
                 ReadWithResponse(response, count, message)
@@ -688,9 +800,12 @@ namespace
                 "A missing cloud item was misclassified.");
         }
         {
+            // 一時的なサービス障害を表す応答
             LamaPon::HttpResponse response;
             response.statusCode = 503;
+            // 応答を受け取った要求数
             std::size_t count{};
+            // 利用者へ返すエラー文
             std::string message;
             Require(
                 ReadWithResponse(response, count, message)
@@ -699,10 +814,13 @@ namespace
                 "A retryable service status was misclassified or retried.");
         }
         {
+            // 秘密情報を含む通信エラー応答
             LamaPon::HttpResponse response;
             response.transportError =
                 "transport leaked backend-token and player-secret";
+            // 応答を受け取った要求数
             std::size_t count{};
+            // 秘密情報が除去された公開エラー文
             std::string message;
             Require(
                 ReadWithResponse(response, count, message)
@@ -712,17 +830,21 @@ namespace
                 "A transport failure leaked a secret.");
         }
         {
+            // 送信コールバックの呼出回数
             std::size_t count{};
+            // 送信時に例外を投げるクライアント
             LamaPon::Detail::CloudSaveClient client(
                 "https://online.example.test",
                 "game",
                 "production",
                 false,
+                // 要求を数えてから故意に失敗させる
                 [&count](const LamaPon::HttpRequest&) -> LamaPon::HttpResponse
                 {
                     ++count;
                     throw std::runtime_error("backend-token secret");
                 });
+            // 送信例外が通信失敗になることを確認
             const auto result = client.FetchManifest("backend-token");
             Require(
                 result.outcome.status
@@ -734,8 +856,10 @@ namespace
         }
     }
 
+    // 競合一覧、重複JSON、上限超過を拒否することを検証します。
     void TestManifestConflictsFailClosed()
     {
+        // 大文字小文字だけ異なるスロット応答
         ScriptedBackend backend;
         backend.responses.push_back(JsonResponse(
             200,
@@ -761,7 +885,9 @@ namespace
                     })
                 }
             }));
+        // 競合一覧の解析対象クライアント
         auto client = MakeClient(backend);
+        // 競合一覧の取得結果
         const auto result = client.FetchManifest("backend-token");
         Require(
             result.outcome.status
@@ -769,9 +895,12 @@ namespace
                 && result.items.empty(),
             "Case-colliding remote slots were accepted.");
 
+        // 重複キー応答の偽バックエンド
         ScriptedBackend duplicateKeys;
+        // JSONオブジェクトに重複キーを含む応答
         LamaPon::HttpResponse duplicateResponse;
         duplicateResponse.statusCode = 200;
+        // protocolVersionを重複させたJSON本文
         const std::string duplicateBody =
             R"({"protocolVersion":1,"protocolVersion":1,"items":[]})";
         duplicateResponse.body.assign(
@@ -784,14 +913,18 @@ namespace
             L"Content-Length",
             std::to_wstring(duplicateResponse.body.size()));
         duplicateKeys.responses.push_back(std::move(duplicateResponse));
+        // 重複キー応答を検査するクライアント
         auto duplicateClient = MakeClient(duplicateKeys);
         Require(
             duplicateClient.FetchManifest("backend-token").outcome.status
                 == LamaPon::Detail::CloudSaveWireStatus::InvalidResponse,
             "Duplicate JSON keys were accepted.");
 
+        // スロット数上限検査の偽バックエンド
         ScriptedBackend tooMany;
+        // 上限を超える一覧JSON配列
         Json items = Json::array();
+        // 33スロットの応答を作成
         for (int index = 0; index < 33; ++index)
         {
             items.push_back({
@@ -807,14 +940,18 @@ namespace
                 { "protocolVersion", 1 },
                 { "items", std::move(items) }
             }));
+        // スロット数上限応答の検査対象
         auto tooManyClient = MakeClient(tooMany);
         Require(
             tooManyClient.FetchManifest("backend-token").outcome.status
                 == LamaPon::Detail::CloudSaveWireStatus::InvalidResponse,
             "A manifest with 33 save slots was accepted.");
 
+        // アカウント容量上限検査の偽バックエンド
         ScriptedBackend overQuota;
+        // 容量上限を超える保存一覧
         Json quotaItems = Json::array();
+        // 17個の最大サイズ保存を作成
         for (int index = 0; index < 17; ++index)
         {
             quotaItems.push_back({
@@ -831,6 +968,7 @@ namespace
                 { "protocolVersion", 1 },
                 { "items", std::move(quotaItems) }
             }));
+        // 容量上限応答の検査対象
         auto overQuotaClient = MakeClient(overQuota);
         Require(
             overQuotaClient.FetchManifest("backend-token").outcome.status
@@ -839,8 +977,10 @@ namespace
     }
 }
 
+// クラウド保存クライアントのプロトコル検証を実行します。
 int main()
 {
+    // 例外を失敗コードとして報告
     try
     {
         TestSuccessfulProtocol();
@@ -848,8 +988,11 @@ int main()
         TestInvalidResponsesAndStatusMapping();
         TestManifestConflictsFailClosed();
         std::cout << "Cloud save wire protocol tests passed.\n";
+        // 全検証の成功
         return 0;
     }
+    // テスト例外を標準エラーへ出力
+    // catch(exception: 検証中に発生した例外)
     catch (const std::exception& exception)
     {
         std::cerr << exception.what() << '\n';

@@ -1,7 +1,6 @@
 #include "LamaPon/LamaPon.h"
 #include "LamaPon/Editor/Editor.h"
 #include "LamaPon/Editor/PackageNativeDependencies.h"
-// セーフモードで、覚えているシェーダーの失敗を捨てるため。
 #include "LamaPon/Graphics/ShaderCompiler.h"
 
 #include <Windows.h>
@@ -19,21 +18,27 @@
 
 namespace
 {
+    // Windowsの起動引数を文字列一覧で返します。
     std::vector<std::wstring> CommandLineArguments()
     {
+        // Windowsから取得した引数の個数
         int argumentCount{};
+        // Windowsが確保した引数配列
         auto** argumentValues = CommandLineToArgvW(
             GetCommandLineW(),
             &argumentCount);
+        // OSから引数配列を取得できない場合は起動を中断します。
         if (argumentValues == nullptr)
         {
             throw std::runtime_error(
                 "Could not read the editor command line.");
         }
 
+        // コピー後に返す引数一覧
         std::vector<std::wstring> arguments;
         arguments.reserve(
             static_cast<std::size_t>(argumentCount));
+        // 引数番号(index: 反復位置)
         for (int index = 0; index < argumentCount; ++index)
         {
             arguments.emplace_back(argumentValues[index]);
@@ -42,13 +47,17 @@ namespace
         return arguments;
     }
 
+    // 起動引数にflagがあるか調べます(flag: 照合するフラグ)。
     bool HasCommandLineFlag(const std::wstring_view flag)
     {
+        // 現在のプロセス引数
         const auto arguments = CommandLineArguments();
+        // CLI引数位置(index: 反復位置)
         for (std::size_t index = 1;
             index < arguments.size();
             ++index)
         {
+            // 指定されたフラグとの一致
             if (arguments[index] == flag)
             {
                 return true;
@@ -57,15 +66,18 @@ namespace
         return false;
     }
 
-    // 値付きオプション（--flag <値>）。無ければ空文字列です。
+    // flagの次の引数を返し、無ければ空文字列を返します(flag: オプション名)。
     std::wstring CommandLineOptionValue(
         const std::wstring_view flag)
     {
+        // 現在のプロセス引数
         const auto arguments = CommandLineArguments();
+        // オプション位置(index: 反復位置)
         for (std::size_t index = 1;
             index + 1 < arguments.size();
             ++index)
         {
+            // 一致したオプションの直後が値です。
             if (arguments[index] == flag)
             {
                 return arguments[index + 1];
@@ -74,19 +86,25 @@ namespace
         return {};
     }
 
+    // 起動引数と検証結果からプロジェクトのルートを返します。
     std::filesystem::path RequestedProjectRoot()
     {
+        // 現在のプロセス引数
         const auto arguments = CommandLineArguments();
+        // 既定のProject root
         std::filesystem::path projectRoot{
             LAMAPON_DEFAULT_PROJECT_ROOT
         };
 
+        // Project指定の位置(index: 反復位置)
         for (std::size_t index = 1;
             index < arguments.size();
             ++index)
         {
+            // --projectの値をプロジェクトルートに設定します。
             if (arguments[index] == L"--project")
             {
+                // オプションの値が無ければ起動引数を拒否します。
                 if (index + 1 >= arguments.size())
                 {
                     throw std::invalid_argument(
@@ -95,8 +113,7 @@ namespace
                 projectRoot = arguments[++index];
                 continue;
             }
-            // 値付きオプションの値をプロジェクトパスと誤認しないよう、
-            // プロジェクトパスの探索対象から除外します。
+            // 値付きオプションとその値を飛ばします。
             if (arguments[index] == L"--screenshot"
                 || arguments[index] == L"--report"
                 || arguments[index] == L"--show"
@@ -106,6 +123,7 @@ namespace
                 ++index;
                 continue;
             }
+            // オプション以外の引数をプロジェクトルート候補にします。
             if (!arguments[index].empty()
                 && arguments[index].front() != L'-')
             {
@@ -113,23 +131,29 @@ namespace
             }
         }
 
+        // .lamapon/project.jsonが指定された場合は親のルートへ戻します。
         if (projectRoot.filename() == L"project.json"
             && projectRoot.parent_path().filename()
                 == L".lamapon")
         {
             projectRoot = projectRoot.parent_path().parent_path();
         }
+        // 有効なプロジェクトパスが無ければ起動を中断します。
         if (projectRoot.empty())
         {
             throw std::invalid_argument(
                 "A LamaPon project folder was not specified.");
         }
 
+        // settingsとAssetsの存在を検証するプロジェクト絶対パス
         projectRoot = std::filesystem::absolute(
             projectRoot).lexically_normal();
+        // Project Settingsの保存先
         const auto settingsPath =
             projectRoot / L".lamapon" / L"project.json";
+        // Assetファイルのルート
         const auto assetRoot = projectRoot / L"assets";
+        // SettingsかAssetsが無ければプロジェクトとして扱いません。
         if (!std::filesystem::is_regular_file(settingsPath)
             || !std::filesystem::is_directory(assetRoot))
         {
@@ -141,19 +165,23 @@ namespace
     }
 }
 
+// Editorを起動します(instance: Win32アプリケーション識別子)。
 int WINAPI wWinMain(
     HINSTANCE instance,
     HINSTANCE,
     PWSTR,
     int)
 {
+    // 起動失敗時の初期ログ保存先
     std::filesystem::path logPath =
         LamaPon::ExecutableDirectory() / L"LamaPonEditor.log";
     LamaPon::CrashReporter::Install(
         LamaPon::ExecutableDirectory() / L"Crashes",
         "LamaPonEditor");
+    // 起動処理全体の失敗を捕捉します。
     try
     {
+        // 検証済みプロジェクトの絶対ルート
         const auto projectRoot = RequestedProjectRoot();
         logPath = projectRoot
             / L".lamapon"
@@ -162,7 +190,9 @@ int WINAPI wWinMain(
             projectRoot / L".lamapon" / L"Crashes",
             "LamaPonEditor");
 
+        // 同じプロジェクトの多重起動を防ぐロック
         LamaPon::ProjectInstanceLock projectInstance(projectRoot);
+        // ロックを取れなければ同じプロジェクトを開きません。
         if (!projectInstance.Acquired())
         {
             MessageBoxW(
@@ -171,31 +201,33 @@ int WINAPI wWinMain(
                 L"同じプロジェクトを同時に複数開くことはできません。",
                 L"LamaPon Editor",
                 MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
+            // 多重起動として終了します。
             return 2;
         }
 
+        // 相対パスをプロジェクトルート基準にします。
         SetCurrentDirectoryW(projectRoot.c_str());
 
-        // 前回の実行がクラッシュや強制終了で終わっていたら、
-        // 復旧方法を選べるようにします。C++スクリプトの不具合で
-        // エディターが開けなくなる状態から抜け出すための導線です。
+        // 前回起動が正常終了したか追跡します。
         LamaPon::CrashSentinel crashSentinel(projectRoot);
+        // --safeでセーフモードを強制するか
         bool safeMode = HasCommandLineFlag(L"--safe");
-        // スクリーンショットモード（--screenshot）は無人実行なので、
-        // ダイアログで止めずに通常どおり開きます。
+        // 自動撮影先
         const std::wstring screenshotPath =
             CommandLineOptionValue(L"--screenshot");
+        // 自動遠隔操作の接続先
         const std::wstring remotePath =
             CommandLineOptionValue(L"--remote");
-        // 無人実行（スクリーンショット or リモート操作）。ダイアログを
-        // 出すと誰も押せないボタンを待ち続けるので、全部抑止します。
+        // ScreenshotまたはRemote起動か
         const bool unattended =
             !screenshotPath.empty()
             || !remotePath.empty();
+        // 異常終了後の復旧選択は対話起動に限ります。
         if (crashSentinel.PreviousRunCrashed()
             && !safeMode
             && !unattended)
         {
+            // 利用者が選択した復旧方法
             const int choice = MessageBoxW(
                 nullptr,
                 L"前回、LamaPon Editorは正常に終了しませんでした。\n"
@@ -209,30 +241,26 @@ int WINAPI wWinMain(
                 L"LamaPon Editor",
                 MB_YESNOCANCEL | MB_ICONWARNING
                     | MB_SETFOREGROUND);
+            // CancelまたはMessageBox失敗時は起動しません。
             if (choice == IDCANCEL || choice == 0)
             {
+                // 利用者が起動を取り消しました。
                 return 0;
             }
             safeMode = choice == IDNO;
         }
 
-        // 古いエンジンで作られたプロジェクトは、組み込みシェーダーが
-        // 当時のままだと現在のエンジンと定数バッファのレイアウトが
-        // 食い違い、描画異常やクラッシュの原因になります。開く前に
-        // 最新へ揃えます（改造されていた分は .bak へ退避）。
-        //
-        // 揃える前に新旧を確かめます。新しいエンジンで作られた
-        // プロジェクトを開いてはいけません。古いエンジンで
-        // 書き戻すと、新しい版が足した設定を落としたり、組み込み
-        // シェーダーを巻き戻したりして、元のエンジンでも壊れた
-        // 状態になります。
+        // VersionStringで版を照合し、旧Editorによる新版Project破損を防ぎます。
+        // 検査したProjectの作成バージョン
         const auto versionInfo =
             LamaPon::InspectProjectVersion(
                 projectRoot,
                 LamaPon::VersionString);
+        // 現在のEditorより新しい版で作られたProjectを拒否します。
         if (versionInfo.status
             == LamaPon::ProjectVersionStatus::Newer)
         {
+            // Version不一致の案内文
             const auto message =
                 L"このプロジェクトは、より新しいバージョンの"
                 L"LamaPon Engineで作られています。\n\n"
@@ -248,6 +276,7 @@ int WINAPI wWinMain(
                 + LamaPon::Utf8ToWide(
                     versionInfo.recordedVersion)
                 + L"以降のLamaPon Engineで開いてください。";
+            // 無人起動ではダイアログを出さず終了します。
             if (!unattended)
             {
                 MessageBoxW(
@@ -257,24 +286,26 @@ int WINAPI wWinMain(
                     MB_OK | MB_ICONERROR
                         | MB_SETFOREGROUND);
             }
+            // 旧Editorで新しいProjectを開いた場合の終了コード
             return 3;
         }
 
-        // 古い／記録が無いプロジェクトは、更新してよいか訊きます。
-        // 黙って書き換えると、あとで「前のエディターで開けない」に
-        // なったときに何が起きたのか分かりません。
+        // Engine版が古いか記録されていないか
         const bool needsUpgrade =
             versionInfo.status
                 == LamaPon::ProjectVersionStatus::Older
             || versionInfo.status
                 == LamaPon::ProjectVersionStatus::Unrecorded;
+        // 古い／未記録版のProjectだけ更新確認を行います。
         if (needsUpgrade)
         {
+            // 記録済みEngine版
             const std::wstring from =
                 versionInfo.recordedVersion.empty()
                 ? L"（記録なし）"
                 : L"v" + LamaPon::Utf8ToWide(
                     versionInfo.recordedVersion);
+            // 更新内容と旧版を示す確認メッセージ
             const auto message =
                 L"このプロジェクトは、古いバージョンの"
                 L"LamaPon Engineで作られています。\n\n"
@@ -287,8 +318,7 @@ int WINAPI wWinMain(
                 L"組み込みシェーダーが最新へ揃います"
                 L"（自分で書き換えていたものは .bak へ残します）。\n\n"
                 L"「いいえ」を選ぶと、開かずに終了します。";
-            // 無人実行（スクリーンショットモード）では訊かずに
-            // 「はい」相当で進めます。訊いても誰も押せません。
+            // 更新確認の選択結果
             const int choice =
                 !unattended
                     ? MessageBoxW(
@@ -298,23 +328,25 @@ int WINAPI wWinMain(
                         MB_YESNO | MB_ICONWARNING
                             | MB_SETFOREGROUND)
                     : IDYES;
+            // 更新拒否またはDialog失敗時は終了します。
             if (choice != IDYES)
             {
+                // Projectを変更せずに終了します。
                 return 0;
             }
         }
 
+        // 変更済みAssetを.bakへ退避して更新します。
         const auto migration = LamaPon::MigrateProjectAssets(
             projectRoot,
             LamaPon::ExecutableDirectory() / L"assets",
             LamaPon::VersionString);
+        // Asset更新の利用者向け報告は対話起動に限ります。
         if (needsUpgrade
             && migration.changed
-            // 無人実行では報告ダイアログも出しません（ログには残る）。
             && !unattended)
         {
-            // 何が変わったかを見せます。ログだけだと、絵が変わった
-            // ときに「更新のせいなのか」が分かりません。
+            // 更新結果の件数と退避ファイルを示す報告
             std::wstring report =
                 L"プロジェクトを v"
                 + LamaPon::Utf8ToWide(
@@ -323,10 +355,12 @@ int WINAPI wWinMain(
                 + std::to_wstring(
                     migration.updatedAssets.size())
                 + L"件";
+            // 既存編集を退避したAssetがあれば列挙します。
             if (!migration.backedUpAssets.empty())
             {
                 report += L"\n\n書き換えられていたため .bak へ"
                     L"退避したもの:";
+                // 退避されたAssetのパスを追加します(backedUp: 退避パス)。
                 for (const auto& backedUp :
                     migration.backedUpAssets)
                 {
@@ -341,6 +375,7 @@ int WINAPI wWinMain(
                 MB_OK | MB_ICONINFORMATION
                     | MB_SETFOREGROUND);
         }
+        // 退避Assetをログへ記録します(backedUp: 退避パス)。
         for (const auto& backedUp : migration.backedUpAssets)
         {
             LamaPon::Logger::Instance().Warning(
@@ -348,6 +383,7 @@ int WINAPI wWinMain(
                 "（元の内容は .bak へ保存しています）: "
                 + LamaPon::PathToUtf8(backedUp));
         }
+        // Assetが更新された場合だけ結果を記録します。
         if (!migration.updatedAssets.empty())
         {
             LamaPon::Logger::Instance().Info(
@@ -359,24 +395,23 @@ int WINAPI wWinMain(
                 + "件の組み込みアセット）");
         }
 
+        // Project Settingsの保存先
         const auto settingsPath =
             projectRoot / L".lamapon" / L"project.json";
+        // 保存済みProject Settings
         const auto projectSettings =
             LamaPon::LoadProjectSettings(settingsPath);
+        // プロジェクトAssetのルート
         const auto assetRoot = projectRoot / L"assets";
+        // 設定に記録された起動Sceneのパス
         const auto scenePath =
             assetRoot / projectSettings.startupScene;
-        // 起動シーンが読めなくても、開けなくはしません。
-        // 開けないということは、エディターで直す手段も無いという
-        // ことです。シーンを選び直すのも、作り直すのも、他の
-        // アセットを見るのも、全部できなくなります。
-        //
-        // ファイルが無いだけなら、そのパスのまま空のシーンで開きます
-        // （保存すればそこへ作られます）。読めたのに壊れている場合は
-        // パスを渡しません。渡すとCtrl+Sが「上書き保存」になり、
-        // 手で直せたかもしれないファイルを空のシーンで潰します。
+        // 起動Sceneが欠落・破損してもEditorで修復できるよう開きます。
+        // Scene問題の案内文
         std::wstring startupSceneProblem;
+        // 起動Sceneを安全に読み込めなかったか
         bool startupSceneCorrupt = false;
+        // 欠落時は保存先を保ち、破損時は空Pathで元ファイルを保護します。
         if (!std::filesystem::is_regular_file(scenePath))
         {
             startupSceneProblem =
@@ -387,46 +422,43 @@ int WINAPI wWinMain(
                 L"ください。";
         }
 
-        // --warp: GPUを使わず、CPUラスタライザ（WARP）で描画します。
-        // 仮想マシンやGPUが正しく動かない環境での動作確認用です。
+        // --warpでCPUラスタライザを使います。
         if (HasCommandLineFlag(L"--warp"))
         {
             LamaPon::GraphicsDevice::SetPreferWarpAdapter(true);
         }
 
-        // --d3ddebug: 選択中Direct3D APIのデバッグレイヤーを有効にします。
-        // 不正な描画は、これが無いと警告も出ずにドライバーへ渡り、
-        // WARPではプロセスごと落ちます。落ちる場所を突き止め
-        // たいときに付けてください（普段は重いので既定は無効）。
+        // --d3ddebugで選択中APIの検証レイヤーを有効にします。
         if (HasCommandLineFlag(L"--d3ddebug"))
         {
             LamaPon::GraphicsDevice::SetEnableDebugLayer(true);
         }
 
-        // 複数ブランチのエディターを並べても取り違えないよう、
-        // タイトルにブランチ名とコミットを出します。
+        // Build Label付きタイトル
         const auto windowTitle = LamaPon::Utf8ToWide(
             projectSettings.gameName + " - LamaPon Editor ("
             + LamaPon::FormatBuildLabel() + ")");
+        // Editor Application
         LamaPon::Application application(
             windowTitle,
             1280,
             720,
             projectSettings.gameName);
 
+        // Package Assetの解決先を設定します。
         LamaPon::SetGraphicsBackendPackageAssetRoot(assetRoot);
+        // 選択APIで初期化し、D3D12失敗時はD3D11へ戻します。
         application.Initialize(
             instance,
-            // Editor GUI、モデルプレビュー、grid／gizmoを含むD3D12
-            // rendererを起動します。初期化失敗時はD3D11へ戻ります。
             projectSettings.graphics.renderingApi);
+        // Network設定を適用します。
         static_cast<void>(application.Network().Configure(projectSettings.network));
-        // セーフモードと自動UI検証では、保存済みセッションの復元を含む
-        // 外部通信を開始しません。通常のEditor起動だけで有効化します。
+        // 対話起動かつ通常モードでOnline設定を有効化します。
         if (!safeMode
             && !unattended
             && projectSettings.online.enabled)
         {
+            // Online Service接続設定
             LamaPon::OnlineServiceConfiguration online;
             online.serviceBaseUrl =
                 projectSettings.online.serviceBaseUrl;
@@ -439,12 +471,12 @@ int WINAPI wWinMain(
                 projectSettings.online.openAuthorizationBrowser;
             application.Online().Configure(std::move(online));
         }
-        // Rich Presenceはアカウント連携と独立しています。ログイン設定
-        // （online.enabled）に関係なく、Presenceの設定だけで有効化します。
+        // Discord Rich PresenceはOnlineログインと独立して有効化できます。
         if (!safeMode
             && !unattended
             && projectSettings.online.discordPresence.enabled)
         {
+            // Discord Presence接続設定
             LamaPon::DiscordPresenceConfiguration presence;
             presence.enabled = true;
             presence.applicationId =
@@ -459,17 +491,18 @@ int WINAPI wWinMain(
             application.Online().ConfigureDiscordPresence(
                 std::move(presence));
         }
+        // 描画品質・解像度などを反映します。
         application.Graphics().SetGraphicsSettings(
             projectSettings.graphics);
+        // 保存済みInput Actionを適用します。
         application.Input().SetActions(
             projectSettings.inputActions);
+        // Asset読込先をProjectへ設定します。
         application.Graphics().Assets().SetAssetRoot(assetRoot);
+        // Safe ModeではShader失敗記録を初期化します。
         if (safeMode)
         {
-            // 前回落ちた原因が分からない状態なので、起動を妨げ得る
-            // ものは捨ててから開きます。覚えている「失敗」だけを
-            // 捨てるので、コンパイル済みのバイトコードは残ります
-            // （捨てると次の起動が全部コンパイルからになります）。
+            // 消去したShader失敗記録数
             const auto discarded =
                 LamaPon::ClearShaderCacheFailures();
             LamaPon::Logger::Instance().Warning(
@@ -480,33 +513,34 @@ int WINAPI wWinMain(
                 + std::to_string(discarded)
                 + "件捨てました。");
         }
+        // Safe Mode以外ではGame ModuleとNative SDKを読み込みます。
         else
         {
-            // パッケージが持ち込むSDKのDLLを、Game Moduleが解決
-            // できるようにします（assets/packages/<名前>/ の下に
-            // あるため、既定のDLL探索順では見つかりません）。
+            // Package SDK DLLをGame Moduleの探索先へ加えます。
             application.GameModule().SetNativeSearchDirectories(
                 LamaPon::PackageNativeSearchDirectories(
                     LamaPon::ScanPackageNativeDependencies(
                         assetRoot).packages));
+            // Project固有のGame Moduleを読み込みます。
             static_cast<void>(application.GameModule().Load(
                 projectRoot
                     / L".lamapon"
                     / L"bin"
                     / L"LamaPonGameModule.dll"));
         }
+        // Sceneに問題が無ければファイルから開きます。
         if (startupSceneProblem.empty())
         {
+            // Scene読込に失敗した途中状態を捕捉します。
             try
             {
                 application.ActiveScene().LoadFromFile(
                     scenePath);
             }
+            // Sceneの読込失敗理由(exception: 読込例外)。
             catch (const std::exception& exception)
             {
-                // 途中まで読めている可能性があるので捨てます。
-                // 半端に読めたシーンをそのまま見せると、消えている
-                // ものが「元から無かった」ように見えます。
+                // 半端なSceneを破棄し、元ファイルを保護します。
                 application.ActiveScene().Clear();
                 startupSceneCorrupt = true;
                 startupSceneProblem =
@@ -519,24 +553,26 @@ int WINAPI wWinMain(
                     L"保存は「名前を付けて保存」になります。";
             }
         }
+        // 問題のあるSceneを空のまま開く理由を表示します。
         if (!startupSceneProblem.empty())
         {
             LamaPon::Logger::Instance().Error(
                 "起動シーンを開けませんでした: "
                 + LamaPon::PathToUtf8(scenePath));
-            // ログだけだと気付けません。空のシーンが出た理由が
-            // 分からないと、作り直して上書きしてしまいます。
             MessageBoxW(
                 nullptr,
                 startupSceneProblem.c_str(),
                 L"LamaPon Editor",
                 MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
         }
+        // ビルド設定既定のEngine root
         auto engineRoot = std::filesystem::path{
             LAMAPON_DEFAULT_PROJECT_ROOT
         };
+        // 実行中Editorの配置先
         const auto installedEngineRoot =
             LamaPon::ExecutableDirectory();
+        // 配布Editorなら配置済みEngine rootを使います。
         if (std::filesystem::is_regular_file(
                 installedEngineRoot
                     / L"tools"
@@ -545,8 +581,7 @@ int WINAPI wWinMain(
         {
             engineRoot = installedEngineRoot;
         }
-        // スクリーンショットモードでは、指定した画面を撮影して
-        // レポートを保存した後、自動的に終了します。
+        // 無人撮影・Remote操作のオプション
         LamaPon::EditorScreenshotOptions screenshot;
         screenshot.imagePath = screenshotPath;
         screenshot.reportPath =
@@ -555,19 +590,19 @@ int WINAPI wWinMain(
             std::filesystem::path{
                 CommandLineOptionValue(L"--show") });
         screenshot.remoteDirectory = remotePath;
+        // 取得するスクリーンショットのフレーム番号
         if (const auto frames =
                 CommandLineOptionValue(L"--shot-frames");
             !frames.empty())
         {
+            // --shot-framesの値をcaptureFrameへ変換します。
             screenshot.captureFrame =
                 static_cast<std::uint32_t>(
                     std::stoul(frames));
         }
+        // 破損Sceneはパスを渡さずCtrl+Sで元ファイルを保護します。
         LamaPon::EnableEditor(
             application,
-            // 壊れたファイルは「開いているシーン」にしません。
-            // 空パスならCtrl+Sが「名前を付けて保存」になるので、
-            // 手で直せたかもしれない中身を潰しません。
             startupSceneCorrupt
                 ? std::filesystem::path{}
                 : scenePath,
@@ -576,40 +611,45 @@ int WINAPI wWinMain(
             safeMode,
             unattended ? &screenshot : nullptr);
 
+        // Editorの終了コード
         int exitCode{};
+        // Editor実行中の例外を境界で変換します。
         try
         {
             exitCode = application.Run();
         }
+        // Game Module解放前にDLL由来の例外情報を複製します(exception: 実行例外)。
         catch (const std::exception& exception)
         {
-            // Applicationが生きている間はGame Moduleも読み込まれて
-            // います。ここでメッセージをエディター側の例外へコピーし、
-            // DLL解放後に無効な例外vtableを参照しないようにします。
             throw std::runtime_error(exception.what());
         }
+        // std::exception以外を共通例外へ変換します。
         catch (...)
         {
             throw std::runtime_error(
                 "Unknown exception escaped from the editor runtime.");
         }
 
-        // セーフモードから「通常モードで開き直す」を選んだ場合は、
-        // ここまででプロジェクトのロックとウィンドウが解放されて
-        // いるため、安全に起動し直せます。
+        // Safe Modeから通常起動へ切り替える要求を処理します。
         if (LamaPon::WasNormalModeRestartRequested())
         {
+            // 正常終了を記録します。
             crashSentinel.MarkCleanExit();
+            // 子Editor起動前にProject lockを解放します。
             projectInstance.Release();
+            // 通常モード起動用のコマンドライン
             std::wstring commandLine = L"\""
                 + (LamaPon::ExecutableDirectory()
                     / L"LamaPonEditor.exe").native()
                 + L"\" --project \""
                 + projectRoot.native()
                 + L"\"";
+            // Windows Process起動情報
             STARTUPINFOW startupInfo{};
             startupInfo.cb = sizeof(startupInfo);
+            // 子Editor Processの識別情報
             PROCESS_INFORMATION processInfo{};
+            // Project rootを引き継いでEditorを再起動します。
             if (CreateProcessW(
                 nullptr,
                 commandLine.data(),
@@ -628,39 +668,43 @@ int WINAPI wWinMain(
         }
         return exitCode;
     }
+    // 起動例外を記録し、対話起動なら理由を表示します(exception: 起動例外)。
     catch (const std::exception& exception)
     {
         static_cast<void>(
             LamaPon::CrashReporter::WriteDiagnostic(
                 exception.what()));
+        // ログ保存先の親Directoryを準備します。
         if (!logPath.parent_path().empty())
         {
+            // Directory作成時のErrorCode
             std::error_code error;
             std::filesystem::create_directories(
                 logPath.parent_path(),
                 error);
         }
+        // 例外の詳細を起動ログへ記録します。
         std::ofstream log(logPath, std::ios::trunc);
         log << exception.what() << '\n';
 
-        // スクリーンショットモード（無人実行）ではダイアログを
-        // 出しません。出すと誰も押せないOKボタンを待ち続けます。
-        // 代わりに--reportのJSONへ理由を書いて終了します。
+        // Screenshot起動ではDialogを出さずReportへ記録します。
         if (!CommandLineOptionValue(L"--screenshot").empty())
         {
+            // 指定された失敗Reportの保存先
             if (const auto reportPath =
                     CommandLineOptionValue(L"--report");
                 !reportPath.empty())
             {
+                // Screenshot失敗のJSON本文
                 const nlohmann::json failure{
                     { "ok", false },
                     { "error", exception.what() },
                 };
+                // 失敗JSONを書き出すReport
                 std::ofstream report(
                     std::filesystem::path{ reportPath },
                     std::ios::trunc);
-                // 不正なUTF-8（ANSI由来の例外文など）でも
-                // JSONを壊さず置換します。
+                // 不正UTF-8を置換してJSONを保ちます。
                 report << failure.dump(
                     2,
                     ' ',
@@ -668,15 +712,19 @@ int WINAPI wWinMain(
                     nlohmann::json::error_handler_t::
                         replace);
             }
+            // Screenshot起動の失敗コード
             return 1;
         }
 
+        // Wide形式にした例外文
         const auto message = LamaPon::Utf8ToWide(exception.what());
+        // 対話起動でエラー理由を表示します。
         MessageBoxW(
             nullptr,
             message.c_str(),
             L"LamaPon Editor - エラー",
             MB_OK | MB_ICONERROR);
+        // 起動失敗の終了コード
         return 1;
     }
 }

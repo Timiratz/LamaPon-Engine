@@ -14,19 +14,20 @@
 
 namespace
 {
-    // このランタイム（LamaPonRuntime.dll）のビルド時刻を返します。
-    // 静的リンクなどで取得できない場合はfalseを返し、時刻による
-    // 互換性判定を省略します。
+    // Runtimeのファイル更新時刻を取得し不明ならfalseとする(writeTime: 時刻の出力)。
     [[nodiscard]] bool TryGetRuntimeWriteTime(
         std::filesystem::file_time_type& writeTime) noexcept
     {
+        // 現在読み込み中のRuntime
         const HMODULE runtime =
             GetModuleHandleW(L"LamaPonRuntime.dll");
         if (runtime == nullptr)
         {
             return false;
         }
+        // RuntimeDLLの取得先パス
         std::wstring path(MAX_PATH, L'\0');
+        // 取得したDLLパスの文字数
         const DWORD length = GetModuleFileNameW(
             runtime,
             path.data(),
@@ -36,7 +37,9 @@ namespace
             return false;
         }
         path.resize(length);
+        // ファイル操作のエラー
         std::error_code error;
+        // Runtimeの更新時刻
         const auto time =
             std::filesystem::last_write_time(path, error);
         if (error)
@@ -47,6 +50,7 @@ namespace
         return true;
     }
 
+    // Windowsエラーを改行末尾のない文字列にする(error: エラー番号)。
     std::string WindowsErrorMessage(const DWORD error)
     {
         if (error == ERROR_SUCCESS)
@@ -54,7 +58,9 @@ namespace
             return {};
         }
 
+        // Windowsが確保したエラー文
         char* buffer{};
+        // エラー文の取得文字数
         const DWORD size = FormatMessageA(
             FORMAT_MESSAGE_ALLOCATE_BUFFER
                 | FORMAT_MESSAGE_FROM_SYSTEM
@@ -65,6 +71,7 @@ namespace
             reinterpret_cast<char*>(&buffer),
             0,
             nullptr);
+        // 整形したWindowsエラー文
         std::string result = size != 0 && buffer != nullptr
             ? std::string(buffer, size)
             : "Windows error " + std::to_string(error);
@@ -82,12 +89,14 @@ namespace
         return result;
     }
 
+    // 空・空白のみ・128バイト超の名前を拒否する(value: 任意のUTF8型名または表示名)。
     bool IsValidName(const char* value)
     {
         if (value == nullptr)
         {
             return false;
         }
+        // 検査する借用名文字列
         const std::string_view text(value);
         return !text.empty()
             && text.size() <= 128
@@ -100,15 +109,23 @@ namespace LamaPon
 {
     struct GameModuleHost::Candidate final
     {
+        // 採用する候補DLLの所有権
         void* handle{};
+        // 候補DLL内の型記述
         const GameModuleDescriptor* descriptor{};
+        // 候補DLLの読み込み用コピー
         std::filesystem::path shadowPath;
+        // 候補元DLLの更新時刻
         std::filesystem::file_time_type writeTime{};
+        // 候補DLLの複製表示名
         std::string moduleName;
+        // 候補のスクリプト型名列
         std::vector<RegisteredNativeScript> components;
+        // 候補のデータ型とスキーマ
         std::vector<RegisteredDataAssetType> dataAssets;
     };
 
+    // 唯一の有効なDLL管理器
     GameModuleHost* GameModuleHost::s_current{};
 
     GameModuleHost::GameModuleHost()
@@ -123,7 +140,9 @@ namespace LamaPon
 
     GameModuleHost::~GameModuleHost()
     {
+        // 通知中の変更を避ける登録控え
         const auto instances = m_instances;
+        // 通知または検証する型と物体
         for (auto* component : instances)
         {
             if (component != nullptr)
@@ -138,9 +157,7 @@ namespace LamaPon
         s_current = nullptr;
     }
 
-    // パッケージが持ち込むSDKのDLLは、実行ファイルの隣ではなく
-    // assets/packages/<名前>/ の下にあります。既定のDLL探索順では
-    // 見つからないため、明示的に探索先へ足します。
+
     void GameModuleHost::SetNativeSearchDirectories(
         std::vector<std::filesystem::path> directories)
     {
@@ -151,13 +168,16 @@ namespace LamaPon
 
     void GameModuleHost::ApplyNativeSearchDirectories()
     {
+        // 依存DLLの探索フォルダー
         for (const auto& directory : m_nativeSearchDirectories)
         {
+            // ファイル操作のエラー
             std::error_code error;
             if (!std::filesystem::is_directory(directory, error))
             {
                 continue;
             }
+            // 正規化した探索先の絶対パス
             const auto absolute =
                 std::filesystem::absolute(directory, error)
                     .lexically_normal();
@@ -165,6 +185,7 @@ namespace LamaPon
             {
                 continue;
             }
+            // Windowsの探索登録
             if (auto* const cookie =
                 AddDllDirectory(absolute.c_str()))
             {
@@ -175,6 +196,7 @@ namespace LamaPon
 
     void GameModuleHost::ReleaseNativeSearchDirectories() noexcept
     {
+        // Windowsの探索登録
         for (auto* const cookie : m_nativeSearchCookies)
         {
             static_cast<void>(
@@ -186,6 +208,7 @@ namespace LamaPon
 
     bool GameModuleHost::Load(std::filesystem::path modulePath)
     {
+        // 正規化した元DLLパス
         const auto requestedPath =
             std::filesystem::absolute(
             std::move(modulePath)).lexically_normal();
@@ -196,7 +219,9 @@ namespace LamaPon
         {
             if (IsLoaded())
             {
+                // 通知中の変更を避ける登録控え
                 const auto instances = m_instances;
+                // 通知または検証する型と物体
                 for (auto* component : instances)
                 {
                     if (component != nullptr)
@@ -206,6 +231,7 @@ namespace LamaPon
                 }
                 ReleaseLoadedModule();
                 m_loadedWriteTime = {};
+                // 通知または検証する型と物体
                 for (auto* component : instances)
                 {
                     if (component != nullptr)
@@ -227,13 +253,16 @@ namespace LamaPon
             return false;
         }
 
+        // 採用前に検証するDLL候補
         Candidate candidate;
         if (!LoadCandidate(candidate))
         {
             return false;
         }
 
+        // 通知中の変更を避ける登録控え
         const auto instances = m_instances;
+        // 通知または検証する型と物体
         for (auto* component : instances)
         {
             if (component != nullptr)
@@ -254,6 +283,7 @@ namespace LamaPon
             std::move(candidate.dataAssets);
         m_lastError.clear();
 
+        // 通知または検証する型と物体
         for (auto* component : instances)
         {
             if (component != nullptr)
@@ -275,7 +305,9 @@ namespace LamaPon
         }
         m_pollAccumulator = 0.0f;
 
+        // ファイル操作のエラー
         std::error_code error;
+        // 元DLLの現在更新時刻
         const auto writeTime =
             std::filesystem::last_write_time(
                 m_modulePath,
@@ -294,10 +326,12 @@ namespace LamaPon
         {
             return nullptr;
         }
+        // 型記述列の検査番号
         for (std::size_t index = 0;
             index < m_descriptor->componentCount;
             ++index)
         {
+            // 通知または検証する型と物体
             const auto& component =
                 m_descriptor->components[index];
             if (component.typeName != nullptr
@@ -313,6 +347,7 @@ namespace LamaPon
         GameModuleHost::FindDataAssetType(
             const std::string_view typeName) const noexcept
     {
+        // 検索または検証するデータ型
         for (const auto& dataAsset : m_registeredDataAssets)
         {
             if (dataAsset.typeName == typeName)
@@ -331,9 +366,7 @@ namespace LamaPon
     std::filesystem::path GameModuleHost::HotReloadDirectoryFor(
         const std::filesystem::path& modulePath)
     {
-        // ネットワークやWebDAV上ではシャドウコピーとLoadLibraryが
-        // 失敗する場合があります。リモートのモジュールはユーザーの
-        // ローカル領域へコピーしてから読み込みます。
+
         if (!UsesNetworkDrive(modulePath))
         {
             return modulePath.parent_path() / L".lamapon-hot-reload";
@@ -367,6 +400,7 @@ namespace LamaPon
     bool GameModuleHost::LoadCandidate(
         Candidate& candidate)
     {
+        // ファイル操作のエラー
         std::error_code error;
         candidate.writeTime =
             std::filesystem::last_write_time(
@@ -380,9 +414,8 @@ namespace LamaPon
             return false;
         }
 
-        // Runtimeより古いGame Moduleは、同じAPI番号でも公開クラスの
-        // レイアウトが一致しない可能性があります。読み込み前に更新時刻を
-        // 比較し、再ビルドが必要な場合は手順を案内します。
+        // API番号が一致してもRuntimeより古いDLLは拒否し、現在のヘッダーでの再ビルドを求める。
+        // 互換判定用のRuntime時刻
         std::filesystem::file_time_type runtimeWriteTime{};
         if (TryGetRuntimeWriteTime(runtimeWriteTime)
             && candidate.writeTime < runtimeWriteTime)
@@ -395,11 +428,12 @@ namespace LamaPon
             return false;
         }
 
+        // DLLコピーの作成先
         auto hotReloadDirectory = HotReloadDirectoryFor(m_modulePath);
         if (!EnsureDirectoryExists(hotReloadDirectory, error))
         {
-            // 読み取り専用や権限不足でプロジェクト内へ作成できない場合は、
-            // ユーザーのローカル領域へ切り替えて再試行します。
+            // プロジェクト内に作成できない場合はユーザーローカルへ切り替える。
+            // ユーザーローカルの作成先
             const auto fallback =
                 LocalEngineCachePath(L"HotReload")
                 / PathCacheKey(m_modulePath.parent_path());
@@ -416,6 +450,7 @@ namespace LamaPon
                 + error.message();
             return false;
         }
+        // 古いDLLコピーの走査位置
         for (std::filesystem::directory_iterator iterator(
                 hotReloadDirectory,
                 error);
@@ -424,9 +459,12 @@ namespace LamaPon
                     != std::filesystem::directory_iterator{};
             iterator.increment(error))
         {
+            // 確認する古いコピー項目
             const auto& entry = *iterator;
+            // 古いDLLコピーのファイル名
             const auto filename =
                 entry.path().filename().wstring();
+            // 対象DLLコピーの名前接頭辞
             const auto prefix =
                 m_modulePath.stem().wstring()
                 + L"-";
@@ -436,6 +474,7 @@ namespace LamaPon
                     == m_modulePath.extension()
                 && entry.path() != m_shadowPath)
             {
+                // 古いコピーの削除エラー
                 std::error_code removeError;
                 std::filesystem::remove(
                     entry.path(),
@@ -444,6 +483,7 @@ namespace LamaPon
         }
         error.clear();
 
+        // コピー名に含める単調時刻
         const auto uniqueValue = std::chrono::steady_clock::now()
             .time_since_epoch().count();
         candidate.shadowPath =
@@ -465,8 +505,8 @@ namespace LamaPon
             return false;
         }
 
-        // 探索先を足していないときは、従来どおりの読み込みのままに
-        // します。フラグを渡すと探索順そのものが変わるためです。
+        // 探索登録がない場合は検索フラグを変えず、Windowsの既定探索順を維持する。
+        // 読み込んだ候補DLL
         const HMODULE handle = m_nativeSearchCookies.empty()
             ? LoadLibraryW(candidate.shadowPath.c_str())
             : LoadLibraryExW(
@@ -484,6 +524,7 @@ namespace LamaPon
         }
         candidate.handle = handle;
 
+        // DLLから型記述を取得する関数
         const auto getDescriptor =
             reinterpret_cast<
                 GetGameModuleDescriptorFunction>(
@@ -501,8 +542,7 @@ namespace LamaPon
         }
 
         candidate.descriptor = getDescriptor();
-        // APIバージョンの不一致は再ビルドで解消できるため、
-        // 一般的なモジュール破損と分けて必要な操作を案内します。
+
         if (candidate.descriptor != nullptr
             && candidate.descriptor->apiVersion
                 != GameModuleApiVersion)
@@ -538,15 +578,18 @@ namespace LamaPon
             return false;
         }
 
+        // 登録済みスクリプト型名
         std::unordered_set<std::string> typeNames;
         candidate.moduleName =
             candidate.descriptor->moduleName;
         candidate.components.reserve(
             candidate.descriptor->componentCount);
+        // 型記述列の検査番号
         for (std::size_t index = 0;
             index < candidate.descriptor->componentCount;
             ++index)
         {
+            // 通知または検証する型と物体
             const auto& component =
                 candidate.descriptor->components[index];
             if (!IsValidName(component.typeName)
@@ -570,13 +613,16 @@ namespace LamaPon
                 });
         }
 
+        // 登録済みデータ型名
         std::unordered_set<std::string> dataAssetTypeNames;
         candidate.dataAssets.reserve(
             candidate.descriptor->dataAssetCount);
+        // 型記述列の検査番号
         for (std::size_t index = 0;
             index < candidate.descriptor->dataAssetCount;
             ++index)
         {
+            // 検索または検証するデータ型
             const auto& dataAsset =
                 candidate.descriptor->dataAssets[index];
             if (!IsValidName(dataAsset.typeName)
@@ -626,6 +672,7 @@ namespace LamaPon
         {
             return;
         }
+        // ファイル操作のエラー
         std::error_code error;
         std::filesystem::remove(path, error);
     }

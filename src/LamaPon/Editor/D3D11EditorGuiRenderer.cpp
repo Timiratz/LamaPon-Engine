@@ -14,6 +14,7 @@
 
 namespace
 {
+    // 生のSRVをImGuiのtexture IDへ変換する(texture: フレーム内で存続するSRV)。
     ImTextureRef MakeD3D11TextureReference(
         ID3D11ShaderResourceView* const texture)
     {
@@ -40,6 +41,7 @@ namespace LamaPon
                 "The DirectX 11 editor GUI renderer is already initialized.");
         }
 
+        // 初期化する現在のImGui context
         auto* const imguiContext = ImGui::GetCurrentContext();
         if (imguiContext == nullptr)
         {
@@ -47,11 +49,13 @@ namespace LamaPon
                 "The DirectX 11 editor GUI renderer requires an ImGui context.");
         }
 
-        // Device / Contextを読む前に取得し、raw pointerの取得と
-        // ImGui初期化の間へBackend transitionが割り込まないようにします。
+        // 生のdevice・context取得前にleaseを取り、ImGui初期化中のbackend切替を防ぐ。
+        // 描画装置の再初期化を防ぐ使用権
         auto resourceLease = graphics.AcquireResourceLease();
+        // 初期化済みD3D11 deviceの借用
         auto* const device =
             Detail::GraphicsDeviceD3D11Access::Device(graphics);
+        // 初期化済みD3D11 contextの借用
         auto* const context =
             Detail::GraphicsDeviceD3D11Access::Context(graphics);
         if (device == nullptr || context == nullptr)
@@ -75,9 +79,7 @@ namespace LamaPon
     void D3D11EditorGuiRenderer::NewFrame()
     {
         RequireCurrentContext();
-        // ImGui texture IDs are raw DirectX 11 SRV pointers. Keep every SRV
-        // referenced while building a frame alive until that draw data has
-        // been consumed; the next NewFrame marks that boundary.
+        // ImGuiのtexture IDは生のSRV参照なので次のNewFrameまで所有参照を保持し、描画命令を先に消費する。
         m_frameTexturePins.clear();
         ImGui_ImplDX11_NewFrame();
     }
@@ -86,7 +88,9 @@ namespace LamaPon
         const TextureAsset& texture)
     {
         RequireCurrentContext();
+        // textureのGPU資源の所有参照
         const auto resources = texture.resources.Acquire();
+        // 当該フレームで参照するSRV
         auto* const view = resources != nullptr
             ? Detail::GraphicsDeviceD3D11Access::
                 TryResolveD3D11ShaderResourceView(
@@ -108,6 +112,7 @@ namespace LamaPon
         const RenderTarget& target)
     {
         RequireCurrentContext();
+        // 当該フレームで参照するSRV
         auto* const view = Detail::GraphicsDeviceD3D11Access::
             TryResolveD3D11ShaderResourceView(
                 *m_graphics,
@@ -160,6 +165,7 @@ namespace LamaPon
             return;
         }
 
+        // 終了処理後に戻すImGui context
         auto* const previousContext = ImGui::GetCurrentContext();
         if (previousContext != m_imguiContext)
         {
@@ -174,7 +180,7 @@ namespace LamaPon
         m_graphics = nullptr;
         m_imguiContext = nullptr;
         m_initialized = false;
-        // ImGui_ImplDX11_Shutdownが内部resourceを解放した後で返します。
+        // ImGuiの内部GPU資源を解放してから描画装置の使用権を返す。
         m_graphicsResourceLease.Reset();
     }
 }

@@ -6,6 +6,7 @@
 
 namespace LamaPon
 {
+    // EOSバックエンドを含むビルドかを返す。
     bool HasEpicNetworkBackend() noexcept
     {
 #if defined(LAMAPON_WITH_EOS)
@@ -18,6 +19,7 @@ namespace LamaPon
 
 namespace LamaPon::Detail
 {
+    // EOS通信実装を作り、EOS無効のビルドでは空を返す。
     std::unique_ptr<INetworkTransport> CreateEpicTransport()
     {
 #if defined(LAMAPON_WITH_EOS)

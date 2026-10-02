@@ -8,41 +8,25 @@ namespace LamaPon
 {
     class Application;
 
-    // エディターのスクリーンショットモード。
-    //
-    // 指定したUIを開いて数フレーム描画し、バックバッファをPNGへ
-    // 保存します。GUIを使わない自動テストから表示を確認できます。
+    // 指定UIを描画してPNGと実行結果を出力するエディターの撮影・リモート操作設定。
     struct EditorScreenshotOptions final
     {
-        // 出力PNG。空ならスクリーンショットモードにしません。
+        // 出力PNGのパス・空なら撮影しない
         std::filesystem::path imagePath;
-        // 実行結果のJSON（ok/エラー/画像パス）。エディターは
-        // コンソールを持たないので、stdoutの代わりにここへ書きます。
+        // 実行結果JSONの出力パス
         std::filesystem::path reportPath;
-        // 撮る前に開いておくUI。空なら既定レイアウトのまま。
-        //   "project-settings:<ゲーム|グラフィック|ビューポート設定|物理|タグ|入力|スクリプト|ビルドプロファイル|オンライン>"
-        //   "inspector:<GameObject名>"
-        //   "panel:<パネルID>"（例: panel:profiler、panel:frameDebugger）
+        // UI指定はproject-settings:設定名・inspector:オブジェクト名・panel:パネルIDのいずれかで、空なら既定レイアウトを使う。
+        // 撮影前に開くUIの指定
         std::string show;
-        // 撮影するフレーム番号。UIのレイアウトとフォントが落ち着く
-        // まで数フレームかかるので、少し待ってから撮ります。
+        // レイアウト確定を待つ撮影フレーム
         std::uint32_t captureFrame{ 12 };
 
-        // リモート操作モード（--remote <dir>）。指定すると、この
-        // フォルダーの command.json を毎フレーム監視し、マウス・
-        // キー入力の注入／スクリーンショット／終了を受け付けます。
-        // 実行結果は state.json へ返します。
-        //
-        // 自動化クライアントがスクリーンショットを確認しながら
-        // エディターを操作するための仕組みです。imagePathと違い、
-        // こちらは自動終了しません
-        // （quitコマンドで閉じます）。
+        // command.jsonの入力・撮影・終了要求を毎フレーム受け付けstate.jsonへ結果を返し、終了はquit要求まで待つ。
+        // リモート操作文書を置くフォルダー
         std::filesystem::path remoteDirectory;
     };
 
-    // safeModeがtrueのときは、C++ Game Moduleを読み込まずに起動した
-    // 状態として扱い、エディターへ警告を表示します。
-    // screenshotを渡すと、撮影後に自動で終了します。
+    // 編集レイヤーを接続し撮影または操作設定を適用する(application: 接続するApplication, scenePath: 編集対象シーンのパス, engineRoot: エンジンのルートパス, buildConfiguration: モジュールのビルド構成, safeMode: モジュール未読込の警告を出すか, screenshot: 撮影・操作設定の借用・省略可)。
     void EnableEditor(
         Application& application,
         std::filesystem::path scenePath,
@@ -52,8 +36,6 @@ namespace LamaPon
         const EditorScreenshotOptions* screenshot
             = nullptr);
 
-    // セーフモードから通常モードへ戻る要求があったかを返します。
-    // エディター終了後に呼び、trueなら通常モードで起動し直します
-    // （プロジェクトのロックが解放されてから再起動するため）。
+    // 終了後に再起動要求を確認しtrueならプロジェクトロック解放後に通常モードで起動する。
     [[nodiscard]] bool WasNormalModeRestartRequested() noexcept;
 }

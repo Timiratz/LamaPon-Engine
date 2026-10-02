@@ -7,22 +7,20 @@
 
 namespace LamaPon
 {
-    // Project Settingsの「スクリプト」カテゴリーで選択肢として提示する、
-    // インストール済みスクリプトエディターの情報。
+    // プロジェクト設定のスクリプト欄で選ぶインストール済みエディターの情報。
     struct ScriptEditorOption final
     {
+        // 設定欄に表示するエディター名
         std::string label;
+        // 起動する実行ファイルのパス
         std::filesystem::path executablePath;
     };
 
-    // このPCにインストールされているVisual Studio Code（Insidersを含む）と、
-    // vswhere経由で見つかるVisual Studio（Community/Professional/
-    // Enterpriseや2026などのプレリリース版を含む）を検出します。
-    // 何も見つからなければ空のvectorを返します
-    // （呼び出し側で「システムの既定」と組み合わせて表示してください）。
+    // VS Code・InsidersとMSBuild付きVisual Studioを検出し不在なら空を返す。
     [[nodiscard]] std::vector<ScriptEditorOption>
         DetectScriptEditors();
 
+    // エディターの種類に応じてファイル・行・列を開く引数を作る(editor: 起動する実行ファイル, source: 開くsourceファイルのパス, line: 1始まりの行・0なら位置なし, column: 1始まりの列・VS Codeのみ)。
     [[nodiscard]] std::wstring BuildScriptEditorArguments(
         const std::filesystem::path& editor,
         const std::filesystem::path& source,

@@ -19,9 +19,13 @@ namespace LamaPon
     {
         using namespace DirectX;
 
+        // カメラ所有物体のワールド変換
         const XMMATRIX world = Owner().WorldMatrix();
+        // カメラのワールド位置
         const XMVECTOR position = world.r[3];
+        // ワールドでのカメラ前向き
         const XMVECTOR forward = XMVector3Normalize(XMVectorNegate(world.r[2]));
+        // ワールドでのカメラ上向き
         const XMVECTOR up = XMVector3Normalize(world.r[1]);
 
         return XMMatrixLookToRH(position, forward, up);

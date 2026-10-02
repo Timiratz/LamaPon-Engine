@@ -8,19 +8,26 @@ namespace
 {
     struct Property final
     {
+        // 定数成分またはtexture register
         std::string target;
+        // Inspectorに表示するプロパティ型
         std::string type;
+        // Inspectorに表示するプロパティ名
         std::string name;
+        // 範囲や既定値を持つJSON断片
         std::string extra;
     };
 
+    // 順序を保ってプロパティ定義のJSONを生成する(output: HLSLの出力stream, properties: 出力するプロパティ一覧)。
     void WriteProperties(
         std::ostringstream& output,
         const std::vector<Property>& properties)
     {
         output << "/* LAMAPON_PROPERTIES\n[\n";
+        // プロパティを出力する順序
         for (std::size_t index{}; index < properties.size(); ++index)
         {
+            // 出力するプロパティの借用
             const auto& property = properties[index];
             output << "  { \"target\": \"" << property.target
                 << "\", \"type\": \"" << property.type
@@ -45,6 +52,7 @@ namespace LamaPon
     std::string GenerateSimpleMaterialShader(
         const SimpleMaterialShaderGraph& graph)
     {
+        // 選択したノードのプロパティ一覧
         std::vector<Property> properties;
         if (graph.tint)
         {
@@ -78,6 +86,7 @@ namespace LamaPon
             properties.push_back({ "t7", "texture", "Mask", {} });
         }
 
+        // 生成するHLSL文書のstream
         std::ostringstream output;
         output << "// LamaPon Simple Shader Graph generated file.\n"
             "// 作成ダイアログで選択したノードから生成されています。\n"

@@ -11,6 +11,7 @@ namespace LamaPon::Cli
 {
     namespace
     {
+        // ComponentField(name: 項目名, type: 型, defaultValue: 初期値)
         [[nodiscard]] nlohmann::json ComponentField(
             const char* name,
             const char* type,
@@ -24,22 +25,28 @@ namespace LamaPon::Cli
             };
         }
 
+        // 全コンポーネントの編集項目定義を作ります。
         [[nodiscard]] nlohmann::json BuildComponentSchemas()
         {
+            // 項目定義を作る共通関数
             auto field = ComponentField;
+            // vec2(x: X座標, y: Y座標)
             auto vec2 = [](const double x, const double y)
             {
                 return nlohmann::json::array({ x, y });
             };
+            // vec3(x: X座標, y: Y座標, z: Z座標)
             auto vec3 = [](const double x, const double y, const double z)
             {
                 return nlohmann::json::array({ x, y, z });
             };
+            // color(r: 赤, g: 緑, b: 青, a: 透明度)
             auto color = [](const double r, const double g,
                 const double b, const double a = 1.0)
             {
                 return nlohmann::json::array({ r, g, b, a });
             };
+            // schema(type: 識別名, category: 分類, fields: 項目群)
             auto schema = [](const char* type,
                 const char* category,
                 nlohmann::json fields)
@@ -51,20 +58,24 @@ namespace LamaPon::Cli
                 };
             };
 
+            // 縦横を選ぶレイアウト軸
             auto axis = field(
                 "axis",
                 "enum",
                 "vertical");
             axis["values"] = { "horizontal", "vertical" };
+            // 物理演算の衝突判定方式
             auto collisionDetection = field(
                 "collisionDetection",
                 "enum",
                 "discrete");
             collisionDetection["values"] = { "discrete", "continuous" };
+            // 変形アニメーションの制御資産
             auto controller = field(
                 "controller",
                 "asset",
                 "");
+            // 再生するアニメーションクリップ
             auto clip = field(
                 "clip",
                 "asset",
@@ -302,12 +313,16 @@ namespace LamaPon::Cli
             });
         }
 
+        // schemasからtypeに一致する定義を返します。
+        // FindComponentSchema(schemas: 定義一覧, type: 識別名)
         [[nodiscard]] const nlohmann::json* FindComponentSchema(
             const nlohmann::json& schemas,
             const std::string& type)
         {
+            // schema: 識別名が一致する定義を探す
             for (const auto& schema : schemas)
             {
+                // 要求された型だけを返す
                 if (schema.value("type", std::string{}) == type)
                 {
                     return &schema;
@@ -316,17 +331,23 @@ namespace LamaPon::Cli
             return nullptr;
         }
 
+        // schema内からpathに一致する項目を返します。
+        // FindComponentField(schema: 定義, path: 項目名)
         [[nodiscard]] const nlohmann::json* FindComponentField(
             const nlohmann::json& schema,
             const std::string& path)
         {
+            // schemaの項目配列
             const auto fields = schema.find("fields");
+            // 項目配列がなければ検索できない
             if (fields == schema.end() || !fields->is_array())
             {
                 return nullptr;
             }
+            // field: 指定pathの項目を探す
             for (const auto& field : *fields)
             {
+                // 項目名が一致した定義を返す
                 if (field.value("name", std::string{}) == path)
                 {
                     return &field;
@@ -335,27 +356,39 @@ namespace LamaPon::Cli
             return nullptr;
         }
 
+        // valueがtypeで定義されたJSON型か判定します。
+        // JsonMatchesComponentType(value: 値, type: 項目型)
         [[nodiscard]] bool JsonMatchesComponentType(
             const nlohmann::json& value,
             const std::string& type)
         {
+            // boolはJSON真偽値に限定する
             if (type == "bool") return value.is_boolean();
+            // 文字列と資産参照はJSON文字列で表す
             if (type == "string" || type == "asset") return value.is_string();
+            // enum値は文字列で表す
             if (type == "enum") return value.is_string();
+            // numberは整数と浮動小数を許可する
             if (type == "number") return value.is_number();
+            // integerは符号付き・符号なし整数を許可する
             if (type == "integer")
             {
                 return value.is_number_integer()
                     || value.is_number_unsigned();
             }
+            // objectはJSONオブジェクトに限定する
             if (type == "object") return value.is_object();
+            // arrayはJSON配列に限定する
             if (type == "array") return value.is_array();
+            // vec2は数値2要素に限定する
             if (type == "vec2") return value.is_array() && value.size() == 2
                 && std::ranges::all_of(value, [](const auto& item)
                     { return item.is_number(); });
+            // vec3は数値3要素に限定する
             if (type == "vec3") return value.is_array() && value.size() == 3
                 && std::ranges::all_of(value, [](const auto& item)
                     { return item.is_number(); });
+            // vec4とcolor4は数値4要素に限定する
             if (type == "vec4" || type == "color4")
             {
                 return value.is_array() && value.size() == 4
@@ -374,34 +407,46 @@ namespace LamaPon::Cli
         return schemas;
     }
 
+    // 定義済みの項目型とenum値を検証します。
+    // ValidateComponentValue(componentType: 部品型, path: 項目名, value: 設定値)
     void ValidateComponentValue(
         const std::string& componentType,
         const std::string& path,
         const nlohmann::json& value)
     {
+        // コンポーネント型一覧
         const auto& schemas = ComponentSchemas();
+        // 対象コンポーネント定義
         const auto* schema = FindComponentSchema(
             schemas,
             componentType);
+        // 定義のない型は追加制約なし
         if (schema == nullptr)
         {
             return;
         }
+        // 対象項目定義
         const auto* field = FindComponentField(*schema, path);
+        // 定義のない項目は追加制約なし
         if (field == nullptr)
         {
             return;
         }
+        // 項目の宣言型
         const auto fieldType = field->value("type", std::string{});
+        // 宣言型と値のJSON型が不一致
         if (!JsonMatchesComponentType(value, fieldType))
         {
             throw std::invalid_argument(
                 "Component field has the wrong type: "
                 + componentType + "." + path);
         }
+        // enum項目は許可値も照合する
         if (fieldType == "enum")
         {
+            // enumの許可値一覧
             const auto values = field->find("values");
+            // 許可値一覧がある場合だけ値を照合する
             if (values != field->end()
                 && std::ranges::none_of(
                     *values,
@@ -417,16 +462,21 @@ namespace LamaPon::Cli
         }
     }
 
+    // component内の既知項目を順に検証します。
+    // ValidateComponentObject(componentType: 部品型, component: 部品データ)
     void ValidateComponentObject(
         const std::string& componentType,
         const nlohmann::json& component)
     {
+        // object以外は項目検証の対象外
         if (!component.is_object())
         {
             return;
         }
+        // key: 項目名, value: 設定値を検証
         for (const auto& [key, value] : component.items())
         {
+            // 共通メタデータは型定義の対象外
             if (key == "type" || key == "enabled")
             {
                 continue;
@@ -435,17 +485,24 @@ namespace LamaPon::Cli
         }
     }
 
+    // listは一覧、schemaは単一の定義をJSON出力します。
+    // RunComponentCommand(action: 操作, type: 部品型, category: 分類)
     [[nodiscard]] int RunComponentCommand(
         const std::wstring& action,
         const std::string& type,
         const std::string& category)
     {
+        // コンポーネント型一覧
         const auto& schemas = ComponentSchemas();
+        // listは型名と分類の一覧を返す
         if (action == L"list")
         {
+            // 分類条件を適用した結果
             nlohmann::json result = nlohmann::json::array();
+            // schema: 分類条件に合う定義を列挙
             for (const auto& schema : schemas)
             {
+                // 指定分類以外を除外する
                 if (!category.empty()
                     && schema.value("category", std::string{}) != category)
                 {
@@ -457,6 +514,7 @@ namespace LamaPon::Cli
                     { "fieldCount", schema.at("fields").size() },
                 });
             }
+            // CLI応答JSON
             const nlohmann::json report{
                 { "ok", true },
                 { "command", "component list" },
@@ -472,19 +530,24 @@ namespace LamaPon::Cli
                 << std::endl;
             return 0;
         }
+        // schemaは指定型の詳細定義を返す
         if (action == L"schema")
         {
+            // 型指定なしでは詳細を選べない
             if (type.empty())
             {
                 throw std::invalid_argument(
                     "component schema requires --type.");
             }
+            // 指定された型定義
             const auto* schema = FindComponentSchema(schemas, type);
+            // 存在しない型はエラー
             if (schema == nullptr)
             {
                 throw std::runtime_error(
                     "Unknown component schema: " + type);
             }
+            // CLI応答JSON
             const nlohmann::json report{
                 { "ok", true },
                 { "command", "component schema" },

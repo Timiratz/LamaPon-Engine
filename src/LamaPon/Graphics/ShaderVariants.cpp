@@ -6,6 +6,7 @@
 
 namespace
 {
+    // 改行以外の空白文字か判定する(value: 確認する文字)。
     [[nodiscard]] bool IsSpace(const char value) noexcept
     {
         return value == ' '
@@ -15,6 +16,7 @@ namespace
             || value == '\v';
     }
 
+    // 前後の空白を除いた借用文字列を返す(text: 入力文字列)。
     [[nodiscard]] std::string_view TrimSpace(
         std::string_view text) noexcept
     {
@@ -29,7 +31,7 @@ namespace
         return text;
     }
 
-    // キーワードとして使える文字か（HLSLのマクロ名になるため）。
+    // HLSLマクロ名に使える英数字か下線か判定する(value: 確認する文字)。
     [[nodiscard]] bool IsKeywordCharacter(
         const char value) noexcept
     {
@@ -39,6 +41,7 @@ namespace
             || (value >= 'a' && value <= 'z');
     }
 
+    // 先頭が数字でないHLSLマクロ名か判定する(keyword: 確認するキーワード)。
     [[nodiscard]] bool IsValidKeyword(
         const std::string_view keyword) noexcept
     {
@@ -46,7 +49,7 @@ namespace
         {
             return false;
         }
-        // 先頭が数字のものはマクロ名にできません。
+        // 先頭の数字はHLSLマクロ名として無効とする。
         if (keyword.front() >= '0' && keyword.front() <= '9')
         {
             return false;
@@ -63,7 +66,9 @@ namespace LamaPon
     std::size_t
         ShaderVariantDeclaration::VariantCount() const noexcept
     {
+        // バリアントの組合せ数
         std::size_t count = 1;
+        // 対象のバリアントグループ
         for (const auto& group : groups)
         {
             if (group.keywords.empty())
@@ -78,11 +83,15 @@ namespace LamaPon
     ShaderVariantDeclaration ParseShaderVariants(
         const std::string_view source)
     {
+        // 解析中の宣言と診断
         ShaderVariantDeclaration declaration;
+        // 次に読むソース位置
         std::size_t offset = 0;
         while (offset <= source.size())
         {
+            // 行末改行のソース位置
             const auto lineEnd = source.find('\n', offset);
+            // 前後の空白を除いた入力行
             const auto line = TrimSpace(source.substr(
                 offset,
                 lineEnd == std::string_view::npos
@@ -96,6 +105,7 @@ namespace LamaPon
             {
                 continue;
             }
+            // 未処理のpragma引数
             auto rest = TrimSpace(line.substr(1));
             if (rest.rfind("pragma", 0) != 0)
             {
@@ -103,6 +113,7 @@ namespace LamaPon
             }
             rest = TrimSpace(rest.substr(6));
 
+            // バリアントの書出し方式
             ShaderVariantKind kind{};
             if (rest.rfind("multi_compile", 0) == 0)
             {
@@ -119,31 +130,36 @@ namespace LamaPon
                 continue;
             }
 
-            // 行末コメントは切り落とします。
+            // pragma引数から行末コメントを除く。
+            // 行末コメントの開始位置
             if (const auto comment = rest.find("//");
                 comment != std::string_view::npos)
             {
                 rest = TrimSpace(rest.substr(0, comment));
             }
 
+            // 対象のバリアントグループ
             ShaderVariantGroup group;
             group.kind = kind;
+            // 選択肢の開始位置
             std::size_t tokenStart = 0;
             while (tokenStart <= rest.size())
             {
+                // 選択肢の終了位置
                 auto tokenEnd = tokenStart;
                 while (tokenEnd < rest.size()
                     && !IsSpace(rest[tokenEnd]))
                 {
                     ++tokenEnd;
                 }
+                // 解析中の選択肢文字列
                 const auto token =
                     rest.substr(tokenStart, tokenEnd - tokenStart);
                 if (!token.empty())
                 {
                     if (token == "_")
                     {
-                        // 「どれも立てない」枠。
+                        // 下線だけの選択肢は未定義を表す空文字として保持する。
                         group.keywords.emplace_back();
                     }
                     else if (IsValidKeyword(token))
@@ -166,9 +182,7 @@ namespace LamaPon
                 tokenStart = tokenEnd + 1;
             }
 
-            // 選択肢が1つしかないグループは組み合わせを増やさない
-            // ので、宣言としては無意味です。書き間違いの可能性が
-            // 高いので落とします（エラーにはしません）。
+            // 二つ未満の選択肢を持つ行は診断を出さずに除外する。
             if (group.keywords.size() < 2)
             {
                 continue;
@@ -195,6 +209,7 @@ namespace LamaPon
         : m_keywords(std::move(keywords))
     {
         std::sort(m_keywords.begin(), m_keywords.end());
+        // 空文字のキーワードを除く(keyword: 対象キーワード)。
         m_keywords.erase(
             std::remove_if(
                 m_keywords.begin(),
@@ -215,6 +230,7 @@ namespace LamaPon
         {
             return;
         }
+        // キーワード集合内の対象位置
         const auto position = std::lower_bound(
             m_keywords.begin(),
             m_keywords.end(),
@@ -230,6 +246,7 @@ namespace LamaPon
     void ShaderKeywordSet::Disable(
         const std::string_view keyword)
     {
+        // キーワード集合内の対象位置
         const auto position = std::find(
             m_keywords.begin(),
             m_keywords.end(),
@@ -265,7 +282,9 @@ namespace LamaPon
 
     std::string ShaderKeywordSet::Key() const
     {
+        // 連結するキャッシュキー
         std::string key;
+        // 確認または追加するキーワード
         for (const auto& keyword : m_keywords)
         {
             if (!key.empty())
@@ -281,12 +300,13 @@ namespace LamaPon
         const ShaderVariantDeclaration& declaration,
         const ShaderKeywordSet& requested)
     {
+        // 正規化したキーワード集合
         ShaderKeywordSet result;
+        // 対象のバリアントグループ
         for (const auto& group : declaration.groups)
         {
-            // グループの中で最初に見つかった有効なものだけを残します。
-            // 2つ以上立っていると、どちらの#defineも渡って
-            // シェーダー側の想定が崩れるためです。
+            // 同じグループでは宣言順で最初の要求キーワードだけを残す。
+            // 確認または追加するキーワード
             for (const auto& keyword : group.keywords)
             {
                 if (!keyword.empty()
@@ -304,11 +324,13 @@ namespace LamaPon
         const ShaderVariantDeclaration& declaration,
         const std::vector<std::string>* usedKeywords)
     {
+        // 列挙中のキーワード組合せ
         std::vector<ShaderKeywordSet> variants;
         if (declaration.VariantCount() > MaximumShaderVariants)
         {
             return variants;
         }
+        // 一覧が指定された場合だけ使用有無を調べる(keyword: 対象キーワード)。
         const auto isUsed =
             [usedKeywords](const std::string& keyword)
         {
@@ -322,14 +344,17 @@ namespace LamaPon
                 keyword) != usedKeywords->end();
         };
 
-        // 何も宣言が無くても「キーワード無し」の1本は必要です。
+        // 宣言がなくても未定義の組合せを一件残す。
         variants.emplace_back();
+        // 対象のバリアントグループ
         for (const auto& group : declaration.groups)
         {
-            // shader_featureは「実際に使われているものだけ」へ
-            // 絞ります。multi_compileは常に全部です。
+            // 使用一覧の指定時はshader_featureだけ選択肢を絞る。
+            // 対象グループの有効な選択肢
             std::vector<std::string> choices;
+            // 空の選択肢の宣言有無
             bool hasEmpty = false;
+            // 確認または追加するキーワード
             for (const auto& keyword : group.keywords)
             {
                 if (keyword.empty())
@@ -344,19 +369,22 @@ namespace LamaPon
                     choices.push_back(keyword);
                 }
             }
-            // 絞った結果が空でも「立てない」だけは残します
-            // （そのグループを使っていない、という組み合わせ）。
+            // 元の空選択肢または空になったグループに未定義の選択肢を残す。
             if (hasEmpty || choices.empty())
             {
                 choices.insert(choices.begin(), std::string{});
             }
 
+            // 一段展開したキーワード組合せ
             std::vector<ShaderKeywordSet> expanded;
             expanded.reserve(variants.size() * choices.size());
+            // 展開元のキーワード組合せ
             for (const auto& base : variants)
             {
+                // 確認または追加するキーワード
                 for (const auto& keyword : choices)
                 {
+                    // 選択肢を加えたキーワード集合
                     auto next = base;
                     if (!keyword.empty())
                     {

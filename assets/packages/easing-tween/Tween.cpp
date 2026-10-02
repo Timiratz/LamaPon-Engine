@@ -1,9 +1,3 @@
-// Tween（トゥイーン）は、GameObjectの位置・回転・拡縮を時間をかけて
-// 目標値へ動かします。動きの緩急はイージング種別で選べます。
-//
-// 使い方: GameObjectへ「Tween（移動・回転・拡縮）」を追加し、
-// Inspectorで目標値・時間・種別を設定します。C++からイージングだけ
-// 使いたい場合はEasing.hを直接includeしてください。
 #include "LamaPon/LamaPon.h"
 
 #include "Easing.h"
@@ -14,8 +8,7 @@
 
 namespace
 {
-    // Inspectorに出す入力欄の定義です。種別は文字列で持ち、
-    // Easing.hのTypeFromNameで解釈します。
+    // InspectorのTween設定スキーマ
     constexpr char TweenSchema[] = R"({
         "fields": [
             {
@@ -148,9 +141,10 @@ namespace
 class Tween final : public LamaPon::Script
 {
 public:
+    // 開始時のTransformと再生状態を初期化します。
     void Start() override
     {
-        // 開始時のTransformを基準にして、そこからの相対で動かします。
+        // 相対移動の基準Transform
         const auto& transform = GetTransform();
         m_startPosition = transform.position;
         m_startRotation = transform.EulerAngles();
@@ -161,6 +155,7 @@ public:
         m_playing = m_playOnStart;
     }
 
+    // 経過時間から相対移動・回転・拡縮を進めます(deltaTime: 経過秒数)。
     void Update(const float deltaTime) override
     {
         if (!m_playing || m_finished)
@@ -174,16 +169,19 @@ public:
             return;
         }
 
+        // 開始待機を除いた経過秒数
         const float active = m_elapsed - m_delay;
+        // 0.01秒以上に制限した所要時間
         const float duration = m_duration > 0.01f
             ? m_duration
             : 0.01f;
+        // 今回の移動区間の進捗
         float progress = active / duration;
         if (progress >= 1.0f)
         {
             if (m_loop)
             {
-                // 往復なら向きを変え、そうでなければ最初へ戻します。
+                // 超過時間は次周へ持ち越さず、待機終了時点へ戻します。
                 progress = 1.0f;
                 m_elapsed = m_delay;
                 if (m_pingPong)
@@ -198,17 +196,19 @@ public:
             }
         }
 
+        // 曲線と移動方向を反映した補間量
         const float eased = LamaPonEasing::Ease(
             m_easing,
             m_forward ? progress : 1.0f - progress);
         Apply(eased);
     }
 
-    // 進み具合を保存しておくと、再生中にホットリロードしても
-    // 途中から続きます。
+    // 設定と経過時間・進行方向を復元します(propertiesJson: 設定JSON)。
+    // 不正なJSONやオブジェクト以外は無視し、値の型違いはJSONの例外です。
     void LoadProperties(
         const std::string_view propertiesJson) override
     {
+        // 復元するTweenの設定値
         const auto properties = nlohmann::json::parse(
             propertiesJson.empty()
                 ? std::string{ "{}" }
@@ -251,6 +251,7 @@ public:
         m_forward = properties.value("forward", true);
     }
 
+    // 設定と経過時間・進行方向をJSONへ保存します。
     [[nodiscard]] std::string SaveProperties() const override
     {
         return nlohmann::json{
@@ -281,8 +282,10 @@ public:
     }
 
 private:
+    // 開始Transformに相対変化を適用します(amount: 曲線を評価した補間量)。
     void Apply(const float amount)
     {
+        // 相対変化を反映するTransform
         auto& transform = GetTransform();
         if (m_movePosition)
         {
@@ -294,7 +297,7 @@ private:
         }
         if (m_rotate)
         {
-            // Transformの回転はラジアンなので度から変換します。
+            // 度からラジアンへの換算係数
             constexpr float toRadians =
                 3.14159265358979323846f / 180.0f;
             transform.SetEulerAngles({
@@ -308,6 +311,7 @@ private:
         }
         if (m_scale)
         {
+            // 開始スケールに掛ける拡縮倍率
             const float factor = 1.0f
                 + (m_scaleMultiplier - 1.0f) * amount;
             transform.scale = {
@@ -318,27 +322,46 @@ private:
         }
     }
 
+    // 進捗へ適用する曲線種別
     LamaPonEasing::Type m_easing{
         LamaPonEasing::Type::OutCubic
     };
+    // 一方向の移動に要する秒数
     float m_duration{ 1.0f };
+    // 移動開始までの待機秒数
     float m_delay{};
+    // 移動の繰り返し有無
     bool m_loop{};
+    // 繰り返し時の往復有無
     bool m_pingPong{ true };
+    // 開始時の自動再生有無
     bool m_playOnStart{ true };
+    // 位置変更の有無
     bool m_movePosition{ true };
+    // 開始位置からの相対移動量
     DirectX::XMFLOAT3 m_offset{ 0.0f, 1.0f, 0.0f };
+    // 回転変更の有無
     bool m_rotate{};
+    // 開始回転からの相対角度の度数
     DirectX::XMFLOAT3 m_rotation{ 0.0f, 180.0f, 0.0f };
+    // 拡縮変更の有無
     bool m_scale{};
+    // 終点の開始スケール比
     float m_scaleMultiplier{ 1.5f };
 
+    // 開始時の位置
     DirectX::XMFLOAT3 m_startPosition{};
+    // 開始時の回転ラジアン
     DirectX::XMFLOAT3 m_startRotation{};
+    // 開始時のスケール
     DirectX::XMFLOAT3 m_startScale{ 1.0f, 1.0f, 1.0f };
+    // 待機を含む経過秒数
     float m_elapsed{};
+    // 始点から終点への進行か
     bool m_forward{ true };
+    // 再生中の状態
     bool m_playing{ true };
+    // 繰り返しなしの完了状態
     bool m_finished{};
 };
 

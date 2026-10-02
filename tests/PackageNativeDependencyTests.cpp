@@ -10,23 +10,28 @@
 
 namespace
 {
+    // Require(condition: 成立条件, message: 失敗理由): 条件不成立を検査失敗にする。
     void Require(const bool condition, const char* message)
     {
+        // 検査条件の不成立を検出する。
         if (!condition)
         {
             throw std::runtime_error(message);
         }
     }
 
+    // WriteFile(path: 出力先, contents: 書込内容): 親ディレクトリを作ってバイナリ保存する。
     void WriteFile(
         const std::filesystem::path& path,
         const std::string& contents)
     {
         std::filesystem::create_directories(
             path.parent_path());
+        // 作成するテストファイル
         std::ofstream output(
             path,
             std::ios::binary | std::ios::trunc);
+        // ファイル作成の失敗を検出する。
         if (!output)
         {
             throw std::runtime_error(
@@ -35,10 +40,13 @@ namespace
         output << contents;
     }
 
+    // ReadFile(path: 読込元): ファイル全体を文字列として読む。
     [[nodiscard]] std::string ReadFile(
         const std::filesystem::path& path)
     {
+        // 読み込むテストファイル
         std::ifstream input(path, std::ios::binary);
+        // ファイルが開けない場合は空文字列を返す。
         if (!input)
         {
             return {};
@@ -48,11 +56,12 @@ namespace
             std::istreambuf_iterator<char>{});
     }
 
-    // 指定したマニフェストが拒否されることを確かめます。
+    // Rejects(manifestJson: 検査するJSON, packageDirectory: パッケージ位置): 不正な依存定義が拒否されるか調べる。
     [[nodiscard]] bool Rejects(
         const std::string& manifestJson,
         const std::filesystem::path& packageDirectory)
     {
+        // 依存定義の解析を試す。
         try
         {
             static_cast<void>(
@@ -61,10 +70,12 @@ namespace
                     packageDirectory,
                     "my-sdk"));
         }
+        // 形式不正の拒否を成功として扱う。
         catch (const std::invalid_argument&)
         {
             return true;
         }
+        // その他の失敗は拒否確認として扱わない。
         catch (const std::exception&)
         {
             return false;
@@ -72,11 +83,13 @@ namespace
         return false;
     }
 
-    // nativeを持たない既存パッケージは、そのまま何も足しません。
+    // TestManifestWithoutNativeIsEmpty(root: テストルート): native指定のないパッケージが空になることを確認する。
     void TestManifestWithoutNativeIsEmpty(
         const std::filesystem::path& root)
     {
+        // native指定のないパッケージ位置
         const auto directory = root / "easing-tween";
+        // パースした空の依存定義
         const auto dependency =
             LamaPon::ParsePackageNativeDependency(
                 R"({"name":"easing-tween","version":"1.0.0"})",
@@ -88,10 +101,13 @@ namespace
             "a package without a native block must add nothing");
     }
 
+    // TestValidManifestResolvesPaths(root: テストルート): 宣言された相対パスがパッケージ内へ解決されることを確認する。
     void TestValidManifestResolvesPaths(
         const std::filesystem::path& root)
     {
+        // 検証するパッケージ位置
         const auto directory = root / "my-sdk";
+        // パースしたネイティブ依存定義
         const auto dependency =
             LamaPon::ParsePackageNativeDependency(
                 R"({"name":"my-sdk","version":"1.0.0","native":{)"
@@ -128,11 +144,13 @@ namespace
             "a package with native entries is not empty");
     }
 
-    // パッケージフォルダーの外を指す指定はすべて拒否します。
+    // TestPathEscapesAreRejected(root: テストルート): パッケージ外を指す指定が拒否されることを確認する。
     void TestPathEscapesAreRejected(
         const std::filesystem::path& root)
     {
+        // 検証するパッケージ位置
         const auto directory = root / "my-sdk";
+        // 拒否すべきパス指定
         const char* const escapes[]{
             R"({"native":{"libraries":["../other/evil.lib"]}})",
             R"({"native":{"libraries":["sdk/../../evil.lib"]}})",
@@ -143,6 +161,7 @@ namespace
             R"({"native":{"runtimeFiles":["sdk/*.dll"]}})",
             R"({"native":{"libraries":[""]}})"
         };
+        // 各不正マニフェストを拒否する。
         for (const auto* const manifest : escapes)
         {
             Require(
@@ -152,9 +171,11 @@ namespace
         }
     }
 
+    // TestExtensionsAreEnforced(root: テストルート): ライブラリと実行ファイルの拡張子を検証する。
     void TestExtensionsAreEnforced(
         const std::filesystem::path& root)
     {
+        // 検証するパッケージ位置
         const auto directory = root / "my-sdk";
         Require(
             Rejects(
@@ -166,7 +187,8 @@ namespace
                 R"({"native":{"runtimeFiles":["sdk/my_sdk.lib"]}})",
                 directory),
             "runtime files must be .dll files");
-        // 大文字の拡張子は同じものとして扱います。
+        // 拡張子の大文字小文字を区別せず解析する。
+        // 大文字拡張子を含む有効な依存定義
         const auto dependency =
             LamaPon::ParsePackageNativeDependency(
                 R"({"native":{"libraries":["sdk/My_Sdk.LIB"],)"
@@ -179,12 +201,13 @@ namespace
             "extensions must be matched without case");
     }
 
-    // ビルドコマンドを書き換える抜け道を作らないため、未知のキーは
-    // 黙って無視せず拒否します。
+    // TestUnknownAndMalformedKeysAreRejected(root: テストルート): 未知キーや不正値を拒否することを確認する。
     void TestUnknownAndMalformedKeysAreRejected(
         const std::filesystem::path& root)
     {
+        // 検証するパッケージ位置
         const auto directory = root / "my-sdk";
+        // 拒否すべきキーや値を含むJSON
         const char* const malformed[]{
             R"({"native":{"compileOptions":["/GL"]}})",
             R"({"native":{"linkOptions":["/NODEFAULTLIB"]}})",
@@ -196,6 +219,7 @@ namespace
             R"J({"native":{"defines":["SDK=$(cmd)"]}})J",
             R"({"native":{"defines":[""]}})"
         };
+        // 各不正マニフェストを拒否する。
         for (const auto* const manifest : malformed)
         {
             Require(
@@ -204,7 +228,9 @@ namespace
                 " rejected");
         }
 
+        // 上限超過用のライブラリ配列JSON
         std::string tooMany = R"({"native":{"libraries":[)";
+        // 上限を超える数のライブラリを追加する。
         for (int index = 0; index < 33; ++index)
         {
             tooMany += index == 0 ? "" : ",";
@@ -218,9 +244,11 @@ namespace
             "more than 32 entries must be rejected");
     }
 
+    // TestInvalidJsonIsReported(root: テストルート): 不正JSONと非オブジェクトを拒否することを確認する。
     void TestInvalidJsonIsReported(
         const std::filesystem::path& root)
     {
+        // 検証するパッケージ位置
         const auto directory = root / "my-sdk";
         Require(
             Rejects("{ not json", directory),
@@ -230,10 +258,11 @@ namespace
             "a non-object manifest must be rejected");
     }
 
-    // 1件壊れていても、残りのパッケージは使えるようにします。
+    // TestScanCollectsAndReports(root: テストルート): 不正な1件を報告し、有効な依存を収集する。
     void TestScanCollectsAndReports(
         const std::filesystem::path& root)
     {
+        // スキャン対象のアセットルート
         const auto assetRoot = root / "scan" / "assets";
         WriteFile(
             assetRoot / "packages" / "easing-tween"
@@ -253,13 +282,14 @@ namespace
                 / "package.json",
             R"({"name":"broken-sdk","native":{)"
             R"("libraries":["../escape.lib"]}})");
-        // 名前が安全でないフォルダーは見ません。
+        // 安全でない名前のパッケージをスキャン対象へ置く。
         WriteFile(
             assetRoot / "packages" / "Bad Name"
                 / "package.json",
             R"({"name":"Bad Name","native":{)"
             R"("libraries":["lib/bad.lib"]}})");
 
+        // 収集結果とエラー一覧
         const auto scan =
             LamaPon::ScanPackageNativeDependencies(assetRoot);
         Require(
@@ -284,11 +314,13 @@ namespace
             "a project without packages must scan cleanly");
     }
 
-    // SDKの配置忘れを、リンカーのエラーより先に説明します。
+    // TestMissingFilesAreExplained(root: テストルート): SDK不足時に必要なパスを示すことを確認する。
     void TestMissingFilesAreExplained(
         const std::filesystem::path& root)
     {
+        // 配置検査対象のパッケージ位置
         const auto directory = root / "place" / "my-sdk";
+        // 必要なSDKパスを宣言する依存定義
         auto dependency =
             LamaPon::ParsePackageNativeDependency(
                 R"({"native":{"includeDirectories":["sdk/include"],)"
@@ -297,11 +329,14 @@ namespace
                 directory,
                 "my-sdk");
 
+        // 依存ファイル不足の診断
         std::string reported;
+        // 不足ファイルの診断を取得する。
         try
         {
             LamaPon::RequirePackageNativeFiles({ dependency });
         }
+        // error: SDK不足を示す診断例外
         catch (const std::runtime_error& error)
         {
             reported = error.what();
@@ -320,10 +355,11 @@ namespace
         LamaPon::RequirePackageNativeFiles({ dependency });
     }
 
-    // SDK本体が未配置のパッケージは、ビルドを止めずにnative設定ごと外します。
+    // TestMissingPackagesAreSkipped(root: テストルート): SDK不足パッケージだけを選択結果から外す。
     void TestMissingPackagesAreSkipped(
         const std::filesystem::path& root)
     {
+        // name: パッケージ名を受けて依存定義を作る。
         const auto parse = [&root](const char* const name)
         {
             return LamaPon::ParsePackageNativeDependency(
@@ -334,12 +370,14 @@ namespace
                 root / "skip" / name,
                 name);
         };
+        // 必須SDKファイルを配置するパッケージ位置
         const auto placedDirectory = root / "skip" / "placed-sdk";
         std::filesystem::create_directories(
             placedDirectory / "sdk" / "include");
         WriteFile(placedDirectory / "sdk" / "lib" / "vendor.lib", "lib");
         WriteFile(placedDirectory / "sdk" / "bin" / "vendor.dll", "dll");
 
+        // 利用可能・不足依存の選択結果
         const auto selection =
             LamaPon::SelectAvailablePackageNativeDependencies(
                 { parse("missing-sdk"), parse("placed-sdk") });
@@ -359,12 +397,15 @@ namespace
             "a package without its SDK must be skipped with every missing "
             "file named");
 
-        // 外したパッケージのdefinesはCMakeへ渡しません。
+        // 選択済みパッケージだけをCMakeへ書き出す。
+        // 選択結果を出力するCMakeファイル
         const auto cmakePath = root / "skip" / "package-native.cmake";
         LamaPon::WritePackageNativeCMakeFile(
             cmakePath,
             selection.available);
+        // 生成したCMake定義
         std::ifstream input(cmakePath, std::ios::binary);
+        // 出力ファイルの全内容
         const std::string cmake{
             std::istreambuf_iterator<char>(input),
             std::istreambuf_iterator<char>() };
@@ -374,10 +415,11 @@ namespace
             "only packages with their SDK may reach the Game Module build");
     }
 
-    // エンジン自身のDLLを、パッケージに差し替えさせません。
+    // TestRuntimeFileCollisionsAreRejected(root: テストルート): エンジンDLL名や重複名を拒否する。
     void TestRuntimeFileCollisionsAreRejected(
         const std::filesystem::path& root)
     {
+        // make(name: パッケージ名, file: DLL相対パス): 実行時ファイル依存を作る。
         const auto make =
             [&root](
                 const char* const name,
@@ -390,19 +432,23 @@ namespace
                 name);
         };
 
+        // エンジン予約名やランタイム共通DLL名を確認する。
         for (const auto* const reserved : {
             "bin/LamaPonRuntime.dll",
             "bin/lamaponruntime.dll",
             "bin/LamaPonGameModule.dll",
             "bin/msvcp140.dll" })
         {
+            // 予約名の拒否結果
             bool rejected = false;
+            // 予約名の実行時ファイルを検査する。
             try
             {
                 static_cast<void>(
                     LamaPon::CollectPackageRuntimeFiles(
                         { make("my-sdk", reserved) }));
             }
+            // 予約名拒否を記録する。
             catch (const std::runtime_error&)
             {
                 rejected = true;
@@ -413,7 +459,9 @@ namespace
                 " engine's own");
         }
 
+        // 大文字小文字を無視した重複名の拒否結果
         bool duplicateRejected = false;
+        // パッケージ間のDLL名重複を検査する。
         try
         {
             static_cast<void>(
@@ -421,6 +469,7 @@ namespace
                     make("my-sdk", "bin/shared.dll"),
                     make("audio-sdk", "lib/Shared.dll") }));
         }
+        // 重複名拒否を記録する。
         catch (const std::runtime_error&)
         {
             duplicateRejected = true;
@@ -429,6 +478,7 @@ namespace
             duplicateRejected,
             "two packages must not ship the same DLL name");
 
+        // 受理された実行時ファイル一覧
         const auto files = LamaPon::CollectPackageRuntimeFiles({
             make("my-sdk", "bin/my_sdk.dll"),
             make("audio-sdk", "lib/audio.dll") });
@@ -440,10 +490,13 @@ namespace
             "runtime files must keep their package and name");
     }
 
+    // TestCMakeFileGeneration(root: テストルート): ネイティブ依存のCMake定義生成を検証する。
     void TestCMakeFileGeneration(
         const std::filesystem::path& root)
     {
+        // 生成対象パッケージ位置
         const auto directory = root / "cmake" / "my-sdk";
+        // CMakeへ出力する依存定義
         const auto dependency =
             LamaPon::ParsePackageNativeDependency(
                 R"({"native":{"includeDirectories":["sdk/include"],)"
@@ -451,12 +504,14 @@ namespace
                 R"("defines":["MY_SDK_ENABLED"]}})",
                 directory,
                 "my-sdk");
+        // 生成先CMakeファイル
         const auto outputPath =
             root / "cmake" / "out" / "package-native.cmake";
 
         LamaPon::WritePackageNativeCMakeFile(
             outputPath,
             { dependency });
+        // 最初に生成したCMake内容
         const auto text = ReadFile(outputPath);
         Require(
             text.find("LAMAPON_PACKAGE_INCLUDE_DIRECTORIES")
@@ -471,8 +526,8 @@ namespace
             "the generated CMake file must say where each entry"
             " came from");
 
-        // 内容が同じ再生成では書き込まず、CMakeのconfigureを
-        // 無駄にやり直させません。
+        // 同じ内容の再生成では更新時刻を維持する。
+        // 初回生成後の更新時刻
         const auto firstWrite =
             std::filesystem::last_write_time(outputPath);
         LamaPon::WritePackageNativeCMakeFile(
@@ -483,8 +538,9 @@ namespace
                 == firstWrite,
             "an unchanged regeneration must not touch the file");
 
-        // ネイティブ依存が無くなったら、空の定義で上書きします。
+        // 依存削除後は空の定義で上書きする。
         LamaPon::WritePackageNativeCMakeFile(outputPath, {});
+        // 依存削除後のCMake内容
         const auto cleared = ReadFile(outputPath);
         Require(
             cleared.find("my_sdk.lib") == std::string::npos
@@ -495,10 +551,13 @@ namespace
     }
 }
 
+// main(): ネイティブ依存の解析、選択、出力テストを実行する。
 int main()
 {
+    // テスト失敗を終了コードへ変換する。
     try
     {
+        // テスト用ファイルの保存先
         const auto root =
             std::filesystem::current_path()
             / "test-output"
@@ -518,6 +577,7 @@ int main()
         TestRuntimeFileCollisionsAreRejected(root);
         TestCMakeFileGeneration(root);
     }
+    // 例外(error: テスト失敗情報)を標準エラーへ出力する。
     catch (const std::exception& error)
     {
         std::cerr

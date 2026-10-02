@@ -43,10 +43,12 @@
 
 namespace
 {
+    // ボーン変換後の全メッシュ外接範囲を合成する(model: 対象モデル, bounds: 範囲の出力)。
     bool CalculateModelBounds(
         const DirectX::Model& model,
         LamaPon::Bounds3D& bounds)
     {
+        // ボーンの絶対変換行列
         std::vector<DirectX::XMMATRIX> boneTransforms(
             model.bones.size());
         if (!boneTransforms.empty())
@@ -56,13 +58,16 @@ namespace
                 boneTransforms.data());
         }
 
+        // 外接範囲の設定済み状態
         bool initialized{};
+        // 合成対象のメッシュ
         for (const auto& mesh : model.meshes)
         {
             if (!mesh)
             {
                 continue;
             }
+            // 変換後のメッシュ外接範囲
             DirectX::BoundingBox transformed =
                 mesh->boundingBox;
             if (mesh->boneIndex < boneTransforms.size())
@@ -71,11 +76,13 @@ namespace
                     transformed,
                     boneTransforms[mesh->boneIndex]);
             }
+            // 外接範囲の最小座標
             const DirectX::XMFLOAT3 minimum{
                 transformed.Center.x - transformed.Extents.x,
                 transformed.Center.y - transformed.Extents.y,
                 transformed.Center.z - transformed.Extents.z
             };
+            // 外接範囲の最大座標
             const DirectX::XMFLOAT3 maximum{
                 transformed.Center.x + transformed.Extents.x,
                 transformed.Center.y + transformed.Extents.y,
@@ -97,26 +104,29 @@ namespace
         return initialized;
     }
 
-    // DirectXTKのEffectFactoryへ処理を委譲しつつ、モデル読込時にしか
-    // 取得できないマテリアル色をEffectごとに控えます。
+    // 効果生成を委譲し、効果の寿命内で元の材質色を記録する。
     class MaterialCapturingEffectFactory final
         : public DirectX::IEffectFactory
     {
     public:
+        // 材質色を記録する生成器を作る(device: 借用D3D11デバイス)。
         explicit MaterialCapturingEffectFactory(ID3D11Device* device)
             : m_factory(device)
         {
         }
 
+        // 外部画像の検索先を指定する(path: 画像フォルダー)。
         void SetDirectory(const wchar_t* path) noexcept
         {
             m_factory.SetDirectory(path);
         }
 
+        // 描画効果を生成して元材質色を控える(info: 材質設定, context: 任意の即時コンテキスト)。
         std::shared_ptr<DirectX::IEffect> __cdecl CreateEffect(
             const EffectInfo& info,
             ID3D11DeviceContext* context) override
         {
+            // 生成した描画効果
             auto effect = m_factory.CreateEffect(info, context);
             if (effect != nullptr)
             {
@@ -132,6 +142,7 @@ namespace
             return effect;
         }
 
+        // DirectXTKへ画像生成を委譲する(name: 画像名, context: 任意の即時コンテキスト, textureView: ビュー出力)。
         void __cdecl CreateTexture(
             const wchar_t* name,
             ID3D11DeviceContext* context,
@@ -140,6 +151,7 @@ namespace
             m_factory.CreateTexture(name, context, textureView);
         }
 
+        // 記録した材質色を移動して取り出す。
         [[nodiscard]] std::unordered_map<
             const DirectX::IEffect*,
             DirectX::XMFLOAT4> TakeDiffuseColors() noexcept
@@ -148,20 +160,26 @@ namespace
         }
 
     private:
+        // 元の描画効果生成器
         DirectX::EffectFactory m_factory;
+        // 効果別の元材質色
         std::unordered_map<
             const DirectX::IEffect*,
             DirectX::XMFLOAT4> m_diffuseColors;
     };
 
+    // 上位8階層から物理ModelTextureフォルダーを探す(modelPath: 対象モデル)。
     std::filesystem::path FindCmoTextureDirectory(
         const std::filesystem::path& modelPath)
     {
+        // 画像検索中のフォルダー
         auto directory = modelPath.parent_path();
+        // 階層またはミップの深度
         for (std::size_t depth = 0;
              depth < 8 && !directory.empty();
              ++depth)
         {
+            // 共通画像フォルダー
             const auto sharedTextures =
                 directory / L"ModelTexture";
             if (std::filesystem::is_directory(
@@ -170,6 +188,7 @@ namespace
                 return sharedTextures;
             }
 
+            // 検索先の親フォルダー
             const auto parent = directory.parent_path();
             if (parent == directory)
             {
@@ -180,6 +199,7 @@ namespace
         return modelPath.parent_path();
     }
 
+    // 失敗したHRESULTを操作名付き例外にする(result: 実行結果, operation: 操作名)。
     void ThrowIfFailed(const HRESULT result, const char* operation)
     {
         if (FAILED(result))
@@ -191,6 +211,7 @@ namespace
         }
     }
 
+    // 失敗したHRESULTを画像パス付き例外にする(result: 実行結果, path: 対象画像)。
     void ThrowIfFailed(const HRESULT result, const std::filesystem::path& path)
     {
         if (FAILED(result))
@@ -201,28 +222,31 @@ namespace
         }
     }
 
+    // D3D11のBackendなら借用ポインターを返す(backend: 任意の描画Backend)。
     [[nodiscard]] LamaPon::D3D11Backend* AsD3D11Backend(
         LamaPon::GraphicsBackend* const backend) noexcept
     {
         return dynamic_cast<LamaPon::D3D11Backend*>(backend);
     }
 
+    // 材質のD3D11ビューを共有登録する(model: 更新対象, backend: D3D11なら取り込むBackend)。
     void ImportSkeletalTextureViews(
         LamaPon::SkeletalModel& model,
         LamaPon::GraphicsBackend* const backend)
     {
+        // 借用D3D11Backend
         auto* const d3d11 = AsD3D11Backend(backend);
         if (d3d11 == nullptr)
         {
             return;
         }
 
-        // glTFではroughnessとmetallicが同じSRVを共有するなど、複数の
-        // primitive/slotが同じnative viewを参照します。1回だけBackend
-        // 世代へ取り込み、同じ強所有handleをcopyして共有します。
+        // 同じビューは一度だけ登録し、強所有ハンドルを共有する。
+        // 元ビュー別の共通ハンドル
         std::unordered_map<
             ID3D11ShaderResourceView*,
             LamaPon::GraphicsViewHandle> importedViews;
+        // 元ビューを共有登録する(native: 任意のD3D11ビュー)。
         const auto importView =
             [d3d11, &importedViews](
                 ID3D11ShaderResourceView* const native)
@@ -232,19 +256,24 @@ namespace
             {
                 return {};
             }
+            // 登録済みビューの検索結果
             if (const auto found = importedViews.find(native);
                 found != importedViews.end())
             {
                 return found->second;
             }
+            // 取り込んだ資源とビュー
             auto imported = d3d11->ImportShaderResourceView(native);
+            // 画像を参照する描画ビュー
             auto view = std::move(imported.second);
             importedViews.emplace(native, view);
             return view;
         };
 
+        // 材質ビューの更新対象
         for (auto& primitive : model.primitives)
         {
+            // 共通形式の材質画像
             auto& textures = primitive.embeddedTextures;
             textures.albedo = importView(primitive.texture.Get());
             textures.normal = importView(primitive.normalTexture.Get());
@@ -262,6 +291,7 @@ namespace
         }
     }
 
+    // 対応DXGI形式を共通形式へ変換し未対応なら例外にする(format: 元の形式)。
     [[nodiscard]] LamaPon::GraphicsTextureFormat ToGraphicsTextureFormat(
         const DXGI_FORMAT format)
     {
@@ -365,6 +395,7 @@ namespace
         }
     }
 
+    // 準備済み画像から2D生成設定を作る(data: 空でないミップ列)。
     [[nodiscard]] LamaPon::GraphicsTexture2DDescription
         MakeTextureDescription(
             const LamaPon::TextureLoader::PreparedTextureData& data)
@@ -388,12 +419,15 @@ namespace
         };
     }
 
+    // 準備済みバイト列を借用して転送記述を作る(data: 転送API完了まで保持するミップ列)。
     [[nodiscard]] std::vector<LamaPon::GraphicsTextureSubresourceData>
         MakeTextureSubresources(
             const LamaPon::TextureLoader::PreparedTextureData& data)
     {
+        // 借用する転送バイト列
         std::vector<LamaPon::GraphicsTextureSubresourceData> subresources;
         subresources.reserve(data.levels.size());
+        // 処理対象のミップ
         for (const auto& level : data.levels)
         {
             if (level.bytes.size()
@@ -411,6 +445,7 @@ namespace
         return subresources;
     }
 
+    // DDSの面単位で2D生成設定を作る(data: 準備済みDDS)。
     [[nodiscard]] LamaPon::GraphicsTexture2DDescription
         MakeDdsFaceDescription(
             const LamaPon::TextureLoader::PreparedDdsTextureData& data)
@@ -423,14 +458,18 @@ namespace
         };
     }
 
+    // 深度と容量を検証してDDSバイト列の転送記述を作る(data: 転送API完了まで保持するDDS)。
     [[nodiscard]] std::vector<LamaPon::GraphicsTextureSubresourceData>
         MakeDdsSubresources(
             const LamaPon::TextureLoader::PreparedDdsTextureData& data)
     {
+        // 借用する転送バイト列
         std::vector<LamaPon::GraphicsTextureSubresourceData> subresources;
         subresources.reserve(data.subresources.size());
+        // DDS転送データの番号
         for (std::size_t index{}; index < data.subresources.size(); ++index)
         {
+            // 元のDDS転送データ
             const auto& source = data.subresources[index];
             if (source.bytes.size()
                 > std::numeric_limits<std::uint32_t>::max())
@@ -438,11 +477,13 @@ namespace
                 throw std::overflow_error(
                     "A prepared DDS subresource is too large.");
             }
+            // 深度1枚分の転送容量
             std::size_t slicePitch = source.bytes.size();
             if (data.dimension
                 == LamaPon::TextureLoader::
                     PreparedDdsTextureDimension::Texture3D)
             {
+                // 階層またはミップの深度
                 const auto depth = std::max(
                     data.depth >> static_cast<std::uint32_t>(index),
                     1u);
@@ -469,16 +510,22 @@ namespace
 
     struct D3D12DdsResource final
     {
+        // 生成したDDS画像資源
         LamaPon::GraphicsTextureHandle texture;
+        // DDSの対応ビュー
         LamaPon::GraphicsViewHandle view;
+        // キューブ次元の識別
         bool cube{};
     };
 
+    // DDSの配列・キューブ・深度を維持して生成する(backend: 借用D3D12Backend, data: 準備済みDDS)。
     [[nodiscard]] D3D12DdsResource CreateD3D12DdsResource(
         LamaPon::D3D12Backend& backend,
         const LamaPon::TextureLoader::PreparedDdsTextureData& data)
     {
+        // 借用する転送バイト列
         const auto subresources = MakeDdsSubresources(data);
+        // DDSの面単位の生成設定
         const auto faceDescription = MakeDdsFaceDescription(data);
         using Dimension =
             LamaPon::TextureLoader::PreparedDdsTextureDimension;
@@ -486,9 +533,11 @@ namespace
         {
         case Dimension::Texture2D:
         {
+            // 生成する画像アセット資源
             auto texture = backend.CreateTexture2D(
                 faceDescription,
                 subresources);
+            // 画像を参照する描画ビュー
             auto view = backend.CreateShaderResourceView(
                 texture,
                 { 0u, data.mipLevels });
@@ -496,6 +545,7 @@ namespace
         }
         case Dimension::Texture2DArray:
         {
+            // 配列画像と対応する描画ビュー
             auto [texture, view] = backend.CreateTextureArray(
                 faceDescription,
                 data.arraySize,
@@ -506,6 +556,7 @@ namespace
         case Dimension::TextureCube:
         case Dimension::TextureCubeArray:
         {
+            // 配列画像と対応する描画ビュー
             auto [texture, view] = backend.CreateTextureArray(
                 faceDescription,
                 data.arraySize,
@@ -515,6 +566,7 @@ namespace
         }
         case Dimension::Texture3D:
         {
+            // 画像資源の生成設定
             LamaPon::GraphicsTexture3DDescription description{
                 data.width,
                 data.height,
@@ -522,9 +574,11 @@ namespace
                 data.mipLevels,
                 ToGraphicsTextureFormat(data.format)
             };
+            // 生成する画像アセット資源
             auto texture = backend.CreateTexture3D(
                 description,
                 subresources);
+            // 画像を参照する描画ビュー
             auto view = backend.CreateShaderResourceView(
                 texture,
                 { 0u, data.mipLevels });
@@ -534,12 +588,15 @@ namespace
         throw std::invalid_argument("The DDS resource dimension is invalid.");
     }
 
+    // D3D11のみ互換ビューを解決する(backend: 任意の描画Backend, view: 同世代の共通ビュー)。
     [[nodiscard]] Microsoft::WRL::ComPtr<
         ID3D11ShaderResourceView> ResolveCompatibilityView(
             LamaPon::GraphicsBackend* const backend,
             const LamaPon::GraphicsViewHandle& view)
     {
+        // 解決したD3D11ビュー
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> resolved;
+        // 借用D3D11Backend
         if (auto* const d3d11 = AsD3D11Backend(backend))
         {
             resolved = d3d11->ResolveShaderResourceView(view);
@@ -547,6 +604,7 @@ namespace
         return resolved;
     }
 
+    // 互換ビューの解決後に完成した資源組を公開する(asset: 公開先, backend: 任意の描画Backend, texture: 同世代の画像, view: 同世代のビュー)。
     template <typename Asset>
     void PublishTextureResources(
         Asset& asset,
@@ -554,8 +612,8 @@ namespace
         LamaPon::GraphicsTextureHandle texture,
         LamaPon::GraphicsViewHandle view)
     {
-        // resolverを含む失敗し得る処理を先に終え、assetへは完成した一式だけを
-        // 公開します。DirectX 12ではcompatibility viewは空になります。
+
+        // 解決した互換ビュー
         auto compatibility = ResolveCompatibilityView(backend, view);
         asset.resources.Publish(
             LamaPon::TextureResourceSnapshot{
@@ -565,6 +623,7 @@ namespace
             });
     }
 
+    // 共通ハンドルが空のD3D11互換ビューを公開する(asset: 公開先, view: 所有する互換ビュー)。
     template <typename Asset>
     void PublishLegacyTextureView(
         Asset& asset,
@@ -578,17 +637,22 @@ namespace
             });
     }
 
+    // 準備済み画像の全ミップを生成して公開する(asset: 公開先, backend: 描画Backend, data: 転送用ミップ列)。
     template <typename Asset>
     void CreatePreparedTextureResources(
         Asset& asset,
         LamaPon::GraphicsBackend& backend,
         const LamaPon::TextureLoader::PreparedTextureData& data)
     {
+        // 画像資源の生成設定
         const auto description = MakeTextureDescription(data);
+        // 借用する転送バイト列
         const auto subresources = MakeTextureSubresources(data);
+        // 生成する画像アセット資源
         auto texture = backend.CreateTexture2D(
             description,
             subresources);
+        // 画像を参照する描画ビュー
         auto view = backend.CreateShaderResourceView(
             texture,
             LamaPon::GraphicsTextureViewDescription{
@@ -602,10 +666,11 @@ namespace
             std::move(view));
     }
 
-    // 小文字化した拡張子を返します。
+    // パスの拡張子を小文字化する(path: 対象パス)。
     [[nodiscard]] std::wstring LoweredExtension(
         const std::filesystem::path& path)
     {
+        // 小文字化したファイル拡張子
         auto extension = path.extension().wstring();
         std::ranges::transform(
             extension,
@@ -614,7 +679,7 @@ namespace
         return extension;
     }
 
-    // プリフェッチ中にGPUテクスチャまで作成する対象の拡張子か。
+    // 画像生成も先読みする拡張子か調べる(extension: 小文字の拡張子)。
     [[nodiscard]] bool IsTextureExtension(
         const std::wstring& extension) noexcept
     {
@@ -628,9 +693,11 @@ namespace
             || extension == L".tiff";
     }
 
+    // 組み込み図形の種類を返す(path: 組み込み指定パス)。
     [[nodiscard]] std::wstring BuiltInTextureKind(
         const std::filesystem::path& path)
     {
+        // 正規化する組み込み指定
         auto name = path.generic_wstring();
         std::ranges::transform(
             name,
@@ -645,6 +712,7 @@ namespace
         return {};
     }
 
+    // 退化線分も含め点から線分への距離を求める(pointX: 点X, pointY: 点Y, ax: 始点X, ay: 始点Y, bx: 終点X, by: 終点Y)。
     [[nodiscard]] float SegmentDistance(
         const float pointX,
         const float pointY,
@@ -653,9 +721,13 @@ namespace
         const float bx,
         const float by) noexcept
     {
+        // 線分の横方向成分
         const float edgeX = bx - ax;
+        // 線分の縦方向成分
         const float edgeY = by - ay;
+        // 線分長の二乗
         const float lengthSquared = edgeX * edgeX + edgeY * edgeY;
+        // 線分上の最近点の割合
         const float projection = lengthSquared > 0.0f
             ? std::clamp(
                 ((pointX - ax) * edgeX
@@ -664,11 +736,14 @@ namespace
                 0.0f,
                 1.0f)
             : 0.0f;
+        // 最近点からの横距離
         const float deltaX = pointX - (ax + edgeX * projection);
+        // 最近点からの縦距離
         const float deltaY = pointY - (ay + edgeY * projection);
         return std::sqrt(deltaX * deltaX + deltaY * deltaY);
     }
 
+    // 白い図形をRGBA画像として生成する(backend: 任意の描画Backend, device: 互換デバイス, sourcePath: 組み込み指定, kind: 図形種類)。
     [[nodiscard]] std::shared_ptr<LamaPon::TextureAsset>
         CreateBuiltInTexture(
             LamaPon::GraphicsBackend* const backend,
@@ -676,10 +751,13 @@ namespace
             const std::filesystem::path& sourcePath,
             const std::wstring& kind)
     {
+        // 組み込み画像の一辺
         constexpr std::uint32_t Size = 256;
+        // 図形の白色RGBA画素列
         std::vector<std::uint8_t> pixels(
             static_cast<std::size_t>(Size) * Size * 4u,
             0u);
+        // 境界距離を被覆率に変換する(signedDistance: 図形内側が正の距離)。
         const auto edge = [](
                 const float signedDistance) noexcept
         {
@@ -688,6 +766,7 @@ namespace
                 0.0f,
                 1.0f);
         };
+        // 有向辺と点の外積を求める(ax: 始点X, ay: 始点Y, bx: 終点X, by: 終点Y, px: 点X, py: 点Y)。
         const auto cross = [](
                 const float ax,
                 const float ay,
@@ -699,24 +778,34 @@ namespace
             return (bx - ax) * (py - ay)
                 - (by - ay) * (px - ax);
         };
+        // 図形画像の行番号
         for (std::uint32_t y{}; y < Size; ++y)
         {
+            // 図形画像の列番号
             for (std::uint32_t x{}; x < Size; ++x)
             {
+                // 画素中心のX座標
                 const float pointX = static_cast<float>(x) + 0.5f;
+                // 画素中心のY座標
                 const float pointY = static_cast<float>(y) + 0.5f;
+                // 図形内側が正の境界距離
                 float signedDistance = -1000.0f;
                 if (kind == L"circle")
                 {
+                    // 図形中心からの横距離
                     const float dx = pointX - 128.0f;
+                    // 図形中心からの縦距離
                     const float dy = pointY - 128.0f;
                     signedDistance =
                         112.0f - std::sqrt(dx * dx + dy * dy);
                 }
                 else if (kind == L"ring")
                 {
+                    // 図形中心からの横距離
                     const float dx = pointX - 128.0f;
+                    // 図形中心からの縦距離
                     const float dy = pointY - 128.0f;
+                    // 中心または辺からの距離
                     const float distance =
                         std::sqrt(dx * dx + dy * dy);
                     signedDistance =
@@ -724,18 +813,26 @@ namespace
                 }
                 else
                 {
+                    // 三角形の頂点AX
                     constexpr float ax = 128.0f;
+                    // 三角形の頂点AY
                     constexpr float ay = 16.0f;
+                    // 三角形の頂点BX
                     constexpr float bx = 240.0f;
+                    // 三角形の頂点BY
                     constexpr float by = 238.0f;
+                    // 三角形の頂点CX
                     constexpr float cx = 16.0f;
+                    // 三角形の頂点CY
                     constexpr float cy = 238.0f;
+                    // 三角形内側の判定
                     const bool inside =
                         cross(ax, ay, bx, by, pointX, pointY) >= 0.0f
                         && cross(bx, by, cx, cy, pointX, pointY)
                             >= 0.0f
                         && cross(cx, cy, ax, ay, pointX, pointY)
                             >= 0.0f;
+                    // 中心または辺からの距離
                     const float distance = std::min({
                         SegmentDistance(
                             pointX, pointY, ax, ay, bx, by),
@@ -745,8 +842,10 @@ namespace
                             pointX, pointY, cx, cy, ax, ay) });
                     signedDistance = inside ? distance : -distance;
                 }
+                // 図形の境界被覆率
                 const auto alpha = static_cast<std::uint8_t>(
                     std::lround(edge(signedDistance) * 255.0f));
+                // 画素RGBAの先頭位置
                 const auto pixelIndex =
                     (static_cast<std::size_t>(y) * Size + x) * 4u;
                 pixels[pixelIndex] = 255u;
@@ -755,6 +854,7 @@ namespace
                 pixels[pixelIndex + 3] = alpha;
             }
         }
+        // 生成または回収したアセット
         auto asset = std::make_shared<LamaPon::TextureAsset>();
         asset->width = Size;
         asset->height = Size;
@@ -762,6 +862,7 @@ namespace
         asset->sourcePath = sourcePath.lexically_normal();
         if (backend != nullptr)
         {
+            // 転送用の画像データ
             LamaPon::TextureLoader::PreparedTextureData prepared;
             prepared.format = DXGI_FORMAT_R8G8B8A8_UNORM;
             prepared.levels.push_back(
@@ -782,6 +883,7 @@ namespace
             throw std::runtime_error(
                 "Cannot create built-in texture without a D3D11 device.");
         }
+        // D3D11画像の生成設定
         D3D11_TEXTURE2D_DESC textureDescription{};
         textureDescription.Width = Size;
         textureDescription.Height = Size;
@@ -791,9 +893,11 @@ namespace
         textureDescription.SampleDesc.Count = 1;
         textureDescription.Usage = D3D11_USAGE_IMMUTABLE;
         textureDescription.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        // 画像転送の初期データ
         D3D11_SUBRESOURCE_DATA initialData{};
         initialData.pSysMem = pixels.data();
         initialData.SysMemPitch = Size * 4u;
+        // 生成する画像アセット資源
         Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
         ThrowIfFailed(
             device->CreateTexture2D(
@@ -801,11 +905,13 @@ namespace
                 &initialData,
                 texture.ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateTexture2D(built-in)");
+        // D3D11ビューの生成設定
         D3D11_SHADER_RESOURCE_VIEW_DESC viewDescription{};
         viewDescription.Format = textureDescription.Format;
         viewDescription.ViewDimension =
             D3D11_SRV_DIMENSION_TEXTURE2D;
         viewDescription.Texture2D.MipLevels = 1;
+        // 画像を参照する描画ビュー
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view;
         ThrowIfFailed(
             device->CreateShaderResourceView(
@@ -825,17 +931,20 @@ namespace LamaPon
         class TextureResourceSlot final
         {
         public:
+            // 空の資源組を持つ共有公開先を作る。
             TextureResourceSlot()
                 : current(
                     std::make_shared<const TextureResourceSnapshot>())
             {
             }
 
+            // 同世代の公開資源組
             std::atomic<std::shared_ptr<const TextureResourceSnapshot>>
                 current;
         };
     }
 
+    // 空の共有公開先を作る。
     TextureResourceBinding::TextureResourceBinding()
         : m_slot(std::make_shared<Detail::TextureResourceSlot>())
     {
@@ -846,6 +955,7 @@ namespace LamaPon
     TextureResourceBinding::TextureResourceBinding(
         const TextureResourceBinding&) noexcept = default;
 
+    // 移動元を空にせず公開先を共有する(other: 元の公開窓口)。
     TextureResourceBinding::TextureResourceBinding(
         TextureResourceBinding&& other) noexcept
         : m_slot(other.m_slot)
@@ -855,6 +965,7 @@ namespace LamaPon
     TextureResourceBinding& TextureResourceBinding::operator=(
         const TextureResourceBinding&) noexcept = default;
 
+    // 移動元を空にせず公開先を共有する(other: 元の公開窓口)。
     TextureResourceBinding& TextureResourceBinding::operator=(
         TextureResourceBinding&& other) noexcept
     {
@@ -873,6 +984,7 @@ namespace LamaPon
     void TextureResourceBinding::Publish(
         TextureResourceSnapshot snapshot)
     {
+        // 一括公開する完成資源組
         auto published = std::make_shared<const TextureResourceSnapshot>(
             std::move(snapshot));
         if (m_slot == nullptr)
@@ -912,6 +1024,7 @@ namespace LamaPon
             throw std::invalid_argument(
                 "AssetManager requires an initialized graphics backend.");
         }
+        // 借用D3D11Backend
         if (auto* const d3d11 = AsD3D11Backend(m_backend))
         {
             if (m_device == nullptr)
@@ -968,16 +1081,17 @@ namespace LamaPon
         try
         {
             {
+                // 実行中モデル処理の排他
                 std::scoped_lock lock(m_graphicsWorkMutex);
                 m_acceptingGraphicsWork = false;
             }
 
-            // A worker may be waiting for the next frame's upload budget.
-            // Release that wait before waiting for the worker count to reach
-            // zero, otherwise teardown could deadlock without another frame.
+            // 終了待ちより先に予算待ちを解除し、次フレームがない終了時のデッドロックを防ぐ。
             DisableModelUploadThrottle();
 
+            // 実行中モデル処理の排他
             std::unique_lock lock(m_graphicsWorkMutex);
+            // 実行中モデル処理がなくなるまで待つ。
             m_graphicsWorkCondition.wait(
                 lock,
                 [this]
@@ -987,8 +1101,7 @@ namespace LamaPon
         }
         catch (...)
         {
-            // Destruction remains noexcept. The normal mutex/condition
-            // variable path does not throw after successful construction.
+
         }
         WaitForModelPreparation();
     }
@@ -997,6 +1110,7 @@ namespace LamaPon
     {
         try
         {
+            // 実行中モデル処理の排他
             std::scoped_lock lock(m_graphicsWorkMutex);
             if (!m_acceptingGraphicsWork)
             {
@@ -1016,6 +1130,7 @@ namespace LamaPon
         try
         {
             {
+                // 実行中モデル処理の排他
                 std::scoped_lock lock(m_graphicsWorkMutex);
                 if (m_activeGraphicsWork > 0)
                 {
@@ -1038,15 +1153,14 @@ namespace LamaPon
         std::filesystem::path assetRoot,
         const bool createMissingMeta)
     {
-        // ワーカーはm_assetRoot/m_archiveを参照するため、切り替える
-        // 前に必ず完了させます。
+        // ルートとアーカイブを参照するモデル準備を切替前に完了させる。
         WaitForModelPreparation();
         m_assetRoot = std::filesystem::absolute(std::move(assetRoot)).lexically_normal();
         m_archive.reset();
         if (!std::filesystem::is_directory(m_assetRoot))
         {
-            // 配布ゲームでは、展開された"assets"フォルダーを置く場所に
-            // 暗号化済み"assets.tpak"を置き、フォルダー自体は同梱しません。
+
+            // 暗号化アーカイブのパス
             auto archivePath = m_assetRoot;
             archivePath += L".tpak";
             if (std::filesystem::is_regular_file(archivePath))
@@ -1073,13 +1187,18 @@ namespace LamaPon
     std::vector<std::uint8_t> AssetManager::ReadFileBytes(
         const std::filesystem::path& path) const
     {
+        // 解決済みのアセットパス
         const auto resolvedPath = ResolvePath(path);
+        // アセットの再利用キー
         const auto cacheKey = MakeCacheKey(resolvedPath);
+        // 先読み済みの共有バイト列
         std::shared_ptr<
             const std::vector<std::uint8_t>>
                 cachedBytes;
         {
+            // 先読みキャッシュの排他
             std::scoped_lock lock(m_prefetchMutex);
+            // ディスクまたは先読みの結果
             if (const auto cached =
                     m_prefetchedBytes.find(cacheKey);
                 cached != m_prefetchedBytes.end())
@@ -1106,8 +1225,10 @@ namespace LamaPon
     {
         if (m_archive)
         {
+            // アーカイブ内の相対パス
             const auto relative =
                 resolvedPath.lexically_relative(m_assetRoot);
+            // 読み込むアセットのバイト列
             if (auto bytes = m_archive->TryRead(relative))
             {
                 return std::move(*bytes);
@@ -1117,6 +1238,7 @@ namespace LamaPon
                 + PathToUtf8(relative));
         }
 
+        // 通常ファイルの読み取り
         std::ifstream input(
             resolvedPath,
             std::ios::binary | std::ios::ate);
@@ -1126,6 +1248,7 @@ namespace LamaPon
                 "Could not open asset file: "
                 + PathToUtf8(resolvedPath));
         }
+        // ファイル終端の位置
         const auto end = input.tellg();
         if (end < 0)
         {
@@ -1133,6 +1256,7 @@ namespace LamaPon
                 "Could not determine asset size: "
                 + PathToUtf8(resolvedPath));
         }
+        // ファイル容量分の読込先
         std::vector<std::uint8_t> bytes(
             static_cast<std::size_t>(end));
         input.seekg(0);
@@ -1158,6 +1282,7 @@ namespace LamaPon
         {
             return true;
         }
+        // 解決済みのアセットパス
         const auto resolvedPath = ResolvePath(path);
         if (m_archive)
         {
@@ -1173,6 +1298,7 @@ namespace LamaPon
             const std::size_t,
             const std::size_t)>& progress)
     {
+        // 先読み処理の集計
         AssetPrefetchReport report;
         report.requestedFiles = paths.size();
         if (progress && !progress(0, paths.size()))
@@ -1181,7 +1307,9 @@ namespace LamaPon
             return report;
         }
 
+        // 先読みの処理済み件数
         std::size_t completed{};
+        // 先読み対象のパス
         for (const auto& path : paths)
         {
             if (!BuiltInTextureKind(path).empty())
@@ -1208,18 +1336,25 @@ namespace LamaPon
                 }
                 continue;
             }
+            // 解決済みのアセットパス
             const auto resolvedPath = ResolvePath(path);
+            // パスの再利用キー
             const auto key = MakeCacheKey(resolvedPath);
 
             try
             {
+                // 先読みの再利用済み判定
                 bool foundExisting{};
                 for (;;)
                 {
+                    // 読み取り開始時の画像世代
                     std::uint64_t textureEpoch{};
+                    // 読み取り開始時のパス世代
                     std::uint64_t pathGeneration{};
+                    // 読み取り開始時の先読み世代
                     std::uint64_t prefetchEpoch{};
                     {
+                        // 世代更新と公開の一括排他
                         std::scoped_lock lock(
                             m_textureMutex,
                             m_prefetchMutex);
@@ -1230,6 +1365,7 @@ namespace LamaPon
                             break;
                         }
                         textureEpoch = m_textureEpoch;
+                        // パス世代の検索結果
                         const auto generation =
                             m_texturePathGenerations.find(key);
                         pathGeneration = generation
@@ -1239,21 +1375,24 @@ namespace LamaPon
                         prefetchEpoch = m_prefetchEpoch;
                     }
 
+                    // 読み込むアセットのバイト列
                     auto bytes =
                         std::make_shared<
                             const std::vector<std::uint8_t>>(
                                 ReadFileBytesUncached(
                                     resolvedPath));
+                    // 読み取り中の無効化判定
                     bool generationChanged{};
                     {
-                        // Invalidate/Clearと同じmutex集合でcommitし、古い
-                        // 読み取り結果が新世代のbyte cacheへ復活しないように
-                        // します。世代が変わった場合は最新状態で読み直します。
+                        // 無効化と同じ排他区間で世代を再確認し、変更済みなら読み直す。
+                        // 世代更新と公開の一括排他
                         std::scoped_lock lock(
                             m_textureMutex,
                             m_prefetchMutex);
+                        // パス世代の検索結果
                         const auto generation =
                             m_texturePathGenerations.find(key);
+                        // 確定時の画像パス世代
                         const auto currentPathGeneration = generation
                                 != m_texturePathGenerations.end()
                             ? generation->second
@@ -1265,6 +1404,7 @@ namespace LamaPon
                             || prefetchEpoch != m_prefetchEpoch;
                         if (!generationChanged)
                         {
+                            // 採用先の位置と新規採用の有無
                             const auto [iterator, inserted] =
                                 m_prefetchedBytes.emplace(
                                     key,
@@ -1290,11 +1430,7 @@ namespace LamaPon
                     }
                 }
 
-                // テクスチャならGPUリソースまでこのワーカー
-                // スレッドで作成しておきます（デバイスは
-                // フリースレッドなので安全）。失敗しても
-                // バイトキャッシュは有効なため、本番ロード側の
-                // エラー処理に任せて握りつぶします。
+                // 画像生成に失敗しても先読みバイト列を残し、本読み込み側へエラー処理を委ねる。
                 if (!foundExisting
                     && (m_backend != nullptr || m_device != nullptr)
                     && IsTextureExtension(
@@ -1331,6 +1467,7 @@ namespace LamaPon
     {
         try
         {
+            // 先読みキャッシュの排他
             std::scoped_lock lock(m_prefetchMutex);
             ++m_prefetchEpoch;
             m_prefetchedBytes.clear();
@@ -1346,6 +1483,7 @@ namespace LamaPon
     {
         try
         {
+            // 先読みキャッシュの排他
             std::scoped_lock lock(m_prefetchMutex);
             return m_prefetchedBytes.size();
         }
@@ -1360,6 +1498,7 @@ namespace LamaPon
     {
         try
         {
+            // 先読みキャッシュの排他
             std::scoped_lock lock(m_prefetchMutex);
             return m_prefetchedByteCount;
         }
@@ -1373,13 +1512,16 @@ namespace LamaPon
         const std::filesystem::path& path,
         const TextureLoader::TextureUsage usage)
     {
+        // 組み込み図形の識別
         const auto builtInKind = BuiltInTextureKind(path);
+        // 解決済みのアセットパス
         const auto resolvedPath = builtInKind.empty()
             ? ResolvePath(path)
             : path.lexically_normal();
+        // 用途を含まないパスキー
         const auto baseCacheKey = MakeCacheKey(resolvedPath);
-        // 同じ画像でも用途が違えばフォーマットが違うので、
-        // メモリ上のキャッシュも用途で分けます。
+        // 用途で圧縮形式が異なるため、同じパスでもキャッシュを分ける。
+        // アセットの再利用キー
         auto cacheKey = baseCacheKey;
         cacheKey += L"|u";
         cacheKey += static_cast<wchar_t>(
@@ -1387,10 +1529,14 @@ namespace LamaPon
 
         for (;;)
         {
+            // 画像読み込み開始時の世代
             std::uint64_t epoch{};
+            // 読み取り開始時のパス世代
             std::uint64_t pathGeneration{};
             {
+                // 画像キャッシュの排他
                 std::scoped_lock lock(m_textureMutex);
+                // 共有キャッシュの検索結果
                 if (const auto existing =
                         m_textureCache.find(cacheKey);
                     existing != m_textureCache.end())
@@ -1402,10 +1548,10 @@ namespace LamaPon
                     m_texturePathGenerations[baseCacheKey];
             }
 
-            // 生成はロックの外で行い、他スレッドのキャッシュ参照を
-            // 止めません。同じpathが途中でInvalidate/Clearされた場合は
-            // 旧結果を公開せず、最新世代として読み直します。
+            // ロック外で生成し、無効化された旧結果は公開せず読み直す。
+            // 生成後に必要な段階転送
             std::optional<PendingTextureUpload> pendingUpload;
+            // 生成する画像アセット資源
             auto texture = builtInKind.empty()
                 ? LoadTextureUncached(
                     resolvedPath,
@@ -1418,12 +1564,13 @@ namespace LamaPon
                     builtInKind);
 
             {
-                // 世代確認、cache採用、段階upload登録を一括commitします。
-                // 同じkeyの並行loadでtry_emplaceに負けたresourceや、
-                // Invalidate済みのresourceはglobal queueへ公開しません。
+                // 世代確認・キャッシュ採用・段階転送登録を一括で確定する。
+                // 画像公開と転送登録の排他
                 std::scoped_lock lock(m_textureMutex, m_uploadMutex);
+                // 確定時のパス世代検索
                 const auto currentGeneration =
                     m_texturePathGenerations.find(baseCacheKey);
+                // 確定時の画像パス世代
                 const auto currentPathGeneration =
                     currentGeneration !=
                             m_texturePathGenerations.end()
@@ -1432,6 +1579,7 @@ namespace LamaPon
                 if (epoch == m_textureEpoch
                     && pathGeneration == currentPathGeneration)
                 {
+                    // 採用先の位置と新規採用の有無
                     const auto [iterator, inserted] =
                         m_textureCache.try_emplace(
                             cacheKey,
@@ -1445,8 +1593,7 @@ namespace LamaPon
                         }
                         catch (...)
                         {
-                            // placeholderだけがcacheへ残る半端なcommitを
-                            // 防ぎ、次回loadで生成から再試行できるようにします。
+                            // 仮表示だけが残らないようキャッシュ採用も取り消す。
                             m_textureCache.erase(iterator);
                             throw;
                         }
@@ -1463,6 +1610,7 @@ namespace LamaPon
             const bool isDds,
             const TextureLoader::TextureUsage usage)
     {
+        // 画像を参照する描画ビュー
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view;
         if (bytes.empty())
         {
@@ -1470,8 +1618,7 @@ namespace LamaPon
         }
         if (isDds)
         {
-            // DDSは既に最終形（多くはBC圧縮済み）なので、
-            // 展開し直さずそのまま渡します。
+
             ThrowIfFailed(
                 DirectX::CreateDDSTextureFromMemory(
                     m_device,
@@ -1483,18 +1630,24 @@ namespace LamaPon
             return view;
         }
 
+        // WIC画像のBC圧縮許可
         const bool compress = RuntimeTextureCompressionEnabled();
+        // 画像内容と用途の保存キー
         const std::uint64_t diskCacheKey =
             TextureCache::ComputeKey(bytes, compress, usage);
+        // 転送用の画像データ
         TextureLoader::PreparedTextureData prepared;
+        // ディスクまたは先読みの結果
         if (auto cached = TextureCache::TryLoad(diskCacheKey))
         {
             prepared = std::move(cached->data);
         }
         else
         {
+            // 生成したRGBAミップ列
             auto mips = TextureLoader::GenerateMipChain(
                 TextureLoader::DecodeImageBytes(bytes));
+            // 保存する画像キャッシュ
             TextureCache::CachedTexture entry;
             std::copy_n(
                 mips.back().pixels.begin(),
@@ -1507,9 +1660,7 @@ namespace LamaPon
             TextureCache::Store(diskCacheKey, entry);
             prepared = std::move(entry.data);
         }
-        // モデルのテクスチャは段階アップロードに載せません。
-        // 途中のフレームで法線が1x1の平均色になると陰影が崩れ、
-        // 「読み込み中」ではなく「壊れている」ように見えるためです。
+        // モデル画像は法線の仮表示による陰影崩れを避け、全ミップを一度に転送する。
         return TextureLoader::CreateTexture(m_device, prepared);
     }
 
@@ -1534,8 +1685,10 @@ namespace LamaPon
         }
         if (isDds && TextureLoader::IsDdsCubeTexture(bytes))
         {
+            // 借用D3D11Backend
             if (auto* const d3d11 = AsD3D11Backend(m_backend))
             {
+                // 画像のD3D11ビュー
                 auto nativeView = CreateTextureViewFromMemory(
                     bytes,
                     true,
@@ -1545,6 +1698,7 @@ namespace LamaPon
             }
             return {};
         }
+        // 転送用の画像データ
         const auto prepared = isDds
             ? TextureLoader::PrepareDdsTextureData(bytes)
             : TextureLoader::PrepareTextureData(
@@ -1552,8 +1706,11 @@ namespace LamaPon
                     TextureLoader::DecodeImageBytes(bytes)),
                 RuntimeTextureCompressionEnabled(),
                 usage);
+        // 画像資源の生成設定
         const auto description = MakeTextureDescription(prepared);
+        // 借用する転送バイト列
         const auto subresources = MakeTextureSubresources(prepared);
+        // 生成する画像アセット資源
         auto texture = m_backend->CreateTexture2D(
             description,
             subresources);
@@ -1576,17 +1733,22 @@ namespace LamaPon
             throw std::runtime_error("Texture file does not exist: " + LamaPon::PathToUtf8(resolvedPath));
         }
 
+        // 生成する画像アセット資源
         auto texture = std::make_shared<TextureAsset>();
         texture->sourcePath = resolvedPath;
 
+        // 小文字化したファイル拡張子
         const auto extension =
             LoweredExtension(resolvedPath);
+        // 読み込むアセットのバイト列
         const auto bytes = ReadFileBytes(resolvedPath);
         if (extension == L".dds")
         {
+            // 借用D3D11Backend
             if (auto* const d3d11 = AsD3D11Backend(m_backend))
             {
-                // D3D11はDirectXTKの全DDS対応範囲を従来どおり維持します。
+
+                // 読み込んだDDSビュー
                 Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
                     loadedView;
                 ThrowIfFailed(
@@ -1597,6 +1759,7 @@ namespace LamaPon
                         nullptr,
                         loadedView.ReleaseAndGetAddressOf()),
                     resolvedPath);
+                // 同世代の画像と描画ビュー
                 auto [textureHandle, viewHandle] =
                     d3d11->ImportShaderResourceView(
                         loadedView.Get());
@@ -1609,14 +1772,16 @@ namespace LamaPon
             else if (auto* const d3d12 = dynamic_cast<D3D12Backend*>(
                     m_backend))
             {
-                // D3D12でもDDSの2D／array／cube／cube array／volume次元を
-                // 保ち、正しいnative resourceとSRVを公開します。
+
+                // 転送用の画像データ
                 const auto prepared =
                     TextureLoader::PrepareDdsResourceData(bytes);
+                // 画像のGPU資源
                 auto resource = CreateD3D12DdsResource(*d3d12, prepared);
                 texture->width = prepared.width;
                 texture->height = prepared.height;
                 texture->isCube = resource.cube;
+                // DDSの転送データ
                 for (const auto& subresource : prepared.subresources)
                 {
                     texture->gpuBytes += subresource.bytes.size();
@@ -1629,6 +1794,7 @@ namespace LamaPon
             }
             else
             {
+                // 読み込んだDDSビュー
                 Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
                     loadedView;
                 ThrowIfFailed(
@@ -1646,23 +1812,21 @@ namespace LamaPon
         }
         else
         {
-            // PNG/JPG等はWICデコード→CPUミップ生成→（設定に
-            // より）BC1/BC3圧縮。immediate contextを使わないので
-            // ワーカースレッドから安全です。
-            //
-            // この3段はCPUの重仕事なのに結果が毎回同じなので、
-            // 最終形をディスクへ残して2回目以降は読むだけにします。
-            // 鍵はファイルの中身から作るため、テクスチャを
-            // 差し替えれば自然に作り直しになります。
+
+            // WIC画像のBC圧縮許可
             const bool compress =
                 RuntimeTextureCompressionEnabled();
+            // 画像内容と用途の保存キー
             const std::uint64_t diskCacheKey =
                 TextureCache::ComputeKey(bytes, compress, usage);
+            // 転送用の画像データ
             TextureLoader::PreparedTextureData prepared;
-            // 段階アップロード中の仮表示用の最小ミップ（1x1）。
+
+            // 仮表示の1×1平均色画像
             TextureLoader::CpuImage placeholder;
             placeholder.width = 1;
             placeholder.height = 1;
+            // ディスクまたは先読みの結果
             if (auto cached =
                     TextureCache::TryLoad(diskCacheKey))
             {
@@ -1673,6 +1837,7 @@ namespace LamaPon
             }
             else
             {
+                // 生成したRGBAミップ列
                 auto mips =
                     TextureLoader::GenerateMipChain(
                         TextureLoader::DecodeImageBytes(
@@ -1683,9 +1848,9 @@ namespace LamaPon
                         std::move(mips),
                         compress,
                         usage);
+                // 保存する画像キャッシュ
                 TextureCache::CachedTexture entry;
-                // ここのlevelsはこの後ムーブされるので、保存は
-                // 先に済ませます。1x1のRGBAが仮表示の色です。
+
                 std::copy_n(
                     placeholder.pixels.begin(),
                     entry.placeholderPixel.size(),
@@ -1700,17 +1865,17 @@ namespace LamaPon
                 && prepared.TotalBytes()
                     >= ProgressiveUploadThreshold())
             {
-                // 大きいテクスチャは空のDEFAULTテクスチャだけを
-                // 作り、粗いミップから毎フレーム少しずつ転送
-                // します（PumpTextureUploads）。それまでは1x1の
-                // 平均色SRVで表示します。
+                // 転送完了までは1×1の平均色を公開し、粗いミップから差し替える。
                 texture->width = prepared.levels[0].width;
                 texture->height = prepared.levels[0].height;
+                // 段階転送先のD3D11画像
                 Microsoft::WRL::ComPtr<ID3D11Texture2D>
                     gpuTexture;
+                // 段階転送先の共通画像
                 GraphicsTextureHandle gpuTextureHandle;
                 if (m_backend != nullptr)
                 {
+                    // ミップ更新可能な生成設定
                     auto uploadDescription =
                         MakeTextureDescription(prepared);
                     uploadDescription.updateMode =
@@ -1718,6 +1883,7 @@ namespace LamaPon
                     gpuTextureHandle = m_backend->CreateTexture2D(
                         uploadDescription,
                         {});
+                    // 仮表示のRGBA転送データ
                     TextureLoader::PreparedTextureData
                         placeholderData;
                     placeholderData.format =
@@ -1750,6 +1916,7 @@ namespace LamaPon
                             false));
                 }
 
+                // 最小ミップの番号
                 const auto lastLevel =
                     static_cast<std::ptrdiff_t>(
                         prepared.levels.size()) - 1;
@@ -1764,9 +1931,7 @@ namespace LamaPon
                 return texture;
             }
 
-            // WIC/CPU decodeで作った2D textureの形状はprepared dataから
-            // API非依存に確定できます。D3D12 backendではD3D11互換viewを
-            // 公開しないため、native SRVのintrospectionへ依存させません。
+
             texture->width = prepared.levels.front().width;
             texture->height = prepared.levels.front().height;
             texture->isCube = false;
@@ -1788,26 +1953,30 @@ namespace LamaPon
             }
         }
 
-        // DDSとlegacy D3D11経路はnative metadataを保持し得ます。通常の
-        // WIC textureは上でprepared dataから設定済みであり、将来の
-        // D3D12 backendではcompatibility viewが空でも安全です。
+
+        // 公開中の画像資源組
         const auto resources = texture->resources.Acquire();
+        // 公開中のD3D11ビュー
         const auto compatibilityView = resources != nullptr
             ? resources->d3d11ShaderResourceView
             : nullptr;
         if (compatibilityView)
         {
+            // 画像のGPU資源
             Microsoft::WRL::ComPtr<ID3D11Resource> resource;
             compatibilityView->GetResource(
                 resource.ReleaseAndGetAddressOf());
+            // D3D11資源の次元
             D3D11_RESOURCE_DIMENSION dimension{};
             resource->GetType(&dimension);
             if (dimension == D3D11_RESOURCE_DIMENSION_TEXTURE3D)
             {
-                // DDSのvolume textureは、D3D12と同じく幅と高さを控えます。
+
+                // 深度を持つD3D11画像
                 Microsoft::WRL::ComPtr<ID3D11Texture3D> texture3D;
                 ThrowIfFailed(resource.As(&texture3D), resolvedPath);
 
+                // 画像資源の生成設定
                 D3D11_TEXTURE3D_DESC description{};
                 texture3D->GetDesc(&description);
                 texture->width = description.Width;
@@ -1816,9 +1985,11 @@ namespace LamaPon
             }
             else
             {
+                // D3D11の2D画像
                 Microsoft::WRL::ComPtr<ID3D11Texture2D> texture2D;
                 ThrowIfFailed(resource.As(&texture2D), resolvedPath);
 
+                // 画像資源の生成設定
                 D3D11_TEXTURE2D_DESC description{};
                 texture2D->GetDesc(&description);
                 texture->width = description.Width;
@@ -1830,8 +2001,8 @@ namespace LamaPon
         }
         if (texture->gpuBytes == 0 && extension == L".dds")
         {
-            // DirectXTKのDDS経路はmip列を直接GPUへ送るため、ヘッダーを
-            // 除いたファイルの大きさがGPU上の量の良い見積もりです。
+            // D3D11経路の容量は基本ヘッダーを除くファイルサイズによる概算とする。
+            // 基本DDSヘッダー容量
             constexpr std::size_t DdsHeaderBytes = 128;
             texture->gpuBytes =
                 bytes.size() > DdsHeaderBytes
@@ -1849,27 +2020,29 @@ namespace LamaPon
             return;
         }
 
+        // 段階転送キューの排他
         std::scoped_lock lock(m_uploadMutex);
+        // 今回の画像転送容量
         std::size_t uploadedBytes = 0;
         while (!m_pendingUploads.empty())
         {
+            // 転送待ち画像の先頭
             auto& pending = m_pendingUploads.front();
-            // キャッシュからも参照されなくなったテクスチャは
-            // 転送せずに破棄します（Clear後など）。
+
             if (pending.asset.use_count() == 1)
             {
                 m_pendingUploads.pop_front();
                 continue;
             }
 
-            // 今回公開するmip範囲を、assetや進捗を変更せず先に決めます。
-            // view生成に失敗した場合は同じ範囲を次回再試行できます。
+            // ビュー生成の失敗時に同じ範囲を再試行できるよう、進捗の確定を遅らせる。
+            // 今回の転送後ミップ番号
             auto nextLevelAfterBatch = pending.nextLevel;
+            // 今回の画像転送量
             std::size_t batchBytes = 0;
             while (nextLevelAfterBatch >= 0)
             {
-                // 予算を使い切っても最低1レベルは進めます
-                // （巨大なミップ0でも前進を保証）。
+                // 最初の1ミップを必ず進めるため、指定予算の超過を許容する。
                 if ((uploadedBytes != 0 || batchBytes != 0)
                     && (uploadedBytes >= byteBudget
                         || batchBytes
@@ -1877,6 +2050,7 @@ namespace LamaPon
                 {
                     break;
                 }
+                // 処理対象のミップ
                 const auto& level = pending.data.levels[
                     static_cast<std::size_t>(
                         nextLevelAfterBatch)];
@@ -1893,17 +2067,21 @@ namespace LamaPon
 
             if (nextLevelAfterBatch == pending.nextLevel)
             {
-                // 既に別textureで予算を使い切りました。
+
                 break;
             }
 
+            // 公開範囲の最大解像度
             const auto mostDetailed =
                 static_cast<std::uint32_t>(
                     nextLevelAfterBatch + 1);
+            // 画像の全ミップ数
             const auto totalMipLevels =
                 static_cast<std::uint32_t>(
                     pending.data.levels.size());
+            // 転送後に公開するビュー
             GraphicsViewHandle nextView;
+            // 転送後の互換ビュー
             Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>
                 nextCompatibilityView;
             if (pending.textureHandle)
@@ -1934,12 +2112,14 @@ namespace LamaPon
                         totalMipLevels);
             }
 
-            // viewとcompatibility mirrorが完成してからuploadします。途中で
-            // 失敗しても公開中のassetとnextLevel/CPU bytesは変わりません。
+            // 転送失敗時も公開中の資源組と進捗・CPUバイト列を維持する。
+            // 今回転送するミップ番号
             for (auto levelIndex = pending.nextLevel;
+                // 今回の転送後ミップ番号
                 levelIndex > nextLevelAfterBatch;
                 --levelIndex)
             {
+                // 処理対象のミップ
                 auto& level = pending.data.levels[
                     static_cast<std::size_t>(levelIndex)];
                 if (pending.textureHandle)
@@ -1978,7 +2158,9 @@ namespace LamaPon
                     std::move(nextView),
                     std::move(nextCompatibilityView)
                 });
+            // 今回転送するミップ番号
             for (auto levelIndex = pending.nextLevel;
+                // 今回の転送後ミップ番号
                 levelIndex > nextLevelAfterBatch;
                 --levelIndex)
             {
@@ -1994,7 +2176,7 @@ namespace LamaPon
                 m_pendingUploads.pop_front();
                 continue;
             }
-            // 予算切れ。残りは次のフレームで続けます。
+
             break;
         }
     }
@@ -2003,6 +2185,7 @@ namespace LamaPon
         AssetManager::PendingTextureUploadCount()
             const noexcept
     {
+        // 段階転送キューの排他
         std::scoped_lock lock(m_uploadMutex);
         return m_pendingUploads.size();
     }
@@ -2012,13 +2195,13 @@ namespace LamaPon
     {
         try
         {
-            // 0指定でも最低1バッファは進めます。完全停止にすると
-            // ワーカーが予算待ちのままになり、インポート完了を
-            // 永久に受け取れません。
+            // 予算0でも進捗を止めないよう最低1バイトの予算を補充する。
+            // 最低1バイトの補充予算
             const std::size_t effectiveBudget = std::max<std::size_t>(
                 byteBudget,
                 1u);
             {
+                // モデル転送予算の排他
                 std::scoped_lock lock(m_modelUploadMutex);
                 m_modelUploadBytesLastFrame.store(
                     m_modelUploadBytesCurrentFrame,
@@ -2044,6 +2227,7 @@ namespace LamaPon
         {
             return;
         }
+        // モデル転送予算の排他
         std::unique_lock lock(m_modelUploadMutex);
         if (!m_modelUploadThrottled
             || std::this_thread::get_id()
@@ -2051,10 +2235,12 @@ namespace LamaPon
         {
             return;
         }
+        // 予算補充または終了による待機解除を確認する。
         m_modelUploadCondition.wait(
             lock,
             [this, byteCount]
             {
+                // 待機解除に必要な予算
                 const std::size_t required = std::min(
                     byteCount,
                     m_modelUploadFrameBudget);
@@ -2067,6 +2253,7 @@ namespace LamaPon
         {
             return;
         }
+        // 待機解除に必要な予算
         const std::size_t required = std::min(
             byteCount,
             m_modelUploadFrameBudget);
@@ -2079,6 +2266,7 @@ namespace LamaPon
     {
         try
         {
+            // モデル転送予算の排他
             std::scoped_lock lock(m_modelUploadMutex);
             return m_modelUploadThrottled ? 1u : 0u;
         }
@@ -2093,6 +2281,7 @@ namespace LamaPon
         try
         {
             {
+                // モデル転送予算の排他
                 std::scoped_lock lock(m_modelUploadMutex);
                 m_modelUploadThrottled = false;
                 m_modelUploadBudgetRemaining = 0;
@@ -2109,6 +2298,7 @@ namespace LamaPon
         try
         {
             {
+                // モデル転送予算の排他
                 std::scoped_lock lock(m_modelUploadMutex);
                 m_modelUploadThrottled = false;
                 m_modelPreparationThread = {};
@@ -2129,10 +2319,12 @@ namespace LamaPon
             throw std::logic_error(
                 "AssetManager is stopping graphics work.");
         }
+        // 所有者を破棄せず処理数を減らす(owner: 処理を借用した管理器)。
         const auto finishGraphicsWork = [](AssetManager* owner) noexcept
         {
             owner->EndGraphicsWork();
         };
+        // 所有者を破棄せず処理数を戻す終了処理
         const std::unique_ptr<
             AssetManager,
             decltype(finishGraphicsWork)> graphicsWorkScope{
@@ -2147,12 +2339,18 @@ namespace LamaPon
         const std::filesystem::path& path)
     {
 
+        // 解決済みのアセットパス
         const auto resolvedPath = ResolvePath(path);
+        // アセットの再利用キー
         const auto cacheKey = MakeCacheKey(resolvedPath);
+        // 同じパスの準備結果
         std::future<std::shared_ptr<ModelAsset>> preparedFuture;
+        // 回収した準備結果の世代
         std::uint64_t preparedGeneration{};
         {
+            // モデル準備と共有の排他
             std::scoped_lock lock(m_modelMutex);
+            // 共有キャッシュの検索結果
             if (const auto existing = m_modelCache.find(cacheKey);
                 existing != m_modelCache.end())
             {
@@ -2169,29 +2367,33 @@ namespace LamaPon
             }
         }
 
+        // 準備結果を待つかの判定
         const bool usedPreparedFuture = preparedFuture.valid();
         if (usedPreparedFuture)
         {
-            // 同期要求へ切り替わった場合は、次フレームの予算補充を
-            // 待たずに残りを完了させます。
+            // 同期要求では予算待ちを解除して準備完了まで進める。
             DisableModelUploadThrottle();
         }
+        // 生成または回収したアセット
         auto asset = usedPreparedFuture
             ? preparedFuture.get()
             : LoadModelUncached(resolvedPath, m_context);
+        // 回収した準備結果の無効化
         bool preparedResultIsStale{};
         {
+            // モデル準備と共有の排他
             std::scoped_lock lock(m_modelMutex);
             preparedResultIsStale = usedPreparedFuture
                 && preparedGeneration != m_modelGeneration;
         }
         if (preparedResultIsStale)
         {
-            // 準備中にInvalidateされた結果は採用せず、現在の内容を
-            // 同期経路で読み直します。
+            // 無効化済みの準備結果を採用せず同期経路で読み直す。
             asset = LoadModelUncached(resolvedPath, m_context);
         }
+        // モデル準備と共有の排他
         std::scoped_lock lock(m_modelMutex);
+        // 採用先の位置と新規採用の有無
         const auto [iterator, inserted] =
             m_modelCache.try_emplace(cacheKey, std::move(asset));
         static_cast<void>(inserted);
@@ -2205,10 +2407,12 @@ namespace LamaPon
         {
             return false;
         }
+        // 所有者を破棄せず処理数を減らす(owner: 処理を借用した管理器)。
         const auto finishGraphicsWork = [](AssetManager* owner) noexcept
         {
             owner->EndGraphicsWork();
         };
+        // 所有者を破棄せず処理数を戻す終了処理
         const std::unique_ptr<
             AssetManager,
             decltype(finishGraphicsWork)> graphicsWorkScope{
@@ -2216,12 +2420,18 @@ namespace LamaPon
                 finishGraphicsWork
             };
 
+        // 解決済みのアセットパス
         const auto resolvedPath = ResolvePath(path);
+        // アセットの再利用キー
         const auto cacheKey = MakeCacheKey(resolvedPath);
+        // 別モデルの完了済み結果
         std::future<std::shared_ptr<ModelAsset>> completedFuture;
+        // 別モデルの再利用キー
         std::wstring completedKey;
+        // 別モデルの準備開始世代
         std::uint64_t completedGeneration{};
         {
+            // モデル準備と共有の排他
             std::scoped_lock lock(m_modelMutex);
             if (m_modelCache.contains(cacheKey))
             {
@@ -2240,9 +2450,7 @@ namespace LamaPon
                 {
                     return false;
                 }
-                // 呼び出し側が別モデルへ移っていても、完了済みの
-                // ジョブを回収して次の準備が永久に詰まらないように
-                // します。
+                // 別モデルの完了済みジョブも回収し、次の準備枠を空ける。
                 completedKey =
                     m_pendingModelPreparation->cacheKey;
                 completedGeneration =
@@ -2257,7 +2465,9 @@ namespace LamaPon
         {
             try
             {
+                // 回収した別モデル
                 auto completedAsset = completedFuture.get();
+                // モデル準備と共有の排他
                 std::scoped_lock lock(m_modelMutex);
                 if (completedGeneration == m_modelGeneration)
                 {
@@ -2268,11 +2478,11 @@ namespace LamaPon
             }
             catch (...)
             {
-                // 回収されなかった古いジョブの失敗は、これから
-                // 要求されたモデルの準備を妨げません。
+
             }
         }
 
+        // モデル準備と共有の排他
         std::scoped_lock lock(m_modelMutex);
         if (m_modelCache.contains(cacheKey))
         {
@@ -2283,8 +2493,10 @@ namespace LamaPon
             return m_pendingModelPreparation->cacheKey
                 == cacheKey;
         }
+        // 読み込み時のモデル世代
         const auto generation = m_modelGeneration;
         {
+            // モデル転送予算の排他
             std::scoped_lock uploadLock(m_modelUploadMutex);
             m_modelUploadThrottled = true;
             m_modelPreparationThread = {};
@@ -2294,6 +2506,7 @@ namespace LamaPon
                 DefaultModelUploadBudgetPerFrame;
             m_modelUploadBytesCurrentFrame = 0;
         }
+        // 回収する非同期準備結果
         std::future<std::shared_ptr<ModelAsset>> future;
         if (!TryBeginGraphicsWork())
         {
@@ -2302,15 +2515,18 @@ namespace LamaPon
         }
         try
         {
+            // 登録済みワーカーでモデルを準備する。
             future = std::async(
                 std::launch::async,
                 [this, resolvedPath]()
             {
+                // 所有者を破棄せず処理数を減らす(owner: 処理を借用した管理器)。
                 const auto finishGraphicsWork = [](
                     AssetManager* owner) noexcept
                 {
                     owner->EndGraphicsWork();
                 };
+                // 所有者を破棄せず処理数を戻す終了処理
                 const std::unique_ptr<
                     AssetManager,
                     decltype(finishGraphicsWork)> graphicsWorkScope{
@@ -2318,21 +2534,25 @@ namespace LamaPon
                         finishGraphicsWork
                     };
                 {
+                    // モデル転送予算の排他
                     std::scoped_lock lock(m_modelUploadMutex);
                     m_modelPreparationThread =
                         std::this_thread::get_id();
                 }
+                // 管理器を破棄せず準備登録を解除する。
                 const auto finishUpload = [this](
                     AssetManager*) noexcept
                 {
                     EndModelUploadPreparation();
                 };
+                // 準備登録を解除する終了処理
                 const std::unique_ptr<
                     AssetManager,
                     decltype(finishUpload)> uploadScope{
                         this,
                         finishUpload
                     };
+                // ワーカーのCOM初期化結果
                 const HRESULT comResult = CoInitializeEx(
                     nullptr,
                     COINIT_MULTITHREADED);
@@ -2342,9 +2562,12 @@ namespace LamaPon
                     throw std::runtime_error(
                         "Could not initialize COM for model import.");
                 }
+                // comScope: 初期化成功時のCOM寿命管理
                 struct ComScope final
                 {
+                    // COM初期化の成功状態
                     bool initialized{};
+                    // このスレッドで初期化したCOMのみを終了する。
                     ~ComScope()
                     {
                         if (initialized)
@@ -2354,8 +2577,7 @@ namespace LamaPon
                     }
                 } comScope{ SUCCEEDED(comResult) };
 
-                // Immediate Contextを渡さないことで、ワーカー上の
-                // 処理をフリースレッドなDevice操作だけに限定します。
+                // ワーカーへ即時コンテキストを渡さず、デバイス操作だけでモデルを準備する。
                 return LoadModelUncached(
                     resolvedPath,
                     nullptr);
@@ -2390,10 +2612,12 @@ namespace LamaPon
             }
             return ModelPreparationState::Failed;
         }
+        // 所有者を破棄せず処理数を減らす(owner: 処理を借用した管理器)。
         const auto finishGraphicsWork = [](AssetManager* owner) noexcept
         {
             owner->EndGraphicsWork();
         };
+        // 所有者を破棄せず処理数を戻す終了処理
         const std::unique_ptr<
             AssetManager,
             decltype(finishGraphicsWork)> graphicsWorkScope{
@@ -2405,11 +2629,16 @@ namespace LamaPon
         {
             error->clear();
         }
+        // 解決済みのアセットパス
         const auto resolvedPath = ResolvePath(path);
+        // アセットの再利用キー
         const auto cacheKey = MakeCacheKey(resolvedPath);
+        // 回収する非同期準備結果
         std::future<std::shared_ptr<ModelAsset>> future;
+        // 読み込み時のモデル世代
         std::uint64_t generation{};
         {
+            // モデル準備と共有の排他
             std::scoped_lock lock(m_modelMutex);
             if (m_modelCache.contains(cacheKey))
             {
@@ -2436,7 +2665,9 @@ namespace LamaPon
 
         try
         {
+            // 生成または回収したアセット
             auto asset = future.get();
+            // モデル準備と共有の排他
             std::scoped_lock lock(m_modelMutex);
             if (generation != m_modelGeneration)
             {
@@ -2447,6 +2678,7 @@ namespace LamaPon
                 std::move(asset));
             return ModelPreparationState::Ready;
         }
+        // 準備の失敗理由を出力する(exception: 回収時の例外)。
         catch (const std::exception& exception)
         {
             if (error != nullptr)
@@ -2473,10 +2705,12 @@ namespace LamaPon
             throw std::logic_error(
                 "AssetManager is stopping graphics work.");
         }
+        // 所有者を破棄せず処理数を減らす(owner: 処理を借用した管理器)。
         const auto finishGraphicsWork = [](AssetManager* owner) noexcept
         {
             owner->EndGraphicsWork();
         };
+        // 所有者を破棄せず処理数を戻す終了処理
         const std::unique_ptr<
             AssetManager,
             decltype(finishGraphicsWork)> graphicsWorkScope{
@@ -2484,18 +2718,21 @@ namespace LamaPon
                 finishGraphicsWork
             };
 
+        // 解決済みのアセットパス
         const auto resolvedPath = ResolvePath(path);
+        // アセットの再利用キー
         const auto cacheKey = MakeCacheKey(resolvedPath);
+        // 同じモデルの準備中判定
         bool preparationPending{};
         {
+            // モデル準備と共有の排他
             std::scoped_lock lock(m_modelMutex);
             preparationPending = m_pendingModelPreparation
                 && m_pendingModelPreparation->cacheKey == cacheKey;
         }
         if (preparationPending)
         {
-            // 同じファイルを二重解析せず、準備結果（およびその
-            // ディスクキャッシュ）が完成してからインスタンス化します。
+            // 準備の終了とディスクキャッシュ保存を待ってから独立資源を生成する。
             static_cast<void>(LoadModelImpl(resolvedPath));
         }
         return LoadModelUncached(resolvedPath, m_context);
@@ -2505,10 +2742,13 @@ namespace LamaPon
         AssetManager::LoadAnimationClip(
             const std::filesystem::path& path)
     {
+        // 解決済みのアセットパス
         const auto resolvedPath =
             ResolvePath(path);
+        // アセットの再利用キー
         const auto cacheKey =
             MakeCacheKey(resolvedPath);
+        // 共有キャッシュの検索結果
         if (const auto existing =
                 m_animationCache.find(cacheKey);
             existing != m_animationCache.end())
@@ -2522,7 +2762,9 @@ namespace LamaPon
                 "Could not open animation clip: "
                 + LamaPon::PathToUtf8(resolvedPath));
         }
+        // 読み込むアセットのバイト列
         const auto bytes = ReadFileBytes(resolvedPath);
+        // 解析したアニメーション
         auto clip = std::make_shared<AnimationClip>(
             AnimationClip::FromJson(
                 std::string_view(
@@ -2538,6 +2780,7 @@ namespace LamaPon
         AssetManager::ReloadAnimationClip(
             const std::filesystem::path& path)
     {
+        // 解決済みのアセットパス
         const auto resolvedPath =
             ResolvePath(path);
         m_animationCache.erase(
@@ -2550,10 +2793,13 @@ namespace LamaPon
         AssetManager::LoadDataAsset(
             const std::filesystem::path& path)
     {
+        // 解決済みのアセットパス
         const auto resolvedPath =
             ResolvePath(path);
+        // アセットの再利用キー
         const auto cacheKey =
             MakeCacheKey(resolvedPath);
+        // 共有キャッシュの検索結果
         if (const auto existing =
                 m_dataAssetCache.find(cacheKey);
             existing != m_dataAssetCache.end())
@@ -2567,7 +2813,9 @@ namespace LamaPon
                 "Could not open data asset: "
                 + LamaPon::PathToUtf8(resolvedPath));
         }
+        // 読み込むアセットのバイト列
         const auto bytes = ReadFileBytes(resolvedPath);
+        // 生成または回収したアセット
         auto asset = std::make_shared<const DataAsset>(
             DataAsset::FromJson(
                 std::string_view(
@@ -2586,6 +2834,7 @@ namespace LamaPon
         AssetManager::ReloadDataAsset(
             const std::filesystem::path& path)
     {
+        // 解決済みのアセットパス
         const auto resolvedPath =
             ResolvePath(path);
         m_dataAssetCache.erase(
@@ -2597,10 +2846,13 @@ namespace LamaPon
         AssetManager::LoadAnimatorController(
             const std::filesystem::path& path)
     {
+        // 解決済みのアセットパス
         const auto resolvedPath =
             ResolvePath(path);
+        // アセットの再利用キー
         const auto cacheKey =
             MakeCacheKey(resolvedPath);
+        // 共有キャッシュの検索結果
         if (const auto existing =
                 m_animatorControllerCache.find(cacheKey);
             existing
@@ -2614,7 +2866,9 @@ namespace LamaPon
                 "Could not open Animator Controller: "
                 + LamaPon::PathToUtf8(resolvedPath));
         }
+        // 読み込むアセットのバイト列
         const auto bytes = ReadFileBytes(resolvedPath);
+        // 解析した制御設定
         auto controller =
             std::make_shared<AnimatorController>(
                 AnimatorController::FromJson(
@@ -2633,6 +2887,7 @@ namespace LamaPon
         AssetManager::ReloadAnimatorController(
             const std::filesystem::path& path)
     {
+        // 解決済みのアセットパス
         const auto resolvedPath =
             ResolvePath(path);
         m_animatorControllerCache.erase(
@@ -2650,11 +2905,15 @@ namespace LamaPon
             throw std::runtime_error("Model file does not exist: " + LamaPon::PathToUtf8(resolvedPath));
         }
 
+        // 小文字化したファイル拡張子
         auto extension = resolvedPath.extension().wstring();
         std::ranges::transform(extension, extension.begin(), std::towlower);
 
+        // DirectXTK形式のモデル
         std::unique_ptr<DirectX::Model> loadedModel;
+        // 共通形式のモデル
         std::shared_ptr<SkeletalModel> skeletalModel;
+        // 元のパーツ別材質色
         std::unordered_map<
             const DirectX::IEffect*,
             DirectX::XMFLOAT4> embeddedDiffuseColors;
@@ -2662,11 +2921,13 @@ namespace LamaPon
         {
             if (m_device != nullptr)
             {
-                // D3D11はDirectXTKの既存モデル・Effect生成を維持します。
-                // CMOのテクスチャはEffectFactoryがディスクから直接読む
-                // ため、暗号化アーカイブの対象にはなりません。
+
+                // CMOの外部画像はEffectFactoryが物理ファイルから読むためアーカイブ経由に対応しない。
+                // 読み込むアセットのバイト列
                 const auto bytes = ReadFileBytes(resolvedPath);
+                // 元の材質色を記録する生成器
                 MaterialCapturingEffectFactory effectFactory(m_device);
+                // 外部画像の検索フォルダー
                 const auto modelDirectory =
                     FindCmoTextureDirectory(resolvedPath).wstring();
                 effectFactory.SetDirectory(modelDirectory.c_str());
@@ -2680,8 +2941,7 @@ namespace LamaPon
             }
             else
             {
-                // D3D12などでは同じファイルをCPU幾何・共通texture
-                // handleへ変換し、既存のModel描画要求へ接続します。
+
                 skeletalModel = CmoImporter::Load(*this, resolvedPath);
             }
         }
@@ -2689,9 +2949,12 @@ namespace LamaPon
         {
             if (m_device != nullptr)
             {
-                // D3D11はDirectXTKの既存モデル・Effect生成を維持します。
+
+                // 読み込むアセットのバイト列
                 const auto bytes = ReadFileBytes(resolvedPath);
+                // 元の材質色を記録する生成器
                 MaterialCapturingEffectFactory effectFactory(m_device);
+                // 外部画像の検索フォルダー
                 const auto modelDirectory =
                     resolvedPath.parent_path().wstring();
                 effectFactory.SetDirectory(modelDirectory.c_str());
@@ -2705,8 +2968,7 @@ namespace LamaPon
             }
             else
             {
-                // D3D12などでは同じファイルをCPU幾何・共通texture
-                // handleへ変換し、既存のModel描画要求へ接続します。
+
                 skeletalModel = SdkmeshImporter::Load(*this, resolvedPath);
             }
         }
@@ -2714,7 +2976,8 @@ namespace LamaPon
         {
             if (m_device != nullptr)
             {
-                // D3D11はDirectXTKの既存loaderとBasicEffectを維持します。
+
+                // 読み込むアセットのバイト列
                 const auto bytes = ReadFileBytes(resolvedPath);
                 loadedModel = DirectX::Model::CreateFromVBO(
                     m_device,
@@ -2756,6 +3019,7 @@ namespace LamaPon
                 m_backend);
         }
 
+        // 生成または回収したアセット
         auto asset = std::make_shared<ModelAsset>();
         asset->model =
             std::shared_ptr<DirectX::Model>(std::move(loadedModel));
@@ -2785,16 +3049,25 @@ namespace LamaPon
         const float fontSize,
         const TextLayoutOptions& layout)
     {
+        // UTF16の表示文字列
         const std::wstring wideText = Utf8ToWide(text);
+        // UTF16の書体名
         const std::wstring wideFontFamily = Utf8ToWide(fontFamily);
+        // 文字配置の制約横幅
         const float layoutWidth = std::clamp(layout.size.x, 0.0f, 4096.0f);
+        // 文字配置の制約高さ
         const float layoutHeight = std::clamp(layout.size.y, 0.0f, 4096.0f);
+        // 横幅制約の有効性
         const bool constrainedWidth = layoutWidth > 0.0f;
+        // 高さ制約の有効性
         const bool constrainedHeight = layoutHeight > 0.0f;
+        // 文字配置の最大横幅
         const float maximumWidth = constrainedWidth ? layoutWidth : 4096.0f;
+        // 文字配置の最大高さ
         const float maximumHeight = constrainedHeight ? layoutHeight : 4096.0f;
 
-        // 色はキーに入れません（白で焼いて描画時に掛けるため）。
+
+        // 文字と書体・配置の再利用キー
         std::wstring cacheKey = wideFontFamily;
         cacheKey += L'\x1f';
         cacheKey += std::to_wstring(fontSize);
@@ -2813,6 +3086,7 @@ namespace LamaPon
         cacheKey += L'\x1f';
         cacheKey += wideText;
 
+        // 共有キャッシュの検索結果
         if (const auto existing = m_textCache.find(cacheKey);
             existing != m_textCache.end())
         {
@@ -2820,6 +3094,7 @@ namespace LamaPon
             return existing->second.asset;
         }
 
+        // 文字の書式設定
         Microsoft::WRL::ComPtr<IDWriteTextFormat> textFormat;
         ThrowIfFailed(
             m_dwriteFactory->CreateTextFormat(
@@ -2833,6 +3108,7 @@ namespace LamaPon
                 textFormat.ReleaseAndGetAddressOf()),
             "IDWriteFactory::CreateTextFormat");
 
+        // 文字の横方向揃え
         DWRITE_TEXT_ALIGNMENT textAlignment = DWRITE_TEXT_ALIGNMENT_LEADING;
         if (constrainedWidth)
         {
@@ -2849,6 +3125,7 @@ namespace LamaPon
             }
         }
 
+        // 文字の縦方向揃え
         DWRITE_PARAGRAPH_ALIGNMENT paragraphAlignment =
             DWRITE_PARAGRAPH_ALIGNMENT_NEAR;
         if (constrainedHeight)
@@ -2879,6 +3156,7 @@ namespace LamaPon
                     : DWRITE_WORD_WRAPPING_NO_WRAP),
             "IDWriteTextFormat::SetWordWrapping");
 
+        // 描画用の文字配置
         Microsoft::WRL::ComPtr<IDWriteTextLayout> textLayout;
         ThrowIfFailed(
             m_dwriteFactory->CreateTextLayout(
@@ -2890,25 +3168,31 @@ namespace LamaPon
                 textLayout.ReleaseAndGetAddressOf()),
             "IDWriteFactory::CreateTextLayout");
 
+        // 配置後の文字寸法
         DWRITE_TEXT_METRICS metrics{};
         ThrowIfFailed(
             textLayout->GetMetrics(&metrics),
             "IDWriteTextLayout::GetMetrics");
 
+        // 余白追加前の描画横幅
         const float renderedWidth =
             constrainedWidth
                 ? maximumWidth
                 : metrics.widthIncludingTrailingWhitespace;
+        // 余白追加前の描画高さ
         const float renderedHeight =
             constrainedHeight ? maximumHeight : metrics.height;
+        // 文字画像の横幅
         const std::uint32_t width = std::max(
             static_cast<std::uint32_t>(
                 std::ceil(renderedWidth)) + 4u,
             1u);
+        // 文字画像の高さ
         const std::uint32_t height = std::max(
             static_cast<std::uint32_t>(std::ceil(renderedHeight)) + 4u,
             1u);
 
+        // 文字描画先のCPU画像
         Microsoft::WRL::ComPtr<IWICBitmap> bitmap;
         ThrowIfFailed(
             m_wicFactory->CreateBitmap(
@@ -2919,6 +3203,7 @@ namespace LamaPon
                 bitmap.ReleaseAndGetAddressOf()),
             "IWICImagingFactory::CreateBitmap(text)");
 
+        // 文字描画先の形式
         const D2D1_RENDER_TARGET_PROPERTIES renderTargetProperties =
             D2D1::RenderTargetProperties(
                 D2D1_RENDER_TARGET_TYPE_DEFAULT,
@@ -2926,6 +3211,7 @@ namespace LamaPon
                     DXGI_FORMAT_B8G8R8A8_UNORM,
                     D2D1_ALPHA_MODE_PREMULTIPLIED));
 
+        // 文字描画のD2D対象
         Microsoft::WRL::ComPtr<ID2D1RenderTarget> renderTarget;
         ThrowIfFailed(
             m_d2dFactory->CreateWicBitmapRenderTarget(
@@ -2935,8 +3221,8 @@ namespace LamaPon
             "ID2D1Factory::CreateWicBitmapRenderTarget");
         renderTarget->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
 
-        // 白で焼きます。色は描画時に掛けるので、ここで色を入れると
-        // 二重に掛かってしまいます（かつ色ごとにテクスチャが増えます）。
+        // 描画時に色を乗算するため、文字画像は白で生成する。
+        // 白い文字の描画ブラシ
         Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush;
         ThrowIfFailed(
             renderTarget->CreateSolidColorBrush(
@@ -2954,12 +3240,14 @@ namespace LamaPon
             renderTarget->EndDraw(),
             "ID2D1RenderTarget::EndDraw");
 
+        // 読み取る画像の範囲
         WICRect lockRectangle{
             0,
             0,
             static_cast<INT>(width),
             static_cast<INT>(height)
         };
+        // 画像バイト列の借用固定
         Microsoft::WRL::ComPtr<IWICBitmapLock> bitmapLock;
         ThrowIfFailed(
             bitmap->Lock(
@@ -2968,8 +3256,11 @@ namespace LamaPon
                 bitmapLock.ReleaseAndGetAddressOf()),
             "IWICBitmap::Lock");
 
+        // 画像1行のバイト数
         UINT stride{};
+        // 固定した画像の容量
         UINT dataSize{};
+        // 固定した画像のバイト先頭
         BYTE* data{};
         ThrowIfFailed(bitmapLock->GetStride(&stride), "IWICBitmapLock::GetStride");
         ThrowIfFailed(
@@ -2977,6 +3268,7 @@ namespace LamaPon
             "IWICBitmapLock::GetDataPointer");
         static_cast<void>(dataSize);
 
+        // D3D11画像の生成設定
         D3D11_TEXTURE2D_DESC textureDescription{};
         textureDescription.Width = width;
         textureDescription.Height = height;
@@ -2987,21 +3279,25 @@ namespace LamaPon
         textureDescription.Usage = D3D11_USAGE_IMMUTABLE;
         textureDescription.BindFlags = D3D11_BIND_SHADER_RESOURCE;
 
+        // 画像転送の初期データ
         D3D11_SUBRESOURCE_DATA initialData{};
         initialData.pSysMem = data;
         initialData.SysMemPitch = stride;
 
+        // 生成または回収したアセット
         auto asset = std::make_shared<TextTextureAsset>();
         asset->width = width;
         asset->height = height;
         if (m_backend != nullptr)
         {
+            // 画像資源の生成設定
             const GraphicsTexture2DDescription description{
                 width,
                 height,
                 1,
                 GraphicsTextureFormat::Bgra8Unorm
             };
+            // 借用する転送バイト列
             const std::array subresources{
                 GraphicsTextureSubresourceData{
                     std::span<const std::byte>{
@@ -3012,9 +3308,11 @@ namespace LamaPon
                     dataSize
                 }
             };
+            // 生成する画像アセット資源
             auto texture = m_backend->CreateTexture2D(
                 description,
                 subresources);
+            // 画像を参照する描画ビュー
             auto view = m_backend->CreateShaderResourceView(
                 texture,
                 GraphicsTextureViewDescription{ 0, 1 });
@@ -3026,6 +3324,7 @@ namespace LamaPon
         }
         else
         {
+            // 生成する画像アセット資源
             Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
             ThrowIfFailed(
                 m_device->CreateTexture2D(
@@ -3033,6 +3332,7 @@ namespace LamaPon
                     &initialData,
                     texture.ReleaseAndGetAddressOf()),
                 "ID3D11Device::CreateTexture2D(text)");
+            // 画像を参照する描画ビュー
             Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view;
             ThrowIfFailed(
                 m_device->CreateShaderResourceView(
@@ -3043,9 +3343,8 @@ namespace LamaPon
             PublishLegacyTextureView(*asset, std::move(view));
         }
 
-        // 文字テクスチャは「文字列ごとに1枚」なので、スコアや残り時間
-        // のように中身が変わり続ける表示では際限なく増えます。上限を
-        // 決めて、古くて誰も参照していないものから捨てます。
+
+        // 文字画像の推定キャッシュ容量
         const std::size_t bytes =
             static_cast<std::size_t>(width)
             * static_cast<std::size_t>(height)
@@ -3061,12 +3360,7 @@ namespace LamaPon
         return asset;
     }
 
-    // 予算を超えていたら、最後に使われたのが古い項目を1つずつ探して
-    // 捨てます。キーをコピーしたり、一時配列をソートしたりしないので、
-    // 定常状態では1回の走査と1回のeraseだけで済みます。
-    // ただしまだ誰かが表示に使っているもの（use_count > 1）は
-    // 捨てません。捨てても解放されないうえ、次のフレームで作り直す
-    // ことになるためです（キャッシュの意味が無くなる）。
+
     void AssetManager::TrimTextCache() noexcept
     {
         if (m_textCacheBytes <= m_textCacheBudgetBytes)
@@ -3078,7 +3372,9 @@ namespace LamaPon
         {
             while (m_textCacheBytes > m_textCacheBudgetBytes)
             {
+                // 未使用で最も古い文字画像
                 auto oldest = m_textCache.end();
+                // キャッシュの検索位置
                 for (auto iterator = m_textCache.begin();
                      iterator != m_textCache.end();
                      ++iterator)
@@ -3118,8 +3414,7 @@ namespace LamaPon
         }
         catch (...)
         {
-            // 掃除や警告ログに失敗しても描画は続けられます
-            // （次回また試します）。
+
         }
     }
 
@@ -3128,9 +3423,8 @@ namespace LamaPon
         WaitForModelPreparation();
         try
         {
-            // 世代更新/cache破棄とpending破棄を1つのtransactionにします。
-            // 間へ新世代のLoadTextureが入り、そのpendingだけを後段のClear
-            // が消してplaceholderを固定してしまう競合を防ぎます。
+            // 世代更新と転送待ちの破棄を一括で行い、新世代の転送を誤って消さない。
+            // 世代更新と公開の一括排他
             std::scoped_lock lock(
                 m_textureMutex,
                 m_uploadMutex,
@@ -3148,6 +3442,7 @@ namespace LamaPon
         }
         try
         {
+            // モデル準備と共有の排他
             std::scoped_lock lock(m_modelMutex);
             ++m_modelGeneration;
             m_modelCache.clear();
@@ -3168,20 +3463,24 @@ namespace LamaPon
     {
         try
         {
+            // 組み込み図形の識別
             const auto builtInKind = BuiltInTextureKind(path);
+            // 無効化対象の解決済みパス
             const auto cachePath = builtInKind.empty()
                 ? ResolvePath(path)
                 : path.lexically_normal();
+            // アセットの再利用キー
             const auto cacheKey =
                 MakeCacheKey(cachePath);
             {
-                // Clearと同様、cache generationとpending queueを原子的に
-                // 無効化し、新世代loadのuploadを誤って消さないようにします。
+                // パス世代更新と転送待ちの除去を一括で行い、新世代の転送を維持する。
+                // 世代更新と公開の一括排他
                 std::scoped_lock lock(
                     m_textureMutex,
                     m_uploadMutex,
                     m_prefetchMutex);
                 ++m_texturePathGenerations[cacheKey];
+                // 無効化する画像用途
                 for (int usage =
                         static_cast<int>(
                             TextureLoader::TextureUsage::Color);
@@ -3189,11 +3488,13 @@ namespace LamaPon
                         TextureLoader::TextureUsage::DataMap);
                     ++usage)
                 {
+                    // 用途を含む画像キー
                     auto textureKey = cacheKey;
                     textureKey += L"|u";
                     textureKey += static_cast<wchar_t>(L'0' + usage);
                     m_textureCache.erase(textureKey);
                 }
+                // 同じパスの転送待ちを除く(pending: 確認対象の待機画像)。
                 std::erase_if(
                     m_pendingUploads,
                     [&cacheKey](
@@ -3204,6 +3505,7 @@ namespace LamaPon
                                 pending.asset->sourcePath)
                                 == cacheKey;
                     });
+                // ディスクまたは先読みの結果
                 if (const auto cached =
                         m_prefetchedBytes.find(cacheKey);
                     cached != m_prefetchedBytes.end())
@@ -3219,6 +3521,7 @@ namespace LamaPon
                 }
             }
             {
+                // モデル準備と共有の排他
                 std::scoped_lock lock(m_modelMutex);
                 ++m_modelGeneration;
                 m_modelCache.erase(cacheKey);
@@ -3234,6 +3537,7 @@ namespace LamaPon
 
     std::wstring AssetManager::MakeCacheKey(const std::filesystem::path& path)
     {
+        // パスの再利用キー
         auto key = path.wstring();
         std::ranges::transform(key, key.begin(), std::towlower);
         return key;
@@ -3243,8 +3547,10 @@ namespace LamaPon
     {
         try
         {
+            // 回収する非同期準備結果
             std::future<std::shared_ptr<ModelAsset>> future;
             {
+                // モデル準備と共有の排他
                 std::scoped_lock lock(m_modelMutex);
                 if (!m_pendingModelPreparation)
                 {

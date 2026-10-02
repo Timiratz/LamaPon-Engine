@@ -1,5 +1,6 @@
 #pragma once
 
+// DLL公開属性のプラットフォーム切替
 #if defined(_WIN32)
 #if defined(LAMAPON_RUNTIME_BUILD)
 #define LAMAPON_API __declspec(dllexport)

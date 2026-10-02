@@ -17,6 +17,7 @@
 
 namespace
 {
+    // 現在のD3D11描画先を検証して借用します(graphics: 使用するデバイス, target: 検証する描画先, operation: 失敗文に付ける操作名)。
     [[nodiscard]] const LamaPon::Detail::D3D11RenderTargetState&
         RequireCurrentOffscreenTarget(
         const LamaPon::GraphicsDevice& graphics,
@@ -40,6 +41,7 @@ namespace
                 + " requires a target owned by the active backend.");
         }
 
+        // 現在の描画先の内部状態
         const auto* const state = dynamic_cast<const
             LamaPon::Detail::D3D11RenderTargetState*>(
                 LamaPon::Detail::RenderTargetBackendAccess::Get(target));
@@ -52,6 +54,7 @@ namespace
         return *state;
     }
 
+    // 現在のD3D11描画先を検証して変更可能に借用します(graphics: 使用するデバイス, target: 検証する描画先, operation: 失敗文に付ける操作名)。
     [[nodiscard]] LamaPon::Detail::D3D11RenderTargetState&
         RequireCurrentOffscreenTarget(
             const LamaPon::GraphicsDevice& graphics,
@@ -62,6 +65,7 @@ namespace
             graphics,
             static_cast<const LamaPon::RenderTarget&>(target),
             operation));
+        // 現在の描画先の内部状態
         auto* const state = dynamic_cast<
             LamaPon::Detail::D3D11RenderTargetState*>(
                 LamaPon::Detail::RenderTargetBackendAccess::Get(target));
@@ -74,20 +78,24 @@ namespace
         return *state;
     }
 
+    // D3D11のTAA入力へ変換します(source: API共通の行列入力)。
     [[nodiscard]] LamaPon::EnvironmentRenderer::TemporalInputs
         ToD3D11TemporalInputs(
             const LamaPon::TemporalAntiAliasingInputs& source)
     {
+        // 変換した後処理の入力
         LamaPon::EnvironmentRenderer::TemporalInputs result{};
         result.inverseViewProjection = source.inverseViewProjection;
         result.viewProjection = source.viewProjection;
         return result;
     }
 
+    // D3D11の光の筋の入力へ変換します(source: API共通のカメラ・光源・影情報)。
     [[nodiscard]] LamaPon::EnvironmentRenderer::VolumetricInputs
         ToD3D11VolumetricInputs(
             const LamaPon::VolumetricLightInputs& source)
     {
+        // 変換した後処理の入力
         LamaPon::EnvironmentRenderer::VolumetricInputs result{};
         result.cascadeShadow = source.cascadeShadow;
         result.inverseViewProjection = source.inverseViewProjection;
@@ -101,8 +109,8 @@ namespace
         return result;
     }
 
-    // D3D12のpost-processもD3D11と同じ条件でtargetを検証し、Sprite
-    // rendererのfullscreen passへ送ります。
+
+    // 描画先を検証してD3D12後処理器を借用します(graphics: 使用するデバイス, resources: 現在のAPI資源, target: 検証する描画先, operation: 失敗文に付ける操作名)。
     [[nodiscard]] LamaPon::Detail::D3D12SpriteRenderer&
         RequireD3D12PostProcessRenderer(
             const LamaPon::GraphicsDevice& graphics,
@@ -126,8 +134,10 @@ namespace
                 std::string(operation)
                 + " requires a target owned by the active backend.");
         }
+        // 現在のD3D12所有資源
         auto* const d3d12 = dynamic_cast<
             LamaPon::Detail::GraphicsDeviceD3D12Resources*>(resources);
+        // 借用するD3D12後処理器
         auto* const renderer = d3d12 != nullptr
             ? d3d12->TrySpriteRenderer()
             : nullptr;
@@ -143,6 +153,7 @@ namespace
 
 namespace LamaPon
 {
+    // 処理済みの色をバックバッファ全体へ転写します(target: 現在の資源世代の描画先)。
     void GraphicsDevice::CopyOffscreenTargetToBackBuffer(
         const RenderTarget& target)
     {
@@ -160,14 +171,16 @@ namespace LamaPon
                     "DirectX 12 target.");
             }
 
-            // HDR表示用資源へ確定し、D3D11のCopyToBoundRenderTargetと
-            // 同じく、post-process済みの色をそのまま画面全体へ転写します。
+            // 後処理済みの色を表示画像へ確定し、バックバッファ全体へ転写します。
+            // 表示画像を確定する描画先
             auto& mutableTarget = const_cast<RenderTarget&>(target);
             m_state->m_backend->PublishOffscreenTarget(mutableTarget);
             m_state->m_backend->BindBackBuffer();
+            // 現在のD3D12所有資源
             auto* const resources = dynamic_cast<
                 Detail::GraphicsDeviceD3D12Resources*>(
                     m_state->m_apiResources.get());
+            // 借用するD3D12後処理器
             auto* const renderer = resources != nullptr
                 ? resources->TrySpriteRenderer()
                 : nullptr;
@@ -186,7 +199,9 @@ namespace LamaPon
             *this,
             target,
             "CopyOffscreenTargetToBackBuffer"));
+        // D3D11の環境描画器
         auto& environment = Environment();
+        // 転写元のD3D11カラーSRV
         auto* const source = TryResolveD3D11ShaderResourceView(
             target.CurrentColorViewHandle());
         if (source == nullptr)
@@ -200,6 +215,7 @@ namespace LamaPon
         environment.CopyToBoundRenderTarget(source);
     }
 
+    // 深度から遮蔽率を生成したか返します(target: 深度入力と遮蔽率の出力先, settings: 遮蔽の設定, projection: 深度復元の射影行列, sampleCount: 採取点数)。
     bool GraphicsDevice::ResolveOffscreenTargetAmbientOcclusion(
         RenderTarget& target,
         const AmbientOcclusionSettings& settings,
@@ -209,9 +225,7 @@ namespace LamaPon
         if (ActiveRenderingApi()
             == RenderingApi::DirectX12Experimental)
         {
-            // D3D12の公開DepthViewはshader-readable copyなので、プリパスの
-            // 深度を確定してから遮蔽を求めます。SSRなど後続パスも同じ
-            // コピーを読みます。
+            // 遮蔽やSSRが読む深度コピーをプリパス完了後に確定します。
             m_state->m_backend->CaptureOffscreenTargetDepth(target);
             if (!settings.enabled)
             {
@@ -229,6 +243,7 @@ namespace LamaPon
                     projection,
                     sampleCount);
         }
+        // 現在のD3D11描画先状態
         auto& targetState = RequireCurrentOffscreenTarget(
             *this,
             target,
@@ -244,6 +259,7 @@ namespace LamaPon
             sampleCount);
     }
 
+    // 再投影した履歴を混ぜます(target: 処理する描画先, settings: TAAの設定, inputs: 履歴と再投影行列)。
     void GraphicsDevice::ApplyOffscreenTargetTemporalAntiAliasing(
         RenderTarget& target,
         const TemporalAntiAliasingSettings& settings,
@@ -256,8 +272,7 @@ namespace LamaPon
             {
                 return;
             }
-            // D3D12の公開DepthViewはshader-readable copyなので、main passを
-            // 描き終えた現在深度をTAAの直前に確定します。
+            // TAAが読む深度コピーを主描画の完了後に確定します。
             m_state->m_backend->CaptureOffscreenTargetDepth(target);
             RequireD3D12PostProcessRenderer(
                 *this,
@@ -272,6 +287,7 @@ namespace LamaPon
             return;
         }
 
+        // 現在のD3D11描画先状態
         auto& targetState = RequireCurrentOffscreenTarget(
             *this,
             target,
@@ -286,6 +302,7 @@ namespace LamaPon
             ToD3D11TemporalInputs(inputs));
     }
 
+    // 影から光の筋を合成します(target: HDRの描画先, settings: 光の筋の設定, inputs: カメラと光源・影情報)。
     void GraphicsDevice::ApplyOffscreenTargetVolumetricLight(
         RenderTarget& target,
         const VolumetricLightSettings& settings,
@@ -307,6 +324,7 @@ namespace LamaPon
             return;
         }
 
+        // 現在のD3D11描画先状態
         auto& targetState = RequireCurrentOffscreenTarget(
             *this,
             target,
@@ -321,6 +339,7 @@ namespace LamaPon
             ToD3D11VolumetricInputs(inputs));
     }
 
+    // 焦点帯の外を深度に応じてぼかします(target: HDRの描画先, settings: 被写界深度の設定, projection: 深度復元の射影行列, sampleCount: 採取点数)。
     void GraphicsDevice::ApplyOffscreenTargetDepthOfField(
         RenderTarget& target,
         const DepthOfFieldSettings& settings,
@@ -330,6 +349,7 @@ namespace LamaPon
         if (ActiveRenderingApi()
             == RenderingApi::DirectX12Experimental)
         {
+            // 借用するD3D12後処理器
             auto& renderer = RequireD3D12PostProcessRenderer(
                 *this,
                 m_state->m_apiResources.get(),
@@ -349,6 +369,7 @@ namespace LamaPon
             return;
         }
 
+        // 現在のD3D11描画先状態
         auto& targetState = RequireCurrentOffscreenTarget(
             *this,
             target,
@@ -364,6 +385,7 @@ namespace LamaPon
             sampleCount);
     }
 
+    // 前フレームとの差に沿って色を平均します(target: HDRの描画先, settings: 動きぼかしの設定, inverseViewProjection: 世界座標を復元する逆行列, viewProjection: 保存する現在の射影行列, sampleCount: 採取点数)。
     void GraphicsDevice::ApplyOffscreenTargetMotionBlur(
         RenderTarget& target,
         const MotionBlurSettings& settings,
@@ -374,11 +396,13 @@ namespace LamaPon
         if (ActiveRenderingApi()
             == RenderingApi::DirectX12Experimental)
         {
+            // 借用するD3D12後処理器
             auto& renderer = RequireD3D12PostProcessRenderer(
                 *this,
                 m_state->m_apiResources.get(),
                 target,
                 "ApplyOffscreenTargetMotionBlur");
+            // 現在の描画先の内部状態
             auto* const state =
                 Detail::RenderTargetBackendAccess::Get(target);
             if (state == nullptr)
@@ -389,8 +413,7 @@ namespace LamaPon
             }
             if (!settings.enabled)
             {
-                // D3D11と同じく、無効中のカメラ移動を再有効化した最初の
-                // フレームへ持ち越しません。
+                // 無効中のカメラ移動を再有効化時へ持ち越さないよう履歴を無効にします。
                 state->m_motionBlurPreviousValid = false;
                 return;
             }
@@ -407,19 +430,18 @@ namespace LamaPon
                     state->m_motionBlurPreviousViewProjection,
                     sampleCount);
             }
-            // 最初のフレームは描画せず、次回の比較に使う行列だけを
-            // targetごとに保存します。
+            // 初回はぼかさず、次回の比較行列を描画先ごとに保存します。
             state->m_motionBlurPreviousViewProjection = viewProjection;
             state->m_motionBlurPreviousValid = true;
             return;
         }
 
+        // 現在のD3D11描画先状態
         auto& targetState = RequireCurrentOffscreenTarget(
             *this,
             target,
             "ApplyOffscreenTargetMotionBlur");
-        // disabledでもRenderTargetへ渡し、保持している前フレーム行列を
-        // 無効化します。再度有効にした瞬間の大きなブレを防ぐためです。
+        // 無効時も処理を渡して履歴を無効にし、再有効化時の大きなブレを防ぎます。
         targetState.ApplyMotionBlur(
             Environment(),
             settings,
@@ -428,6 +450,7 @@ namespace LamaPon
             sampleCount);
     }
 
+    // 高輝度部のぼかしを適用します(target: HDRの描画先, settings: ブルームの設定)。
     void GraphicsDevice::ApplyOffscreenTargetBloom(
         RenderTarget& target,
         const BloomSettings& settings)
@@ -446,6 +469,7 @@ namespace LamaPon
             return;
         }
 
+        // 現在のD3D11描画先状態
         auto& targetState = RequireCurrentOffscreenTarget(
             *this,
             target,
@@ -457,6 +481,7 @@ namespace LamaPon
         targetState.ApplyBloom(Environment(), settings);
     }
 
+    // 光条・ゴースト・ハローを合成します(target: HDRの描画先, settings: レンズフレアの設定)。
     void GraphicsDevice::ApplyOffscreenTargetScreenSpaceLensFlare(
         RenderTarget& target,
         const ScreenSpaceLensFlareSettings& settings)
@@ -476,6 +501,7 @@ namespace LamaPon
             return;
         }
 
+        // 現在のD3D11描画先状態
         auto& targetState = RequireCurrentOffscreenTarget(
             *this,
             target,
@@ -489,6 +515,7 @@ namespace LamaPon
             settings);
     }
 
+    // ACES近似と色調補正を適用します(target: HDRの描画先, settings: 色調補正の設定)。
     void GraphicsDevice::ApplyOffscreenTargetToneMapping(
         RenderTarget& target,
         const ColorGradingSettings& settings)
@@ -507,6 +534,7 @@ namespace LamaPon
             return;
         }
 
+        // 現在のD3D11描画先状態
         auto& targetState = RequireCurrentOffscreenTarget(
             *this,
             target,
@@ -514,6 +542,7 @@ namespace LamaPon
         targetState.ApplyToneMapping(Environment(), settings);
     }
 
+    // 深度と法線から輪郭を合成します(target: 処理する描画先, settings: 輪郭の設定, projection: 深度復元の射影行列)。
     void GraphicsDevice::ApplyOffscreenTargetScreenOutline(
         RenderTarget& target,
         const ScreenOutlineSettings& settings,
@@ -526,8 +555,7 @@ namespace LamaPon
             {
                 return;
             }
-            // アウトラインはmain passの最終深度を読むため、TAAが無効でも
-            // shader-readable copyをここで確定します。
+            // 輪郭用の最終深度コピーはTAAの有効状態によらず確定します。
             m_state->m_backend->CaptureOffscreenTargetDepth(target);
             RequireD3D12PostProcessRenderer(
                 *this,
@@ -542,6 +570,7 @@ namespace LamaPon
             return;
         }
 
+        // 現在のD3D11描画先状態
         auto& targetState = RequireCurrentOffscreenTarget(
             *this,
             target,
@@ -556,6 +585,7 @@ namespace LamaPon
             projection);
     }
 
+    // 輝度の縁を検出して平滑化します(target: 処理する描画先)。
     void GraphicsDevice::ApplyOffscreenTargetFXAA(
         RenderTarget& target)
     {
@@ -572,6 +602,7 @@ namespace LamaPon
             return;
         }
 
+        // 現在のD3D11描画先状態
         auto& targetState = RequireCurrentOffscreenTarget(
             *this,
             target,
@@ -579,6 +610,7 @@ namespace LamaPon
         targetState.ApplyFXAA(Environment());
     }
 
+    // 輝度へ順応した露出補正EVを返します(target: HDR入力と測定値の保存先, settings: 自動露出の設定, deltaSeconds: 前回からの経過秒)。
     float GraphicsDevice::UpdateOffscreenTargetAutoExposure(
         RenderTarget& target,
         const AutoExposureSettings& settings,
@@ -587,13 +619,16 @@ namespace LamaPon
         if (ActiveRenderingApi()
             == RenderingApi::DirectX12Experimental)
         {
+            // 借用するD3D12後処理器
             auto& renderer = RequireD3D12PostProcessRenderer(
                 *this,
                 m_state->m_apiResources.get(),
                 target,
                 "UpdateOffscreenTargetAutoExposure");
+            // 現在のD3D12バックエンド
             auto* const backend = dynamic_cast<D3D12Backend*>(
                 m_state->m_backend.get());
+            // 現在の描画先の内部状態
             auto* const state =
                 Detail::RenderTargetBackendAccess::Get(target);
             if (backend == nullptr || state == nullptr)
@@ -604,13 +639,13 @@ namespace LamaPon
             }
             if (!settings.enabled)
             {
-                // D3D11と同じく、無効にしたら読み残しと順応状態を捨てます。
+                // 無効時は未読の測定値と順応状態を破棄します。
                 backend->DiscardOffscreenTargetLuminance(target);
                 Detail::ResetAutoExposure(*state);
                 return 0.0f;
             }
-            // D3D11と同じ順で、前フレームの読み出し、順応、現在の測定と
-            // 次回用の転送を行います。
+            // 前フレーム値で順応した後、現在の輝度を測定して次回の転送を予約します。
+            // 順応後の露出補正（EV）
             const float exposureStops = Detail::AdvanceAutoExposure(
                 *state,
                 backend->TryReadOffscreenTargetLuminance(target),
@@ -623,11 +658,13 @@ namespace LamaPon
             return exposureStops;
         }
 
+        // 現在のD3D11描画先状態
         auto& targetState = RequireCurrentOffscreenTarget(
             *this,
             target,
             "UpdateOffscreenTargetAutoExposure");
 
+        // 読み戻せた線形平均輝度
         std::optional<float> measuredLuminance;
         if (settings.enabled)
         {
@@ -635,6 +672,7 @@ namespace LamaPon
                 m_state->m_backend->TryReadOffscreenTargetLuminance(target);
         }
 
+        // 順応後の露出補正（EV）
         const float exposureStops = targetState.UpdateAutoExposure(
             Environment(),
             measuredLuminance,

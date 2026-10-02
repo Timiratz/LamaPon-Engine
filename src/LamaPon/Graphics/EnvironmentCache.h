@@ -11,28 +11,25 @@ struct ID3D11DeviceContext;
 
 namespace LamaPon::EnvironmentCache
 {
-    // 事前畳み込み済み環境（IBL）のディスクキャッシュ。
-    //
-    // リフレクションプローブとSkyboxの決定的な畳み込み結果を保存し、
-    // 同じ入力に対するGPUでの再計算を省略します。1組はスペキュラ8ミップと
-    // 放射照度のfp16キューブ2枚で構成されます。
-    //
-    // 何をもって「同じ」とするかは呼ぶ側が鍵で表します（プローブは
-    // シーンのパス＋位置＋範囲、Skyはキューブマップの内容ハッシュ）。
+    // 鏡面・拡散のRGBA16Fキューブを保存し、入力の同一性は呼出し側の識別子で表す。
 
-    // 置き場所（既定は%LOCALAPPDATA%\LamaPon\environment-cache）。
+
+    // キャッシュの配置先を返す。
+    // 既定はLOCALAPPDATA配下のLamaPon/environment-cacheとし、取得不能なら一時領域を使う。
     [[nodiscard]] std::filesystem::path CacheDirectory();
 
-    // テスト用の差し替え。空で既定へ戻ります。
+
+    // 配置先を差し替え、空なら既定へ戻す(directory: 任意の配置先)。
     void SetCacheDirectoryOverride(std::filesystem::path directory);
 
-    // 鍵作りに使うFNV-1a 64（texture-cache等と同じもの）。
+
+    // バイト列のFNV-1a 64識別子を求める(bytes: 識別するバイト列)。
     [[nodiscard]] std::uint64_t HashBytes(
         std::span<const std::uint8_t> bytes) noexcept;
 
-    // GPUのキューブ2枚をCPUへ読み戻して保存します。GPUとの同期が
-    // 必要なため、ベイクや畳み込みの直後に呼びます。失敗時は保存を
-    // 行いません。
+
+    // 二キューブをGPUから読み戻して保存し、失敗は無視する(key: キャッシュ識別子, device: 描画デバイス, context: 描画コンテキスト, environment: 保存する二キューブ)。
+    // GPUとの同期で待機するためベイク直後に呼び、同じ識別子への並行保存は呼出し側で直列化する。
     void Store(
         std::uint64_t key,
         ID3D11Device* device,
@@ -40,8 +37,8 @@ namespace LamaPon::EnvironmentCache
         const EnvironmentRenderer::OwnedPrefilteredEnvironment&
             environment) noexcept;
 
-    // キャッシュが無い、または破損している場合はIsValid()が偽の値を返し、
-    // 呼び出し側でベイクまたは畳み込みを実行します。
+
+    // 規定形式の二キューブを復元し、失敗なら無効な組を返す(device: 描画デバイス, key: キャッシュ識別子)。
     [[nodiscard]]
     EnvironmentRenderer::OwnedPrefilteredEnvironment TryLoad(
         ID3D11Device* device,

@@ -16,10 +16,11 @@
 
 namespace
 {
-    // 1行の最大文字数（テキストテクスチャの肥大化を防ぎます）。
+    // 省略前の本文上限バイト数
     constexpr std::size_t MaximumLineBytes = 96;
 
-    // UTF-8の文字境界を壊さないように切り詰めます。
+    // UTF-8の文字境界で本文を短縮します(text: 表示本文の複製, maximumBytes: 省略前の上限バイト数)。
+    // 短縮時は本文の末尾へ3バイトの省略記号を追加します。
     [[nodiscard]] std::string TruncateUtf8(
         std::string text,
         const std::size_t maximumBytes)
@@ -28,6 +29,7 @@ namespace
         {
             return text;
         }
+        // UTF-8文字境界に合わせる末尾
         std::size_t end = maximumBytes;
         while (end > 0
             && (static_cast<unsigned char>(text[end])
@@ -48,6 +50,7 @@ namespace LamaPon
         Scene& scene,
         const float deltaTime)
     {
+        // 現在のF1キー押下状態
         const bool pressed =
             graphics.Input().KeyboardState().F1;
         if (pressed && !m_toggleHeld)
@@ -84,8 +87,10 @@ namespace LamaPon
         Scene& scene)
     {
         m_lines.clear();
+        // 統計行の整形先
         char buffer[160];
 
+        // 描画フレームの計測統計
         const auto& frame = graphics.FrameStats();
         std::snprintf(
             buffer,
@@ -110,7 +115,9 @@ namespace LamaPon
             m_lines.push_back({ buffer, 0 });
         }
 
+        // シーンの可視判定統計
         const auto& visibility = scene.VisibilityStats();
+        // カリングした描画対象の総数
         const std::size_t culled =
             visibility.frustumCulledCount
             + visibility.occlusionCulledCount
@@ -125,6 +132,7 @@ namespace LamaPon
             culled);
         m_lines.push_back({ buffer, 0 });
 
+        // シーンの物理演算統計
         const auto& physics = scene.PhysicsStats();
         std::snprintf(
             buffer,
@@ -136,9 +144,11 @@ namespace LamaPon
                 + physics.candidatePairCount2D);
         m_lines.push_back({ buffer, 0 });
 
-        // 直近の警告・エラー（新しい順に最大4件）。
+        // 直近の診断履歴の複製
         const auto entries = Logger::Instance().Snapshot();
+        // 追加済みの警告・エラー行数
         int shown = 0;
+        // 新しい順に照合する診断の位置
         for (auto iterator = entries.rbegin();
             iterator != entries.rend() && shown < 4;
             ++iterator)
@@ -147,6 +157,7 @@ namespace LamaPon
             {
                 continue;
             }
+            // 表示する診断がエラーか
             const bool isError =
                 iterator->level == LogLevel::Error;
             m_lines.push_back({
@@ -169,31 +180,38 @@ namespace LamaPon
             return;
         }
 
-        // AssetManagerと描画Backendを同じ世代に固定します。テキストを
-        // 準備してからpassを開始し、GPU uploadをactive passの外に保ちます。
+        // 描画資源の世代を固定する借用
+        // GPUアップロードをパスの外で完了するため、本文資源を先に準備します。
         [[maybe_unused]] auto operationLease =
             graphics.AcquireResourceLease();
 
-        // 先にテキストテクスチャを揃えてパネルサイズを決めます
-        // （文字列単位でAssetManagerがキャッシュします）。
+        // 本文のフォントサイズ
         constexpr float FontSize = 15.0f;
+        // パネル内の余白ピクセル
         constexpr float Padding = 10.0f;
+        // 本文の行間ピクセル
         constexpr float LineGap = 4.0f;
-        // 文字テクスチャは白で焼かれるので、行ごとの色は描くときに
-        // 掛けます（色を焼くと、同じ文だけ色違いでもテクスチャが
-        // 増えてしまいます）。
+        // 色別のキャッシュを増やさないよう本文を白で生成し、描画時に着色します。
         struct Line final
         {
+            // 本文画像の寿命を保持する参照
             std::shared_ptr<const TextTextureAsset> texture;
+            // 本文画像の描画ビュー
             GraphicsViewHandle view;
+            // 本文へ乗算する表示色
             XMFLOAT4 color{};
         };
+        // 本文の描画資源と表示色
         std::vector<Line> textures;
         textures.reserve(m_lines.size());
+        // 背景パネルの幅ピクセル
         float panelWidth = 0.0f;
+        // 背景パネルの高さピクセル
         float panelHeight = Padding * 2.0f;
+        // 資源を準備する表示行
         for (const auto& line : m_lines)
         {
+            // 診断の重要度に応じた表示色
             const XMFLOAT4 color =
                 line.severity == 2
                     ? XMFLOAT4{ 1.0f, 0.45f, 0.4f, 1.0f }
@@ -202,6 +220,7 @@ namespace LamaPon
                             1.0f, 0.8f, 0.35f, 1.0f }
                         : XMFLOAT4{
                             0.92f, 0.95f, 1.0f, 1.0f });
+            // キャッシュから取得する本文画像
             auto texture =
                 graphics.Assets().LoadTextTexture(
                     line.text,
@@ -213,6 +232,7 @@ namespace LamaPon
             panelHeight +=
                 static_cast<float>(texture->height)
                 + LineGap;
+            // 本文画像の現在の描画資源
             const auto resources = texture->resources.Acquire();
             textures.push_back(
                 Line{
@@ -225,33 +245,41 @@ namespace LamaPon
         panelWidth += Padding * 2.0f;
         panelHeight -= LineGap;
 
+        // オーバーレイ用描画パスの設定
         SpritePassDescription description;
         description.blend = SpriteBlendMode::NonPremultiplied;
+        // オーバーレイを描くスプライトパス
         auto pass = graphics.BeginSpritePass(description);
+        // パス内の描画要求の送信先
         const auto context = pass.Context();
+        // 背景の黒と透過率
         const XMFLOAT4 backgroundColor{
             0.0f, 0.0f, 0.0f, 0.68f };
+        // 乗算済みアルファの背景色
         const XMFLOAT4 backgroundTint{
             backgroundColor.x * backgroundColor.w,
             backgroundColor.y * backgroundColor.w,
             backgroundColor.z * backgroundColor.w,
             backgroundColor.w };
+        // 背景パネルの描画要求
         SpriteDrawRequest backgroundRequest;
-        // empty textureはBackend所有のwhite textureへfallbackします。
+        // テクスチャ未指定でバックエンドの白画像を使い、背景色を乗算します。
         backgroundRequest.position = { 6.0f, 6.0f };
         backgroundRequest.scale = { panelWidth, panelHeight };
         backgroundRequest.tint = backgroundTint;
         static_cast<void>(context.Draw(backgroundRequest));
 
+        // 次の本文行のY座標ピクセル
         float y = 6.0f + Padding;
+        // 描画する本文の資源と色
         for (const auto& line : textures)
         {
-            // empty handleはwhite fallbackになるため、欠落文字は明示的に
-            // skipします。Draw失敗時も従来どおり行送りしません。
+            // 本文資源の欠落や描画失敗では行送りを省略します。
             if (!line.view)
             {
                 continue;
             }
+            // 本文1行の描画要求
             SpriteDrawRequest request;
             request.texture = line.view;
             request.position = { 6.0f + Padding, y };

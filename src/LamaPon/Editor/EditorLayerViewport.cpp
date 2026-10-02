@@ -32,7 +32,6 @@
 #include "LamaPon/Scene/Scene.h"
 
 #include <imgui.h>
-// ImGuizmo.hはimgui.hを自前でincludeしないため、必ずこの順で。
 #include <ImGuizmo.h>
 
 #include <algorithm>
@@ -47,6 +46,7 @@ using namespace LamaPon::EditorDetail;
 
 namespace
 {
+    // Orbitで中ボタンまたはAlt併用のドラッグ中かを調べます(preset: 操作方式)。
     bool IsOrbitViewportNavigationMouseInput(
         const LamaPon::ViewportNavigationPreset preset)
     {
@@ -55,6 +55,7 @@ namespace
             return false;
         }
 
+        // Altキーを押しているか
         const bool altDown =
             ImGui::IsKeyDown(ImGuiKey_LeftAlt)
             || ImGui::IsKeyDown(ImGuiKey_RightAlt);
@@ -64,13 +65,17 @@ namespace
                     || ImGui::IsMouseDown(ImGuiMouseButton_Right)));
     }
 
+    // コライダー優先で選択用のワールド境界を求め、対象外はnulloptを返します(gameObject: 選択対象)。
     std::optional<LamaPon::Bounds3D> SelectionBounds(
         const LamaPon::GameObject& gameObject)
     {
+        // 選択境界に使うコライダー
         if (const auto* collider =
             gameObject.GetComponent<LamaPon::BoxCollider2DComponent>())
         {
+            // 2Dコライダーのワールド境界
             const auto bounds = collider->WorldBounds();
+            // 対象のワールド変換行列
             DirectX::XMFLOAT4X4 world{};
             DirectX::XMStoreFloat4x4(
                 &world,
@@ -80,11 +85,14 @@ namespace
                 { bounds.maximum.x, bounds.maximum.y, world._43 + 0.05f }
             };
         }
+        // 選択境界に使うコライダー
         if (const auto* collider =
             gameObject.GetComponent<
                 LamaPon::CircleCollider2DComponent>())
         {
+            // 2Dコライダーのワールド境界
             const auto bounds = collider->WorldBounds();
+            // 対象のワールド変換行列
             DirectX::XMFLOAT4X4 world{};
             DirectX::XMStoreFloat4x4(
                 &world,
@@ -94,11 +102,14 @@ namespace
                 { bounds.maximum.x, bounds.maximum.y, world._43 + 0.05f }
             };
         }
+        // 選択境界に使うコライダー
         if (const auto* collider =
             gameObject.GetComponent<
                 LamaPon::PolygonCollider2DComponent>())
         {
+            // 2Dコライダーのワールド境界
             const auto bounds = collider->WorldBounds();
+            // 対象のワールド変換行列
             DirectX::XMFLOAT4X4 world{};
             DirectX::XMStoreFloat4x4(
                 &world,
@@ -108,18 +119,24 @@ namespace
                 { bounds.maximum.x, bounds.maximum.y, world._43 + 0.05f }
             };
         }
+        // 選択境界に使うSpriteMask
         if (const auto* spriteMask =
             gameObject.GetComponent<
                 LamaPon::SpriteMaskComponent>())
         {
+            // マスクのワールド中心
             const auto center = spriteMask->WorldPosition();
+            // マスクの大きさ
             const auto& size = spriteMask->Size();
+            // マスクの半幅
             const float halfWidth = size.x * 0.5f;
+            // マスクの半高
             const float halfHeight =
                 spriteMask->Shape()
                         == LamaPon::SpriteMaskShape::Circle
                     ? halfWidth
                     : size.y * 0.5f;
+            // 対象のワールド変換行列
             DirectX::XMFLOAT4X4 world{};
             DirectX::XMStoreFloat4x4(
                 &world,
@@ -137,49 +154,58 @@ namespace
                 }
             };
         }
+        // 選択境界に使うCharacterController
         if (const auto* controller =
             gameObject.GetComponent<
                 LamaPon::CharacterControllerComponent>())
         {
             return controller->WorldBounds();
         }
+        // 選択境界に使うコライダー
         if (const auto* collider =
             gameObject.GetComponent<LamaPon::BoxCollider3DComponent>())
         {
             return collider->WorldBounds();
         }
+        // 選択境界に使うカプセル
         if (const auto* capsule =
             gameObject.GetComponent<
                 LamaPon::CapsuleCollider3DComponent>())
         {
             return capsule->WorldBounds();
         }
+        // 選択境界に使う球コライダー
         if (const auto* sphere =
             gameObject.GetComponent<
                 LamaPon::SphereCollider3DComponent>())
         {
             return sphere->WorldBounds();
         }
+        // 選択境界に使う凸包
         if (const auto* hull =
             gameObject.GetComponent<
                 LamaPon::ConvexHullCollider3DComponent>())
         {
             return hull->WorldBounds();
         }
+        // 選択境界に使うメッシュCollider
         if (const auto* meshCollider =
             gameObject.GetComponent<
                 LamaPon::MeshCollider3DComponent>())
         {
             return meshCollider->WorldBounds();
         }
+        // 選択境界に使うナビメッシュ
         if (const auto* navMesh =
             gameObject.GetComponent<
                 LamaPon::NavMeshComponent>())
         {
+            // 対象のワールド変換行列
             DirectX::XMFLOAT4X4 world{};
             DirectX::XMStoreFloat4x4(
                 &world,
                 gameObject.WorldMatrix());
+            // ナビ面の大きさ
             const auto size =
                 navMesh->SurfaceSize();
             return LamaPon::Bounds3D{
@@ -196,11 +222,13 @@ namespace
             };
         }
 
+        // 描画対象のローカル選択境界
         LamaPon::Bounds3D localBounds{
             { -0.5f, -0.5f, -0.5f },
             { 0.5f, 0.5f, 0.5f }
         };
 
+        // 選択境界に使うプリミティブ
         if (const auto* mesh =
             gameObject.GetComponent<LamaPon::MeshRendererComponent>())
         {
@@ -230,10 +258,12 @@ namespace
             localBounds.minimum = { -0.3f, -0.3f, -0.3f };
             localBounds.maximum = { 0.3f, 0.3f, 0.3f };
         }
+        // 選択境界に使う粒子コンポーネント
         else if (const auto* particles =
             gameObject.GetComponent<
                 LamaPon::ParticleSystemComponent>())
         {
+            // 粒子の放出範囲
             const auto size =
                 particles->EmitterSize();
             localBounds.minimum = {
@@ -259,12 +289,14 @@ namespace
 
 namespace LamaPon
 {
+    // タブを登録してから選択中のビューを描画し、ビュー切替時にギズモ操作を履歴へ確定します。
     void EditorLayer::DrawViewport()
     {
         ImGui::SetNextWindowSize(
             ImVec2{ 720.0f, 640.0f },
             ImGuiCond_FirstUseEver);
 
+        // ビューポートのウィンドウ設定
         constexpr ImGuiWindowFlags flags =
             ImGuiWindowFlags_NoCollapse
             | ImGuiWindowFlags_NoScrollbar
@@ -274,7 +306,9 @@ namespace LamaPon
         m_activeViewport = ViewportMode::None;
         m_sceneViewportHovered = false;
 
+        // シーンタブが選択中か
         bool drawSceneViewport = false;
+        // ゲームタブが選択中か
         bool drawGameViewport = false;
 
         ImGui::PushStyleColor(
@@ -314,8 +348,7 @@ namespace LamaPon
         }
         ImGui::PopStyleColor(6);
 
-        // 両方のタブ見出しを登録してから、共通の描画リストへ
-        // ビューポート画像とオーバーレイを追加します。
+        // タブ見出しの登録後に共通の描画リストへ画像とオーバーレイを追加します。
         if (drawSceneViewport)
         {
             m_activeViewport = ViewportMode::Scene;
@@ -336,10 +369,12 @@ namespace LamaPon
         ImGui::End();
     }
 
+    // シーン画像と操作UIを描画し、カメラ・ギズモ・タイル編集・選択入力を処理します。
     void EditorLayer::DrawSceneViewport()
     {
         m_viewCubeHovered = false;
 
+        // シーン画像の表示サイズ
         ImVec2 size = ImGui::GetContentRegionAvail();
         size.x = std::max(size.x, 16.0f);
         size.y = std::max(size.y, 16.0f);
@@ -361,25 +396,28 @@ namespace LamaPon
                             renderScale)),
                 1u));
 
+        // シーン画像の画面上の原点
         const ImVec2 position = ImGui::GetCursorScreenPos();
         m_viewportPosition = { position.x, position.y };
         m_viewportSize = { size.x, size.y };
 
-        // ポスト処理でテクスチャが入れ替わっても表示が最終結果を
-        // 指すよう、表示専用のテクスチャ参照を使います。
+        // ポスト処理後の画像を指す表示専用参照を使います。
         ImGui::Image(
             m_editorGuiRenderer->DisplayTextureReference(
                 m_sceneRenderTarget),
             size);
+        // シーン画像上にマウスがあるか
         const bool viewportImageHovered = ImGui::IsItemHovered();
-        // Asset BrowserからScene Viewへのドロップは、落とした場所へ
-        // 配置します（画像の直後で受けるとImGui::Imageが対象になる）。
+        // 画像をドロップ先にするため、Image直後に配置処理を呼びます。
         HandleSceneViewAssetDrop();
+        // 画像描画後のカーソル位置
         const ImVec2 cursorAfterViewport = ImGui::GetCursorScreenPos();
+        // カメラプレビュー上か
         bool cameraPreviewHovered = false;
 
         ImGui::SetCursorScreenPos(
             ImVec2{ position.x + 8.0f, position.y + 8.0f });
+        // 表示モードを切り替えます(label: 表示名, active: 選択中か, mode2D: 2Dにするか)。
         const auto drawModeButton = [this](
             const char* label,
             const bool active,
@@ -394,6 +432,7 @@ namespace LamaPon
                     ImGuiCol_ButtonHovered,
                     ImVec4{ 0.20f, 0.50f, 0.86f, 1.0f });
             }
+            // 表示モードボタンを押したか
             const bool clicked = ImGui::SmallButton(label);
             if (active)
             {
@@ -406,6 +445,7 @@ namespace LamaPon
         };
 
         drawModeButton("2D##SceneViewMode", m_scene2DMode, true);
+        // 操作バー上にマウスがあるか
         bool viewportToolbarHovered = ImGui::IsItemHovered();
         ImGui::SameLine(0.0f, 2.0f);
         drawModeButton("3D##SceneViewMode", !m_scene2DMode, false);
@@ -425,13 +465,16 @@ namespace LamaPon
             viewportToolbarHovered || ImGui::IsItemHovered();
         DrawSceneCameraSettings();
 
+        // 選択中のオブジェクト
         const auto* selected =
             m_scene.FindGameObject(m_selectedObjectId);
+        // 選択中のカメラ
         const auto* selectedCamera = selected != nullptr
             ? selected->GetComponent<CameraComponent>()
             : nullptr;
         if (selectedCamera != nullptr)
         {
+            // カメラプレビューの幅
             float previewWidth = std::clamp(
                 size.x * 0.28f,
                 160.0f,
@@ -439,7 +482,9 @@ namespace LamaPon
             previewWidth = std::min(
                 previewWidth,
                 std::max(size.x - 24.0f, 16.0f));
+            // カメラプレビューの高さ
             float previewHeight = previewWidth * 9.0f / 16.0f;
+            // プレビューの高さの上限
             const float maximumPreviewHeight = std::max(
                 size.y * 0.36f,
                 54.0f);
@@ -451,6 +496,7 @@ namespace LamaPon
 
             if (previewWidth >= 96.0f && previewHeight >= 54.0f)
             {
+                // プレビューの描画倍率
                 const float renderScale =
                     m_graphics.Settings().renderScale;
                 m_graphics.ResizeOffscreenTarget(
@@ -466,16 +512,21 @@ namespace LamaPon
                                 previewHeight * renderScale)),
                         1u));
 
+                // プレビュー外側の余白
                 constexpr float previewMargin = 12.0f;
+                // プレビュー枠の太さ
                 constexpr float previewBorder = 3.0f;
+                // プレビューの画面上の原点
                 const ImVec2 previewPosition{
                     position.x + size.x - previewWidth - previewMargin,
                     position.y + size.y - previewHeight - previewMargin
                 };
+                // プレビューの画面上の右下
                 const ImVec2 previewMaximum{
                     previewPosition.x + previewWidth,
                     previewPosition.y + previewHeight
                 };
+                // プレビューを重ねる描画リスト
                 ImDrawList* drawList = ImGui::GetWindowDrawList();
                 drawList->AddRectFilled(
                     ImVec2{
@@ -509,6 +560,7 @@ namespace LamaPon
                     2.0f,
                     0,
                     2.0f);
+                // プレビュー見出しの高さ
                 const float labelHeight =
                     ImGui::GetTextLineHeight() + 6.0f;
                 drawList->AddRectFilled(
@@ -571,9 +623,11 @@ namespace LamaPon
         }
         HandleTilemapPainting();
 
+        // タイル編集の対象オブジェクト
         const auto* selectedObject =
             m_scene.FindGameObject(
                 m_selectedObjectId);
+        // タイル編集で選択入力を抑えるか
         const bool tilemapEditing =
             !m_playing
             && selectedObject != nullptr
@@ -595,10 +649,12 @@ namespace LamaPon
         }
     }
 
+    // 選択タイルマップのローカル座標で描画・消去し、ドラッグ終了時に履歴を確定します。
     void EditorLayer::HandleTilemapPainting()
     {
         using namespace DirectX;
 
+        // 編集可否の判定前に、完了したストロークを履歴へ確定します。
         if (ImGui::IsMouseReleased(
                 ImGuiMouseButton_Left)
             && m_tilemapStrokeChanged)
@@ -607,9 +663,11 @@ namespace LamaPon
             m_tilemapStrokeChanged = false;
         }
 
+        // タイル編集の対象オブジェクト
         auto* selected =
             m_scene.FindGameObject(
                 m_selectedObjectId);
+        // 編集中のタイルマップ
         auto* tilemap = selected != nullptr
             ? selected->GetComponent<
                 TilemapComponent>()
@@ -630,20 +688,27 @@ namespace LamaPon
             return;
         }
 
+        // マウスの画面位置
         const ImVec2 mouse =
             ImGui::GetMousePos();
+        // 画像原点からのマウスX
         const float screenX =
             mouse.x - m_viewportPosition.x;
+        // 画像原点からのマウスY
         const float screenY =
             mouse.y - m_viewportPosition.y;
 
+        // ワールド行列の行列式
         XMVECTOR determinant{};
+        // タイルマップのワールド行列
         const XMMATRIX world =
             selected->WorldMatrix();
+        // ワールド行列の逆行列
         const XMMATRIX inverseWorld =
             XMMatrixInverse(
                 &determinant,
                 world);
+        // タイルマップのローカル位置
         XMFLOAT3 local{};
         XMStoreFloat3(
             &local,
@@ -655,18 +720,23 @@ namespace LamaPon
                     1.0f),
                 inverseWorld));
 
+        // 1セルの大きさ
         const auto tileSize =
             tilemap->TileSize();
+        // 編集中セルのX座標
         const int cellX =
             static_cast<int>(
                 std::floor(
                     local.x / tileSize.x));
+        // 編集中セルのY座標
         const int cellY =
             static_cast<int>(
                 std::floor(
                     local.y / tileSize.y));
 
+        // 編集中セルの画面上の外枠
         std::array<ImVec2, 5> outline{};
+        // 編集中セルのローカル四隅
         const std::array<XMFLOAT3, 4>
             localCorners{
                 XMFLOAT3{
@@ -686,10 +756,12 @@ namespace LamaPon
                     (cellY + 1) * tileSize.y,
                     0.0f }
             };
+        // セルの頂点番号
         for (std::size_t index = 0;
             index < localCorners.size();
             ++index)
         {
+            // セルのワールド頂点
             XMFLOAT3 corner{};
             XMStoreFloat3(
                 &corner,
@@ -723,6 +795,7 @@ namespace LamaPon
             m_tilemapStrokeChanged = false;
         }
 
+        // セルの内容が変わったか
         bool changed{};
         if (m_tilemapTool
             == TilemapTool::Erase)
@@ -747,6 +820,7 @@ namespace LamaPon
             m_tilemapStrokeChanged || changed;
     }
 
+    // シーンカメラ・ギズモ・表示・プリセットと設定保存のPopupを描画します。
     void EditorLayer::DrawSceneCameraSettings()
     {
         if (!ImGui::BeginPopup("SceneCameraSettings"))
@@ -789,6 +863,7 @@ namespace LamaPon
             }
             ImGui::EndDisabled();
 
+            // 変更前は正投影だったか
             const bool wasOrthographic = m_sceneOrthographic;
             ImGui::Checkbox("正投影", &m_sceneOrthographic);
             if (wasOrthographic && !m_sceneOrthographic)
@@ -814,8 +889,7 @@ namespace LamaPon
             ImGui::Checkbox("グリッドを表示", &m_gridVisible);
             ImGui::Checkbox("ビューキューブを表示", &m_viewCubeVisible);
 
-            // デバッグ線は種類ごとに出し入れできます。作業中の対象
-            // だけ残せるよう、まとめてではなく個別にしています。
+
             ImGui::Checkbox(
                 "当たり判定を表示",
                 &m_colliderDebugVisible);
@@ -867,6 +941,7 @@ namespace LamaPon
             ImGui::Checkbox("スナップ", &m_snapEnabled);
             ImGui::BeginDisabled(!m_snapEnabled);
             ImGui::SetNextItemWidth(130.0f);
+            // 操作別のスナップ単位を編集します。
             switch (m_gizmoOperation)
             {
             case GizmoOperation::Translate:
@@ -914,15 +989,18 @@ namespace LamaPon
             {
                 m_selectedEditorPreset = std::min(m_selectedEditorPreset,
                     m_editorPresets.size() - 1);
+                // 選択中の表示プリセット
                 const auto& selectedPreset =
                     m_editorPresets[m_selectedEditorPreset];
                 ImGui::SetNextItemWidth(220.0f);
                 if (ImGui::BeginCombo("プリセット",
                         selectedPreset.name.c_str()))
                 {
+                    // 表示プリセットの番号
                     for (std::size_t index = 0; index < m_editorPresets.size();
                         ++index)
                     {
+                        // 選択中のプリセットか
                         const bool selected = index == m_selectedEditorPreset;
                         if (ImGui::Selectable(
                                 m_editorPresets[index].name.c_str(),
@@ -932,6 +1010,7 @@ namespace LamaPon
                             {
                                 ApplyEditorPreset(index);
                             }
+                            // プリセット操作時の例外
                             catch (const std::exception& exception)
                             {
                                 SetStatus(exception.what(), true);
@@ -951,6 +1030,7 @@ namespace LamaPon
                     {
                         ApplyEditorPreset(m_selectedEditorPreset);
                     }
+                    // プリセット操作時の例外
                     catch (const std::exception& exception)
                     {
                         SetStatus(exception.what(), true);
@@ -963,6 +1043,7 @@ namespace LamaPon
                     {
                         UpdateSelectedEditorPreset();
                     }
+                    // プリセット操作時の例外
                     catch (const std::exception& exception)
                     {
                         SetStatus(exception.what(), true);
@@ -976,6 +1057,7 @@ namespace LamaPon
                     {
                         DeleteSelectedEditorPreset();
                     }
+                    // プリセット操作時の例外
                     catch (const std::exception& exception)
                     {
                         SetStatus(exception.what(), true);
@@ -985,6 +1067,7 @@ namespace LamaPon
             }
 
             ImGui::SetNextItemWidth(220.0f);
+            // Enterで新規保存を確定したか
             const bool createPreset = ImGui::InputText("新規名",
                 m_editorPresetNameBuffer.data(),
                 m_editorPresetNameBuffer.size(),
@@ -995,6 +1078,7 @@ namespace LamaPon
                 {
                     SaveCurrentEditorPreset(m_editorPresetNameBuffer.data());
                 }
+                // 設定操作時の例外
                 catch (const std::exception& exception)
                 {
                     SetStatus(exception.what(), true);
@@ -1085,6 +1169,7 @@ namespace LamaPon
                     SaveEditorSettings();
                     SetStatus("エディター設定を保存しました");
                 }
+                // 設定操作時の例外
                 catch (const std::exception& exception)
                 {
                     SetStatus(exception.what(), true);
@@ -1099,6 +1184,7 @@ namespace LamaPon
                     SaveEditorSettings();
                     SetStatus("エディター設定を既定値に戻しました");
                 }
+                // 設定操作時の例外
                 catch (const std::exception& exception)
                 {
                     SetStatus(exception.what(), true);
@@ -1109,6 +1195,7 @@ namespace LamaPon
         ImGui::EndPopup();
     }
 
+    // 再生中に16～8192pxの固定解像度を設定し、初回の旧設定を終了時の復元用に保存します(width: 幅px, height: 高さpx)。
     bool EditorLayer::SetGameViewSize(
         const std::uint32_t width,
         const std::uint32_t height)
@@ -1137,6 +1224,7 @@ namespace LamaPon
         return true;
     }
 
+    // 固定時は指定サイズ、それ以外は実際の描画ターゲットのサイズを返します。
     std::pair<std::uint32_t, std::uint32_t>
         EditorLayer::GameViewSize() const noexcept
     {
@@ -1151,21 +1239,23 @@ namespace LamaPon
             m_gameRenderTarget.Height() };
     }
 
+    // ゲーム画像の解像度と配置を調整し、画像座標へ変換したポインター入力を渡します。
     void EditorLayer::DrawGameViewport()
     {
+        // ゲーム画像の表示可能サイズ
         ImVec2 size = ImGui::GetContentRegionAvail();
         size.x = std::max(size.x, 16.0f);
         size.y = std::max(size.y, 16.0f);
+        // 表示領域の画面上の原点
         const ImVec2 position = ImGui::GetCursorScreenPos();
 
-        // 描画スケールはアスペクトを変えずに画素数だけ減らします。
-        // UIのレイアウトも縮んだ解像度で解決されるので、割合
-        // ベースのUIは同じ見た目、ピクセル指定のUIは原寸確認の
-        // ときだけ100%へ戻してください。
+        // ゲームビューの描画倍率
         const float resolutionScale = std::clamp(
             m_gameViewResolutionScale, 0.25f, 1.0f);
 
+        // ゲーム描画ターゲットの幅
         std::uint32_t targetWidth{};
+        // ゲーム描画ターゲットの高さ
         std::uint32_t targetHeight{};
         if (m_gameViewFixedResolution)
         {
@@ -1184,8 +1274,7 @@ namespace LamaPon
         }
         else
         {
-            // 既定のパネル追従モードにも描画スケールを適用します。
-            // パネルの表示サイズは保ち、縮小した描画結果を拡大表示します。
+            // パネル追従時の描画倍率
             const float panelScale =
                 m_graphics.Settings().renderScale
                 * resolutionScale;
@@ -1207,15 +1296,17 @@ namespace LamaPon
             m_gameRenderTarget.Width(),
             m_gameRenderTarget.Height());
 
-        // 固定解像度では画像を引き伸ばさず、パネル内へ余白付きで配置し、
-        // ゲームビューと同じアスペクト比を保ちます。
+        // アスペクト維持後の表示サイズ
         ImVec2 displaySize = size;
+        // 画像の中央配置オフセット
         ImVec2 displayOffset{};
         if (m_gameViewFixedResolution)
         {
+            // 描画ターゲットのアスペクト比
             const float targetAspect =
                 static_cast<float>(targetWidth)
                 / static_cast<float>(targetHeight);
+            // 表示領域のアスペクト比
             const float availableAspect = size.x / size.y;
             if (availableAspect > targetAspect)
             {
@@ -1248,22 +1339,29 @@ namespace LamaPon
             m_editorGuiRenderer->DisplayTextureReference(
                 m_gameRenderTarget),
             displaySize);
+        // ゲーム画像の画面上の原点
         const ImVec2 imageMinimum =
             ImGui::GetItemRectMin();
+        // マウスの画面位置
         const ImVec2 mouse =
             ImGui::GetMousePos();
+        // マウスがゲーム画像内か
         const bool valid =
             ImGui::IsItemHovered();
         {
+            // 表示から描画へのX座標倍率
             const float scaleX =
                 static_cast<float>(
                     m_gameRenderTarget.Width())
                 / displaySize.x;
+            // 表示から描画へのY座標倍率
             const float scaleY =
                 static_cast<float>(
                     m_gameRenderTarget.Height())
                 / displaySize.y;
+            // ImGuiの入力状態
             const auto& inputOutput = ImGui::GetIO();
+            // ゲームへ渡すポインター状態
             InputPointerState pointer;
             pointer.position = {
                 (mouse.x - imageMinimum.x) * scaleX,
@@ -1280,7 +1378,7 @@ namespace LamaPon
                 pointer.wheelHorizontal =
                     inputOutput.MouseWheelH;
             }
-            // ImGuiのボタン0～4はPointerButtonの並びと一致します。
+            // ポインターボタンの番号
             for (std::size_t button = 0;
                 button < pointer.buttons.size();
                 ++button)
@@ -1306,6 +1404,7 @@ namespace LamaPon
         DrawGameViewResolutionSettings();
     }
 
+    // 固定解像度と描画倍率のPopupを描画します。
     void EditorLayer::DrawGameViewResolutionSettings()
     {
         if (!ImGui::BeginPopup("GameViewResolution"))
@@ -1352,6 +1451,7 @@ namespace LamaPon
 
         ImGui::Separator();
         ImGui::TextDisabled("プリセット");
+        // 解像度を選びます(label: 表示名, width: 幅px, height: 高さpx)。
         const auto presetButton = [this](
             const char* label,
             const int width,
@@ -1378,15 +1478,12 @@ namespace LamaPon
         }
         ImGui::EndDisabled();
 
-        // 描画スケールは固定解像度の外に置きます。自由（パネル
-        // 追従）が既定なので、そちらで触れないと「重いときに
-        // 軽くする手段が無い」状態になります。
+        // パネル追従時も倍率を選べるよう、固定解像度の無効範囲の外へ置きます。
         ImGui::Separator();
         ImGui::TextDisabled("描画スケール");
         ImGui::SameLine();
         ImGui::TextDisabled("(?)");
-        // ツールチップは常に表示されるラベルへ結び付け、
-        // 解像度設定にかかわらず同じ項目を参照させます。
+
         if (ImGui::IsItemHovered())
         {
             ImGui::SetTooltip(
@@ -1395,6 +1492,7 @@ namespace LamaPon
                 "画素数なりなので、50%%で約4分の1の負荷です。"
                 "ピクセル指定UIの原寸確認だけ100%%で行ってください");
         }
+        // 描画倍率を選びます(label: 表示名, value: 描画倍率)。
         const auto scaleButton = [this](
             const char* label,
             const float value)
@@ -1414,8 +1512,7 @@ namespace LamaPon
         scaleButton("50%", 0.5f);
         ImGui::NewLine();
 
-        // 実際の描画解像度を常に表示し、描画スケールと
-        // パフォーマンスの関係を確認できるようにします。
+
         ImGui::TextDisabled(
             "実際の描画: %u x %u",
             m_gameRenderTarget.Width(),
@@ -1424,6 +1521,7 @@ namespace LamaPon
         ImGui::EndPopup();
     }
 
+    // 選択対象の変換を操作し、複数選択へ差分を適用して操作終了時に履歴を確定します。
     void EditorLayer::DrawTransformGizmo()
     {
         if (!ImGui::IsMouseDown(ImGuiMouseButton_Left))
@@ -1433,9 +1531,11 @@ namespace LamaPon
         m_transformGizmoHovered = false;
         m_transformGizmoUsing = false;
 
+        // 主選択のオブジェクト
         auto* selected = m_scene.FindGameObject(m_selectedObjectId);
         if (selected == nullptr || m_playing)
         {
+            // ギズモ操作を解除するか
             const bool cancelGizmo =
                 m_gizmoWasUsing
                 || m_transformGizmoUsing
@@ -1475,6 +1575,7 @@ namespace LamaPon
             m_viewportSize.y);
         ImGuizmo::SetGizmoSizeClipSpace(0.13f);
 
+        // ImGuizmoの表示スタイル
         auto& gizmoStyle = ImGuizmo::GetStyle();
         gizmoStyle.TranslationLineThickness = 4.0f;
         gizmoStyle.TranslationLineArrowSize = 8.0f;
@@ -1489,8 +1590,11 @@ namespace LamaPon
         gizmoStyle.Colors[ImGuizmo::DIRECTION_Z] =
             ImVec4{ 0.18f, 0.48f, 1.0f, 1.0f };
 
+        // シーンカメラのビュー行列
         DirectX::XMFLOAT4X4 viewMatrix{};
+        // シーンカメラの投影行列
         DirectX::XMFLOAT4X4 projectionMatrix{};
+        // 主選択の編集用ワールド行列
         DirectX::XMFLOAT4X4 worldMatrix{};
         DirectX::XMStoreFloat4x4(
             &viewMatrix,
@@ -1502,7 +1606,9 @@ namespace LamaPon
             &worldMatrix,
             selected->WorldMatrix());
 
+        // ImGuizmoの操作種別
         ImGuizmo::OPERATION operation = ImGuizmo::TRANSLATE;
+        // 編集操作をImGuizmoの操作種別へ変換します。
         switch (m_gizmoOperation)
         {
         case GizmoOperation::Translate:
@@ -1516,15 +1622,18 @@ namespace LamaPon
             break;
         }
 
+        // ギズモの操作座標系
         const ImGuizmo::MODE mode = m_gizmoLocal
             ? ImGuizmo::LOCAL
             : ImGuizmo::WORLD;
 
+        // 各軸のスナップ単位
         std::array snapValues{
             m_translationSnap,
             m_translationSnap,
             m_translationSnap
         };
+        // 操作に対応するスナップ値を設定します。
         switch (m_gizmoOperation)
         {
         case GizmoOperation::Translate:
@@ -1536,9 +1645,11 @@ namespace LamaPon
             snapValues.fill(m_scaleSnap);
             break;
         }
+        // 設定またはCtrlでスナップするか
         const bool useSnap = m_snapEnabled || ImGui::GetIO().KeyCtrl;
 
         ImGuizmo::PushID(selected);
+        // ギズモで変換が変わったか
         const bool changed = ImGuizmo::Manipulate(
             &viewMatrix._11,
             &projectionMatrix._11,
@@ -1547,7 +1658,9 @@ namespace LamaPon
             &worldMatrix._11,
             nullptr,
             useSnap ? snapValues.data() : nullptr);
+        // ギズモを操作中か
         const bool isUsing = ImGuizmo::IsUsing();
+        // ギズモ上にマウスがあるか
         const bool isHovered = ImGuizmo::IsOver(operation);
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)
             && (isHovered || isUsing))
@@ -1560,13 +1673,17 @@ namespace LamaPon
 
         if (changed)
         {
+            // 操作後のワールド行列
             DirectX::XMMATRIX newWorld =
                 DirectX::XMLoadFloat4x4(&worldMatrix);
+            // 操作後のローカル行列
             DirectX::XMMATRIX newLocal = newWorld;
 
             if (selected->Parent() != nullptr)
             {
+                // 親のワールド行列の行列式
                 DirectX::XMVECTOR determinant{};
+                // 親のワールド行列の逆行列
                 const DirectX::XMMATRIX inverseParent =
                     DirectX::XMMatrixInverse(
                         &determinant,
@@ -1580,9 +1697,13 @@ namespace LamaPon
                 newLocal = newWorld * inverseParent;
             }
 
+            // 主選択のローカル変換
             auto& transform = selected->GetTransform();
+            // 行列から分解した拡縮
             DirectX::XMVECTOR localScale{};
+            // 行列から分解した回転
             DirectX::XMVECTOR localRotation{};
+            // 行列から分解した位置
             DirectX::XMVECTOR localTranslation{};
             if (!DirectX::XMMatrixDecompose(
                     &localScale,
@@ -1593,28 +1714,32 @@ namespace LamaPon
                 return;
             }
 
+            // 編集後のローカル位置
             DirectX::XMFLOAT3 translation{};
             DirectX::XMStoreFloat3(
                 &translation,
                 localTranslation);
+            // 編集後のローカル拡縮
             DirectX::XMFLOAT3 scale{};
             DirectX::XMStoreFloat3(
                 &scale,
                 localScale);
 
-            // 複数選択中は、主選択の変化量を他へも同じだけ適用します。
+
+            // 主選択の位置差分
             const DirectX::XMFLOAT3 deltaPosition{
                 translation.x - transform.position.x,
                 translation.y - transform.position.y,
                 translation.z - transform.position.z
             };
-            // 回転差分はEuler角で求めると±180度やジンバルロックの
-            // 近くで不連続になるため、クォータニオンの差分にします。
+            // Euler角の不連続を避けるため、回転差分はクォータニオンで求めます。
+            // 主選択の回転差分
             const auto deltaRotation =
                 DirectX::XMQuaternionMultiply(
                     DirectX::XMQuaternionInverse(
                         transform.RotationVector()),
                     localRotation);
+            // 主選択の拡縮倍率
             const DirectX::XMFLOAT3 scaleRatio{
                 transform.scale.x != 0.0f
                     ? scale.x / transform.scale.x
@@ -1639,14 +1764,17 @@ namespace LamaPon
                 scale.z
             };
 
+            // 差分を適用する選択対象
             for (auto* other : SelectedObjects())
             {
                 if (other == selected)
                 {
                     continue;
                 }
-                // 主選択の子は親の移動で一緒に動くため除きます。
+
+                // 対象が主選択の子孫か
                 bool underPrimary = false;
+                // 主選択の子孫かを調べる親
                 for (const auto* parent = other->Parent();
                     parent != nullptr;
                     parent = parent->Parent())
@@ -1657,11 +1785,13 @@ namespace LamaPon
                         break;
                     }
                 }
+                // 主選択の子は親から変換を受けるため、二重に差分を適用しません。
                 if (underPrimary)
                 {
                     continue;
                 }
 
+                // 他の選択対象のローカル変換
                 auto& otherTransform =
                     other->GetTransform();
                 otherTransform.position.x +=
@@ -1687,15 +1817,19 @@ namespace LamaPon
         m_gizmoWasUsing = isUsing;
     }
 
+    // ビューキューブで視点を変更し、操作時は2D表示を解除してカメラ姿勢へ反映します。
     void EditorLayer::DrawViewCube()
     {
         using namespace DirectX;
 
+        // ビューキューブの表示サイズ
         constexpr float cubeSize = 108.0f;
+        // ビューキューブの表示原点
         const ImVec2 cubePosition{
             m_viewportPosition.x + m_viewportSize.x - cubeSize - 8.0f,
             m_viewportPosition.y + 8.0f
         };
+        // マウスの画面位置
         const ImVec2 mouse = ImGui::GetMousePos();
         m_viewCubeHovered =
             mouse.x >= cubePosition.x
@@ -1703,10 +1837,12 @@ namespace LamaPon
             && mouse.x <= cubePosition.x + cubeSize
             && mouse.y <= cubePosition.y + cubeSize;
 
+        // 操作するビュー行列
         XMFLOAT4X4 viewMatrix{};
         XMStoreFloat4x4(
             &viewMatrix,
             SceneViewMatrix());
+        // 操作前のビュー行列
         const XMFLOAT4X4 previousView = viewMatrix;
 
         ImGuizmo::SetOrthographic(m_sceneOrthographic);
@@ -1718,9 +1854,13 @@ namespace LamaPon
             ImVec2{ cubeSize, cubeSize },
             IM_COL32(20, 24, 32, 190));
 
+        // 操作前の行列要素
         const float* previous = &previousView._11;
+        // 操作後の行列要素
         const float* current = &viewMatrix._11;
+        // ビュー行列が変わったか
         bool changed = false;
+        // ビュー行列の要素番号
         for (std::size_t index = 0; index < 16; ++index)
         {
             if (std::abs(previous[index] - current[index]) > 0.00001f)
@@ -1738,22 +1878,29 @@ namespace LamaPon
                 m_sceneOrthographic = false;
                 m_scene3DViewStored = false;
             }
+            // ビュー行列の行列式
             XMVECTOR determinant{};
+            // 操作後のビュー行列
             const XMMATRIX view =
                 XMLoadFloat4x4(&viewMatrix);
+            // 操作後のカメラ行列
             const XMMATRIX cameraWorld =
                 XMMatrixInverse(&determinant, view);
+            // 操作後の視線方向
             const XMVECTOR forward = XMVector3Normalize(
                 XMVectorNegate(cameraWorld.r[2]));
 
             XMStoreFloat3(
                 &m_sceneCameraPosition,
                 cameraWorld.r[3]);
+            // 視線方向のX成分
             const float forwardX = XMVectorGetX(forward);
+            // 範囲制限した視線のY成分
             const float forwardY = std::clamp(
                 XMVectorGetY(forward),
                 -1.0f,
                 1.0f);
+            // 視線方向のZ成分
             const float forwardZ = XMVectorGetZ(forward);
             m_sceneCameraRotation.x = std::asin(forwardY);
             m_sceneCameraRotation.y =
@@ -1770,27 +1917,32 @@ namespace LamaPon
         }
     }
 
+    // 選択境界の中心と大きさに合わせて視点距離と正投影サイズを調整します。
     void EditorLayer::FocusSelection()
     {
         using namespace DirectX;
 
+        // フォーカス対象のオブジェクト
         const auto* selected = m_scene.FindGameObject(m_selectedObjectId);
         if (selected == nullptr)
         {
             return;
         }
 
+        // 対象のワールド選択境界
         const auto bounds = SelectionBounds(*selected);
         if (!bounds)
         {
             return;
         }
 
+        // 選択境界の中心
         const XMFLOAT3 center{
             (bounds->minimum.x + bounds->maximum.x) * 0.5f,
             (bounds->minimum.y + bounds->maximum.y) * 0.5f,
             (bounds->minimum.z + bounds->maximum.z) * 0.5f
         };
+        // 選択境界の最大半幅
         const float halfExtent = std::max({
             (bounds->maximum.x - bounds->minimum.x) * 0.5f,
             (bounds->maximum.y - bounds->minimum.y) * 0.5f,
@@ -1804,20 +1956,24 @@ namespace LamaPon
                 1.0f);
         }
 
+        // シーンカメラの回転行列
         const XMMATRIX rotation = XMMatrixRotationRollPitchYaw(
             m_sceneCameraRotation.x,
             m_sceneCameraRotation.y,
             0.0f);
+        // シーンカメラの視線方向
         const XMVECTOR forward = XMVector3Normalize(
             XMVector3TransformNormal(
                 g_XMNegIdentityR2,
                 rotation));
+        // 対象へ合わせるカメラ位置
         const XMVECTOR position = XMVectorSubtract(
             XMLoadFloat3(&center),
             XMVectorScale(forward, m_sceneCameraFocusDistance));
         XMStoreFloat3(&m_sceneCameraPosition, position);
     }
 
+    // 2D切替時に3D視点を退避し、復帰時は保存視点または注視点から3D視点を再構成します(enabled: 2D表示にするか)。
     void EditorLayer::SetScene2DMode(const bool enabled)
     {
         using namespace DirectX;
@@ -1835,18 +1991,22 @@ namespace LamaPon
                 m_sceneCameraFocusDistance;
             m_scene3DViewStored = true;
 
+            // 3D視点の回転行列
             const XMMATRIX rotation = XMMatrixRotationRollPitchYaw(
                 m_sceneCameraRotation.x,
                 m_sceneCameraRotation.y,
                 0.0f);
+            // 3D視点の視線方向
             const XMVECTOR forward = XMVector3Normalize(
                 XMVector3TransformNormal(
                     g_XMNegIdentityR2,
                     rotation));
+            // 保持する注視点
             const XMVECTOR focus = XMVectorMultiplyAdd(
                 XMVectorReplicate(m_sceneCameraFocusDistance),
                 forward,
                 XMLoadFloat3(&m_sceneCameraPosition));
+            // 2D視点に使う注視点
             XMFLOAT3 focusPosition{};
             XMStoreFloat3(&focusPosition, focus);
 
@@ -1873,16 +2033,19 @@ namespace LamaPon
             return;
         }
 
+        // 保持する注視点
         const XMVECTOR focus = XMVectorAdd(
             XMLoadFloat3(&m_sceneCameraPosition),
             XMVectorScale(
                 g_XMNegIdentityR2,
                 m_sceneCameraFocusDistance));
         m_sceneCameraRotation = { -0.12f, 0.0f, 0.0f };
+        // 3D視点の回転行列
         const XMMATRIX rotation = XMMatrixRotationRollPitchYaw(
             m_sceneCameraRotation.x,
             m_sceneCameraRotation.y,
             0.0f);
+        // 3D視点の視線方向
         const XMVECTOR forward = XMVector3Normalize(
             XMVector3TransformNormal(
                 g_XMNegIdentityR2,
@@ -1895,6 +2058,7 @@ namespace LamaPon
                 focus));
     }
 
+    // マウスのレイと対象境界・グリッドの交点を配置位置にし、交点がなければ注視距離を使います。
     DirectX::XMFLOAT3 EditorLayer::SceneViewDropPosition() const
     {
         using namespace DirectX;
@@ -1905,15 +2069,22 @@ namespace LamaPon
             return {};
         }
 
+        // ドロップ位置の画面座標
         const ImVec2 mousePosition = ImGui::GetMousePos();
+        // 画像原点からのマウスX
         const float localX =
             mousePosition.x - m_viewportPosition.x;
+        // 画像原点からのマウスY
         const float localY =
             mousePosition.y - m_viewportPosition.y;
 
+        // シーンカメラのビュー行列
         const XMMATRIX view = SceneViewMatrix();
+        // シーンカメラの投影行列
         const XMMATRIX projection = SceneProjectionMatrix();
+        // レイ生成用の単位行列
         const XMMATRIX world = XMMatrixIdentity();
+        // レイの近クリップ位置
         const XMVECTOR nearPoint = XMVector3Unproject(
             XMVectorSet(localX, localY, 0.0f, 1.0f),
             0.0f,
@@ -1925,6 +2096,7 @@ namespace LamaPon
             projection,
             view,
             world);
+        // レイの遠クリップ位置
         const XMVECTOR farPoint = XMVector3Unproject(
             XMVectorSet(localX, localY, 1.0f, 1.0f),
             0.0f,
@@ -1937,6 +2109,7 @@ namespace LamaPon
             view,
             world);
 
+        // 配置先を探すワールドレイ
         Ray ray{};
         XMStoreFloat3(&ray.origin, nearPoint);
         XMStoreFloat3(
@@ -1944,20 +2117,23 @@ namespace LamaPon
             XMVector3Normalize(
                 XMVectorSubtract(farPoint, nearPoint)));
 
-        // 既存オブジェクトの上へ落とした場合は、その手前へ置きます。
+        // 最も近い正の交点距離
         float nearestDistance =
             std::numeric_limits<float>::max();
+        // 配置先境界を調べる対象
         for (const auto& gameObject : m_scene.GameObjects())
         {
             if (!gameObject->IsEnabled())
             {
                 continue;
             }
+            // 配置先候補の選択境界
             const auto bounds = SelectionBounds(*gameObject);
             if (!bounds)
             {
                 continue;
             }
+            // 候補境界との交点距離
             float distance{};
             if (RayIntersectsBounds(ray, *bounds, distance)
                 && distance > 0.0f
@@ -1970,16 +2146,17 @@ namespace LamaPon
         if (nearestDistance
             == std::numeric_limits<float>::max())
         {
-            // 何にも当たらなければグリッド平面との交点へ。
-            // 2DはXY平面(z=0)、3DはXZ平面(y=0)です。
+            // グリッド法線軸のレイ原点
             const float origin = m_scene2DMode
                 ? ray.origin.z
                 : ray.origin.y;
+            // グリッド法線軸のレイ方向
             const float direction = m_scene2DMode
                 ? ray.direction.z
                 : ray.direction.y;
             if (std::abs(direction) > 1.0e-4f)
             {
+                // グリッド平面との交点距離
                 const float hit = -origin / direction;
                 if (hit > 0.0f)
                 {
@@ -1996,6 +2173,7 @@ namespace LamaPon
             }
         }
 
+        // 決定したワールド配置位置
         XMFLOAT3 position{};
         XMStoreFloat3(
             &position,
@@ -2006,6 +2184,7 @@ namespace LamaPon
         return position;
     }
 
+    // 画像へのドロップでPrefabまたはアセットの対象を配置し、SceneとScriptは配置しません。
     void EditorLayer::HandleSceneViewAssetDrop()
     {
         if (m_playing || !ImGui::BeginDragDropTarget())
@@ -2013,16 +2192,20 @@ namespace LamaPon
             return;
         }
 
+        // 受け付けたアセットの情報
         if (const ImGuiPayload* payload =
             ImGui::AcceptDragDropPayload(AssetPayload))
         {
+            // 配置するアセットの相対パス
             const auto asset = PathFromUtf8(
                 static_cast<const char*>(payload->Data));
+            // ワールド配置位置
             const auto position = SceneViewDropPosition();
             try
             {
                 if (IsPrefabAsset(asset))
                 {
+                    // 配置したPrefabの実体
                     auto& instance = m_scene.InstantiatePrefab(
                         m_graphics.Assets().ResolvePath(asset));
                     instance.GetTransform().position = position;
@@ -2035,11 +2218,11 @@ namespace LamaPon
                 else if (IsCppScriptAsset(asset)
                     || IsSceneAsset(asset))
                 {
-                    // シーンやスクリプトは置き場所の概念が無いため
-                    // Scene Viewへのドロップでは何もしません。
+                    // SceneとScriptは配置対象から除外します。
                 }
                 else
                 {
+                    // アセット適用先の新規対象
                     auto& created = m_scene.CreateGameObject(
                         PathToUtf8(asset.stem()));
                     created.GetTransform().position = position;
@@ -2055,6 +2238,7 @@ namespace LamaPon
                     }
                 }
             }
+            // アセット配置時の例外
             catch (const std::exception& exception)
             {
                 SetStatus(exception.what(), true);
@@ -2063,6 +2247,7 @@ namespace LamaPon
         ImGui::EndDragDropTarget();
     }
 
+    // マウスのレイに最も近い有効対象を選択し、Ctrl時は選択を追加・解除します。
     void EditorLayer::PickSceneObject()
     {
         using namespace DirectX;
@@ -2072,8 +2257,11 @@ namespace LamaPon
             return;
         }
 
+        // 選択位置の画面座標
         const ImVec2 mousePosition = ImGui::GetMousePos();
+        // 画像原点からのマウスX
         const float localX = mousePosition.x - m_viewportPosition.x;
+        // 画像原点からのマウスY
         const float localY = mousePosition.y - m_viewportPosition.y;
         if (localX < 0.0f
             || localY < 0.0f
@@ -2083,9 +2271,13 @@ namespace LamaPon
             return;
         }
 
+        // シーンカメラのビュー行列
         const XMMATRIX view = SceneViewMatrix();
+        // シーンカメラの投影行列
         const XMMATRIX projection = SceneProjectionMatrix();
+        // レイ生成用の単位行列
         const XMMATRIX world = XMMatrixIdentity();
+        // レイの近クリップ位置
         const XMVECTOR nearPoint = XMVector3Unproject(
             XMVectorSet(localX, localY, 0.0f, 1.0f),
             0.0f,
@@ -2097,6 +2289,7 @@ namespace LamaPon
             projection,
             view,
             world);
+        // レイの遠クリップ位置
         const XMVECTOR farPoint = XMVector3Unproject(
             XMVectorSet(localX, localY, 1.0f, 1.0f),
             0.0f,
@@ -2109,14 +2302,18 @@ namespace LamaPon
             view,
             world);
 
+        // 選択対象を探すワールドレイ
         Ray ray{};
         XMStoreFloat3(&ray.origin, nearPoint);
         XMStoreFloat3(
             &ray.direction,
             XMVector3Normalize(XMVectorSubtract(farPoint, nearPoint)));
 
+        // 最も近い選択対象のID
         GameObjectId nearestId{};
+        // 最も近い境界との距離
         float nearestDistance = std::numeric_limits<float>::max();
+        // 選択境界を調べる対象
         for (const auto& gameObject : m_scene.GameObjects())
         {
             if (!gameObject->IsEnabled())
@@ -2124,12 +2321,14 @@ namespace LamaPon
                 continue;
             }
 
+            // 候補のワールド選択境界
             const auto bounds = SelectionBounds(*gameObject);
             if (!bounds)
             {
                 continue;
             }
 
+            // 候補境界との交点距離
             float distance{};
             if (RayIntersectsBounds(ray, *bounds, distance)
                 && distance < nearestDistance)
@@ -2139,25 +2338,30 @@ namespace LamaPon
             }
         }
 
-        // Ctrl+クリックはScene Viewでも選択の追加／解除にします。
+
         SelectObject(nearestId, ImGui::GetIO().KeyCtrl);
     }
 
+    // 有効な選択対象の境界を描画し、主選択と追加選択の色を分けます。
     void EditorLayer::DrawSelectionHighlight()
     {
-        // 主選択は明るい水色、追加選択は少し暗い色で描きます。
+
+        // 現在の選択対象一覧
         const auto selection = SelectedObjects();
+        // 境界を描く選択対象
         for (const auto* object : selection)
         {
             if (object == nullptr || !object->IsEnabled())
             {
                 continue;
             }
+            // 選択対象のワールド境界
             const auto bounds = SelectionBounds(*object);
             if (!bounds)
             {
                 continue;
             }
+            // 主選択のオブジェクトか
             const bool primary =
                 object->Id() == m_selectedObjectId;
             m_graphics.Debug().DrawBounds(
@@ -2172,14 +2376,18 @@ namespace LamaPon
         }
     }
 
+    // 有効カメラの視錐台を最大5mまで描画し、主カメラの色を分けます。
     void EditorLayer::DrawCameraGizmos()
     {
+        // ゲームビューのアスペクト比
         const float aspectRatio = m_gameRenderTarget.IsValid()
             ? m_gameRenderTarget.AspectRatio()
             : 16.0f / 9.0f;
 
+        // カメラを調べる対象
         for (const auto& gameObject : m_scene.GameObjects())
         {
+            // 視錐台を描くカメラ
             const auto* camera =
                 gameObject->GetComponent<CameraComponent>();
             if (!gameObject->IsEnabled()
@@ -2189,10 +2397,13 @@ namespace LamaPon
                 continue;
             }
 
+            // シーンの主カメラか
             const bool isMainCamera = camera == m_scene.MainCamera();
+            // カメラギズモの表示色
             const auto color = isMainCamera
                 ? DirectX::XMVectorSet(1.0f, 0.78f, 0.16f, 1.0f)
                 : DirectX::XMVectorSet(0.72f, 0.36f, 1.0f, 1.0f);
+            // 視錐台の表示終端距離
             const float debugFarDistance = std::min(
                 camera->FarPlane(),
                 5.0f);
@@ -2209,8 +2420,10 @@ namespace LamaPon
         }
     }
 
+    // 有効な3Dライトの方向・範囲・円錐を描画します。
     void EditorLayer::DrawLightGizmos()
     {
+        // ライトを調べる対象
         for (const auto& gameObject : m_scene.GameObjects())
         {
             if (!gameObject->IsEnabled())
@@ -2218,11 +2431,13 @@ namespace LamaPon
                 continue;
             }
 
+            // ギズモを描くライト
             if (const auto* light =
                 gameObject->GetComponent<
                     DirectionalLightComponent>();
                 light != nullptr && light->IsEnabled())
             {
+                // ライトの表示色
                 const auto& color = light->Color();
                 m_graphics.Debug().DrawDirectionalLight(
                     gameObject->WorldMatrix(),
@@ -2234,10 +2449,12 @@ namespace LamaPon
                     SceneViewMatrix(),
                     SceneProjectionMatrix());
             }
+            // ギズモを描くライト
             if (const auto* light =
                 gameObject->GetComponent<PointLightComponent>();
                 light != nullptr && light->IsEnabled())
             {
+                // ライトの表示色
                 const auto& color = light->Color();
                 m_graphics.Debug().DrawPointLight(
                     gameObject->WorldMatrix(),
@@ -2250,10 +2467,12 @@ namespace LamaPon
                     SceneViewMatrix(),
                     SceneProjectionMatrix());
             }
+            // ギズモを描くライト
             if (const auto* light =
                 gameObject->GetComponent<SpotLightComponent>();
                 light != nullptr && light->IsEnabled())
             {
+                // ライトの表示色
                 const auto& color = light->Color();
                 m_graphics.Debug().DrawSpotLight(
                     gameObject->WorldMatrix(),
@@ -2270,6 +2489,7 @@ namespace LamaPon
         }
     }
 
+    // ギズモ操作中を除き、マウスのOrbit・パン・ズームと右ドラッグ中の視点移動を適用します。
     void EditorLayer::UpdateSceneCamera()
     {
         if (!m_sceneViewportHovered
@@ -2281,38 +2501,51 @@ namespace LamaPon
             return;
         }
 
+        // ImGuiの入力状態
         const auto& inputOutput = ImGui::GetIO();
+        // プロジェクトの操作設定
         const auto& viewportSettings = m_projectSettings.viewport;
+        // Orbit操作方式が選択中か
         const bool orbitNavigation =
             viewportSettings.navigationPreset
             == ViewportNavigationPreset::Orbit;
+        // Altキーを押しているか
         const bool altDown =
             ImGui::IsKeyDown(ImGuiKey_LeftAlt)
             || ImGui::IsKeyDown(ImGuiKey_RightAlt);
+        // 左ボタンを押しているか
         const bool leftMouseDown =
             ImGui::IsMouseDown(ImGuiMouseButton_Left);
+        // 中ボタンを押しているか
         const bool middleMouseDown =
             ImGui::IsMouseDown(ImGuiMouseButton_Middle);
+        // 右ボタンを押しているか
         const bool rightMouseDown =
             ImGui::IsMouseDown(ImGuiMouseButton_Right);
+        // カメラ回転の合成感度
         const float orbitSensitivity =
             m_sceneCameraLookSensitivity
             * viewportSettings.orbitSensitivity;
+        // ズームの合成感度
         const float zoomSensitivity =
             m_sceneCameraZoomSensitivity
             * viewportSettings.zoomSensitivity;
+        // 移動前のカメラ回転行列
         const DirectX::XMMATRIX rotation =
             DirectX::XMMatrixRotationRollPitchYaw(
                 m_sceneCameraRotation.x,
                 m_sceneCameraRotation.y,
                 0.0f);
+        // 移動前の視線方向
         const DirectX::XMVECTOR forward =
             DirectX::XMVector3Normalize(
                 DirectX::XMVector3TransformNormal(
                     DirectX::g_XMNegIdentityR2,
                     rotation));
+        // ワールド上方向
         const DirectX::XMVECTOR up = DirectX::g_XMIdentityR1;
 
+        // 更新するカメラ位置
         DirectX::XMVECTOR position =
             DirectX::XMLoadFloat3(&m_sceneCameraPosition);
 
@@ -2331,6 +2564,7 @@ namespace LamaPon
             }
             else
             {
+                // 維持する注視点
                 const DirectX::XMVECTOR focus = DirectX::XMVectorMultiplyAdd(
                     DirectX::XMVectorReplicate(m_sceneCameraFocusDistance),
                     forward,
@@ -2356,6 +2590,7 @@ namespace LamaPon
             && rightMouseDown
             && std::abs(inputOutput.MouseDelta.y) > 0.0f)
         {
+            // 維持する注視点
             const DirectX::XMVECTOR focus =
                 DirectX::XMVectorMultiplyAdd(
                     DirectX::XMVectorReplicate(
@@ -2377,16 +2612,20 @@ namespace LamaPon
                 focus);
         }
 
+        // 注視点まわりに回転するか
         const bool orbit =
             orbitNavigation
             && altDown
             && leftMouseDown
             && !m_scene2DMode;
+        // 中ドラッグでパンするか
         const bool pan = orbitNavigation && middleMouseDown;
         if (orbit)
         {
+            // マウス差分の回転倍率
             const float lookScale =
                 0.004f * orbitSensitivity;
+            // 縦回転の方向倍率
             const float invertY =
                 viewportSettings.invertY ? -1.0f : 1.0f;
             m_sceneCameraRotation.y +=
@@ -2398,16 +2637,19 @@ namespace LamaPon
                 -DirectX::XM_PIDIV2 + 0.01f,
                 DirectX::XM_PIDIV2 - 0.01f);
 
+            // Orbit後の回転行列
             const DirectX::XMMATRIX orbitRotation =
                 DirectX::XMMatrixRotationRollPitchYaw(
                     m_sceneCameraRotation.x,
                     m_sceneCameraRotation.y,
                     0.0f);
+            // Orbit後の視線方向
             const DirectX::XMVECTOR orbitForward =
                 DirectX::XMVector3Normalize(
                     DirectX::XMVector3TransformNormal(
                         DirectX::g_XMNegIdentityR2,
                         orbitRotation));
+            // 維持する注視点
             const DirectX::XMVECTOR focus =
                 DirectX::XMVectorMultiplyAdd(
                     DirectX::XMVectorReplicate(
@@ -2422,24 +2664,29 @@ namespace LamaPon
         }
         else if (pan)
         {
+            // パンの座標系の回転行列
             const DirectX::XMMATRIX panRotation =
                 DirectX::XMMatrixRotationRollPitchYaw(
                     m_sceneCameraRotation.x,
                     m_sceneCameraRotation.y,
                     0.0f);
+            // パンの右方向
             const DirectX::XMVECTOR right =
                 DirectX::XMVector3Normalize(
                     DirectX::XMVector3TransformNormal(
                         DirectX::g_XMIdentityR0,
                         panRotation));
+            // パンの上方向
             const DirectX::XMVECTOR panUp =
                 DirectX::XMVector3Normalize(
                     DirectX::XMVector3TransformNormal(
                         DirectX::g_XMIdentityR1,
                         panRotation));
+            // パン感度に使う視点距離
             const float distance = m_sceneOrthographic
                 ? m_sceneOrthographicSize
                 : m_sceneCameraFocusDistance;
+            // マウス差分のパン倍率
             const float panScale =
                 0.0025f
                 * std::max(distance, 0.1f)
@@ -2470,8 +2717,10 @@ namespace LamaPon
 
         if (!m_scene2DMode)
         {
+            // マウス差分の回転倍率
             const float lookScale =
                 0.004f * orbitSensitivity;
+            // 縦回転の方向倍率
             const float invertY =
                 viewportSettings.invertY ? -1.0f : 1.0f;
             m_sceneCameraRotation.y += inputOutput.MouseDelta.x * lookScale;
@@ -2483,30 +2732,36 @@ namespace LamaPon
                 DirectX::XM_PIDIV2 - 0.01f);
         }
 
+        // 回転操作後の回転行列
         const DirectX::XMMATRIX updatedRotation =
             DirectX::XMMatrixRotationRollPitchYaw(
                 m_sceneCameraRotation.x,
                 m_sceneCameraRotation.y,
                 0.0f);
+        // 回転操作後の視線方向
         const DirectX::XMVECTOR updatedForward =
             DirectX::XMVector3Normalize(
                 DirectX::XMVector3TransformNormal(
                     DirectX::g_XMNegIdentityR2,
                     updatedRotation));
+        // 回転操作後の右方向
         const DirectX::XMVECTOR updatedRight =
             DirectX::XMVector3Normalize(
                 DirectX::XMVector3TransformNormal(
                     DirectX::g_XMIdentityR0,
                     updatedRotation));
+        // 回転操作後の上方向
         const DirectX::XMVECTOR updatedUp =
             DirectX::XMVector3Normalize(
                 DirectX::XMVector3TransformNormal(
                     DirectX::g_XMIdentityR1,
                     updatedRotation));
 
+        // 正投影サイズによる移動倍率
         const float projectionScale = m_sceneOrthographic
             ? std::max(m_sceneOrthographicSize / 10.0f, 0.1f)
             : 1.0f;
+        // このフレームの移動距離
         float speed =
             m_sceneCameraSpeed
             * projectionScale
@@ -2563,19 +2818,24 @@ namespace LamaPon
         DirectX::XMStoreFloat3(&m_sceneCameraPosition, position);
     }
 
+    // エディター視点の位置と姿勢から右手系ビュー行列を返します。
     DirectX::XMMATRIX EditorLayer::SceneViewMatrix() const noexcept
     {
+        // シーンカメラの回転行列
         const DirectX::XMMATRIX rotation =
             DirectX::XMMatrixRotationRollPitchYaw(
                 m_sceneCameraRotation.x,
                 m_sceneCameraRotation.y,
                 0.0f);
+        // シーンカメラの位置
         const DirectX::XMVECTOR position =
             DirectX::XMLoadFloat3(&m_sceneCameraPosition);
+        // シーンカメラの視線方向
         const DirectX::XMVECTOR forward =
             DirectX::XMVector3TransformNormal(
                 DirectX::g_XMNegIdentityR2,
                 rotation);
+        // シーンカメラの上方向
         const DirectX::XMVECTOR up =
             DirectX::XMVector3TransformNormal(
                 DirectX::g_XMIdentityR1,
@@ -2584,10 +2844,12 @@ namespace LamaPon
         return DirectX::XMMatrixLookToRH(position, forward, up);
     }
 
+    // 描画ターゲットの比率で正投影または画角60度の右手系投影行列を返します。
     DirectX::XMMATRIX EditorLayer::SceneProjectionMatrix() const noexcept
     {
         if (m_sceneOrthographic)
         {
+            // 正投影の表示高さ
             const float height = std::max(
                 m_sceneOrthographicSize,
                 0.1f);
@@ -2605,6 +2867,7 @@ namespace LamaPon
             1000.0f);
     }
 
+    // 選択タイルマップの設定と先頭1024タイルを表示し、編集と選択を処理します(open: パレットの表示状態)。
     void EditorLayer::DrawTilePalette(bool& open)
     {
         if (!open)
@@ -2615,6 +2878,7 @@ namespace LamaPon
         ImGui::SetNextWindowSize(
             ImVec2{ 360.0f, 430.0f },
             ImGuiCond_FirstUseEver);
+        // パレットのウィンドウ設定
         constexpr ImGuiWindowFlags flags =
             ImGuiWindowFlags_NoCollapse;
         if (!ImGui::Begin(
@@ -2626,9 +2890,11 @@ namespace LamaPon
             return;
         }
 
+        // タイル編集の対象オブジェクト
         auto* selected =
             m_scene.FindGameObject(
                 m_selectedObjectId);
+        // 編集中のタイルマップ
         auto* tilemap = selected != nullptr
             ? selected->GetComponent<
                 TilemapComponent>()
@@ -2650,6 +2916,7 @@ namespace LamaPon
         ImGui::Separator();
 
         ImGui::BeginDisabled(m_playing);
+        // ペイントツールが選択中か
         const bool paintSelected =
             m_tilemapTool
                 == TilemapTool::Paint;
@@ -2676,6 +2943,7 @@ namespace LamaPon
         }
         ImGui::SameLine();
 
+        // 消去ツールが選択中か
         const bool eraseSelected =
             m_tilemapTool
                 == TilemapTool::Erase;
@@ -2724,6 +2992,7 @@ namespace LamaPon
             "Sceneタブ上を左ドラッグして編集");
         ImGui::SeparatorText("タイルシート");
 
+        // タイルシートの相対パス
         const auto texturePath =
             PathToUtf8(
                 tilemap->TexturePath());
@@ -2737,10 +3006,12 @@ namespace LamaPon
             ImVec2{ -1.0f, 0.0f });
         if (ImGui::BeginDragDropTarget())
         {
+            // 受け付けた画像アセットの情報
             if (const ImGuiPayload* payload =
                 ImGui::AcceptDragDropPayload(
                     AssetPayload))
             {
+                // ドロップした画像の相対パス
                 const auto droppedPath =
                     PathFromUtf8(
                         static_cast<
@@ -2757,6 +3028,7 @@ namespace LamaPon
                         SetStatus(
                             "Tilemapへタイルシートを設定しました");
                     }
+                    // タイルシート設定時の例外
                     catch (
                         const std::exception&
                             exception)
@@ -2790,6 +3062,7 @@ namespace LamaPon
                 SetStatus(
                     "Tilemapへタイルシートを設定しました");
             }
+            // タイルシート設定時の例外
             catch (
                 const std::exception&
                     exception)
@@ -2801,6 +3074,7 @@ namespace LamaPon
         }
         ImGui::EndDisabled();
 
+        // タイルシートの列数と行数
         int atlasGrid[]{
             static_cast<int>(
                 tilemap->AtlasColumns()),
@@ -2830,6 +3104,7 @@ namespace LamaPon
             RecordHistory();
         }
 
+        // 1セルの編集サイズ
         auto tileSize =
             tilemap->TileSize();
         if (ImGui::DragFloat2(
@@ -2863,6 +3138,7 @@ namespace LamaPon
             "選択中: Tile %u",
             m_tilePaletteSelectedTile);
 
+        // パレット表示中に保持する画像
         std::shared_ptr<
             const TextureAsset> texture;
         if (!tilemap->TexturePath().empty())
@@ -2875,6 +3151,7 @@ namespace LamaPon
                             tilemap->
                                 TexturePath());
             }
+            // タイルシート読込時の例外
             catch (
                 const std::exception&
                     exception)
@@ -2889,23 +3166,28 @@ namespace LamaPon
             "TilePaletteGrid",
             ImVec2{ 0.0f, 0.0f },
             ImGuiChildFlags_Borders);
+        // パレットに表示するタイル数
         const std::uint32_t visibleCount =
             std::min(
                 tilemap->TileCount(),
                 1024u);
+        // パレットの表示列数
         const int displayColumns =
             std::max(
                 static_cast<int>(
                     ImGui::GetContentRegionAvail().x
                     / 58.0f),
                 1);
+        // パレットのタイル番号
         for (std::uint32_t tileIndex{};
+            // パレットに表示するタイル数
             tileIndex < visibleCount;
             ++tileIndex)
         {
             ImGui::PushID(
                 static_cast<int>(
                     tileIndex));
+            // 選択中のタイルか
             const bool selectedTile =
                 tileIndex
                     == m_tilePaletteSelectedTile;
@@ -2920,15 +3202,19 @@ namespace LamaPon
                     1.0f,
                     1.0f });
 
+            // タイルをクリックしたか
             bool clicked{};
             if (texture)
             {
+                // シート内のタイル列番号
                 const std::uint32_t column =
                     tileIndex
                     % tilemap->AtlasColumns();
+                // シート内のタイル行番号
                 const std::uint32_t row =
                     tileIndex
                     / tilemap->AtlasColumns();
+                // タイル画像の左上UV
                 const ImVec2 uv0{
                     static_cast<float>(column)
                         / tilemap->
@@ -2937,6 +3223,7 @@ namespace LamaPon
                         / tilemap->
                             AtlasRows()
                 };
+                // タイル画像の右下UV
                 const ImVec2 uv1{
                     static_cast<float>(
                         column + 1)

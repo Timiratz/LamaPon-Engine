@@ -212,6 +212,19 @@ DLLと同じ名前は同梱できません。複数のパッケージが同じ�
 
 導入したパッケージのうち公式一覧に無いもの（自作・受け取り物）は、パッケージタブの「このプロジェクトのパッケージ（公式一覧外）」にまとめて表示され、そこから削除もできます。
 
+## Easingを直接使う
+
+`easing-tween`導入後は`Easing.h`をincludeして、自分のScriptから補間量を取得できます。
+`elapsed`と`duration`は秒単位、`start`と`goal`は同じ座標系の位置です。
+
+```cpp
+// イージング適用後の進行率
+const float k = LamaPonEasing::Ease(
+    LamaPonEasing::Type::OutCubic,
+    elapsed / duration);
+position = start + (goal - start) * k;
+```
+
 ## よくあるつまずき
 
 - **一覧が空** — 公式パッケージの公開前はこの状態が正常です。

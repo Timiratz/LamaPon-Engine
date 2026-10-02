@@ -8,99 +8,85 @@
 
 namespace LamaPon
 {
-    // Shaderバリアント（#pragma multi_compileで指定する組み合わせ）。
-    //
-    // 1本のシェーダーの中でif分岐を書くと、使わない枝の分もGPUが
-    // レジスタを確保し続けるため、実際には通らない機能のぶんまで
-    // 遅くなります。バリアントは「キーワードの組み合わせごとに
-    // 別々のシェーダーとしてコンパイルしてしまう」やり方で、
-    // 分岐そのものを消します。
-    //
-    //   #pragma multi_compile _ FOG_ON
-    //   #pragma shader_feature _ DETAIL_ON
-    //
-    // 1行が1グループで、そこから必ず1つが選ばれます。_は
-    // 「どのキーワードも立てない」組み合わせを表します。
-    // 選ばれたキーワードは #define FOG_ON 1 として渡ります。
-    //
-    // multi_compileとshader_featureの違いは書き出し時だけです。
-    // multi_compileは全組み合わせを同梱し、shader_featureは
-    // 実際にどれかのマテリアルが使っている組み合わせだけを同梱
-    // します。エディターでの
-    // 挙動は同じです。
+    // 各pragma行から一つを選び、選択キーワードをマクロ定義として渡す。
     enum class ShaderVariantKind
     {
-        // 常に全組み合わせを用意します。
+        // 全選択肢を書き出す方式
         MultiCompile,
-        // 使われている組み合わせだけを書き出しへ含めます。
+        // 使用キーワードで絞り込む方式
         ShaderFeature
     };
 
     struct ShaderVariantGroup final
     {
+        // 組合せの書出し方式
         ShaderVariantKind kind{
             ShaderVariantKind::MultiCompile };
-        // このグループの選択肢。_は空文字列として入ります
-        // （「どれも立てない」を表します）。
+        // 空文字を含む宣言順の選択肢
         std::vector<std::string> keywords;
     };
 
     struct ShaderVariantDeclaration final
     {
+        // 宣言順のバリアントグループ
         std::vector<ShaderVariantGroup> groups;
-        // 宣言の誤り（空なら問題なし）。Inspectorへ出します。
+        // 空なら正常の宣言診断
         std::string error;
 
+        // バリアントのグループ宣言が空か返す。
         [[nodiscard]] bool Empty() const noexcept
         {
             return groups.empty();
         }
 
-        // 全組み合わせの数。グループの選択肢数の掛け算です。
+        // グループの選択肢数を掛け合わせ、宣言なしなら1を返す。
         [[nodiscard]] std::size_t VariantCount() const noexcept;
     };
 
-    // 組み合わせの上限。これを超える宣言は読み取り時に弾きます。
-    //
-    // multi_compileを1行追加するたびに組み合わせは倍になり、
-    // 10行では1024通りになります。書き出し時間と配布サイズを
-    // 制御できる範囲へ収めるため、読み取り時に上限を適用します。
+    // 読込と列挙に適用する組合せ上限
     inline constexpr std::size_t MaximumShaderVariants = 64;
 
-    // HLSLソースから#pragma multi_compile / shader_featureを読みます。
+    // HLSLのバリアント宣言を読み、誤りを診断に格納する(source: HLSLソース文字列)。
     [[nodiscard]] ShaderVariantDeclaration ParseShaderVariants(
         std::string_view source);
 
-    // 有効なキーワードの集合。並びは常に整列されているので、
-    // そのままキャッシュのキーや比較に使えます。
+    // キーワード名の検証は行わないため、HLSLマクロ名として有効な文字列を渡す。
     class ShaderKeywordSet final
     {
     public:
+        // 空のキーワード集合を作る。
         ShaderKeywordSet() = default;
+        // 空文字と重複を除いてキーワードを整列する(keywords: 初期キーワード一覧)。
         explicit ShaderKeywordSet(
             std::vector<std::string> keywords);
 
+        // 空文字と重複を除いてキーワードを追加する(keyword: 有効化するキーワード)。
         void Enable(std::string keyword);
+        // 該当するキーワードを取り除く(keyword: 無効化するキーワード)。
         void Disable(std::string_view keyword);
+        // キーワードの有効状態を設定する(keyword: 対象キーワード, enabled: 有効化フラグ)。
         void Set(std::string_view keyword, bool enabled);
+        // キーワードが保存されているか返す(keyword: 確認するキーワード)。
         [[nodiscard]] bool IsEnabled(
             std::string_view keyword) const noexcept;
 
+        // 整列済みで重複のないキーワード一覧を返す。
         [[nodiscard]] const std::vector<std::string>&
             Keywords() const noexcept
         {
             return m_keywords;
         }
 
+        // 有効なキーワード集合が空か返す。
         [[nodiscard]] bool Empty() const noexcept
         {
             return m_keywords.empty();
         }
 
-        // キャッシュのキーやログに使う一意な文字列。
-        // 例: "FOG_ON+SHADOWS_HIGH"、何も無ければ空文字列。
+        // キーワードをプラス記号で連結したキャッシュキーを返す。
         [[nodiscard]] std::string Key() const;
 
+        // 保存されたキーワード集合が一致するか返す(other: 比較するキーワード集合)。
         [[nodiscard]] bool operator==(
             const ShaderKeywordSet& other) const noexcept
         {
@@ -108,26 +94,17 @@ namespace LamaPon
         }
 
     private:
-        // 常に整列・重複なし。
+        // 整列済みで重複なしの有効集合
         std::vector<std::string> m_keywords;
     };
 
-    // 宣言に無いキーワードを落とし、各グループから高々1つだけを
-    // 残します。マテリアルの保存値が古いシェーダー由来でも、
-    // 存在しないキーワードでコンパイルしないようにするためです。
+    // 各グループの宣言順で最初の要求キーワードを残す(declaration: バリアント宣言, requested: 要求キーワード集合)。
     [[nodiscard]] ShaderKeywordSet NormalizeKeywords(
         const ShaderVariantDeclaration& declaration,
         const ShaderKeywordSet& requested);
 
-    // 宣言から全組み合わせを作ります。上限を超える場合は空を返します。
-    //
-    // usedKeywordsを渡すと、shader_featureのグループは「そこに
-    // 入っているキーワード」と「立てない(_)」だけへ絞ります
-    // 使用中の組み合わせだけを残します。multi_compileの
-    // グループは常に全部作ります。
-    //
-    // 絞るのは安全側です。取りこぼした組み合わせは実行時に
-    // コンパイルされるだけで、動かなくなることはありません。
+    // 上限内の組合せを列挙し、未宣言なら空キーワード1件を返す(declaration: バリアント宣言, usedKeywords: 絞込用の使用中一覧)。
+    // 一覧の指定時はshader_featureだけ絞り、選択肢がなくなったグループには空選択肢を残す。
     [[nodiscard]] std::vector<ShaderKeywordSet>
         EnumerateShaderVariants(
             const ShaderVariantDeclaration& declaration,

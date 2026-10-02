@@ -30,42 +30,41 @@ namespace LamaPon
     enum class RenderingApiFallbackReason
     {
         None,
-        // Kept for source and binary compatibility with the bootstrap-era
-        // selection result. Current supported APIs are implemented.
+        // 旧モジュールとの列挙値互換を維持します。
         NotImplemented,
         Unsupported,
         InitializationFailed,
         UnknownApi
     };
 
-    // D3D12 bootstrap期の起動プロファイルです。現在はどちらを指定しても
-    // 選択したrendererを起動しますが、既存Game Moduleのソース互換のため
-    // 列挙値とoverloadを残します。
+    // 互換用の起動指定で、現在は選択したAPIだけで起動します。
     enum class GraphicsStartupProfile : std::uint8_t
     {
         FullRenderer,
         AllowD3D12ExperimentalRenderer,
-        // 初期実装時の名前を、既存Game Moduleのソース互換用に残します。
+        // 旧モジュール用の別名です。
         AllowD3D12ExperimentalBootstrap =
             AllowD3D12ExperimentalRenderer
     };
 
     struct GraphicsBackendSelection final
     {
+        // 要求した描画API
         RenderingApi requestedApi{
             RenderingApi::DirectX11 };
+        // 使用する描画API
         RenderingApi activeApi{
             RenderingApi::DirectX11 };
+        // 代替APIの選択理由
         RenderingApiFallbackReason fallbackReason{
             RenderingApiFallbackReason::None };
     };
 
-    // 設定値から起動するBackendを選びます。Autoは既存互換のためD3D11、
-    // DirectX12ExperimentalはD3D12を選びます。
+    // 起動APIを選びます(requestedApi: 要求APIでAutoはD3D11)。
     [[nodiscard]] GraphicsBackendSelection
         SelectGraphicsBackend(
             RenderingApi requestedApi) noexcept;
-    // profile付きoverloadはbootstrap期とのソース互換用です。
+    // 起動APIを選びます(requestedApi: 要求APIでAutoはD3D11, profile: 選択に使わない互換指定)。
     [[nodiscard]] GraphicsBackendSelection
         SelectGraphicsBackend(
             RenderingApi requestedApi,
@@ -73,162 +72,167 @@ namespace LamaPon
 
     struct GraphicsBackendCreateInfo final
     {
-        // 公開する共通Backend契約へWindows/D3D型を持ち込まないため、
-        // HWNDは呼び出し側でvoid*として渡します。
+        // 描画先のHWND
         void* nativeWindow{};
+        // 描画幅（ピクセル）
         std::uint32_t width{};
+        // 描画高（ピクセル）
         std::uint32_t height{};
+        // ソフト描画優先
         bool preferWarpAdapter{};
+        // 検証レイヤーの有効化
         bool enableDebugLayer{};
     };
 
-    // Backendが報告するAPI-neutralなGPUメモリ情報です。搭載量と
-    // OS予算を分け、予算APIを利用できない環境ではavailable=falseで
-    // usage/budgetを0のまま返します。
+    // 容量・使用量・予算はバイト単位で、取得可否は各Availableで判定します。
     struct GraphicsVideoMemoryStatistics final
     {
+        // 専用メモリ容量
         std::uint64_t dedicatedBytes{};
+        // 共有メモリ容量
         std::uint64_t sharedSystemBytes{};
+        // ローカル使用量
         std::uint64_t localUsageBytes{};
+        // ローカル予算
         std::uint64_t localBudgetBytes{};
+        // 非ローカル使用量
         std::uint64_t nonLocalUsageBytes{};
+        // 非ローカル予算
         std::uint64_t nonLocalBudgetBytes{};
+        // アダプター取得可否
         bool adapterAvailable{};
+        // 容量情報の取得可否
         bool descriptionAvailable{};
+        // ローカル予算の取得可否
         bool localBudgetAvailable{};
+        // 非ローカル予算の取得可否
         bool nonLocalBudgetAvailable{};
     };
 
-    // 一時的に別の描画先へ切り替えた後、元のprimary output bindingへ
-    // 戻すためのBackend固有tokenです。全pipeline stateではなく、色の
-    // slot 0、深度、先頭viewportだけを保持します。
+    // 主描画先を復元する状態で、パイプライン全体は保存しません。
     class GraphicsOutputState
     {
     public:
+        // 保存した描画先状態を破棄します。
         virtual ~GraphicsOutputState() = default;
 
+        // 状態のコピーを禁止します。
         GraphicsOutputState(const GraphicsOutputState&) = delete;
+        // 状態のコピー代入を禁止します。
         GraphicsOutputState& operator=(
             const GraphicsOutputState&) = delete;
 
     protected:
+        // 空の描画先状態を作ります。
         GraphicsOutputState() = default;
     };
 
-    // SwapChainを持つ描画Backendの最小共通契約です。DeviceやContext、
-    // RenderTargetViewなどのAPI固有型は具象Backendだけが公開します。
+    // 描画APIの共通契約で、既存モジュールとの互換のため仮想関数の順序を維持します。
     class GraphicsBackend
     {
     public:
+        // バックエンドを破棄します。
         virtual ~GraphicsBackend() = default;
 
+        // バックエンドの基底を構築します。
         GraphicsBackend() = default;
+        // バックエンドのコピーを禁止します。
         GraphicsBackend(const GraphicsBackend&) = delete;
+        // バックエンドのコピー代入を禁止します。
         GraphicsBackend& operator=(
             const GraphicsBackend&) = delete;
 
+        // 使用する描画APIを返します。
         [[nodiscard]] virtual RenderingApi
             Api() const noexcept = 0;
+        // 描画資源の初期化状態を返します。
         [[nodiscard]] virtual bool
             IsInitialized() const noexcept = 0;
 
+        // 描画資源を初期化します(createInfo: ウィンドウ・寸法・アダプター設定)。
         virtual void Initialize(
             const GraphicsBackendCreateInfo& createInfo) = 0;
 
-        // GraphicsDeviceが所有するGPU資源を破棄する前に呼びます。
-        // Contextが保持する参照を外し、GPUへ残った命令を送ります。
+        // 所有GPU資源の破棄前に参照を外し、残る命令を送信します。
         virtual void PrepareForResourceRelease() noexcept = 0;
+        // GPU資源と描画状態を解放します。
         virtual void Shutdown() noexcept = 0;
 
+        // バックバッファを再作成します(width: 描画幅, height: 描画高)。
         virtual void Resize(
             std::uint32_t width,
             std::uint32_t height) = 0;
+        // バックバッファを設定して消去します(clearColor: RGBAの消去色)。
         virtual void BindAndClearBackBuffer(
             const float clearColor[4]) = 0;
+        // 描画APIの検証メッセージを回収します。
         virtual void DrainDebugMessages() = 0;
+        // 描画結果を表示します(vSyncEnabled: 垂直同期の有効化)。
         virtual void Present(bool vSyncEnabled) = 0;
 
+        // 表示画像をCPUへ読み戻します(width: 画像幅の出力, height: 画像高の出力)。
         [[nodiscard]] virtual std::vector<std::uint8_t>
             CaptureBackBuffer(
                 std::uint32_t& width,
                 std::uint32_t& height) const = 0;
+        // 垂直同期なしの表示でティアリングを許可できるか返します。
         [[nodiscard]] virtual bool
             TearingAllowed() const noexcept = 0;
 
-        // クリアせず、既定のバックバッファを描画先へ戻します。
-        // 深度ターゲットは外し、バックバッファ用viewportを設定します。
-        // Initializeが成功したBackendに対して呼びます。
-        // 既存virtualのslotを維持するため、新しい契約は末尾へ追加します。
+        // 初期化済みバックバッファとビューポートを設定し、深度を外します。
         virtual void BindBackBuffer() = 0;
 
-        // API固有のDevice / Contextを呼び出し側へ渡さず、オフスクリーン
-        // 描画先の基本操作を行います。RenderTargetの具象資源はopaqueな
-        // Backend stateが所有し、この入口がBackend別stateの生成境界です。
-        // targetの所有権は移さず、各呼び出しの間だけ参照します。
-        // 既存virtualのslotを維持するため、新しい契約は末尾へ追加します。
+        // 描画先資源を再作成します(target: 更新する描画先, width: 画像幅, height: 画像高)。
         virtual void ResizeOffscreenTarget(
             RenderTarget& target,
             std::uint32_t width,
             std::uint32_t height) = 0;
-        // targetを描画先へ設定し、色と深度をclearColorで初期化します。
+        // 描画先を設定して色と深度を消去します(target: 描画先, clearColor: RGBAの消去色)。
         virtual void BeginOffscreenTarget(
             RenderTarget& target,
             const float clearColor[4]) = 0;
-        // 内容を消さず、targetを描画先へ戻します。
+        // 画像を消さず描画先を設定します(target: 描画先)。
         virtual void BindOffscreenTarget(
             RenderTarget& target) = 0;
-        // 完成画像を表示専用資源へ確定します。描画先は変更しません。
+        // 描画先を変えず表示用画像へ確定します(target: 確定する描画先)。
         virtual void PublishOffscreenTarget(
             RenderTarget& target) = 0;
-        // カラーを割り当てず、targetの深度だけを描画先にします。
-        // 深度はclearせず、描画先の復元も行いません。
-        // 既存virtualのslotを維持するため、新しい契約は末尾へ追加します。
+        // 消去・復元せず深度だけを設定します(target: 深度の描画先)。
         virtual void BindOffscreenTargetDepthOnly(
             RenderTarget& target) = 0;
-        // 現在の深度をtarget内のshader-readableなコピーへ控えます。
-        // 描画先のbind状態は変更しません。
+        // 描画先を変えず読み取り用深度を保存します(target: 保存先)。
         virtual void CaptureOffscreenTargetDepth(
             RenderTarget& target) = 0;
-        // 現在のHDRカラーを、SSRが次フレームで読む履歴へ控えます。
-        // viewProjectionは控えた画像を描いたときの行列です。
-        // 描画先のbind状態は変更しません。
+        // SSR用HDR履歴を保存します(target: 保存先, viewProjection: 画像描画時の行列)。
         virtual void CaptureOffscreenTargetColorHistory(
             RenderTarget& target,
             const DirectX::XMFLOAT4X4& viewProjection) = 0;
-        // 現在のTAA解決結果を次フレームの履歴へ控えます。
-        // viewProjectionは再投影に使うずらし無しの行列です。
-        // 描画先のbind状態は変更しません。
+        // TAA用履歴を保存します(target: 保存先, viewProjection: ジッターなしの再投影行列)。
         virtual void CaptureOffscreenTargetTemporalHistory(
             RenderTarget& target,
             const DirectX::XMFLOAT4X4& viewProjection) = 0;
-        // 前フレームに控えた画面全体の平均輝度を、GPUを待たずに
-        // 読みます。初回または転送が未完了ならnulloptを返します。
-        // 値はGPU上の格納形式ではなく、線形空間の輝度です。
+        // 待機せず線形平均輝度を返し、未完了ならnulloptです(target: 測定結果の描画先)。
         [[nodiscard]] virtual std::optional<float>
             TryReadOffscreenTargetLuminance(
                 RenderTarget& target) = 0;
-        // 現在の輝度測定結果を、次フレームの非同期読み出し用に
-        // 控えます。描画先のbind状態は変更しません。
+        // 輝度測定結果を非同期読み戻し用に保存します(target: 測定結果の描画先)。
         virtual void CaptureOffscreenTargetLuminance(
             RenderTarget& target) = 0;
-        // 影用の深度配列（cube=trueでは6面のTextureCube）を作ります。
+        // 影の深度配列を作ります(shadowMap: 作成先, resolution: 一辺の画素数, cascadeCount: 配列面数, cube: 6面のキューブ指定)。
         virtual void InitializeShadowMap(
             ShadowMap& shadowMap,
             std::uint32_t resolution,
             std::uint32_t cascadeCount,
             bool cube) = 0;
-        // 指定した影スライスを描画先へ設定して深度をclearします。
-        // 無効な影、範囲外のスライス、描画中の再入では何もしません。
+        // 影の面を設定して深度を消去します(shadowMap: 影の描画先, cascadeIndex: 描画面の番号)。
+        // 無効な影・範囲外の面・描画中の再入は何もしません。
         virtual void BeginShadowMap(
             ShadowMap& shadowMap,
             std::uint32_t cascadeIndex) = 0;
-        // BeginShadowMap前の描画先とviewportを復元します。
-        // Begin前に呼ばれた場合は何もしません。
+        // 影描画前の描画先とビューポートへ戻します(shadowMap: 終了する影の描画先)。
         virtual void EndShadowMap(
             ShadowMap& shadowMap) = 0;
-        // Forward+用のライト一覧をGPUへ送り、クラスタごとの番号表を
-        // lightingへ設定します。native資源はClusteredLightsのopaque
-        // Backend stateに閉じ込め、共通契約へAPI固有型を出しません。
+        // Forward+用のライト一覧と番号表を更新します(clusteredLights: GPU資源, lighting: ライト情報と結果, view: ビュー行列, projection: 射影行列, width: 画面幅, height: 画面高)。
         virtual void UpdateClusteredLights(
             ClusteredLights& clusteredLights,
             LightingState& lighting,
@@ -236,121 +240,94 @@ namespace LamaPon
             const DirectX::XMFLOAT4X4& projection,
             std::uint32_t width,
             std::uint32_t height) = 0;
-        // 現在のprimary output bindingを同じBackendで復元するtokenとして
-        // 控えます。資源解放やResizeをまたがず、同じ描画区間で使います。
-        // D3D12 Backendではgetterではなく論理bind状態から実装します。
+        // 主描画先の復元状態を保存します。
+        // 同じバックエンドの描画区間で使い、Resizeや資源解放をまたがせません。
         [[nodiscard]] virtual std::unique_ptr<GraphicsOutputState>
             CaptureOutputState() = 0;
+        // 保存した主描画先を復元します(state: 同じバックエンドで保存した状態)。
         virtual void RestoreOutputState(
             const GraphicsOutputState& state) = 0;
-        // Device型を公開せず、実効adapterの容量と現在のOS予算を
-        // 取得します。性能表示用なので失敗時は空の値へ倒します。
+        // アダプター容量とOS予算を返し、取得失敗は各Availableで示します。
         [[nodiscard]] virtual GraphicsVideoMemoryStatistics
             QueryVideoMemoryStatistics() const noexcept = 0;
-        // Collider、grid、gizmo等が生成した共通線分を描くsinkです。
-        // Backendが初期化済みの間だけ生成し、Backendより先に破棄します。
+        // 線分描画器を生成し、初期化済みバックエンドより先に破棄します。
         [[nodiscard]] virtual std::unique_ptr<DebugDrawingBackend>
             CreateDebugDrawingBackend() = 0;
-        // GPU計測driverはBackendが所有し、初期化済みの間だけ
-        // facadeへ貸し出します。未初期化時はnullptrです。
-        // 既存virtualのslotを維持するため、新しい契約は末尾へ追加します。
+        // 初期化中だけ所有する計測器を貸し出し、未初期化ならnullptrです。
         [[nodiscard]] virtual GpuProfilerBackend*
             ProfilerBackend() noexcept = 0;
 
-        // API非依存handleを返す最初のresource生成境界です。viewはtextureを
-        // 強所有し、Backendを再初期化した後もhandleの破棄自体は安全です。
-        // 既存virtualのslotを維持するため、新しい契約は末尾へ追加します。
+        // 単色のRGBA8テクスチャを作ります(color: 各成分0～255のRGBA)。
         [[nodiscard]] virtual GraphicsTextureHandle
             CreateSolidRgba8Texture(
                 const std::array<std::uint8_t, 4>& color) = 0;
+        // テクスチャを保持する読み取りビューを作ります(texture: 同じバックエンド世代の画像)。
         [[nodiscard]] virtual GraphicsViewHandle
             CreateShaderResourceView(
                 const GraphicsTextureHandle& texture) = 0;
 
-        // 共有の動的頂点bufferを必要容量へ拡張し、先頭からdataを書きます。
-        // allocation / upload失敗時はbufferを変更せずfalseを返します。
-        // 別Backend世代のhandleはprogrammer errorとしてinvalid_argumentで
-        // 拒否します。
+        // 頂点バッファへ先頭から書き込みます(buffer: 更新するハンドル, data: 頂点のバイト列)。
+        // 空データ・GPU確保や転送の失敗はfalseでハンドルを維持し、異なる世代はinvalid_argumentです。
         [[nodiscard]] virtual bool UpdateDynamicVertexBuffer(
             GraphicsBufferHandle& buffer,
             std::span<const std::byte> data) = 0;
 
-        // Asset側がAPI固有Deviceへ触れずに2D textureを生成・更新する境界です。
-        // initialDataは空（PerMipUpdateのみ）か、全mip分を先頭から並べます。
-        // Immutableは全mip必須かつ後続更新不可、PerMipUpdateは後から更新可能
-        // というdescriptionの契約を各Backendで同じように守ります。
-        // 生成はAsset準備workerからも呼べる必要があります。
-        // UpdateTexture2Dはimmediate command submissionを伴うためrender
-        // thread専用です。
+        // 2D画像を生成します(description: 形式・寸法・更新方式, initialData: 全ミップの初期値)。
+        // 生成は準備ワーカーでも可能で、PerMipUpdateだけ初期値を空にでき、Immutableは後続更新できません。
         [[nodiscard]] virtual GraphicsTextureHandle CreateTexture2D(
             const GraphicsTexture2DDescription& description,
             std::span<const GraphicsTextureSubresourceData>
                 initialData) = 0;
+        // ミップ画像を更新します(texture: 更新可能な同世代の画像, mipLevel: ミップ番号, data: 画像データと行ピッチ)。
+        // 即時命令を送信するため描画スレッドから呼びます。
         virtual void UpdateTexture2D(
             const GraphicsTextureHandle& texture,
             std::uint32_t mipLevel,
             const GraphicsTextureSubresourceData& data) = 0;
+        // 指定範囲の読み取りビューを作ります(texture: 同じバックエンド世代の画像, description: 形式とミップ範囲)。
         [[nodiscard]] virtual GraphicsViewHandle
             CreateShaderResourceView(
                 const GraphicsTextureHandle& texture,
                 const GraphicsTextureViewDescription& description) = 0;
 
-        // API 39で追加した互換slotです。現在はRenderTarget自身が表示
-        // handleを所有するため、そのhandleをBackend世代検証して返します。
-        // vtable互換のためslot自体は維持します。
+        // 描画先が所有する表示ビューを世代確認して返します(target: 表示する描画先)。
         [[nodiscard]] virtual GraphicsViewHandle
             CreateOffscreenDisplayView(
                 const RenderTarget& target) = 0;
 
-        // API固有のbuffer実体を公開せず、現在の入力アセンブラへ
-        // vertex bufferを1本bindします。既存virtualのslotを維持する
-        // ため、新しい契約は末尾へ追加します。
+        // 頂点バッファを1本設定します(buffer: 同世代の頂点資源, slot: 入力スロット, stride: 頂点間隔のバイト数, offset: 先頭のバイト位置)。
         virtual void BindVertexBuffer(
             const GraphicsBufferHandle& buffer,
             std::uint32_t slot,
             std::uint32_t stride,
             std::uint32_t offset) = 0;
 
-        // D3D11 Effect互換slotです。Shader resource viewをAPI固有pointerへ
-        // 解決せず、pixel shaderの
-        // register space 0にある連続したtNへbindします。emptyまたは無効なentryはfallbackへ
-        // 置き換え、fallbackも無効ならnullをbindします。slot範囲が不正な
-        // 場合だけ何も変更せずfalseを返します。既存virtualのslotを
-        // 維持するため、新しい契約は末尾へ追加します。呼び出し側はrecord
-        // した描画が終わるまでhandleを保持し、BackendはGPU完了まで必要な
-        // native resource / descriptorの寿命を保証します。D3D12の描画島は
-        // root signature固有のdescriptor tableを専用RenderServicesでbindし、
-        // この互換slotへ非空rangeが渡された場合はfalseを返します。
+        // D3D11の連続tレジスターへ設定します(firstSlot: 先頭番号, resources: 設定するビュー列, fallback: 無効要素の代替ビュー)。
+        // 未初期化・不正範囲・D3D12の非空範囲はfalseで、有効な空範囲は何もせず成功します。
+        // 代替も無効ならnullを設定し、呼び出し側は記録した描画の終了までハンドルを保持します。
         [[nodiscard]] virtual bool TryBindPixelShaderResources(
             std::uint32_t firstSlot,
             std::span<const GraphicsViewHandle> resources,
             const GraphicsViewHandle& fallback) noexcept = 0;
 
-        // 3D volumeの全mipを初期dataから生成します。既存virtual slotを
-        // 維持するため末尾へ追加します。
+        // 3D画像の全ミップを生成します(description: 形式と寸法, initialData: 全ミップの体積データ)。
         [[nodiscard]] virtual GraphicsTextureHandle CreateTexture3D(
             const GraphicsTexture3DDescription& description,
             std::span<const GraphicsTextureSubresourceData>
                 initialData) = 0;
 
-        // 長寿命Componentが保持するviewを、Backend再初期化後に安全に
-        // 再生成できるよう、現在のresource domain所属かだけを調べます。
-        // native pointerの解決やpipeline変更は行いません。既存virtual
-        // slotを維持するため末尾へ追加します。
+        // 現在の資源世代に属するかだけを返します(view: 確認するビュー)。
         [[nodiscard]] virtual bool IsViewCurrent(
             const GraphicsViewHandle& view) const noexcept = 0;
 
-        // Forward+資源のnative表現を具象Backendへ閉じ込めます。既存の
-        // virtual slotを維持するため末尾へ追加します。実装は全資源と
-        // neutral viewを完成させてからownerへ一度に公開します。
+        // Forward+資源を全て完成後に公開します(clusteredLights: 作成先, assets: シェーダーの取得元, shaderPath: シェーダーのパス)。
         virtual void InitializeClusteredLights(
             ClusteredLights& clusteredLights,
             AssetManager& assets,
             const std::filesystem::path& shaderPath) = 0;
     };
 
-    // 通常起動ではSelectGraphicsBackendで解決済みの値を渡します。
-    // DirectX 12 Experimentalは実験的なBackendを生成します。
+    // D3D11またはD3D12を生成し、他は例外です(activeApi: 選択済みのAPI)。
     [[nodiscard]] std::unique_ptr<GraphicsBackend>
         CreateGraphicsBackend(RenderingApi activeApi);
 }

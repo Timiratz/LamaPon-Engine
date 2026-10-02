@@ -10,15 +10,16 @@
 
 namespace LamaPon
 {
-    // privateへ書き込むための構築ヘルパーです。ヘッダから
-    // nlohmann/jsonを隠したまま、JSONからDataAssetを組み立てます。
+    // JSON実装を公開せず、型・値・表示名を構築する。
     struct DataAssetBuilder final
     {
+        // 型・値・表示名を所有するアセットを作る(typeName: 型識別子, values: 所有する値の一覧, name: 任意の表示名)。
         static DataAsset Make(
             std::string typeName,
             std::vector<DataValue> values,
             std::string name = {})
         {
+            // 型・値・表示名を持つ構築結果
             DataAsset asset;
             asset.m_typeName = std::move(typeName);
             asset.m_values = std::move(values);
@@ -31,13 +32,13 @@ namespace LamaPon
     {
         using Json = nlohmann::json;
 
-        // 数値や文字列だけのList要素は、この名前のキー1つを持つ
-        // DataAssetとして保持します。要素がオブジェクトのときは、
-        // そのフィールドがそのまま入ります。
+        // スカラー要素を包むvalueキー
         constexpr const char* ScalarItemKey = "value";
 
+        // 文字列を小文字に変換する(value: 変換する文字列)。
         [[nodiscard]] std::string Lowercase(std::string value)
         {
+            // 各バイトを小文字にする(character: 符号なしのUTF8バイト)。
             std::ranges::transform(
                 value,
                 value.begin(),
@@ -49,13 +50,12 @@ namespace LamaPon
             return value;
         }
 
-        // JSONの1値をDataValueへ写します。objectとarrayは
-        // どちらもListとして持ち、要素をDataAssetで包みます。
+        // 対応するJSON値を写し、オブジェクトは単一要素リストにする(source: 元のJSON値, value: 変換先の値)。
         void ReadValue(
             const Json& source,
             DataValue& value);
 
-        // objectのフィールドをDataAssetの値として読み込みます。
+        // JSONオブジェクトの対応フィールドを追記する(source: 元のオブジェクト, values: 値の追記先)。
         void ReadValues(
             const Json& source,
             std::vector<DataValue>& values)
@@ -65,8 +65,10 @@ namespace LamaPon
                 return;
             }
             values.reserve(source.size());
+            // key: フィールド名、item: 元のJSON値
             for (const auto& [key, item] : source.items())
             {
+                // キーに対応するアセット値
                 DataValue value;
                 value.key = key;
                 ReadValue(item, value);
@@ -77,8 +79,10 @@ namespace LamaPon
             }
         }
 
+        // オブジェクトを展開し、スカラーはvalueキーで包む(source: 元のリスト要素)。
         [[nodiscard]] DataAsset MakeItem(const Json& source)
         {
+            // 要素が保持する値の一覧
             std::vector<DataValue> values;
             if (source.is_object())
             {
@@ -86,6 +90,7 @@ namespace LamaPon
             }
             else
             {
+                // キーに対応するアセット値
                 DataValue value;
                 value.key = ScalarItemKey;
                 ReadValue(source, value);
@@ -99,6 +104,7 @@ namespace LamaPon
                 std::move(values));
         }
 
+        // 対応するJSON値を写し、オブジェクトは単一要素リストにする(source: 元のJSON値, value: 変換先の値)。
         void ReadValue(
             const Json& source,
             DataValue& value)
@@ -126,6 +132,7 @@ namespace LamaPon
             {
                 value.kind = DataValueKind::List;
                 value.items.reserve(source.size());
+                // 処理するリスト要素
                 for (const auto& item : source)
                 {
                     value.items.push_back(MakeItem(item));
@@ -134,21 +141,24 @@ namespace LamaPon
             }
             if (source.is_object())
             {
-                // 単体のobjectも「要素1つのList」として持ちます。
-                // Item(key, 0)で中身を引けます。
+                // オブジェクトは一要素のリストに包み、Item(key, 0)で読む。
                 value.kind = DataValueKind::List;
                 value.items.push_back(MakeItem(source));
                 return;
             }
-            // null等は「無い」と同じ扱いにします。
+
         }
 
+        // 登録種別に従ってJSONへ戻し、リストは配列にする(value: 書き出す値)。
         [[nodiscard]] Json WriteValue(const DataValue& value);
 
+        // キー付きの値一覧をJSONオブジェクトへ戻す(values: 書き出す値の一覧)。
         [[nodiscard]] Json WriteValues(
             const std::vector<DataValue>& values)
         {
+            // 書き出すキー付きJSON
             Json result = Json::object();
+            // キーに対応するアセット値
             for (const auto& value : values)
             {
                 result[value.key] = WriteValue(value);
@@ -156,8 +166,10 @@ namespace LamaPon
             return result;
         }
 
+        // value一項目はスカラーへ、他はオブジェクトへ戻す(item: 書き出すリスト要素)。
         [[nodiscard]] Json WriteItem(const DataAsset& item)
         {
+            // 要素が保持する値の一覧
             const auto& values = item.Values();
             if (values.size() == 1
                 && values.front().key == ScalarItemKey)
@@ -167,6 +179,7 @@ namespace LamaPon
             return WriteValues(values);
         }
 
+        // 登録種別に従ってJSONへ戻し、リストは配列にする(value: 書き出す値)。
         [[nodiscard]] Json WriteValue(const DataValue& value)
         {
             switch (value.kind)
@@ -179,7 +192,9 @@ namespace LamaPon
                 return value.text;
             case DataValueKind::List:
             {
+                // 書き出すリストのJSON配列
                 Json array = Json::array();
+                // 処理するリスト要素
                 for (const auto& item : value.items)
                 {
                     array.push_back(WriteItem(item));
@@ -192,8 +207,7 @@ namespace LamaPon
             }
         }
 
-        // 数値のListから成分を1つ読みます。足りない成分は
-        // 呼び出し側の既定値のままにします。
+        // 対応成分だけ上書きし、欠損・非対応型は既定値を保つ(value: 元の数値リスト, components: 補完値入りの出力配列, count: 出力成分数)。
         void ReadComponents(
             const DataValue* value,
             float* components,
@@ -204,10 +218,12 @@ namespace LamaPon
             {
                 return;
             }
+            // 読み出す成分の番号
             for (std::size_t index = 0;
                 index < count && index < value->items.size();
                 ++index)
             {
+                // 処理するリスト要素
                 const auto& item = value->items[index];
                 if (item.Has(ScalarItemKey))
                 {
@@ -223,11 +239,12 @@ namespace LamaPon
         const std::string_view json,
         std::string name)
     {
+        // 型・値・表示名を持つ構築結果
         DataAsset asset;
         asset.m_name = std::move(name);
 
-        // 壊れたJSONでも例外を投げない形（allow_exceptions=false）で
-        // 読みます。空のDataAssetになるだけで、ゲームは続きます。
+
+        // 読み込み・書き出し用JSON
         const auto document = Json::parse(
             json.begin(),
             json.end(),
@@ -257,6 +274,7 @@ namespace LamaPon
 
     std::string DataAsset::SerializeToJson() const
     {
+        // 読み込み・書き出し用JSON
         Json document;
         document["format"] = "LamaPonDataAsset";
         document["version"] = 1;
@@ -268,6 +286,7 @@ namespace LamaPon
     const DataValue* DataAsset::Find(
         const std::string_view key) const noexcept
     {
+        // キーに対応するアセット値
         for (const auto& value : m_values)
         {
             if (value.key == key)
@@ -288,6 +307,7 @@ namespace LamaPon
         const std::string_view key,
         const bool defaultValue) const noexcept
     {
+        // キーに対応するアセット値
         const auto* value = Find(key);
         if (value == nullptr)
         {
@@ -308,6 +328,7 @@ namespace LamaPon
         const std::string_view key,
         const int defaultValue) const noexcept
     {
+        // キーに対応するアセット値
         const auto* value = Find(key);
         if (value == nullptr)
         {
@@ -328,6 +349,7 @@ namespace LamaPon
         const std::string_view key,
         const float defaultValue) const noexcept
     {
+        // キーに対応するアセット値
         const auto* value = Find(key);
         if (value == nullptr)
         {
@@ -348,6 +370,7 @@ namespace LamaPon
         const std::string_view key,
         std::string defaultValue) const
     {
+        // キーに対応するアセット値
         const auto* value = Find(key);
         if (value == nullptr
             || value->kind != DataValueKind::Text)
@@ -392,6 +415,7 @@ namespace LamaPon
     std::filesystem::path DataAsset::GetAssetPath(
         const std::string_view key) const
     {
+        // アセットパスのUTF8文字列
         const auto text = GetText(key);
         if (text.empty())
         {
@@ -403,6 +427,7 @@ namespace LamaPon
     std::size_t DataAsset::Count(
         const std::string_view key) const noexcept
     {
+        // キーに対応するアセット値
         const auto* value = Find(key);
         return value != nullptr
                 && value->kind == DataValueKind::List
@@ -414,6 +439,7 @@ namespace LamaPon
         const std::string_view key,
         const std::size_t index) const noexcept
     {
+        // キーに対応するアセット値
         const auto* value = Find(key);
         if (value == nullptr
             || value->kind != DataValueKind::List
@@ -466,6 +492,7 @@ namespace LamaPon
 
     const DataAsset& DataAsset::Empty() noexcept
     {
+        // プロセス共有の空アセット
         static const DataAsset empty;
         return empty;
     }

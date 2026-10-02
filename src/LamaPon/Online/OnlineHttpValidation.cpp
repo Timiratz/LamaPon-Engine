@@ -5,6 +5,7 @@
 
 namespace
 {
+    // スキーム直後のホスト部を借用する(value: 検査URL, scheme: 区切りを含むスキーム)。
     std::string_view UrlAuthority(
         const std::string_view value,
         const std::string_view scheme)
@@ -13,7 +14,9 @@ namespace
         {
             return {};
         }
+        // スキーム直後の開始位置
         const auto begin = scheme.size();
+        // ホスト部の終端位置
         const auto end = value.find_first_of("/?#", begin);
         return value.substr(
             begin,
@@ -22,8 +25,10 @@ namespace
                 : end - begin);
     }
 
+    // 空でないASCII数字列かを判定する(value: 検査文字列)。
     bool IsDigits(const std::string_view value)
     {
+        // 数字1文字かを判定(character: 検査するバイト)。
         return !value.empty()
             && std::ranges::all_of(
                 value,
@@ -33,8 +38,10 @@ namespace
                 });
     }
 
+    // 指定の3ホストのHTTPかを判定する(value: 検査URL)。
     bool IsLoopbackBaseUrl(const std::string_view value)
     {
+        // スキーム直後のホスト部
         const auto authority = UrlAuthority(value, "http://");
         if (authority == "127.0.0.1"
             || authority == "localhost"
@@ -42,6 +49,7 @@ namespace
         {
             return true;
         }
+        // 許可するローカルホスト名
         for (const auto host : {
                 std::string_view("127.0.0.1"),
                 std::string_view("localhost"),
@@ -58,8 +66,10 @@ namespace
         return false;
     }
 
+    // 空白・制御文字・DELの有無を調べる(value: 検査文字列)。
     bool ContainsUnsafeUrlCharacter(const std::string_view value)
     {
+        // 空白・制御文字かを判定(character: 検査するバイト)。
         return std::ranges::any_of(
             value,
             [](const unsigned char character)
@@ -79,9 +89,12 @@ namespace LamaPon::Detail
         {
             value.pop_back();
         }
+        // HTTPSスキームか
         const bool secure = value.starts_with("https://");
+        // ローカルHTTPの許可状態
         const bool allowedLoopback = allowInsecureLoopback
             && IsLoopbackBaseUrl(value);
+        // スキーム直後のホスト部
         const auto authority = secure
             ? UrlAuthority(value, "https://")
             : UrlAuthority(value, "http://");
@@ -112,6 +125,7 @@ namespace LamaPon::Detail
         const std::string_view value,
         const std::size_t maxBytes)
     {
+        // visible ASCIIかを判定(character: 検査するバイト)。
         return !value.empty()
             && value.size() <= maxBytes
             && std::ranges::all_of(
@@ -126,6 +140,7 @@ namespace LamaPon::Detail
         const std::string_view value,
         const std::size_t maxBytes)
     {
+        // 識別子用ASCIIかを判定(character: 検査するバイト)。
         return !value.empty()
             && value.size() <= maxBytes
             && std::ranges::all_of(

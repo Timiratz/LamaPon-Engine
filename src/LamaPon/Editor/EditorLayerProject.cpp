@@ -37,6 +37,7 @@ using namespace LamaPon::EditorDetail;
 
 namespace
 {
+    // 初期化時に指定フォルダーを選択します(dialog: フォルダー選択ダイアログ, message: ダイアログの通知種別, userData: 初期パス文字列の借用ポインター)。
     int CALLBACK BrowseForExportCallback(
         const HWND dialog,
         const UINT message,
@@ -54,14 +55,18 @@ namespace
         return 0;
     }
 
+    // 出力先を選び、取消ならnullopt、パス取得失敗は例外を投げます(owner: ダイアログの親ウィンドウ, initialDirectory: 初期選択するフォルダー)。
     std::optional<std::filesystem::path> BrowseForExportDirectory(
         const HWND owner,
         const std::filesystem::path& initialDirectory)
     {
+        // 選択フォルダーの表示名出力
         std::array<wchar_t, MAX_PATH> displayName{};
+        // ダイアログの初期選択パス
         const std::wstring initialPath =
             initialDirectory.wstring();
 
+        // Windowsのフォルダー選択情報
         BROWSEINFOW browse{};
         browse.hwndOwner = owner;
         browse.pszDisplayName = displayName.data();
@@ -73,6 +78,7 @@ namespace
         browse.lParam = reinterpret_cast<LPARAM>(
             initialPath.c_str());
 
+        // 選択された項目の所有PIDL
         const PIDLIST_ABSOLUTE item =
             SHBrowseForFolderW(&browse);
         if (item == nullptr)
@@ -80,7 +86,9 @@ namespace
             return std::nullopt;
         }
 
+        // 選択フォルダーのパス出力領域
         std::array<wchar_t, MAX_PATH> selectedPath{};
+        // 選択項目をパスへ変換できたか
         const bool pathRead =
             SHGetPathFromIDListW(
                 item,
@@ -98,26 +106,29 @@ namespace
 
 namespace
 {
-    // project.json の外部変更検知用の内容ハッシュ（FNV-1a 64bit）。
-    // WebDAV(Z:)ではmtimeがキャッシュで古いままのことがあるため
-    // （ビルド側 fa4bdb4 と同じ轍）、更新時刻ではなく内容で比較する。
-    // ファイルは数KBなので毎スキャン読んでよい
+
+    // 更新時刻に依存せず設定ファイルの内容をハッシュ化します(path: 読込対象の設定パス, readable: 開けたかの出力先)。
     std::uint64_t HashProjectSettingsFile(
         const std::filesystem::path& path,
         bool& readable)
     {
         readable = false;
+        // 外部変更検出用の設定ファイル入力
         std::ifstream stream(path, std::ios::binary);
         if (!stream)
         {
             return 0;
         }
+        // 外部変更検出用の内容ハッシュ
         std::uint64_t hash = 1469598103934665603ull;
+        // 設定ファイルの読込バッファ
         char buffer[4096];
         while (stream.read(buffer, sizeof(buffer))
             || stream.gcount() > 0)
         {
+            // 読み取った設定のバイト数
             const std::streamsize count = stream.gcount();
+            // ハッシュへ加えるバイトの添字
             for (std::streamsize index = 0; index < count; ++index)
             {
                 hash ^= static_cast<unsigned char>(buffer[index]);
@@ -130,26 +141,19 @@ namespace
 }
 
 namespace LamaPon
-{    std::filesystem::path EditorLayer::ProjectSettingsPath() const
+{
+    // プロジェクトの管理ディレクトリ内にある設定JSONの保存パスを返します。
+    std::filesystem::path EditorLayer::ProjectSettingsPath() const
     {
         return m_graphics.Assets().AssetRoot().parent_path()
             / L".lamapon"
             / L"project.json";
     }
 
+    // 編集可能な間に二秒ごとに内容変更を検出し、入力・描画・タグへ反映します。
     void EditorLayer::UpdateExternalProjectSettings()
     {
-        // project.json（入力アクション等）を外部で編集・git pullした
-        // 直後に、プロジェクトを開き直さなくても反映されるようにする。
-        // 走査は2秒に1回・数KBの読み込みとハッシュだけ。エディター
-        // 専用コードで、書き出したゲームには載らない。
-        // Play中は走らせない: SetActionsが入力の現在値/前回値を
-        // クリアするため押しっぱなしキーのWasPressedが偽発火するのと、
-        // WebDAV越しの同期読みがフレームヒッチ源になるため
-        // （シーン監視と同じ方針）。ダイアログ表示中も走らせない:
-        // 画面上の下書きと競合し、保存でpull内容が無警告で巻き戻る。
-        // どちらも基準ハッシュを動かさないので、Play停止・ダイアログを
-        // 閉じた後の次スキャンで確実に反映される
+        // 入力状態と編集中の下書きを守るため、ビルド・再生・設定ダイアログ中は基準ハッシュを変えず監視を止めます。
         if (m_gameModuleBuildProcess != nullptr
             || m_playing
             || ImGui::IsPopupOpen(
@@ -157,6 +161,7 @@ namespace LamaPon
         {
             return;
         }
+        // 今回の監視時刻・秒
         const double now = ImGui::GetTime();
         if (now - m_lastProjectSettingsScanAt < 2.0)
         {
@@ -164,13 +169,16 @@ namespace LamaPon
         }
         m_lastProjectSettingsScanAt = now;
 
+        // プロジェクト設定JSONのパス
         const auto path = ProjectSettingsPath();
+        // 設定ファイルを開けたか
         bool readable = false;
+        // 外部変更検出用の内容ハッシュ
         const std::uint64_t hash =
             HashProjectSettingsFile(path, readable);
         if (!readable)
         {
-            // 置き換え中などの一時状態。次のスキャンで再試行する
+            // 読めない間は基準ハッシュを変えず、次の走査で再試行します。
             return;
         }
         if (!m_projectSettingsHashInitialized)
@@ -183,17 +191,13 @@ namespace LamaPon
         {
             return;
         }
-        // 半書き込みでパースに失敗しても、内容がさらに変われば
-        // ハッシュが動いて再試行される
+        // 読込に失敗しても同じ内容を再試行せず、次の内容変更を待ちます。
         m_projectSettingsSeenHash = hash;
 
         try
         {
             m_projectSettings = LamaPon::LoadProjectSettings(path);
-            // 適用範囲はプロジェクト設定ダイアログの保存時と同じ
-            // （入力・グラフィックス・タグ）。物理は適用しない:
-            // fixedTimeStep等の実行中差し替えは再現性を壊すため、
-            // プロジェクトを開いたときだけにする
+            // 外部変更では入力・描画・タグを反映し、物理刻みは起動時の状態を保ちます。
             m_graphics.Input().SetActions(
                 m_projectSettings.inputActions);
             m_graphics.SetGraphicsSettings(
@@ -203,6 +207,7 @@ namespace LamaPon
             SetStatus(
                 "プロジェクト設定の外部変更を再読み込みしました");
         }
+        // 外部変更の適用失敗を通知します(error: 適用の失敗理由)。
         catch (const std::exception& error)
         {
             SetStatus(
@@ -212,8 +217,10 @@ namespace LamaPon
         }
     }
 
+    // プロジェクト設定を物理も含めて反映し、外部変更検出の基準を更新します。
     bool EditorLayer::LoadProjectConfiguration()
     {
+        // プロジェクト設定JSONのパス
         const auto path = ProjectSettingsPath();
         if (!std::filesystem::exists(path))
         {
@@ -231,6 +238,7 @@ namespace LamaPon
             m_projectSettings.tags);
         // 外部変更検知の基準ハッシュを読み込んだ内容に合わせる
         {
+            // 設定ファイルを開けたか
             bool readable = false;
             m_projectSettingsSeenHash =
                 HashProjectSettingsFile(path, readable);
@@ -239,6 +247,7 @@ namespace LamaPon
         return true;
     }
 
+    // 設定を保存し、自身の保存を外部変更として扱わないよう基準を更新します。
     void EditorLayer::SaveProjectConfiguration() const
     {
         LamaPon::SaveProjectSettings(
@@ -246,6 +255,7 @@ namespace LamaPon
             m_projectSettings,
             ProjectSettingsFileType::Project);
         // 自分の保存を外部変更として誤検知しないよう基準を更新する
+        // 設定ファイルを開けたか
         bool readable = false;
         m_projectSettingsSeenHash = HashProjectSettingsFile(
             ProjectSettingsPath(),
@@ -253,9 +263,11 @@ namespace LamaPon
         m_projectSettingsHashInitialized = readable;
     }
 
+    // タグを正規化して保存し、重複なら成功、保存失敗なら登録を取り消します(tag: 登録する64byte以下のタグ名)。
     bool EditorLayer::AddProjectTag(std::string tag)
     {
         // 前後の空白を除去してから登録します。
+        // タグ名の先頭の非空白位置
         const auto first =
             tag.find_first_not_of(" \t\r\n");
         if (first == std::string::npos)
@@ -263,6 +275,7 @@ namespace LamaPon
             SetStatus("タグ名が空です", true);
             return false;
         }
+        // タグ名の末尾の非空白位置
         const auto last =
             tag.find_last_not_of(" \t\r\n");
         tag = tag.substr(first, last - first + 1);
@@ -286,6 +299,7 @@ namespace LamaPon
         {
             SaveProjectConfiguration();
         }
+        // タグ保存の失敗時に登録を取り消します(exception: 保存の失敗理由)。
         catch (const std::exception& exception)
         {
             m_projectSettings.tags.pop_back();
@@ -301,6 +315,7 @@ namespace LamaPon
         return true;
     }
 
+    // 保存済み設定を編集用のdraftへ複製して設定画面を開きます。
     void EditorLayer::OpenProjectSettingsDialog()
     {
         strncpy_s(
@@ -308,6 +323,7 @@ namespace LamaPon
             m_projectGameNameBuffer.size(),
             m_projectSettings.gameName.c_str(),
             _TRUNCATE);
+        // 起動シーンの相対パス
         const std::string startupScene =
             PathToUtf8(m_projectSettings.startupScene);
         strncpy_s(
@@ -315,6 +331,7 @@ namespace LamaPon
             m_projectStartupSceneBuffer.size(),
             startupScene.c_str(),
             _TRUNCATE);
+        // アイコンの相対パス
         const std::string gameIcon =
             PathToUtf8(m_projectSettings.gameIcon);
         strncpy_s(
@@ -384,23 +401,23 @@ namespace LamaPon
             m_projectSettings.online.discordPresence
                 .defaultLargeImageText.c_str(),
             _TRUNCATE);
-        // ダイアログを開くたびに検出し直すことで、ダイアログを
-        // 開いたまま新しくエディターをインストールした場合にも
-        // 対応します（頻繁に呼ばれる処理ではないため許容範囲）。
+        // 開くたびに外部エディター候補を再検出します。
         m_projectScriptEditorOptions = DetectScriptEditors();
         m_projectSettingsError.clear();
         m_projectSettingsDialogRequested = true;
     }
 
-    // プロジェクト設定「スクリプト」カテゴリーで選択した
-    // .cppを開く外部エディターを探します。
+    // 実行ファイルの選択結果を外部エディターのdraftへ設定し、キャンセル時は維持します。
     void EditorLayer::BrowseForScriptEditor()
     {
+        // 選択した実行ファイルのパス
         std::array<wchar_t, 1024> selectedFile{};
+        // 実行ファイルの選択フィルター
         constexpr wchar_t filter[] =
             L"実行可能ファイル (*.exe)\0*.exe\0"
             L"すべてのファイル (*.*)\0*.*\0\0";
 
+        // 実行ファイルの選択設定
         OPENFILENAMEW dialog{};
         dialog.lStructSize = sizeof(dialog);
         dialog.hwndOwner = m_window;
@@ -423,6 +440,7 @@ namespace LamaPon
         }
     }
 
+    // 外部エディター・保存時ビルド・出力設定のdraftを編集します。
     void EditorLayer::DrawProjectSettingsScriptingSection()
     {
         ImGui::TextUnformatted("スクリプト");
@@ -432,11 +450,14 @@ namespace LamaPon
             "エディターを選べます。");
         ImGui::Spacing();
 
+        // 既定の関連付けを使うか
         const bool useSystemDefault =
             m_projectScriptEditorDraft.empty();
+        // 選択中のエディター名
         std::string preview = useSystemDefault
             ? "システムの既定（ファイルの関連付け）"
             : PathToUtf8(m_projectScriptEditorDraft);
+        // 外部エディターの候補
         for (const auto& option : m_projectScriptEditorOptions)
         {
             if (option.executablePath
@@ -461,6 +482,7 @@ namespace LamaPon
             for (const auto& option
                 : m_projectScriptEditorOptions)
             {
+                // 選択中の候補か
                 const bool selected =
                     option.executablePath
                     == m_projectScriptEditorDraft;
@@ -539,6 +561,7 @@ namespace LamaPon
             "保持されます。");
     }
 
+    // オンライン設定の編集を通信設定セクションへ委譲します。
     void EditorLayer::DrawProjectSettingsOnlineSection()
     {
         ImGui::TextUnformatted("オンライン");
@@ -546,6 +569,7 @@ namespace LamaPon
         DrawProjectSettingsNetworkSection();
     }
 
+    // アカウント・クラウド・Presenceの設定draftを編集します。
     void EditorLayer::DrawProjectSettingsServicesSection()
     {
         ImGui::TextUnformatted("サービス連携");
@@ -612,8 +636,7 @@ namespace LamaPon
             "client_secretはバックエンドの環境変数またはシークレット管理へ保存します。ゲームに入れると、配布ファイルから誰でも取り出せます。");
     }
 
-    // Rich PresenceはDiscordアカウント連携と別機能です。片方だけを
-    // 有効にでき、ログインもクラウドセーブも必要ありません。
+    // ログインやクラウド保存と独立したDiscord Presenceのdraftを編集します。
     void EditorLayer::DrawProjectSettingsDiscordPresenceSection()
     {
         ImGui::SeparatorText("Discord Rich Presence");
@@ -650,6 +673,7 @@ namespace LamaPon
         ImGui::TextDisabled(
             "画像へカーソルを合わせたときの説明です。例: My Awesome Game");
 
+        // アプリIDが未入力か
         const bool applicationIdMissing =
             m_projectDiscordPresenceApplicationIdBuffer[0]
                 == '\0';
@@ -667,6 +691,7 @@ namespace LamaPon
         ImGui::TextDisabled("テスト表示と接続状態は「ウィンドウ > サービス連携の診断」で確認できます。");
     }
 
+    // draftの保存成功後に対象別の出力ダイアログを予約します。
     void EditorLayer::DrawProjectSettingsBuildSection()
     {
         ImGui::TextUnformatted("ビルドプロファイル");
@@ -696,11 +721,14 @@ namespace LamaPon
                 : "同梱");
         ImGui::Spacing();
 
+        // プロファイル間の余白
         const float spacing = ImGui::GetStyle().ItemSpacing.x;
+        // プロファイルの表示幅
         const float profileWidth = std::max(
             250.0f,
             (ImGui::GetContentRegionAvail().x - spacing)
                 * 0.5f);
+        // シーンの保存先があるか
         const bool hasSavedScene = !m_scenePath.empty();
 
         ImGui::BeginChild(
@@ -765,7 +793,7 @@ namespace LamaPon
         }
     }
 
-    // プロジェクト設定「ゲーム」カテゴリー（名前・解像度・アイコン・起動シーン）。
+    // ゲーム名・起動シーン・ウィンドウ・アイコンのdraftを編集します。
     void EditorLayer::DrawProjectSettingsGameSection()
     {
         ImGui::TextUnformatted("ゲーム");
@@ -807,9 +835,11 @@ namespace LamaPon
         ImGui::SameLine();
         if (ImGui::Button("現在のシーン"))
         {
+            // 現在のシーンの相対パス
             const auto relativeScene =
                 m_scenePath.lexically_relative(
                     m_graphics.Assets().AssetRoot());
+            // 起動シーン欄へ設定するパス
             const std::string scenePath =
                 PathToUtf8(relativeScene);
             strncpy_s(
@@ -819,6 +849,7 @@ namespace LamaPon
                 _TRUNCATE);
         }
 
+        // 選択中の起動シーン名
         const std::string preview =
             m_projectStartupSceneBuffer.data();
         ImGui::SetNextItemWidth(360.0f);
@@ -828,6 +859,7 @@ namespace LamaPon
                 ? "選択してください"
                 : preview.c_str()))
         {
+            // 起動シーンの候補アセット
             for (const auto& asset : m_assetFiles)
             {
                 if (!IsSceneAsset(asset))
@@ -835,8 +867,10 @@ namespace LamaPon
                     continue;
                 }
 
+                // シーン候補の相対パス
                 const std::string assetPath =
                     PathToUtf8(asset);
+                // 選択中の起動シーンか
                 const bool selected =
                     assetPath == preview;
                 if (ImGui::Selectable(
@@ -859,7 +893,7 @@ namespace LamaPon
 
     }
 
-    // 非同期のシーン切り替えで重ねる標準の読み込み画面です。
+    // シーン遷移中の読み込み画面のdraftを編集します。
     void EditorLayer::DrawProjectSettingsLoadingScreenSection()
     {
         ImGui::SeparatorText("読み込み画面");
@@ -873,15 +907,18 @@ namespace LamaPon
             "パッケージの演出を導入します。");
     }
 
-    // プロジェクト設定「グラフィック」カテゴリー。
+    // 描画設定のdraftを編集し、個別の品質変更をCustomとして扱います。
     void EditorLayer::DrawProjectSettingsGraphicsSection()
     {
         ImGui::SeparatorText("描画API");
         struct RenderingApiOption final
         {
+            // 描画APIの値
             RenderingApi api;
+            // FPS上限の表示名
             const char* label;
         };
+        // 描画APIの選択肢
         static constexpr std::array<
             RenderingApiOption,
             3> renderingApiOptions{ {
@@ -890,9 +927,12 @@ namespace LamaPon
             { RenderingApi::DirectX12Experimental,
                 "DirectX 12 Experimental" }
         } };
+        // 編集前の描画API
         const auto currentRenderingApi =
             m_projectGraphicsDraft.renderingApi;
+        // 選択中の描画API名
         const char* currentRenderingApiLabel = "DirectX 11";
+        // 描画設定の候補
         for (const auto& option : renderingApiOptions)
         {
             if (option.api == currentRenderingApi)
@@ -904,8 +944,10 @@ namespace LamaPon
                 "Rendering API",
                 currentRenderingApiLabel))
         {
+            // 描画設定の候補
             for (const auto& option : renderingApiOptions)
             {
+                // 選択中の候補か
                 const bool selected =
                     option.api == currentRenderingApi;
                 if (ImGui::Selectable(
@@ -923,6 +965,7 @@ namespace LamaPon
             ImGui::EndCombo();
         }
 
+        // 描画APIの注意を表示します(message: 注意文)。
         const auto drawRenderingApiWarning =
             [](const char* message)
         {
@@ -958,6 +1001,7 @@ namespace LamaPon
         }
 
         ImGui::SeparatorText("グラフィック品質");
+        // 選択できる品質プリセット
         constexpr std::array qualityPresets{
             GraphicsQualityPreset::Low,
             GraphicsQualityPreset::Medium,
@@ -965,6 +1009,7 @@ namespace LamaPon
             GraphicsQualityPreset::Ultra,
             GraphicsQualityPreset::Custom
         };
+        // 選択中の品質プリセット名
         const auto qualityName =
             GraphicsQualityPresetName(
                 m_projectGraphicsDraft.preset);
@@ -972,10 +1017,13 @@ namespace LamaPon
             "品質プリセット",
             qualityName.data()))
         {
+            // 品質プリセットの候補
             for (const auto preset : qualityPresets)
             {
+                // 品質プリセットの表示名
                 const auto name =
                     GraphicsQualityPresetName(preset);
+                // 選択中の候補か
                 const bool selected =
                     preset
                     == m_projectGraphicsDraft.preset;
@@ -991,17 +1039,19 @@ namespace LamaPon
                     }
                     else
                     {
+                        // プリセット適用前のFPS上限
                         const auto targetFrameRate =
                             m_projectGraphicsDraft
                                 .targetFrameRate;
-                        // 描画方式と描画APIはプリセットの
-                        // 範囲外の選択なので引き継ぎます。
+                        // プリセット適用前の描画方式
                         const auto renderingPath =
                             m_projectGraphicsDraft
                                 .renderingPath;
+                        // プリセット適用前の描画API
                         const auto renderingApi =
                             m_projectGraphicsDraft
                                 .renderingApi;
+                        // FPS上限・描画方式・描画APIはプリセット適用後も維持します。
                         m_projectGraphicsDraft =
                             GraphicsSettingsForPreset(
                                 preset);
@@ -1024,15 +1074,17 @@ namespace LamaPon
             ImGui::EndCombo();
         }
 
-        // 描画方式はプリセットの外に置きます。品質の上げ下げでは
-        // なく「ライトの計算のしかた」を選ぶ項目で、切り替えると
-        // 置けるライトの数が変わるためです。
+        // 描画方式は品質プリセットから独立して選択します。
         struct RenderingPathOption final
         {
+            // 描画方式の値
             RenderingPath path;
+            // FPS上限の表示名
             const char* label;
+            // 描画方式の説明
             const char* help;
         };
+        // 描画方式の選択肢
         static constexpr std::array<
             RenderingPathOption,
             2> renderingPathOptions{ {
@@ -1048,10 +1100,13 @@ namespace LamaPon
                 "無くなるので、ライトが少ないシーンや非力な環境では"
                 "こちらが軽くなります" }
         } };
+        // 編集前の描画方式
         const auto currentPath =
             m_projectGraphicsDraft.renderingPath;
+        // 選択中の描画方式名
         const char* currentPathLabel =
             renderingPathOptions.front().label;
+        // 描画設定の候補
         for (const auto& option : renderingPathOptions)
         {
             if (option.path == currentPath)
@@ -1063,9 +1118,11 @@ namespace LamaPon
                 "描画方式",
                 currentPathLabel))
         {
+            // 描画設定の候補
             for (const auto& option :
                 renderingPathOptions)
             {
+                // 選択中の候補か
                 const bool selected =
                     option.path == currentPath;
                 if (ImGui::Selectable(
@@ -1094,6 +1151,7 @@ namespace LamaPon
                 "1回の描画で使える灯数になります。");
         }
 
+        // 個別変更をCustomの品質設定として記録します。
         const auto markCustom = [this]
         {
             m_projectGraphicsDraft.preset =
@@ -1141,6 +1199,7 @@ namespace LamaPon
         }
         ImGui::BeginDisabled(
             !m_projectGraphicsDraft.shadowsEnabled);
+        // シャドウ解像度の編集値
         int shadowResolution =
             static_cast<int>(
                 m_projectGraphicsDraft.shadowResolution);
@@ -1155,6 +1214,7 @@ namespace LamaPon
                     shadowResolution);
             markCustom();
         }
+        // カスケード上限の編集値
         int cascadeLimit =
             static_cast<int>(
                 m_projectGraphicsDraft.shadowCascadeLimit);
@@ -1190,6 +1250,7 @@ namespace LamaPon
         {
             markCustom();
         }
+        // 被写界深度のサンプル数
         int depthOfFieldSamples =
             static_cast<int>(
                 m_projectGraphicsDraft
@@ -1218,6 +1279,7 @@ namespace LamaPon
         {
             markCustom();
         }
+        // モーションブラーのサンプル数
         int motionBlurSamples =
             static_cast<int>(
                 m_projectGraphicsDraft
@@ -1284,6 +1346,7 @@ namespace LamaPon
                 "VRAM使用量を減らします。\n"
                 "次に読み込まれるテクスチャから反映されます。");
         }
+        // FPS上限の選択肢
         constexpr std::array<std::uint32_t, 7>
             frameRateOptions{
                 0,
@@ -1294,6 +1357,7 @@ namespace LamaPon
                 240,
                 360
             };
+        // 選択中のFPS上限の表示
         const std::string frameRatePreview =
             m_projectGraphicsDraft.targetFrameRate == 0
             ? "無制限"
@@ -1305,14 +1369,17 @@ namespace LamaPon
                 "FPS上限",
                 frameRatePreview.c_str()))
         {
+            // FPS上限の候補
             for (const auto frameRate :
                 frameRateOptions)
             {
+                // FPS上限の表示名
                 const std::string label =
                     frameRate == 0
                     ? "無制限"
                     : std::to_string(frameRate)
                         + " FPS";
+                // 選択中の候補か
                 const bool selected =
                     m_projectGraphicsDraft
                         .targetFrameRate
@@ -1332,11 +1399,11 @@ namespace LamaPon
             }
             ImGui::EndCombo();
         }
-        // VSync有効時はモニターのリフレッシュレートが上限になるため、
-        // フレームレート設定の直後に解除方法を案内します。
+
         ImGui::TextDisabled(
             "リフレッシュレートを超えるにはVSyncを切ってください。"
             "有効なままだと、上限を上げてもモニターの値で頭打ちです。");
+        // ポイントライト上限の編集値
         int pointLightLimit =
             static_cast<int>(
                 m_projectGraphicsDraft.pointLightLimit);
@@ -1351,6 +1418,7 @@ namespace LamaPon
                     pointLightLimit);
             markCustom();
         }
+        // スポットライト上限の編集値
         int spotLightLimit =
             static_cast<int>(
                 m_projectGraphicsDraft.spotLightLimit);
@@ -1370,7 +1438,7 @@ namespace LamaPon
 
     }
 
-    // プロジェクト設定「ビューポート設定」カテゴリー。
+    // ビューポート操作と感度のdraftを編集します。
     void EditorLayer::DrawProjectSettingsViewportSection()
     {
         ImGui::SeparatorText("ビューポート操作");
@@ -1378,6 +1446,7 @@ namespace LamaPon
             "Scene Viewのカメラ操作をプロジェクト単位で設定します。"
             "フライ操作は従来の操作、オービット操作は注視点を中心にした操作です。");
 
+        // 選択中の操作方式名
         const char* presetName =
             m_projectViewportDraft.navigationPreset
                 == ViewportNavigationPreset::Orbit
@@ -1385,13 +1454,16 @@ namespace LamaPon
             : "フライ操作";
         if (ImGui::BeginCombo("操作プリセット", presetName))
         {
+            // ビューポート操作の選択肢
             constexpr std::array<std::pair<
                 const char*, ViewportNavigationPreset>, 2> presets{
                 std::pair{ "フライ操作", ViewportNavigationPreset::Fly },
                 std::pair{ "オービット操作", ViewportNavigationPreset::Orbit }
             };
+            // name: 操作名、preset: 操作方式
             for (const auto& [name, preset] : presets)
             {
+                // 選択中の操作方式か
                 const bool selected =
                     m_projectViewportDraft.navigationPreset == preset;
                 if (ImGui::Selectable(name, selected))
@@ -1449,12 +1521,14 @@ namespace LamaPon
         }
     }
 
+    // 物理設定と衝突レイヤー・対称マトリクスのdraftを編集します。
     void EditorLayer::DrawProjectSettingsPhysicsSection()
     {
         ImGui::SeparatorText("重力");
         ImGui::TextDisabled(
             "Rigidbodyの「重力を使う」がオンのものへ掛かります"
             "（m/s²）。");
+        // 重力の編集値
         float gravity[3]{
             m_projectPhysicsDraft.gravity.x,
             m_projectPhysicsDraft.gravity.y,
@@ -1474,6 +1548,7 @@ namespace LamaPon
         }
 
         ImGui::SeparatorText("進め方");
+        // 固定更新間隔の編集値
         float timeStep = m_projectPhysicsDraft.fixedTimeStep;
         if (ImGui::DragFloat(
             "固定タイムステップ（秒）##Physics",
@@ -1486,7 +1561,7 @@ namespace LamaPon
             m_projectPhysicsDraft.fixedTimeStep =
                 std::clamp(timeStep, 1.0f / 1000.0f, 0.1f);
         }
-        // 秒だけだと直感が働かないので、Hzを併記します。
+
         ImGui::TextDisabled(
             "= %.1f Hz。小さいほど正確ですが重くなります。"
             "FixedUpdateの間隔でもあります。",
@@ -1494,6 +1569,7 @@ namespace LamaPon
                 ? 1.0f / m_projectPhysicsDraft.fixedTimeStep
                 : 0.0f);
 
+        // 追従更新回数の編集値
         int catchUp = static_cast<int>(
             m_projectPhysicsDraft.maximumCatchUpSteps);
         if (ImGui::SliderInt(
@@ -1510,6 +1586,7 @@ namespace LamaPon
             "増やしすぎると処理負荷が増え、遅延がさらに悪化します。");
 
         ImGui::SeparatorText("当たり判定の解決");
+        // 衝突解決の反復回数
         int iterations = static_cast<int>(
             m_projectPhysicsDraft.solverIterations);
         if (ImGui::SliderInt(
@@ -1538,8 +1615,7 @@ namespace LamaPon
             0.01f,
             100000.0f,
             "%.1f");
-        // 「一番薄い当たり判定 ÷ 刻み幅」が境目なので、
-        // 今の設定で1歩あたり何メートル進むかを併記します。
+
         ImGui::TextDisabled(
             "今の設定では1歩あたり %.2f m 進みます。"
             "これより薄い当たり判定はすり抜けます。",
@@ -1588,12 +1664,14 @@ namespace LamaPon
             "空欄は未使用の意味で、下のマトリクス表に出ません。"
             "名前を変えても既存シーンの挙動は変わりません"
             "（判定は番号で行うため）。");
+        // 衝突レイヤーの番号
         for (std::size_t layerIndex = 0;
             layerIndex < CollisionLayerCount;
             ++layerIndex)
         {
             ImGui::PushID(
                 static_cast<int>(layerIndex) + 91000);
+            // 衝突レイヤー名の編集欄
             std::array<char, 64> nameBuffer{};
             strncpy_s(
                 nameBuffer.data(),
@@ -1601,6 +1679,7 @@ namespace LamaPon
                 m_projectPhysicsDraft
                     .layerNames[layerIndex].c_str(),
                 _TRUNCATE);
+            // 衝突レイヤー番号の表示
             const std::string label =
                 std::to_string(layerIndex);
             ImGui::SetNextItemWidth(240.0f);
@@ -1623,9 +1702,9 @@ namespace LamaPon
             "RaycastやOverlapなどの問い合わせには掛かりません"
             "（問い合わせは呼び出し側のマスクで絞ります）。");
         {
-            // 表に出すのは名前が付いたレイヤーだけです（0は常に出す）。
-            // 32×32を全部出すと画面が升目で埋まるため。
+            // レイヤー0と名前のある番号
             std::vector<std::size_t> usedLayers;
+            // 衝突レイヤーの番号
             for (std::size_t layerIndex = 0;
                 layerIndex < CollisionLayerCount;
                 ++layerIndex)
@@ -1637,10 +1716,8 @@ namespace LamaPon
                     usedLayers.push_back(layerIndex);
                 }
             }
-            // ScrollX付きのテーブルは子ウィンドウになるため、
-            // 高さを明示しないと「残りの高さ」に合わせられます。
-            // スクロール末尾でも高さ0にならないよう、行数から高さを
-            // 決めます。
+            // 表の高さを行数から求め、末尾で高さが0になるのを防ぎます。
+            // 衝突表の表示高さ
             const float matrixHeight =
                 ImGui::GetTextLineHeightWithSpacing()
                 * (static_cast<float>(usedLayers.size())
@@ -1654,16 +1731,19 @@ namespace LamaPon
                 ImVec2{ 0.0f, matrixHeight }))
             {
                 ImGui::TableSetupColumn("");
+                // 衝突相手のレイヤー番号
                 for (const auto column : usedLayers)
                 {
                     ImGui::TableSetupColumn(
                         std::to_string(column).c_str());
                 }
                 ImGui::TableHeadersRow();
+                // 衝突元のレイヤー番号
                 for (const auto row : usedLayers)
                 {
                     ImGui::TableNextRow();
                     ImGui::TableSetColumnIndex(0);
+                    // 衝突元レイヤーの名前
                     const auto& rowName =
                         m_projectPhysicsDraft
                             .layerNames[row];
@@ -1673,12 +1753,13 @@ namespace LamaPon
                         rowName.empty()
                             ? "(無名)"
                             : rowName.c_str());
+                    // 衝突表の表示列番号
                     int cellColumn = 0;
+                    // 衝突相手のレイヤー番号
                     for (const auto column : usedLayers)
                     {
                         ++cellColumn;
-                        // 対称なので上三角だけ出します
-                        // 対称行列なので、上三角だけ表示します。
+                        // 対称行列の下三角は省略します。
                         if (column < row)
                         {
                             continue;
@@ -1689,6 +1770,7 @@ namespace LamaPon
                             static_cast<int>(
                                 row * 32 + column)
                             + 92000);
+                        // レイヤー間で衝突させるか
                         bool collide =
                             (m_projectPhysicsDraft
                                 .collisionMatrix[row]
@@ -1733,13 +1815,16 @@ namespace LamaPon
             "エンジン標準の物理設定に戻します。");
     }
 
+    // タグ候補のdraftを編集し、列挙後に削除を適用します。
     void EditorLayer::DrawProjectSettingsTagsSection()
     {
         ImGui::SeparatorText("タグ");
         ImGui::TextDisabled(
             "GameObjectのタグ候補です。InspectorのTag欄はこの一覧から選びます。");
         {
+            // 列挙後に削除するタグ番号
             std::optional<std::size_t> tagToDelete;
+            // 表示中のタグ番号
             for (std::size_t tagIndex = 0;
                 tagIndex < m_projectTagsDraft.size();
                 ++tagIndex)
@@ -1773,8 +1858,10 @@ namespace LamaPon
             if (ImGui::Button("タグを追加")
                 && m_projectNewTagBuffer[0] != '\0')
             {
+                // 追加するタグ名
                 const std::string newTag =
                     m_projectNewTagBuffer.data();
+                // 同名のタグが既にあるか
                 const bool duplicate =
                     std::ranges::find(
                         m_projectTagsDraft,
@@ -1790,27 +1877,31 @@ namespace LamaPon
 
     }
 
-    // プロジェクト設定「入力」カテゴリー。
+    // 入力アクションのdraftを編集し、列挙後に削除を適用します。
     void EditorLayer::DrawProjectSettingsInputSection()
     {
         ImGui::SeparatorText("入力アクション");
         ImGui::TextDisabled(
             "複数の入力値を合成し、Action値を -1～1 で取得します。");
 
+        // 列挙後に削除する入力番号
         std::optional<std::size_t> actionToDelete;
         ImGui::BeginChild(
             "InputActionList",
             ImVec2{ -1.0f, 270.0f },
             true);
+        // 編集中の入力番号
         for (std::size_t actionIndex = 0;
             actionIndex < m_projectInputActionsDraft.size();
             ++actionIndex)
         {
+            // 編集中の入力アクション
             auto& action =
                 m_projectInputActionsDraft[actionIndex];
             ImGui::PushID(
                 static_cast<int>(actionIndex));
 
+            // 入力アクション名の編集欄
             std::array<char, 96> actionName{};
             strncpy_s(
                 actionName.data(),
@@ -1834,15 +1925,19 @@ namespace LamaPon
             }
             ImGui::EndDisabled();
 
+            // 列挙後に削除する割当番号
             std::optional<std::size_t> bindingToDelete;
+            // 編集中の入力割当番号
             for (std::size_t bindingIndex = 0;
                 bindingIndex < action.bindings.size();
                 ++bindingIndex)
             {
+                // 編集中の入力割当
                 auto& binding =
                     action.bindings[bindingIndex];
                 ImGui::PushID(
                     static_cast<int>(bindingIndex));
+                // 割当済み入力の表示名
                 const auto controlName =
                     InputControlDisplayName(
                         binding.control);
@@ -1851,11 +1946,14 @@ namespace LamaPon
                     "入力",
                     controlName.data()))
                 {
+                    // 入力デバイス値の候補
                     for (const auto control :
                         AllInputControls())
                     {
+                        // 選択中の入力値か
                         const bool selected =
                             control == binding.control;
+                        // 入力候補の表示名
                         const auto displayName =
                             InputControlDisplayName(
                                 control);
@@ -1926,11 +2024,15 @@ namespace LamaPon
             m_projectInputActionsDraft.size() >= 64);
         if (ImGui::Button("Actionを追加"))
         {
+            // 新規アクションの名前
             std::string name = "NewAction";
+            // 重複を避ける名前の連番
             std::size_t suffix = 2;
+            // 入力名の重複を確認します(candidate: 名前候補)。
             const auto nameExists =
                 [this](const std::string_view candidate)
                 {
+                    // 候補と同名かを調べます(action: 登録済み入力)。
                     return std::ranges::any_of(
                         m_projectInputActionsDraft,
                         [candidate](
@@ -1965,10 +2067,12 @@ namespace LamaPon
 
     }
 
+    // draftを検証して保存・反映し、例外時はエラーを表示してfalseを返します。
     bool EditorLayer::SaveProjectSettingsDraft()
     {
         try
         {
+            // 検証・保存するプロジェクト設定
             ProjectSettings settings;
             settings.gameName =
                 m_projectGameNameBuffer.data();
@@ -2027,6 +2131,7 @@ namespace LamaPon
                 m_projectDiscordPresenceImageTextBuffer.data();
             ValidateProjectSettings(settings);
 
+            // 検証する起動シーンのパス
             const auto startupScene =
                 m_graphics.Assets().AssetRoot()
                 / settings.startupScene;
@@ -2055,15 +2160,18 @@ namespace LamaPon
                     + PathToUtf8(settings.scriptEditorPath));
             }
 
+            // メモリを先に更新するため、保存失敗時にも旧設定へは戻りません。
             m_projectSettings = std::move(settings);
+            // 編集中の通信セッション
             if (auto* network = ActiveNetworkSession(); network != nullptr && !m_playing)
             {
-                // 再生中のSceneが参照する通信設定アセットを、保存操作で上書きしません。
+
                 static_cast<void>(network->Configure(m_projectSettings.network));
             }
             SaveProjectConfiguration();
             m_graphics.Input().SetActions(
                 m_projectSettings.inputActions);
+            // 保存時の即時反映は入力・描画・タグで、物理設定はここでは再適用しません。
             m_graphics.SetGraphicsSettings(
                 m_projectSettings.graphics);
             m_scene.SetRegisteredTags(
@@ -2074,6 +2182,7 @@ namespace LamaPon
             m_projectSettingsError.clear();
             return true;
         }
+        // 処理失敗時の例外
         catch (const std::exception& exception)
         {
             m_projectSettingsError = exception.what();
@@ -2085,10 +2194,13 @@ namespace LamaPon
         }
     }
 
+    // カテゴリー別にdraftを編集し、保存成功またはキャンセルで設定画面を閉じます。
     void EditorLayer::DrawProjectSettingsDialog()
     {
+        // プロジェクト設定のPopup名
         constexpr const char* popupName =
             "プロジェクト設定とビルド##ProjectSettings";
+        // 内容を先頭へスクロールするか
         bool resetContentScroll = false;
         if (m_projectSettingsDialogRequested)
         {
@@ -2108,7 +2220,8 @@ namespace LamaPon
             return;
         }
 
-        // 左のカテゴリー一覧と右の内容ペインへ分割します。
+
+        // 設定カテゴリーの表示名
         constexpr std::array<const char*, 10> categories{
             "ゲーム",
             "グラフィック",
@@ -2125,6 +2238,7 @@ namespace LamaPon
             "ProjectSettingsCategories",
             ImVec2{ 175.0f, -96.0f },
             true);
+        // 設定カテゴリーの番号
         for (std::size_t index = 0;
             index < categories.size();
             ++index)
@@ -2150,13 +2264,13 @@ namespace LamaPon
         {
             ImGui::SetScrollY(0.0f);
         }
-        // スクリーンショットモードの「:bottom」指定。設定の下の方
-        // （衝突マトリクス等）を撮るため、末尾へスクロールし続けます。
+        // 末尾撮影の指定時は毎フレーム最下部へスクロールします。
         if (m_screenshotScrollToBottom
             && !m_screenshotRequest.imagePath.empty())
         {
             ImGui::SetScrollY(ImGui::GetScrollMaxY());
         }
+        // 選択中の設定カテゴリーを描画します。
         switch (m_projectSettingsCategory)
         {
         case 1:
@@ -2220,6 +2334,7 @@ namespace LamaPon
         ImGui::EndPopup();
     }
 
+    // プロジェクトの親フォルダーを初期位置として出力画面を開きます。
     void EditorLayer::OpenGameExportDialog()
     {
         if (!m_gameExportDialog)
@@ -2227,12 +2342,14 @@ namespace LamaPon
         m_gameExportDialog->Open(m_graphics.Assets().AssetRoot().parent_path());
     }
 
+    // 設定画面が閉じた後に出力画面を開く対象を予約します(target: 出力対象)。
     void EditorLayer::RequestGameExportDialog(
         const GameExportTarget target)
     {
         m_requestedGameExportTarget = target;
     }
 
+    // 設定画面の終了後に予約を回収し、出力画面を描画します。
     void EditorLayer::DrawGameExportDialog()
     {
         if (m_requestedGameExportTarget.has_value()
@@ -2252,7 +2369,7 @@ namespace LamaPon
             m_requestedGameExportTarget.reset();
         }
         if (!m_gameExportDialog) return;
-        // UIとワーカーは専用担当へ渡し、Sceneの保存はUIスレッドで完了します。
+        // UIスレッドでシーンを保存し、通知(message: 状態文, failed: 失敗か)と選択(initial: 初期フォルダー)を渡します。
         m_gameExportDialog->Draw(GameExportDialogContext{
             m_engineRoot, ExecutableDirectory(), m_graphics.Assets().AssetRoot(),
             ProjectSettingsPath(), m_projectSettings,
@@ -2274,6 +2391,7 @@ namespace LamaPon
         });
     }
 
+    // 編集状態を保存し、遷移・通信・粒子・音声・時計を初期化して再生を開始します。
     void EditorLayer::StartPlaying()
     {
         try
@@ -2282,7 +2400,9 @@ namespace LamaPon
             {
                 CloseAnimationTimeline(true);
             }
+            // 再生前に初期化する通信連携
             if (auto* bridge = ActiveNetworkSceneBridge()) bridge->Reset();
+            // 再生に使う通信セッション
             if (auto* network = ActiveNetworkSession())
                 static_cast<void>(network->Configure(m_projectSettings.network));
             m_playSnapshot = m_scene.SerializeToJson();
@@ -2292,16 +2412,16 @@ namespace LamaPon
                     SetCurrentScenePath(
                         m_scenePath);
             }
-            // 書き出したゲームと同じ状態で再生します。前回の再生で
-            // Scriptが既定の遷移を変えていても、すぐ切り替える遷移へ
-            // 戻します。
+            // 前回のScriptによる設定を残さないよう、再生開始前に遷移を初期化します。
             m_scene.Scenes().ResetTransition();
             m_scene.Scenes().SetDefaultTransition({});
             m_scene.Scenes().LoadingScreen() =
                 m_projectSettings.loadingScreen;
+            // 再生開始時のシーン内オブジェクト
             for (const auto& gameObject :
                 m_scene.GameObjects())
             {
+                // 再生開始時の粒子コンポーネント
                 if (auto* particles =
                     gameObject->GetComponent<
                         ParticleSystemComponent>())
@@ -2322,16 +2442,18 @@ namespace LamaPon
             m_remoteInputSnapshot.reset();
             m_remoteInputFrames = 0;
             m_graphics.Audio().SetSuspended(false);
-            // 再生ごとにタイムスケールと時計を初期状態へ戻します。
+            // 再生開始時に時計とタイムスケールを初期化します。
             Time::Detail::Reset();
             SetStatus("再生モード");
         }
+        // 処理失敗時の例外
         catch (const std::exception& exception)
         {
             SetStatus(exception.what(), true);
         }
     }
 
+    // 再生中の更新と音声を一緒に停止・再開し、ステップ要求を消去します(paused: 一時停止するか)。
     void EditorLayer::SetPaused(const bool paused)
     {
         if (!m_playing)
@@ -2339,11 +2461,9 @@ namespace LamaPon
             return;
         }
         m_paused = paused;
-        // 溜まったステップ要求を持ち越さないようにします。
+        // 停止・再開時にステップ要求を持ち越しません。
         m_stepRequested = false;
-        // 絵が止まっているのに音だけ進むと状態がズレるので、
-        // 音声処理も一緒に止めます。エンジン側で
-        // 止めるため、再開すると元の位置から続きます。
+        // 音声処理も停止し、再開時は元の再生位置から続けます。
         m_graphics.Audio().SetSuspended(m_paused);
         SetStatus(
             m_paused
@@ -2351,6 +2471,7 @@ namespace LamaPon
                 : "再生モード");
     }
 
+    // 一時停止中の再生に限り、次回更新で1フレーム進めるよう予約します。
     void EditorLayer::RequestSimulationStep()
     {
         if (!m_playing || !m_paused)
@@ -2361,16 +2482,17 @@ namespace LamaPon
         SetStatus("1フレーム進めました");
     }
 
+    // 再生前のシーンと表示状態を復元し、遷移・音声・時計を編集状態へ戻します。
     void EditorLayer::StopPlaying()
     {
         try
         {
+            // 停止時に初期化する通信連携
             if (auto* bridge = ActiveNetworkSceneBridge()) bridge->Reset();
             m_scene.LoadFromJson(m_playSnapshot);
             m_scene.Scenes().
                 CancelPending();
-            // 遷移の途中で停止しても、覆いやBGMの音量を編集モードへ
-            // 持ち込みません。
+            // 遷移の途中で停止しても、覆いやBGMの音量を編集モードへ持ち込みません。
             m_scene.Scenes().ResetTransition();
             if (!m_scenePath.empty())
             {
@@ -2399,13 +2521,14 @@ namespace LamaPon
             m_stepRequested = false;
             m_remoteInputSnapshot.reset();
             m_remoteInputFrames = 0;
-            // 一時停止したまま停止しても音が止まったままにならないように。
+            // 一時停止中の終了でも音声処理を再開しておきます。
             m_graphics.Audio().SetSuspended(false);
             m_playSnapshot.clear();
-            // ゲームが変更したタイムスケールを編集モードへ持ち込まない。
+            // ゲームが変更したタイムスケールを編集状態へ持ち込みません。
             Time::Detail::Reset();
             SetStatus("停止しました。編集状態を復元しました");
         }
+        // 処理失敗時の例外
         catch (const std::exception& exception)
         {
             SetStatus(exception.what(), true);

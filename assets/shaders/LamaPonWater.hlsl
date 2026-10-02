@@ -1,21 +1,3 @@
-// 水面の見本Shaderです。
-//
-// ノイズで波を作り、その波の傾き（法線）で「空の映り込み」と
-// 「太陽の反射」を計算します。平らな板メッシュへマテリアルとして
-// 割り当てるだけで動きます。スクリプトは要りません。
-//
-// 中で何をしているか（上から順に）:
-//   (1) ノイズを2枚重ねて波の高さを作る（大きなうねり＋細かいさざ波）
-//   (2) 高さの傾きから法線を出す（隣を測って引き算するだけ）
-//   (3) 見る角度で「映り込みの強さ」を決める（フレネル。水面を
-//      真上から見ると透けて、浅い角度で見ると鏡になる現象）
-//   (4) 空の色を映す＋太陽をGGXで反射する
-//
-// ★太陽の向きと色はシーンのDirectional Lightから読んでいます
-//   （下のLightingBufferの宣言）。ライトを回すと反射も動きます。
-//   太陽の「角度の大きさ」も一緒に読むので、ハイライトは点ではなく
-//   本物と同じ0.53度の円盤の大きさになります。
-
 #include "LamaPonNoise.hlsli"
 
 /* LAMAPON_RENDER_STATE
@@ -53,91 +35,134 @@
 ]
 */
 
+// CPUと配置を揃える物体定数
 cbuffer ObjectBuffer : register(b0)
 {
+    // 行優先のWorld変換行列
     row_major float4x4 World;
+    // 行優先のビュー透視合成行列
     row_major float4x4 ViewProjection;
+    // 行優先の法線変換用逆転置
     row_major float4x4 WorldInverseTranspose;
+    // 最終Alphaに使う材質色
     float4 MaterialColor;
+    // World視点XYZ・W予約
     float4 CameraPosition;
+    // 互換配置の視線方向
     float4 CameraForward;
+    // 互換配置の材質設定
     float4 MaterialParameters;
+    // 波・反射・水色・天空色の設定
     float4 CustomParameters[8];
+    // 互換配置の材質画像設定
     float4 MaterialTextureParameters;
+    // 互換配置の発光設定
     float4 EmissiveParameters;
-    // x=経過秒（エンジンが入れます）。これで波が勝手に動きます。
+
+    // 1時間周期秒・差分秒・フレーム数
     float4 TimeParameters;
 };
 
-// シーンのライトです。エンジンがb1へ入れているので、自作Shaderからも
-// 「必要なところまで宣言して、そこで止める」だけで読めます。
-// （並びはLamaPonLit.hlslのLightingBufferと同じにしてください）
+// LightingBufferはLamaPonLit.hlslと同じ順序で、使う範囲まで宣言する。
 struct DirectionalLight
 {
-    // xyz=光が進む向き, w=強さ。
+
+    // 光の進行方向XYZ・W強度
     float4 DirectionIntensity;
-    // rgb=色, w=太陽の角半径（ラジアン）。
+
+    // 光RGB・W太陽角半径rad
     float4 Color;
 };
 
+// CPUと配置を揃える光源定数
 cbuffer LightingBuffer : register(b1)
 {
+    // 互換配置の環境光
     float4 Ambient;
+    // X平行・Y点・Zスポット数
     uint4 LightCounts;
+    // 先頭を太陽に使う4本の平行光
     DirectionalLight DirectionalLights[4];
 };
 
+// スキン変形用の骨定数
 cbuffer BoneBuffer : register(b2)
 {
+    // 最大72骨の変形行列
     float4x3 BoneTransforms[72];
 };
 
+// 反射方向で採取する天空画像
 TextureCube EnvironmentMap : register(t3);
+// 天空画像の採取設定
 SamplerState MaterialSampler : register(s0);
 
+// GGX分布に使う円周率
 static const float WaterPi = 3.14159265f;
 
 struct VertexInput
 {
+    // ローカル頂点位置
     float3 Position : SV_Position;
+    // ローカル頂点法線
     float3 Normal : NORMAL;
+    // 画像UV
     float2 TexCoord : TEXCOORD0;
 };
 
 struct SkinnedVertexInput
 {
+    // 骨変形前の頂点位置
     float3 Position : SV_Position;
+    // 骨変形前の頂点法線
     float3 Normal : NORMAL;
+    // 互換入力の頂点接線
     float4 Tangent : TANGENT;
+    // 互換入力の頂点色
     float4 Color : COLOR;
+    // 画像UV
     float2 TexCoord : TEXCOORD0;
+    // 影響する4骨の番号
     uint4 BlendIndices : BLENDINDICES0;
+    // 4骨の影響比
     float4 BlendWeights : BLENDWEIGHT0;
 };
 
 struct PixelInput
 {
+    // 透視投影後の画面位置
     float4 Position : SV_Position;
+    // 補間するWorld位置
     float3 WorldPosition : TEXCOORD0;
+    // 補間するWorld法線
     float3 WorldNormal : TEXCOORD1;
+    // 補間する画像UV
     float2 TexCoord : TEXCOORD2;
 };
 
 struct SkinnedPixelInput
 {
+    // 補間する画像UV
     float2 TexCoord : TEXCOORD0;
+    // 補間するWorld同次位置
     float4 WorldPosition : TEXCOORD1;
+    // 補間するWorld法線
     float3 WorldNormal : TEXCOORD2;
+    // 互換入力の頂点色
     float4 Diffuse : COLOR0;
+    // 透視投影後の画面位置
     float4 Position : SV_Position;
 };
 
+// World位置・法線と透視位置を生成する(position: ローカル位置, normal: ローカル法線, texCoord: 画像UV)。
 PixelInput BuildPixelInput(
     const float3 position,
     const float3 normal,
     const float2 texCoord)
 {
+    // World変換後のPixel入力
     PixelInput output;
+    // World空間の同次位置
     const float4 worldPosition =
         mul(float4(position, 1.0f), World);
     output.Position = mul(worldPosition, ViewProjection);
@@ -149,6 +174,7 @@ PixelInput BuildPixelInput(
     return output;
 }
 
+// 通常頂点を水面のPixel入力へ変換する(input: 通常頂点)。
 PixelInput VSMain(VertexInput input)
 {
     return BuildPixelInput(
@@ -157,15 +183,17 @@ PixelInput VSMain(VertexInput input)
         input.TexCoord);
 }
 
-// スキン付きモデルへ割り当てられたときのための入口です。水面を骨で
-// 動かすことはまずありませんが、これが無いとコンパイルに失敗して
-// 「なぜ映らないのか分からない」状態になるので用意しています。
+
+// 最大4骨を加重合成して水面のPixel入力へ変換する(input: スキン頂点)。
 PixelInput VSSkinnedMain(SkinnedVertexInput input)
 {
+    // 4骨の加重合成行列
     float4x3 skinning = 0.0f;
+    // 合成する骨影響の番号
     [unroll]
     for (uint index = 0u; index < 4u; ++index)
     {
+        // 0～71へ制限した骨番号
         const uint bone = min(input.BlendIndices[index], 71u);
         skinning +=
             BoneTransforms[bone] * input.BlendWeights[index];
@@ -176,24 +204,28 @@ PixelInput VSSkinnedMain(SkinnedVertexInput input)
         input.TexCoord);
 }
 
-// 波の高さ
-// ワールドのXZで測ります（UVではなく）。板を並べても模様が途切れず、
-// 板を大きくしても波の大きさが変わりません。
+
+// WorldのXZで2層の移動ノイズを採取する(position: WorldのXZ位置)。
 float WaveHeight(const float2 position)
 {
+    // 1時間周期の経過秒
     const float time = TimeParameters.x;
+    // 波の模様の移動速度
     const float speed = CustomParameters[0].w;
+    // うねりのWorld座標倍率
     const float swellScale = max(CustomParameters[0].x, 0.001f);
+    // さざ波のWorld座標倍率
     const float rippleScale = max(CustomParameters[0].y, 0.001f);
 
-    // 大きなうねりと細かいさざ波を、別々の向きへ流します。
-    // 同じ向きだと模様がそのまま平行移動して見えて、水に見えません。
+
+    // 3段階のうねりノイズ
     const float swell = LamaPonFractalPerlin2D(
         position * swellScale
             + float2(0.42f, 0.18f) * (time * speed),
         3,
         2.0f,
         0.5f);
+    // 2段階のさざ波ノイズ
     const float ripple = LamaPonFractalPerlin2D(
         position * rippleScale
             + float2(-0.23f, 0.51f) * (time * speed * 1.7f),
@@ -203,45 +235,48 @@ float WaveHeight(const float2 position)
     return swell * 0.75f + ripple * 0.25f;
 }
 
-// 高さの傾きから求める法線
-// 隣り合う4点の高さを測って引き算するだけです（中心差分）。
-// ノイズの式を微分しなくてよいので、波の作り方を変えても
-// ここは書き換えずに済みます。
+
+// 中心差分の波の傾きを面の向きへ合成する(position: WorldのXZ位置, geometricNormal: 視点側のWorld法線)。
 float3 WaveNormal(
     const float2 position,
     const float3 geometricNormal)
 {
-    // 測る間隔はさざ波1つぶんの5%です。ここが粗いと山と谷を
-    // またいでしまい、傾きが平均化されて水面が平らになります
-    // （35%にしていたとき、波はあるのに鏡のような一枚板に
-    // 見えました。絵で見るまで気付けない類の間違いです）。
+    // さざ波の周期の5%を中心差分の間隔とし、山谷の平均化を抑える。
+    // 中心差分のWorld間隔
     const float step =
         0.05f / max(CustomParameters[0].y, 0.001f);
+    // XZの正X側の高さ
     const float heightRight =
         WaveHeight(position + float2(step, 0.0f));
+    // XZの負X側の高さ
     const float heightLeft =
         WaveHeight(position - float2(step, 0.0f));
+    // XZの正Z側の高さ
     const float heightForward =
         WaveHeight(position + float2(0.0f, step));
+    // XZの負Z側の高さ
     const float heightBack =
         WaveHeight(position - float2(0.0f, step));
 
+    // 法線へ反映する波の振幅
     const float amplitude = max(CustomParameters[0].z, 0.0f);
+    // 中心差分の波勾配
     const float2 gradient = float2(
         (heightRight - heightLeft) / (2.0f * step),
         (heightForward - heightBack) / (2.0f * step))
         * amplitude;
 
-    // Y上向きで作った法線を、板の実際の向きへ載せ替えます。
-    // 板が水平（法線が+Y）なら right=+X／forward=+Z になり、
-    // ワールドのXZとぴったり一致します。
+
+    // 面の単位幾何法線
     const float3 up = normalize(geometricNormal);
+    // 平行を避けた補助軸
     const float3 helper = abs(up.y) > 0.99f
         ? float3(0.0f, 0.0f, 1.0f)
         : float3(0.0f, 1.0f, 0.0f);
+    // 面に沿う右単位方向
     const float3 right = normalize(cross(up, helper));
-    // 3本目は必ず right × up です。cross(up, right) と書くと
-    // 行列式が−1（鏡像）になり、波が裏返って光が逆から来ます。
+    // 鏡像になる逆順を避け、forwardはright×upで作る。
+    // 面に沿う前単位方向
     const float3 forward = cross(right, up);
 
     return normalize(
@@ -250,14 +285,8 @@ float3 WaveNormal(
         + forward * (-gradient.y));
 }
 
-// 太陽の反射（GGXと太陽の角半径）
-// 太陽は点ではなく、空に0.53度の円盤として見えています。点として
-// 扱うと、つるつるの水面ではハイライトが1画素の点になってしまい、
-// 「きらきら光る帯」になりません。
-//
-// やり方は代表点法です。反射の向きが太陽の円盤から外れているときだけ、
-// 円盤の縁の一番近い点へ寄せます。そのぶん明るくなりすぎるので、
-// 広がった割合で割って戻します（エネルギー保存）。
+
+// 太陽円盤の代表点からGGX反射と広がり補正を求める(normal: 表面の単位法線, viewDirection: 視点への単位方向, toSun: 太陽への単位方向, sunColor: 強度込みの太陽RGB, sunAngularRadius: 太陽角半径rad, roughness: 表面の粗さ)。
 float3 SunSpecular(
     const float3 normal,
     const float3 viewDirection,
@@ -266,18 +295,25 @@ float3 SunSpecular(
     const float sunAngularRadius,
     const float roughness)
 {
+    // 二乗粗さの下限付きGGX幅
     const float alpha = max(roughness * roughness, 1.0e-4f);
 
-    // 反射ベクトルを太陽の円盤へ寄せた「代表点」。
+
+    // 視線を法線で反射した方向
     const float3 reflected =
         reflect(-viewDirection, normal);
+    // 太陽と反射方向の内積
     const float sunDotReflected = dot(toSun, reflected);
+    // 太陽角半径の余弦
     const float diskCosine = cos(sunAngularRadius);
+    // 太陽円盤内の代表光方向
     float3 representative = reflected;
     if (sunDotReflected < diskCosine)
     {
+        // 太陽方向に直交する反射成分
         const float3 sideways =
             reflected - sunDotReflected * toSun;
+        // 直交する反射成分の長さ
         const float sidewaysLength = length(sideways);
         if (sidewaysLength > 1.0e-5f)
         {
@@ -292,44 +328,55 @@ float3 SunSpecular(
         }
     }
 
+    // 法線と太陽方向の内積
     const float normalDotLight = saturate(dot(normal, toSun));
     if (normalDotLight <= 0.0f)
     {
         return 0.0f.xxx;
     }
+    // 下限付きの法線と視線内積
     const float normalDotView =
         max(dot(normal, viewDirection), 1.0e-4f);
+    // 代表光と視線の中間方向
     const float3 halfVector =
         normalize(representative + viewDirection);
+    // 法線と中間方向の内積
     const float normalDotHalf =
         saturate(dot(normal, halfVector));
+    // 視線と中間方向の内積
     const float viewDotHalf =
         saturate(dot(viewDirection, halfVector));
 
-    // GGXの法線分布。
+
+    // GGX粗さの二乗
     const float alphaSquared = alpha * alpha;
+    // GGX分母の中間項
     const float denominator =
         normalDotHalf * normalDotHalf * (alphaSquared - 1.0f)
         + 1.0f;
-    // 鋭いハイライトではGGXの分母が非常に小さくなるため、
-    // 下限を十分小さくして太陽の反射を保ちます。
+    // GGX分母の下限を1e-12に保ち、鋭い反射の減衰を抑える。
+    // GGXの法線分布密度
     const float distribution = alphaSquared
         / max(WaterPi * denominator * denominator, 1.0e-12f);
 
-    // 代表点へ寄せたぶんのエネルギー補正。円盤の広がりを粗さへ
-    // 足した値との比で割ります。
+
+    // 太陽角半径で広げた粗さ
     const float widened =
         saturate(alpha + sin(sunAngularRadius) * 0.5f);
+    // 代表点の反射量補正比
     const float energy =
         (alpha / max(widened, 1.0e-4f))
         * (alpha / max(widened, 1.0e-4f));
 
-    // 幾何減衰（Smith-Schlick）とフレネル（水のF0は0.02）。
+
+    // Smith減衰の粗さ係数
     const float k = alpha * 0.5f + 1.0e-4f;
+    // Smith-Schlick幾何減衰
     const float geometry =
         (normalDotView / (normalDotView * (1.0f - k) + k))
         * (normalDotLight
             / (normalDotLight * (1.0f - k) + k));
+    // 水のF0を使う反射率
     const float fresnel = 0.02f
         + (1.0f - 0.02f) * pow(1.0f - viewDotHalf, 5.0f);
 
@@ -342,12 +389,13 @@ float3 SunSpecular(
         / max(4.0f * normalDotView * normalDotLight, 1.0e-4f);
 }
 
-// 空の色。Skyboxが無くても水面が黒くならないよう、上（天頂）と
-// 地平の2色から作ります。Skyboxやリフレクションプローブがある
-// シーンでは「空の映り込み」を上げると実際の空が混ざります。
+
+// 天空の勾配色へ環境画像を混合する(direction: 採取する単位方向, mixEnvironment: 環境画像の混合比)。
 float3 SkyColor(const float3 direction, const float mixEnvironment)
 {
+    // 上下方向の天空補間比
     const float upward = saturate(direction.y * 0.5f + 0.5f);
+    // 上下方向の天空勾配RGB
     const float3 gradient = lerp(
         CustomParameters[5].rgb,
         CustomParameters[4].rgb,
@@ -356,6 +404,7 @@ float3 SkyColor(const float3 direction, const float mixEnvironment)
     {
         return gradient;
     }
+    // 天空画像の採取RGB
     const float3 sampled =
         EnvironmentMap.SampleLevel(
             MaterialSampler,
@@ -364,68 +413,71 @@ float3 SkyColor(const float3 direction, const float mixEnvironment)
     return lerp(gradient, sampled, saturate(mixEnvironment));
 }
 
+// 波状法線で天空・太陽・きらめきとAlphaを合成する(input: World位置・法線とUV)。
 float4 ShadeWater(const PixelInput input)
 {
+    // 表面から視点への単位方向
     const float3 viewDirection = normalize(
         CameraPosition.xyz - input.WorldPosition);
-    // 両面描画（cull: none）なので、板の裏を見ていることがあります。
-    // 法線が向こう向きのままだと、空の映り込みは下向きを引いて
-    // ずっと地平の色になり、太陽は「水平線の下」と判定されて
-    // 反射が丸ごと消えます（真っ平らな水色の板に見えます）。
-    // 見ている側へ向け直してから波を乗せます。
+    // 裏面でも反射できるよう、幾何法線を視点側へ向けてから波を合成する。
+    // 視点側へ向けた幾何法線
     const float3 facingNormal =
         dot(input.WorldNormal, viewDirection) < 0.0f
             ? -input.WorldNormal
             : input.WorldNormal;
+    // 波の傾きを合成した法線
     const float3 normal = WaveNormal(
         input.WorldPosition.xz,
         facingNormal);
 
-    // フレネル反射
-    // 真上から覗くと水の中が見え、浅い角度では空が映る、という
-    // 見え方の切り替わりです。水のF0（正面から見た反射率）は0.02。
+
+    // 視線と波の法線の内積
     const float viewDotNormal =
         saturate(dot(normal, viewDirection));
+    // 水のF0を使う反射率
     const float fresnel =
         0.02f + (1.0f - 0.02f)
             * pow(1.0f - viewDotNormal, 5.0f);
 
-    // 水の色。浅い角度ほど「深い色」に見えるようにして、
-    // 奥行きを感じさせます（本物は水を通る距離が長くなるため）。
+
+    // 視線角で混ぜた浅深の水色
     const float3 waterColor = lerp(
         CustomParameters[3].rgb,
         CustomParameters[2].rgb,
         pow(viewDotNormal, 0.7f));
 
+    // 視線を法線で反射した方向
     const float3 reflected = reflect(-viewDirection, normal);
+    // 反射方向の天空RGB
     const float3 sky = SkyColor(
         reflected,
         CustomParameters[1].w);
 
+    // 反射と輝きを合成するRGB
     float3 color = lerp(waterColor, sky, fresnel);
 
-    // 太陽。シーンに方向光があればそれを、無ければ斜め上から。
+
+    // 表面から太陽への単位方向
     float3 toSun = normalize(float3(0.35f, 0.75f, 0.4f));
+    // 強度込みの太陽RGB
     float3 sunColor = float3(1.0f, 0.96f, 0.88f);
+    // 太陽の角半径rad
     float sunAngularRadius = 0.00465f;
     if (LightCounts.x >= 1u)
     {
+        // 先頭の平行光
         const DirectionalLight sun = DirectionalLights[0];
         toSun = normalize(-sun.DirectionIntensity.xyz);
         sunColor = sun.Color.rgb * sun.DirectionIntensity.w;
-        // 角半径が入っていない古いシーンでは0が来るので、
-        // そのときは本物の太陽（0.53度＝角半径0.00465）にします。
+        // 角半径未設定の旧シーンでは0.00465radを使う。
         sunAngularRadius = sun.Color.w > 1.0e-5f
             ? sun.Color.w
             : 0.00465f;
     }
-    // ここで言う「ざらつき」は、画素より細かくて描き切れない
-    // さざ波の代わりです。0に近づけて完全な鏡にすると、太陽の
-    // 0.53度は反射の散らばり（波の傾きぶん±40度ほど）に対して
-    // 狭すぎて、光の帯が数画素へ落ちるか丸ごと消えます。
-    // 少しざらつかせるのが正解で、これで「きらきら光る帯」に
-    // なります。
+
+    // 下限0.02の反射粗さ
     const float roughness = max(CustomParameters[1].x, 0.02f);
+    // 輝き倍率込みの太陽反射RGB
     const float3 sunTerm = SunSpecular(
         normal,
         viewDirection,
@@ -436,42 +488,50 @@ float4 ShadeWater(const PixelInput input)
         * max(CustomParameters[1].y, 0.0f);
     color += sunTerm;
 
-    // きらめき。細かい波の面が太陽を向いた瞬間だけ光る、水面特有の
-    // ちらちらです。Worleyノイズの粒を「小さな面の向き」に見立てて、
-    // 太陽へ向いている粒だけを光らせます。
+
+    // きらめきの強度倍率
     const float sparkleAmount = max(CustomParameters[1].z, 0.0f);
     if (sparkleAmount > 0.0f)
     {
+        // 1時間周期の経過秒
         const float time = TimeParameters.x;
+        // 移動後の粒ノイズ採取座標
         const float2 sparkleUV =
             input.WorldPosition.xz
                 * max(CustomParameters[0].y, 0.001f) * 6.0f
             + float2(0.17f, -0.31f)
                 * (time * CustomParameters[0].w);
+        // Worley距離を反転した粒値
         const float cells =
             1.0f - LamaPonWorleyNoise2D(sparkleUV);
+        // 法線と太陽視線中間の内積
         const float aligned =
             saturate(dot(normal, normalize(toSun + viewDirection)));
+        // 粒と向きによる輝き係数
         const float sparkle =
             pow(cells, 12.0f) * pow(aligned, 24.0f);
         color += sunColor * sparkle * sparkleAmount;
     }
 
-    // 不透明度もフレネルで動かします。真上から見ると底が透けて、
-    // 浅い角度では空を映して見通せなくなります。
+    // 浅い視線角ほど不透明にし、最後に材質Alphaを掛ける。
+    // 設定水色のAlpha
     const float baseAlpha = saturate(CustomParameters[2].a);
+    // 材質倍率込みの最終Alpha
     const float alpha = saturate(
         lerp(baseAlpha, 1.0f, fresnel) * MaterialColor.a);
     return float4(color, alpha);
 }
 
+// 通常Meshへ水面材質を適用する(input: 通常Pixel入力)。
 float4 PSMain(PixelInput input) : SV_Target
 {
     return ShadeWater(input);
 }
 
+// スキン入力を共通構造へ変換して水面材質を適用する(input: スキンPixel入力)。
 float4 PSSkinnedMain(SkinnedPixelInput input) : SV_Target
 {
+    // 共通構造へ変換したPixel入力
     PixelInput pixel;
     pixel.Position = input.Position;
     pixel.WorldPosition = input.WorldPosition.xyz;

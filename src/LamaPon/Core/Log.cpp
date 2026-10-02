@@ -9,21 +9,26 @@
 
 namespace
 {
+    // ローカル時刻をミリ秒付き文字列にします(time: 記録時刻)。
     std::string TimeText(
         const std::chrono::system_clock::
             time_point time)
     {
+        // 秒未満のミリ秒部分
         const auto milliseconds =
             std::chrono::duration_cast<
                 std::chrono::milliseconds>(
                     time.time_since_epoch())
                 % 1000;
+        // ローカル時刻変換用の秒単位時刻
         const std::time_t raw =
             std::chrono::system_clock::
                 to_time_t(time);
+        // 日時のローカル時刻成分
         std::tm local{};
         localtime_s(&local, &raw);
 
+        // 日時文字列を組み立てる出力
         std::ostringstream stream;
         stream
             << std::put_time(
@@ -55,6 +60,7 @@ namespace LamaPon
 
     Logger& Logger::Instance() noexcept
     {
+        // プロセスで共有するロガー
         static Logger logger;
         return logger;
     }
@@ -66,6 +72,7 @@ namespace LamaPon
         const std::source_location&
             location)
     {
+        // 今回記録する診断の内容
         LogEntry entry{
             {},
             std::chrono::system_clock::now(),
@@ -76,6 +83,7 @@ namespace LamaPon
             gameObjectId
         };
 
+        // 記録と出力設定を保護するロック
         std::scoped_lock lock(m_mutex);
         entry.sequence = m_nextSequence++;
         m_entries.push_back(entry);
@@ -119,6 +127,7 @@ namespace LamaPon
     std::vector<LogEntry>
         Logger::Snapshot() const
     {
+        // 記録と出力設定を保護するロック
         std::scoped_lock lock(m_mutex);
         return {
             m_entries.begin(),
@@ -128,6 +137,7 @@ namespace LamaPon
 
     void Logger::Clear() noexcept
     {
+        // 記録と出力設定を保護するロック
         std::scoped_lock lock(m_mutex);
         m_entries.clear();
     }
@@ -135,6 +145,7 @@ namespace LamaPon
     void Logger::SetCapacity(
         const std::size_t capacity) noexcept
     {
+        // 記録と出力設定を保護するロック
         std::scoped_lock lock(m_mutex);
         m_capacity =
             std::clamp<std::size_t>(
@@ -149,6 +160,7 @@ namespace LamaPon
 
     std::size_t Logger::Capacity() const noexcept
     {
+        // 記録と出力設定を保護するロック
         std::scoped_lock lock(m_mutex);
         return m_capacity;
     }
@@ -157,6 +169,7 @@ namespace LamaPon
         const std::filesystem::path& path,
         const bool truncate) noexcept
     {
+        // 記録と出力設定を保護するロック
         std::scoped_lock lock(m_mutex);
         m_file.close();
         m_file.clear();
@@ -194,12 +207,14 @@ namespace LamaPon
     std::filesystem::path
         Logger::FilePath() const
     {
+        // 記録と出力設定を保護するロック
         std::scoped_lock lock(m_mutex);
         return m_filePath;
     }
 
     void Logger::CloseFile() noexcept
     {
+        // 記録と出力設定を保護するロック
         std::scoped_lock lock(m_mutex);
         m_file.close();
         m_filePath.clear();

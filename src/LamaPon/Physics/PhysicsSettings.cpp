@@ -6,8 +6,7 @@ namespace LamaPon
 {
     namespace
     {
-        // EXEとLamaPonRuntime.dllで同じ設定を共有するため、この翻訳
-        // 単位に単一の実体を置きます。取得と設定も同じ側で定義します。
+        // EXEとDLLが共有する物理設定
         PhysicsSettings g_physicsSettings{};
     }
 
@@ -19,8 +18,7 @@ namespace LamaPon
     void SetActivePhysicsSettings(
         const PhysicsSettings& settings) noexcept
     {
-        // 設定画面を経由しないJSONやスクリプト入力も正規化し、
-        // 0除算や物理更新の停止を引き起こす値を有効範囲へ制限します。
+        // 範囲と対称性を調整する設定コピー
         PhysicsSettings sanitized = settings;
         sanitized.fixedTimeStep = std::clamp(
             sanitized.fixedTimeStep,
@@ -42,24 +40,21 @@ namespace LamaPon
             sanitized.sleepDelay,
             0.0f,
             60.0f);
-        // 0以下だと「常にすり抜ける速さ」になり、頭打ちを
-        // オンにした瞬間に全部止まります。
         sanitized.discreteSafeSpeed = std::clamp(
             sanitized.discreteSafeSpeed,
             0.01f,
             100000.0f);
-        // マトリクスは対称が前提です。手で編集したJSONなどで
-        // 非対称になっていたら「両方が許可しているときだけ当たる」
-        // 側へ丸めます（ANDで揃える）。判定側で毎回両方向を見るより、
-        // 入口で1回揃える方が安くて確実です。
+        // 対称化する基準レイヤー番号
         for (std::size_t row = 0;
             row < CollisionLayerCount;
             ++row)
         {
+            // 対称化する相手レイヤー番号
             for (std::size_t column = row + 1;
                 column < CollisionLayerCount;
                 ++column)
             {
+                // 両方向で接触を許可するか
                 const bool collide =
                     (sanitized.collisionMatrix[row]
                         & (1u << column)) != 0
@@ -82,8 +77,6 @@ namespace LamaPon
         const std::uint32_t layerA,
         const std::uint32_t layerB) noexcept
     {
-        // Layer()は0〜31の想定ですが、範囲外の値が来ても落ちない
-        // よう31でマスクします（シフト量32以上は未定義動作）。
         return (g_physicsSettings.collisionMatrix[
                     layerA & 31u]
                 & (1u << (layerB & 31u))) != 0;

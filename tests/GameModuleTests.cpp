@@ -10,10 +10,13 @@
 
 namespace
 {
+    // 条件不成立ならテストを失敗させます。
+    // Require(condition: 成立条件, message: 失敗理由)
     void Require(
         const bool condition,
         const char* message)
     {
+        // assertion失敗を例外で通知
         if (!condition)
         {
             throw std::runtime_error(message);
@@ -21,21 +24,29 @@ namespace
     }
 
 #ifdef NDEBUG
+    // Release moduleにbuild machineのPDB pathが含まれないことを確認します。
+    // RequireSafePdbReference(modulePath: 検査するGame Module DLL)
     void RequireSafePdbReference(
         const std::filesystem::path& modulePath)
     {
+        // バイナリ形式を保って検査するmodule入力
         std::ifstream input(modulePath, std::ios::binary);
         Require(input.good(), "Could not inspect the Game Module.");
+        // RSDS markerを検索するDLL bytes
         const std::string bytes(
             std::istreambuf_iterator<char>(input),
             std::istreambuf_iterator<char>{});
+        // CodeView PDB参照marker位置
         const auto marker = bytes.find("RSDS");
+        // markerがないDLLはsymbols無効として扱う
         if (marker == std::string::npos)
         {
-            return; // Release symbols may be disabled.
+            // Release symbols may be disabled.
+            return;
         }
-        // CodeView RSDS: signature (4), GUID (16), age (4), PDB path.
+        // RSDS固定部24 bytesの後がPDB path
         const auto pathBegin = marker + 24;
+        // PDB path終端のNUL位置
         const auto pathEnd = bytes.find('\0', pathBegin);
         Require(
             pathEnd != std::string::npos
@@ -46,14 +57,13 @@ namespace
 #endif
 }
 
+// Game Moduleのshadow copy・registration・reloadを検証します。
 int main()
 {
+    // テスト例外を失敗終了コードへ変換
     try
     {
-        // シャドウコピーの置き場所: ローカルのモジュールは従来どおり隣、
-        // ネットワーク(UNC/WebDAV)上のモジュールはユーザーローカルへ退避する。
-        // 共有側へ作ろうとするとWebDAVでディレクトリ作成やLoadLibraryが
-        // 失敗し、エディター再生でC++ Scriptが黙って動かなくなるため。
+        // UNC/WebDAV moduleはlocal cacheへ退避する
         const auto localShadow =
             LamaPon::GameModuleHost::HotReloadDirectoryFor(
                 L"C:/Games/Sample/.lamapon/bin/LamaPonGameModule.dll");
@@ -63,6 +73,7 @@ int main()
                     == std::filesystem::path(
                         L"C:/Games/Sample/.lamapon/bin"),
             "Local Game Modules should shadow-copy next to the module.");
+        // remote moduleを退避するユーザーlocal cache
         const auto remoteShadow =
             LamaPon::GameModuleHost::HotReloadDirectoryFor(
                 LR"(\\server\share\Game\.lamapon\bin\LamaPonGameModule.dll)");
@@ -72,12 +83,15 @@ int main()
                     != std::wstring::npos,
             "Network Game Modules must shadow-copy into the local cache.");
 
+        // load・reload対象のGame Module host
         LamaPon::GameModuleHost host;
 #ifdef NDEBUG
+        // Release PDB参照の検査結果
         RequireSafePdbReference(
             std::filesystem::current_path()
                 / "LamaPonGameModule.dll");
 #endif
+        // Game Module DLLのload結果
         const bool moduleLoaded = host.Load(
             std::filesystem::current_path() / "LamaPonGameModule.dll");
         Require(moduleLoaded, host.LastError().c_str());
@@ -88,10 +102,8 @@ int main()
             host.ModuleName()
                 == "LamaPon Sample Game",
             "Unexpected Game Module name.");
-        // 登録数と並び順は、assets配下へ公式パッケージや
-        // ユーザーのスクリプトを追加すると変わるため固定しません。
-        // サンプルが持つ1種と、ScriptRegistry経由で追加される
-        // TargetRange.Gameを取得できることだけを確認します。
+        // 必須のNativeScript登録だけを確認
+        // expected: load後に見つかるべきcomponent名
         for (const char* expected : {
             "Sample.FloatingAccent",
             "TargetRange.Game" })
@@ -100,12 +112,14 @@ int main()
                 host.FindComponent(expected) != nullptr,
                 "Native components were not registered.");
         }
+        // Inspector schemaを公開するFloatingAccent定義
         const auto* floatingDescriptor =
             host.FindComponent("Sample.FloatingAccent");
         Require(
             floatingDescriptor != nullptr
                 && floatingDescriptor->propertiesSchemaJson != nullptr,
             "Native component Inspector schema was not registered.");
+        // Inspectorへ公開されたcomponent schema
         const auto inspectorSchema = nlohmann::json::parse(
             floatingDescriptor->propertiesSchemaJson);
         Require(
@@ -115,10 +129,14 @@ int main()
                     == "amplitude",
             "Native component Inspector schema was invalid.");
 
+        // NativeScriptの実行先となるgraphics device
         LamaPon::GraphicsDevice graphics;
+        // Module Test scene
         LamaPon::Scene scene(graphics);
+        // NativeScriptを持たせるgame object
         auto& object =
             scene.CreateGameObject("Module Test");
+        // updateとserialize対象のNativeScript component
         auto& script =
             object.AddComponent<
                 LamaPon::NativeScriptComponent>(
@@ -130,9 +148,11 @@ int main()
                 && object.GetTransform().EulerAngles().y > 0.09f,
             "Native component update was not invoked.");
 
+        // componentを含むscene JSON
         const auto serialized =
             nlohmann::json::parse(
                 scene.SerializeToJson());
+        // NativeScript componentの保存JSON
         const auto& component =
             serialized.at("objects").at(0)
                 .at("components").at(0);
@@ -151,8 +171,10 @@ int main()
                     == 6,
             "Native component did not serialize.");
 
+        // JSONから復元したscene
         LamaPon::Scene loaded(graphics);
         loaded.LoadFromJson(serialized.dump());
+        // 復元sceneのNativeScript component
         const auto* loadedScript =
             loaded.GameObjects().at(0)
                 ->GetComponent<
@@ -164,33 +186,33 @@ int main()
                     == script.ScriptType(),
             "Native component did not round-trip.");
 
-        // GetScript<T>()で自作インターフェースを引けること。
-        // 実際の呼び出しはGame Module内のDamageDealerProbeが行い、
-        // GetScript<IDamageable>()で相手を見つけて25ダメージ与えます。
-        // DamageableProbeはScriptを「先頭以外」に継承しているため、
-        // void*から素にstatic_cast<Script*>する実装だとポインタ調整が
-        // 入らず壊れます。descriptorのasScript経由になっているかの検査
-        // でもあります。
+        // GetScript<T>がasScript経由でbase offsetを保つことを確認
         {
+            // interface lookupを行うModule probe scene
             LamaPon::Scene interfaceScene(graphics);
+            // 二つのNativeScriptを置くgame object
             auto& probeObject =
                 interfaceScene.CreateGameObject("Interface Probe");
+            // IDamageableとして解決するscript
             auto& damageable =
                 probeObject.AddComponent<
                     LamaPon::NativeScriptComponent>(
                         "Sample.DamageableProbe");
+            // interfaceを通じてdamageを与えるscript
             auto& dealer =
                 probeObject.AddComponent<
                     LamaPon::NativeScriptComponent>(
                         "Sample.DamageDealerProbe");
             interfaceScene.Update(0.016f);
 
+            // dealerのinterface call状態
             const auto dealerState = nlohmann::json::parse(
                 dealer.SerializedProperties());
             Require(
                 dealerState.value("dealt", false),
                 "GetScript<T>() did not find the interface.");
 
+            // damage適用後の対象health
             const auto health = nlohmann::json::parse(
                 damageable.SerializedProperties());
             Require(
@@ -198,12 +220,14 @@ int main()
                 "Damage through the interface was not applied.");
         }
 
+        // Module DLLのreload結果
         const bool reloaded = host.Reload();
         Require(reloaded, host.LastError().c_str());
         Require(
             host.FindComponent(
                 "Sample.FloatingAccent") != nullptr,
             "Component registration was lost after reload.");
+        // reload直後のgame object高さ
         const float heightBeforeReloadedUpdate =
             object.GetTransform().position.y;
         scene.Update(0.05f);
@@ -212,7 +236,9 @@ int main()
                 != heightBeforeReloadedUpdate,
             "Active Native component was not restored after reload.");
 
+        // reload前に読み込んだDLLのpath
         const auto originalModulePath = host.ModulePath();
+        // 存在しないproject moduleのpath
         const auto missingModulePath =
             std::filesystem::current_path()
             / "missing-project-module.dll";
@@ -232,6 +258,7 @@ int main()
             << "Game Module tests passed.\n";
         return 0;
     }
+    // テスト例外を標準エラーと失敗終了コードへ変換
     catch (const std::exception& exception)
     {
         std::cerr << exception.what() << '\n';

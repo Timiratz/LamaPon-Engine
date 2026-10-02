@@ -7,16 +7,17 @@
 #include <string_view>
 
 // Ollamaを「このPCで動くローカルモデル」だけに限定するための判定です。
-// Ollama Cloudは無料枠を含めて使いません。接続先・モデル名・応答を別々に
-// 確かめ、どれか1つをすり抜けても、クラウドで生成した結果をゲームへ
-// 渡さないようにします。
+// Ollama Cloudは無料枠を含めて使いません。
+// 接続先・モデル名・応答を別々に確かめ、どれか1つをすり抜けても、クラウドで生成した結果をゲームへ渡さないようにします。
 // どの関数も状態を持たず、OSのAPIを呼びません。
 namespace LamaPonOllama
 {
+    // 接続先を制限する既定ポート
     inline constexpr std::uint16_t DefaultPort = 11434;
 
     namespace Detail
     {
+        // ASCII英数字か判定します(character: 検査する文字)。
         [[nodiscard]] constexpr bool IsAsciiAlphaNumeric(const char character) noexcept
         {
             return (character >= '0' && character <= '9')
@@ -24,6 +25,7 @@ namespace LamaPonOllama
                 || (character >= 'A' && character <= 'Z');
         }
 
+        // ASCII英大文字を小文字へ変換します(character: 変換する文字)。
         [[nodiscard]] constexpr char ToAsciiLower(const char character) noexcept
         {
             return character >= 'A' && character <= 'Z'
@@ -31,14 +33,16 @@ namespace LamaPonOllama
                 : character;
         }
 
-        // 1～65535の10進数だけを受け付けます。
+        // 1～65535の10進数か判定します(text: ポート文字列)。
         [[nodiscard]] constexpr bool IsPortText(const std::string_view text) noexcept
         {
             if (text.empty() || text.size() > 5)
             {
                 return false;
             }
+            // 数字列を変換したポート
             std::uint32_t port{};
+            // ポート文字列の各数字
             for (const char character : text)
             {
                 if (character < '0' || character > '9')
@@ -51,30 +55,28 @@ namespace LamaPonOllama
         }
     }
 
-    // このパッケージが呼ぶAPIは3つだけです。Web検索やWeb取得のように
-    // サインインを前提にしたAPIのパスは、ここで止めます。
+    // 許可するAPI経路を3種類に制限します(path: 要求パス)。
     [[nodiscard]] constexpr bool IsAllowedApiPath(const std::string_view path) noexcept
     {
         return path == "/api/tags" || path == "/api/show" || path == "/api/chat";
     }
 
-    // 接続先はこのPC（loopback）へのhttpだけです。エンジンのHttpSendは
-    // HTTPSならどこへでも送れるため、送る前に必ずこの関数で確かめます。
-    // ホストは 127.0.0.1 / localhost / [::1] の完全一致、ポートは必須です。
-    // 判定を単純に保つため、小文字だけを受け付け、クエリやユーザー情報を
-    // 含むURLは内容を見ずに拒否します。
+    // LoopbackのHTTP APIだけを許可します(url: 接続先)。
+    // localhost系3種・必須port・小文字のみを受け付け、queryとuserinfoは拒否します。
     [[nodiscard]] constexpr bool IsAllowedEndpoint(std::string_view url) noexcept
     {
+        // 許可するHTTP scheme
         constexpr std::string_view scheme = "http://";
+        // 長さ・schemeを検証します。
         if (url.size() > 128 || !url.starts_with(scheme))
         {
             return false;
         }
         url.remove_prefix(scheme.size());
+        // URL内の禁止文字を確認します(character: URLの各文字)。
         for (const char character : url)
         {
-            // '@'より前はユーザー情報になり、後ろが実際の接続先になります。
-            // '\\'や'%'も、解釈する側によってホストの区切りが変わります。
+            // 曖昧な接続先解釈につながる文字を拒否します。
             if (character <= ' ' || character > '~'
                 || character == '@' || character == '\\' || character == '%'
                 || character == '?' || character == '#')
@@ -83,13 +85,15 @@ namespace LamaPonOllama
             }
         }
 
+        // authorityとAPI pathの境界
         const auto pathStart = url.find('/');
         if (pathStart == std::string_view::npos)
         {
             return false;
         }
+        // ホストとポートの組
         const auto authority = url.substr(0, pathStart);
-        // IPv6は"[::1]"の中にも':'があるため、']'の後ろからポートを探します。
+        // IPv6は角括弧の後からポートを解析します。
         const auto hostEnd = authority.starts_with('[')
             ? authority.find(']') + 1
             : authority.find(':');
@@ -97,6 +101,7 @@ namespace LamaPonOllama
         {
             return false;
         }
+        // 許可対象と照合するホスト名
         const auto host = authority.substr(0, hostEnd);
         if (host != "127.0.0.1" && host != "localhost" && host != "[::1]")
         {
@@ -106,37 +111,42 @@ namespace LamaPonOllama
             && IsAllowedApiPath(url.substr(pathStart));
     }
 
-    // 設定できるのはポートだけです。ホストを引数に取らないことで、
-    // 設定アセットやScriptから接続先を変えられないようにします。
+    // Loopbackの接続先を組み立てます(port: 接続ポート, path: API経路)。
     [[nodiscard]] inline std::string BuildEndpoint(
         const std::uint16_t port, const std::string_view path)
     {
         return "http://127.0.0.1:" + std::to_string(port) + std::string(path);
     }
 
-    // クラウドのモデルは "gemma4:cloud" や "gpt-oss:120b-cloud" のように、
-    // 名前のどこかに cloud という語を持ちます。英数字以外で区切った語の
-    // 1つが cloud ならクラウド扱いにします。ローカルモデルに同じ語を
-    // 付けた場合も拒否しますが、取りこぼすより安全な側へ倒します。
+    // 区切られたcloud語を含むモデル名を検出します(model: モデル名)。
     [[nodiscard]] constexpr bool HasCloudTag(const std::string_view model) noexcept
     {
+        // 拒否するモデル種別語
         constexpr std::string_view word = "cloud";
+        // 現在の語頭位置
         std::size_t start{};
+        // 英数字で区切られた語を調べます。
         while (start < model.size())
         {
+            // 現在の語末位置
             auto end = start;
+            // 現在の英数字語を読み進めます。
             while (end < model.size() && Detail::IsAsciiAlphaNumeric(model[end]))
             {
                 ++end;
             }
+            // cloud語と同じ長さだけ照合します。
             if (end - start == word.size())
             {
+                // 大小文字を無視した一致状態
                 bool matches = true;
+                // cloud語の各文字
                 for (std::size_t index = 0; index < word.size(); ++index)
                 {
                     matches = matches
                         && Detail::ToAsciiLower(model[start + index]) == word[index];
                 }
+                // 一致したらクラウド扱いにします。
                 if (matches)
                 {
                     return true;
@@ -147,14 +157,14 @@ namespace LamaPonOllama
         return false;
     }
 
-    // 設定や一覧から受け取ったモデル名を、送ってよい名前かどうか判定します。
-    // 空の名前は「自動選択」を表すので、呼び出し側で先に分けてください。
+    // ローカルモデル名として使えるか判定します(model: モデル名)。
     [[nodiscard]] constexpr bool IsLocalModelName(const std::string_view model) noexcept
     {
         if (model.empty() || model.size() > 128)
         {
             return false;
         }
+        // Ollamaモデル名に使える文字を確認します(character: 各文字)。
         for (const char character : model)
         {
             if (!Detail::IsAsciiAlphaNumeric(character)
@@ -167,18 +177,18 @@ namespace LamaPonOllama
         return !HasCloudTag(model);
     }
 
-    // クラウドのモデルは、一覧（/api/tags）・詳細（/api/show）・生成結果
-    // （/api/chat）のどれにも remote_host と remote_model が付きます
-    // （Ollamaの api/types.go）。名前だけでは見分けられないモデルを、
-    // ここで見つけます。文字列以外の値が入っていた場合も拒否します。
+    // Remoteモデルの応答欄を検査します(value: Ollama応答オブジェクト)。
+    // null以外の文字列以外の値も拒否します。
     [[nodiscard]] inline bool HasRemoteOrigin(const nlohmann::json& value) noexcept
     {
         if (!value.is_object())
         {
             return false;
         }
+        // Remote由来を示す応答キー(key: 検査対象名)
         for (const char* key : { "remote_host", "remote_model" })
         {
+            // 現在のキーに対応するJSON値
             const auto found = value.find(key);
             if (found == value.end() || found->is_null())
             {

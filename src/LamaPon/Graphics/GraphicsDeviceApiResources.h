@@ -1,7 +1,5 @@
 #pragma once
 
-// GraphicsDeviceの公開layoutから描画APIごとの所有資源を隠すRuntime内部
-// interfaceです。具象D3D11 stateは別headerに置き、SDKには入れません。
 #include "LamaPon/Graphics/GraphicsQuality.h"
 
 namespace LamaPon
@@ -14,38 +12,50 @@ namespace LamaPon
     {
         class GraphicsDeviceApiResources
         {
+            // ワーカー停止、高レベル資源の解放、Resetの順で処理し、バックエンドは最後に終了する。
         public:
+            // 派生側を含むAPI固有資源の所有状態を解放する。
             virtual ~GraphicsDeviceApiResources() noexcept = default;
 
+            // API資源のコピーを禁止する。
             GraphicsDeviceApiResources(
                 const GraphicsDeviceApiResources&) = delete;
+            // API資源のコピー代入を禁止する。
             GraphicsDeviceApiResources& operator=(
                 const GraphicsDeviceApiResources&) = delete;
 
+            // 資源が属する描画APIを返す。
             [[nodiscard]] virtual RenderingApi Api() const noexcept = 0;
-            // Shader worker等、BackendとAssetManagerを借用する処理を
-            // 両方が生存している間に停止します。
+
+            // バックエンドとアセット管理の生存中に、両者を借用するワーカーを停止する。
             virtual void QuiesceResourceWork() noexcept = 0;
-            // Device世代に属するEffect/cache等を先に解放します。
+
+            // デバイス世代に属する効果とキャッシュなどを解放する。
             virtual void ResetHighLevelResources() noexcept = 0;
-            // 部分初期化の巻き戻しと通常終了の両方から呼べます。
+
+            // 部分初期化の巻戻しと通常終了で所有資源を初期化前の状態へ戻す。
             virtual void Reset() noexcept = 0;
 
+            // 所有する描画サービスを借用し、利用不能ならヌルを返す。
             [[nodiscard]] virtual GraphicsRenderServices*
                 TryRenderServices() noexcept = 0;
-            // ShadowMapのnative実装はまだAPI固有ですが、所有と再生成は
-            // この境界へ閉じ、GraphicsDevice本体は具象stateを知りません。
+
+            // 品質設定に応じて影マップを再生成する(backend: 資源作成バックエンド, settings: 描画品質設定)。
             virtual void RecreateShadowMaps(
                 GraphicsBackend& backend,
                 const GraphicsSettings& settings) = 0;
+            // 所有する方向影マップを借用し、不在ならヌルを返す。
             [[nodiscard]] virtual ShadowMap*
                 TryDirectionalShadowMap() const noexcept = 0;
+            // 所有するスポット影マップを借用し、不在ならヌルを返す。
             [[nodiscard]] virtual ShadowMap*
                 TrySpotShadowMap() const noexcept = 0;
+            // 所有する点ライト影マップを借用し、不在ならヌルを返す。
             [[nodiscard]] virtual ShadowMap*
                 TryPointShadowMap() const noexcept = 0;
 
         protected:
+            // 空のAPI資源の所有状態を作成する。
             GraphicsDeviceApiResources() = default;
         };
     }

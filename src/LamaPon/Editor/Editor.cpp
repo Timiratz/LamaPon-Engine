@@ -16,6 +16,7 @@ namespace LamaPon
         const bool safeMode,
         const EditorScreenshotOptions* screenshot)
     {
+        // Applicationへ渡す編集レイヤー
         auto layer = std::make_unique<EditorLayer>(
             application.WindowHandle(),
             application.Graphics(),

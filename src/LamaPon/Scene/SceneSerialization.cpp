@@ -74,23 +74,26 @@
 
 namespace
 {
-    // GIの焼き込みデータ（fp16配列）をシーンJSONへ入れるための
-    // base64。数値の配列で書くとファイルが5倍以上に膨れるうえ、
-    // 差分も読めないので、ひとかたまりの文字列にします。
+    // base64の6ビット値の文字表
     constexpr char Base64Characters[] =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
         "abcdefghijklmnopqrstuvwxyz0123456789+/";
 
+    // 生バイト列をパディング付きbase64へ変換します(data: sizeバイト読める入力先頭, size: 入力バイト数)。
     [[nodiscard]] std::string EncodeBase64(
         const std::uint8_t* data,
         const std::size_t size)
     {
+        // base64へ符号化した文字列
         std::string output;
         output.reserve((size + 2) / 3 * 4);
+        // 処理する入力または配列の添字
         for (std::size_t index = 0; index < size; index += 3)
         {
+            // 今回まとめる残り入力バイト数
             const std::uint32_t remaining = static_cast<std::uint32_t>(
                 std::min<std::size_t>(3, size - index));
+            // 符号化する最大三バイトの値
             std::uint32_t chunk =
                 static_cast<std::uint32_t>(data[index]) << 16;
             if (remaining > 1)
@@ -118,9 +121,12 @@ namespace
         return output;
     }
 
+    // 最初のパディングまでbase64を復号し、途中の未知文字では空の列を返します(text: 復号する文字列)。
+    // 空白は受け付けず、パディング以降と末尾の未完成ビットは検証しません。
     [[nodiscard]] std::vector<std::uint8_t> DecodeBase64(
         const std::string& text)
     {
+        // base64文字を6ビット値へ変換し、未知文字は-1を返します(character: 変換する文字)。
         const auto valueOf = [](const char character)
             -> std::int32_t
         {
@@ -146,16 +152,21 @@ namespace
             }
             return -1;
         };
+        // base64から復号したバイト列
         std::vector<std::uint8_t> output;
         output.reserve(text.size() / 4 * 3);
+        // 復号中の6ビット値の蓄積
         std::uint32_t accumulator = 0;
+        // 未出力の蓄積ビット数
         int bits = 0;
+        // 処理中の入力文字
         for (const char character : text)
         {
             if (character == '=')
             {
                 break;
             }
+            // base64文字を復号した6ビット値
             const auto value = valueOf(character);
             if (value < 0)
             {
@@ -177,21 +188,27 @@ namespace
 
     using Json = nlohmann::json;
 
+    // 描画機器のアセット台帳を借用し、未初期化なら静的な空の台帳を返します(graphics: 描画デバイス)。
     const LamaPon::AssetDatabase& AssetDatabaseFor(
         LamaPon::GraphicsDevice& graphics)
     {
+        // 描画未初期化時の空の台帳
         static const LamaPon::AssetDatabase emptyDatabase;
+        // 利用可能なアセット管理器
         const auto* assets = graphics.TryAssets();
         return assets != nullptr
             ? assets->Database()
             : emptyDatabase;
     }
 
+    // キーの~と/をJSON Pointer用にエスケープします(token: 一階層のキー)。
     std::string EscapeJsonPointerToken(
         const std::string_view token)
     {
+        // JSON Pointerへ変換したキー
         std::string escaped;
         escaped.reserve(token.size());
+        // 処理中の入力文字
         for (const char character : token)
         {
             if (character == '~')
@@ -210,6 +227,7 @@ namespace
         return escaped;
     }
 
+    // 文字列は内容を、その他はJSON表記を差分表示用に返します(value: 表示する値)。
     std::string DisplayJsonValue(
         const Json& value)
     {
@@ -220,6 +238,7 @@ namespace
         return value.dump();
     }
 
+    // プリハブ差分の値と存在状態を一覧へ追加します(overrides: 追加先, path: JSON Pointer, source: 元値またはnullptr, instance: 実体値またはnullptr, canApplyIndividually: 両値がある時に個別適用を許すか)。
     void AddPrefabOverride(
         std::vector<LamaPon::PrefabOverride>& overrides,
         std::string path,
@@ -244,6 +263,7 @@ namespace
             });
     }
 
+    // 物体またはコンポーネントの構造配列かを返します(path: JSON Pointer)。
     bool IsStructuralPrefabArray(
         const std::string_view path)
     {
@@ -251,6 +271,8 @@ namespace
             || path.ends_with("/components");
     }
 
+    // 元データと実体の差分を再帰収集します(source: 元JSON値, instance: 実体JSON値, path: 現在のJSON Pointer, overrides: 差分追加先)。
+    // 構造配列の要素は位置で対応させ、要素数やコンポーネント型の変更とキーの追加・削除は個別適用を禁止します。
     void CollectPrefabOverrides(
         const Json& source,
         const Json& instance,
@@ -270,13 +292,16 @@ namespace
 
         if (source.is_object())
         {
+            // 元と実体のキーの和集合
             std::set<std::string> keys;
+            // key: 比較対象のJSONキー, value: キー一覧の取得では使わない値
             for (const auto& [key, value] :
                 source.items())
             {
                 static_cast<void>(value);
                 keys.insert(key);
             }
+            // key: 比較対象のJSONキー, value: キー一覧の取得では使わない値
             for (const auto& [key, value] :
                 instance.items())
             {
@@ -284,12 +309,16 @@ namespace
                 keys.insert(key);
             }
 
+            // 比較するJSONのキー
             for (const auto& key : keys)
             {
+                // 元データ内の該当キーの位置
                 const auto sourceValue =
                     source.find(key);
+                // 実体内の該当キーの位置
                 const auto instanceValue =
                     instance.find(key);
+                // 比較する子キーのJSON Pointer
                 const std::string childPath =
                     path + "/"
                     + EscapeJsonPointerToken(key);
@@ -344,6 +373,7 @@ namespace
                 return;
             }
 
+            // 処理する入力または配列の添字
             for (std::size_t index = 0;
                 index < source.size();
                 ++index)
@@ -388,6 +418,7 @@ namespace
         }
     }
 
+    // 絶対パスを正規化し、相対パスをアセット基準で解決します(graphics: アセットを持つ描画デバイス, path: プリハブのパス)。
     std::filesystem::path ResolvePrefabAssetPath(
         LamaPon::GraphicsDevice& graphics,
         const std::filesystem::path& path)
@@ -397,6 +428,7 @@ namespace
             : graphics.Assets().ResolvePath(path);
     }
 
+    // 存在するアセットをJSONとして読み、未発見や不正なJSONは例外を伝播します(assets: 読み込み元, path: 文書パス, label: 未発見時の文書名)。
     Json ReadJsonDocument(
         LamaPon::AssetManager& assets,
         const std::filesystem::path& path,
@@ -410,10 +442,13 @@ namespace
                 + ": "
                 + LamaPon::PathToUtf8(path));
         }
+        // JSON文書の入力バイト列
         const auto bytes = assets.ReadFileBytes(path);
         return Json::parse(bytes.begin(), bytes.end());
     }
 
+    // 親フォルダーを作成してテキストを保存し、書き込み完了後に置換します(path: 保存先, text: 保存内容)。
+    // 保存先に.tmpを付けた固定名を使うため同じ保存先への同時呼び出しを避け、失敗時は例外を伝播します。
     void WriteTextAtomically(
         const std::filesystem::path& path,
         const std::string_view text)
@@ -423,8 +458,10 @@ namespace
             std::filesystem::create_directories(
                 path.parent_path());
         }
+        // 置換前に保存する.tmpパス
         auto temporaryPath = path;
         temporaryPath += L".tmp";
+        // 置換前のテキスト書込先ストリーム
         std::ofstream output(
             temporaryPath,
             std::ios::binary | std::ios::trunc);
@@ -439,6 +476,7 @@ namespace
         output.close();
         if (!output)
         {
+            // 失敗時の一時保存先の削除結果
             std::error_code cleanupError;
             std::filesystem::remove(
                 temporaryPath,
@@ -454,6 +492,7 @@ namespace
                 MOVEFILE_REPLACE_EXISTING
                     | MOVEFILE_WRITE_THROUGH))
         {
+            // 失敗時の一時保存先の削除結果
             std::error_code cleanupError;
             std::filesystem::remove(
                 temporaryPath,
@@ -464,7 +503,7 @@ namespace
         }
     }
 
-    // 合成モードは既定値のとき省略し、シーンJSONの差分を抑えます。
+    // 既定値でない物理材質の合成モードだけを書き込みます(result: 追記先JSON, material: 保存する物理材質)。
     void SerializeMaterialCombine(
         Json& result,
         const LamaPon::PhysicsMaterial& material)
@@ -486,9 +525,11 @@ namespace
         }
     }
 
+    // 物理材質を読み、合成モードの番号を0〜4へ制限します(value: 材質のJSONオブジェクト)。
     [[nodiscard]] LamaPon::PhysicsMaterial
         ReadPhysicsMaterial(const Json& value)
     {
+        // JSONから読み出した物理材質
         LamaPon::PhysicsMaterial material{
             value.value("friction", 0.5f),
             value.value("restitution", 0.0f) };
@@ -509,21 +550,25 @@ namespace
         return material;
     }
 
+    // 二成分をXY順のJSON配列へ変換します(value: 保存する二成分)。
     Json ToJson(const DirectX::XMFLOAT2& value)
     {
         return Json::array({ value.x, value.y });
     }
 
+    // 三成分をXYZ順のJSON配列へ変換します(value: 保存する三成分)。
     Json ToJson(const DirectX::XMFLOAT3& value)
     {
         return Json::array({ value.x, value.y, value.z });
     }
 
+    // 四成分をXYZW順のJSON配列へ変換します(value: 保存する四成分)。
     Json ToJson(const DirectX::XMFLOAT4& value)
     {
         return Json::array({ value.x, value.y, value.z, value.w });
     }
 
+    // 二要素の数値配列を読み、長さや型が不正なら例外を伝播します(value: XY順のJSON配列)。
     DirectX::XMFLOAT2 ReadFloat2(const Json& value)
     {
         if (!value.is_array() || value.size() != 2)
@@ -534,6 +579,7 @@ namespace
         return { value.at(0).get<float>(), value.at(1).get<float>() };
     }
 
+    // 三要素の数値配列を読み、長さや型が不正なら例外を伝播します(value: XYZ順のJSON配列)。
     DirectX::XMFLOAT3 ReadFloat3(const Json& value)
     {
         if (!value.is_array() || value.size() != 3)
@@ -548,6 +594,7 @@ namespace
         };
     }
 
+    // 四要素の数値配列を読み、長さや型が不正なら例外を伝播します(value: XYZW順のJSON配列)。
     DirectX::XMFLOAT4 ReadFloat4(const Json& value)
     {
         if (!value.is_array() || value.size() != 4)
@@ -563,15 +610,15 @@ namespace
         };
     }
 
-    // transformの回転を読み込みます。回転の正本はクォータニオン
-    // ですが、それが無い古いシーン（オイラー角しか持たない）も
-    // そのまま開けるようにします。
+    // クォータニオンを優先して回転を読み、旧形式のオイラー角にも対応します(transformValue: 変換のJSON, transform: 回転の書込先)。
+    // 両形式がない場合は単位クォータニオンを設定します。
     void ReadTransformRotation(
         const Json& transformValue,
         LamaPon::Transform& transform)
     {
         if (transformValue.contains("rotationQuaternion"))
         {
+            // JSONに保存された回転の四成分
             const auto quaternion = ReadFloat4(
                 transformValue.at("rotationQuaternion"));
             transform.SetRotationVector(
@@ -589,6 +636,7 @@ namespace
             0.0f, 0.0f, 0.0f, 1.0f };
     }
 
+    // 横揃えを保存名へ変換し、未知値はLeftにします(alignment: 横揃えの指定)。
     const char* TextHorizontalAlignmentName(
         const LamaPon::TextHorizontalAlignment alignment)
     {
@@ -603,6 +651,7 @@ namespace
         }
     }
 
+    // 横揃えの保存名を読み、未知名はLeftにします(value: 横揃えの保存名)。
     LamaPon::TextHorizontalAlignment ReadTextHorizontalAlignment(
         const std::string_view value)
     {
@@ -617,6 +666,7 @@ namespace
         return LamaPon::TextHorizontalAlignment::Left;
     }
 
+    // 縦揃えを保存名へ変換し、未知値はTopにします(alignment: 縦揃えの指定)。
     const char* TextVerticalAlignmentName(
         const LamaPon::TextVerticalAlignment alignment)
     {
@@ -631,6 +681,7 @@ namespace
         }
     }
 
+    // 縦揃えの保存名を読み、未知名はTopにします(value: 縦揃えの保存名)。
     LamaPon::TextVerticalAlignment ReadTextVerticalAlignment(
         const std::string_view value)
     {
@@ -645,6 +696,7 @@ namespace
         return LamaPon::TextVerticalAlignment::Top;
     }
 
+    // 基本形状を保存名へ変換し、未対応値は例外を送出します(shape: 基本形状の種類)。
     const char* ShapeName(const LamaPon::PrimitiveShape shape)
     {
         switch (shape)
@@ -662,6 +714,7 @@ namespace
         }
     }
 
+    // 基本形状の保存名を読み、未知名は例外を送出します(name: 基本形状の保存名)。
     LamaPon::PrimitiveShape ReadShape(const std::string& name)
     {
         if (name == "Cube")
@@ -684,6 +737,7 @@ namespace
         throw std::runtime_error("Unknown primitive shape: " + name);
     }
 
+    // 粒子放出形状を保存名へ変換し、未知値はConeにします(shape: 粒子放出形状の種類)。
     const char* ParticleShapeName(
         const LamaPon::ParticleEmitterShape shape)
     {
@@ -700,6 +754,7 @@ namespace
         }
     }
 
+    // 粒子描画を保存名へ変換し、Horizontal以外はBillboardにします(mode: 粒子の描画方式)。
     const char* ParticleRenderModeName(
         const LamaPon::ParticleRenderMode mode)
     {
@@ -709,6 +764,7 @@ namespace
             : "Billboard";
     }
 
+    // 粒子描画の保存名を読み、Horizontal以外はBillboardにします(value: 描画方式の保存名)。
     LamaPon::ParticleRenderMode ReadParticleRenderMode(
         const std::string& value)
     {
@@ -717,6 +773,7 @@ namespace
             : LamaPon::ParticleRenderMode::Billboard;
     }
 
+    // ビルボード方式を保存名へ変換し、未知値はScreenAlignedにします(mode: ビルボードの向き指定)。
     const char* BillboardModeToString(
         const LamaPon::BillboardMode mode)
     {
@@ -737,6 +794,7 @@ namespace
         }
     }
 
+    // ビルボードの保存名を読み、未知名はScreenAlignedにします(value: 向き指定の保存名)。
     LamaPon::BillboardMode BillboardModeFromString(
         const std::string& value)
     {
@@ -762,6 +820,7 @@ namespace
         return LamaPon::BillboardMode::ScreenAligned;
     }
 
+    // 正面軸を保存名へ変換し、Forward以外はUpにします(axis: 正面とするローカル軸)。
     const char* BillboardFacingAxisToString(
         const LamaPon::BillboardFacingAxis axis)
     {
@@ -770,6 +829,7 @@ namespace
             : "Up";
     }
 
+    // 正面軸の保存名を読み、Forward以外はUpにします(value: 正面軸の保存名)。
     LamaPon::BillboardFacingAxis
         BillboardFacingAxisFromString(
             const std::string& value)
@@ -779,6 +839,7 @@ namespace
             : LamaPon::BillboardFacingAxis::Up;
     }
 
+    // 粒子放出形状の保存名を読み、未知名はConeにします(name: 放出形状の保存名)。
     LamaPon::ParticleEmitterShape
         ReadParticleShape(
             const std::string& name)
@@ -797,12 +858,14 @@ namespace
             ParticleEmitterShape::Cone;
     }
 
+    // アセットのパスと取得できたGUIDを保存します(result: 追記先JSON, field: パスのキー名, path: 保存するパス, database: GUIDを得る台帳)。
     void SerializeAssetReference(
         Json& result,
         const std::string_view field,
         const std::filesystem::path& path,
         const LamaPon::AssetDatabase& database)
     {
+        // JSONへ格納するアセットのキー名
         const std::string fieldName(field);
         result[fieldName] =
             LamaPon::PathToUtf8(path);
@@ -810,6 +873,7 @@ namespace
         {
             return;
         }
+        // 保存または解決するアセットGUID
         const auto guid =
             database.GuidForPath(path);
         if (!guid.empty())
@@ -818,8 +882,7 @@ namespace
         }
     }
 
-    // PBRマップ（粗さ・金属度・遮蔽・発光）と付随する値を書き出します。
-    // MeshRendererとModelRendererで同じ形なので共通化しています。
+    // PBRマップのパス・GUIDと遮蔽・発光の設定を書き込みます(result: 追記先JSON, material: 保存する材質, database: GUIDを得る台帳)。
     void SerializePbrMapReferences(
         Json& result,
         const LamaPon::LitMaterial& material,
@@ -847,6 +910,7 @@ namespace
             database);
         result["occlusionStrength"] =
             material.OcclusionStrength();
+        // 保存する材質の発光色
         const auto& emissive = material.EmissiveColor();
         result["emissiveColor"] = Json::array({
             emissive.x,
@@ -855,16 +919,20 @@ namespace
         });
     }
 
+    // GUIDを優先してアセット参照を解決し、解決できなければ保存パスを使います(value: 参照元JSON, field: パスのキー名, database: GUIDを解決する台帳)。
     std::filesystem::path ReadAssetReference(
         const Json& value,
         const std::string_view field,
         const LamaPon::AssetDatabase& database)
     {
+        // JSONへ格納するアセットのキー名
         const std::string fieldName(field);
+        // GUID未解決時の保存パス
         const auto fallback = LamaPon::PathFromUtf8(
             value.value(
                 fieldName,
                 std::string{}));
+        // 保存または解決するアセットGUID
         const auto guid = value.value(
             fieldName + "Guid",
             std::string{});
@@ -875,9 +943,8 @@ namespace
             : fallback;
     }
 
-    // SerializePbrMapReferencesと対になる読み込み。未指定なら未設定の
-    // まま（発光は黒＝発光なし）にするので、旧シーンもそのまま開けます。
-    // MeshRendererとModelRendererで同じAPI名なのでテンプレートです。
+    // PBRマップの参照と遮蔽・発光の設定を復元します(value: 材質JSON, component: 復元先の描画コンポーネント, database: GUIDを解決する台帳)。
+    // 省略されたマップは空パス、遮蔽強度は1を使い、発光色は三要素配列の場合だけ更新します。
     template<typename Component>
     void ReadPbrMapReferences(
         const Json& value,
@@ -906,6 +973,7 @@ namespace
                 database));
         component.SetOcclusionStrength(
             value.value("occlusionStrength", 1.0f));
+        // 発光色のJSON内の格納位置
         if (const auto found = value.find("emissiveColor");
             found != value.end()
             && found->is_array()
@@ -919,21 +987,26 @@ namespace
         }
     }
 
+    // 対応するコンポーネントの型・有効状態・設定を保存用JSONへ変換します(component: 保存するコンポーネント, database: アセットGUIDを取得する台帳)。
+    // 新しい型は保存・復元の双方へ追加し、未対応型はserializable=falseとして記録します。
     Json SerializeComponent(
         const LamaPon::Component& component,
         const LamaPon::AssetDatabase& database)
     {
+        // 型と設定を格納するJSON
         Json result{
             { "type", std::string(component.TypeName()) },
             { "enabled", component.IsEnabled() }
         };
 
+        // 保存するネットワーク識別子
         if (const auto* identity = dynamic_cast<const LamaPon::NetworkIdentityComponent*>(&component))
         {
             result["sceneKey"] = identity->SceneKey();
             result["hostOnlySimulation"] = identity->HostOnlySimulation();
             result["interpolationSeconds"] = identity->InterpolationSeconds();
         }
+        // 保存するカメラ設定
         else if (const auto* camera = dynamic_cast<const LamaPon::CameraComponent*>(&component))
         {
             result["verticalFieldOfView"] = camera->VerticalFieldOfView();
@@ -947,6 +1020,7 @@ namespace
             result["targetClearColor"] =
                 ToJson(camera->TargetClearColor());
         }
+        // 保存する方向光源
         else if (const auto* directionalLight =
             dynamic_cast<
                 const LamaPon::DirectionalLightComponent*>(
@@ -971,6 +1045,7 @@ namespace
             result["angularDiameterDegrees"] =
                 directionalLight->AngularDiameterDegrees();
         }
+        // 保存するポイント光源
         else if (const auto* pointLight =
             dynamic_cast<const LamaPon::PointLightComponent*>(
                 &component))
@@ -985,6 +1060,7 @@ namespace
             result["shadowStrength"] =
                 pointLight->ShadowStrength();
         }
+        // 保存するスポット光源
         else if (const auto* spotLight =
             dynamic_cast<const LamaPon::SpotLightComponent*>(
                 &component))
@@ -1005,6 +1081,7 @@ namespace
             result["shadowStrength"] =
                 spotLight->ShadowStrength();
         }
+        // 保存する二次元光源
         else if (const auto* light2D =
             dynamic_cast<
                 const LamaPon::Light2DComponent*>(
@@ -1015,6 +1092,7 @@ namespace
             result["radius"] = light2D->Radius();
             result["affectsUI"] = light2D->AffectsUI();
         }
+        // 保存する二次元箱形状
         else if (const auto* collider2D =
             dynamic_cast<const LamaPon::BoxCollider2DComponent*>(&component))
         {
@@ -1029,6 +1107,7 @@ namespace
                 result,
                 collider2D->Material());
         }
+        // 保存する円形状
         else if (const auto* circle2D =
             dynamic_cast<
                 const LamaPon::CircleCollider2DComponent*>(
@@ -1048,12 +1127,15 @@ namespace
                 result,
                 circle2D->Material());
         }
+        // 保存する多角形状
         else if (const auto* polygon2D =
             dynamic_cast<
                 const LamaPon::PolygonCollider2DComponent*>(
                     &component))
         {
+            // 多角形頂点のJSON配列
             auto vertices = Json::array();
+            // 保存する多角形頂点
             for (const auto& vertex : polygon2D->Vertices())
             {
                 vertices.push_back(ToJson(vertex));
@@ -1071,6 +1153,7 @@ namespace
                 result,
                 polygon2D->Material());
         }
+        // 保存する三次元箱形状
         else if (const auto* collider3D =
             dynamic_cast<const LamaPon::BoxCollider3DComponent*>(&component))
         {
@@ -1085,6 +1168,7 @@ namespace
                 result,
                 collider3D->Material());
         }
+        // 保存するカプセル形状
         else if (const auto* capsule =
             dynamic_cast<
                 const LamaPon::CapsuleCollider3DComponent*>(
@@ -1102,6 +1186,7 @@ namespace
                 result,
                 capsule->Material());
         }
+        // 保存する球形状
         else if (const auto* sphere =
             dynamic_cast<
                 const LamaPon::SphereCollider3DComponent*>(
@@ -1120,12 +1205,15 @@ namespace
                 result,
                 sphere->Material());
         }
+        // 保存する凸形状
         else if (const auto* hull =
             dynamic_cast<
                 const LamaPon::ConvexHullCollider3DComponent*>(
                     &component))
         {
+            // 凸形状頂点のJSON配列
             auto points = Json::array();
+            // 保存する凸形状の頂点
             for (const auto& point : hull->Points())
             {
                 points.push_back(ToJson(point));
@@ -1143,6 +1231,7 @@ namespace
                 result,
                 hull->Material());
         }
+        // 保存するメッシュ衝突形状
         else if (const auto* meshCollider =
             dynamic_cast<
                 const LamaPon::MeshCollider3DComponent*>(
@@ -1168,6 +1257,7 @@ namespace
                 result,
                 meshCollider->Material());
         }
+        // 保存するメッシュ描画設定
         else if (const auto* mesh = dynamic_cast<const LamaPon::MeshRendererComponent*>(&component))
         {
             result["shape"] = ShapeName(mesh->Shape());
@@ -1186,8 +1276,8 @@ namespace
                 result,
                 mesh->Material(),
                 database);
-            // カスタムShaderの追加テクスチャ（t7以降）。GUID付きで
-            // 保存するため、移動・改名しても参照が追従します。
+            // 独自シェーダーのt7以降の追加テクスチャもGUID付きで保存します。
+            // 追加テクスチャの添字
             for (std::size_t customIndex = 0;
                 customIndex
                     < LamaPon::LitMaterial::CustomTextureCount;
@@ -1213,12 +1303,14 @@ namespace
                 database);
             // バリアントのキーワード（#pragma multi_compile）。
             result["shaderKeywords"] = Json::array();
+            // 保存するシェーダーキーワード
             for (const auto& keyword :
                 mesh->ShaderKeywords().Keywords())
             {
                 result["shaderKeywords"].push_back(keyword);
             }
             result["customParameters"] = Json::array();
+            // 独自描画定数の添字
             for (std::size_t index = 0;
                 index < LamaPon::LitMaterial::CustomParameterCount;
                 ++index)
@@ -1232,6 +1324,7 @@ namespace
                 mesh->MaterialAssetPath(),
                 database);
         }
+        // 保存するスプライト描画設定
         else if (const auto* sprite = dynamic_cast<const LamaPon::SpriteRendererComponent*>(&component))
         {
             result["size"] = ToJson(sprite->Size());
@@ -1242,6 +1335,7 @@ namespace
             result["maskInteraction"] =
                 static_cast<int>(sprite->MaskInteraction());
             // 既定（全体表示）以外のときだけ保存します。
+            // 画像内の表示範囲の正規化矩形
             const auto& sourceRect = sprite->SourceRect();
             if (sourceRect.x != 0.0f
                 || sourceRect.y != 0.0f
@@ -1261,6 +1355,7 @@ namespace
                 sprite->ShaderPath(),
                 database);
             result["customParameters"] = Json::array();
+            // 独自描画定数の添字
             for (std::size_t index = 0;
                 index
                     < LamaPon::SpriteRendererComponent::
@@ -1272,6 +1367,7 @@ namespace
                         sprite->CustomParameter(index)));
             }
         }
+        // 保存するスプライトマスク
         else if (const auto* spriteMask =
             dynamic_cast<
                 const LamaPon::SpriteMaskComponent*>(
@@ -1281,6 +1377,7 @@ namespace
                 static_cast<int>(spriteMask->Shape());
             result["size"] = ToJson(spriteMask->Size());
         }
+        // 保存する可視判定設定
         else if (const auto* renderCulling =
             dynamic_cast<
                 const LamaPon::RenderCullingComponent*>(
@@ -1291,12 +1388,13 @@ namespace
             result["cullingMargin"] =
                 renderCulling->CullingMargin();
         }
+        // 保存する反射プローブ設定
         else if (const auto* reflectionProbe =
             dynamic_cast<
                 const LamaPon::ReflectionProbeComponent*>(
                     &component))
         {
-            // ベイク結果は保存しません（読み込み時に焼き直します）。
+            // 反射のベイク結果はシーンJSONに含めず、描画時にキャッシュ復元または再ベイクします。
             result["range"] = reflectionProbe->Range();
             result["intensity"] =
                 reflectionProbe->Intensity();
@@ -1305,6 +1403,7 @@ namespace
             result["blendDistance"] =
                 reflectionProbe->BlendDistance();
         }
+        // 保存するスプライトアニメ設定
         else if (const auto* spriteAnimator =
             dynamic_cast<
                 const LamaPon::SpriteAnimatorComponent*>(
@@ -1317,7 +1416,9 @@ namespace
                 spriteAnimator->PlayOnStart();
             result["defaultClip"] =
                 spriteAnimator->DefaultClip();
+            // アニメクリップのJSON配列
             auto clips = nlohmann::json::array();
+            // 保存するアニメクリップ
             for (const auto& clip :
                 spriteAnimator->Clips())
             {
@@ -1334,6 +1435,7 @@ namespace
             }
             result["clips"] = std::move(clips);
         }
+        // 保存するUI基準画面の設定
         else if (const auto* canvas =
             dynamic_cast<
                 const LamaPon::UICanvasComponent*>(
@@ -1345,6 +1447,7 @@ namespace
             result["matchWidthOrHeight"] =
                 canvas->MatchWidthOrHeight();
         }
+        // 保存するUI矩形変換
         else if (const auto* uiTransform =
             dynamic_cast<
                 const LamaPon::
@@ -1364,6 +1467,7 @@ namespace
             result["sizeDelta"] =
                 ToJson(uiTransform->SizeDelta());
         }
+        // 保存するボタン設定
         else if (const auto* button =
             dynamic_cast<
                 const LamaPon::UIButtonComponent*>(
@@ -1409,6 +1513,7 @@ namespace
                 button->TargetScene(),
                 database);
         }
+        // 保存するUI画像設定
         else if (const auto* image =
             dynamic_cast<
                 const LamaPon::UIImageComponent*>(
@@ -1426,6 +1531,7 @@ namespace
                 image->TexturePath(),
                 database);
         }
+        // 保存するトグル設定
         else if (const auto* toggle =
             dynamic_cast<
                 const LamaPon::UIToggleComponent*>(
@@ -1448,6 +1554,7 @@ namespace
                 ToJson(toggle->FallbackSize());
             result["sortOrder"] = toggle->SortOrder();
         }
+        // 保存するスライダー設定
         else if (const auto* slider =
             dynamic_cast<
                 const LamaPon::UISliderComponent*>(
@@ -1472,6 +1579,7 @@ namespace
                 ToJson(slider->FallbackSize());
             result["sortOrder"] = slider->SortOrder();
         }
+        // 保存する文字入力設定
         else if (const auto* inputField =
             dynamic_cast<
                 const LamaPon::UIInputFieldComponent*>(
@@ -1502,6 +1610,7 @@ namespace
             result["sortOrder"] =
                 inputField->SortOrder();
         }
+        // 保存するUI整列設定
         else if (const auto* layoutGroup =
             dynamic_cast<
                 const LamaPon::UILayoutGroupComponent*>(
@@ -1520,6 +1629,7 @@ namespace
                 static_cast<int>(
                     layoutGroup->ChildAlignment());
         }
+        // 保存するスクロール表示設定
         else if (const auto* scrollView =
             dynamic_cast<
                 const LamaPon::UIScrollViewComponent*>(
@@ -1536,6 +1646,7 @@ namespace
             result["sortOrder"] =
                 scrollView->SortOrder();
         }
+        // 保存するナビ格子設定
         else if (const auto* navMesh =
             dynamic_cast<
                 const LamaPon::NavMeshComponent*>(
@@ -1553,10 +1664,12 @@ namespace
                 Json::array();
             if (navMesh->IsBaked())
             {
+                // ナビ格子の奥行き添字
                 for (std::uint32_t z{};
                     z < navMesh->GridDepth();
                     ++z)
                 {
+                    // ナビ格子の横方向添字
                     for (std::uint32_t x{};
                         x < navMesh->GridWidth();
                         ++x)
@@ -1578,6 +1691,7 @@ namespace
             result["baked"] =
                 navMesh->IsBaked();
         }
+        // 保存するナビ移動設定
         else if (const auto* agent =
             dynamic_cast<
                 const LamaPon::
@@ -1592,6 +1706,7 @@ namespace
             result["destination"] =
                 ToJson(agent->Destination());
             result["path"] = Json::array();
+            // 保存する移動経路のワールド点
             for (const auto& point :
                 agent->Path())
             {
@@ -1599,6 +1714,7 @@ namespace
                     ToJson(point));
             }
         }
+        // 保存するタイル描画設定
         else if (const auto* tilemap =
             dynamic_cast<
                 const LamaPon::TilemapComponent*>(
@@ -1619,6 +1735,7 @@ namespace
                 tilemap->TexturePath(),
                 database);
             result["cells"] = Json::array();
+            // coordinate: タイルのXY格子座標, tileIndex: 画像内のタイル番号
             for (const auto& [coordinate, tileIndex] :
                 tilemap->Cells())
             {
@@ -1629,6 +1746,7 @@ namespace
                 });
             }
         }
+        // 保存する視差移動設定
         else if (const auto* parallax =
             dynamic_cast<
                 const LamaPon::ParallaxLayerComponent*>(
@@ -1638,6 +1756,7 @@ namespace
             result["referenceId"] =
                 parallax->ReferenceId();
         }
+        // 保存する音声再生設定
         else if (const auto* audio =
             dynamic_cast<const LamaPon::AudioSourceComponent*>(&component))
         {
@@ -1665,6 +1784,7 @@ namespace
                 &component) != nullptr)
         {
         }
+        // 保存するモデル描画設定
         else if (const auto* model = dynamic_cast<const LamaPon::ModelRendererComponent*>(&component))
         {
             SerializeAssetReference(
@@ -1694,8 +1814,8 @@ namespace
                 result,
                 model->Material(),
                 database);
-            // カスタムShaderの追加テクスチャ（t7以降）。GUID付きで
-            // 保存するため、移動・改名しても参照が追従します。
+            // 独自シェーダーのt7以降の追加テクスチャもGUID付きで保存します。
+            // 追加テクスチャの添字
             for (std::size_t customIndex = 0;
                 customIndex
                     < LamaPon::LitMaterial::CustomTextureCount;
@@ -1719,12 +1839,14 @@ namespace
                 model->ShaderPath(),
                 database);
             result["shaderKeywords"] = Json::array();
+            // 保存するシェーダーキーワード
             for (const auto& keyword :
                 model->ShaderKeywords().Keywords())
             {
                 result["shaderKeywords"].push_back(keyword);
             }
             result["customParameters"] = Json::array();
+            // 独自描画定数の添字
             for (std::size_t index = 0;
                 index < LamaPon::LitMaterial::CustomParameterCount;
                 ++index)
@@ -1755,6 +1877,7 @@ namespace
                 model->MaterialAssetPath(),
                 database);
         }
+        // 保存する文字描画設定
         else if (const auto* text = dynamic_cast<const LamaPon::TextRendererComponent*>(&component))
         {
             result["text"] = text->Text();
@@ -1769,6 +1892,7 @@ namespace
                 TextVerticalAlignmentName(text->VerticalAlignment());
             result["sortOrder"] = text->SortOrder();
         }
+        // 保存する三次元粒子設定
         else if (const auto* particles =
             dynamic_cast<
                 const LamaPon::
@@ -1835,6 +1959,7 @@ namespace
                 particles->AuxiliaryTexturePath(),
                 database);
             result["customParameters"] = Json::array();
+            // 独自描画定数の添字
             for (std::size_t index = 0;
                 index
                     < LamaPon::ParticleSystemComponent::
@@ -1846,6 +1971,7 @@ namespace
                         particles->CustomParameter(index)));
             }
         }
+        // 保存する二次元粒子設定
         else if (const auto* particles2D =
             dynamic_cast<
                 const LamaPon::SpriteParticles2DComponent*>(
@@ -1876,10 +2002,12 @@ namespace
                 particles2D->TexturePath(),
                 database);
         }
+        // 保存する回転速度設定
         else if (const auto* rotator = dynamic_cast<const LamaPon::RotatorComponent*>(&component))
         {
             result["angularVelocity"] = ToJson(rotator->AngularVelocity());
         }
+        // 保存するビルボード設定
         else if (const auto* billboard =
             dynamic_cast<
                 const LamaPon::BillboardComponent*>(
@@ -1893,6 +2021,7 @@ namespace
             result["targetPosition"] =
                 ToJson(billboard->TargetPosition());
         }
+        // 保存する変換アニメ設定
         else if (const auto* animator =
             dynamic_cast<
                 const LamaPon::TransformAnimatorComponent*>(
@@ -1913,6 +2042,7 @@ namespace
                 animator->ControllerPath(),
                 database);
         }
+        // 保存する入力移動設定
         else if (const auto* inputMover =
             dynamic_cast<
                 const LamaPon::InputMoverComponent*>(
@@ -1924,6 +2054,7 @@ namespace
                 inputMover->VerticalAction();
             result["speed"] = inputMover->Speed();
         }
+        // 保存するキャラクター移動設定
         else if (const auto* controller =
             dynamic_cast<
                 const LamaPon::CharacterControllerComponent*>(
@@ -1943,6 +2074,7 @@ namespace
             result["verticalAction"] = controller->VerticalAction();
             result["jumpAction"] = controller->JumpAction();
         }
+        // 保存するネイティブスクリプト
         else if (const auto* nativeScript =
             dynamic_cast<
                 const LamaPon::NativeScriptComponent*>(
@@ -1953,6 +2085,7 @@ namespace
             result["properties"] = Json::parse(
                 nativeScript->SerializedProperties());
         }
+        // 保存する剛体設定
         else if (const auto* rigidbody = dynamic_cast<const LamaPon::RigidbodyComponent*>(&component))
         {
             result["velocity"] = ToJson(rigidbody->Velocity());
@@ -1999,9 +2132,11 @@ namespace
                 ? "continuous"
                 : "discrete";
         }
+        // 保存するジョイント設定
         else if (const auto* joint =
             dynamic_cast<const LamaPon::JointComponent*>(&component))
         {
+            // ジョイント種類の保存名
             const char* jointType = "fixed";
             if (joint->Type() == LamaPon::JointType::Hinge)
             {
@@ -2033,6 +2168,7 @@ namespace
             result["collideConnected"] =
                 joint->CollideConnected();
         }
+        // 保存するLOD切替設定
         else if (const auto* lodGroup =
             dynamic_cast<
                 const LamaPon::LODGroupComponent*>(
@@ -2041,6 +2177,7 @@ namespace
             result["cullDistance"] =
                 lodGroup->CullDistance();
             result["levels"] = Json::array();
+            // 保存するLOD距離と対象番号
             for (const auto& level :
                 lodGroup->Levels())
             {
@@ -2064,16 +2201,21 @@ namespace
         return result;
     }
 
+    // 保存型に応じたコンポーネントを追加して設定を復元します(gameObject: 追加先の物体, value: コンポーネントJSON, database: アセットGUIDを解決する台帳)。
+    // 未知型や不正なデータは例外を伝播し、追加後の復元失敗はここではロールバックしません。
     LamaPon::Component& DeserializeComponent(
         LamaPon::GameObject& gameObject,
         const Json& value,
         const LamaPon::AssetDatabase& database)
     {
+        // 復元するコンポーネントの型名
         const auto type = value.at("type").get<std::string>();
+        // 追加したコンポーネントの参照
         LamaPon::Component* component{};
 
         if (type == "NetworkIdentity")
         {
+            // 復元したネットワーク識別子
             auto& identity = gameObject.AddComponent<LamaPon::NetworkIdentityComponent>(
                 value.value("sceneKey", std::string{}));
             identity.SetHostOnlySimulation(value.value("hostOnlySimulation", true));
@@ -2082,6 +2224,7 @@ namespace
         }
         else if (type == "Camera")
         {
+            // 復元したカメラ設定
             auto& camera =
                 gameObject.AddComponent<LamaPon::CameraComponent>(
                     value.value("verticalFieldOfView", DirectX::XM_PIDIV4),
@@ -2113,6 +2256,7 @@ namespace
         }
         else if (type == "DirectionalLight")
         {
+            // 復元した方向光源
             auto& directionalLight = gameObject.AddComponent<
                 LamaPon::DirectionalLightComponent>(
                 value.contains("color")
@@ -2132,10 +2276,7 @@ namespace
                 value.value("shadowStrength", 0.85f),
                 value.value("shadowCascadeCount", 4u),
                 value.value("shadowSplitLambda", 0.65f));
-            // 角度サイズはコンストラクター引数を増やさずに足します
-            // （公開シグネチャを変えると、既存のGame Moduleの
-            // AddComponent<DirectionalLightComponent>(...)が
-            // そのままでは通らなくなるため）。
+            // 既存Game Moduleとのコンストラクター互換を保ち、角直径は追加後に設定します。
             directionalLight.SetAngularDiameterDegrees(
                 value.value("angularDiameterDegrees", 0.53f));
             component = &directionalLight;
@@ -2153,6 +2294,7 @@ namespace
                     },
                 value.value("intensity", 3.0f),
                 value.value("range", 8.0f));
+            // 復元したポイント光源
             auto* pointLight =
                 static_cast<LamaPon::PointLightComponent*>(
                     component);
@@ -2182,6 +2324,7 @@ namespace
                 value.value(
                     "outerConeAngle",
                     DirectX::XMConvertToRadians(35.0f)));
+            // 復元したスポット光源
             auto* spotLight =
                 static_cast<LamaPon::SpotLightComponent*>(
                     component);
@@ -2196,6 +2339,7 @@ namespace
         }
         else if (type == "Light2D")
         {
+            // 復元した二次元光源
             auto& light2D = gameObject.AddComponent<
                 LamaPon::Light2DComponent>(
                 value.contains("color")
@@ -2207,8 +2351,7 @@ namespace
                     },
                 value.value("intensity", 1.0f),
                 value.value("radius", 150.0f));
-            // コンストラクター引数は増やしません（既存のGame Moduleの
-            // AddComponent<Light2DComponent>(...)を通らなくしないため）。
+            // 既存Game Moduleとのコンストラクター互換を保ち、UIへの影響は追加後に設定します。
             light2D.SetAffectsUI(
                 value.value("affectsUI", false));
             component = &light2D;
@@ -2242,9 +2385,11 @@ namespace
         }
         else if (type == "PolygonCollider2D")
         {
+            // 復元する多角形頂点の一覧
             std::vector<DirectX::XMFLOAT2> vertices;
             if (value.contains("vertices"))
             {
+                // 多角形頂点のJSON配列
                 for (const auto& vertex : value.at("vertices"))
                 {
                     vertices.push_back(ReadFloat2(vertex));
@@ -2304,9 +2449,11 @@ namespace
         }
         else if (type == "ConvexHullCollider3D")
         {
+            // 復元する凸形状の頂点一覧
             std::vector<DirectX::XMFLOAT3> points;
             if (value.contains("points"))
             {
+                // 復元する頂点または経路点
                 for (const auto& point : value.at("points"))
                 {
                     points.push_back(ReadFloat3(point));
@@ -2341,6 +2488,7 @@ namespace
         }
         else if (type == "MeshRenderer")
         {
+            // 復元したメッシュ描画設定
             auto& mesh = gameObject.AddComponent<LamaPon::MeshRendererComponent>(
                 ReadShape(value.value("shape", std::string("Cube"))),
                 value.contains("color")
@@ -2374,12 +2522,15 @@ namespace
                 value,
                 "shader",
                 database));
+            // キーワード配列の格納位置
             if (const auto keywords =
                     value.find("shaderKeywords");
                 keywords != value.end()
                 && keywords->is_array())
             {
+                // 有効化するキーワード一覧
                 std::vector<std::string> enabled;
+                // キーワード配列のJSON値
                 for (const auto& keyword : *keywords)
                 {
                     if (keyword.is_string())
@@ -2392,6 +2543,7 @@ namespace
                     LamaPon::ShaderKeywordSet{
                         std::move(enabled) });
             }
+            // 追加テクスチャの添字
             for (std::size_t customIndex = 0;
                 customIndex
                     < LamaPon::LitMaterial::CustomTextureCount;
@@ -2405,12 +2557,15 @@ namespace
                             + std::to_string(customIndex),
                         database));
             }
+            // 独自描画定数のJSON格納位置
             if (const auto found = value.find("customParameters");
                 found != value.end() && found->is_array())
             {
+                // 復元可能な独自描画定数の数
                 const auto count = std::min(
                     found->size(),
                     LamaPon::LitMaterial::CustomParameterCount);
+                // 復元する独自描画定数の添字
                 for (std::size_t index = 0; index < count; ++index)
                 {
                     mesh.SetCustomParameter(
@@ -2422,6 +2577,7 @@ namespace
         }
         else if (type == "SpriteRenderer")
         {
+            // 復元したスプライト描画設定
             auto& sprite =
                 gameObject.AddComponent<LamaPon::SpriteRendererComponent>(
                 value.contains("size")
@@ -2456,16 +2612,20 @@ namespace
                     value,
                     "shader",
                     database));
+            // 独自描画定数のJSON格納位置
             if (const auto found =
                     value.find("customParameters");
                 found != value.end()
                 && found->is_array())
             {
+                // 復元可能な独自描画定数の数
                 const auto count = std::min(
                     found->size(),
                     LamaPon::SpriteRendererComponent::
                         CustomParameterCount);
+                // 復元する独自描画定数の添字
                 for (std::size_t index = 0;
+                    // 復元可能な独自描画定数の数
                     index < count;
                     ++index)
                 {
@@ -2485,6 +2645,7 @@ namespace
         }
         else if (type == "SpriteMask")
         {
+            // 復元したスプライトマスク
             auto& spriteMask = gameObject.AddComponent<
                 LamaPon::SpriteMaskComponent>(
                 static_cast<LamaPon::SpriteMaskShape>(
@@ -2500,6 +2661,7 @@ namespace
         }
         else if (type == "RenderCulling")
         {
+            // 復元した可視判定設定
             auto& renderCulling =
                 gameObject.AddComponent<
                     LamaPon::RenderCullingComponent>(
@@ -2509,6 +2671,7 @@ namespace
         }
         else if (type == "ReflectionProbe")
         {
+            // 復元した反射プローブ設定
             auto& reflectionProbe =
                 gameObject.AddComponent<
                     LamaPon::ReflectionProbeComponent>(
@@ -2521,14 +2684,13 @@ namespace
             }
             reflectionProbe.SetBlendDistance(
                 value.value("blendDistance", 0.0f));
-            // シーン由来の印。最初の自動ベイクを、ディスクの環境
-            // キャッシュからの復元で置き換えてよいのはこの印がある
-            // プローブだけです。
+            // シーン由来と記録し、初回の自動ベイクをキャッシュ復元へ置き換えられるようにします。
             reflectionProbe.MarkLoadedFromScene();
             component = &reflectionProbe;
         }
         else if (type == "SpriteAnimator")
         {
+            // 復元したスプライトアニメ設定
             auto& animator = gameObject.AddComponent<
                 LamaPon::SpriteAnimatorComponent>(
                 value.value("columns", 1),
@@ -2541,12 +2703,15 @@ namespace
                 value.value(
                     "defaultClip",
                     std::string{}));
+            // アニメクリップ配列の格納位置
             if (const auto clips = value.find("clips");
                 clips != value.end()
                 && clips->is_array())
             {
+                // 復元するアニメクリップのJSON
                 for (const auto& clipValue : *clips)
                 {
+                    // 復元したアニメクリップ
                     LamaPon::SpriteAnimationClip clip;
                     clip.name = clipValue.value(
                         "name",
@@ -2636,6 +2801,7 @@ namespace
         }
         else if (type == "UIButton")
         {
+            // 復元したボタン設定
             auto& button =
                 gameObject.AddComponent<
                     LamaPon::UIButtonComponent>(
@@ -2731,6 +2897,7 @@ namespace
         }
         else if (type == "UIImage")
         {
+            // 復元したUI画像設定
             auto& image =
                 gameObject.AddComponent<
                     LamaPon::UIImageComponent>(
@@ -2767,6 +2934,7 @@ namespace
         }
         else if (type == "UIToggle")
         {
+            // 復元したトグル設定
             auto& toggle =
                 gameObject.AddComponent<
                     LamaPon::UIToggleComponent>(
@@ -2807,13 +2975,14 @@ namespace
             }
             toggle.SetSortOrder(
                 value.value("sortOrder", 0));
-            // 読み込み直後は「変更あり」にしない
+            // 復元した初期値を操作による変更として通知しません。
             static_cast<void>(
                 toggle.ConsumeValueChanged());
             component = &toggle;
         }
         else if (type == "UISlider")
         {
+            // 復元したスライダー設定
             auto& slider =
                 gameObject.AddComponent<
                     LamaPon::UISliderComponent>(
@@ -2856,6 +3025,7 @@ namespace
         }
         else if (type == "UIInputField")
         {
+            // 復元した文字入力設定
             auto& inputField =
                 gameObject.AddComponent<
                     LamaPon::UIInputFieldComponent>(
@@ -2917,6 +3087,7 @@ namespace
         }
         else if (type == "UILayoutGroup")
         {
+            // 復元したUI整列設定
             auto& layoutGroup =
                 gameObject.AddComponent<
                     LamaPon::UILayoutGroupComponent>(
@@ -2934,6 +3105,7 @@ namespace
                 layoutGroup.SetPadding(
                     ReadFloat4(value.at("padding")));
             }
+            // 0〜2へ制限した子の整列指定
             const int alignment = std::clamp(
                 value.value("childAlignment", 0),
                 0,
@@ -2945,6 +3117,7 @@ namespace
         }
         else if (type == "UIScrollView")
         {
+            // 復元したスクロール表示設定
             auto& scrollView =
                 gameObject.AddComponent<
                     LamaPon::UIScrollViewComponent>();
@@ -2970,6 +3143,7 @@ namespace
         }
         else if (type == "NavMesh")
         {
+            // 復元したナビ格子設定
             auto& navMesh =
                 gameObject.AddComponent<
                     LamaPon::NavMeshComponent>(
@@ -2993,6 +3167,7 @@ namespace
                             1.8f));
             if (value.value("baked", false))
             {
+                // 復元する通行不可セルの座標一覧
                 std::vector<
                     LamaPon::
                         NavMeshComponent::
@@ -3004,6 +3179,7 @@ namespace
                         "blockedCells").
                             is_array())
                 {
+                    // 復元する格子セルのJSON
                     for (const auto& cell :
                         value.at(
                             "blockedCells"))
@@ -3029,6 +3205,7 @@ namespace
         }
         else if (type == "NavMeshAgent")
         {
+            // 復元したナビ移動設定
             auto& agent =
                 gameObject.AddComponent<
                     LamaPon::
@@ -3042,12 +3219,14 @@ namespace
                             value.value(
                                 "rotateToPath",
                                 true));
+            // 復元するワールド移動経路
             std::vector<
                 DirectX::XMFLOAT3> path;
             if (value.contains("path")
                 && value.at("path").
                     is_array())
             {
+                // 復元する頂点または経路点
                 for (const auto& point :
                     value.at("path"))
                 {
@@ -3067,6 +3246,7 @@ namespace
         }
         else if (type == "Tilemap")
         {
+            // 復元したタイル描画設定
             auto& tilemap =
                 gameObject.AddComponent<
                     LamaPon::TilemapComponent>(
@@ -3100,9 +3280,11 @@ namespace
             if (value.contains("cells")
                 && value.at("cells").is_array())
             {
+                // 復元する格子セルのJSON
                 for (const auto& cell :
                     value.at("cells"))
                 {
+                    // 復元する画像内のタイル番号
                     const auto tileIndex =
                         cell.value("tile", 0u);
                     if (tileIndex
@@ -3121,6 +3303,7 @@ namespace
         }
         else if (type == "ParallaxLayer")
         {
+            // 復元した視差移動設定
             auto& parallax = gameObject.AddComponent<
                 LamaPon::ParallaxLayerComponent>(
                 value.contains("factor")
@@ -3146,6 +3329,7 @@ namespace
                 value.value("spatial", false),
                 value.value("minimumDistance", 1.0f),
                 value.value("maximumDistance", 20.0f));
+            // 復元した音声再生設定
             auto* audioSource =
                 static_cast<LamaPon::AudioSourceComponent*>(
                     component);
@@ -3162,6 +3346,7 @@ namespace
         }
         else if (type == "ModelRenderer")
         {
+            // 復元したモデル描画設定
             auto& model = gameObject.AddComponent<LamaPon::ModelRendererComponent>(
                 ReadAssetReference(
                     value,
@@ -3215,20 +3400,22 @@ namespace
             model.SetMetallic(
                 value.value("metallic", 0.0f));
             ReadPbrMapReferences(value, model, database);
-            // 未指定は既定のLamaPon Lit（PBR）。旧シーンも
-            // そのまま新しい描画で開けます。
+            // 旧シーンで方式の指定がない場合も既定のPBR描画を使います。
             model.SetUseLegacyShading(
                 value.value("useLegacyShading", false));
             model.SetShaderPath(ReadAssetReference(
                 value,
                 "shader",
                 database));
+            // キーワード配列の格納位置
             if (const auto keywords =
                     value.find("shaderKeywords");
                 keywords != value.end()
                 && keywords->is_array())
             {
+                // 有効化するキーワード一覧
                 std::vector<std::string> enabled;
+                // キーワード配列のJSON値
                 for (const auto& keyword : *keywords)
                 {
                     if (keyword.is_string())
@@ -3241,6 +3428,7 @@ namespace
                     LamaPon::ShaderKeywordSet{
                         std::move(enabled) });
             }
+            // 追加テクスチャの添字
             for (std::size_t customIndex = 0;
                 customIndex
                     < LamaPon::LitMaterial::CustomTextureCount;
@@ -3254,12 +3442,15 @@ namespace
                             + std::to_string(customIndex),
                         database));
             }
+            // 独自描画定数のJSON格納位置
             if (const auto found = value.find("customParameters");
                 found != value.end() && found->is_array())
             {
+                // 復元可能な独自描画定数の数
                 const auto count = std::min(
                     found->size(),
                     LamaPon::LitMaterial::CustomParameterCount);
+                // 復元する独自描画定数の添字
                 for (std::size_t index = 0; index < count; ++index)
                 {
                     model.SetCustomParameter(
@@ -3271,6 +3462,7 @@ namespace
         }
         else if (type == "TextRenderer")
         {
+            // 復元した文字描画設定
             auto& text =
                 gameObject.AddComponent<LamaPon::TextRendererComponent>(
                 value.value("text", std::string("日本語テキスト")),
@@ -3297,6 +3489,7 @@ namespace
         }
         else if (type == "ParticleSystem")
         {
+            // 復元した粒子描画設定
             auto& particles =
                 gameObject.AddComponent<
                     LamaPon::
@@ -3425,18 +3618,22 @@ namespace
                     value,
                     "auxiliaryTexture",
                     database));
+            // 独自描画定数のJSON格納位置
             if (const auto found =
                 value.find("customParameters");
                 found != value.end()
                 && found->is_array())
             {
+                // 復元可能な独自描画定数の数
                 const std::size_t count =
                     std::min(
                         found->size(),
                         LamaPon::
                             ParticleSystemComponent::
                                 CustomParameterCount);
+                // 復元する独自描画定数の添字
                 for (std::size_t index = 0;
+                    // 復元可能な独自描画定数の数
                     index < count;
                     ++index)
                 {
@@ -3450,6 +3647,7 @@ namespace
         }
         else if (type == "SpriteParticles2D")
         {
+            // 復元した粒子描画設定
             auto& particles =
                 gameObject.AddComponent<
                     LamaPon::SpriteParticles2DComponent>(
@@ -3490,6 +3688,7 @@ namespace
         }
         else if (type == "Billboard")
         {
+            // 復元したビルボード設定
             auto& billboard =
                 gameObject.AddComponent<
                     LamaPon::BillboardComponent>(
@@ -3549,6 +3748,7 @@ namespace
         }
         else if (type == "CharacterController")
         {
+            // 復元したキャラクター移動設定
             auto& controller = gameObject.AddComponent<
                 LamaPon::CharacterControllerComponent>(
                     value.value("radius", 0.4f),
@@ -3578,6 +3778,7 @@ namespace
         }
         else if (type == "Rigidbody")
         {
+            // 復元した連続判定方式
             const auto collisionDetection =
                 value.value(
                     "collisionDetection",
@@ -3585,9 +3786,11 @@ namespace
                     == "continuous"
                 ? LamaPon::CollisionDetectionMode::Continuous
                 : LamaPon::CollisionDetectionMode::Discrete;
+            // 復元した剛体の軸拘束
             LamaPon::RigidbodyConstraints constraints{};
             if (value.contains("constraints"))
             {
+                // 軸拘束を保存したJSON
                 const auto& serializedConstraints =
                     value.at("constraints");
                 constraints.freezeRotationX =
@@ -3638,10 +3841,12 @@ namespace
         }
         else if (type == "Joint")
         {
+            // ジョイント種類の保存名
             const auto typeName =
                 value.value(
                     "jointType",
                     std::string("fixed"));
+            // 復元したジョイントの種類
             LamaPon::JointType jointType =
                 LamaPon::JointType::Fixed;
             if (typeName == "hinge")
@@ -3698,8 +3903,10 @@ namespace
         }
         else if (type == "LODGroup")
         {
+            // 復元するLOD距離と対象の一覧
             std::vector<LamaPon::LODLevel>
                 levels;
+            // LOD距離と対象番号のJSON
             for (const auto& level :
                 value.value(
                     "levels",
@@ -3723,6 +3930,7 @@ namespace
         }
         else if (type == "NativeScript")
         {
+            // スクリプト属性のJSONオブジェクト
             const auto properties =
                 value.value(
                     "properties",
@@ -3746,6 +3954,8 @@ namespace
         return *component;
     }
 
+    // 物体の変換と対応コンポーネントを保存用JSONへ変換します(gameObject: 保存対象, id: 保存する物体番号, parentId: 保存する親番号, includePrefabLink: プリハブ参照を含むか, includePersistence: 保持指定を含むか, database: アセットGUIDの台帳)。
+    // 未対応コンポーネントは除外し、互換用オイラー角と正本のクォータニオンを両方保存します。
     Json SerializeGameObject(
         const LamaPon::GameObject& gameObject,
         const LamaPon::GameObjectId id,
@@ -3754,11 +3964,9 @@ namespace
         const bool includePersistence,
         const LamaPon::AssetDatabase& database)
     {
+        // 保存する物体のローカル変換
         const auto& transform = gameObject.GetTransform();
-        // alwaysVisible / cullingMargin はオブジェクト直下には
-        // もう書きません（RenderCullingコンポーネントとして保存
-        // されます）。読み込み側は古いシーンとの互換のため、
-        // 両キーを今も受け付けてコンポーネントへ変換します。
+        // 保存する一物体のJSON
         Json object{
             { "id", id },
             { "name", gameObject.Name() },
@@ -3771,9 +3979,6 @@ namespace
             },
             { "transform", {
                 { "position", ToJson(transform.position) },
-                // rotationは既存プロジェクトおよび外部ツールとの互換性のために
-                // 保存します。rotationQuaternionを回転の正本とし、読み込み時も
-                // rotationQuaternionを優先します。
                 { "rotation",
                     ToJson(transform.EulerAngles()) },
                 { "rotationQuaternion",
@@ -3783,8 +3988,10 @@ namespace
             { "components", Json::array() }
         };
 
+        // 保存可否を調べるコンポーネント
         for (const auto& component : gameObject.Components())
         {
+            // コンポーネントの保存用JSON
             const auto serialized =
                 SerializeComponent(
                     *component,
@@ -3819,17 +4026,21 @@ namespace
         return object;
     }
 
+    // 主シーンの物体・環境・物理・描画設定とアセット一覧をJSONへ変換します(scene: 保存対象のシーン, database: アセットGUIDの台帳)。
+    // 追加シーンの物体・カメラ・親参照は保存対象から除外し、間接光係数はベイク時の格子形状と保存します。
     Json SerializeScene(
         const LamaPon::Scene& scene,
         const LamaPon::AssetDatabase& database)
     {
-        // Main Cameraが追加シーン側のカメラだった場合は、主シーンの
-        // ファイルに書けないためnullとして保存します。
+        // Main Cameraが追加シーン側のカメラだった場合は、主シーンのファイルに書けないためnullとして保存します。
+        // シーンに指定された主カメラ
         const auto* mainCamera = scene.MainCamera();
+        // 主カメラが保存対象に属するか
         const bool mainCameraIsSaved =
             mainCamera != nullptr
             && mainCamera->Owner().SourceScene()
                 == LamaPon::Scene::PrimarySceneHandle();
+        // 主シーンの保存用JSON
         Json document{
             { "format", "LamaPonScene" },
             { "version", 1 },
@@ -3970,9 +4181,6 @@ namespace
                         scene.BakedGlobalIllumination()
                             .intensity
                     },
-                    // 焼き込み済みデータ。「焼いたときの形」と
-                    // 一緒に保存します（設定を変えた後でも表示が
-                    // 崩れないように）。
                     {
                         "bakedResolution",
                         Json::array({
@@ -4196,18 +4404,19 @@ namespace
             { "objects", Json::array() }
         };
 
+        // 主シーン所属か調べる保存対象
         for (const auto& gameObject : scene.GameObjects())
         {
-            // 追加読み込みしたシーンのGameObjectは、主シーンの
-            // ファイルへ混ざらないよう保存対象から外します。
+            // 追加読み込みしたシーンのGameObjectは、主シーンのファイルへ混ざらないよう保存対象から外します。
             if (gameObject->SourceScene()
                 != LamaPon::Scene::PrimarySceneHandle())
             {
                 continue;
             }
-            // 追加シーンのGameObjectを親にしていた場合は、
-            // 保存先に親が居なくなるためルート扱いにします。
+            // 追加シーンのGameObjectを親にしていた場合は、保存先に親が居なくなるためルート扱いにします。
+            // 保存対象の現在の親
             const auto* parent = gameObject->Parent();
+            // 親が主シーンの保存対象か
             const bool parentIsSaved =
                 parent != nullptr
                 && parent->SourceScene()
@@ -4229,6 +4438,8 @@ namespace
         return document;
     }
 
+    // プリハブの旧形式を更新して物体を生成し、親と内部参照を新番号へ対応付けます(scene: 生成先のシーン, document: 更新するJSONの写し, database: アセットGUIDの台帳)。
+    // 1〜4096物体の単一ルート階層を要求し、不正な階層は例外を伝播します。
     LamaPon::GameObject& LoadPrefabHierarchy(
         LamaPon::Scene& scene,
         Json document,
@@ -4238,6 +4449,7 @@ namespace
             LamaPon::MigrateSerializedDocument(
                 document,
                 LamaPon::SerializedDocumentKind::Prefab));
+        // プリハブの物体配列の格納位置
         const auto objects = document.find("objects");
         if (objects == document.end()
             || !objects->is_array()
@@ -4253,19 +4465,24 @@ namespace
                 "Prefab root GameObject is missing.");
         }
 
+        // プリハブ内の保存ルート番号
         const auto rootId =
             document.at("root")
                 .get<LamaPon::GameObjectId>();
+        // 保存番号から生成先物体への対応
         std::unordered_map<
             LamaPon::GameObjectId,
             LamaPon::GameObject*> objectsById;
+        // 全物体生成後に設定する親参照
         std::vector<
             std::pair<
                 LamaPon::GameObject*,
                 LamaPon::GameObjectId>> pendingParents;
 
+        // 復元する一物体のJSON
         for (const auto& objectValue : *objects)
         {
+            // プリハブ内に保存された物体番号
             const auto id = objectValue.at("id")
                 .get<LamaPon::GameObjectId>();
             if (id == 0 || objectsById.contains(id))
@@ -4274,6 +4491,7 @@ namespace
                     "Prefab contains an invalid or duplicate GameObject id.");
             }
 
+            // 新しい番号で生成した物体
             auto& gameObject = scene.CreateGameObject(
                 objectValue.value(
                     "name",
@@ -4282,13 +4500,13 @@ namespace
                 objectValue.value("enabled", true));
             gameObject.SetTag(
                 objectValue.value("tag", std::string{}));
-            // 旧形式との互換。オブジェクト直下にあった描画カリング
-            // 設定は、既定値でなければRenderCullingコンポーネントへ
-            // 変換します（新形式はコンポーネントとして読まれます）。
+            // 旧形式の物体直下の可視設定を、既定値でなければRenderCullingへ移します。
             {
+                // 旧形式の常時表示指定
                 const bool legacyAlwaysVisible =
                     objectValue.value(
                         "alwaysVisible", false);
+                // 旧形式の可視境界の拡張幅
                 const float legacyCullingMargin =
                     objectValue.value(
                         "cullingMargin", 0.0f);
@@ -4302,6 +4520,7 @@ namespace
                 }
             }
             scene.WarnUnregisteredTag(gameObject);
+            // 入れ子プリハブ参照の格納位置
             if (const auto prefabAsset =
                     objectValue.find("prefabAsset");
                 prefabAsset != objectValue.end()
@@ -4316,8 +4535,10 @@ namespace
                         database));
             }
 
+            // 保存されたローカル変換のJSON
             const auto& transformValue =
                 objectValue.at("transform");
+            // 生成先物体のローカル変換
             auto& transform = gameObject.GetTransform();
             transform.position = ReadFloat3(
                 transformValue.at("position"));
@@ -4327,14 +4548,13 @@ namespace
             transform.scale = ReadFloat3(
                 transformValue.at("scale"));
 
+            // 復元するコンポーネントのJSON
             for (const auto& componentValue :
                 objectValue.value(
                     "components",
                     Json::array()))
             {
-                // 1つのコンポーネントが復元に失敗しても
-                // （参照先アセットが欠けている場合など）、
-                // シーン全体の読み込みは止めません。
+                // コンポーネント単位の復元失敗は記録し、残りの復元を続けます。
                 try
                 {
                     DeserializeComponent(
@@ -4342,6 +4562,7 @@ namespace
                         componentValue,
                         database);
                 }
+                // exception: コンポーネント復元の失敗内容
                 catch (const std::exception& exception)
                 {
                     LamaPon::Logger::Instance().Warning(
@@ -4367,9 +4588,11 @@ namespace
             objectsById.emplace(id, &gameObject);
         }
 
+        // child: 生成した子物体, parentId: 保存された親番号
         for (const auto& [child, parentId] :
             pendingParents)
         {
+            // 保存親番号に対応する生成物体
             const auto parent =
                 objectsById.find(parentId);
             if (parent == objectsById.end())
@@ -4380,16 +4603,19 @@ namespace
             child->SetParent(parent->second);
         }
 
+        // sourceId: 保存された元番号, gameObject: 新番号で生成した物体
         for (const auto& [sourceId, gameObject] :
             objectsById)
         {
             static_cast<void>(sourceId);
+            // 内部参照を更新するジョイント
             auto* joint =
                 gameObject->GetComponent<
                     LamaPon::JointComponent>();
             if (joint != nullptr
                 && joint->ConnectedBodyId() != 0)
             {
+                // 参照先の新しい物体の格納位置
                 if (const auto target =
                         objectsById.find(
                             joint->ConnectedBodyId());
@@ -4403,12 +4629,14 @@ namespace
                     joint->SetConnectedBodyId(0);
                 }
             }
+            // 内部参照を更新する視差移動
             if (auto* parallax =
                     gameObject->GetComponent<
                         LamaPon::ParallaxLayerComponent>();
                 parallax != nullptr
                 && parallax->ReferenceId() != 0)
             {
+                // 参照先の新しい物体の格納位置
                 const auto target = objectsById.find(
                     parallax->ReferenceId());
                 parallax->SetReferenceId(
@@ -4416,14 +4644,18 @@ namespace
                         ? target->second->Id()
                         : 0);
             }
+            // 内部参照を更新するLOD設定
             if (auto* lodGroup =
                     gameObject->GetComponent<
                         LamaPon::LODGroupComponent>())
             {
+                // 新番号へ置き換えるLOD一覧
                 auto levels =
                     lodGroup->Levels();
+                // 新番号へ置き換える一LOD設定
                 for (auto& level : levels)
                 {
+                    // 参照先の新しい物体の格納位置
                     if (const auto target =
                             objectsById.find(
                                 level.targetId);
@@ -4442,6 +4674,7 @@ namespace
             }
         }
 
+        // 保存ルート番号の対応位置
         const auto root = objectsById.find(rootId);
         if (root == objectsById.end()
             || root->second->Parent() != nullptr)
@@ -4449,9 +4682,11 @@ namespace
             throw std::runtime_error(
                 "Prefab root is invalid.");
         }
+        // id: 保存された元番号, gameObject: 所属階層を検証する物体
         for (const auto& [id, gameObject] : objectsById)
         {
             static_cast<void>(id);
+            // ルート所属を調べる祖先物体
             auto* ancestor = gameObject;
             while (ancestor != nullptr
                 && ancestor != root->second)
@@ -4470,6 +4705,7 @@ namespace
 
 namespace LamaPon
 {
+    // 主シーンの保存用JSONを二スペース字下げの文字列で返します。
     std::string Scene::SerializeToJson() const
     {
         return SerializeScene(
@@ -4477,6 +4713,8 @@ namespace LamaPon
             AssetDatabaseFor(m_graphics)).dump(2);
     }
 
+    // 親フォルダーを作成して主シーンのJSONを上書き保存します(path: 保存先)。
+    // 保存先を先に切り詰めるため書き込み失敗時に旧内容は保持せず、失敗は例外を伝播します。
     void Scene::SaveToFile(const std::filesystem::path& path) const
     {
         if (!path.parent_path().empty())
@@ -4484,6 +4722,7 @@ namespace LamaPon
             std::filesystem::create_directories(path.parent_path());
         }
 
+        // 主シーンJSONの上書き先ストリーム
         std::ofstream output(path, std::ios::binary | std::ios::trunc);
         if (!output)
         {
@@ -4497,6 +4736,7 @@ namespace LamaPon
         }
     }
 
+    // アセット経由で主シーンを読み込み、成功時に現在のシーンパスを更新します(path: 読み込み元)。
     void Scene::LoadFromFile(const std::filesystem::path& path)
     {
         if (!m_graphics.Assets().FileExists(path))
@@ -4504,7 +4744,9 @@ namespace LamaPon
             throw std::runtime_error("Could not open scene for reading: " + LamaPon::PathToUtf8(path));
         }
 
+        // シーンJSONの入力バイト列
         const auto bytes = m_graphics.Assets().ReadFileBytes(path);
+        // アセットから読み込んだJSON文字列
         const std::string json{
             bytes.begin(),
             bytes.end()
@@ -4543,12 +4785,15 @@ namespace LamaPon
                 + LamaPon::PathToUtf8(path));
         }
 
+        // シーンJSONの入力バイト列
         const auto bytes =
             m_graphics.Assets().ReadFileBytes(path);
+        // アセットから読み込んだJSON文字列
         const std::string json{
             bytes.begin(),
             bytes.end()
         };
+        // 追加読み込みで割り当てた番号
         const auto handle =
             MergeFromJson(json, path);
         Logger::Instance().Info(
@@ -4562,6 +4807,7 @@ namespace LamaPon
         const bool additive,
         std::filesystem::path sourcePath)
     {
+        // 旧形式を更新する入力シーンJSON
         Json document = Json::parse(json.begin(), json.end());
 
         if (document.value("format", std::string{}) != "LamaPonScene")
@@ -4573,6 +4819,7 @@ namespace LamaPon
                 document,
                 SerializedDocumentKind::Scene));
 
+        // 読み込み先のシーン所属番号
         SceneHandle handle = PrimarySceneHandle();
         if (additive)
         {
@@ -4582,12 +4829,11 @@ namespace LamaPon
         {
             Clear();
         }
-        // 追加読み込み中に作られるGameObjectへ、このシーンの
-        // ハンドルを自動で付けます。読み込みが途中で失敗しても、
-        // 足しかけたGameObjectを残さないよう後始末します。
+        // 読み込み中の生成所属を設定し、追加読み込みの失敗時は追加分を破棄するスコープです。
         class LoadScope final
         {
         public:
+            // 生成する物体の所属を設定します(scene: 読み込み先, additive: 失敗時に追加分を戻すか, handle: 読み込みシーン番号)。
             LoadScope(
                 Scene& scene,
                 const bool additive,
@@ -4599,6 +4845,7 @@ namespace LamaPon
             {
                 m_scene.m_loadingScene = handle;
             }
+            // 生成所属を復元し、未確定の追加読み込みを破棄します。
             ~LoadScope()
             {
                 m_scene.m_loadingScene = m_previous;
@@ -4616,25 +4863,33 @@ namespace LamaPon
                     // 後始末の失敗で例外を上書きしません。
                 }
             }
+            // 後始末の重複を防ぐためコピーを禁止します。
             LoadScope(const LoadScope&) = delete;
+            // 後始末の重複を防ぐため代入を禁止します。
             LoadScope& operator=(
                 const LoadScope&) = delete;
 
+            // 読み込み成功を確定して追加分の破棄を解除します。
             void Commit() noexcept
             {
                 m_rollback = false;
             }
 
         private:
+            // 読み込み先のシーン
             Scene& m_scene;
+            // 読み込み前の生成所属番号
             SceneHandle m_previous{};
+            // 今回読み込むシーン番号
             SceneHandle m_handle{};
+            // 失敗時に追加分を破棄するか
             bool m_rollback{};
         };
+        // 所属復元と追加分破棄の管理範囲
         LoadScope loadScope{ *this, additive, handle };
 
-        // 環境設定は主シーンのものを維持します（追加シーン側の
-        // 空・霧・Bloomは無視します）。
+        // 環境設定は主シーンのものを維持します（追加シーン側の空・霧・Bloomは無視します）。
+        // 復元する環境JSONの格納位置
         if (const auto environment = document.find("environment");
             !additive
             && environment != document.end()
@@ -4649,11 +4904,13 @@ namespace LamaPon
                 environment->value(
                     "ambientIntensity",
                     m_ambientLightIntensity));
+            // 空の設定JSONの格納位置
             if (const auto sky =
                     environment->find("sky");
                 sky != environment->end()
                 && sky->is_object())
             {
+                // 復元する空と環境反射の設定
                 auto settings = m_sky;
                 settings.enabled =
                     sky->value("enabled", settings.enabled);
@@ -4690,11 +4947,13 @@ namespace LamaPon
                     sky->value("sunDriven", false);
                 SetSkySettings(settings);
             }
+            // 霧の設定JSONの格納位置
             if (const auto fog =
                     environment->find("fog");
                 fog != environment->end()
                 && fog->is_object())
             {
+                // 復元する霧の設定
                 auto settings = m_fog;
                 settings.enabled =
                     fog->value("enabled", settings.enabled);
@@ -4717,11 +4976,13 @@ namespace LamaPon
                         settings.density);
                 SetFogSettings(settings);
             }
+            // 環境遮蔽JSONの格納位置
             if (const auto occlusion =
                     environment->find("ambientOcclusion");
                 occlusion != environment->end()
                 && occlusion->is_object())
             {
+                // 復元する環境遮蔽の設定
                 auto settings = m_ambientOcclusion;
                 settings.enabled =
                     occlusion->value(
@@ -4737,12 +4998,14 @@ namespace LamaPon
                         settings.strength);
                 SetAmbientOcclusionSettings(settings);
             }
+            // 時間AAのJSON格納位置
             if (const auto temporal =
                     environment->find(
                         "temporalAntiAliasing");
                 temporal != environment->end()
                 && temporal->is_object())
             {
+                // 復元する時間AAの設定
                 auto settings = m_temporalAntiAliasing;
                 settings.enabled = temporal->value(
                     "enabled", settings.enabled);
@@ -4756,12 +5019,14 @@ namespace LamaPon
                     settings.clampTolerance);
                 SetTemporalAntiAliasingSettings(settings);
             }
+            // 画面反射JSONの格納位置
             if (const auto reflection =
                     environment->find(
                         "screenSpaceReflection");
                 reflection != environment->end()
                 && reflection->is_object())
             {
+                // 復元する画面空間反射の設定
                 auto settings = m_screenSpaceReflection;
                 settings.enabled = reflection->value(
                     "enabled", settings.enabled);
@@ -4781,12 +5046,14 @@ namespace LamaPon
                         settings.roughnessCutoff);
                 SetScreenSpaceReflectionSettings(settings);
             }
+            // 間接光JSONの格納位置
             if (const auto bakedGi =
                     environment->find(
                         "bakedGlobalIllumination");
                 bakedGi != environment->end()
                 && bakedGi->is_object())
             {
+                // 復元する間接光ベイク設定
                 auto settings = m_bakedGiSettings;
                 settings.enabled = bakedGi->value(
                     "enabled", settings.enabled);
@@ -4800,6 +5067,7 @@ namespace LamaPon
                     settings.size =
                         ReadFloat3(bakedGi->at("size"));
                 }
+                // 次回ベイクの格子点数の配列
                 if (const auto resolution =
                         bakedGi->find("resolution");
                     resolution != bakedGi->end()
@@ -4820,8 +5088,8 @@ namespace LamaPon
                     "intensity", settings.intensity);
                 SetBakedGlobalIlluminationSettings(settings);
 
-                // 焼き込み済みデータの復元。形とデータが揃って
-                // いるときだけ受け取ります。
+                // ベイク時の格子形状と係数データが揃う場合だけ復元します。
+                // 保存係数の格子点数の配列
                 if (const auto bakedResolution =
                         bakedGi->find("bakedResolution");
                     bakedResolution != bakedGi->end()
@@ -4830,6 +5098,7 @@ namespace LamaPon
                     && bakedGi->contains("data")
                     && bakedGi->at("data").is_string())
                 {
+                    // 保存係数をベイクした格子形状
                     BakedGlobalIlluminationSettings shape =
                         settings;
                     shape.resolutionX =
@@ -4851,6 +5120,7 @@ namespace LamaPon
                         shape.size = ReadFloat3(
                             bakedGi->at("bakedSize"));
                     }
+                    // 検証した保存格子のプローブ数
                     const auto probeCount =
                         BakedGlobalIlluminationProbeCount(
                             shape.resolutionX,
@@ -4858,24 +5128,29 @@ namespace LamaPon
                             shape.resolutionZ);
                     if (probeCount.has_value())
                     {
+                        // 保存係数の要素数
                         const std::size_t coefficientCount =
                             *probeCount
                             * BakedGlobalIlluminationCoefficientsPerProbe;
+                        // 格子から決まる係数バイト数
                         const std::size_t expectedByteCount =
                             coefficientCount
                             * sizeof(std::uint16_t);
+                        // 係数base64の必要文字数
                         const std::size_t expectedTextLength =
                             (expectedByteCount + 2) / 3 * 4;
+                        // 保存されたbase64係数文字列
                         const auto& encoded =
                             bakedGi->at("data")
                                 .get_ref<const std::string&>();
-                        // 形から決まる上限をDecodeBase64より先に確認し、
-                        // 壊れたJSONで巨大な一時領域を確保しません。
+                        // 形から決まる上限をDecodeBase64より先に確認し、壊れたJSONで巨大な一時領域を確保しません。
                         if (encoded.size() == expectedTextLength)
                         {
+                            // 復号した係数のバイト列
                             const auto bytes = DecodeBase64(encoded);
                             if (bytes.size() == expectedByteCount)
                             {
+                                // 復元するfp16係数の所有列
                                 std::vector<std::uint16_t> payload(
                                     coefficientCount);
                                 std::memcpy(
@@ -4890,11 +5165,13 @@ namespace LamaPon
                     }
                 }
             }
+            // 光の積算JSONの格納位置
             if (const auto volumetric =
                     environment->find("volumetricLight");
                 volumetric != environment->end()
                 && volumetric->is_object())
             {
+                // 復元する光の積算設定
                 auto settings = m_volumetricLight;
                 settings.enabled =
                     volumetric->value(
@@ -4918,11 +5195,13 @@ namespace LamaPon
                         settings.scattering);
                 SetVolumetricLightSettings(settings);
             }
+            // ブルームJSONの格納位置
             if (const auto bloom =
                     environment->find("bloom");
                 bloom != environment->end()
                 && bloom->is_object())
             {
+                // 復元するブルーム設定
                 auto settings = m_bloom;
                 settings.enabled =
                     bloom->value(
@@ -4942,11 +5221,13 @@ namespace LamaPon
                         settings.radius);
                 SetBloomSettings(settings);
             }
+            // 画面輪郭JSONの格納位置
             if (const auto screenOutline =
                     environment->find("screenOutline");
                 screenOutline != environment->end()
                 && screenOutline->is_object())
             {
+                // 復元する画面輪郭の設定
                 auto settings = m_screenOutline;
                 settings.enabled = screenOutline->value(
                     "enabled", settings.enabled);
@@ -4965,11 +5246,13 @@ namespace LamaPon
                     "normalThreshold", settings.normalThreshold);
                 SetScreenOutlineSettings(settings);
             }
+            // レンズフレアJSONの格納位置
             if (const auto lensFlare =
                     environment->find("screenSpaceLensFlare");
                 lensFlare != environment->end()
                 && lensFlare->is_object())
             {
+                // 復元するレンズフレア設定
                 auto settings = m_screenSpaceLensFlare;
                 settings.enabled = lensFlare->value(
                     "enabled",
@@ -5005,11 +5288,13 @@ namespace LamaPon
                         settings.streakAngleDegrees);
                 SetScreenSpaceLensFlareSettings(settings);
             }
+            // 被写界深度JSONの格納位置
             if (const auto depthOfField =
                     environment->find("depthOfField");
                 depthOfField != environment->end()
                 && depthOfField->is_object())
             {
+                // 復元する被写界深度の設定
                 auto settings = m_depthOfField;
                 settings.enabled = depthOfField->value(
                     "enabled",
@@ -5028,11 +5313,13 @@ namespace LamaPon
                     settings.maximumRadius);
                 SetDepthOfFieldSettings(settings);
             }
+            // モーションブラーJSONの格納位置
             if (const auto motionBlur =
                     environment->find("motionBlur");
                 motionBlur != environment->end()
                 && motionBlur->is_object())
             {
+                // 復元するモーションブラー設定
                 auto settings = m_motionBlur;
                 settings.enabled = motionBlur->value(
                     "enabled",
@@ -5045,11 +5332,13 @@ namespace LamaPon
                     settings.maximumRadius);
                 SetMotionBlurSettings(settings);
             }
+            // 自動露出JSONの格納位置
             if (const auto autoExposure =
                     environment->find("autoExposure");
                 autoExposure != environment->end()
                 && autoExposure->is_object())
             {
+                // 復元する自動露出の設定
                 auto settings = m_autoExposure;
                 settings.enabled = autoExposure->value(
                     "enabled",
@@ -5073,11 +5362,13 @@ namespace LamaPon
                     settings.speedToDark);
                 SetAutoExposureSettings(settings);
             }
+            // 色補正JSONの格納位置
             if (const auto colorGrading =
                     environment->find("colorGrading");
                 colorGrading != environment->end()
                 && colorGrading->is_object())
             {
+                // 復元する色補正の設定
                 auto settings = m_colorGrading;
                 settings.toneMappingEnabled = colorGrading->value(
                     "toneMappingEnabled",
@@ -5100,6 +5391,7 @@ namespace LamaPon
             }
         }
 
+        // 物理設定JSONの格納位置
         if (const auto physics = document.find("physics");
             !additive
             && physics != document.end()
@@ -5110,6 +5402,7 @@ namespace LamaPon
                     "broadPhaseCellSize",
                     m_physicsBroadPhaseCellSize));
         }
+        // 描画設定JSONの格納位置
         if (const auto rendering =
                 document.find("rendering");
             !additive
@@ -5126,13 +5419,13 @@ namespace LamaPon
                     m_occlusionCullingEnabled));
         }
 
-        // 追加読み込みでは、既存GameObjectとID衝突しないように
-        // 新しいIDを振り直します。JSON内の親参照は元のIDのままな
-        // ので、objectsByIdはJSON側のIDで引きます。
+        // 追加物体には新番号を付け、JSON内の参照を解決する対応表は保存番号で引きます。
         if (additive)
         {
+            // 正規化した追加シーンの生成パス
             const auto normalizedPath =
                 sourcePath.lexically_normal();
+            // 追加シーンの表示名
             std::string name =
                 normalizedPath.stem().string();
             if (name.empty())
@@ -5149,33 +5442,42 @@ namespace LamaPon
                 });
         }
 
+        // 保存番号から復元先物体への対応
         std::unordered_map<GameObjectId, GameObject*> objectsById;
+        // 全物体復元後に設定する親参照
         std::vector<std::pair<GameObject*, GameObjectId>> pendingParents;
+        // 親設定後に登録する保持対象とキー
         std::vector<std::pair<GameObject*, std::string>>
             pendingPersistentObjects;
 
+        // 復元する一物体のJSON
         for (const auto& objectValue : document.at("objects"))
         {
+            // 保存された物体番号
             const GameObjectId id = objectValue.at("id").get<GameObjectId>();
             if (id == 0 || objectsById.contains(id))
             {
                 throw std::runtime_error("Scene contains an invalid or duplicate GameObject id.");
             }
 
+            // 復元した物体の所有参照
             auto gameObject = std::make_unique<GameObject>(
                 additive ? m_nextId++ : id,
                 objectValue.value("name", std::string("GameObject")));
             gameObject->m_scene = this;
             gameObject->m_sourceScene = handle;
+            // 所有列へ移す復元物体の参照
             auto* gameObjectPointer = gameObject.get();
             gameObjectPointer->SetEnabled(objectValue.value("enabled", true));
             gameObjectPointer->SetTag(
                 objectValue.value("tag", std::string{}));
-            // 旧形式との互換（上のローダーと同じ変換）。
+            // 旧形式の物体直下の可視設定を、既定値でなければRenderCullingへ移します。
             {
+                // 旧形式の常時表示指定
                 const bool legacyAlwaysVisible =
                     objectValue.value(
                         "alwaysVisible", false);
+                // 旧形式の可視境界の拡張幅
                 const float legacyCullingMargin =
                     objectValue.value(
                         "cullingMargin", 0.0f);
@@ -5189,6 +5491,7 @@ namespace LamaPon
                 }
             }
             WarnUnregisteredTag(*gameObjectPointer);
+            // プリハブ参照のJSON格納位置
             if (const auto prefabAsset =
                     objectValue.find("prefabAsset");
                 prefabAsset != objectValue.end()
@@ -5203,16 +5506,18 @@ namespace LamaPon
                         AssetDatabaseFor(m_graphics)));
             }
 
+            // ローカル変換を保存したJSON
             const auto& transformValue = objectValue.at("transform");
+            // 復元先物体のローカル変換
             auto& transform = gameObjectPointer->GetTransform();
             transform.position = ReadFloat3(transformValue.at("position"));
             ReadTransformRotation(transformValue, transform);
             transform.scale = ReadFloat3(transformValue.at("scale"));
 
+            // 復元するコンポーネントのJSON
             for (const auto& componentValue : objectValue.value("components", Json::array()))
             {
-                // 欠けたアセット参照などで1つのコンポーネントが
-                // 失敗しても、シーン読み込み全体は継続します。
+                // コンポーネント単位の復元失敗は記録し、残りの復元を続けます。
                 try
                 {
                     DeserializeComponent(
@@ -5220,6 +5525,7 @@ namespace LamaPon
                         componentValue,
                         AssetDatabaseFor(m_graphics));
                 }
+                // exception: コンポーネント復元の失敗内容
                 catch (const std::exception& exception)
                 {
                     Logger::Instance().Warning(
@@ -5257,8 +5563,10 @@ namespace LamaPon
             m_gameObjects.emplace_back(std::move(gameObject));
         }
 
+        // child: 復元した子物体, parentId: 保存された親番号
         for (const auto& [child, parentId] : pendingParents)
         {
+            // 保存親番号に対応する物体位置
             const auto parent = objectsById.find(parentId);
             if (parent == objectsById.end())
             {
@@ -5268,21 +5576,22 @@ namespace LamaPon
             child->SetParent(parent->second);
         }
 
-        // 追加読み込みではIDを振り直したので、GameObjectIdを
-        // 持つコンポーネントの参照も新しいIDへ付け替えます
-        // （Prefab配置と同じ扱いです）。
+        // 追加読み込みのジョイント・視差移動・LOD参照は新番号へ変え、読み込み対象外への参照は0にします。
         if (additive)
         {
+            // documentId: 保存された元番号, gameObject: 新番号で生成した物体
             for (const auto& [documentId, gameObject] :
                 objectsById)
             {
                 static_cast<void>(documentId);
+                // 参照を新番号へ変えるジョイント
                 if (auto* joint =
                         gameObject->GetComponent<
                             JointComponent>();
                     joint != nullptr
                     && joint->ConnectedBodyId() != 0)
                 {
+                    // 内部参照の復元先の格納位置
                     const auto target =
                         objectsById.find(
                             joint->ConnectedBodyId());
@@ -5291,12 +5600,14 @@ namespace LamaPon
                             ? target->second->Id()
                             : 0);
                 }
+                // 参照を新番号へ変える視差移動
                 if (auto* parallax =
                         gameObject->GetComponent<
                             ParallaxLayerComponent>();
                     parallax != nullptr
                     && parallax->ReferenceId() != 0)
                 {
+                    // 内部参照の復元先の格納位置
                     const auto target =
                         objectsById.find(
                             parallax->ReferenceId());
@@ -5305,13 +5616,17 @@ namespace LamaPon
                             ? target->second->Id()
                             : 0);
                 }
+                // 参照を新番号へ変えるLOD設定
                 if (auto* lodGroup =
                     gameObject->GetComponent<
                         LODGroupComponent>())
                 {
+                    // 内部参照を更新するLOD一覧
                     auto levels = lodGroup->Levels();
+                    // 内部参照を更新する一LOD設定
                     for (auto& level : levels)
                     {
+                        // 内部参照の復元先の格納位置
                         const auto target =
                             objectsById.find(
                                 level.targetId);
@@ -5326,6 +5641,7 @@ namespace LamaPon
             }
         }
 
+        // gameObject: 保持指定する物体, key: シーン間で照合する保持キー
         for (auto& [gameObject, key] :
             pendingPersistentObjects)
         {
@@ -5336,21 +5652,23 @@ namespace LamaPon
 
         if (document.contains("mainCamera") && !document.at("mainCamera").is_null())
         {
+            // 主カメラ所有物体の保存番号
             const GameObjectId cameraObjectId = document.at("mainCamera").get<GameObjectId>();
+            // 主カメラ物体の復元先位置
             const auto cameraObject = objectsById.find(cameraObjectId);
             if (cameraObject == objectsById.end())
             {
                 throw std::runtime_error("Scene references a missing main camera GameObject.");
             }
 
+            // 復元した主カメラの参照
             auto* camera = cameraObject->second->GetComponent<CameraComponent>();
             if (camera == nullptr)
             {
                 throw std::runtime_error("The main camera GameObject has no Camera component.");
             }
 
-            // 追加シーンのカメラは、主シーンにMain Cameraが
-            // 無いときだけ採用します。
+            // 追加シーンのカメラは、主シーンにMain Cameraが無いときだけ採用します。
             if (!additive || m_mainCamera == nullptr)
             {
                 SetMainCamera(*camera);
@@ -5360,7 +5678,9 @@ namespace LamaPon
         loadScope.Commit();
         if (additive)
         {
+            // 追加シーンに属するルート数
             std::size_t rootCount = 0;
+            // 所属と親を調べる復元物体
             for (const auto& object : m_gameObjects)
             {
                 if (object->m_sourceScene == handle
@@ -5369,6 +5689,7 @@ namespace LamaPon
                     ++rootCount;
                 }
             }
+            // 対象の追加シーンかを照合した格納位置(scene: 読み込み済みシーン情報)。
             if (auto entry = std::find_if(
                     m_additiveScenes.begin(),
                     m_additiveScenes.end(),
@@ -5394,13 +5715,16 @@ namespace LamaPon
                 "Prefab root does not belong to this Scene.");
         }
 
+        // 親から子へ集めた保存対象の階層
         std::vector<const GameObject*> hierarchy;
+        // ルートから子の順に階層を集めます(self: 再帰呼び出し先, gameObject: 追加する物体)。
         const auto collect =
             [&hierarchy](
                 const auto& self,
                 const GameObject& gameObject) -> void
             {
                 hierarchy.push_back(&gameObject);
+                // 保存階層へ加える子物体
                 for (const auto* child :
                     gameObject.Children())
                 {
@@ -5409,9 +5733,11 @@ namespace LamaPon
             };
         collect(collect, root);
 
+        // シーン番号からプリハブ内番号への対応
         std::unordered_map<
             GameObjectId,
             GameObjectId> localIds;
+        // 保存階層内の物体添字
         for (std::size_t index = 0;
             index < hierarchy.size();
             ++index)
@@ -5421,6 +5747,7 @@ namespace LamaPon
                 static_cast<GameObjectId>(index + 1));
         }
 
+        // プリハブ保存または入力のJSON
         Json document{
             { "format", "LamaPonPrefab" },
             { "version", 1 },
@@ -5428,11 +5755,14 @@ namespace LamaPon
             { "name", root.Name() },
             { "objects", Json::array() }
         };
+        // プリハブ階層の保存対象物体
         for (const auto* gameObject : hierarchy)
         {
+            // プリハブ内のローカル親番号
             std::optional<GameObjectId> parentId;
             if (gameObject != &root)
             {
+                // 保存親の対応位置または配置先の親
                 const auto parent =
                     localIds.find(
                         gameObject->Parent()->Id());
@@ -5443,6 +5773,7 @@ namespace LamaPon
                 }
                 parentId = parent->second;
             }
+            // ローカル番号で保存する物体JSON
             auto serializedObject =
                 SerializeGameObject(
                     *gameObject,
@@ -5451,22 +5782,27 @@ namespace LamaPon
                     gameObject != &root,
                     false,
                     AssetDatabaseFor(m_graphics));
+            // 内部参照を更新する成分JSON
             for (auto& component :
                 serializedObject["components"])
             {
+                // 内部参照を更新する成分の型名
                 const auto componentType =
                     component.value(
                         "type",
                         std::string{});
                 if (componentType == "LODGroup")
                 {
+                    // 番号をローカル化するLODのJSON
                     for (auto& level :
                         component["levels"])
                     {
+                        // シーンにあるLOD対象番号
                         const auto targetId =
                             level.value(
                                 "targetId",
                                 GameObjectId{});
+                        // LOD対象のローカル番号の位置
                         if (const auto target =
                                 localIds.find(
                                     targetId);
@@ -5484,12 +5820,14 @@ namespace LamaPon
                 }
                 if (componentType == "ParallaxLayer")
                 {
+                    // シーンにある視差基準物体番号
                     const auto referenceId =
                         component.value(
                             "referenceId",
                             GameObjectId{});
                     if (referenceId != 0)
                     {
+                        // 視差基準のローカル番号の位置
                         const auto reference =
                             localIds.find(referenceId);
                         component["referenceId"] =
@@ -5503,10 +5841,12 @@ namespace LamaPon
                 {
                     continue;
                 }
+                // シーンにある接続先の物体番号
                 const auto connectedBodyId =
                     component.value(
                         "connectedBodyId",
                         GameObjectId{});
+                // 接続先のローカル番号の位置
                 if (const auto connected =
                         localIds.find(connectedBodyId);
                     connected != localIds.end())
@@ -5529,9 +5869,7 @@ namespace LamaPon
     std::shared_ptr<const DataAsset> Scene::LoadDataAsset(
         const std::filesystem::path& path) const
     {
-        // データが1つ欠けただけでゲームが止まらないように、
-        // 例外は握って空のDataAssetを返します。読めなかったことは
-        // 警告としてログへ残すので、原因は後から追えます。
+        // 読み込みのstd::exceptionは警告に記録して空のDataAssetを返します。
         try
         {
             if (!path.empty())
@@ -5540,6 +5878,7 @@ namespace LamaPon
                     path);
             }
         }
+        // exception: データアセット読み込みの失敗内容
         catch (const std::exception& exception)
         {
             Logger::Instance().Warning(
@@ -5548,6 +5887,7 @@ namespace LamaPon
                 }
                 + exception.what());
         }
+        // 読み込み失敗時に共有する空データ
         static const auto empty =
             std::make_shared<const DataAsset>();
         return empty;
@@ -5566,6 +5906,7 @@ namespace LamaPon
         const std::filesystem::path& path,
         GameObject* parent)
     {
+        // リンク先プリハブの解決済みパス
         const auto resolvedPath =
             ResolvePrefabAssetPath(
                 m_graphics,
@@ -5576,8 +5917,10 @@ namespace LamaPon
                 "Could not open prefab: "
                 + PathToUtf8(resolvedPath));
         }
+        // 読み込んだプリハブのバイト列
         const auto bytes =
             m_graphics.Assets().ReadFileBytes(resolvedPath);
+        // 読み込んだプリハブのJSON文字列
         const std::string json{
             bytes.begin(),
             bytes.end()
@@ -5600,14 +5943,18 @@ namespace LamaPon
                 "Prefab parent does not belong to this Scene.");
         }
 
+        // プリハブ保存または入力のJSON
         const Json document =
             Json::parse(json.begin(), json.end());
+        // 複製元の階層を復元する別シーン
         Scene prefabScene(m_graphics);
+        // 別シーンへ復元した配置元のルート
         auto& prefabRoot =
             LoadPrefabHierarchy(
                 prefabScene,
                 document,
                 AssetDatabaseFor(m_graphics));
+        // 配置先へ複製した新しいルート
         auto& instance = DuplicateGameObject(
             prefabRoot,
             parent,
@@ -5624,6 +5971,7 @@ namespace LamaPon
         {
             return nullptr;
         }
+        // プリハブルートを探している祖先
         for (auto* current = &gameObject;
             current != nullptr;
             current = current->Parent())
@@ -5662,21 +6010,26 @@ namespace LamaPon
                 "GameObject is not a Prefab instance root.");
         }
 
+        // 実体がリンクするプリハブパス
         const auto& assetPath =
             instanceRoot.PrefabAssetPath();
+        // リンク先プリハブの解決済みパス
         const auto resolvedPath =
             ResolvePrefabAssetPath(
                 m_graphics,
                 assetPath);
+        // ファイルから読んだ元プリハブJSON
         const Json sourceDocument =
             ReadJsonDocument(
                 m_graphics.Assets(),
                 resolvedPath,
                 "linked prefab");
+        // 現在の実体を保存したプリハブJSON
         const Json instanceDocument =
             Json::parse(
                 SerializePrefabToJson(instanceRoot));
 
+        // 元プリハブの階層を検証する別シーン
         Scene validationScene(m_graphics);
         static_cast<void>(
             LoadPrefabHierarchy(
@@ -5684,6 +6037,7 @@ namespace LamaPon
                 sourceDocument,
                 AssetDatabaseFor(m_graphics)));
 
+        // 元と実体の設定差分の一覧
         std::vector<PrefabOverride> overrides;
         CollectPrefabOverrides(
             sourceDocument.at("objects"),
@@ -5697,8 +6051,10 @@ namespace LamaPon
         const GameObject& instanceRoot,
         const std::string_view path) const
     {
+        // 元と実体の設定差分の一覧
         const auto overrides =
             GetPrefabOverrides(instanceRoot);
+        // 指定パスに一致する個別操作候補(value: 調べるプリハブ差分)。
         const auto selectedOverride =
             std::find_if(
                 overrides.begin(),
@@ -5715,26 +6071,32 @@ namespace LamaPon
                 "Prefab override cannot be applied individually.");
         }
 
+        // 実体がリンクするプリハブパス
         const auto& assetPath =
             instanceRoot.PrefabAssetPath();
+        // リンク先プリハブの解決済みパス
         const auto resolvedPath =
             ResolvePrefabAssetPath(
                 m_graphics,
                 assetPath);
+        // ファイルから読んだ元プリハブJSON
         Json sourceDocument =
             ReadJsonDocument(
                 m_graphics.Assets(),
                 resolvedPath,
                 "linked prefab");
+        // 現在の実体を保存したプリハブJSON
         const Json instanceDocument =
             Json::parse(
                 SerializePrefabToJson(instanceRoot));
+        // 個別操作する値のJSON Pointer
         const Json::json_pointer pointer{
             std::string{ path }
         };
         sourceDocument.at(pointer) =
             instanceDocument.at(pointer);
 
+        // 元プリハブの階層を検証する別シーン
         Scene validationScene(m_graphics);
         static_cast<void>(
             LoadPrefabHierarchy(
@@ -5750,8 +6112,10 @@ namespace LamaPon
         GameObject& instanceRoot,
         const std::string_view path)
     {
+        // 元と実体の設定差分の一覧
         const auto overrides =
             GetPrefabOverrides(instanceRoot);
+        // 指定パスに一致する個別操作候補(value: 調べるプリハブ差分)。
         const auto selectedOverride =
             std::find_if(
                 overrides.begin(),
@@ -5768,27 +6132,34 @@ namespace LamaPon
                 "Prefab override cannot be reverted individually.");
         }
 
+        // 実体がリンクするプリハブパス
         const auto assetPath =
             instanceRoot.PrefabAssetPath();
+        // リンク先プリハブの解決済みパス
         const auto resolvedPath =
             ResolvePrefabAssetPath(
                 m_graphics,
                 assetPath);
+        // ファイルから読んだ元プリハブJSON
         const Json sourceDocument =
             ReadJsonDocument(
                 m_graphics.Assets(),
                 resolvedPath,
                 "linked prefab");
+        // 現在の実体を保存したプリハブJSON
         Json instanceDocument =
             Json::parse(
                 SerializePrefabToJson(instanceRoot));
+        // 個別操作する値のJSON Pointer
         const Json::json_pointer pointer{
             std::string{ path }
         };
         instanceDocument.at(pointer) =
             sourceDocument.at(pointer);
 
+        // 保存親の対応位置または配置先の親
         auto* parent = instanceRoot.Parent();
+        // 元の階層を置き換える新ルート
         auto& replacement =
             InstantiatePrefabFromJson(
                 instanceDocument.dump(),
@@ -5814,8 +6185,10 @@ namespace LamaPon
                 "GameObject is not a Prefab instance root.");
         }
 
+        // 実体がリンクするプリハブパス
         const auto& assetPath =
             instanceRoot.PrefabAssetPath();
+        // リンク先プリハブの解決済みパス
         const auto resolvedPath =
             ResolvePrefabAssetPath(
                 m_graphics,
@@ -5834,9 +6207,12 @@ namespace LamaPon
                 "GameObject is not a Prefab instance root.");
         }
 
+        // 実体がリンクするプリハブパス
         const auto assetPath =
             instanceRoot.PrefabAssetPath();
+        // 保存親の対応位置または配置先の親
         auto* parent = instanceRoot.Parent();
+        // 元の階層を置き換える新ルート
         auto& replacement =
             InstantiatePrefab(assetPath, parent);
         if (!DestroyGameObject(instanceRoot))

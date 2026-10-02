@@ -101,6 +101,7 @@ namespace LamaPon
 
     Bounds3D CharacterControllerComponent::WorldBounds() const noexcept
     {
+        // 足元位置を持つワールド変換
         DirectX::XMFLOAT4X4 world{};
         DirectX::XMStoreFloat4x4(&world, Owner().WorldMatrix());
         return {
@@ -137,17 +138,20 @@ namespace LamaPon
     bool CharacterControllerComponent::HasCollision(
         const Bounds3D& bounds) const
     {
+        // 自身とトリガーを除く層条件
         const PhysicsQueryFilter filter{
             m_collisionMask,
             false,
             Owner().Id()
         };
+        // 境界に重なるコライダー
         for (const auto& hit :
             Owner().GetScene().OverlapBox(bounds, filter))
         {
-            // ヒット種別ごとに有効なコライダーからマスクとレイヤーを
-            // 取ります（box以外のヒットではcolliderはnullptrです）。
+            // ヒットが保持する形状種別の参照から相手の層条件を取得します。
+            // 相手が許可する層ビット集合
             std::uint32_t mask{ 0xffffffffu };
+            // 相手の所属層の番号
             std::uint32_t layer{ 0 };
             if (hit.collider != nullptr)
             {
@@ -176,9 +180,8 @@ namespace LamaPon
                 mask = hit.meshCollider->CollisionMask();
                 layer = hit.meshCollider->Layer();
             }
+
             if ((mask & (1u << m_layer)) != 0
-                // プロジェクト設定の衝突マトリクスにも従います
-                // （既定は全部当たるので挙動は変わりません）。
                 && LayersCanCollide(m_layer, layer))
             {
                 return true;
@@ -190,6 +193,7 @@ namespace LamaPon
     bool CharacterControllerComponent::HasGround(
         const float probeDistance) const
     {
+        // 足元直下の検査境界
         auto bounds = WorldBounds();
         bounds.maximum.y = bounds.minimum.y + m_skinWidth;
         bounds.minimum.y -= std::max(probeDistance, m_skinWidth);
@@ -205,6 +209,7 @@ namespace LamaPon
         {
             return true;
         }
+        // 指定軸だけのワールド移動
         DirectX::XMFLOAT3 movement{};
         (&movement.x)[axis] = amount;
         Owner().TranslateWorld(movement);
@@ -241,7 +246,9 @@ namespace LamaPon
 
     void CharacterControllerComponent::OnUpdate(const float deltaTime)
     {
+        // 0〜0.1秒に制限した時間
         const float safeDeltaTime = std::clamp(deltaTime, 0.0f, 0.1f);
+        // 今回の合計ワールド移動
         DirectX::XMFLOAT3 displacement = m_queuedDisplacement;
         m_queuedDisplacement = {};
 
@@ -254,8 +261,11 @@ namespace LamaPon
         }
         if (m_useInput && m_input != nullptr)
         {
+            // X方向の入力値
             float horizontal = m_input->Value(m_horizontalAction);
+            // 負Z方向の入力値
             float vertical = m_input->Value(m_verticalAction);
+            // XY入力ベクトルの長さ
             const float magnitude =
                 std::sqrt(horizontal * horizontal + vertical * vertical);
             if (magnitude > 1.0f)
@@ -279,23 +289,29 @@ namespace LamaPon
         m_verticalVelocity -= m_gravity * safeDeltaTime;
         displacement.y += m_verticalVelocity * safeDeltaTime;
 
+        // 1分割で進む距離の目安
         const float maximumStep =
             std::max(0.05f, m_radius * 0.35f);
+        // XYZで最大の移動量絶対値
         const float largest = std::max({
             std::abs(displacement.x),
             std::abs(displacement.y),
             std::abs(displacement.z)
         });
+        // 移動の分割数
         const int steps = std::max(
             1,
             static_cast<int>(std::ceil(largest / maximumStep)));
+        // 1分割のワールド移動
         const DirectX::XMFLOAT3 step{
             displacement.x / static_cast<float>(steps),
             displacement.y / static_cast<float>(steps),
             displacement.z / static_cast<float>(steps)
         };
 
+        // 鉛直移動が阻まれた状態
         bool verticalBlocked{};
+        // 移動の分割番号
         for (int index{}; index < steps; ++index)
         {
             MoveAxis(0, step.x, true);
@@ -328,6 +344,7 @@ namespace LamaPon
         DirectX::FXMMATRIX view,
         DirectX::CXMMATRIX projection)
     {
+        // 接地状態のデバッグRGBA色
         const auto color = m_grounded
             ? DirectX::XMVectorSet(0.15f, 1.0f, 0.45f, 1.0f)
             : DirectX::XMVectorSet(0.15f, 0.75f, 1.0f, 1.0f);

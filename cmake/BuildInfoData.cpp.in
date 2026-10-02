@@ -1,11 +1,11 @@
-// このファイルはcmake/BuildInfoData.cpp.inからビルド時に生成されます。
-// 直接編集しないでください。
 #include "LamaPon/Core/BuildInfo.h"
 
 namespace LamaPon
 {
+    // BuildInfoを静的なビルド情報で返します。
     const BuildInfo& GetBuildInfo() noexcept
     {
+        // configure時のGit情報
         static constexpr BuildInfo info{
             "@LAMAPON_BUILD_BRANCH@",
             "@LAMAPON_BUILD_COMMIT@",

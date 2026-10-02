@@ -13,6 +13,7 @@
 
 namespace
 {
+    // 診断用のステージ名を返す(stage: シェーダーの段階)。
     [[nodiscard]] const char* StageName(
         const LamaPon::ShaderStage stage) noexcept
     {
@@ -34,6 +35,7 @@ namespace
         return "unknown";
     }
 
+    // 失敗したHRESULTを例外として伝える(result: 操作結果, operation: 診断に表示する操作名)。
     void ThrowIfFailed(
         const HRESULT result,
         const char* operation)
@@ -67,7 +69,9 @@ namespace LamaPon
 
         if (IsShaderManifestPath(shaderPath))
         {
+            // 計算シェーダーのマニフェスト
             ShaderAssetDesc asset;
+            // マニフェスト読込の診断
             std::string manifestError;
             if (!LoadShaderAssetDesc(
                     assets,
@@ -85,11 +89,12 @@ namespace LamaPon
                     + PathToUtf8(shaderPath));
             }
 
-            // Validation guarantees that at least one pass has a required
-            // compute stage. Optional probes do not select the runtime pass.
+            // 最初の必須計算ステージを持つパス
             const ShaderPassDesc* selectedPass{};
+            // 計算ステージを探す候補パス
             for (const auto& candidate : asset.passes)
             {
+                // 候補の計算ステージ宣言
                 const auto* compute = FindShaderStage(
                     candidate,
                     ShaderStage::Compute);
@@ -106,6 +111,7 @@ namespace LamaPon
                     " compute stage: " + PathToUtf8(shaderPath));
             }
 
+            // 選択したパスのステージ宣言
             for (const auto& stage : selectedPass->stages)
             {
                 if (stage.stage != ShaderStage::Compute)
@@ -121,7 +127,9 @@ namespace LamaPon
                 }
             }
 
+            // コンパイルしたステージの資源
             ShaderProgram program;
+            // シェーダーコンパイルの診断
             std::string programError;
             if (!program.Compile(
                     device,
@@ -142,7 +150,7 @@ namespace LamaPon
         }
         else
         {
-            // Direct HLSL keeps the original CSMain/cs_5_0 fallback.
+            // 直接指定のCSMainバイトコード
             const auto byteCode = CompileShaderCached(
                 assets,
                 shaderPath,
@@ -158,6 +166,7 @@ namespace LamaPon
                 "(compute effect)");
         }
 
+        // 定数バッファーの作成設定
         D3D11_BUFFER_DESC buffer{};
         buffer.ByteWidth =
             static_cast<UINT>(sizeof(Constants));
@@ -170,6 +179,7 @@ namespace LamaPon
                 m_constantBuffer.ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateBuffer(compute effect)");
 
+        // 線形クランプのサンプラー設定
         D3D11_SAMPLER_DESC sampler{};
         sampler.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
         sampler.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
@@ -199,6 +209,7 @@ namespace LamaPon
             return;
         }
 
+        // GPUへ送る計算定数
         Constants constants{};
         constants.parameters = parameters;
         constants.outputSize = {
@@ -219,15 +230,19 @@ namespace LamaPon
             m_computeShader.Get(),
             nullptr,
             0);
+        // CSのb0に結合する定数
         ID3D11Buffer* buffers[]{ m_constantBuffer.Get() };
         m_context->CSSetConstantBuffers(0, 1, buffers);
+        // CSのt0・t1に結合する入力
         ID3D11ShaderResourceView* resources[]{
             inputTextures[0],
             inputTextures[1]
         };
         m_context->CSSetShaderResources(0, 2, resources);
+        // CSのs0に結合するサンプラー
         ID3D11SamplerState* samplers[]{ m_sampler.Get() };
         m_context->CSSetSamplers(0, 1, samplers);
+        // CSのu0に結合する出力
         ID3D11UnorderedAccessView* outputs[]{ output };
         m_context->CSSetUnorderedAccessViews(
             0,
@@ -235,24 +250,24 @@ namespace LamaPon
             outputs,
             nullptr);
 
-        // 端数のスレッドグループも回すので切り上げます。はみ出した
-        // スレッドはHLSL側で出力サイズと比べて捨ててください
-        // （雛形にその1行が入っています）。
+        // 端の範囲外スレッドはHLSL側で除く。
+        // 横方向のスレッドグループ数
         const auto groupsX =
             (width + ThreadGroupSize - 1) / ThreadGroupSize;
+        // 縦方向のスレッドグループ数
         const auto groupsY =
             (height + ThreadGroupSize - 1) / ThreadGroupSize;
         m_context->Dispatch(groupsX, groupsY, 1);
 
-        // 出したUAVとSRVは必ず外します。着けたままだと、次に同じ
-        // テクスチャを描画側で読もうとしたときにD3D11が黙って
-        // nullへ差し替えます。
+        // 描画側で同じ資源を読めるよう、UAVとSRVの結合を解除する。
+        // UAVの結合を解除するヌル配列
         ID3D11UnorderedAccessView* nullOutputs[]{ nullptr };
         m_context->CSSetUnorderedAccessViews(
             0,
             1,
             nullOutputs,
             nullptr);
+        // SRVの結合を解除するヌル配列
         ID3D11ShaderResourceView* nullResources[]{
             nullptr,
             nullptr

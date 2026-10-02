@@ -7,6 +7,7 @@
 
 namespace
 {
+    // 方向を正規化し短すぎれば代替値を返します(value: 入力方向, fallback: 代替の単位方向)。
     DirectX::XMFLOAT3 Normalize(
         const DirectX::XMFLOAT3& value,
         const DirectX::XMFLOAT3& fallback = {
@@ -14,6 +15,7 @@ namespace
             1.0f,
             0.0f }) noexcept
     {
+        // 入力ベクトルの長さ
         const float length = std::sqrt(
             value.x * value.x
             + value.y * value.y
@@ -27,6 +29,7 @@ namespace
             : fallback;
     }
 
+    // 三成分の外積を返します(left: 左ベクトル, right: 右ベクトル)。
     DirectX::XMFLOAT3 Cross(
         const DirectX::XMFLOAT3& left,
         const DirectX::XMFLOAT3& right) noexcept
@@ -38,6 +41,7 @@ namespace
         };
     }
 
+    // 三成分の内積を返します(left: 一方のベクトル, right: もう一方のベクトル)。
     float Dot(
         const DirectX::XMFLOAT3& left,
         const DirectX::XMFLOAT3& right) noexcept
@@ -47,10 +51,12 @@ namespace
             + left.z * right.z;
     }
 
+    // 方向を変換して正規化し短すぎればY軸を返します(value: 入力方向, matrix: 適用する行列)。
     DirectX::XMFLOAT3 TransformDirection(
         const DirectX::XMFLOAT3& value,
         DirectX::FXMMATRIX matrix) noexcept
     {
+        // 変換した方向ベクトル
         DirectX::XMFLOAT3 result{};
         DirectX::XMStoreFloat3(
             &result,
@@ -60,10 +66,12 @@ namespace
         return Normalize(result);
     }
 
+    // 平面へ射影して正規化し短すぎればY軸を返します(value: 入力方向, normal: 平面の単位法線)。
     DirectX::XMFLOAT3 ProjectToPlane(
         const DirectX::XMFLOAT3& value,
         const DirectX::XMFLOAT3& normal) noexcept
     {
+        // 法線方向への射影量
         const float projection = Dot(value, normal);
         return Normalize({
             value.x - normal.x * projection,
@@ -120,6 +128,7 @@ namespace LamaPon
 
     void JointComponent::SetAxis(const DirectX::XMFLOAT3& value) noexcept
     {
+        // 入力ベクトルの長さ
         const float length = std::sqrt(
             value.x * value.x
             + value.y * value.y
@@ -192,6 +201,7 @@ namespace LamaPon
             return;
         }
 
+        // ヒンジ軸と平行でない補助軸
         const DirectX::XMFLOAT3 basis =
             std::abs(m_axis.y) < 0.9f
             ? DirectX::XMFLOAT3{ 0.0f, 1.0f, 0.0f }
@@ -200,17 +210,21 @@ namespace LamaPon
             Normalize(
                 Cross(m_axis, basis),
                 { 1.0f, 0.0f, 0.0f });
+        // 正規化したワールドヒンジ軸
         const auto worldAxis =
             TransformDirection(
                 m_axis,
                 Owner().WorldMatrix());
+        // ワールドの初期基準方向
         const auto worldReference =
             ProjectToPlane(
                 TransformDirection(
                     m_hingeOwnerReference,
                     Owner().WorldMatrix()),
                 worldAxis);
+        // 接続物体の変換の行列式
         DirectX::XMVECTOR determinant{};
+        // 接続物体のワールド逆変換
         const auto inverseConnected =
             DirectX::XMMatrixInverse(
                 &determinant,
@@ -251,14 +265,17 @@ namespace LamaPon
             return 0.0f;
         }
 
+        // 正規化したワールドヒンジ軸
         const auto worldAxis =
             HingeWorldAxis(connected);
+        // 接続側のワールド基準方向
         const auto connectedReference =
             ProjectToPlane(
                 TransformDirection(
                     m_hingeConnectedReference,
                     connected.WorldMatrix()),
                 worldAxis);
+        // 自身のワールド基準方向
         const auto ownerReference =
             ProjectToPlane(
                 TransformDirection(

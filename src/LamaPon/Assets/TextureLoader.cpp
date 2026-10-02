@@ -14,6 +14,7 @@
 
 namespace
 {
+    // 4文字を下位から順に32ビット識別子へ詰める(a: 第1文字, b: 第2文字, c: 第3文字, d: 第4文字)。
     constexpr std::uint32_t MakeFourCc(
         const char a,
         const char b,
@@ -31,40 +32,67 @@ namespace
 
     struct DdsPixelFormat final
     {
+        // ピクセル形式情報のバイト数
         std::uint32_t size{};
+        // 格納形式のフラグ
         std::uint32_t flags{};
+        // 4文字またはD3D9形式の値
         std::uint32_t fourCc{};
+        // 1画素のビット数
         std::uint32_t rgbBitCount{};
+        // 赤成分のビットマスク
         std::uint32_t redMask{};
+        // 緑成分のビットマスク
         std::uint32_t greenMask{};
+        // 青成分のビットマスク
         std::uint32_t blueMask{};
+        // アルファのビットマスク
         std::uint32_t alphaMask{};
     };
 
     struct DdsHeader final
     {
+        // 旧ヘッダーのバイト数
         std::uint32_t size{};
+        // 旧ヘッダーの有効項目フラグ
         std::uint32_t flags{};
+        // 最も細かいミップの高さ
         std::uint32_t height{};
+        // 最も細かいミップの幅
         std::uint32_t width{};
+        // 元の行幅または圧縮サイズ
         std::uint32_t pitchOrLinearSize{};
+        // 元の3D画像の奥行き
         std::uint32_t depth{};
+        // 記録されたミップ数
         std::uint32_t mipMapCount{};
+        // 旧形式の予約領域
         std::array<std::uint32_t, 11> reserved{};
+        // 旧形式の画素記述
         DdsPixelFormat pixelFormat{};
+        // 元の画像機能フラグ
         std::uint32_t caps{};
+        // キューブ・3D等の機能フラグ
         std::uint32_t caps2{};
+        // 元の追加機能フラグ
         std::uint32_t caps3{};
+        // 元の追加機能フラグ
         std::uint32_t caps4{};
+        // 旧形式の追加予約領域
         std::uint32_t reserved2{};
     };
 
     struct DdsHeaderDx10 final
     {
+        // 元のDXGI格納形式
         std::uint32_t format{};
+        // 2D・3D等の次元の値
         std::uint32_t resourceDimension{};
+        // キューブ等の機能フラグ
         std::uint32_t miscFlag{};
+        // 配列枚数、キューブは個数
         std::uint32_t arraySize{};
+        // 元のアルファモード等の情報
         std::uint32_t miscFlags2{};
     };
 
@@ -72,12 +100,14 @@ namespace
     static_assert(sizeof(DdsHeader) == 124u);
     static_assert(sizeof(DdsHeaderDx10) == 20u);
 
+    // 形式と寸法から最小行バイト数と行数を返す(format: 元の格納形式, width: ミップ幅（画素）, height: ミップ高（画素）)。
     [[nodiscard]] std::pair<std::uint32_t, std::uint32_t>
         DdsLevelLayout(
             const DXGI_FORMAT format,
             const std::uint32_t width,
             const std::uint32_t height)
     {
+        // 形式と寸法に対応する行配置
         const auto layout = LamaPon::Detail::RequiredTextureLayout(
             format,
             width,
@@ -85,6 +115,7 @@ namespace
         return { layout.minimumRowBytes, layout.rowCount };
     }
 
+    // HRESULTが失敗なら操作名付き例外を送出する(result: APIの結果, operation: 失敗した操作名)。
     void ThrowIfFailed(
         const HRESULT result,
         const char* operation)
@@ -102,16 +133,20 @@ namespace
     // 呼び出しスレッドのCOMを初期化するRAII。
     struct ComScope final
     {
+        // このスコープでCOM解放するか
         bool uninitialize{};
 
+        // 現在のスレッドでCOM初期化を試み、成功した分だけ解放を予約する。
         ComScope()
         {
+            // COM初期化の結果
             const HRESULT result = CoInitializeEx(
                 nullptr,
                 COINIT_MULTITHREADED);
             uninitialize = SUCCEEDED(result);
         }
 
+        // このスコープが成功させたCOM初期化だけを解放する。
         ~ComScope()
         {
             if (uninitialize)
@@ -121,7 +156,7 @@ namespace
         }
     };
 
-    // RGB888 → RGB565
+    // 8ビットRGBをRGB565へ量子化する(red: 赤成分, green: 緑成分, blue: 青成分)。
     [[nodiscard]] std::uint16_t To565(
         const std::uint8_t red,
         const std::uint8_t green,
@@ -133,29 +168,35 @@ namespace
             | (blue >> 3));
     }
 
-    // 4x4ブロックをRGBA配列として取り出します（端はクランプ）。
+    // 画像端を繰り返して4×4のRGBA画素を取り出す(image: 正寸法と全画素を持つ元画像, blockX: ブロック列番号, blockY: ブロック行番号, block: 64バイトの返却先)。
     void ExtractBlock(
         const LamaPon::TextureLoader::CpuImage& image,
         const std::uint32_t blockX,
         const std::uint32_t blockY,
         std::array<std::uint8_t, 64>& block) noexcept
     {
+        // 4×4ブロック内の行番号
         for (std::uint32_t row = 0; row < 4; ++row)
         {
+            // 読み書きする画素の行番号
             const std::uint32_t y = std::min(
                 blockY * 4 + row,
                 image.height - 1);
+            // 4×4ブロック内の列番号
             for (std::uint32_t column = 0;
                 column < 4;
                 ++column)
             {
+                // 読み書きする画素の列番号
                 const std::uint32_t x = std::min(
                     blockX * 4 + column,
                     image.width - 1);
+                // コピー元の画素列の位置
                 const std::size_t source =
                     (static_cast<std::size_t>(y)
                         * image.width
                         + x) * 4;
+                // 書き込み先の画素列の位置
                 const std::size_t destination =
                     (row * 4 + column) * 4;
                 block[destination] =
@@ -170,18 +211,23 @@ namespace
         }
     }
 
-    // BC1のカラー部（8バイト）をエンコードします。
-    // 端点はブロック内の輝度最小/最大ピクセルです。
+    // RGB合計の最小・最大を端点にBC色ブロックを作る(block: 4×4のRGBA画素, destination: 8バイト以上の返却先)。
     void EncodeColorBlock(
         const std::array<std::uint8_t, 64>& block,
         std::uint8_t* destination) noexcept
     {
+        // ブロック内の最大RGB合計
         int brightest = -1;
+        // ブロック内の最小RGB合計
         int darkest = 256 * 3 + 1;
+        // RGB合計が最大の端点色
         std::array<std::uint8_t, 3> endpointHigh{};
+        // RGB合計が最小の端点色
         std::array<std::uint8_t, 3> endpointLow{};
+        // ブロック内の画素番号
         for (int pixel = 0; pixel < 16; ++pixel)
         {
+            // 画素のRGB成分の合計
             const int luminance =
                 block[pixel * 4]
                 + block[pixel * 4 + 1]
@@ -204,10 +250,12 @@ namespace
             }
         }
 
+        // RGB565の第1端点
         std::uint16_t color0 = To565(
             endpointHigh[0],
             endpointHigh[1],
             endpointHigh[2]);
+        // RGB565の第2端点
         std::uint16_t color1 = To565(
             endpointLow[0],
             endpointLow[1],
@@ -219,8 +267,10 @@ namespace
             std::swap(endpointHigh, endpointLow);
         }
 
-        // パレット4色（2端点＋2内分点）
+
+        // 成分を補間した選択肢
         std::array<std::array<int, 3>, 4> palette{};
+        // RGBA成分の番号
         for (int channel = 0; channel < 3; ++channel)
         {
             palette[0][channel] = endpointHigh[channel];
@@ -233,26 +283,32 @@ namespace
                     + 2 * endpointLow[channel]) / 3;
         }
 
+        // 画素ごとのパレット番号列
         std::uint32_t indices = 0;
-        // color0 == color1は3色＋透明モードになり、インデックス
-        // 3が透明黒として描画されてしまうため、全ピクセルを
-        // 端点0（indices=0のまま）にします。
+        // 端点が等しいと透明モードになるため、全画素を不透明な端点0へ割り当てる。
         if (color0 != color1)
         {
+            // ブロック内の画素番号
             for (int pixel = 15; pixel >= 0; --pixel)
             {
+                // 最も近いパレット番号
                 int bestIndex = 0;
+                // 最小の成分誤差の二乗和
                 int bestDistance =
                     std::numeric_limits<int>::max();
+                // 比較するパレット番号
                 for (int candidate = 0;
                     candidate < 4;
                     ++candidate)
                 {
+                    // 成分誤差の二乗和
                     int distance = 0;
+                    // RGBA成分の番号
                     for (int channel = 0;
                         channel < 3;
                         ++channel)
                     {
+                        // 元成分と候補の差
                         const int delta =
                             block[pixel * 4 + channel]
                             - palette[candidate][channel];
@@ -275,18 +331,20 @@ namespace
         std::memcpy(destination + 4, &indices, 4);
     }
 
-    // 1チャンネル分のBC4ブロック（8バイト）をエンコードします。
-    // BC3のアルファ部とBC5のR/G部は同じ符号化なので、見るチャンネルを
-    // 引数にして共用します（channelは0=R, 1=G, 2=B, 3=A）。
+    // 1成分の最小・最大からBC4ブロックを作る(block: 4×4のRGBA画素, channel: RGBAの0〜3の成分番号, destination: 8バイト以上の返却先)。
     void EncodeChannelBlock(
         const std::array<std::uint8_t, 64>& block,
         const int channel,
         std::uint8_t* destination) noexcept
     {
+        // 選択成分の最大値
         std::uint8_t alphaHigh = 0;
+        // 選択成分の最小値
         std::uint8_t alphaLow = 255;
+        // ブロック内の画素番号
         for (int pixel = 0; pixel < 16; ++pixel)
         {
+            // 選択成分の画素値
             const std::uint8_t alpha =
                 block[pixel * 4 + channel];
             alphaHigh = std::max(alphaHigh, alpha);
@@ -295,10 +353,12 @@ namespace
         destination[0] = alphaHigh;
         destination[1] = alphaLow;
 
-        // 8段階の補間パレット（alpha0 > alpha1モード）
+
+        // 成分を補間した選択肢
         std::array<int, 8> palette{};
         palette[0] = alphaHigh;
         palette[1] = alphaLow;
+        // 端点間の補間位置
         for (int step = 1; step <= 6; ++step)
         {
             palette[static_cast<std::size_t>(step) + 1] =
@@ -306,19 +366,27 @@ namespace
                     + step * alphaLow) / 7;
         }
 
+        // 画素ごとのパレット番号列
         std::uint64_t indices = 0;
+        // ブロック内の画素番号
         for (int pixel = 15; pixel >= 0; --pixel)
         {
+            // 選択成分の画素値
             const int alpha = block[pixel * 4 + channel];
+            // 最も近いパレット番号
             int bestIndex = 0;
+            // 最小の成分誤差の二乗和
             int bestDistance =
                 std::numeric_limits<int>::max();
+            // 比較するパレット番号
             for (int candidate = 0;
                 candidate < 8;
                 ++candidate)
             {
+                // 元成分と候補の差
                 const int delta =
                     alpha - palette[candidate];
+                // 成分誤差の二乗和
                 const int distance = delta * delta;
                 if (distance < bestDistance)
                 {
@@ -329,6 +397,7 @@ namespace
             indices = (indices << 3)
                 | static_cast<std::uint64_t>(bestIndex);
         }
+        // パレット番号列のバイト位置
         for (int byte = 0; byte < 6; ++byte)
         {
             destination[2 + byte] =
@@ -337,36 +406,51 @@ namespace
         }
     }
 
+    // 1辺に必要な4画素ブロック数を最低1で返す(size: 画像の幅または高さ)。
     [[nodiscard]] std::uint32_t BlockCount(
         const std::uint32_t size) noexcept
     {
         return std::max((size + 3) / 4, 1u);
     }
 
+    // DDSの形式識別子
     constexpr std::uint32_t DdsMagic = MakeFourCc('D', 'D', 'S', ' ');
+    // FourCC格納のフラグ
     constexpr std::uint32_t PixelFormatFourCc = 0x4u;
-    // caps2のDDSCAPS2_CUBEMAPと6面すべての印です。
+
+    // キューブ指定と6面のフラグ
     constexpr std::uint32_t Caps2CubeMapMask = 0xfe00u;
+    // DX10のキューブ指定フラグ
     constexpr std::uint32_t ResourceMiscTextureCube = 0x4u;
 
-    // DDSのresource次元を保ち、D3D11／D3D12のsubresource順へ展開します。
+    // 対応するDDSを検査し、次元付き転送情報へ展開する(bytes: 元DDSのバイト列)。
     [[nodiscard]] LamaPon::TextureLoader::PreparedDdsTextureData
         ParseDdsResourceData(const std::span<const std::uint8_t> bytes)
     {
+        // RGB格納のフラグ
         constexpr std::uint32_t PixelFormatRgb = 0x40u;
+        // 輝度格納のフラグ
         constexpr std::uint32_t PixelFormatLuminance = 0x20000u;
+        // アルファ格納のフラグ
         constexpr std::uint32_t PixelFormatAlpha = 0x2u;
+        // 符号付き凹凸成分のフラグ
         constexpr std::uint32_t PixelFormatBumpDuDv = 0x80000u;
+        // 3D画像指定のフラグ
         constexpr std::uint32_t Caps2Volume = 0x200000u;
+        // DX10の2D画像次元の値
         constexpr std::uint32_t ResourceDimensionTexture2D = 3u;
+        // DX10の3D画像次元の値
         constexpr std::uint32_t ResourceDimensionTexture3D = 4u;
+        // DDSの1辺の最大画素数
         constexpr std::uint32_t MaximumTextureDimension = 16384u;
 
         if (bytes.size() < sizeof(std::uint32_t) + sizeof(DdsHeader))
         {
             throw std::invalid_argument("The DDS header is incomplete.");
         }
+        // 読み取ったDDS識別子
         std::uint32_t magic{};
+        // 読み取った旧DDSヘッダー
         DdsHeader header{};
         std::memcpy(&magic, bytes.data(), sizeof(magic));
         std::memcpy(
@@ -383,10 +467,12 @@ namespace
         {
             throw std::invalid_argument("The DDS header is invalid.");
         }
-        // 古い形式のcubeはcaps2へDDSCAPS2_CUBEMAPと6面の印を持ちます。
-        // 面が欠けたcubeはD3D11のDirectXTKと同じく読みません。
+        // 旧形式のキューブは6面の指定が揃わなければ拒否する。
+        // キューブ指定の有無
         bool fileCube = (header.caps2 & Caps2CubeMapMask) != 0u;
+        // 3D画像指定の有無
         bool fileVolume = (header.caps2 & Caps2Volume) != 0u;
+        // 配列枚数、キューブは個数
         std::uint32_t arraySize = 1u;
         if (fileCube
             && (header.caps2 & Caps2CubeMapMask) != Caps2CubeMapMask)
@@ -395,7 +481,9 @@ namespace
                 "DDS cubes without all six faces are not supported.");
         }
 
+        // 画像データの開始バイト位置
         std::size_t payloadOffset = sizeof(magic) + sizeof(header);
+        // 確定する画像の格納形式
         DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
         if ((header.pixelFormat.flags & PixelFormatFourCc) != 0u)
         {
@@ -467,6 +555,7 @@ namespace
                     throw std::invalid_argument(
                         "The DDS DX10 header is incomplete.");
                 }
+                // 読み取ったDX10拡張情報
                 DdsHeaderDx10 dx10{};
                 std::memcpy(
                     &dx10,
@@ -647,9 +736,7 @@ namespace
                 format = DXGI_FORMAT_R16G16_SNORM;
             }
         }
-        // DirectXTKのEnsureNotTypelessと同じく、DDSのtypeless storageを
-        // shaderから読める既定のtyped viewへ確定します。resourceとSRVに
-        // typeless formatをそのまま渡すとD3D12ではview生成に失敗します。
+        // typeless形式はDirectXTK互換の既定typed形式へ確定し、リソースとビューに同じ形式を使う。
         switch (format)
         {
         case DXGI_FORMAT_R32G32B32A32_TYPELESS:
@@ -779,8 +866,11 @@ namespace
                 "The DDS cube faces must be square.");
         }
 
+        // 1面あたりのミップ数
         const std::uint32_t mipCount = std::max(header.mipMapCount, 1u);
+        // 寸法から決まる最大ミップ数
         std::uint32_t maximumMipCount = 1u;
+        // 最大ミップ数を求める1辺
         for (std::uint32_t size = std::max({
                 header.width,
                 header.height,
@@ -802,6 +892,7 @@ namespace
             throw std::invalid_argument(
                 "The DDS texture has too many array slices.");
         }
+        // 格納する配列要素と面の総数
         const std::uint32_t sliceCount = fileVolume
             ? 1u
             : fileCube
@@ -812,12 +903,13 @@ namespace
             throw std::invalid_argument(
                 "The DDS texture has too many array slices.");
         }
+        // 元のDDSの格納形式
         const auto sourceFormat = format;
+        // YUY2をRGBA8へ変換するか
         const bool convertYuy2 = sourceFormat == DXGI_FORMAT_YUY2;
+        // 次元付きDDSの転送情報
         LamaPon::TextureLoader::PreparedDdsTextureData result;
-        // D3D12 WARP and a number of hardware drivers do not accept YUY2 as a
-        // general shader texture. Decode it once on the CPU so both backends
-        // get an ordinary, portable color texture.
+        // YUY2は共通描画で扱えるRGBA8へCPUで展開する。
         result.format = convertYuy2
             ? DXGI_FORMAT_R8G8B8A8_UNORM
             : sourceFormat;
@@ -841,18 +933,27 @@ namespace
         result.mipLevels = mipCount;
         result.subresources.reserve(
             static_cast<std::size_t>(mipCount) * sliceCount);
+        // 次に読むDDSのバイト位置
         std::size_t offset = payloadOffset;
+        // DDSのpitch指定は使わず、各形式の最小行幅で連続したデータとして読む。
+        // 配列要素または面の番号
         for (std::uint32_t slice{}; slice < sliceCount; ++slice)
         {
+            // 処理するミップ番号または画像
             for (std::uint32_t mip{}; mip < mipCount; ++mip)
             {
+                // このミップの幅（画素）
                 const auto width = std::max(header.width >> mip, 1u);
+                // このミップの高さ（画素）
                 const auto height = std::max(header.height >> mip, 1u);
+                // rowPitch: 元の1行のバイト数, rowCount: ミップの行数
                 const auto [rowPitch, rowCount] =
                     DdsLevelLayout(sourceFormat, width, height);
+                // このミップの奥行き
                 const auto depth = fileVolume
                     ? std::max(header.depth >> mip, 1u)
                     : 1u;
+                // 奥行きを含むミップのバイト数
                 const std::uint64_t levelBytes64 =
                     static_cast<std::uint64_t>(rowPitch) * rowCount * depth;
                 if (offset > bytes.size()
@@ -862,8 +963,10 @@ namespace
                     throw std::invalid_argument(
                         "The DDS mip data is incomplete.");
                 }
+                // 奥行きを含むミップのバイト数
                 const auto levelBytes =
                     static_cast<std::size_t>(levelBytes64);
+                // ミップの番号または転送情報
                 LamaPon::TextureLoader::PreparedTextureLevel level;
                 level.width = width;
                 level.height = height;
@@ -873,19 +976,24 @@ namespace
                     level.bytes.resize(
                         static_cast<std::size_t>(level.rowPitch)
                             * height * depth);
+                    // 変換した整数を8ビット範囲へ制限する(value: 変換した色成分)。
                     const auto clampByte = [](const int value) noexcept
                     {
                         return static_cast<std::uint8_t>(
                             std::clamp(value, 0, 255));
                     };
+                    // YUVをRGBA8へ変換する(destination: 4バイトの返却先, y: 輝度, u: 青差成分, v: 赤差成分)。
                     const auto writePixel = [&clampByte](
                         std::uint8_t* const destination,
                         const int y,
                         const int u,
                         const int v)
                     {
+                        // 16を差し引いた輝度
                         const int c = std::max(y - 16, 0);
+                        // 128を差し引いた青差成分
                         const int d = u - 128;
+                        // 128を差し引いた赤差成分
                         const int e = v - 128;
                         destination[0] = clampByte(
                             (298 * c + 409 * e + 128) >> 8);
@@ -895,17 +1003,23 @@ namespace
                             (298 * c + 516 * d + 128) >> 8);
                         destination[3] = 255u;
                     };
+                    // 元ミップのバイト先頭
                     const auto* const sourceBase = bytes.data() + offset;
+                    // 奥行きの層番号
                     for (std::uint32_t z{}; z < depth; ++z)
                     {
+                        // 読み書きする画素の行番号
                         for (std::uint32_t y{}; y < height; ++y)
                         {
+                            // コピー元の画素列の位置
                             const auto* source = sourceBase
                                 + (static_cast<std::size_t>(z) * rowCount + y)
                                     * rowPitch;
+                            // 書き込み先の画素列の位置
                             auto* destination = level.bytes.data()
                                 + (static_cast<std::size_t>(z) * height + y)
                                     * level.rowPitch;
+                            // 読み書きする画素の列番号
                             for (std::uint32_t x{}; x < width; x += 2u)
                             {
                                 writePixel(
@@ -953,6 +1067,7 @@ namespace LamaPon::TextureLoader
     PreparedTextureData PrepareDdsTextureData(
         const std::span<const std::uint8_t> bytes)
     {
+        // 展開した次元付きDDS
         auto resource = ParseDdsResourceData(bytes);
         if (resource.dimension != PreparedDdsTextureDimension::Texture2D)
         {
@@ -965,12 +1080,15 @@ namespace LamaPon::TextureLoader
     bool IsDdsCubeTexture(
         const std::span<const std::uint8_t> bytes) noexcept
     {
+        // 旧DDSヘッダーの開始位置
         const std::size_t headerOffset = sizeof(std::uint32_t);
         if (bytes.size() < headerOffset + sizeof(DdsHeader))
         {
             return false;
         }
+        // 読み取ったDDS識別子
         std::uint32_t magic{};
+        // 読み取った旧DDSヘッダー
         DdsHeader header{};
         std::memcpy(&magic, bytes.data(), sizeof(magic));
         std::memcpy(
@@ -985,6 +1103,7 @@ namespace LamaPon::TextureLoader
         {
             return true;
         }
+        // DX10拡張情報の開始位置
         const std::size_t extendedOffset = headerOffset + sizeof(header);
         if ((header.pixelFormat.flags & PixelFormatFourCc) == 0u
             || header.pixelFormat.fourCc != MakeFourCc('D', 'X', '1', '0')
@@ -992,6 +1111,7 @@ namespace LamaPon::TextureLoader
         {
             return false;
         }
+        // 読み取ったDX10拡張情報
         DdsHeaderDx10 dx10{};
         std::memcpy(
             &dx10,
@@ -1003,6 +1123,7 @@ namespace LamaPon::TextureLoader
     PreparedTextureData PrepareDdsCubeTextureData(
         const std::span<const std::uint8_t> bytes)
     {
+        // 展開した次元付きDDS
         auto resource = ParseDdsResourceData(bytes);
         if (resource.dimension != PreparedDdsTextureDimension::TextureCube)
         {
@@ -1020,8 +1141,10 @@ namespace LamaPon::TextureLoader
             throw std::runtime_error(
                 "Texture bytes are empty.");
         }
+        // このスレッドのCOM解放管理
         const ComScope comScope;
 
+        // WIC画像処理の生成元
         Microsoft::WRL::ComPtr<IWICImagingFactory>
             factory;
         ThrowIfFailed(
@@ -1033,8 +1156,8 @@ namespace LamaPon::TextureLoader
                     factory.ReleaseAndGetAddressOf())),
             "CoCreateInstance(WICImagingFactory)");
 
-        // 入力バイト列をコピーせず参照するWICストリームを作ります。
-        // デコードはこの関数内で完了するため、参照先は処理中存続します。
+        // WICストリームは元バイト列を借用し、復号をこの呼出し内で終える。
+        // 元画像を借用するWIC列
         Microsoft::WRL::ComPtr<IWICStream> stream;
         ThrowIfFailed(
             factory->CreateStream(
@@ -1046,6 +1169,7 @@ namespace LamaPon::TextureLoader
                 static_cast<DWORD>(bytes.size())),
             "IWICStream::InitializeFromMemory");
 
+        // 元画像のWICデコーダー
         Microsoft::WRL::ComPtr<IWICBitmapDecoder> decoder;
         ThrowIfFailed(
             factory->CreateDecoderFromStream(
@@ -1055,6 +1179,7 @@ namespace LamaPon::TextureLoader
                 decoder.ReleaseAndGetAddressOf()),
             "IWICImagingFactory::CreateDecoderFromStream");
 
+        // 復号する先頭フレーム
         Microsoft::WRL::ComPtr<IWICBitmapFrameDecode>
             frame;
         ThrowIfFailed(
@@ -1063,6 +1188,7 @@ namespace LamaPon::TextureLoader
                 frame.ReleaseAndGetAddressOf()),
             "IWICBitmapDecoder::GetFrame");
 
+        // RGBA8画素への変換器
         Microsoft::WRL::ComPtr<IWICFormatConverter>
             converter;
         ThrowIfFailed(
@@ -1079,6 +1205,7 @@ namespace LamaPon::TextureLoader
                 WICBitmapPaletteTypeCustom),
             "IWICFormatConverter::Initialize");
 
+        // 復号したCPU画像
         CpuImage image;
         ThrowIfFailed(
             converter->GetSize(
@@ -1106,12 +1233,15 @@ namespace LamaPon::TextureLoader
 
     std::vector<CpuImage> GenerateMipChain(CpuImage base)
     {
+        // 生成するミップの一覧
         std::vector<CpuImage> mips;
         mips.push_back(std::move(base));
         while (mips.back().width > 1
             || mips.back().height > 1)
         {
+            // 縮小元のミップ画像
             const auto& previous = mips.back();
+            // 生成する1段粗いミップ画像
             CpuImage next;
             next.width =
                 std::max(previous.width / 2, 1u);
@@ -1121,34 +1251,42 @@ namespace LamaPon::TextureLoader
                 static_cast<std::size_t>(next.width)
                 * next.height
                 * 4);
+            // 読み書きする画素の行番号
             for (std::uint32_t y = 0;
                 y < next.height;
                 ++y)
             {
+                // 平均する元画素の上の行
                 const std::uint32_t sourceY0 =
                     std::min(
                         y * 2,
                         previous.height - 1);
+                // 平均する元画素の下の行
                 const std::uint32_t sourceY1 =
                     std::min(
                         y * 2 + 1,
                         previous.height - 1);
+                // 読み書きする画素の列番号
                 for (std::uint32_t x = 0;
                     x < next.width;
                     ++x)
                 {
+                    // 平均する元画素の左の列
                     const std::uint32_t sourceX0 =
                         std::min(
                             x * 2,
                             previous.width - 1);
+                    // 平均する元画素の右の列
                     const std::uint32_t sourceX1 =
                         std::min(
                             x * 2 + 1,
                             previous.width - 1);
+                    // RGBA成分の番号
                     for (int channel = 0;
                         channel < 4;
                         ++channel)
                     {
+                        // 元ミップの1成分を読む(sampleX: 元画素の列, sampleY: 元画素の行)。
                         const auto sample =
                             [&previous, channel](
                                 const std::uint32_t
@@ -1165,6 +1303,7 @@ namespace LamaPon::TextureLoader
                                         + sampleX) * 4
                                     + channel]);
                         };
+                        // 4元画素の成分値の合計
                         const int sum =
                             sample(sourceX0, sourceY0)
                             + sample(sourceX1, sourceY0)
@@ -1188,6 +1327,7 @@ namespace LamaPon::TextureLoader
     bool HasTransparentPixels(
         const CpuImage& image) noexcept
     {
+        // 透過を調べるアルファの位置
         for (std::size_t index = 3;
             index < image.pixels.size();
             index += 4)
@@ -1203,20 +1343,28 @@ namespace LamaPon::TextureLoader
     std::vector<std::uint8_t> CompressBC1(
         const CpuImage& image)
     {
+        // 横方向の4画素ブロック数
         const std::uint32_t blocksX =
             BlockCount(image.width);
+        // 縦方向の4画素ブロック数
         const std::uint32_t blocksY =
             BlockCount(image.height);
+        // 圧縮したブロックのバイト列
         std::vector<std::uint8_t> output(
             static_cast<std::size_t>(blocksX)
             * blocksY
             * 8);
+        // 4×4のRGBA画素列
         std::array<std::uint8_t, 64> block{};
+        // 圧縮するブロック行番号
         for (std::uint32_t blockY = 0;
+            // 縦方向の4画素ブロック数
             blockY < blocksY;
             ++blockY)
         {
+            // 圧縮するブロック列番号
             for (std::uint32_t blockX = 0;
+                // 横方向の4画素ブロック数
                 blockX < blocksX;
                 ++blockX)
             {
@@ -1239,20 +1387,28 @@ namespace LamaPon::TextureLoader
     std::vector<std::uint8_t> CompressBC3(
         const CpuImage& image)
     {
+        // 横方向の4画素ブロック数
         const std::uint32_t blocksX =
             BlockCount(image.width);
+        // 縦方向の4画素ブロック数
         const std::uint32_t blocksY =
             BlockCount(image.height);
+        // 圧縮したブロックのバイト列
         std::vector<std::uint8_t> output(
             static_cast<std::size_t>(blocksX)
             * blocksY
             * 16);
+        // 4×4のRGBA画素列
         std::array<std::uint8_t, 64> block{};
+        // 圧縮するブロック行番号
         for (std::uint32_t blockY = 0;
+            // 縦方向の4画素ブロック数
             blockY < blocksY;
             ++blockY)
         {
+            // 圧縮するブロック列番号
             for (std::uint32_t blockX = 0;
+                // 横方向の4画素ブロック数
                 blockX < blocksX;
                 ++blockX)
             {
@@ -1261,6 +1417,7 @@ namespace LamaPon::TextureLoader
                     blockX,
                     blockY,
                     block);
+                // 書き込み先の画素列の位置
                 auto* destination =
                     output.data()
                     + (static_cast<std::size_t>(blockY)
@@ -1278,20 +1435,28 @@ namespace LamaPon::TextureLoader
     std::vector<std::uint8_t> CompressBC5(
         const CpuImage& image)
     {
+        // 横方向の4画素ブロック数
         const std::uint32_t blocksX =
             BlockCount(image.width);
+        // 縦方向の4画素ブロック数
         const std::uint32_t blocksY =
             BlockCount(image.height);
+        // 圧縮したブロックのバイト列
         std::vector<std::uint8_t> output(
             static_cast<std::size_t>(blocksX)
             * blocksY
             * 16);
+        // 4×4のRGBA画素列
         std::array<std::uint8_t, 64> block{};
+        // 圧縮するブロック行番号
         for (std::uint32_t blockY = 0;
+            // 縦方向の4画素ブロック数
             blockY < blocksY;
             ++blockY)
         {
+            // 圧縮するブロック列番号
             for (std::uint32_t blockX = 0;
+                // 横方向の4画素ブロック数
                 blockX < blocksX;
                 ++blockX)
             {
@@ -1300,12 +1465,13 @@ namespace LamaPon::TextureLoader
                     blockX,
                     blockY,
                     block);
+                // 書き込み先の画素列の位置
                 auto* destination =
                     output.data()
                     + (static_cast<std::size_t>(blockY)
                         * blocksX
                         + blockX) * 16;
-                // BC5はBC4ブロック2つ。先がR、後がGです。
+                // BC5は前半のBC4にR、後半にGを格納する。
                 EncodeChannelBlock(block, 0, destination);
                 EncodeChannelBlock(
                     block,
@@ -1321,8 +1487,9 @@ namespace LamaPon::TextureLoader
         const bool compress,
         const TextureUsage usage) noexcept
     {
-        // BCフォーマットはトップレベルの寸法が4の倍数である
-        // 必要があるため、満たさない画像は非圧縮のままにします。
+
+        // 先頭寸法がBC条件を満たすか
+        // BC圧縮は先頭ミップの両辺が4の倍数の場合だけ選ぶ。
         const bool canCompress =
             compress
             && !mips.empty()
@@ -1337,8 +1504,7 @@ namespace LamaPon::TextureLoader
         case TextureUsage::NormalMap:
             return DXGI_FORMAT_BC5_UNORM;
         case TextureUsage::DataMap:
-            // 粗さ、金属度、遮蔽ではアルファを使わないため、
-            // 透過の有無にかかわらずBC1を使用します。
+            // データ画像はアルファを使わず、透過判定によらずBC1を選ぶ。
             return DXGI_FORMAT_BC1_UNORM;
         case TextureUsage::Color:
         default:
@@ -1348,8 +1514,7 @@ namespace LamaPon::TextureLoader
         }
     }
 
-    // フォーマットからブロック1つ分のバイト数を返します
-    // （非圧縮なら0）。
+    // BC1・BC3・BC5のブロック長を返し、他形式には0を返す(format: 画像の形式)。
     [[nodiscard]] std::uint32_t BlockBytesFor(
         const DXGI_FORMAT format) noexcept
     {
@@ -1365,7 +1530,7 @@ namespace LamaPon::TextureLoader
         }
     }
 
-    // フォーマットに合わせて1ミップを圧縮します。
+    // BC1・BC3・BC5に応じて1ミップを圧縮する(mip: 有効なRGBA8画像, format: 選択した圧縮形式)。
     [[nodiscard]] std::vector<std::uint8_t> CompressForFormat(
         const CpuImage& mip,
         const DXGI_FORMAT format)
@@ -1396,29 +1561,37 @@ namespace LamaPon::TextureLoader
                 "CreateTexture requires a device and mips.");
         }
 
+        // 確定する画像の格納形式
         const DXGI_FORMAT format =
             ChooseTextureFormat(mips, compress, usage);
+        // 1圧縮ブロックのバイト数
         const std::uint32_t blockBytes =
             BlockBytesFor(format);
 
-        // 圧縮データはCreateTexture2Dまで生存が必要です。
+
+        // GPU作成まで保持する圧縮列
         std::vector<std::vector<std::uint8_t>>
             compressedMips;
+        // ミップごとのGPU初期データ
         std::vector<D3D11_SUBRESOURCE_DATA> initialData(
             mips.size());
+        // ミップの番号または転送情報
         for (std::size_t level = 0;
             level < mips.size();
             ++level)
         {
+            // 処理するミップ番号または画像
             const auto& mip = mips[level];
             if (blockBytes != 0)
             {
                 compressedMips.push_back(
                     CompressForFormat(mip, format));
+                // 横方向の4画素ブロック数
                 const std::uint32_t blocksX =
                     BlockCount(mip.width);
                 initialData[level].pSysMem =
                     compressedMips.back().data();
+                // SysMemPitch: 圧縮mip rowあたりのbyte数。
                 initialData[level].SysMemPitch =
                     blocksX * blockBytes;
             }
@@ -1431,6 +1604,7 @@ namespace LamaPon::TextureLoader
             }
         }
 
+        // テクスチャまたはビューの設定
         D3D11_TEXTURE2D_DESC description{};
         description.Width = mips[0].width;
         description.Height = mips[0].height;
@@ -1443,6 +1617,7 @@ namespace LamaPon::TextureLoader
         description.BindFlags =
             D3D11_BIND_SHADER_RESOURCE;
 
+        // 作成した2Dテクスチャ
         Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
         ThrowIfFailed(
             device->CreateTexture2D(
@@ -1451,6 +1626,7 @@ namespace LamaPon::TextureLoader
                 texture.ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateTexture2D(async texture)");
 
+        // 作成した画像ビュー
         Microsoft::WRL::ComPtr<
             ID3D11ShaderResourceView> view;
         ThrowIfFailed(
@@ -1473,14 +1649,18 @@ namespace LamaPon::TextureLoader
                 "PrepareTextureData requires mips.");
         }
 
+        // 用意する2Dミップ転送情報
         PreparedTextureData data;
         data.format =
             ChooseTextureFormat(mips, compress, usage);
+        // 1圧縮ブロックのバイト数
         const std::uint32_t blockBytes =
             BlockBytesFor(data.format);
         data.levels.reserve(mips.size());
+        // 処理するミップ番号または画像
         for (auto& mip : mips)
         {
+            // ミップの番号または転送情報
             PreparedTextureLevel level;
             level.width = mip.width;
             level.height = mip.height;
@@ -1512,8 +1692,10 @@ namespace LamaPon::TextureLoader
                 "CreateTexture requires a device and levels.");
         }
 
+        // ミップごとのGPU初期データ
         std::vector<D3D11_SUBRESOURCE_DATA> initialData(
             data.levels.size());
+        // ミップの番号または転送情報
         for (std::size_t level = 0;
             level < data.levels.size();
             ++level)
@@ -1524,6 +1706,7 @@ namespace LamaPon::TextureLoader
                 data.levels[level].rowPitch;
         }
 
+        // テクスチャまたはビューの設定
         D3D11_TEXTURE2D_DESC description{};
         description.Width = data.levels[0].width;
         description.Height = data.levels[0].height;
@@ -1536,6 +1719,7 @@ namespace LamaPon::TextureLoader
         description.BindFlags =
             D3D11_BIND_SHADER_RESOURCE;
 
+        // 作成した2Dテクスチャ
         Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
         ThrowIfFailed(
             device->CreateTexture2D(
@@ -1544,6 +1728,7 @@ namespace LamaPon::TextureLoader
                 texture.ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateTexture2D(prepared texture)");
 
+        // 作成した画像ビュー
         Microsoft::WRL::ComPtr<
             ID3D11ShaderResourceView> view;
         ThrowIfFailed(
@@ -1566,6 +1751,7 @@ namespace LamaPon::TextureLoader
                 "CreateUploadableTexture requires a device and levels.");
         }
 
+        // テクスチャまたはビューの設定
         D3D11_TEXTURE2D_DESC description{};
         description.Width = data.levels[0].width;
         description.Height = data.levels[0].height;
@@ -1578,6 +1764,7 @@ namespace LamaPon::TextureLoader
         description.BindFlags =
             D3D11_BIND_SHADER_RESOURCE;
 
+        // 作成した2Dテクスチャ
         Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
         ThrowIfFailed(
             device->CreateTexture2D(
@@ -1604,6 +1791,7 @@ namespace LamaPon::TextureLoader
                 "CreateTextureView arguments are out of range.");
         }
 
+        // テクスチャまたはビューの設定
         D3D11_SHADER_RESOURCE_VIEW_DESC description{};
         description.Format = format;
         description.ViewDimension =
@@ -1613,6 +1801,7 @@ namespace LamaPon::TextureLoader
         description.Texture2D.MipLevels =
             mipLevels - mostDetailedMip;
 
+        // 作成した画像ビュー
         Microsoft::WRL::ComPtr<
             ID3D11ShaderResourceView> view;
         ThrowIfFailed(

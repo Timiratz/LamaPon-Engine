@@ -9,8 +9,7 @@
 
 namespace
 {
-    // Discordのclient_secretやtokenを間違って貼り付けても弾けるよう、
-    // Application IDはASCII数字だけを受け付けます。
+    // 32文字以内のASCII数字だけの公開IDかを判定する(value: 検査する公開ID)。
     [[nodiscard]] bool IsApplicationId(
         const std::string_view value) noexcept
     {
@@ -20,6 +19,7 @@ namespace
         {
             return false;
         }
+        // ASCII数字かを判定(character: IDの1文字)。
         return std::ranges::all_of(
             value,
             [](const char character) noexcept
@@ -28,21 +28,23 @@ namespace
             });
     }
 
-    // 改行やNULはDiscordが受け付けません。黙って壊れた表示に
-    // ならないよう、送る前に弾きます。
+    // 改行・NUL・DELなどの制御文字を調べる(value: 検査する文字列)。
     [[nodiscard]] bool HasControlCharacter(
         const std::string_view value) noexcept
     {
+        // 制御文字かを判定(character: 表示文字列の1文字)。
         return std::ranges::any_of(
             value,
             [](const char character) noexcept
             {
+                // 1文字の符号なし表現
                 const auto code =
                     static_cast<unsigned char>(character);
                 return code < 0x20u || code == 0x7Fu;
             });
     }
 
+    // 空または2〜128バイトの表示文を検証する(value: 表示文, fieldName: 診断用の項目名, error: 検証エラーの出力先)。
     [[nodiscard]] bool ValidateText(
         const std::string_view value,
         const char* const fieldName,
@@ -73,6 +75,7 @@ namespace
         return true;
     }
 
+    // 空または256バイト以内の画像名を検証する(value: 画像名またはURL, fieldName: 診断用の項目名, error: 検証エラーの出力先)。
     [[nodiscard]] bool ValidateImageKey(
         const std::string_view value,
         const char* const fieldName,
@@ -98,6 +101,7 @@ namespace
         return true;
     }
 
+    // 表示文・画像名・時刻の組合せを検証する(activity: 表示要求, error: 検証エラーの出力先)。
     [[nodiscard]] bool ValidateActivity(
         const LamaPon::DiscordActivity& activity,
         std::string& error)
@@ -148,8 +152,10 @@ namespace
         return true;
     }
 
+    // プロセスで共有するバックエンド生成関数を借用する。
     LamaPon::DiscordPresenceBackendFactory& BackendFactory()
     {
+        // 登録されたバックエンド生成関数
         static LamaPon::DiscordPresenceBackendFactory factory;
         return factory;
     }
@@ -192,11 +198,11 @@ namespace LamaPon
     std::unique_ptr<DiscordPresenceBackend>
         MakeDiscordPresenceBackend()
     {
+        // 登録されたバックエンド生成関数
         const auto& factory = BackendFactory();
         if (!factory)
         {
-            // LamaPonはDiscord SDKを同梱しません。アダプターが
-            // 登録されていなければbackendなしで動きます。
+            // アダプター未登録時はバックエンドなしで動作します。
             return {};
         }
         return factory();
@@ -204,26 +210,38 @@ namespace LamaPon
 
     struct DiscordPresence::Implementation final
     {
+        // 公開の表示設定
         DiscordPresenceConfiguration configuration;
+        // 表示バックエンドの所有先
         std::unique_ptr<DiscordPresenceBackend> backend;
+        // 接続と表示の状態
         DiscordPresenceState state{
             DiscordPresenceState::Disabled
         };
+        // 直近の失敗理由
         std::string lastError;
-        // Discordへ見せたい内容です。backendが落ちていても保持し、
-        // 復帰した時点で送り直します。
+        // 利用不可でも表示内容を保持し、接続復帰時に送り直します。
+        // 最新の表示要求
         DiscordActivity activity;
+        // 表示する内容を保持しているか
         bool hasActivity{};
+        // 送信待ちの更新要求があるか
         bool pendingUpdate{};
+        // バックエンドを初期化済みか
         bool initialized{};
         // backendアダプターが未登録なら再試行しても意味がありません。
+        // アダプターが未登録か
         bool backendMissing{};
+        // 前回の表示更新からの秒数
         float secondsSinceUpdate{
             DiscordPresenceUpdateIntervalSeconds
         };
+        // 初期化の再試行までの残り秒数
         float initializeRetrySeconds{};
+        // 利用不可の警告を報告済みか
         bool unavailableReported{};
 
+        // 失敗理由を保存し、利用不可の警告を一度だけ出す(reason: 表示する失敗理由)。
         void ReportUnavailable(const std::string_view reason)
         {
             lastError = std::string{ reason };
@@ -238,6 +256,7 @@ namespace LamaPon
                 + lastError);
         }
 
+        // 初期化済みのバックエンドが接続を利用できるかを調べる。
         [[nodiscard]] bool BackendAvailable() const noexcept
         {
             return initialized
@@ -245,6 +264,7 @@ namespace LamaPon
                 && backend->IsAvailable();
         }
 
+        // アダプターを作って接続を試し、成功時は保留内容をすぐに送る。
         void TryInitialize()
         {
             if (initialized || backendMissing)
@@ -267,14 +287,14 @@ namespace LamaPon
             if (!backend->Initialize(configuration.applicationId))
             {
                 state = DiscordPresenceState::Unavailable;
+                // バックエンドが返す失敗理由
                 const auto reason = backend->LastError();
                 ReportUnavailable(
                     reason.empty()
                         ? std::string_view{
                             "Discordクライアントへ接続できません。" }
                         : reason);
-                // Discordを後から起動した場合に拾えるよう、
-                // 一定間隔で接続をやり直します。
+                // Discordを後から起動した場合に拾えるよう、一定間隔で接続をやり直します。
                 initializeRetrySeconds =
                     DiscordPresenceUpdateIntervalSeconds;
                 return;
@@ -293,6 +313,7 @@ namespace LamaPon
             Flush();
         }
 
+        // 保留している最新の表示または消去要求を送信する。
         void Flush()
         {
             if (!pendingUpdate || !BackendAvailable())
@@ -309,6 +330,7 @@ namespace LamaPon
             }
             if (!backend->SetActivity(activity))
             {
+                // バックエンドが返す失敗理由
                 const auto reason = backend->LastError();
                 lastError = reason.empty()
                     ? "Discordへ Activityを送信できませんでした。"
@@ -323,6 +345,7 @@ namespace LamaPon
             state = DiscordPresenceState::Active;
         }
 
+        // 更新間隔に達していれば保留要求を送信する。
         void FlushIfDue()
         {
             if (secondsSinceUpdate
@@ -332,6 +355,7 @@ namespace LamaPon
             }
         }
 
+        // 表示を消してバックエンドを終了し、所有権を解放する。
         void ReleaseBackend() noexcept
         {
             if (backend)
@@ -357,7 +381,9 @@ namespace LamaPon
     void DiscordPresence::Configure(
         DiscordPresenceConfiguration configuration)
     {
+        // 表示管理状態の参照
         auto& implementation = *m_implementation;
+        // 初期化済みの同じ公開IDか
         const bool sameConnection =
             implementation.initialized
             && configuration.enabled
@@ -413,6 +439,7 @@ namespace LamaPon
 
     void DiscordPresence::Shutdown() noexcept
     {
+        // 表示管理状態の参照
         auto& implementation = *m_implementation;
         implementation.ReleaseBackend();
         implementation.configuration.enabled = false;
@@ -429,6 +456,7 @@ namespace LamaPon
 
     void DiscordPresence::Tick(float elapsedSeconds) noexcept
     {
+        // 表示管理状態の参照
         auto& implementation = *m_implementation;
         if (!implementation.configuration.enabled
             || implementation.configuration.applicationId.empty())
@@ -489,6 +517,7 @@ namespace LamaPon
     bool DiscordPresence::SetActivity(
         const DiscordActivity& activity) noexcept
     {
+        // 表示管理状態の参照
         auto& implementation = *m_implementation;
         if (!implementation.configuration.enabled
             || implementation.configuration.applicationId.empty())
@@ -497,6 +526,7 @@ namespace LamaPon
                 "Discord Rich Presenceが無効です。";
             return false;
         }
+        // 既定画像を補った表示要求
         auto resolved = activity;
         if (resolved.largeImageKey.empty())
         {
@@ -508,6 +538,7 @@ namespace LamaPon
             resolved.largeImageText =
                 implementation.configuration.defaultLargeImageText;
         }
+        // 表示内容の検証エラー
         std::string error;
         if (!ValidateActivity(resolved, error))
         {
@@ -534,6 +565,7 @@ namespace LamaPon
         const std::string_view details,
         const std::string_view state) noexcept
     {
+        // 最新の表示要求
         DiscordActivity activity;
         activity.details = details;
         activity.state = state;
@@ -542,6 +574,7 @@ namespace LamaPon
 
     void DiscordPresence::ClearActivity() noexcept
     {
+        // 表示管理状態の参照
         auto& implementation = *m_implementation;
         if (!implementation.hasActivity
             && !implementation.pendingUpdate)

@@ -28,6 +28,7 @@
 
 namespace
 {
+    // 目標FPSまで待機します(frameStart: フレーム開始時刻, targetFrameRate: 目標FPS、0は制限なし)。
     void PaceFrame(
         const std::chrono::steady_clock::time_point frameStart,
         const std::uint32_t targetFrameRate)
@@ -37,17 +38,21 @@ namespace
             return;
         }
 
+        // 目標フレーム間隔
         const auto frameDuration =
             std::chrono::duration<double>(
                 1.0
                 / static_cast<double>(targetFrameRate));
+        // フレーム終了の目標時刻
         const auto deadline =
             frameStart
             + std::chrono::duration_cast<
                 std::chrono::steady_clock::duration>(
                     frameDuration);
+        // スピン待機への切替余裕
         constexpr auto spinMargin =
             std::chrono::microseconds(500);
+        // スリープ終了時刻
         const auto sleepDeadline =
             deadline - spinMargin;
         if (std::chrono::steady_clock::now()
@@ -82,9 +87,6 @@ namespace LamaPon
     void Application::ReportRenderFailure(
         const std::string& message)
     {
-        // 同じ失敗を毎フレーム出しません。壊れている間、ログが
-        // 埋まって他が読めなくなるためです。直って再び壊れたときは
-        // 内容が変わるので、また出ます。
         if (m_lastRenderFailure == message)
         {
             return;
@@ -100,8 +102,7 @@ namespace LamaPon
     {
         Logger::Instance().Info(
             "LamaPonを終了します。");
-        // 先に登録を外します。破棄済みのPlayerPrefsへScriptが
-        // 触れないようにするためです。
+        // 破棄済みサービスへスクリプトが触れないよう、共有参照を先に解除します。
         if (m_onlineServices
             && ActiveOnlineServices() == m_onlineServices.get())
         {
@@ -117,10 +118,10 @@ namespace LamaPon
             static_cast<void>(
                 Detail::OnlinePersistenceAccess::Detach(
                     *m_onlineServices));
-            // account Save失敗でguestへ即時復帰した場合も、破棄前に
-            // quarantineを少なくとも一度再試行します。
+            // アカウント保存の保留復旧を破棄前に一度再試行します。
             Detail::OnlinePersistenceAccess::EndFrame(
                 *m_onlineServices);
+            // 終了前の保存復旧を管理する参照
             const auto* const persistence =
                 Detail::OnlinePersistenceAccess::Coordinator(
                     *m_onlineServices);
@@ -141,6 +142,7 @@ namespace LamaPon
                 Logger::Instance().Info(
                     "PlayerPrefsを保存しました。");
             }
+            // 終了前の設定保存の失敗理由
             catch (const std::exception& exception)
             {
                 Logger::Instance().Error(
@@ -188,21 +190,20 @@ namespace LamaPon
         const RenderingApi requestedApi,
         const GraphicsStartupProfile startupProfile)
     {
+        // 実行バイナリの親ディレクトリ
         const auto executableDirectory = ExecutableDirectory();
         if (executableDirectory.empty())
         {
             throw std::runtime_error("GetModuleFileNameW failed.");
         }
-        // GraphicsDeviceの初期化警告（D3D12初期化失敗時のfallback等）も
-        // 起動ログへ残るよう、デバイス作成より先に出力先を開きます。
+        // 描画初期化の警告も記録できるよう、デバイス作成前に診断出力を開きます。
         static_cast<void>(
             Logger::Instance().SetFilePath(
                 executableDirectory
                     / L"LamaPon.log"));
 
-        // エディターが使うフォルダー選択などのシェルダイアログは、呼び出し元の
-        // スレッドがシングルスレッドアパートメントであることを前提とします。
-        // COINIT_MULTITHREADEDではSHBrowseForFolderWが応答しなくなります。
+        // エディターのシェルダイアログを使えるよう、COMをSTAで初期化します。
+        // COM初期化の結果コード
         const HRESULT comResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
         if (SUCCEEDED(comResult))
         {
@@ -213,21 +214,20 @@ namespace LamaPon
             throw std::runtime_error("CoInitializeEx failed.");
         }
 
+        // 最新の描画サイズを予約します(width: 変更後の幅ピクセル, height: 変更後の高さピクセル)。
         m_window.SetResizeCallback(
             [this](const std::uint32_t width, const std::uint32_t height)
             {
                 if (width != 0 && height != 0)
                 {
-                    // Win32のメッセージ処理中にはGPU資源を作り直さず、
-                    // 次の描画前に最後のサイズだけを適用します。
+                    // Win32のメッセージ処理中にはGPU資源を作り直さず、次の描画前に最後のサイズだけを適用します。
                     m_pendingWidth = width;
                     m_pendingHeight = height;
                     m_resizePending = true;
                 }
             });
 
-        // 閉じる前にレイヤー（エディター等）へ確認します。
-        // 未保存の変更がある場合はここで警告が出ます。
+        // レイヤーへ終了可否を確認し、拒否された場合はウィンドウを閉じません。
         m_window.SetCloseCallback(
             [this]
             {
@@ -245,17 +245,14 @@ namespace LamaPon
         m_resizePending = false;
         m_graphics.Assets().SetAssetRoot(
             executableDirectory / L"assets");
-        // 書き出し時に同梱した事前コンパイル済みシェーダー。これが
-        // あると、プレイヤーの初回起動でもコンパイルが1本も走りません
-        // （無ければ従来どおり初回だけコンパイルして、以後は
-        // %LOCALAPPDATA%側のキャッシュが効きます）。
+        // 起動時のコンパイルを省くため、同梱のシェーダーキャッシュを検索対象にします。
         AddShaderCacheSearchDirectory(
             executableDirectory / L"shader-cache");
-        // ログだけで、どのソースから作ったエンジンか分かるようにします。
         Logger::Instance().Info(
             "LamaPonを初期化しました: "
             + FormatBuildLabel());
 
+        // このゲームのユーザー保存領域
         const auto userData =
             UserDataDirectory(m_persistenceName);
         m_playerPrefs =
@@ -268,6 +265,7 @@ namespace LamaPon
         {
             m_playerPrefs->Load();
         }
+        // 起動時の設定読み込みの失敗理由
         catch (const std::exception& exception)
         {
             Logger::Instance().Warning(
@@ -283,8 +281,7 @@ namespace LamaPon
             *m_playerPrefs,
             *m_saveData,
             userData);
-        // C++ Scriptから設定値を読み書きできるように登録します
-        // （Scriptはここを通してハイスコア等を保存します）。
+        // スクリプトが使う設定とオンラインサービスの共有参照を登録します。
         SetActivePlayerPrefs(m_playerPrefs.get());
         SetActiveOnlineServices(m_onlineServices.get());
 
@@ -308,6 +305,8 @@ namespace LamaPon
         m_networkSceneBridge = std::make_unique<NetworkSceneBridge>(*m_scene, *m_networkSession);
         SetActiveNetworkSession(m_networkSession.get());
         SetActiveNetworkSceneBridge(m_networkSceneBridge.get());
+        // ゲーム表示サイズを変更します(width: 幅ピクセル, height: 高さピクセル)。
+        // 現在のゲーム表示サイズを幅と高さの組で返します。
         m_scene->SetWindowSizeCallbacks(
             [this](const std::uint32_t width, const std::uint32_t height)
             {
@@ -372,6 +371,7 @@ namespace LamaPon
 
         m_layer = std::move(layer);
 
+        // メッセージをレイヤーへ転送します(window: 受信ウィンドウ, message: メッセージ番号, wParam: 第1引数, lParam: 第2引数)。
         m_window.SetMessageCallback(
             [this](const HWND window, const UINT message, const WPARAM wParam, const LPARAM lParam)
             {
@@ -393,7 +393,9 @@ namespace LamaPon
             throw std::logic_error("Application::Initialize must be called before Run.");
         }
 
+        // メインループで処理するメッセージ
         MSG message{};
+        // 前フレームの開始時刻
         auto previousTime = std::chrono::steady_clock::now();
         while (message.message != WM_QUIT)
         {
@@ -404,7 +406,7 @@ namespace LamaPon
                 continue;
             }
 
-            // ホストが最小化されてもゲームと通信を進めます。
+            // 通信が停止中の最小化では、次のウィンドウイベントまで待機します。
             if (m_window.IsMinimized()
                 && (!m_networkSession || m_networkSession->State() == NetworkState::Stopped
                     || m_networkSession->State() == NetworkState::Error))
@@ -414,11 +416,15 @@ namespace LamaPon
                 continue;
             }
 
+            // 現在のフレームの開始時刻
             const auto currentTime = std::chrono::steady_clock::now();
+            // 前フレームからの経過秒数
             const std::chrono::duration<float> elapsed = currentTime - previousTime;
             previousTime = currentTime;
+            // 通信などに渡す実経過秒数
             const float rawDeltaTime =
                 std::max(elapsed.count(), 0.0f);
+            // 最長0.1秒に制限した経過時間
             const float deltaTime =
                 std::min(rawDeltaTime, 0.1f);
             Time::Detail::AdvanceFrame(deltaTime);
@@ -431,10 +437,10 @@ namespace LamaPon
                     static_cast<void>(
                         m_graphics.Audio().Update());
                 }
+                // 音声更新に失敗した理由
                 catch (const std::exception& exception)
                 {
-                    // デバイス切り替え後の復旧中は、オーディオエンジンから
-                    // 例外が送出されることがあります。
+                    // デバイス切り替え後の復旧中は、オーディオエンジンから例外が送出されることがあります。
                     Logger::Instance().Warning(
                         std::string{ "音声の更新に失敗しました: " }
                         + exception.what());
@@ -467,6 +473,7 @@ namespace LamaPon
 
             {
                 LAMAPON_PROFILE_SCOPE("Input");
+                // レイヤーから受け取る入力状態
                 InputSnapshot remoteInput;
                 if (m_layer != nullptr
                     && m_layer->ConsumeInputSnapshot(remoteInput))
@@ -482,8 +489,8 @@ namespace LamaPon
             }
             {
                 LAMAPON_PROFILE_SCOPE("Simulation");
-                // 一時停止中は更新を通しません。ただし「次のフレーム」が
-                // 押されていれば1回だけ通します（要求はここで消費）。
+                // 今フレームにゲーム更新を進めるか
+                // 一時停止中の1回更新要求はここで消費します。
                 const bool shouldSimulate =
                     m_layer == nullptr
                     || (m_layer->IsPlaying()
@@ -492,9 +499,8 @@ namespace LamaPon
                                 ->ConsumeSimulationStep()));
                 if (shouldSimulate)
                 {
-                    // timeScale適用済みのdeltaTimeで
-                    // ゲームプレイを進めます。
                     if (m_networkSceneBridge) m_networkSceneBridge->BeforeSimulation(rawDeltaTime);
+                    // ゲーム更新には時間倍率適用済みの経過秒数を渡します。
                     m_scene->Update(Time::DeltaTime());
                     if (m_networkSceneBridge) m_networkSceneBridge->AfterSimulation(rawDeltaTime);
                 }
@@ -506,13 +512,12 @@ namespace LamaPon
                 ApplyPendingResize();
                 if (m_layer)
                 {
-                    // シーン描画の例外はここで処理し、エディターUIを
-                    // 継続します。ログを確認しながら原因を修正でき、
-                    // 修正後はGraphicsDeviceが描画資源を再作成します。
+                    // 描画失敗を記録し、エディターUIを継続します。
                     try
                     {
                         m_layer->RenderSceneViews();
                     }
+                    // 描画失敗の診断内容
                     catch (const std::exception& exception)
                     {
                         ReportRenderFailure(exception.what());
@@ -523,27 +528,14 @@ namespace LamaPon
                 else
                 {
                     m_graphics.BeginFrame(m_clearColor);
-                    // ゲーム実行時も描画失敗をログに記録し、更新処理を
-                    // 継続します。
+                    // 描画失敗を記録し、ゲームの更新を継続します。
                     try
                     {
-                        m_graphics.BeginSceneComposition(
-                            m_clearColor);
-                        // 3DだけをScene用ターゲットへ描き、UIは
-                        // 合成後に重ねます。D3D11はHDR/post-process、
-                        // D3D12 Experimentalは現時点のLDR合成経路です。
-                        m_scene->RenderMainCamera(
-                            m_graphics.AspectRatio(),
-                            false,
-                            m_graphics.SceneCompositionTarget());
-                        m_graphics.EndSceneComposition(
-                            m_scene->PostProcessFrameData());
-                        // UIは両APIとも3Dの後へ重ねます。
-                        m_scene->Render2D();
+                        m_scene->RenderGameFrame(m_clearColor);
+                        // シーン切替の管理
                         const auto& scenes =
                             m_scene->Scenes();
-                        // 読み込み画面はUIの上へ重ねます。遷移の覆いは
-                        // Scene側のSpriteなどが描きます。
+                        // 読み込み画面はUIの上に重ね、遷移の覆いはScene側で描きます。
                         m_graphics.DrawLoadingScreen(
                             scenes.TransitionFrame(),
                             scenes.LoadingScreen());
@@ -556,17 +548,16 @@ namespace LamaPon
                         }
                         else if (m_startupSplashScreenEnabled)
                         {
-                            // 起動ロゴを表示するのは初回だけです。以降のシーン
-                            // 読み込みでは通常の読み込み画面を使います。
+                            // 初回の読み込みが終われば、以後の読み込み画面では起動ロゴを表示しません。
                             m_startupSplashScreenEnabled = false;
                         }
-                        // F1でデバッグオーバーレイを表示します
-                        // （timeScaleの影響を受けないよう実時間で更新）。
+                        // デバッグ表示の更新には時間倍率を掛けない実経過時間を使います。
                         m_debugOverlay.Update(
                             m_graphics,
                             *m_scene,
                             rawDeltaTime);
                     }
+                    // 描画失敗の診断内容
                     catch (const std::exception& exception)
                     {
                         ReportRenderFailure(exception.what());
@@ -575,16 +566,17 @@ namespace LamaPon
                 m_graphics.EndFrame();
             }
 
-            // Simulation/Scriptがこのframeでcommitしたlocal saveを、
-            // 次のnetwork dispatchより前にonline同期層へ渡します。
+            // このフレームで確定した保存を、次のネットワーク処理より前に同期層へ渡します。
             if (m_onlineServices)
             {
                 Detail::OnlinePersistenceAccess::EndFrame(
                     *m_onlineServices);
             }
 
+            // CPUによるフレーム処理の終了時刻
             const auto cpuEnd =
                 std::chrono::steady_clock::now();
+            // 待機を除くCPU処理時間、ミリ秒
             const float cpuMilliseconds =
                 std::chrono::duration<float, std::milli>(
                     cpuEnd - currentTime).count();
@@ -592,8 +584,10 @@ namespace LamaPon
                 rawDeltaTime,
                 cpuMilliseconds);
             Profiler::Instance().EndFrame();
+            // 描画設定の目標フレーム数毎秒
             const auto requestedRate = m_graphics.Settings().targetFrameRate;
-            // 最小化中はPresentのVSync待ちが無いので、通信と物理を60Hzに抑えます。
+            // 最小化時のフレーム上限、毎秒
+            // 最小化中はVSync待機がないため、処理頻度を最大60Hzに制限します。
             const auto frameRate = m_window.IsMinimized()
                 ? (requestedRate == 0 ? 60u : std::min(requestedRate, 60u)) : requestedRate;
             PaceFrame(currentTime, frameRate);

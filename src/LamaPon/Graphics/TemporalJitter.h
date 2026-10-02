@@ -6,27 +6,18 @@
 
 namespace LamaPon
 {
-    // TAA用のサブピクセルずらし量を返します。
-    //
-    // Halton列（基数2と3）を使います。乱数ではなく「均等に散る」列で、
-    // 少ない枚数でもピクセル内へ偏りなく並ぶのが利点です。乱数だと
-    // 同じ場所に固まる回があり、そのフレームだけアンチエイリアスが
-    // 効かずにちらついて見えます。
-    //
-    // 返すのは -0.5〜+0.5 ピクセルの範囲です。射影行列へ足す前に
-    // 2/幅・2/高さを掛けてクリップ空間へ直してください。
+    // 基数の桁を反転した小数を返す(index: 列内の位置, base: 基数)。
+    // 基数が2未満なら0を返す。
     [[nodiscard]] float HaltonSequence(
         std::uint32_t index,
         std::uint32_t base) noexcept;
 
-    // indexは0から数えるフレーム番号です。内部で長さ8へ折り返します
-    // （8枚で1周。長くすると収束は滑らかになりますが、動きの後の
-    // 復帰が遅くなります）。
+    // 8フレーム周期のHalton列から半画素以内のずらし量を返す(index: 0始まりのフレーム番号)。
     [[nodiscard]] DirectX::XMFLOAT2 TemporalJitterOffset(
         std::uint32_t index) noexcept;
 
-    // ずらしを織り込んだ射影行列を返します。行ベクトル規約なので、
-    // クリップ空間のx/yへ足すには_31/_32へ加算します。
+    // 行ベクトル射影の_31・_32へ画素ずらしを加える(projection: 元の射影行列, jitterPixels: 画素単位のずらし量, width: 出力幅, height: 出力高さ)。
+    // 出力サイズは最小1とし、画素座標の下向きYをクリップ空間の上向きYへ変換する。
     [[nodiscard]] DirectX::XMMATRIX ApplyTemporalJitter(
         DirectX::FXMMATRIX projection,
         const DirectX::XMFLOAT2& jitterPixels,

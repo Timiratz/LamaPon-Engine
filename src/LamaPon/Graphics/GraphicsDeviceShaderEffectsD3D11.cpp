@@ -43,8 +43,7 @@
 
 namespace
 {
-    // Keep a manifest as the public/cache identity while directing variant
-    // parsing and include dependency tracking to its referenced HLSL source.
+    // 素材定義を検証して実HLSLのパスを返します(assets: 定義の取得元, definitionPath: 公開識別用の定義パス, sourcePath: 実HLSLパスの出力, error: 失敗理由の出力)。
     [[nodiscard]] bool ResolveMaterialShaderSource(
         LamaPon::AssetManager& assets,
         const std::filesystem::path& definitionPath,
@@ -58,6 +57,7 @@ namespace
             return true;
         }
 
+        // 参照HLSLと用途を持つ素材定義
         LamaPon::ShaderAssetDesc description;
         if (!LamaPon::LoadShaderAssetDesc(
                 assets,
@@ -79,16 +79,18 @@ namespace
         return true;
     }
 
-    // コンパイル失敗時にソースを読み、原因に対応する診断を追加します。
+    // 元HLSLを読めれば原因別の説明を補います(assets: ソースの取得元, shaderPath: 元HLSLのパス, compilerMessage: 空を許す診断, usage: シェーダーの用途)。
     [[nodiscard]] std::string DescribeShaderFailure(
         LamaPon::AssetManager& assets,
         const std::filesystem::path& shaderPath,
         const char* compilerMessage,
         const LamaPon::ShaderUsage usage)
     {
+        // 診断を補う元HLSLの本文
         std::string source;
         try
         {
+            // 診断用のHLSLバイト列
             const auto bytes =
                 assets.ReadFileBytes(shaderPath);
             source.assign(
@@ -97,8 +99,7 @@ namespace
         }
         catch (const std::exception&)
         {
-            // 読めなくても説明は返せます（includeの取りこぼしなど、
-            // ソースを見なくても分かるものがあるため）。
+            // ソースを読めなくてもコンパイラーの診断から説明を作ります。
         }
         return LamaPon::ExplainShaderError(
             compilerMessage != nullptr ? compilerMessage : "",
@@ -106,20 +107,22 @@ namespace
             usage);
     }
 
-    // D3D11のMaterialShaderと同じく、宣言に無いkeywordを落とした
-    // 「パス?キーワード」をcache keyにします。
+    // 宣言外のキーワードを除いて素材ソースを作ります(graphics: 資源と宣言の取得元, shaderPath: 素材HLSLのパス, keywords: 選択するキーワード)。
     [[nodiscard]] LamaPon::Detail::MaterialShaderSource
         MakeMaterialShaderSource(
             const LamaPon::GraphicsDevice& graphics,
             const std::filesystem::path& shaderPath,
             const LamaPon::ShaderKeywordSet& keywords)
     {
+        // 正規化したパスと素材キーワード
         LamaPon::Detail::MaterialShaderSource source;
         source.path =
             graphics.Assets().ResolvePath(shaderPath).lexically_normal();
+        // 宣言外を除いたキーワード集合
         const auto normalized = LamaPon::NormalizeKeywords(
             graphics.ShaderVariantsFor(source.path),
             keywords);
+        // キーワード集合の整列済みキー
         const auto variantKey = normalized.Key();
         source.cacheKey = variantKey.empty()
             ? source.path
@@ -128,7 +131,9 @@ namespace
                 + L"?"
                 + LamaPon::Utf8ToWide(variantKey));
         source.keywords = normalized.Keywords();
+        // コールバックが借用する取得元
         auto* const assets = &graphics.Assets();
+        // 素材の診断を説明します(message: 元の診断, path: 固定する素材パス)。
         source.describeFailure =
             [assets, path = source.path](const char* const message)
             {
@@ -141,6 +146,7 @@ namespace
         return source;
     }
 
+    // D3D12素材サービスを借用し、未対応ならnullptrです(resources: 空を許すAPI資源)。
     [[nodiscard]] LamaPon::Detail::D3D12MaterialShaderServices*
         TryD3D12MaterialShaderServices(
             LamaPon::Detail::GraphicsDeviceApiResources* const resources)
@@ -152,6 +158,7 @@ namespace
             : nullptr;
     }
 
+    // XYZの全成分が有限か返します(value: 確認するベクトル)。
     [[nodiscard]] bool IsFinite(
         const DirectX::XMFLOAT3& value) noexcept
     {
@@ -160,6 +167,7 @@ namespace
             && std::isfinite(value.z);
     }
 
+    // 事前畳み込みキューブの世代と形式・寸法を検証します(graphics: 解決元の描画機器, handle: 確認するビュー, expectedSize: 必要な一辺の画素数, expectedMipLevels: 必要なミップ数, resolved: 借用SRVの出力)。
     [[nodiscard]] bool TryResolvePrefilteredCube(
         const LamaPon::GraphicsDevice& graphics,
         const LamaPon::GraphicsViewHandle& handle,
@@ -174,6 +182,7 @@ namespace
             return false;
         }
 
+        // キューブSRVの形式と範囲
         D3D11_SHADER_RESOURCE_VIEW_DESC viewDescription{};
         resolved->GetDesc(&viewDescription);
         if (viewDescription.Format
@@ -187,13 +196,16 @@ namespace
             return false;
         }
 
+        // ビューが参照する所有資源
         Microsoft::WRL::ComPtr<ID3D11Resource> resource;
         resolved->GetResource(resource.ReleaseAndGetAddressOf());
+        // ビューが参照する2D画像
         Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
         if (resource == nullptr || FAILED(resource.As(&texture)))
         {
             return false;
         }
+        // 参照キューブ画像の形式と寸法
         D3D11_TEXTURE2D_DESC description{};
         texture->GetDesc(&description);
         return description.Width == expectedSize
@@ -209,6 +221,7 @@ namespace
                 & D3D11_RESOURCE_MISC_TEXTURECUBE) != 0;
     }
 
+    // D3D11描画先の実体を借用し、別API・未設定ならnullptrです(target: 調べる描画先)。
     [[nodiscard]] LamaPon::Detail::D3D11RenderTargetState*
         TryD3D11RenderTargetState(
             LamaPon::RenderTarget& target) noexcept
@@ -229,6 +242,7 @@ namespace LamaPon
         std::string* error,
         const Sprite2DLighting* lighting)
     {
+        // スプライトの素材・定数・照明
         SpritePassDescription description;
         description.pixelShader = shaderPath;
         description.customParameters = customParameters;
@@ -254,14 +268,17 @@ namespace LamaPon
             return {};
         }
 
+        // 正規化したシェーダー絶対パス
         const auto absolutePath = Assets().ResolvePath(
             description.pixelShader).lexically_normal();
+        // 用途とキーワード別のキャッシュ
         auto& entry = RequireD3D11ApiResources().spriteShaders[absolutePath];
         if (!entry)
         {
             entry = std::make_unique<SpriteShaderEntry>();
         }
 
+        // 再確認間隔を判定する現在時刻
         const auto now = std::chrono::steady_clock::now();
         if (!entry->observed
             || entry->forceReload
@@ -269,20 +286,26 @@ namespace LamaPon
         {
             entry->nextCheck =
                 now + std::chrono::milliseconds(250);
+            // 資源アーカイブを使用中か
             const bool archived = Assets().IsArchived();
+            // 保存時刻の取得エラー
             std::error_code fileError;
+            // シェーダー元ファイルの有無
             const bool sourceExists =
                 Assets().FileExists(absolutePath);
+            // 元ファイルの保存時刻
             const auto writeTime =
                 (sourceExists && !archived)
                 ? std::filesystem::last_write_time(
                     absolutePath,
                     fileError)
                 : std::filesystem::file_time_type{};
+            // 参照元HLSLと依存先の変更番号
             const auto dependencyRevision =
                 ShaderSourceDependencyRevision(
                     Assets(),
                     absolutePath);
+            // 再読み込みが必要か
             const bool changed = !entry->observed
                 || entry->forceReload
                 || entry->sourceExists != sourceExists
@@ -310,6 +333,7 @@ namespace LamaPon
                 {
                     try
                     {
+                        // 生成成功後に公開する新しい効果
                         auto candidate =
                             std::make_shared<SpriteEffect>(
                                 Device(),
@@ -321,6 +345,7 @@ namespace LamaPon
                             ++m_state->m_spriteShaderGeneration;
                         entry->error.clear();
                     }
+                    // 効果の再作成で生じた診断
                     catch (const std::exception& exception)
                     {
                         entry->error = DescribeShaderFailure(
@@ -328,9 +353,7 @@ namespace LamaPon
                             absolutePath,
                             exception.what(),
                             ShaderUsage::Sprite);
-                        // 直前に成功したものを描き続けると、書き
-                        // 間違えたシェーダーが前のまま出ます。
-                        // 3Dと同じく捨てて代役に任せます。
+                        // 再コンパイル失敗時は旧効果を外して代替表示へ切り替えます。
                         entry->effect.reset();
                     }
                 }
@@ -344,11 +367,13 @@ namespace LamaPon
             // コンパイル失敗を視認できるよう、マゼンタの代替表示を使います。
             if (!entry->error.empty())
             {
+                // 借用する失敗時の代替効果
                 if (auto* const placeholder =
                         SpriteErrorPlaceholder())
                 {
                     status.fallback =
                         SpriteShaderFallback::ErrorPlaceholder;
+                    // マゼンタ表示へ定数を適用します(parameters: 保存したパス定数)。
                     return [
                         placeholder,
                         parameters = description.customParameters]()
@@ -364,10 +389,10 @@ namespace LamaPon
             return {};
         }
 
-        // SpriteBatch invokes this callback only when it flushes. Capture both
-        // the compiled generation and this pass's values: another renderer may
-        // use or hot-reload the same shader between Begin and End.
+        // Flush時に使う効果とこのパスの値を保持し、Begin～End間の他の描画や再読み込みから独立させます。
+        // 描画完了まで保持する効果の世代
         auto effect = entry->effect;
+        // 保存した効果へ値を適用します(parameters: パス定数, lighting: パスの照明)。
         return [
             effect = std::move(effect),
             parameters = description.customParameters,
@@ -400,14 +425,17 @@ namespace LamaPon
             return false;
         }
 
+        // 正規化したシェーダー絶対パス
         const auto absolutePath =
             Assets().ResolvePath(shaderPath).lexically_normal();
+        // 用途とキーワード別のキャッシュ
         auto& entry = RequireD3D11ApiResources().spriteShaders[absolutePath];
         if (!entry)
         {
             entry = std::make_unique<SpriteShaderEntry>();
         }
 
+        // 再確認間隔を判定する現在時刻
         const auto now = std::chrono::steady_clock::now();
         if (!entry->observed
             || entry->forceReload
@@ -415,20 +443,26 @@ namespace LamaPon
         {
             entry->nextCheck =
                 now + std::chrono::milliseconds(250);
+            // 資源アーカイブを使用中か
             const bool archived = Assets().IsArchived();
+            // 保存時刻の取得エラー
             std::error_code fileError;
+            // シェーダー元ファイルの有無
             const bool sourceExists =
                 Assets().FileExists(absolutePath);
+            // 元ファイルの保存時刻
             const auto writeTime =
                 (sourceExists && !archived)
                 ? std::filesystem::last_write_time(
                     absolutePath,
                     fileError)
                 : std::filesystem::file_time_type{};
+            // 参照元HLSLと依存先の変更番号
             const auto dependencyRevision =
                 ShaderSourceDependencyRevision(
                     Assets(),
                     absolutePath);
+            // 再読み込みが必要か
             const bool changed = !entry->observed
                 || entry->forceReload
                 || entry->sourceExists != sourceExists
@@ -456,6 +490,7 @@ namespace LamaPon
                 {
                     try
                     {
+                        // 生成成功後に公開する新しい効果
                         auto candidate =
                             std::make_shared<SpriteEffect>(
                                 Device(),
@@ -467,6 +502,7 @@ namespace LamaPon
                             ++m_state->m_spriteShaderGeneration;
                         entry->error.clear();
                     }
+                    // 効果の再作成で生じた診断
                     catch (const std::exception& exception)
                     {
                         entry->error = DescribeShaderFailure(
@@ -474,8 +510,7 @@ namespace LamaPon
                             absolutePath,
                             exception.what(),
                             ShaderUsage::Sprite);
-                        // スプライトと同じく、失敗したら直前の
-                        // シェーダーは残しません。
+                        // 再コンパイル失敗時は旧効果を外します。
                         entry->effect.reset();
                     }
                 }
@@ -492,9 +527,10 @@ namespace LamaPon
         }
         if (!entry->effect)
         {
-            // スプライトと同じく、失敗はマゼンタで知らせます。
+
             if (!entry->error.empty())
             {
+                // 借用する失敗時の代替効果
                 if (auto* const placeholder =
                         SpriteErrorPlaceholder())
                 {
@@ -525,12 +561,15 @@ namespace LamaPon
         if (ActiveRenderingApi()
             == RenderingApi::DirectX12Experimental)
         {
+            // D3D12のAPI資源
             auto* const resources = dynamic_cast<
                 Detail::GraphicsDeviceD3D12Resources*>(
                     m_state->m_apiResources.get());
+            // 借用するD3D12画面効果描画器
             auto* const renderer = resources != nullptr
                 ? resources->TrySpriteRenderer()
                 : nullptr;
+            // 対象地点の登録があるか調べます(queued: 確認する登録済み効果)。
             if (renderer == nullptr
                 || std::ranges::none_of(
                     resources->queuedScreenEffects,
@@ -542,21 +581,22 @@ namespace LamaPon
                 return;
             }
 
-            // t3はSceneの深度copyです。地点ごとにshader-readableへ
-            // 確定します。D3D11は深度viewが揃わないtargetでは適用を
-            // 飛ばしてキューから外すだけなので、同じ扱いにします。
+            // 登録地点ごとに深度を読み取り用へ確定し、無効ならその地点の効果を除去して描画を省きます。
             m_state->m_backend->CaptureOffscreenTargetDepth(target);
+            // 対象の深度ビューが現役か
             const bool hasDepth = IsGraphicsViewCurrent(
                 target.DepthViewHandle());
-            // 深度を距離へ直す係数と法線再構成用の係数は、D3D11経路と
-            // 同じくこの画像を描いたときの射影から求めます。
+
+            // 深度画像を描いた射影行列
             const auto& projection = SceneProjection();
+            // 距離再構成用の射影Z成分
             const DirectX::XMFLOAT4 depthParameters{
                 projection._33,
                 projection._43,
                 1.0f,
                 0.0f
             };
+            // 位置再構成用の射影XYの逆数
             const DirectX::XMFLOAT4 depthUnprojection{
                 1.0f / (std::abs(projection._11) > 1e-6f
                     ? projection._11
@@ -567,18 +607,21 @@ namespace LamaPon
                 0.0f,
                 0.0f
             };
+            // 対象地点の登録済み画面効果
             for (const auto& queued : resources->queuedScreenEffects)
             {
                 if (queued.point != point || !hasDepth)
                 {
                     continue;
                 }
-                // 描画を記録し終えるまでtexture snapshotを保持します。
-                // 読めない補助textureはD3D11と同じく白へ置き換わります。
+                // 補助画像は描画命令の記録完了まで保持し、解決できない入力は白画像へ置換します。
+                // 描画まで保持する補助画像の世代
                 std::array<std::shared_ptr<
                     const TextureResourceSnapshot>, 2>
                     auxiliaryResources{};
+                // 画面効果へ渡す補助画像ビュー
                 std::array<GraphicsViewHandle, 2> auxiliaryViews{};
+                // 補助画像の枠番号
                 for (std::size_t index{};
                     index < queued.auxiliaryTextures.size();
                     ++index)
@@ -587,6 +630,7 @@ namespace LamaPon
                     {
                         continue;
                     }
+                    // 読み込んだ補助画像アセット
                     const auto texture = Assets().LoadTexture(
                         queued.auxiliaryTextures[index]);
                     auxiliaryResources[index] = texture != nullptr
@@ -611,6 +655,7 @@ namespace LamaPon
                     depthParameters,
                     depthUnprojection);
             }
+            // 対象地点の登録を除去します(queued: 除去対象か調べる効果)。
             std::erase_if(
                 resources->queuedScreenEffects,
                 [point](const ScreenEffectRequest& queued)
@@ -620,7 +665,7 @@ namespace LamaPon
             return;
         }
 
-        // 対象地点にエフェクトが無い場合は、深度変換係数の計算を省略します。
+        // 対象地点の登録があるか調べます(queued: 確認する登録済み効果)。
         if (std::ranges::none_of(
                 RequireD3D11ApiResources().queuedScreenEffects,
                 [point](const QueuedScreenEffect& queued)
@@ -630,26 +675,25 @@ namespace LamaPon
         {
             return;
         }
+        // D3D11描画先の実体
         auto* const targetState = TryD3D11RenderTargetState(target);
+        // 色と深度が現役の描画先か
         const bool targetStateIsCurrent = targetState != nullptr
             && targetState->IsValid()
             && IsGraphicsViewCurrent(targetState->m_currentColorView)
             && IsGraphicsViewCurrent(targetState->m_depthView);
-        // 深度を距離へ直す係数。式は距離＝y/(深度+x)で、SSRの
-        // Hi-Z作成（PSReflectionDepthLinearize）と同じものです。
-        // SSRの深度変換と同じ式を使い、変換規則を一致させます。
-        // 射影はこの画像を描いたときのもの
-        // （TAAのずらし込み＝深度バッファと噛み合う方）。
+        // 深度と一致するジッター付き射影を使い、距離をy/(深度+x)で再構成します。
+        // 深度画像を描いた射影行列
         const auto& projection = SceneProjection();
+        // 距離再構成用の射影Z成分
         const DirectX::XMFLOAT4 depthParameters{
             projection._33,
             projection._43,
             1.0f,
             0.0f
         };
-        // ビュー空間の位置（＝法線の再構成）用。SSAOが持っている
-        // AmbientOcclusionProjectionのzwと同じ中身です。
-        // 0除算よけの1e-6は、射影が空のときに無限大を配らないため。
+
+        // 位置再構成用の射影XYの逆数
         const DirectX::XMFLOAT4 depthUnprojection{
             1.0f / (std::abs(projection._11) > 1e-6f
                 ? projection._11
@@ -660,9 +704,12 @@ namespace LamaPon
             0.0f,
             0.0f
         };
+        // 代替用の白画像ハンドル
         const auto whiteTextureView = WhiteTextureViewHandle();
+        // 借用する代替用の白画像SRV
         auto* const whiteTexture =
             TryResolveD3D11ShaderResourceView(whiteTextureView);
+        // 対象地点の登録済み画面効果
         for (const auto& queued : RequireD3D11ApiResources().queuedScreenEffects)
         {
             if (queued.effect == nullptr
@@ -674,20 +721,24 @@ namespace LamaPon
             {
                 continue;
             }
+            // 描画まで保持する補助画像の世代
             std::array<std::shared_ptr<
                 const TextureResourceSnapshot>, 2>
                 auxiliaryResources{};
             std::array<ID3D11ShaderResourceView*, 2>
                 auxiliaryViews{};
+            // 補助画像の枠番号
             for (std::size_t index = 0;
                 index < auxiliaryViews.size();
                 ++index)
             {
+                // 補助画像のアセット参照
                 const auto& asset =
                     queued.auxiliaryTextures[index];
                 auxiliaryResources[index] = asset != nullptr
                     ? asset->resources.Acquire()
                     : nullptr;
+                // 借用する現役の補助画像SRV
                 auto* const resolved =
                     auxiliaryResources[index] != nullptr
                     ? TryResolveD3D11ShaderResourceView(
@@ -704,8 +755,7 @@ namespace LamaPon
                 depthUnprojection,
                 queued.parameters);
         }
-        // 現在の地点で適用したエフェクトだけを取り除きます。同じフレームの
-        // 後続地点に登録されたエフェクトはキューへ残します。
+        // 現在地点の登録を除去し、後続地点の登録は残します(queued: 除去対象か調べる効果)。
         std::erase_if(
             RequireD3D11ApiResources().queuedScreenEffects,
             [point](const QueuedScreenEffect& queued)
@@ -735,12 +785,15 @@ namespace LamaPon
         if (ActiveRenderingApi()
             == RenderingApi::DirectX12Experimental)
         {
+            // D3D12のAPI資源
             auto* const resources = dynamic_cast<
                 Detail::GraphicsDeviceD3D12Resources*>(
                     m_state->m_apiResources.get());
+            // 借用するD3D12画面効果描画器
             auto* const renderer = resources != nullptr
                 ? resources->TrySpriteRenderer()
                 : nullptr;
+            // 画面効果の失敗原因を説明します(message: コンパイラーの診断)。
             const auto describeFailure =
                 [this, &request](const char* const message)
                 {
@@ -765,15 +818,18 @@ namespace LamaPon
             return true;
         }
 
+        // 正規化したシェーダー絶対パス
         const auto absolutePath =
             Assets().ResolvePath(request.shader)
                 .lexically_normal();
+        // 用途とキーワード別のキャッシュ
         auto& entry = RequireD3D11ApiResources().screenShaders[absolutePath];
         if (!entry)
         {
             entry = std::make_unique<ScreenShaderEntry>();
         }
 
+        // 再確認間隔を判定する現在時刻
         const auto now = std::chrono::steady_clock::now();
         if (!entry->observed
             || entry->forceReload
@@ -781,20 +837,26 @@ namespace LamaPon
         {
             entry->nextCheck =
                 now + std::chrono::milliseconds(250);
+            // 資源アーカイブを使用中か
             const bool archived = Assets().IsArchived();
+            // 保存時刻の取得エラー
             std::error_code fileError;
+            // シェーダー元ファイルの有無
             const bool sourceExists =
                 Assets().FileExists(absolutePath);
+            // 元ファイルの保存時刻
             const auto writeTime =
                 (sourceExists && !archived)
                 ? std::filesystem::last_write_time(
                     absolutePath,
                     fileError)
                 : std::filesystem::file_time_type{};
+            // 参照元HLSLと依存先の変更番号
             const auto dependencyRevision =
                 ShaderSourceDependencyRevision(
                     Assets(),
                     absolutePath);
+            // 再読み込みが必要か
             const bool changed = !entry->observed
                 || entry->forceReload
                 || entry->sourceExists != sourceExists
@@ -821,6 +883,7 @@ namespace LamaPon
                 {
                     try
                     {
+                        // 生成成功後に公開する新しい効果
                         auto candidate =
                             std::make_shared<ScreenEffect>(
                                 Device(),
@@ -832,6 +895,7 @@ namespace LamaPon
                             ++m_state->m_screenShaderGeneration;
                         entry->error.clear();
                     }
+                    // 効果の再作成で生じた診断
                     catch (const std::exception& exception)
                     {
                         // 再コンパイルに失敗しても、直前の正常なシェーダーは維持します。
@@ -858,12 +922,14 @@ namespace LamaPon
             return false;
         }
 
+        // 世代と定数を固定した登録効果
         QueuedScreenEffect queued{};
         queued.effect = entry->effect;
         queued.parameters = request.customParameters;
         queued.point = request.point;
         try
         {
+            // 読み込む補助画像の枠番号
             for (std::size_t index = 0;
                 index < request.auxiliaryTextures.size();
                 ++index)
@@ -876,6 +942,7 @@ namespace LamaPon
                 }
             }
         }
+        // 効果の作成・資源読み込みの診断
         catch (const std::exception& exception)
         {
             if (error != nullptr)
@@ -925,9 +992,11 @@ namespace LamaPon
         if (ActiveRenderingApi()
             == RenderingApi::DirectX12Experimental)
         {
+            // D3D12のAPI資源
             auto* const resources = dynamic_cast<
                 Detail::GraphicsDeviceD3D12Resources*>(
                     m_state->m_apiResources.get());
+            // 借用するD3D12計算効果描画器
             auto* const renderer = resources != nullptr
                 ? resources->TryComputeEffectRenderer()
                 : nullptr;
@@ -941,6 +1010,7 @@ namespace LamaPon
                 }
                 return false;
             }
+            // 計算効果の失敗原因を説明します(message: コンパイラーの診断)。
             const auto describeFailure =
                 [this, &request](const char* const message)
                 {
@@ -960,7 +1030,8 @@ namespace LamaPon
                 return false;
             }
 
-            // 書き込み先。D3D11と同じくResizeの前にUAVの印を付けます。
+            // UAV用途を設定してから画像を作成し、計算書き込み可能な資源を取得します。
+            // 名前付きの計算書き込み画像
             auto& target = AcquireComputeTexture(
                 request.outputTexture,
                 request.outputWidth,
@@ -976,13 +1047,16 @@ namespace LamaPon
                 return false;
             }
 
-            // 描画を記録し終えるまでtexture snapshotを保持します。読めない
-            // 入力はD3D11と同じく白へ置き換わります。
+            // 入力画像は計算命令の記録完了まで保持し、解決できない入力は白画像へ置換します。
+            // 計算記録まで保持する入力の世代
             std::array<std::shared_ptr<
                 const TextureResourceSnapshot>, 2>
                 inputResources{};
+            // 計算入力の読み取りビュー列
             std::array<GraphicsViewHandle, 2> inputs{};
+            // 代替用の白画像ハンドル
             const auto whiteTextureView = WhiteTextureViewHandle();
+            // 計算入力画像の枠番号
             for (std::size_t index = 0;
                 index < request.inputTextures.size();
                 ++index)
@@ -992,6 +1066,7 @@ namespace LamaPon
                 {
                     continue;
                 }
+                // 読み込んだ入力画像アセット
                 const auto texture = Assets().LoadTexture(
                     request.inputTextures[index]);
                 inputResources[index] = texture != nullptr
@@ -1006,6 +1081,7 @@ namespace LamaPon
                 }
             }
 
+            // 計算処理のGPU計測区間
             GpuProfiler::SectionScope computeSection{
                 m_state->m_gpuProfiler,
                 "Compute"
@@ -1020,17 +1096,19 @@ namespace LamaPon
             return true;
         }
 
+        // 正規化したシェーダー絶対パス
         const auto absolutePath =
             Assets().ResolvePath(request.shader)
                 .lexically_normal();
+        // 用途とキーワード別のキャッシュ
         auto& entry = RequireD3D11ApiResources().computeShaders[absolutePath];
         if (!entry)
         {
             entry = std::make_unique<ComputeShaderEntry>();
         }
 
-        // 更新の見張り方はScreenEffectと同じです（保存したら
-        // 作り直す、失敗しても直前の正常な版を残す）。
+        // 保存・依存先変更で再作成し、失敗時は直前の正常版を保持します。
+        // 再確認間隔を判定する現在時刻
         const auto now = std::chrono::steady_clock::now();
         if (!entry->observed
             || entry->forceReload
@@ -1038,20 +1116,26 @@ namespace LamaPon
         {
             entry->nextCheck =
                 now + std::chrono::milliseconds(250);
+            // 資源アーカイブを使用中か
             const bool archived = Assets().IsArchived();
+            // 保存時刻の取得エラー
             std::error_code fileError;
+            // シェーダー元ファイルの有無
             const bool sourceExists =
                 Assets().FileExists(absolutePath);
+            // 元ファイルの保存時刻
             const auto writeTime =
                 (sourceExists && !archived)
                 ? std::filesystem::last_write_time(
                     absolutePath,
                     fileError)
                 : std::filesystem::file_time_type{};
+            // 参照元HLSLと依存先の変更番号
             const auto dependencyRevision =
                 ShaderSourceDependencyRevision(
                     Assets(),
                     absolutePath);
+            // 再読み込みが必要か
             const bool changed = !entry->observed
                 || entry->forceReload
                 || entry->sourceExists != sourceExists
@@ -1087,6 +1171,7 @@ namespace LamaPon
                                 absolutePath);
                         entry->error.clear();
                     }
+                    // 効果の再作成で生じた診断
                     catch (const std::exception& exception)
                     {
                         entry->error = DescribeShaderFailure(
@@ -1108,13 +1193,15 @@ namespace LamaPon
             return false;
         }
 
-        // 書き込み先。UAVが要るので、Resizeの前に印を付けます
-        // （バインドフラグは作成時にしか決められません）。
+        // UAV用途を設定してから画像を作成し、計算書き込み可能な資源を取得します。
+        // 名前付きの計算書き込み画像
         auto& target = AcquireComputeTexture(
             request.outputTexture,
             request.outputWidth,
             request.outputHeight);
+        // D3D11の書き込み画像の実体
         auto* const targetState = TryD3D11RenderTargetState(target);
+        // 借用する計算書き込み先UAV
         auto* const outputView = targetState != nullptr
                 && targetState->IsValid()
                 && IsGraphicsViewCurrent(targetState->m_displayView)
@@ -1131,13 +1218,18 @@ namespace LamaPon
             return false;
         }
 
+        // 計算終了まで保持する入力の世代
         std::array<std::shared_ptr<
             const TextureResourceSnapshot>, 2>
             inputResources{};
+        // 計算入力の読み取りビュー列
         std::array<ID3D11ShaderResourceView*, 2> inputs{};
+        // 代替用の白画像ハンドル
         const auto whiteTextureView = WhiteTextureViewHandle();
+        // 借用する代替用の白画像SRV
         auto* const whiteTexture =
             TryResolveD3D11ShaderResourceView(whiteTextureView);
+        // 計算入力画像の枠番号
         for (std::size_t index = 0;
             index < request.inputTextures.size();
             ++index)
@@ -1147,11 +1239,13 @@ namespace LamaPon
                 inputs[index] = whiteTexture;
                 continue;
             }
+            // 読み込んだ入力画像アセット
             const auto texture = Assets().LoadTexture(
                 request.inputTextures[index]);
             inputResources[index] = texture != nullptr
                 ? texture->resources.Acquire()
                 : nullptr;
+            // 借用する現役の計算入力SRV
             auto* const resolved = inputResources[index] != nullptr
                 ? TryResolveD3D11ShaderResourceView(
                     *inputResources[index])
@@ -1161,6 +1255,7 @@ namespace LamaPon
                 : whiteTexture;
         }
 
+        // 計算処理のGPU計測区間
         GpuProfiler::SectionScope computeSection{
             m_state->m_gpuProfiler,
             "Compute"
@@ -1181,9 +1276,11 @@ namespace LamaPon
         if (ActiveRenderingApi()
             == RenderingApi::DirectX12Experimental)
         {
+            // D3D12のAPI資源
             auto* const d3d12Resources = dynamic_cast<
                 Detail::GraphicsDeviceD3D12Resources*>(
                     m_state->m_apiResources.get());
+            // 借用する効果の再読込窓口
             auto* const renderer = d3d12Resources != nullptr
                 ? d3d12Resources->TryComputeEffectRenderer()
                 : nullptr;
@@ -1193,14 +1290,17 @@ namespace LamaPon
             }
             return;
         }
+        // 処理するAPIの資源
         auto* const resources = TryD3D11ApiResources();
         if (shaderPath.empty() || !TryAssets() || resources == nullptr)
         {
             return;
         }
+        // 正規化したシェーダー絶対パス
         const auto absolutePath =
             Assets().ResolvePath(shaderPath)
                 .lexically_normal();
+        // 用途別キャッシュの検索結果
         const auto found = resources->computeShaders.find(absolutePath);
         if (found != resources->computeShaders.end()
             && found->second)
@@ -1215,9 +1315,11 @@ namespace LamaPon
         if (ActiveRenderingApi()
             == RenderingApi::DirectX12Experimental)
         {
+            // 処理するAPIの資源
             auto* const resources = dynamic_cast<
                 Detail::GraphicsDeviceD3D12Resources*>(
                     m_state->m_apiResources.get());
+            // 借用する効果の再読込窓口
             auto* const renderer = resources != nullptr
                 ? resources->TrySpriteRenderer()
                 : nullptr;
@@ -1229,14 +1331,17 @@ namespace LamaPon
             }
             return;
         }
+        // 処理するAPIの資源
         auto* const resources = TryD3D11ApiResources();
         if (shaderPath.empty() || !TryAssets() || resources == nullptr)
         {
             return;
         }
+        // 正規化したシェーダー絶対パス
         const auto absolutePath =
             Assets().ResolvePath(shaderPath)
                 .lexically_normal();
+        // 用途別キャッシュの検索結果
         const auto found = resources->screenShaders.find(absolutePath);
         if (found != resources->screenShaders.end()
             && found->second)
@@ -1249,17 +1354,22 @@ namespace LamaPon
         const std::filesystem::path& shaderPath,
         const ShaderKeywordSet& keywords) const
     {
+        // 処理するAPIの資源
         const auto* const resources = TryD3D11ApiResources();
         if (shaderPath.empty() || resources == nullptr)
         {
             return false;
         }
+        // 正規化したシェーダー絶対パス
         const auto absolutePath =
             Assets().ResolvePath(shaderPath).lexically_normal();
+        // 宣言外を除いたキーワード集合
         const auto normalized = NormalizeKeywords(
             ShaderVariantsFor(absolutePath),
             keywords);
+        // キーワード集合の整列済みキー
         const auto variantKey = normalized.Key();
+        // パスとキーワード別の識別キー
         const std::filesystem::path cacheKey =
             variantKey.empty()
                 ? absolutePath
@@ -1267,6 +1377,7 @@ namespace LamaPon
                     absolutePath.wstring()
                     + L"?"
                     + Utf8ToWide(variantKey));
+        // 用途別キャッシュの検索結果
         const auto found = resources->materialShaders.find(cacheKey);
         return found != resources->materialShaders.end()
             && found->second->pending;
@@ -1276,22 +1387,28 @@ namespace LamaPon
         GraphicsDevice::ShaderVariantsFor(
             const std::filesystem::path& shaderPath) const
     {
+        // 空パスに返すキーワード宣言
         static const ShaderVariantDeclaration empty;
         if (shaderPath.empty())
         {
             return empty;
         }
+        // 正規化したシェーダー絶対パス
         const auto absolutePath =
             Assets().ResolvePath(shaderPath).lexically_normal();
+        // 用途別キャッシュの検索結果
         const auto found = m_state->m_shaderVariants.find(absolutePath);
         if (found != m_state->m_shaderVariants.end())
         {
             return found->second;
         }
+        // 読み取ったキーワード宣言
         ShaderVariantDeclaration declaration;
         try
         {
+            // 素材定義が参照する実HLSL
             std::filesystem::path sourcePath;
+            // 素材定義の解決で生じた診断
             std::string manifestError;
             if (ResolveMaterialShaderSource(
                     Assets(),
@@ -1300,6 +1417,7 @@ namespace LamaPon
                     manifestError)
                 && Assets().FileExists(sourcePath))
             {
+                // 宣言を読み取るHLSLバイト列
                 const auto source =
                     Assets().ReadFileBytesFresh(sourcePath);
                 declaration = ParseShaderVariants(
@@ -1327,6 +1445,7 @@ namespace LamaPon
         {
             return false;
         }
+        // 効果コンテキストの所有デバイス
         Microsoft::WRL::ComPtr<ID3D11Device> effectDevice;
         effect.m_context->GetDevice(
             effectDevice.ReleaseAndGetAddressOf());
@@ -1335,6 +1454,7 @@ namespace LamaPon
             return false;
         }
 
+        // 画像を解決し、空は正常な未指定として扱います(view: 確認するビュー, resolved: 借用SRVの出力)。
         const auto tryResolve = [this](
             const GraphicsViewHandle& view,
             ID3D11ShaderResourceView*& resolved) noexcept
@@ -1343,12 +1463,17 @@ namespace LamaPon
             return !view || resolved != nullptr;
         };
 
+        // 借用する基本色のSRV
         ID3D11ShaderResourceView* albedo{};
+        // 借用する法線画像のSRV
         ID3D11ShaderResourceView* normal{};
+        // 借用するPBR画像と素材設定
         PbrTextures pbrTextures{};
+        // 借用する自作素材画像のSRV列
         std::array<
             ID3D11ShaderResourceView*,
             LitMaterial::CustomTextureCount> customTextures{};
+        // 全ての指定画像を解決できたか
         bool valid = tryResolve(request.albedo, albedo)
             && tryResolve(request.normal, normal)
             && tryResolve(
@@ -1363,6 +1488,7 @@ namespace LamaPon
             && tryResolve(
                 request.emissive,
                 pbrTextures.emissive);
+        // 自作素材画像の枠番号
         for (std::size_t index{};
             valid && index < customTextures.size();
             ++index)
@@ -1395,6 +1521,7 @@ namespace LamaPon
         {
             return false;
         }
+        // 効果コンテキストの所有デバイス
         Microsoft::WRL::ComPtr<ID3D11Device> effectDevice;
         effect.m_context->GetDevice(
             effectDevice.ReleaseAndGetAddressOf());
@@ -1403,12 +1530,13 @@ namespace LamaPon
             return false;
         }
 
+        // 主反射キューブの指定があるか
         const bool hasSpecular = static_cast<bool>(probe.specular);
+        // 主放射照度キューブの指定
         const bool hasIrradiance = static_cast<bool>(probe.irradiance);
         if (!hasSpecular && !hasIrradiance)
         {
-            // ProbeなしはSetLightingが設定したSky IBLを維持します。
-            // secondary側の古いhandleも無効なmetadataとして解決しません。
+            // 主プローブの指定がなければ環境IBLを維持し、第2プローブの未使用情報は解決しません。
             return true;
         }
         if (hasSpecular != hasIrradiance)
@@ -1416,8 +1544,10 @@ namespace LamaPon
             return false;
         }
 
+        // 事前畳み込み反射の最終段
         constexpr auto ExpectedMaximumMip = static_cast<float>(
             EnvironmentRenderer::PrefilteredSpecularMipLevels - 1);
+        // 検証して借用する反射SRV
         LitEffect::D3D11ReflectionProbeViews nativeViews;
         if (!std::isfinite(probe.intensity)
             || !std::isfinite(probe.specularMaximumMip)
@@ -1480,6 +1610,7 @@ namespace LamaPon
         {
             return false;
         }
+        // 効果コンテキストの所有デバイス
         Microsoft::WRL::ComPtr<ID3D11Device> effectDevice;
         effect.m_context->GetDevice(
             effectDevice.ReleaseAndGetAddressOf());
@@ -1488,8 +1619,10 @@ namespace LamaPon
             return false;
         }
 
+        // 検証済みの借用照明SRV列
         LitEffect::D3D11LightingViews nativeViews;
 
+        // 2D画像の形式・範囲・用途を検証します(handle: 同世代のビュー, expectedFormat: 必要な形式, expectedMipLevels: 必要なミップ数, resolved: 借用SRVの出力, textureDescription: 参照画像設定の出力)。
         const auto tryResolveTexture2D = [this](
             const GraphicsViewHandle& handle,
             const DXGI_FORMAT expectedFormat,
@@ -1502,6 +1635,7 @@ namespace LamaPon
             {
                 return false;
             }
+            // SRVの形式・種別・読み取り範囲
             D3D11_SHADER_RESOURCE_VIEW_DESC viewDescription{};
             resolved->GetDesc(&viewDescription);
             if (viewDescription.ViewDimension
@@ -1513,8 +1647,10 @@ namespace LamaPon
             {
                 return false;
             }
+            // SRVが保持する参照元資源
             Microsoft::WRL::ComPtr<ID3D11Resource> resource;
             resolved->GetResource(resource.ReleaseAndGetAddressOf());
+            // 検証する2D画像の所有参照
             Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
             if (resource == nullptr || FAILED(resource.As(&texture)))
             {
@@ -1528,6 +1664,7 @@ namespace LamaPon
                 && (textureDescription.BindFlags
                     & D3D11_BIND_SHADER_RESOURCE) != 0;
         };
+        // キューブを検証し、形式指定があれば寸法も照合します(handle: 同世代のビュー, expectedFormat: 未指定を許す形式, expectedSize: 形式指定時の寸法, expectedMipLevels: 形式指定時の段数, resolved: 借用SRVの出力)。
         const auto tryResolveTextureCube = [this](
             const GraphicsViewHandle& handle,
             const DXGI_FORMAT expectedFormat,
@@ -1540,6 +1677,7 @@ namespace LamaPon
             {
                 return false;
             }
+            // SRVの形式・種別・読み取り範囲
             D3D11_SHADER_RESOURCE_VIEW_DESC viewDescription{};
             resolved->GetDesc(&viewDescription);
             if (viewDescription.ViewDimension
@@ -1550,15 +1688,19 @@ namespace LamaPon
                 return false;
             }
 
+            // SRVが保持する参照元資源
             Microsoft::WRL::ComPtr<ID3D11Resource> resource;
             resolved->GetResource(resource.ReleaseAndGetAddressOf());
+            // 検証する2D画像の所有参照
             Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
             if (resource == nullptr || FAILED(resource.As(&texture)))
             {
                 return false;
             }
+            // 画像またはSRVのネイティブ設定
             D3D11_TEXTURE2D_DESC description{};
             texture->GetDesc(&description);
+            // SRVの省略を補ったミップ数
             auto viewMipLevels =
                 viewDescription.TextureCube.MipLevels;
             if (viewMipLevels == std::numeric_limits<UINT>::max())
@@ -1588,7 +1730,9 @@ namespace LamaPon
                     && viewMipLevels == expectedMipLevels;
             }
 
+            // サンプル可能な形式の対応状況
             UINT formatSupport{};
+            // キューブ読取に必要な形式用途
             constexpr UINT RequiredFormatSupport =
                 D3D11_FORMAT_SUPPORT_TEXTURECUBE
                 | D3D11_FORMAT_SUPPORT_SHADER_SAMPLE;
@@ -1601,6 +1745,7 @@ namespace LamaPon
                 && (formatSupport & RequiredFormatSupport)
                     == RequiredFormatSupport;
         };
+        // 寸法の逆数を検証して整数の画素数へ戻します(inverseDimension: 正の有限な寸法の逆数, dimension: 成功時の画素数出力)。
         const auto tryRecoverDimension = [](
             const float inverseDimension,
             std::uint32_t& dimension) noexcept
@@ -1610,6 +1755,7 @@ namespace LamaPon
             {
                 return false;
             }
+            // 寸法の逆数から復元した実数
             const auto exactDimension =
                 1.0 / static_cast<double>(inverseDimension);
             if (!std::isfinite(exactDimension)
@@ -1619,6 +1765,7 @@ namespace LamaPon
             {
                 return false;
             }
+            // 整数へ丸めた画像寸法
             const auto roundedDimension = std::round(exactDimension);
             if (std::abs(
                     inverseDimension * roundedDimension - 1.0)
@@ -1630,6 +1777,7 @@ namespace LamaPon
             return true;
         };
 
+        // 環境キューブによる照明設定
         const auto& environment = lighting.environment;
         if (environment.enabled)
         {
@@ -1644,8 +1792,10 @@ namespace LamaPon
                 return false;
             }
 
+            // 事前畳み込み反射の指定があるか
             const bool hasSpecular =
                 static_cast<bool>(environment.specular);
+            // 放射照度の指定があるか
             const bool hasIrradiance =
                 static_cast<bool>(environment.irradiance);
             if (hasSpecular != hasIrradiance)
@@ -1654,6 +1804,7 @@ namespace LamaPon
             }
             if (hasSpecular)
             {
+                // 事前畳み込み反射の最終段
                 constexpr auto ExpectedMaximumMip = static_cast<float>(
                     EnvironmentRenderer::PrefilteredSpecularMipLevels - 1);
                 if (!tryResolveTextureCube(
@@ -1678,6 +1829,7 @@ namespace LamaPon
             }
         }
 
+        // 影のビューと深度画像の形式・寸法を検証します(handle: 同世代のビュー, cube: キューブ指定, minimumSlices: 必要な最小面数, maximumSlices: 許可する最大面数, expectedResolution: 整数に近い一辺の寸法, resolved: 借用SRVの出力)。
         const auto tryResolveShadow = [this](
             const GraphicsViewHandle& handle,
             const bool cube,
@@ -1694,6 +1846,7 @@ namespace LamaPon
             {
                 return false;
             }
+            // 整数へ丸めた影の解像度
             const auto roundedResolution =
                 std::round(expectedResolution);
             if (std::abs(
@@ -1708,6 +1861,7 @@ namespace LamaPon
             {
                 return false;
             }
+            // SRVの形式・種別・読み取り範囲
             D3D11_SHADER_RESOURCE_VIEW_DESC viewDescription{};
             resolved->GetDesc(&viewDescription);
             if (viewDescription.Format != DXGI_FORMAT_R32_FLOAT)
@@ -1737,17 +1891,22 @@ namespace LamaPon
                 return false;
             }
 
+            // SRVが保持する参照元資源
             Microsoft::WRL::ComPtr<ID3D11Resource> resource;
             resolved->GetResource(resource.ReleaseAndGetAddressOf());
+            // 検証する2D画像の所有参照
             Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
             if (resource == nullptr || FAILED(resource.As(&texture)))
             {
                 return false;
             }
+            // 画像またはSRVのネイティブ設定
             D3D11_TEXTURE2D_DESC description{};
             texture->GetDesc(&description);
+            // 検証済みの影の整数解像度
             const auto resolution =
                 static_cast<std::uint32_t>(roundedResolution);
+            // 画像がキューブ用途を持つか
             const bool isCube = (description.MiscFlags
                 & D3D11_RESOURCE_MISC_TEXTURECUBE) != 0;
             return description.Width == resolution
@@ -1765,9 +1924,11 @@ namespace LamaPon
                 && isCube == cube;
         };
 
+        // 平行光の影設定
         const auto& directionalShadow = lighting.directionalShadow;
         if (directionalShadow.enabled)
         {
+            // 定数上限内の平行光の数
             const auto directionalLightCount = std::min(
                 lighting.directionalLightCount,
                 MaximumDirectionalLights);
@@ -1790,10 +1951,13 @@ namespace LamaPon
             }
         }
 
+        // 有効なスポット影があるか
         bool hasSpotShadow{};
+        // 定数上限内のスポット光の数
         const auto spotLightCount = std::min(
             lighting.spotLightCount,
             MaximumSpotLights);
+        // 検証するスポット影の設定
         for (const auto& spotShadow : lighting.spotShadows)
         {
             if (!spotShadow.enabled)
@@ -1820,9 +1984,11 @@ namespace LamaPon
             return false;
         }
 
+        // 点光源の影設定
         const auto& pointShadow = lighting.pointShadow;
         if (pointShadow.enabled)
         {
+            // 定数上限内の点光源の数
             const auto pointLightCount = std::min(
                 lighting.pointLightCount,
                 MaximumPointLights);
@@ -1841,6 +2007,7 @@ namespace LamaPon
             }
         }
 
+        // 画面空間AOの設定
         const auto& screenOcclusion =
             lighting.screenAmbientOcclusion;
         if (screenOcclusion.enabled)
@@ -1852,8 +2019,11 @@ namespace LamaPon
             {
                 return false;
             }
+            // 画像またはSRVのネイティブ設定
             D3D11_TEXTURE2D_DESC description{};
+            // 定数から復元した画面幅
             std::uint32_t targetWidth{};
+            // 定数から復元した画面高
             std::uint32_t targetHeight{};
             if (!tryResolveTexture2D(
                     screenOcclusion.texture,
@@ -1876,6 +2046,7 @@ namespace LamaPon
             }
         }
 
+        // 画面空間反射の設定
         const auto& screenReflection =
             lighting.screenSpaceReflection;
         if (screenReflection.enabled)
@@ -1889,10 +2060,15 @@ namespace LamaPon
             {
                 return false;
             }
+            // SSRのHDR履歴画像設定
             D3D11_TEXTURE2D_DESC colorDescription{};
+            // SSRの深度ピラミッド設定
             D3D11_TEXTURE2D_DESC depthDescription{};
+            // 定数から復元した画面幅
             std::uint32_t targetWidth{};
+            // 定数から復元した画面高
             std::uint32_t targetHeight{};
+            // SSRで要求する深度のミップ数
             const auto depthMipLevels =
                 screenReflection.depthPyramidMaximumMip + 1;
             if (!tryResolveTexture2D(
@@ -1920,7 +2096,9 @@ namespace LamaPon
             {
                 return false;
             }
+            // 画面の最大辺から求める段数
             std::uint32_t fullMipLevels{ 1 };
+            // 段数計算で縮小する最大辺
             for (auto maximumDimension =
                     std::max(targetWidth, targetHeight);
                 maximumDimension > 1;
@@ -1934,6 +2112,7 @@ namespace LamaPon
             }
         }
 
+        // Forward+のライトと格子設定
         const auto& clustered = lighting.clustered;
         if (clustered.enabled)
         {
@@ -1951,27 +2130,33 @@ namespace LamaPon
                 return false;
             }
 
+            // 検証する3本の資源ハンドル
             const std::array<const GraphicsViewHandle*, 3> handles{
                 &clustered.lights,
                 &clustered.lightIndices,
                 &clustered.clusterCounts
             };
+            // 各構造化バッファの要素間隔
             const std::array<std::uint32_t, 3> expectedStrides{
                 static_cast<std::uint32_t>(sizeof(GpuLight)),
                 static_cast<std::uint32_t>(sizeof(std::uint32_t)),
                 static_cast<std::uint32_t>(sizeof(std::uint32_t))
             };
+            // 各バッファに必要な要素数
             const std::array<std::uint32_t, 3> expectedElements{
                 static_cast<std::uint32_t>(MaximumClusteredLights),
                 ClusteredLights::ClusterCount
                     * ClusteredLights::MaximumLightsPerCluster,
                 ClusteredLights::ClusterCount
             };
+            // クラスタ資源またはGI色の番号
             for (std::size_t index{};
                 index < handles.size();
                 ++index)
             {
+                // 検証する同世代のビュー
                 const auto& handle = *handles[index];
+                // 借用する検証対象のSRV
                 auto* const nativeView =
                     TryResolveD3D11ShaderResourceView(handle);
                 if (!handle || nativeView == nullptr)
@@ -1979,6 +2164,7 @@ namespace LamaPon
                     return false;
                 }
 
+                // SRVの形式・種別・読み取り範囲
                 D3D11_SHADER_RESOURCE_VIEW_DESC viewDescription{};
                 nativeView->GetDesc(&viewDescription);
                 if (viewDescription.ViewDimension
@@ -1991,17 +2177,21 @@ namespace LamaPon
                     return false;
                 }
 
+                // SRVが保持する参照元資源
                 Microsoft::WRL::ComPtr<ID3D11Resource> resource;
                 nativeView->GetResource(
                     resource.ReleaseAndGetAddressOf());
+                // 検証する構造化バッファ
                 Microsoft::WRL::ComPtr<ID3D11Buffer> buffer;
                 if (resource == nullptr
                     || FAILED(resource.As(&buffer)))
                 {
                     return false;
                 }
+                // 構造化バッファの容量と間隔
                 D3D11_BUFFER_DESC bufferDescription{};
                 buffer->GetDesc(&bufferDescription);
+                // 必要な要素数と間隔の積
                 const auto requiredBytes =
                     static_cast<std::uint64_t>(expectedElements[index])
                     * expectedStrides[index];
@@ -2019,26 +2209,33 @@ namespace LamaPon
             }
         }
 
+        // ベイクしたGI体積の設定
         const auto& bakedGi = lighting.bakedGlobalIllumination;
         if (bakedGi.enabled)
         {
+            // 第1成分に合わせる体積寸法
             D3D11_TEXTURE3D_DESC expectedVolume{};
+            // 検証する3本の資源ハンドル
             const std::array<const GraphicsViewHandle*, 3> handles{
                 &bakedGi.redCoefficients,
                 &bakedGi.greenCoefficients,
                 &bakedGi.blueCoefficients
             };
+            // クラスタ資源またはGI色の番号
             for (std::size_t index{};
                 index < handles.size();
                 ++index)
             {
+                // 検証する同世代のビュー
                 const auto& handle = *handles[index];
+                // 借用する検証対象のSRV
                 auto* const nativeView =
                     TryResolveD3D11ShaderResourceView(handle);
                 if (!handle || nativeView == nullptr)
                 {
                     return false;
                 }
+                // 画像またはSRVのネイティブ設定
                 D3D11_SHADER_RESOURCE_VIEW_DESC description{};
                 nativeView->GetDesc(&description);
                 if (description.ViewDimension
@@ -2051,15 +2248,18 @@ namespace LamaPon
                     return false;
                 }
 
+                // SRVが保持する参照元資源
                 Microsoft::WRL::ComPtr<ID3D11Resource> resource;
                 nativeView->GetResource(
                     resource.ReleaseAndGetAddressOf());
+                // 検証するGIの3D画像
                 Microsoft::WRL::ComPtr<ID3D11Texture3D> volume;
                 if (resource == nullptr
                     || FAILED(resource.As(&volume)))
                 {
                     return false;
                 }
+                // GI体積画像の形式と寸法
                 D3D11_TEXTURE3D_DESC volumeDescription{};
                 volume->GetDesc(&volumeDescription);
                 if (volumeDescription.Format
@@ -2109,18 +2309,18 @@ namespace LamaPon
             return Lit();
         }
 
+        // 正規化したシェーダー絶対パス
         const auto absolutePath =
             Assets().ResolvePath(shaderPath).lexically_normal();
-        // 宣言に無いキーワードは落とします。シェーダーを差し替えた
-        // 後のマテリアルが、存在しないキーワードでコンパイルを
-        // 走らせないようにするためです。
+
+        // 宣言外を除いたキーワード集合
         const auto normalized = NormalizeKeywords(
             ShaderVariantsFor(absolutePath),
             keywords);
-        // 同じHLSLでもバリアントごとに別のエントリーです。キーは
-        // 「パス?キーワード」で、キーワードは常に整列済みなので
-        // 同じ組み合わせなら必ず同じキーになります。
+
+        // キーワード集合の整列済みキー
         const auto variantKey = normalized.Key();
+        // パスとキーワード別の識別キー
         const std::filesystem::path cacheKey =
             variantKey.empty()
                 ? absolutePath
@@ -2128,6 +2328,7 @@ namespace LamaPon
                     absolutePath.wstring()
                     + L"?"
                     + Utf8ToWide(variantKey));
+        // 用途とキーワード別のキャッシュ
         auto& entry = RequireD3D11ApiResources().materialShaders[cacheKey];
         if (!entry)
         {
@@ -2135,7 +2336,8 @@ namespace LamaPon
             entry->keywords = normalized.Keywords();
         }
 
-        // コンパイル失敗を明示するため標準Litではなくマゼンタの代替表示を使います。
+
+        // 成功した効果、失敗時の代替効果、標準Litの順で返します。
         const auto resolve = [this, &entry]() -> LitEffect&
         {
             if (entry->effect)
@@ -2144,6 +2346,7 @@ namespace LamaPon
             }
             if (!entry->error.empty())
             {
+                // 借用するマゼンタの代替効果
                 if (auto* const placeholder =
                         ShaderErrorPlaceholder(false))
                 {
@@ -2153,8 +2356,7 @@ namespace LamaPon
             return Lit();
         };
 
-        // 非同期コンパイル完了後にLitEffectを組み立てます
-        // （キャッシュに当たるので一瞬で終わります）。
+        // 非同期のキャッシュ準備完了後、呼び出しスレッドでGPU効果を作成します。
         if (entry->pending)
         {
             if (entry->warming.valid()
@@ -2196,6 +2398,7 @@ namespace LamaPon
             }
         }
 
+        // 再確認間隔を判定する現在時刻
         const auto now = std::chrono::steady_clock::now();
         if (entry->observed
             && !entry->forceReload
@@ -2207,18 +2410,22 @@ namespace LamaPon
         }
         entry->nextCheck = now + std::chrono::milliseconds(250);
 
-        // アーカイブで配布したゲームには変更監視の対象となる展開済みファイルが
-        // ありません。ホットリロードの更新日時確認はエディター上の展開済み
-        // アセットだけに行い、アーカイブ内のシェーダーは一度だけ読み込みます。
+        // アーカイブは保存時刻を調べず、存在状態・依存先の変化または無効化要求で再読み込みします。
+        // 資源アーカイブを使用中か
         const bool archived = Assets().IsArchived();
+        // 保存時刻の取得エラー
         std::error_code fileError;
+        // シェーダー元ファイルの有無
         const bool sourceExists = Assets().FileExists(absolutePath);
+        // 元ファイルの保存時刻
         const auto writeTime = (sourceExists && !archived)
             ? std::filesystem::last_write_time(
                 absolutePath,
                 fileError)
             : std::filesystem::file_time_type{};
+        // 依存先を確認する実HLSLのパス
         std::filesystem::path dependencyPath;
+        // 素材定義の解決失敗の診断
         std::string dependencyPathError;
         if (!ResolveMaterialShaderSource(
                 Assets(),
@@ -2228,11 +2435,13 @@ namespace LamaPon
         {
             dependencyPath = absolutePath;
         }
+        // 参照元HLSLと依存先の変更番号
         const auto dependencyRevision =
             ShaderSourceDependencyRevision(
                 Assets(),
                 dependencyPath,
                 entry->keywords);
+        // 再読み込みが必要か
         const bool changed = !entry->observed
             || entry->forceReload
             || entry->sourceExists != sourceExists
@@ -2260,20 +2469,21 @@ namespace LamaPon
             {
                 try
                 {
-                    // アーカイブ（書き出したゲーム）は全部事前
-                    // コンパイル済みなので待ち時間が無く、かつ
-                    // アーカイブ読み取りはスレッド安全ではないため
-                    // 同期のままにします。
+                    // アーカイブの読み取りはスレッド安全でないため同期処理を使います。
                     if (m_state->m_asyncShaderCompilation
                         && !Assets().IsArchived())
                     {
-                        // effectを破棄すると、失敗時は代替表示へ切り替わります。
+
+                        // 非同期処理が借用する取得元
                         auto* const assets = &Assets();
+                        // 非同期処理に固定する素材パス
                         const auto path = absolutePath;
+                        // 非同期処理に固定するキーワード
                         const auto keywordList = entry->keywords;
                         entry->effect.reset();
                         entry->pending = true;
                         entry->error.clear();
+                        // パスとキーワードを固定してCPU側のコンパイルキャッシュを準備します。
                         entry->warming = std::async(
                             std::launch::async,
                             [assets, path, keywordList]
@@ -2285,6 +2495,7 @@ namespace LamaPon
                             });
                         return Lit();
                     }
+                    // 生成成功後に公開する新しい効果
                     auto candidate = std::make_unique<LitEffect>(
                         Device(),
                         Context(),
@@ -2304,8 +2515,7 @@ namespace LamaPon
                         absolutePath,
                         exception.what(),
                         ShaderUsage::Material);
-                    // 再コンパイル失敗を視認できるよう、直前のシェーダーを破棄して
-                    // 代替表示へ切り替えます。
+                    // 再コンパイル失敗時は旧効果を外して代替表示へ切り替えます。
                     entry->effect.reset();
                 }
             }
@@ -2329,13 +2539,17 @@ namespace LamaPon
             return nullptr;
         }
 
+        // 正規化したシェーダー絶対パス
         const auto absolutePath =
             Assets().ResolvePath(shaderPath).lexically_normal();
-        // 通常マテリアルと同じく、バリアントごとに別エントリーです。
+
+        // 宣言外を除いたキーワード集合
         const auto normalized = NormalizeKeywords(
             ShaderVariantsFor(absolutePath),
             keywords);
+        // キーワード集合の整列済みキー
         const auto variantKey = normalized.Key();
+        // パスとキーワード別の識別キー
         const std::filesystem::path cacheKey =
             variantKey.empty()
                 ? absolutePath
@@ -2343,6 +2557,7 @@ namespace LamaPon
                     absolutePath.wstring()
                     + L"?"
                     + Utf8ToWide(variantKey));
+        // 用途とキーワード別のキャッシュ
         auto& entry = RequireD3D11ApiResources().skinnedMaterialShaders[cacheKey];
         if (!entry)
         {
@@ -2350,8 +2565,8 @@ namespace LamaPon
             entry->keywords = normalized.Keywords();
         }
 
-        // 通常マテリアルと同じく、失敗時はマゼンタの代替表示を使い、
-        // シェーダーを作成できなかったモデルを画面上で特定できます。
+
+        // 成功した骨変形効果か失敗時の代替効果を返し、未設定はnullptrです。
         const auto resolve = [this, &entry]() -> LitEffect*
         {
             if (entry->effect)
@@ -2365,6 +2580,7 @@ namespace LamaPon
             return nullptr;
         };
 
+        // 再確認間隔を判定する現在時刻
         const auto now = std::chrono::steady_clock::now();
         if (entry->observed
             && !entry->forceReload
@@ -2376,18 +2592,22 @@ namespace LamaPon
         }
         entry->nextCheck = now + std::chrono::milliseconds(250);
 
-        // アーカイブで配布したゲームには変更監視の対象となる展開済みファイルが
-        // ありません。ホットリロードの更新日時確認はエディター上の展開済み
-        // アセットだけに行い、アーカイブ内のシェーダーは一度だけ読み込みます。
+        // アーカイブは保存時刻を調べず、存在状態・依存先の変化または無効化要求で再読み込みします。
+        // 資源アーカイブを使用中か
         const bool archived = Assets().IsArchived();
+        // 保存時刻の取得エラー
         std::error_code fileError;
+        // シェーダー元ファイルの有無
         const bool sourceExists = Assets().FileExists(absolutePath);
+        // 元ファイルの保存時刻
         const auto writeTime = (sourceExists && !archived)
             ? std::filesystem::last_write_time(
                 absolutePath,
                 fileError)
             : std::filesystem::file_time_type{};
+        // 依存先を確認する実HLSLのパス
         std::filesystem::path dependencyPath;
+        // 素材定義の解決失敗の診断
         std::string dependencyPathError;
         if (!ResolveMaterialShaderSource(
                 Assets(),
@@ -2397,11 +2617,13 @@ namespace LamaPon
         {
             dependencyPath = absolutePath;
         }
+        // 参照元HLSLと依存先の変更番号
         const auto dependencyRevision =
             ShaderSourceDependencyRevision(
                 Assets(),
                 dependencyPath,
                 entry->keywords);
+        // 再読み込みが必要か
         const bool changed = !entry->observed
             || entry->forceReload
             || entry->sourceExists != sourceExists
@@ -2429,6 +2651,7 @@ namespace LamaPon
             {
                 try
                 {
+                    // 生成成功後に公開する新しい効果
                     auto candidate = std::make_unique<LitEffect>(
                         Device(),
                         Context(),
@@ -2448,8 +2671,7 @@ namespace LamaPon
                         absolutePath,
                         exception.what(),
                         ShaderUsage::Material);
-                    // 通常マテリアルと同じく、失敗したら直前の
-                    // シェーダーは残しません。
+                    // 再コンパイル失敗時は旧効果を外します。
                     entry->effect.reset();
                 }
             }
@@ -2468,8 +2690,8 @@ namespace LamaPon
     {
         generation = 0;
         error.clear();
-        // glTF／FBXでMaterial上書きが無いときは、定数はモデル自身の材質、
-        // Shaderとkeywordはコンポーネントの材質から読みます。
+        // 素材定数とシェーダー指定元を分けられ、指定元がなければ同じ素材を使います。
+        // シェーダーとキーワードの指定元
         const auto* const shaderMaterial = material.shaderMaterial != nullptr
             ? material.shaderMaterial
             : material.material;
@@ -2481,6 +2703,7 @@ namespace LamaPon
         {
             return false;
         }
+        // 借用するD3D12素材サービス
         auto* const services = TryD3D12MaterialShaderServices(
             m_state->m_apiResources.get());
         if (services == nullptr)
@@ -2488,23 +2711,27 @@ namespace LamaPon
             return false;
         }
 
+        // キーワード正規化済みの素材指定
         const auto shader = MakeMaterialShaderSource(
             *this,
             shaderMaterial->Shader(),
             shaderMaterial->ShaderKeywords());
-        // D3D11のShaderErrorPlaceholderと同じく、プロジェクトに代替
-        // Shaderが無いときはエンジン同梱版を使います。
+        // プロジェクトに代替表示のHLSLがなければエンジン同梱版を使います。
+        // 代替表示の標準アセットパス
         constexpr const char* placeholderRelativePath =
             "shaders/LamaPonShaderError.hlsl";
+        // 代替表示に使うHLSLの実パス
         auto placeholderPath = Assets().ResolvePath(placeholderRelativePath);
         if (!Assets().FileExists(placeholderPath))
         {
             placeholderPath =
                 ExecutableDirectory() / "assets" / placeholderRelativePath;
         }
+        // 代替表示のソース指定
         Detail::MaterialShaderSource placeholder;
         placeholder.path = placeholderPath.lexically_normal();
         placeholder.cacheKey = placeholder.path;
+        // 描画成否と代替表示・診断
         const auto result = services->DrawMaterialShader(
             Assets(),
             shader,
@@ -2514,12 +2741,11 @@ namespace LamaPon
             material,
             Lighting());
         generation = result.generation;
-        // 通常の描画に問題が無くても、輪郭／遮蔽表示だけを止めたときは
-        // その説明を出します。
+        // 通常パスが正常でも追加パスの失敗診断を返します。
         error = result.error.empty() ? result.passError : result.error;
         if (result.drawn && result.placeholder)
         {
-            // 代替表示を使った回数をFrameStatisticsへ記録します。
+
             ++m_state->m_frameStatistics.shaderFallbackDraws;
         }
         return result.drawn;
@@ -2537,6 +2763,7 @@ namespace LamaPon
         {
             return false;
         }
+        // 借用するD3D12素材サービス
         auto* const services = TryD3D12MaterialShaderServices(
             m_state->m_apiResources.get());
         return services != nullptr
@@ -2557,6 +2784,7 @@ namespace LamaPon
         {
             return {};
         }
+        // 借用するD3D12素材サービス
         auto* const services = TryD3D12MaterialShaderServices(
             m_state->m_apiResources.get());
         return services != nullptr
@@ -2573,14 +2801,15 @@ namespace LamaPon
         {
             return;
         }
+        // 無効化する元素材の絶対パス
         const auto absolutePath =
             Assets().ResolvePath(shaderPath).lexically_normal();
-        // 宣言そのものも読み直します（multi_compileの行を
-        // 足し引きしたときに追従するため）。
+        // キーワード宣言のキャッシュも外し、次の取得で再読み込みします。
         m_state->m_shaderVariants.erase(absolutePath);
         if (ActiveRenderingApi()
             == RenderingApi::DirectX12Experimental)
         {
+            // 借用するD3D12素材サービス
             if (auto* const services = TryD3D12MaterialShaderServices(
                     m_state->m_apiResources.get()))
             {
@@ -2588,16 +2817,19 @@ namespace LamaPon
             }
             return;
         }
+        // 借用するD3D11のAPI資源
         auto* const resources = TryD3D11ApiResources();
         if (resources == nullptr)
         {
             return;
         }
-        // バリアントごとに別エントリーなので、そのHLSLから作られた
-        // ものを全部立て直します（キーは「パス?キーワード」）。
+        // 完全一致と「パス?」で始まる通常・骨変形の全バリアントを再読み込み対象にします。
+        // バリアント識別キーの素材パス
         const auto prefix = absolutePath.wstring();
+        // key: バリアント識別キー、value: 無効化するコードと状態
         for (auto& [key, value] : resources->materialShaders)
         {
+            // キーワードを含むキャッシュキー
             const auto text = key.wstring();
             if (text == prefix
                 || (text.rfind(prefix, 0) == 0
@@ -2607,8 +2839,10 @@ namespace LamaPon
                 value->forceReload = true;
             }
         }
+        // key: バリアント識別キー、value: 無効化するコードと状態
         for (auto& [key, value] : resources->skinnedMaterialShaders)
         {
+            // キーワードを含むキャッシュキー
             const auto text = key.wstring();
             if (text == prefix
                 || (text.rfind(prefix, 0) == 0
@@ -2627,6 +2861,7 @@ namespace LamaPon
         std::uint64_t* const shaderGeneration,
         std::string* const shaderError)
     {
+        // 借用するD3D12素材サービス
         auto* const services = TryD3D12MaterialShaderServices(
             m_state->m_apiResources.get());
         if (services == nullptr
@@ -2635,12 +2870,14 @@ namespace LamaPon
         {
             return false;
         }
-        // D3D11のApplyCustomPixelShaderと同じく絶対パスをcache keyにし、
-        // compile失敗の説明は2DのShaderとして出します。
+        // 画素シェーダーは絶対パスで識別し、失敗は2Dシェーダー用の診断で説明します。
+        // パーティクル用画素シェーダー指定
         Detail::MaterialShaderSource shader;
         shader.path = Assets().ResolvePath(shaderPath).lexically_normal();
         shader.cacheKey = shader.path;
+        // 診断コールバックが借用する取得元
         auto* const assets = &Assets();
+        // 2Dシェーダーの診断を説明します(message: 元の診断, path: 固定するHLSLのパス)。
         shader.describeFailure =
             [assets, path = shader.path](const char* const message)
             {
@@ -2650,19 +2887,22 @@ namespace LamaPon
                     message,
                     ShaderUsage::Sprite);
             };
-        // D3D11のSpriteErrorPlaceholderと同じく、プロジェクトに代替Shaderが
-        // 無いときはエンジン同梱版を使います。
+        // プロジェクトに代替表示のHLSLがなければエンジン同梱版を使います。
+        // 代替表示の標準アセットパス
         constexpr const char* placeholderRelativePath =
             "shaders/LamaPonSpriteError.hlsl";
+        // 代替表示に使うHLSLの実パス
         auto placeholderPath = Assets().ResolvePath(placeholderRelativePath);
         if (!Assets().FileExists(placeholderPath))
         {
             placeholderPath =
                 ExecutableDirectory() / "assets" / placeholderRelativePath;
         }
+        // 代替表示のソース指定
         Detail::MaterialShaderSource placeholder;
         placeholder.path = placeholderPath.lexically_normal();
         placeholder.cacheKey = placeholder.path;
+        // 描画成否と代替表示・診断
         const auto result = services->DrawCustomParticles(
             Assets(),
             shader,
@@ -2679,7 +2919,7 @@ namespace LamaPon
         }
         if (result.drawn && result.placeholder)
         {
-            // D3D11と同じく、代替表示を使った回数を数えます。
+
             ++m_state->m_frameStatistics.shaderFallbackDraws;
         }
         return result.drawn;
@@ -2691,8 +2931,8 @@ namespace LamaPon
         if (ActiveRenderingApi()
             == RenderingApi::DirectX12Experimental)
         {
-            // D3D12のSpriteは描くたびにcompile cacheを確かめるため、
-            // ParticleSystemのcustom pixel shaderだけを作り直させます。
+            // D3D12スプライトは描画ごとにキャッシュを確認するため、粒子用の画素シェーダーだけ無効化します。
+            // 借用するD3D12素材サービス
             auto* const services = TryD3D12MaterialShaderServices(
                 m_state->m_apiResources.get());
             if (services != nullptr
@@ -2704,13 +2944,16 @@ namespace LamaPon
             }
             return;
         }
+        // 借用するD3D11のAPI資源
         auto* const resources = TryD3D11ApiResources();
         if (shaderPath.empty() || resources == nullptr)
         {
             return;
         }
+        // 正規化したシェーダー絶対パス
         const auto absolutePath =
             Assets().ResolvePath(shaderPath).lexically_normal();
+        // 画像効果キャッシュの検索結果
         const auto found = resources->spriteShaders.find(absolutePath);
         if (found != resources->spriteShaders.end())
         {

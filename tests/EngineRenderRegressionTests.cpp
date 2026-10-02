@@ -1,12 +1,5 @@
-// エンジンの実描画パス（シェーダーコンパイル、ライティング、
-// GPUインスタンシング、カスケード影、スカイ）をWARPデバイス＋
-// 非表示ウィンドウで実行し、ピクセルの性質で検証します。
-// ゴールデンイメージ比較ではなく性質検証なので、環境差や
-// ラスタライズ差に対して頑健です。
 #include "LamaPon/LamaPon.h"
 
-// レンダーテクスチャの解像度を確認するため、RenderTargetの実体が必要です
-// （LamaPon.hはGraphicsDevice経由の前方宣言しか持ちません）。
 #include "LamaPon/Assets/GltfImporter.h"
 #include "LamaPon/Graphics/ClusteredLights.h"
 #include "LamaPon/Graphics/EnvironmentCache.h"
@@ -25,7 +18,6 @@
 
 #include <Windows.h>
 #include <objbase.h>
-// Compute Shaderの出力（R16G16B16A16_FLOAT）をCPUで読み戻すため。
 #include <DirectXPackedVector.h>
 #include <nlohmann/json.hpp>
 #include <wrl/client.h>
@@ -55,6 +47,7 @@ namespace
         LamaPon::Detail::GraphicsDeviceD3D11Access;
 
     template <typename T>
+    // HasPublicDepthCopyShaderResourceView(target: 検査対象): public depth-copy view APIの有無を調べます。
     concept HasPublicDepthCopyShaderResourceView = requires(
         const T& target)
     {
@@ -62,6 +55,7 @@ namespace
     };
 
     template <typename T>
+    // HasPublicReflectionDepthPyramidMipTarget(target: 検査対象, mip: mip番号): public mip target APIの有無を調べます。
     concept HasPublicReflectionDepthPyramidMipTarget = requires(
         const T& target,
         const std::uint32_t mip)
@@ -70,6 +64,7 @@ namespace
     };
 
     template <typename T>
+    // HasPublicReflectionDepthPyramidMipView(target: 検査対象, mip: mip番号): public mip view APIの有無を調べます。
     concept HasPublicReflectionDepthPyramidMipView = requires(
         const T& target,
         const std::uint32_t mip)
@@ -78,6 +73,7 @@ namespace
     };
 
     template <typename T>
+    // HasPublicDisplayUnorderedAccessView(target: 検査対象): public display UAV APIの有無を調べます。
     concept HasPublicDisplayUnorderedAccessView = requires(
         const T& target)
     {
@@ -85,28 +81,35 @@ namespace
     };
 
     template <typename T>
+    // HasPublicDisplayTexture(target: 検査対象): public display texture APIの有無を調べます。
     concept HasPublicDisplayTexture = requires(const T& target)
     {
         target.DisplayTexture();
     };
 
+    // Width: test render targetの幅(px)。
     constexpr std::uint32_t Width = 320;
+    // Height: test render targetの高さ(px)。
     constexpr std::uint32_t Height = 180;
 
+    // Require(condition: 成否条件, message: failure説明): 条件不成立時にtestを失敗させます。
     void Require(
         const bool condition,
         const char* message)
     {
+        // conditionがfalseならfailureを送出します。
         if (!condition)
         {
             throw std::runtime_error(message);
         }
     }
 
+    // CreateSolidView(graphics: 描画API, color: RGBA値): 1pxのshader resource viewを作ります。
     [[nodiscard]] LamaPon::GraphicsViewHandle CreateSolidView(
         LamaPon::GraphicsDevice& graphics,
         const std::array<std::uint8_t, 4>& color)
     {
+        // initialData: 1px textureへ設定するRGBA texel。
         const std::array initialData{
             LamaPon::GraphicsTextureSubresourceData{
                 std::as_bytes(std::span{ color }),
@@ -114,6 +117,7 @@ namespace
                 static_cast<std::uint32_t>(color.size())
             }
         };
+        // texture: initialDataを持つimmutable 1px texture。
         const auto texture = graphics.CreateTexture2D(
             LamaPon::GraphicsTexture2DDescription{
                 1,
@@ -123,42 +127,57 @@ namespace
                 LamaPon::GraphicsTextureUpdateMode::Immutable
             },
             initialData);
+        // 作成したtextureのshader resource viewを返します。
         return graphics.CreateShaderResourceView(
             texture,
             LamaPon::GraphicsTextureViewDescription{ 0, 1 });
     }
 
     [[nodiscard]] Microsoft::WRL::ComPtr<
+        // CapturePixelShaderView(graphics: 描画API, slot: pixel shader resource slot): 現在のviewを取得します。
         ID3D11ShaderResourceView> CapturePixelShaderView(
             LamaPon::GraphicsDevice& graphics,
             const UINT slot)
     {
+        // result: pixel shader slotから取得したresource view。
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> result;
         D3D11Access::Context(graphics)->PSGetShaderResources(
             slot,
             1,
             result.ReleaseAndGetAddressOf());
+        // 取得したresource viewを返します。
         return result;
     }
 
     struct PrefilterPipelineState final
     {
+        // targets: 現在bind中のrender target views。
+        // viewports: 現在設定中のviewport群。
+        // vertexInstances: vertex shaderのclass instance群。
         std::array<
             Microsoft::WRL::ComPtr<ID3D11RenderTargetView>,
             D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT> targets;
+        // depth: 現在bind中のdepth stencil view。
         Microsoft::WRL::ComPtr<ID3D11DepthStencilView> depth;
         std::array<
             D3D11_VIEWPORT,
             D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE>
             viewports{};
+        // viewportCount: 保存するactive viewport数。
         UINT viewportCount{};
+        // depthState: 現在bind中のdepth stencil state。
         Microsoft::WRL::ComPtr<ID3D11DepthStencilState> depthState;
+        // stencilReference: 現在のstencil reference値。
         UINT stencilReference{};
+        // rasterizer: 現在bind中のrasterizer state。
         Microsoft::WRL::ComPtr<ID3D11RasterizerState> rasterizer;
+        // inputLayout: 現在bind中のinput layout。
         Microsoft::WRL::ComPtr<ID3D11InputLayout> inputLayout;
+        // topology: 現在のprimitive topology。
         D3D11_PRIMITIVE_TOPOLOGY topology{
             D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED
         };
+        // vertexShader: 現在bind中のvertex shader。
         Microsoft::WRL::ComPtr<ID3D11VertexShader> vertexShader;
         std::array<
             Microsoft::WRL::ComPtr<ID3D11ClassInstance>,
@@ -170,20 +189,26 @@ namespace
             D3D11_SHADER_MAX_INTERFACES> pixelInstances;
         UINT pixelInstanceCount{};
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> pixelResource;
+        // pixelSampler: pixel shader slot 0のsampler。
         Microsoft::WRL::ComPtr<ID3D11SamplerState> pixelSampler;
+        // pixelBuffer: pixel shader slot 3のconstant buffer。
         Microsoft::WRL::ComPtr<ID3D11Buffer> pixelBuffer;
 
+        // Capture(context: D3D11 context): draw前のpipeline stateを保存します。
         [[nodiscard]] static PrefilterPipelineState Capture(
             ID3D11DeviceContext* const context)
         {
+            // state: 復元用pipeline stateの保存領域。
             PrefilterPipelineState state;
             std::array<
                 ID3D11RenderTargetView*,
+                // rawTargets: COM ownershipをstateへ移す前のrender target群。
                 D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT> rawTargets{};
             context->OMGetRenderTargets(
                 static_cast<UINT>(rawTargets.size()),
                 rawTargets.data(),
                 state.depth.ReleaseAndGetAddressOf());
+            // index: raw target viewをstateへ順に移す位置。
             for (std::size_t index{}; index < rawTargets.size(); ++index)
             {
                 state.targets[index].Attach(rawTargets[index]);
@@ -205,6 +230,7 @@ namespace
 
             std::array<
                 ID3D11ClassInstance*,
+                // rawVertexInstances: ownership移行前のvertex shader class instance群。
                 D3D11_SHADER_MAX_INTERFACES> rawVertexInstances{};
             state.vertexInstanceCount = static_cast<UINT>(
                 rawVertexInstances.size());
@@ -212,6 +238,7 @@ namespace
                 state.vertexShader.ReleaseAndGetAddressOf(),
                 rawVertexInstances.data(),
                 &state.vertexInstanceCount);
+            // index: vertex shader class instanceの移行位置。
             for (UINT index{}; index < state.vertexInstanceCount; ++index)
             {
                 state.vertexInstances[index].Attach(
@@ -220,6 +247,7 @@ namespace
 
             std::array<
                 ID3D11ClassInstance*,
+                // rawPixelInstances: ownership移行前のpixel shader class instance群。
                 D3D11_SHADER_MAX_INTERFACES> rawPixelInstances{};
             state.pixelInstanceCount = static_cast<UINT>(
                 rawPixelInstances.size());
@@ -227,6 +255,7 @@ namespace
                 state.pixelShader.ReleaseAndGetAddressOf(),
                 rawPixelInstances.data(),
                 &state.pixelInstanceCount);
+            // index: pixel shader class instanceの移行位置。
             for (UINT index{}; index < state.pixelInstanceCount; ++index)
             {
                 state.pixelInstances[index].Attach(
@@ -506,10 +535,9 @@ namespace
         return total;
     }
 
-    // 指定領域の「鋭さ」。隣どうしの差の2乗の平均です。
-    //
-    // 単調な段差では絶対差の総和がぼかし後も変わらないため、
-    // ぼかし幅に応じて減少する差の2乗を使います。
+    // 指定領域の「鋭さ」。
+    // 隣どうしの差の2乗の平均です。
+    // 単調な段差では絶対差の総和がぼかし後も変わらないため、ぼかし幅に応じて減少する差の2乗を使います。
     [[nodiscard]] double RegionSharpness(
         const std::vector<std::uint8_t>& pixels,
         const std::uint32_t minimumX,
@@ -629,8 +657,7 @@ int main(const int argumentCount, char** arguments)
             CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         static_cast<void>(comResult);
 
-        // 利用者の%LOCALAPPDATA%と過去の結果を避けるため、
-        // プローブのベイク結果は専用ディレクトリへ保存します。
+        // 利用者の%LOCALAPPDATA%と過去の結果を避けるため、プローブのベイク結果は専用ディレクトリへ保存します。
         LamaPon::EnvironmentCache::SetCacheDirectoryOverride(
             std::filesystem::current_path()
             / "test-output"
@@ -644,9 +671,8 @@ int main(const int argumentCount, char** arguments)
             preferWarp);
         LamaPon::GraphicsDevice::SetEnableDebugLayer(
             debugLayer);
-        // このexeが立てたフラグが、LamaPonRuntime.dllの中まで
-        // 届いていること。ヘッダーでinline staticにするとEXE側とDLL側で
-        // 別々の実体になり、--warpと--d3ddebugが機能しません。
+        // このexeが立てたフラグが、LamaPonRuntime.dllの中まで届いていること。
+        // ヘッダーでinline staticにするとEXE側とDLL側で別々の実体になり、--warpと--d3ddebugが機能しません。
         Require(
             LamaPon::GraphicsDevice::IsDebugLayerEnabled()
                 == debugLayer,
@@ -654,8 +680,8 @@ int main(const int argumentCount, char** arguments)
             " runtime DLL.");
         if (debugLayer)
         {
-            // Loggerはファイルを指定しないと画面にも出ません
-            // （メモリへ溜めるだけ）。行き先を作ってから知らせます。
+            // Loggerはファイルを指定しないと画面にも出ません（メモリへ溜めるだけ）。
+            // 行き先を作ってから知らせます。
             const auto logPath =
                 (g_dumpDirectory.empty()
                     ? std::filesystem::current_path()
@@ -671,9 +697,8 @@ int main(const int argumentCount, char** arguments)
         }
         LamaPon::GraphicsDevice graphics;
         Stage("initialize");
-        // この回帰テストはD3D11固有の公開互換入口も検証するため、
-        // D3D11を明示して起動します。D3D12は専用の画素比較suiteで
-        // 同じユーザー向け描画経路を検証します。
+        // この回帰テストはD3D11固有の公開互換入口も検証するため、D3D11を明示して起動します。
+        // D3D12は専用の画素比較suiteで同じユーザー向け描画経路を検証します。
         graphics.Initialize(
             window,
             Width,
@@ -1148,8 +1173,7 @@ int main(const int argumentCount, char** arguments)
             reinterpret_cast<LegacyRenderTargetDisplayTextureAccessor>(
                 legacyRenderTargetDisplayTextureAddress);
 
-        // API 66のinline destructorが安全に空の旧layoutを破棄できるよう、
-        // loader互換constructorは旧storage全体を初期化します。
+        // API 66のinline destructorが安全に空の旧layoutを破棄できるよう、loader互換constructorは旧storage全体を初期化します。
         constexpr auto LegacyClusteredLightsSize =
             10u * sizeof(void*)
             + 3u * sizeof(LamaPon::GraphicsViewHandle);
@@ -1445,9 +1469,8 @@ int main(const int argumentCount, char** arguments)
         graphics.Assets().SetAssetRoot(
             LAMAPON_TEST_ASSET_DIR);
 
-        // runtimeのAssetManagerを通ったglTF/FBX primitiveは、従来の
-        // DirectXTK11 viewと同じ内容をBackend世代付きhandleでも
-        // 保持します。Importer単体のraw互換経路とはここで区別します。
+        // runtimeのAssetManagerを通ったglTF/FBX primitiveは、従来のDirectXTK11 viewと同じ内容をBackend世代付きhandleでも保持します。
+        // Importer単体のraw互換経路とはここで区別します。
         Stage("skeletal-neutral-textures");
         const auto skeletalAsset = graphics.Assets().LoadModel(
             std::filesystem::path{ "models" }
@@ -1511,8 +1534,7 @@ int main(const int argumentCount, char** arguments)
             foundSkeletalTexture,
             "The skeletal neutral-texture fixture has no texture to test");
 
-        // Meshが使うneutral Lit texture requestの全slot対応と、Effectを
-        // 再利用したときのclear、別Backend世代の拒否を直接固定します。
+        // Meshが使うneutral Lit texture requestの全slot対応と、Effectを再利用したときのclear、別Backend世代の拒否を直接固定します。
         Stage("lit-texture-request");
         std::array<LamaPon::GraphicsViewHandle, 10> litViews;
         for (std::size_t index{}; index < litViews.size(); ++index)
@@ -1572,8 +1594,7 @@ int main(const int argumentCount, char** arguments)
             disabledAmbientOcclusionView != nullptr,
             "Disabled SSAO did not bind the Lit white fallback");
 
-        // 3種類の影mapはShadowMapがneutral handleを所有し、Lit bridgeが
-        // array/cube形状とメタデータをまとめて検証します。
+        // 3種類の影mapはShadowMapがneutral handleを所有し、Lit bridgeがarray/cube形状とメタデータをまとめて検証します。
         Stage("lit-neutral-shadow-lighting");
         const auto directionalShadowView =
             graphics.Shadows().ViewHandle();
@@ -1692,8 +1713,7 @@ int main(const int argumentCount, char** arguments)
                 shadowLighting),
             "The neutral shadow baseline could not be restored");
 
-        // 共通Sky IBLはsourceと畳み込み済みpairをneutral handleで運び、
-        // 同じsource/keyではhandle wrapperも再利用します。
+        // 共通Sky IBLはsourceと畳み込み済みpairをneutral handleで運び、同じsource/keyではhandle wrapperも再利用します。
         Stage("neutral-sky-ibl");
         Require(
             graphics.IsSampleableCubeView(pointShadowView)
@@ -2018,8 +2038,7 @@ int main(const int argumentCount, char** arguments)
                 environmentLighting),
             "The neutral environment baseline could not be restored");
 
-        // Reflection Probeもprimary/secondaryの4本をneutral handleで
-        // 運び、全pairを検証した後だけオブジェクト単位のIBLへ差し替えます。
+        // Reflection Probeもprimary/secondaryの4本をneutral handleで運び、全pairを検証した後だけオブジェクト単位のIBLへ差し替えます。
         Stage("lit-neutral-reflection-probe");
         Require(
             graphics.IsGraphicsViewCurrent(
@@ -2140,8 +2159,7 @@ int main(const int argumentCount, char** arguments)
                 environmentLighting),
             "The Sky IBL baseline could not be restored after Probe tests");
 
-        // ボリューメトリック光のmain depthとcascade shadowもhandleで
-        // 運び、検証に失敗した場合はping-pong先へ切り替えません。
+        // ボリューメトリック光のmain depthとcascade shadowもhandleで運び、検証に失敗した場合はping-pong先へ切り替えません。
         Stage("volumetric-neutral-depth-and-shadow");
         LamaPon::RenderTarget volumetricTarget;
         graphics.ResizeOffscreenTarget(
@@ -2218,9 +2236,7 @@ int main(const int argumentCount, char** arguments)
             "Two post-process swaps did not restore the original current "
             "color identity while preserving the display view");
 
-        // TAAの履歴と深度もRenderTargetがneutral handleで所有し、
-        // D3D11描画島が同じBackend世代・期待形式・画面寸法をまとめて
-        // 検証した後にだけ解決します。
+        // TAAの履歴と深度もRenderTargetがneutral handleで所有し、D3D11描画島が同じBackend世代・期待形式・画面寸法をまとめて検証した後にだけ解決します。
         Stage("temporal-neutral-history-and-depth");
         LamaPon::RenderTarget temporalTarget;
         graphics.ResizeOffscreenTarget(
@@ -2368,8 +2384,7 @@ int main(const int argumentCount, char** arguments)
                 invalidTemporalDepth),
             "The TAA renderer accepted a color view as depth");
 
-        // SSAOとSSRもRenderTargetがneutral handleを所有し、Effectへ
-        // 反映する直前に3本まとめて同じBackend世代へ解決します。
+        // SSAOとSSRもRenderTargetがneutral handleを所有し、Effectへ反映する直前に3本まとめて同じBackend世代へ解決します。
         Stage("lit-neutral-screen-space-lighting");
         LamaPon::RenderTarget screenLightingTarget;
         graphics.ResizeOffscreenTarget(
@@ -2510,8 +2525,7 @@ int main(const int argumentCount, char** arguments)
                 screenLighting),
             "The neutral screen-space baseline could not be restored");
 
-        // Forward+の3本のStructuredBufferもLightingStateがneutral
-        // handleで強所有し、Effect反映前にall-or-noneで解決します。
+        // Forward+の3本のStructuredBufferもLightingStateがneutral handleで強所有し、Effect反映前にall-or-noneで解決します。
         Stage("lit-neutral-clustered-lighting");
         LamaPon::LightingState clusteredLighting;
         clusteredLighting.clusteredLights.emplace_back();
@@ -2639,8 +2653,7 @@ int main(const int argumentCount, char** arguments)
                 clusteredLighting),
             "The neutral clustered-lighting baseline could not be restored");
 
-        // Baked GIはLightingStateでも3枚のneutral handleを強所有し、
-        // D3D11への解決はEffect反映直前にtransactionalに行います。
+        // Baked GIはLightingStateでも3枚のneutral handleを強所有し、D3D11への解決はEffect反映直前にtransactionalに行います。
         Stage("lit-neutral-baked-gi");
         const std::array<std::uint16_t, 12> bakedGiCoefficients{
             0x0000u, 0x0001u, 0x0002u, 0x0003u,
@@ -2761,8 +2774,7 @@ int main(const int argumentCount, char** arguments)
                 "An empty neutral Lit slot retained a previous texture");
         }
 
-        // 失敗時にEffectが部分更新されないことを、valid requestを
-        // baselineへ戻してからforeign handleで確認します。
+        // 失敗時にEffectが部分更新されないことを、valid requestをbaselineへ戻してからforeign handleで確認します。
         Require(
             graphics.TrySetLitEffectTextures(
                 litEffect,
@@ -2785,8 +2797,7 @@ int main(const int argumentCount, char** arguments)
             };
             foreignBackend.Initialize(foreignBackendCreateInfo);
 
-            // ClusteredLightsはdefault facadeを安全な未設定として扱い、
-            // native資源と3本のviewは完成後にだけ一括公開します。
+            // ClusteredLightsはdefault facadeを安全な未設定として扱い、native資源と3本のviewは完成後にだけ一括公開します。
             Stage("clustered-lights-backend-state");
             const auto clusteredResultIsClear =
                 [](const LamaPon::LightingState& state)
@@ -2904,8 +2915,8 @@ int main(const int argumentCount, char** arguments)
                 "A failed ClusteredLights replacement changed the last "
                 "complete state");
 
-            // 別Backendのstateはnative contextへ渡さず、出力だけを安全な
-            // fallbackへ戻します。旧Clusters symbolも実際に転送確認します。
+            // 別Backendのstateはnative contextへ渡さず、出力だけを安全なfallbackへ戻します。
+            // 旧Clusters symbolも実際に転送確認します。
             auto* const primaryClusteredLights =
                 legacyClustersAccessor(&graphics);
             Require(
@@ -2932,8 +2943,7 @@ int main(const int argumentCount, char** arguments)
                 "or changed its owner");
 
             // ShadowMapのnative stateは完成した単位でのみ差し替えます。
-            // 初回作成と置換のどちらが失敗しても、部分的なstateを
-            // 公開せず、Begin中の旧stateは元の描画先へ戻せます。
+            // 初回作成と置換のどちらが失敗しても、部分的なstateを公開せず、Begin中の旧stateは元の描画先へ戻せます。
             const auto verifyShadowMapTransactionalState = [&]
             {
                 Stage("shadow-map-transactional-state");
@@ -3053,13 +3063,11 @@ int main(const int argumentCount, char** arguments)
                         transactionalOutput.Matches(foreignBackend.Context()),
                     "A failed active ShadowMap replacement changed its state "
                     "or lost the saved output");
-                // 後段で同じHWNDのswap chainを再作成するため、back bufferを
-                // 強参照するsnapshotは検証直後に解放します。
+                // 後段で同じHWNDのswap chainを再作成するため、back bufferを強参照するsnapshotは検証直後に解放します。
                 transactionalOutput = {};
 
-                // 別Backendが描画中のstateは、そのBackendのcontextでEndする
-                // 必要があります。所有していないcontextへsaved viewを渡さず、
-                // 元stateを保持したまま明示的に拒否します。
+                // 別Backendが描画中のstateは、そのBackendのcontextでEndする必要があります。
+                // 所有していないcontextへsaved viewを渡さず、元stateを保持したまま明示的に拒否します。
                 auto& primaryActiveShadowMap = graphics.Shadows();
                 const auto primaryActiveShadowView =
                     primaryActiveShadowMap.ViewHandle();
@@ -3230,8 +3238,8 @@ int main(const int argumentCount, char** arguments)
                 "The screen-space lighting baseline could not be restored");
             litEffect.Apply(D3D11Access::Context(graphics));
 
-            // Resizeだけが別Backendのtargetを引き取れる境界です。それ以外の
-            // 操作はforeign native資源をcontextへ渡す前に全て拒否します。
+            // Resizeだけが別Backendのtargetを引き取れる境界です。
+            // それ以外の操作はforeign native資源をcontextへ渡す前に全て拒否します。
             const auto ownedTargetCurrent =
                 screenLightingTarget.CurrentColorViewHandle();
             const auto ownedTargetDisplay =
@@ -3692,8 +3700,7 @@ int main(const int argumentCount, char** arguments)
                 "The clustered-lighting baseline could not be restored");
             litEffect.Apply(D3D11Access::Context(graphics));
 
-            // LightingStateのproducerをneutral handleへ移す前提として、
-            // Texture2D以外の既存D3D11 SRVも同じ世代・所有契約へ載せます。
+            // LightingStateのproducerをneutral handleへ移す前提として、Texture2D以外の既存D3D11 SRVも同じ世代・所有契約へ載せます。
             Stage("d3d11-generic-view-import");
             constexpr std::array structuredValues{
                 DirectX::XMFLOAT4{ 1.0f, 2.0f, 3.0f, 4.0f },
@@ -3915,14 +3922,12 @@ int main(const int argumentCount, char** arguments)
                 unsupportedRejected,
                 "An unsupported Texture1D SRV was imported");
 
-            // 再初期化後もhandleの破棄は安全ですが、古い世代のnative
-            // viewとして解決・再取り込みすることはできません。
+            // 再初期化後もhandleの破棄は安全ですが、古い世代のnative viewとして解決・再取り込みすることはできません。
             Microsoft::WRL::ComPtr<ID3D11Device> importedViewDevice =
                 foreignBackend.Device();
             foreignBackend.Initialize(foreignBackendCreateInfo);
 
-            // 同じBackend instanceを再初期化しても旧世代のcluster stateは
-            // native contextへ渡さず、明示的な再初期化後に回復します。
+            // 同じBackend instanceを再初期化しても旧世代のcluster stateはnative contextへ渡さず、明示的な再初期化後に回復します。
             auto staleClusteredLighting = clusteredLighting;
             foreignBackend.UpdateClusteredLights(
                 transactionalClusteredLights,
@@ -4009,8 +4014,7 @@ int main(const int argumentCount, char** arguments)
 
             verifyShadowMapTransactionalState();
 
-            // ParticleSystemから分離した共通serviceがneutral handleだけで
-            // D3D11へ描画し、従来と同じ主要stateへ戻すことを固定します。
+            // ParticleSystemから分離した共通serviceがneutral handleだけでD3D11へ描画し、従来と同じ主要stateへ戻すことを固定します。
             Stage("particle-render-service");
             auto particleService =
                 LamaPon::Detail::CreateD3D11GraphicsRenderServices(
@@ -4125,8 +4129,8 @@ int main(const int argumentCount, char** arguments)
                     && !restoredRasterizerDescription.FrontCounterClockwise,
                 "Particle rendering did not restore counter-clockwise culling");
 
-            // custom shaderが有効な経路ではt0/t1を使い、終了後に両方を
-            // 外します。callback自身はこのテストでは既定PSを維持します。
+            // custom shaderが有効な経路ではt0/t1を使い、終了後に両方を外します。
+            // callback自身はこのテストでは既定PSを維持します。
             particleRequest.texture = particleTextureView;
             particleRequest.auxiliaryTexture = particleTextureView;
             particleRequest.additive = true;
@@ -4190,10 +4194,8 @@ int main(const int argumentCount, char** arguments)
         retainedBackendLifetimeTarget.reset();
         DestroyWindow(foreignWindow);
 
-        // AssetManager::LoadModelを経由せず公開Importerを直接使う旧経路も、
-        // 初回の中立Drawでraw viewをBackend handleへ同期します。外部
-        // materialのempty albedo/normalは内蔵を継承し、empty PBRはclear
-        // されるmerge規則まで実際のDraw後のslotで固定します。
+        // AssetManager::LoadModelを経由せず公開Importerを直接使う旧経路も、初回の中立Drawでraw viewをBackend handleへ同期します。
+        // 外部materialのempty albedo/normalは内蔵を継承し、empty PBRはclearされるmerge規則まで実際のDraw後のslotで固定します。
         Stage("skeletal-direct-import-compatibility");
         const auto directSkeletal = LamaPon::GltfImporter::Load(
             D3D11Access::Device(graphics),
@@ -4319,8 +4321,7 @@ int main(const int argumentCount, char** arguments)
                 && graphics.MemoryStats().systemPhysicalTotalBytes > 0,
             "runtime RAM statistics must be available");
 
-        // 共通DebugRendererが生成した線分を、実効D3D11 Backendの
-        // sinkがバックバッファへ送れることをWARPの実画素で確認します。
+        // 共通DebugRendererが生成した線分を、実効D3D11 Backendのsinkがバックバッファへ送れることをWARPの実画素で確認します。
         Stage("debug-drawing-backend");
         constexpr float debugClear[4]{ 0.0f, 0.0f, 0.0f, 1.0f };
         constexpr std::array debugLine{
@@ -4372,8 +4373,7 @@ int main(const int argumentCount, char** arguments)
                 && redLinePixels > Width / 4u,
             "Debug drawing backend must rasterize the submitted line");
 
-        // 2フレーム目のblocking captureが前フレームのGPU完了を待つため、
-        // そのEndFrameでring bufferからquery結果を決定的に回収できます。
+        // 2フレーム目のblocking captureが前フレームのGPU完了を待つため、そのEndFrameでring bufferからquery結果を決定的に回収できます。
         graphics.BeginFrame(debugClear);
         drawProfiledDebugLine();
         std::uint32_t profilerProbeWidth{};
@@ -4437,10 +4437,8 @@ int main(const int argumentCount, char** arguments)
                 && !graphics.Lighting().pointShadow.enabled
                 && !graphics.Lighting().pointShadow.texture,
             "Shadow recreation retained old neutral handles or lighting state");
-        // このテストは1段につき1フレームしか描かないので、非同期
-        // コンパイルを入れたままだと「まだ焼けていないので標準Lit」
-        // の絵を撮ってしまいます。オフラインの決め打ち描画では
-        // 同期にします。
+        // このテストは1段につき1フレームしか描かないので、非同期コンパイルを入れたままだと「まだ焼けていないので標準Lit」の絵を撮ってしまいます。
+        // オフラインの決め打ち描画では同期にします。
         // 非同期そのものは下の専用の段で確かめます。
         graphics.SetAsyncShaderCompilationEnabled(false);
 
@@ -4504,8 +4502,8 @@ int main(const int argumentCount, char** arguments)
             return pixels;
         };
 
-        // Component側はAPI固有資源を持たず、CPUで生成したquadを共有service
-        // へ渡します。Scene統合経路でも中央に緑のparticleが描けること。
+        // Component側はAPI固有資源を持たず、CPUで生成したquadを共有serviceへ渡します。
+        // Scene統合経路でも中央に緑のparticleが描けること。
         subject.SetEnabled(false);
         auto& particleObject =
             scene.CreateGameObject("ParticleServiceProbe");
@@ -4643,8 +4641,7 @@ int main(const int argumentCount, char** arguments)
                     .meshInstancedRendererCount == 2u,
             "Matching Mesh materials must share one instance batch.");
 
-        // 代表Meshのmaterialが全instanceへ適用されるため、Lit requestの
-        // 非instance値が違う2体は個別描画へ戻さなければなりません。
+        // 代表Meshのmaterialが全instanceへ適用されるため、Lit requestの非instance値が違う2体は個別描画へ戻さなければなりません。
         cloneRenderer.SetOcclusionStrength(0.25f);
         Stage("frame-instance-material-split");
         const auto splitMaterialFrame = renderFrame();
@@ -4671,8 +4668,8 @@ int main(const int argumentCount, char** arguments)
             "Splitting a material batch must keep both Meshes visible.");
         cloneRenderer.SetOcclusionStrength(1.0f);
 
-        // leaderが共有する値はbatch keyへすべて含めます。含め忘れると
-        // 片方のcustom vector/textureがもう片方にも使われます。
+        // leaderが共有する値はbatch keyへすべて含めます。
+        // 含め忘れると片方のcustom vector/textureがもう片方にも使われます。
         Require(
             subjectRenderer.InstanceBatchKey()
                     == cloneRenderer.InstanceBatchKey(),
@@ -4715,9 +4712,8 @@ int main(const int argumentCount, char** arguments)
                     .meshInstancedRendererCount == 2,
             "Restored mesh materials must rejoin one instance batch.");
 
-        // インスタンシングはGameObject::Render3Dを迂回するため、
-        // 無効オブジェクトをバッチへ混ぜると通常経路と違って描画
-        // されてしまいます。無効化した右側だけが消えることを固定します。
+        // インスタンシングはGameObject::Render3Dを迂回するため、無効オブジェクトをバッチへ混ぜると通常経路と違って描画されてしまいます。
+        // 無効化した右側だけが消えることを固定します。
         clone.SetEnabled(false);
         Stage("frame-instanced-disabled-object");
         const auto disabledInstanceFrame = renderFrame();
@@ -4803,9 +4799,8 @@ int main(const int argumentCount, char** arguments)
             "Sky gradient must replace the clear color.");
 
         // (6) Light2D：組み込みシェーダー（LamaPonSpriteLit.hlsl）が
-        // 実際にコンパイルでき、加算式ライティングとして機能することを
-        // 確認します。暗めのグレーを土台にすることで、白飽和で
-        // チャンネル差が消えないようにしています。
+        // 実際にコンパイルでき、加算式ライティングとして機能することを確認します。
+        // 暗めのグレーを土台にすることで、白飽和でチャンネル差が消えないようにしています。
         constexpr std::uint32_t LitSpriteSampleX = 260;
         constexpr std::uint32_t LitSpriteSampleY = 150;
         auto& litSpriteObject =
@@ -4895,8 +4890,7 @@ int main(const int argumentCount, char** arguments)
                 " affecting its red channel.");
 
         // (6)-2 Light2DがTilemap全体へ届くこと。広いTilemapでは、
-        // オブジェクトの原点ではなく画面上の画素ごとに灯りを評価する
-        // 必要があります。
+        // オブジェクトの原点ではなく画面上の画素ごとに灯りを評価する必要があります。
         constexpr std::uint32_t TilemapSampleX = 90;
         constexpr std::uint32_t TilemapSampleY = 90;
         auto& tilemapObject =
@@ -4963,8 +4957,8 @@ int main(const int argumentCount, char** arguments)
                 " tint a Tilemap, not only Sprite Renderers.");
 
         // (6)-3 UIは既定では照らさず、「UIも照らす」を入れたときだけ
-        // 照らすこと。特定の画素ではなく「変わった画素の数」で見ます
-        // （UIの矩形はアンカー解決で決まるため、特定座標には依存しません）。
+        // 照らすこと。
+        // 特定の画素ではなく「変わった画素の数」で見ます（UIの矩形はアンカー解決で決まるため、特定座標には依存しません）。
         auto& uiSpriteObject =
             scene.CreateGameObject("LitUISprite");
         uiSpriteObject.AddComponent<
@@ -5010,8 +5004,7 @@ int main(const int argumentCount, char** arguments)
         std::cout
             << "ui light2d changed pixels: "
             << changedPixels << std::endl;
-        // 40x40画素のUIに対して、中心から減衰する光が十分な範囲へ
-        // 届いたことを確認するため400画素を下限にします。
+        // 40x40画素のUIに対して、中心から減衰する光が十分な範囲へ届いたことを確認するため400画素を下限にします。
         Require(
             changedPixels > 400,
             "Turning on a Light2D's AffectsUI must light the"
@@ -5026,10 +5019,8 @@ int main(const int argumentCount, char** arguments)
             scene.DestroyGameObject(tilemapObject));
 
         // (7) Sprite Mask：組み込みシェーダー（LamaPonSpriteMask.hlsl）が
-        // 実際にコンパイルでき、円マスクの内側／外側で正しくクリップ
-        // されることを確認します。マスク円の中心は必ず可視、円から
-        // 十分離れた（しかしスプライト矩形内の）点は必ず不可視という、
-        // 形状に依存しない判定にしています。
+        // 実際にコンパイルでき、円マスクの内側／外側で正しくクリップされることを確認します。
+        // マスク円の中心は必ず可視、円から十分離れた（しかしスプライト矩形内の）点は必ず不可視という、形状に依存しない判定にしています。
         constexpr std::uint32_t MaskInsideX = 70;
         constexpr std::uint32_t MaskInsideY = 70;
         constexpr std::uint32_t MaskOutsideX = 110;
@@ -5092,9 +5083,9 @@ int main(const int argumentCount, char** arguments)
                 " sprite's own color (VisibleInsideMask"
                 " should clip it away).");
 
-        // 2Dの壊れたShader。3Dと同じくマゼンタで知らせます。
-        // マスクを外した素の矩形で見ます（マスクが効いたままだと
-        // 「クリップされた」のか「色が出ていない」のか分かりません）。
+        // 2Dの壊れたShader。
+        // 3Dと同じくマゼンタで知らせます。
+        // マスクを外した素の矩形で見ます（マスクが効いたままだと「クリップされた」のか「色が出ていない」のか分かりません）。
         {
             maskedSprite.SetMaskInteraction(
                 LamaPon::SpriteMaskInteraction::None);
@@ -5195,8 +5186,8 @@ int main(const int argumentCount, char** arguments)
                 " own color with VisibleOutsideMask.");
 
         // (8) レンダーテクスチャ：サブカメラの絵をSpriteで画面へ出す。
-        // 何も無い方向を向かせるので、テクスチャは背景色一色に
-        // なります。左上に貼ったSpriteがその色になれば成功です。
+        // 何も無い方向を向かせるので、テクスチャは背景色一色になります。
+        // 左上に貼ったSpriteがその色になれば成功です。
         constexpr std::uint32_t RenderTextureSize = 128;
         constexpr float SpriteSize = 64.0f;
         auto& subCameraObject =
@@ -5330,16 +5321,10 @@ int main(const int argumentCount, char** arguments)
                     == minimapCurrentViewHandle,
             "A same-size acquire after a failed resize must keep the last "
             "complete backend state.");
-        // レンダーテクスチャにもスカイとシーンのカラーグレーディング
-        // （トーンマップ・ビネット）がかかるため、サブカメラの
-        // クリア色がそのままピクセルへ出てくるわけではありません。
-        // 一方でこの直後のアサーションはメインビューにスカイが
-        // 出ていることを要求しており、同じフレームなのでスカイを
-        // 切って厳密な色にすることもできません。
-        // そこで「Spriteの位置に背景と明確に違う絵が出ていて、
-        // かつ緑優勢である（サブカメラの緑いクリア色／スカイ上部の
-        // 緑）」ことで、レンダーテクスチャが表示されていることを
-        // 確認します。後処理の係数に依存しません。
+        // レンダーテクスチャにもスカイとシーンのカラーグレーディング（トーンマップ・ビネット）がかかるため、サブカメラのクリア色がそのままピクセルへ出てくるわけではありません。
+        // 一方でこの直後のアサーションはメインビューにスカイが出ていることを要求しており、同じフレームなのでスカイを切って厳密な色にすることもできません。
+        // そこで「Spriteの位置に背景と明確に違う絵が出ていて、かつ緑優勢である（サブカメラの緑いクリア色／スカイ上部の緑）」ことで、レンダーテクスチャが表示されていることを確認します。
+        // 後処理の係数に依存しません。
         Require(
             RegionHasForeground(
                 renderTextureFrame,
@@ -5355,8 +5340,8 @@ int main(const int argumentCount, char** arguments)
             minimapPixel.green > minimapPixel.red
                 && minimapPixel.green > minimapPixel.blue,
             "The sprite must display the render texture contents.");
-        // 描画先の復元漏れがあると、メインカメラの絵がテクスチャ側へ
-        // 流れて画面が変わってしまいます。空の帯で確認します。
+        // 描画先の復元漏れがあると、メインカメラの絵がテクスチャ側へ流れて画面が変わってしまいます。
+        // 空の帯で確認します。
         Require(
             !NearColor(
                 At(
@@ -5414,6 +5399,43 @@ int main(const int argumentCount, char** arguments)
                     == resizedMinimapRawView,
             "A retained display handle must remain safe after registry release.");
 
+        // 登録解除したminimapがゲーム描画で再生成され、Spriteに表示されることを検証します。
+        Stage("frame-render-texture-game-frame");
+        graphics.BeginFrame(clearColor);
+        scene.RenderGameFrame(clearColor);
+        // ゲーム画像の幅
+        std::uint32_t gameFrameWidth{};
+        // ゲーム画像の高さ
+        std::uint32_t gameFrameHeight{};
+        // ゲーム描画のRGBA画像
+        const auto gameFrame = graphics.CaptureBackBuffer(
+            gameFrameWidth,
+            gameFrameHeight);
+        graphics.EndFrame();
+        DumpFrame("render-texture-game-frame", gameFrame);
+        // 再生成された描画先
+        const auto* const gameFrameMinimap =
+            graphics.FindRenderTexture("minimap");
+        Require(
+            gameFrameWidth == Width
+                && gameFrameHeight == Height
+                && gameFrameMinimap != nullptr
+                && gameFrameMinimap->IsValid(),
+            "The game frame path must render cameras that target a "
+            "render texture.");
+        // Sprite上の確認画素
+        const auto gameFrameMinimapPixel = At(gameFrame, 24, 24);
+        Require(
+            gameFrameMinimapPixel.green > gameFrameMinimapPixel.red
+                && gameFrameMinimapPixel.green
+                    > gameFrameMinimapPixel.blue,
+            "The game frame path must display the render texture "
+            "contents in the 2D pass.");
+        // 次の検証に備え、minimapを登録解除します。
+        Require(
+            graphics.ReleaseRenderTexture("minimap"),
+            "The game frame render texture must be releasable.");
+
         auto& computeDisplayTarget =
             graphics.AcquireComputeTexture(
                 "neutral-compute-display",
@@ -5470,17 +5492,12 @@ int main(const int argumentCount, char** arguments)
                     "neutral-compute-display"),
             "Releasing a compute output must remove its neutral view.");
 
-        // GIの保存→読み込み検証をテストの最後で行うための受け渡し
-        // （ベイクする節と検証する節が離れているため、両方から
-        // 見えるこの階層で宣言します）。
+        // GIの保存→読み込み検証をテストの最後で行うための受け渡し（ベイクする節と検証する節が離れているため、両方から見えるこの階層で宣言します）。
         std::string giRoundTripJson;
         long long giRoundTripExpectedNear = 0;
 
-        // 上のrenderFrameはBeginFrame→Scene::Render→Captureで、
-        // ポスト処理（SSAO・光の筋・Bloom・トーンマップ）を通りません。
-        // それらはApplicationがBeginSceneComposition〜
-        // EndSceneCompositionの間で行うため、ここでは実ゲームと
-        // 同じ順序を再現します。
+        // 上のrenderFrameはBeginFrame→Scene::Render→Captureで、ポスト処理（SSAO・光の筋・Bloom・トーンマップ）を通りません。
+        // それらはApplicationがBeginSceneComposition〜EndSceneCompositionの間で行うため、ここでは実ゲームと同じ順序を再現します。
         const auto renderComposedFrame =
             [&graphics, &scene, &clearColor]
             {
@@ -5547,18 +5564,13 @@ int main(const int argumentCount, char** arguments)
         scene.SetScreenOutlineSettings({});
 
         // (9) ボリュメトリックライト（光の筋）。
-        //
-        // 太陽をカメラの正面奥へ置き、間に「中央だけ隙間のある壁」を
-        // 立てます。隙間からは空が見え、レイは最後まで光の中を通ります。
-        //
+        // 太陽をカメラの正面奥へ置き、間に「中央だけ隙間のある壁」を立てます。
+        // 隙間からは空が見え、レイは最後まで光の中を通ります。
         // 影の判定が効いているかは、壁の上の2箇所を比べて確かめます。
-        // どちらも同じ壁なので距離減衰は等しく、影へ入るまでの
-        // レイ区間だけが異なります。隙間側は明るい区間が長く、
-        // 画面端側は早く影へ入ります。
-        // 前方散乱を0（全方向へ均一）にすると位相関数の角度差も消える
-        // ので、この2箇所に差が出る理由は影の判定しか残りません。
-        // ただの霧を足しているだけの実装なら、2箇所は同じだけ明るく
-        // なってしまいます。
+        // どちらも同じ壁なので距離減衰は等しく、影へ入るまでのレイ区間だけが異なります。
+        // 隙間側は明るい区間が長く、画面端側は早く影へ入ります。
+        // 前方散乱を0（全方向へ均一）にすると位相関数の角度差も消えるので、この2箇所に差が出る理由は影の判定しか残りません。
+        // ただの霧を足しているだけの実装なら、2箇所は同じだけ明るくなってしまいます。
         {
             const auto savedSunRotation =
                 sunObject.GetTransform().EulerAngles();
@@ -5575,8 +5587,7 @@ int main(const int argumentCount, char** arguments)
             // yaw=πで奥（-Z）から手前（+Z）へ、pitchで少し下向き。
             sunObject.GetTransform().SetEulerAngles(
                 { -0.5236f, 3.14159265f, 0.0f });
-            // キューブは視界の外へ退かせ、壁と空気だけを見ます
-            // （壁の前に立っていると測る帯の奥行きが変わります）。
+            // キューブは視界の外へ退かせ、壁と空気だけを見ます（壁の前に立っていると測る帯の奥行きが変わります）。
             subject.GetTransform().position =
                 { 0.0f, 60.0f, 0.0f };
             clone.GetTransform().position =
@@ -5610,13 +5621,13 @@ int main(const int argumentCount, char** arguments)
             auto& leftWall = createBlocker(-6.0f);
             auto& rightWall = createBlocker(6.0f);
 
-            // 縦画角45度・カメラz=8・壁z=-4なので、画面に映る半幅は
-            // 約8.8。壁の内側の縁（x=±2）は320px幅のx=124とx=196
-            // あたりに来ます。床の地平線はy=121付近なので、帯は
-            // y=60〜120に取れば壁だけを見ます。
+            // 縦画角45度・カメラz=8・壁z=-4なので、画面に映る半幅は約8.8。
+            // 壁の内側の縁（x=±2）は320px幅のx=124とx=196あたりに来ます。
+            // 床の地平線はy=121付近なので、帯はy=60〜120に取れば壁だけを見ます。
             constexpr std::uint32_t gapMinimumX = 135;
             constexpr std::uint32_t gapMaximumX = 185;
-            // 右の壁の2箇所（隙間寄りと画面端寄り）。奥行きは同じ。
+            // 右の壁の2箇所（隙間寄りと画面端寄り）。
+            // 奥行きは同じ。
             constexpr std::uint32_t wallNearMinimumX = 205;
             constexpr std::uint32_t wallNearMaximumX = 240;
             constexpr std::uint32_t wallFarMinimumX = 280;
@@ -5672,15 +5683,15 @@ int main(const int argumentCount, char** arguments)
                 << "volumetric gap: "
                 << gapBefore << " -> " << gapAfter
                 << std::endl;
-            // 隙間は明るくなること。効いていなければ差は完全に0です。
+            // 隙間は明るくなること。
+            // 効いていなければ差は完全に0です。
             Require(
                 gapAfter
                     > gapBefore + gapBefore / 100 + 1,
                 "Volumetric light must brighten the gap between the blockers.");
 
-            // 前方散乱を0にして、位相関数の角度差を消した状態で
-            // 壁の2箇所を比べます。強度は最大まで上げて、8bitの
-            // 読み出しで差が丸まらないようにします。
+            // 前方散乱を0にして、位相関数の角度差を消した状態で壁の2箇所を比べます。
+            // 強度は最大まで上げて、8bitの読み出しで差が丸まらないようにします。
             volumetric.scattering = 0.0f;
             volumetric.intensity = 4.0f;
             scene.SetVolumetricLightSettings(volumetric);
@@ -5724,8 +5735,7 @@ int main(const int argumentCount, char** arguments)
                 "The band that enters the blocker's shadow sooner must gain less light.");
 
             // 元へ戻すとオフの絵と1バイトも変わらないこと。
-            // 設定の切り替えでターゲットの入れ替えが崩れていないか
-            // （光の筋はカラーターゲットをswapするため）の確認です。
+            // 設定の切り替えでターゲットの入れ替えが崩れていないか（光の筋はカラーターゲットをswapするため）の確認です。
             volumetric.enabled = false;
             scene.SetVolumetricLightSettings(volumetric);
             Stage("frame-volumetric-off-again");
@@ -5755,14 +5765,10 @@ int main(const int argumentCount, char** arguments)
         }
 
         // (10) リフレクションプローブのブレンド。
-        //
-        // カメラの画角の外（左右x=±10）へ緑と赤の壁を置き、その
-        // すぐ内側にプローブを1つずつ焼きます。壁は画面に映らない
-        // ので、鏡面の球に出る色は「どちらのプローブを読んだか」
-        // だけで決まります。
-        //
-        // 球を2つのプローブの中間へ置きます。ブレンド距離0では近い方だけ、
-        // 距離を与えた場合は両方が同じ重みで反映されることを確認します。
+        // カメラの画角の外（左右x=±10）へ緑と赤の壁を置き、そのすぐ内側にプローブを1つずつ焼きます。
+        // 壁は画面に映らないので、鏡面の球に出る色は「どちらのプローブを読んだか」だけで決まります。
+        // 球を2つのプローブの中間へ置きます。
+        // ブレンド距離0では近い方だけ、距離を与えた場合は両方が同じ重みで反映されることを確認します。
         {
             const auto savedCameraPosition =
                 cameraObject.GetTransform().position;
@@ -5811,9 +5817,7 @@ int main(const int argumentCount, char** arguments)
                         scene.CreateGameObject(name);
                     wall.GetTransform().position =
                         { centerX, 0.0f, 0.0f };
-                    // 奥行きを詰めて、画角の外に収めます
-                    // （13m先の画面の半幅は9.6なので、x=9.8から
-                    // 始まる壁が入り込まないようにするため）。
+                    // 奥行きを詰めて、画角の外に収めます（13m先の画面の半幅は9.6なので、x=9.8から始まる壁が入り込まないようにするため）。
                     wall.GetTransform().scale =
                         { 0.4f, 14.0f, 10.0f };
                     wall.AddComponent<
@@ -5915,12 +5919,9 @@ int main(const int argumentCount, char** arguments)
                 << greenOnlySkew
                 << " redOnly=" << redOnlySkew
                 << std::endl;
-            // まず、プローブごとに色が違うことを確かめます
-            // （これが成り立たないと以降の比較に意味がありません）。
-            //
-            // 符号が反転するとは限りません。鏡面の球は周囲すべてを
-            // 映すので、どちらのプローブも両方の壁を見ています
-            // （近い方が大きく映る、という差にしかなりません）。
+            // まず、プローブごとに色が違うことを確かめます（これが成り立たないと以降の比較に意味がありません）。
+            // 符号が反転するとは限りません。
+            // 鏡面の球は周囲すべてを映すので、どちらのプローブも両方の壁を見ています（近い方が大きく映る、という差にしかなりません）。
             // 見るのは「緑寄りの度合いに差がある」ことです。
             Require(
                 greenOnlySkew - redOnlySkew > 1000,
@@ -5934,15 +5935,13 @@ int main(const int argumentCount, char** arguments)
             DumpFrame(
                 "probe-blend-off",
                 hardSwitchFrame);
-            // 近い方だけを読むため、単独で描いたどちらかの画像と
-            // バイト単位で一致し、既定値で描画が変化しないことを確認します。
+            // 近い方だけを読むため、単独で描いたどちらかの画像とバイト単位で一致し、既定値で描画が変化しないことを確認します。
             Require(
                 hardSwitchFrame == greenOnlyFrame
                     || hardSwitchFrame == redOnlyFrame,
                 "With no blend distance the nearest probe must win outright.");
 
-            // 混ぜ始める距離を球までの距離より大きく取ると、影響度が
-            // どちらも1になり半々で混ざります。
+            // 混ぜ始める距離を球までの距離より大きく取ると、影響度がどちらも1になり半々で混ざります。
             {
                 auto* greenComponent =
                     greenProbe.GetComponent<
@@ -5979,8 +5978,7 @@ int main(const int argumentCount, char** arguments)
                 << " allowed=+-" << allowedOffset << ")"
                 << std::endl;
             // 半々で混ざるなら、単独2枚のちょうど中間付近へ来ます。
-            // 混ざっていなければどちらかの端の値のままになるので、
-            // 許容幅（差の1/3）を外れて落ちます。
+            // 混ざっていなければどちらかの端の値のままになるので、許容幅（差の1/3）を外れて落ちます。
             Require(
                 std::llabs(blendedSkew - middleSkew)
                     < allowedOffset,
@@ -6007,16 +6005,11 @@ int main(const int argumentCount, char** arguments)
         }
 
         // ⑪ SSR（画面空間反射）。
-        //
         // 鏡面の床の上へ緑の箱を置いて、床に緑が映るかを見ます。
-        // 箱は床より手前（カメラ寄り）に置くので画面に写っており、
-        // SSRが映せる条件を満たします。
-        //
-        // 有効時は箱の真下だけが緑寄りになり、離れた床は変化しないこと、
-        // 無効へ戻すと元の画像と一致することを確認します。
-        //
-        // なお前フレームのカラーを読むため、有効化した直後の1枚は
-        // まだ映りません。2枚目から比べます。
+        // 箱は床より手前（カメラ寄り）に置くので画面に写っており、SSRが映せる条件を満たします。
+        // 有効時は箱の真下だけが緑寄りになり、離れた床は変化しないこと、無効へ戻すと元の画像と一致することを確認します。
+        // なお前フレームのカラーを読むため、有効化した直後の1枚はまだ映りません。
+        // 2枚目から比べます。
         {
             const auto savedCameraPosition =
                 cameraObject.GetTransform().position;
@@ -6036,8 +6029,8 @@ int main(const int argumentCount, char** arguments)
             cameraObject.GetTransform().SetEulerAngles(
                 { -0.30f, 0.0f, 0.0f });
 
-            // 鏡のように磨いた床。粗さを小さくしないとSSRは
-            // 掛かりません（ぼやけた反射は1本のレイで表せないため）。
+            // 鏡のように磨いた床。
+            // 粗さを小さくしないとSSRは掛かりません（ぼやけた反射は1本のレイで表せないため）。
             auto& mirrorFloor =
                 scene.CreateGameObject("ReflectiveFloor");
             mirrorFloor.GetTransform().position =
@@ -6057,7 +6050,8 @@ int main(const int argumentCount, char** arguments)
             floorRenderer.SetMetallic(1.0f);
             floorRenderer.SetRoughness(0.03f);
 
-            // 床の上に浮かぶ緑の箱。これが床へ映るはずです。
+            // 床の上に浮かぶ緑の箱。
+            // これが床へ映るはずです。
             auto& greenBox =
                 scene.CreateGameObject("ReflectedBox");
             greenBox.GetTransform().position =
@@ -6074,8 +6068,7 @@ int main(const int argumentCount, char** arguments)
                 1.0f,
                 1.0f);
 
-            // 床のうち、箱の真下あたり（映り込みが出る場所）と、
-            // 箱から左へ大きく離れた場所（出ない場所）。
+            // 床のうち、箱の真下あたり（映り込みが出る場所）と、箱から左へ大きく離れた場所（出ない場所）。
             constexpr std::uint32_t underMinimumX = 145;
             constexpr std::uint32_t underMaximumX = 175;
             constexpr std::uint32_t asideMinimumX = 20;
@@ -6153,9 +6146,8 @@ int main(const int argumentCount, char** arguments)
                 << asideBefore << " -> " << asideAfter
                 << std::endl;
             // 箱の真下は緑寄りになること。
-            //
-            // 閾値は「1画素あたり」で決めます。合計値へ小さな定数を
-            // 置くと、実質何も起きていなくても通ってしまうためです。
+            // 閾値は「1画素あたり」で決めます。
+            // 合計値へ小さな定数を置くと、実質何も起きていなくても通ってしまうためです。
             // 30x18=540画素では、合計値200も1画素あたり0.4未満です。
             constexpr long long bandPixels =
                 static_cast<long long>(
@@ -6173,21 +6165,16 @@ int main(const int argumentCount, char** arguments)
                     < underAfter - underBefore,
                 "SSR must not tint floor that has nothing above it.");
 
-            // 距離フェード。最大距離のところで反射が急に途切れると、
-            // カメラが少し動くだけで現れたり消えたりします。
-            //
+            // 距離フェード。
+            // 最大距離のところで反射が急に途切れると、カメラが少し動くだけで現れたり消えたりします。
             // 同じ当たりに対して最大距離の設定だけを変えて測ります。
-            // 幾何は一切動かさないので、差が出るなら距離フェードだけが
-            // 原因です。フェードが無ければ、当たりが見つかる限りどの
-            // 設定でも同じ値が返ります。
-            //
-            // 反復数を上限の128に固定し、最大距離によるフェードだけを
-            // 比較できる条件にします。
+            // 幾何は一切動かさないので、差が出るなら距離フェードだけが原因です。
+            // フェードが無ければ、当たりが見つかる限りどの設定でも同じ値が返ります。
+            // 反復数を上限の128に固定し、最大距離によるフェードだけを比較できる条件にします。
             {
-                // 測る場所は狭い帯にします。広い帯だと画素ごとに
-                // レイの長さが違うため、最大距離を縮めていくと画素が
-                // 順番に脱落し、per-pixelのフェードが無くても
-                // 合計は緩やかに落ちます。それでは検証になりません。
+                // 測る場所は狭い帯にします。
+                // 広い帯だと画素ごとにレイの長さが違うため、最大距離を縮めていくと画素が順番に脱落し、per-pixelのフェードが無くても合計は緩やかに落ちます。
+                // それでは検証になりません。
                 constexpr std::uint32_t narrowMinimumX = 157;
                 constexpr std::uint32_t narrowMaximumX = 165;
                 constexpr std::uint32_t narrowMinimumY = 137;
@@ -6250,9 +6237,7 @@ int main(const int argumentCount, char** arguments)
                         "ssr-fade-1p8m",
                         renderComposedFrame());
                 }
-                // この帯のレイの長さは約1.35mなので、フェードが効く
-                // 範囲（最後の1/4＝最大距離が1.35〜1.8mのとき）を
-                // またぐように選んでいます。
+                // この帯のレイの長さは約1.35mなので、フェードが効く範囲（最後の1/4＝最大距離が1.35〜1.8mのとき）をまたぐように選んでいます。
                 const long long fullRange =
                     measureAtDistance(12.0f);
                 const long long highRange =
@@ -6271,8 +6256,7 @@ int main(const int argumentCount, char** arguments)
                     << " 1.3m=" << cutRange
                     << std::endl;
 
-                // 中間距離で反射強度が段階的に低下し、到達可否だけの
-                // 二値的な結果にならないことを確認します。
+                // 中間距離で反射強度が段階的に低下し、到達可否だけの二値的な結果にならないことを確認します。
                 Require(
                     fullRange > 500,
                     "The narrow band must show a reflection to"
@@ -6302,9 +6286,7 @@ int main(const int argumentCount, char** arguments)
                     " must be gone.");
 
                 // 反復の上限を変えたときの様子。
-                //
-                // Hi-Z走査は十分な反復予算があれば同じ交点へ収束するため、
-                // 48回と128回で反射結果が一致することを確認します。
+                // Hi-Z走査は十分な反復予算があれば同じ交点へ収束するため、48回と128回で反射結果が一致することを確認します。
                 const auto measureAtSteps =
                     [&](const std::uint32_t steps)
                 {
@@ -6369,31 +6351,18 @@ int main(const int argumentCount, char** arguments)
                     " surfaces the ray hits.");
 
                 // 厚みの既定値は「鏡像と見比べて」決めます。
-                //
-                // 厚みには両側に失敗があります。薄すぎるとレイが
-                // 物の側面から入った歩を捨てるので反射が途中で切れ、
-                // 厚すぎると物の裏まで通り抜けたレイを当たり扱いに
-                // するので、映るべきでない床まで映り込みます。
-                // どちらに寄せるかは「正解の絵」が無いと決められ
-                // ません。
-                //
-                // そこで、床の面で折り返した位置へ同じ箱をもう1つ
-                // 置き、床をどけて同じカメラで描きます。立方体は
-                // 上下対称なので、折り返した形はそのまま立方体です。
-                // それが写った行が、そのまま「反射が出るべき行」に
-                // なります。
-                //
-                // カメラを面で反転させると箱が写らず、比較するカメラも
-                // 変わってしまうため、この方法は使用しません。
-                // ずれたときに「反射がおかしい」のか「参照が
-                // おかしい」のか分かりません。同じカメラのままに
-                // できるこちらが確実です。
-                //
-                // 見方は床の縦1列を行ごとに。合計値だけだと反射が
-                // どこまで伸びたかが分からず、既定値の判断はまさに
-                // そこだからです。箱そのものの下端はy=100なので、床
-                // だけを見るためにその下から始めます（入れると箱の緑が
-                // 参照にも反射にも同じだけ乗り、一致率が水増しされます）。
+                // 厚みには両側に失敗があります。
+                // 薄すぎるとレイが物の側面から入った歩を捨てるので反射が途中で切れ、厚すぎると物の裏まで通り抜けたレイを当たり扱いにするので、映るべきでない床まで映り込みます。
+                // どちらに寄せるかは「正解の絵」が無いと決められません。
+                // そこで、床の面で折り返した位置へ同じ箱をもう1つ置き、床をどけて同じカメラで描きます。
+                // 立方体は上下対称なので、折り返した形はそのまま立方体です。
+                // それが写った行が、そのまま「反射が出るべき行」になります。
+                // カメラを面で反転させると箱が写らず、比較するカメラも変わってしまうため、この方法は使用しません。
+                // ずれたときに「反射がおかしい」のか「参照がおかしい」のか分かりません。
+                // 同じカメラのままにできるこちらが確実です。
+                // 見方は床の縦1列を行ごとに。
+                // 合計値だけだと反射がどこまで伸びたかが分からず、既定値の判断はまさにそこだからです。
+                // 箱そのものの下端はy=100なので、床だけを見るためにその下から始めます（入れると箱の緑が参照にも反射にも同じだけ乗り、一致率が水増しされます）。
                 constexpr std::uint32_t profileMinimumY = 102;
                 constexpr std::uint32_t profileMaximumY = 180;
                 const auto rowGreen =
@@ -6414,9 +6383,8 @@ int main(const int argumentCount, char** arguments)
                             underMaximumX - underMinimumX);
                 };
                 // 鏡像が出ている行のうち、反射が届いている行の数。
-                // しきい値が2つあるのは、鏡像は箱そのもの（明るい）で、
-                // 反射は床の反射率を通した後（暗い）だからです。同じ
-                // 値では比べられません。
+                // しきい値が2つあるのは、鏡像は箱そのもの（明るい）で、反射は床の反射率を通した後（暗い）だからです。
+                // 同じ値では比べられません。
                 const auto countRows =
                     [&](const std::vector<std::uint8_t>& mirror,
                         const std::vector<std::uint8_t>* reflected,
@@ -6471,8 +6439,8 @@ int main(const int argumentCount, char** arguments)
                         disabled);
                     const auto savedFloorPosition =
                         mirrorFloor.GetTransform().position;
-                    // 床の上面。立方体プリミティブは1辺1なので
-                    // スケールの半分だけ持ち上がります。
+                    // 床の上面。
+                    // 立方体プリミティブは1辺1なのでスケールの半分だけ持ち上がります。
                     const float mirrorPlaneY =
                         savedFloorPosition.y
                         + mirrorFloor.GetTransform().scale.y
@@ -6518,8 +6486,7 @@ int main(const int argumentCount, char** arguments)
                 }
 
                 // 既定値を選ぶための掃引（--dump のときだけ）。
-                // 絵はPPMで残すので、数字だけでなく切れ方・漏れ方の
-                // 形も見られます。
+                // 絵はPPMで残すので、数字だけでなく切れ方・漏れ方の形も見られます。
                 if (!g_dumpDirectory.empty())
                 {
                     printRowProfile(
@@ -6527,9 +6494,8 @@ int main(const int argumentCount, char** arguments)
                         referenceFrame);
                     printRowProfile("ssr-off", ssrOffFrame);
 
-                    // ファイル名は固定の文字列にします。値から作ると
-                    // <sstream>を足すことになり、そのためだけに
-                    // インクルードを増やしたくないためです。
+                    // ファイル名は固定の文字列にします。
+                    // 値から作ると<sstream>を足すことになり、そのためだけにインクルードを増やしたくないためです。
                     struct ThicknessSample final
                     {
                         const char* name;
@@ -6593,10 +6559,8 @@ int main(const int argumentCount, char** arguments)
                 }
 
                 // 既定の厚みで、鏡像の行のどれだけを埋められるか。
-                //
-                // しきい値が2つあるのは、鏡像は箱そのもの（明るい）で、
-                // 反射は床の反射率を通した後（暗い）だからです。同じ
-                // 値では比べられません。
+                // しきい値が2つあるのは、鏡像は箱そのもの（明るい）で、反射は床の反射率を通した後（暗い）だからです。
+                // 同じ値では比べられません。
                 {
                     Stage("frame-ssr-default-thickness");
                     auto standard = reflection;
@@ -6629,8 +6593,7 @@ int main(const int argumentCount, char** arguments)
                         << ", covered " << coveredRows
                         << " from y=" << firstCoveredRow
                         << std::endl;
-                    // 既定の厚みで鏡像の9割以上を覆い、過度に薄い設定を
-                    // 検出できる条件にします。
+                    // 既定の厚みで鏡像の9割以上を覆い、過度に薄い設定を検出できる条件にします。
                     Require(
                         referenceRows >= 40,
                         "The mirrored box must be visible to"
@@ -6670,12 +6633,9 @@ int main(const int argumentCount, char** arguments)
         }
 
         // ⑫ TAA（時間的アンチエイリアス）。
-        //
-        // 斜めに傾けた板を1枚置いて、その輪郭を見ます。TAAは毎フレーム
-        // サブピクセルだけずらして描いて混ぜるので、輪郭に「前景でも
-        // 背景でもない中間色」の画素が増えるはずです。これがギザギザが
-        // 減ったことの直接的な証拠になります（見た目の判断が要らない）。
-        //
+        // 斜めに傾けた板を1枚置いて、その輪郭を見ます。
+        // TAAは毎フレームサブピクセルだけずらして描いて混ぜるので、輪郭に「前景でも背景でもない中間色」の画素が増えるはずです。
+        // これがギザギザが減ったことの直接的な証拠になります（見た目の判断が要らない）。
         // 性能はWARPのVMでは測れませんが、画質はこうして数値で出せます。
         {
             const auto savedCameraPosition =
@@ -6700,13 +6660,10 @@ int main(const int argumentCount, char** arguments)
                 { 0.0f, 0.0f, 0.37f });
 
             // 輪郭の「段差」を測ります。
-            //
-            // 中間色の画素を数える方法は使えません。キューブ面の
-            // 陰影まで中間色として拾い、輪郭の変化が埋もれるためです。
-            //
-            // 代わりに横方向の隣接差の最大値を行ごとに取り、その
-            // 平均を見ます。ギザギザした輪郭は1画素で全コントラスト
-            // 跳ぶので段差が大きく、均されると小さくなります。
+            // 中間色の画素を数える方法は使えません。
+            // キューブ面の陰影まで中間色として拾い、輪郭の変化が埋もれるためです。
+            // 代わりに横方向の隣接差の最大値を行ごとに取り、その平均を見ます。
+            // ギザギザした輪郭は1画素で全コントラスト跳ぶので段差が大きく、均されると小さくなります。
             // つまりTAAを有効にすると下がるのが正しい向きです。
             const auto edgeStepAverage =
                 [&](const std::vector<std::uint8_t>& frame)
@@ -6776,9 +6733,9 @@ int main(const int argumentCount, char** arguments)
                 renderComposedFrame();
             DumpFrame("taa-settled", taaSettledFrame);
 
-            // 「段差が大きい行の数」も数えます。硬い輪郭は1画素で
-            // 全コントラスト跳ぶので、しきい値を超える行が多く
-            // なります。均されると跳びが分割されて減ります。
+            // 「段差が大きい行の数」も数えます。
+            // 硬い輪郭は1画素で全コントラスト跳ぶので、しきい値を超える行が多くなります。
+            // 均されると跳びが分割されて減ります。
             // 平均より鋭敏なので、判定にはこちらを使います。
             const auto hardRowCount =
                 [&](const std::vector<std::uint8_t>& frame,
@@ -6839,8 +6796,7 @@ int main(const int argumentCount, char** arguments)
                 << hardRowCount(taaOffFrame, 100)
                 << " -> " << hardRowCount(taaOnFrame, 100)
                 << std::endl;
-            // 輪郭の両側へAAが適用されることを確認するため、
-            // 画素間の段差が12%以上減少することを要求します。
+            // 輪郭の両側へAAが適用されることを確認するため、画素間の段差が12%以上減少することを要求します。
             Require(
                 stepAfter < stepBefore * 0.88,
                 "TAA must reduce the hard step across the diagonal edge.");
@@ -6854,8 +6810,8 @@ int main(const int argumentCount, char** arguments)
                     && hardAfter * 2 < hardBefore,
                 "TAA must cut the number of rows that still jump in one pixel.");
 
-            // 静止シーンでは収束して、隣り合うフレームがほぼ同じ絵に
-            // なること。ここが暴れると画面がちらつきます。
+            // 静止シーンでは収束して、隣り合うフレームがほぼ同じ絵になること。
+            // ここが暴れると画面がちらつきます。
             long long settleDifference = 0;
             int settleMaximum = 0;
             for (std::uint32_t y = 40; y < 140; ++y)
@@ -6887,11 +6843,9 @@ int main(const int argumentCount, char** arguments)
                 << "taa settle: max=" << settleMaximum
                 << " average=" << settleAverage
                 << std::endl;
-            // 判定は平均で行います。輪郭の1画素はジッターの位置に
-            // よって最後まで多少振れるので、最大値で締めると
-            // 正しく動いていても落ちます。平均が十分小さければ
-            // 「絵として静止している」と言えます。
-            //
+            // 判定は平均で行います。
+            // 輪郭の1画素はジッターの位置によって最後まで多少振れるので、最大値で締めると正しく動いていても落ちます。
+            // 平均が十分小さければ「絵として静止している」と言えます。
             // 平均差0.3未満を要求し、再投影誤差による静止画のちらつきを検出します。
             Require(
                 settleAverage < 0.3,
@@ -6923,10 +6877,8 @@ int main(const int argumentCount, char** arguments)
         }
 
         // (7) SSAO（--dump のときだけ）。
-        // 陰りの見た目は数値で判定しにくいので、ここではアサーション
-        // をせず、有効・無効の2枚を書き出して目視で比べられるように
-        // します。キューブが床に接しているので、接地部分に陰りが
-        // 出ているか、ザラつきや輪郭の白い縁が無いかを確認できます。
+        // 陰りの見た目は数値で判定しにくいので、ここではアサーションをせず、有効・無効の2枚を書き出して目視で比べられるようにします。
+        // キューブが床に接しているので、接地部分に陰りが出ているか、ザラつきや輪郭の白い縁が無いかを確認できます。
         if (!g_dumpDirectory.empty())
         {
             auto aoGraphics = graphics.Settings();
@@ -6952,20 +6904,16 @@ int main(const int argumentCount, char** arguments)
             Stage("frame-ssao-strong");
             DumpFrame("ssao-strong", renderComposedFrame());
 
-            // 半径を広げた版。既定の0.5がシーンの寸法に対して
-            // 小さすぎないかを見るための比較用です。
+            // 半径を広げた版。
+            // 既定の0.5がシーンの寸法に対して小さすぎないかを見るための比較用です。
             occlusion.radius = 2.0f;
             scene.SetAmbientOcclusionSettings(occlusion);
             Stage("frame-ssao-wide");
             DumpFrame("ssao-wide", renderComposedFrame());
 
             // 接地部の陰りを見るための専用の段。
-            //
-            // 既定のシーンはキューブの底が-1.0、床の上面が-1.7で
-            // 0.7だけ浮いているため、SSAOの差が最大1/255かつ画面全体の
-            // 1%以下となり、判定に使えません。
+            // 既定のシーンはキューブの底が-1.0、床の上面が-1.7で0.7だけ浮いているため、SSAOの差が最大1/255かつ画面全体の1%以下となり、判定に使えません。
             // キューブを床へ置き、カメラを上げて見下ろします。
-            //
             // 影を有効にしたまま比較し、接地部だけに陰りが加わることを確認します。
             const auto savedSubjectPosition =
                 subject.GetTransform().position;
@@ -6997,9 +6945,8 @@ int main(const int argumentCount, char** arguments)
                 renderComposedFrame());
 
             // SSAOが環境光項だけへ掛かっていることを確認します。
-            // 環境光を0にすると掛ける先が無くなるので、SSAOの有無で
-            // 絵が1ビットも変わらないはずです。完成した色へ掛けて
-            // 完成色へ適用される実装では、この条件でも画像が変化します。
+            // 環境光を0にすると掛ける先が無くなるので、SSAOの有無で絵が1ビットも変わらないはずです。
+            // 完成した色へ掛けて完成色へ適用される実装では、この条件でも画像が変化します。
             const auto savedAmbientIntensity =
                 scene.AmbientLightIntensity();
             scene.SetAmbientLightIntensity(0.0f);
@@ -7027,11 +6974,10 @@ int main(const int argumentCount, char** arguments)
                 savedCameraPosition;
             cameraObject.GetTransform().SetEulerAngles(savedCameraRotation);
 
-            // クラスタライトカリング（Forward+）の確認。ポイント
-            // ライトを24灯並べます。従来経路は品質設定の上限
-            // （High=12灯）で打ち切られるので、右半分のライトが
-            // 消えます。クラスタ経路が動いていれば24灯全部の
-            // 光だまりが床に並びます。
+            // クラスタライトカリング（Forward+）の確認。
+            // ポイントライトを24灯並べます。
+            // 従来経路は品質設定の上限（High=12灯）で打ち切られるので、右半分のライトが消えます。
+            // クラスタ経路が動いていれば24灯全部の光だまりが床に並びます。
             {
                 subject.GetTransform().position =
                     { 0.0f, 50.0f, 0.0f };
@@ -7080,11 +7026,8 @@ int main(const int argumentCount, char** arguments)
 
                 // 描画方式の切り替えが画像へ反映されることを確認します。
                 // 24灯はForward+でのみすべて処理されます。
-                // Forwardでは品質設定の上限で打ち切られるので、床の
-                // 光だまりが減ります。
-                //
-                // 環境光と平行光の影響を避けるため合計輝度ではなく、
-                // 経路の切り替えで変化した画素数を比較します。
+                // Forwardでは品質設定の上限で打ち切られるので、床の光だまりが減ります。
+                // 環境光と平行光の影響を避けるため合計輝度ではなく、経路の切り替えで変化した画素数を比較します。
                 auto forwardSettings = graphics.Settings();
                 forwardSettings.renderingPath =
                     LamaPon::RenderingPath::Forward;
@@ -7148,16 +7091,14 @@ int main(const int argumentCount, char** arguments)
                     << " of 24 lights)"
                     << std::endl;
 
-                // 上限が24灯以上だと打ち切りが起きず、この段が
-                // 何も確かめない段になってしまいます。
+                // 上限が24灯以上だと打ち切りが起きず、この段が何も確かめない段になってしまいます。
                 Require(
                     graphics.Settings().pointLightLimit
                         < 24,
                     "The point light limit must cut the"
                     " 24 lights for this stage to mean"
                     " anything.");
-                // GPU差を許容しつつ経路の未切り替えを検出するため、
-                // 変化した画素数の下限を1000にします。
+                // GPU差を許容しつつ経路の未切り替えを検出するため、変化した画素数の下限を1000にします。
                 Require(
                     pathChangedPixels > 1000,
                     "Switching the rendering path must"
@@ -7179,12 +7120,9 @@ int main(const int argumentCount, char** arguments)
             }
 
             // 半透明の前後ソートの確認。
-            //
-            // 重なった半透明を2枚置き、作る順番だけ変えて2回
-            // 描きます。並べ替えが効いていれば結果は作成順に
-            // よらないので、2枚の絵は一致するはずです。色の合成式を
-            // 当てにしないので、ブレンドの設定を将来変えても
-            // この段は生き残ります。
+            // 重なった半透明を2枚置き、作る順番だけ変えて2回描きます。
+            // 並べ替えが効いていれば結果は作成順によらないので、2枚の絵は一致するはずです。
+            // 色の合成式を当てにしないので、ブレンドの設定を将来変えてもこの段は生き残ります。
             {
                 subject.GetTransform().position =
                     { 0.0f, 50.0f, 0.0f };
@@ -7193,7 +7131,8 @@ int main(const int argumentCount, char** arguments)
                 cameraObject.GetTransform().SetEulerAngles(
                     { 0.0f, 0.0f, 0.0f });
 
-                // nearZが手前。奥（farZ）を赤、手前を青にします。
+                // nearZが手前。
+                // 奥（farZ）を赤、手前を青にします。
                 constexpr float nearZ = 1.0f;
                 constexpr float farZ = -1.0f;
                 const auto buildPane =
@@ -7302,9 +7241,8 @@ int main(const int argumentCount, char** arguments)
                     " same regardless of the order they were"
                     " created in.");
 
-                // 読み込みモデル（ModelRenderer）でも同じことを
-                // 見ます。中身がパーツの集まりなので、MeshRenderer
-                // が通っても素通りする可能性があります。
+                // 読み込みモデル（ModelRenderer）でも同じことを見ます。
+                // 中身がパーツの集まりなので、MeshRendererが通っても素通りする可能性があります。
                 const auto buildModel =
                     [&scene](
                         const char* name,
@@ -7323,8 +7261,7 @@ int main(const int argumentCount, char** arguments)
                                 ModelRendererComponent>(
                             std::filesystem::path{ "models" }
                                 / "RiggedSimple.glb");
-                    // アルファを1未満にすると、モデル全体が
-                    // 半透明として扱われます（forceAlpha）。
+                    // アルファを1未満にすると、モデル全体が半透明として扱われます（forceAlpha）。
                     renderer.SetColor(color);
                     return &object;
                 };
@@ -7393,8 +7330,8 @@ int main(const int argumentCount, char** arguments)
                     savedCameraRotation);
             }
 
-            // テセレーションした不透明面が深度を書き込むことを
-            // 確認します。板の後ろに箱を置き、板より後に描画します。
+            // テセレーションした不透明面が深度を書き込むことを確認します。
+            // 板の後ろに箱を置き、板より後に描画します。
             // 深度が正しければ、箱は板に隠れます。
             {
                 subject.GetTransform().position =
@@ -7420,8 +7357,8 @@ int main(const int argumentCount, char** arguments)
                 terrainRenderer.SetShaderPath(
                     std::filesystem::path{ "shaders" }
                         / "LamaPonTessellatedTerrain.hlsl");
-                // 地面は緑、隠れるべき箱は青。取り違えないよう
-                // はっきり分けます。
+                // 地面は緑、隠れるべき箱は青。
+                // 取り違えないようはっきり分けます。
                 terrainRenderer.SetCustomParameter(
                     0,
                     DirectX::XMFLOAT4{
@@ -7454,11 +7391,10 @@ int main(const int argumentCount, char** arguments)
                     "tessellation",
                     tessellationFrame);
 
-                // 対照。板を消して同じ絵を撮ります。ここで箱が
-                // 見えていなければ、隠しているのは板ではなく別の
-                // 何か（前の段で置いた地面など）で、上の判定は
-                // 検証になりません。検証シーンは使い回すため、
-                // 「隠れた＝成功」を信じる前に必ずこれを見ます。
+                // 対照。
+                // 板を消して同じ絵を撮ります。
+                // ここで箱が見えていなければ、隠しているのは板ではなく別の何か（前の段で置いた地面など）で、上の判定は検証になりません。
+                // 検証シーンは使い回すため、「隠れた＝成功」を信じる前に必ずこれを見ます。
                 static_cast<void>(
                     scene.DestroyGameObject(terrain));
                 const auto withoutTerrainFrame =
@@ -7514,13 +7450,13 @@ int main(const int argumentCount, char** arguments)
                     << buriedWithoutTerrain
                     << std::endl;
 
-                // 板が出ていること。HSMain/DSMainが無視されていたり
-                // コンパイルに失敗していたら、ここで落ちます。
+                // 板が出ていること。
+                // HSMain/DSMainが無視されていたりコンパイルに失敗していたら、ここで落ちます。
                 Require(
                     terrainPixels > 2000,
                     "The tessellated plane must be visible.");
-                // 対照が先。板が無いときに箱が見えていなければ、
-                // 下の判定は何も確かめていません。
+                // 対照が先。
+                // 板が無いときに箱が見えていなければ、下の判定は何も確かめていません。
                 Require(
                     buriedWithoutTerrain > 500,
                     "The buried box must be visible without"
@@ -7533,10 +7469,8 @@ int main(const int argumentCount, char** arguments)
                     " depth so later geometry behind it stays"
                     " hidden.");
 
-                // テセレーションShaderを、四角パッチに割れない形状
-                // （Sphere）へ割り当てた場合。
-                // ハル／ドメインを束ねたまま三角形リストを描くのは
-                // D3D11では不正で、ドライバー停止の原因になります。
+                // テセレーションShaderを、四角パッチに割れない形状（Sphere）へ割り当てた場合。
+                // ハル／ドメインを束ねたまま三角形リストを描くのはD3D11では不正で、ドライバー停止の原因になります。
                 // 描画できること自体を回帰条件として確認します。
                 {
                     auto& wrongShape =
@@ -7580,8 +7514,7 @@ int main(const int argumentCount, char** arguments)
                         }
                     }
 
-                    // 箱を消した画像と比較し、描画自体が省略されていないことを
-                    // 変化した画素数で確認します。
+                    // 箱を消した画像と比較し、描画自体が省略されていないことを変化した画素数で確認します。
                     static_cast<void>(
                         scene.DestroyGameObject(wrongShape));
                     const auto withoutCube =
@@ -7624,8 +7557,7 @@ int main(const int argumentCount, char** arguments)
                         "A tessellation shader on a shape that"
                         " cannot tessellate must still draw the"
                         " mesh.");
-                    // テセレーション前提の頂点シェーダーは単体では
-                    // 成立しないため、マゼンタの代替表示になることを確認します。
+                    // テセレーション前提の頂点シェーダーは単体では成立しないため、マゼンタの代替表示になることを確認します。
                     Require(
                         magenta > 500,
                         "A tessellation shader on a shape that"
@@ -7639,17 +7571,12 @@ int main(const int argumentCount, char** arguments)
                         " reported.");
                 }
 
-                // Cubeは6面それぞれを四角パッチとして
-                // テセレーションできます。
-                //
+                // Cubeは6面それぞれを四角パッチとしてテセレーションできます。
                 // 見るのは2つです。
-                //  (1) 6面ぜんぶがパッチになっていること。1面しか
-                //      描いていなくても「マゼンタが出ない」だけなら
-                //      通ってしまうので、普通のCubeと同じ大きさに
-                //      見えるかを対照に置きます。
-                //  (2) 変位が効いていること。真上から見ると上面は
-                //      +Yへ動くだけで輪郭が変わらないので、箱を
-                //      傾けて側面の膨らみが写るようにします。
+                // (1) 6面ぜんぶがパッチになっていること。1面しか
+                // 描いていなくても「マゼンタが出ない」だけなら通ってしまうので、普通のCubeと同じ大きさに見えるかを対照に置きます。
+                // (2) 変位が効いていること。真上から見ると上面は
+                // +Yへ動くだけで輪郭が変わらないので、箱を傾けて側面の膨らみが写るようにします。
                 {
                     auto& tessCube =
                         scene.CreateGameObject("TessCube");
@@ -7685,10 +7612,7 @@ int main(const int argumentCount, char** arguments)
                         DirectX::XMFLOAT4{
                             8.0f, 0.0f, 0.0f, 0.0f });
                     // 周波数は分割数と割り切れない値にします。
-                    // 分割8に対して周波数4だと sin(u*4*2pi) が
-                    // u=k/8 のすべてでちょうど0になり、頂点が1つも
-                    // 動きません（傾きだけ変わるので陰影は変わり、
-                    // 「効いているように見えて動いていない」絵になります。
+                    // 分割8に対して周波数4だと sin(u*4*2pi) がu=k/8 のすべてでちょうど0になり、頂点が1つも動きません（傾きだけ変わるので陰影は変わり、「効いているように見えて動いていない」絵になります。
                     cubeRenderer.SetCustomParameter(
                         1,
                         DirectX::XMFLOAT4{
@@ -7800,8 +7724,7 @@ int main(const int argumentCount, char** arguments)
                         "The plain cube must be visible,"
                         " otherwise the comparison below means"
                         " nothing.");
-                    // 6面ぜんぶがパッチになっていれば、変位なしの
-                    // テセレーションは普通のCubeと同じ形になります。
+                    // 6面ぜんぶがパッチになっていれば、変位なしのテセレーションは普通のCubeと同じ形になります。
                     // 1面しか描いていなければ、ここで大きく減ります。
                     Require(
                         flatCoverage * 10 > plainCoverage * 8
@@ -7818,10 +7741,9 @@ int main(const int argumentCount, char** arguments)
                         " otherwise nothing was displaced.");
                 }
 
-                // ジオメトリシェーダー。三角形を面の向きへ押し出す
-                // 見本を割り当てて、形が変わることを見ます。
-                // 「マゼンタが出ない」だけでは、GSが1度も走らなくても
-                // 通ってしまいます。
+                // ジオメトリシェーダー。
+                // 三角形を面の向きへ押し出す見本を割り当てて、形が変わることを見ます。
+                // 「マゼンタが出ない」だけでは、GSが1度も走らなくても通ってしまいます。
                 {
                     // 直前の画像を対照に使い、このオブジェクトによる差だけを測ります。
                     const auto beforeGeometryFrame =
@@ -7849,7 +7771,8 @@ int main(const int argumentCount, char** arguments)
                         DirectX::XMFLOAT4{
                             0.85f, 0.45f, 0.2f, 1.0f });
 
-                    // 押し出し0。GSは走りますが形は元のままです。
+                    // 押し出し0。
+                    // GSは走りますが形は元のままです。
                     gsRenderer.SetCustomParameter(
                         1,
                         DirectX::XMFLOAT4{
@@ -7863,7 +7786,8 @@ int main(const int argumentCount, char** arguments)
                     const auto gsError =
                         gsRenderer.ShaderError();
 
-                    // 押し出しあり。面がばらけるので輪郭が広がります。
+                    // 押し出しあり。
+                    // 面がばらけるので輪郭が広がります。
                     gsRenderer.SetCustomParameter(
                         1,
                         DirectX::XMFLOAT4{
@@ -7881,9 +7805,8 @@ int main(const int argumentCount, char** arguments)
                         "geometry-shader-empty",
                         gsEmptyFrame);
                     {
-                        // 同じ画素を3枚から並べます。「消えた」のか
-                        // 「暗く描かれた」のかは、対照と見比べないと
-                        // 区別できません。
+                        // 同じ画素を3枚から並べます。
+                        // 「消えた」のか「暗く描かれた」のかは、対照と見比べないと区別できません。
                         const auto sample =
                             [](const std::vector<std::uint8_t>&
                                     frame)
@@ -7957,9 +7880,8 @@ int main(const int argumentCount, char** arguments)
                         "The cube must be visible with the"
                         " geometry shader bound, otherwise the"
                         " comparison below means nothing.");
-                    // 面がばらけると、外へ広がる分と、隙間から
-                    // 向こうが見える分の両方が起きます。増える
-                    // とは限らないので、増減ではなく変化量を見ます。
+                    // 面がばらけると、外へ広がる分と、隙間から向こうが見える分の両方が起きます。
+                    // 増えるとは限らないので、増減ではなく変化量を見ます。
                     const auto silhouetteChange =
                         gsBurstCoverage > gsFlatCoverage
                             ? gsBurstCoverage - gsFlatCoverage
@@ -7970,10 +7892,9 @@ int main(const int argumentCount, char** arguments)
                         " normal must change the silhouette,"
                         " otherwise the geometry shader never"
                         " ran.");
-                    // 束ねたまま抜けていないこと。GSが残っていると、
-                    // この後のスプライトやポスト処理まで巻き込みます。
-                    // オブジェクトを消した後の絵が、テセレーションの
-                    // 段を始める前と同じであることで確かめます。
+                    // 束ねたまま抜けていないこと。
+                    // GSが残っていると、この後のスプライトやポスト処理まで巻き込みます。
+                    // オブジェクトを消した後の絵が、テセレーションの段を始める前と同じであることで確かめます。
                     std::size_t leaked = 0;
                     for (std::uint32_t y = 0; y < Height; ++y)
                     {
@@ -8008,17 +7929,12 @@ int main(const int argumentCount, char** arguments)
                         " gone.");
                 }
 
-                // 同じことを読み込みモデルでも見ます。MeshRenderer
-                // だけを制限してもModelRendererは通過します。パッチで描く
-                // 経路が無いのは同じ
-                // なので、テセレーション前提の頂点シェーダーが刺さり
-                // 何も描かれないまま黙って消えます。
-                //
-                // 使うのはCMO（スキニングなし）です。glTF/FBXは
-                // VSSkinnedMainが無くてコンパイルの時点で落ちるため、
-                // 差し替えの手前で止まってしまいこの経路を通りません。
-                // マテリアル上書きを有効にしないと共通Litで描かれない
-                // （＝カスタムShaderが効かない）ので、そこも合わせます。
+                // 同じことを読み込みモデルでも見ます。
+                // MeshRendererだけを制限してもModelRendererは通過します。
+                // パッチで描く経路が無いのは同じなので、テセレーション前提の頂点シェーダーが刺さり何も描かれないまま黙って消えます。
+                // 使うのはCMO（スキニングなし）です。
+                // glTF/FBXはVSSkinnedMainが無くてコンパイルの時点で落ちるため、差し替えの手前で止まってしまいこの経路を通りません。
+                // マテリアル上書きを有効にしないと共通Litで描かれない（＝カスタムShaderが効かない）ので、そこも合わせます。
                 {
                     auto& tessModel =
                         scene.CreateGameObject("TessOnModel");
@@ -8045,8 +7961,7 @@ int main(const int argumentCount, char** arguments)
                         modelFrame);
                     const auto modelShaderError =
                         modelRenderer.ShaderError();
-                    // 共通Litで描かれていないと、この段は「代役が
-                    // 出ている」ことを何も確かめていません。
+                    // 共通Litで描かれていないと、この段は「代役が出ている」ことを何も確かめていません。
                     const bool usesLamaPonLit =
                         modelRenderer.UsesLamaPonLit();
                     std::size_t modelMagenta = 0;
@@ -8068,8 +7983,8 @@ int main(const int argumentCount, char** arguments)
                         }
                     }
 
-                    // モデルを消した絵と見比べます。「落ちなかった」
-                    // では、描画が丸ごと捨てられていても通ります。
+                    // モデルを消した絵と見比べます。
+                    // 「落ちなかった」では、描画が丸ごと捨てられていても通ります。
                     static_cast<void>(
                         scene.DestroyGameObject(tessModel));
                     const auto withoutModel =
@@ -8123,10 +8038,8 @@ int main(const int argumentCount, char** arguments)
                         "A tessellation shader on a loaded model"
                         " must fall back to the magenta"
                         " placeholder.");
-                    // コンパイル失敗による代役と区別します。CMOは
-                    // VSMain/PSMainがそろっていてコンパイルは通るので、
-                    // 理由がテセレーションでなければ差し替えは
-                    // 効いていません。
+                    // コンパイル失敗による代役と区別します。
+                    // CMOはVSMain/PSMainがそろっていてコンパイルは通るので、理由がテセレーションでなければ差し替えは効いていません。
                     Require(
                         modelShaderError.find("tessellation")
                             != std::string::npos,
@@ -8144,11 +8057,8 @@ int main(const int argumentCount, char** arguments)
             }
 
             // 自作Compute Shaderの確認。
-            //
-            // 計算した絵を名前付きテクスチャへ書き、その名前を
-            // SpriteRendererへ入れて表示します。表示側は無改造で
-            // 使える（レンダーテクスチャと同じ登録簿に入る）ことも
-            // ここで一緒に確かめています。
+            // 計算した絵を名前付きテクスチャへ書き、その名前をSpriteRendererへ入れて表示します。
+            // 表示側は無改造で使える（レンダーテクスチャと同じ登録簿に入る）こともここで一緒に確かめています。
             {
                 subject.GetTransform().position =
                     { 0.0f, 50.0f, 0.0f };
@@ -8177,9 +8087,8 @@ int main(const int argumentCount, char** arguments)
                     ("The compute effect must run: "
                         + computeError).c_str());
 
-                // bool/error契約を守り、入力textureのdecode失敗を例外として
-                // 呼び出し側へ漏らさないこと。HLSLを意図的に画像入力へ
-                // 指定しています。
+                // bool/error契約を守り、入力textureのdecode失敗を例外として呼び出し側へ漏らさないこと。
+                // HLSLを意図的に画像入力へ指定しています。
                 auto invalidInputCompute = compute;
                 invalidInputCompute.outputTexture =
                     "computeInvalidInputProbe";
@@ -8193,8 +8102,7 @@ int main(const int argumentCount, char** arguments)
                         && !invalidInputError.empty(),
                     "A compute effect with an unreadable input texture must return false and an error.");
 
-                // 表示経路のフィルターやUV変換を除外するため、
-                // Compute Shaderの出力テクスチャをCPUへ直接読み戻します。
+                // 表示経路のフィルターやUV変換を除外するため、Compute Shaderの出力テクスチャをCPUへ直接読み戻します。
                 const auto* computeTarget =
                     graphics.FindRenderTexture(
                         "computeProbe");
@@ -8288,21 +8196,18 @@ int main(const int argumentCount, char** arguments)
                         && left.y < 0.01f,
                     "The compute shader must write the"
                     " requested color into the left half.");
-                // 下ほど明るい縦のグラデーション。配線だけ通って
-                // 中身が一様だと、ここで落ちます。
+                // 下ほど明るい縦のグラデーション。
+                // 配線だけ通って中身が一様だと、ここで落ちます。
                 Require(
                     rightBottom.y > rightTop.y + 0.5f,
                     "The compute output must keep the"
                     " vertical gradient it wrote.");
 
-                // 表示側。同じ名前をSpriteRendererへ入れるだけで
-                // 出る、という導線をドキュメントに書いているので、
-                // 実際に出ることも見ます。テクスチャの右半分は
-                // 明るい緑なので、画面のどこかに緑が優勢な画素が
-                // 無ければ表示できていません。
-                // スプライトの位置とサイズは画面のピクセルです
-                // （ワールド座標ではありません）。サイズを省くと
-                // 数画素に縮小されるため、測定領域から外れます。
+                // 表示側。
+                // 同じ名前をSpriteRendererへ入れるだけで出る、という導線をドキュメントに書いているので、実際に出ることも見ます。
+                // テクスチャの右半分は明るい緑なので、画面のどこかに緑が優勢な画素が無ければ表示できていません。
+                // スプライトの位置とサイズは画面のピクセルです（ワールド座標ではありません）。
+                // サイズを省くと数画素に縮小されるため、測定領域から外れます。
                 auto& computeSprite =
                     scene.CreateGameObject("ComputeSprite");
                 computeSprite.GetTransform().position =
@@ -8314,9 +8219,8 @@ int main(const int argumentCount, char** arguments)
                 computeRenderer.SetRenderTexture(
                     "computeProbe");
                 Stage("frame-compute-effect");
-                // 2Dを描くのはscene.Render()を通るrenderFrameの方
-                // です。renderComposedFrameは3Dの合成だけなので、
-                // スプライトを置いても一生出てきません。
+                // 2Dを描くのはscene.Render()を通るrenderFrameの方です。
+                // renderComposedFrameは3Dの合成だけなので、スプライトを置いても一生出てきません。
                 const auto computeFrame = renderFrame();
                 DumpFrame("compute-effect", computeFrame);
                 static_cast<void>(
@@ -8333,9 +8237,8 @@ int main(const int argumentCount, char** arguments)
                     {
                         const auto pixel =
                             At(computeFrame, x, y);
-                        // 背景の床は(191,151,48)のような暖色で、
-                        // 青がはっきり低い。混ざらないよう、
-                        // 「他の2色がどちらも低い」ものだけ数えます。
+                        // 背景の床は(191,151,48)のような暖色で、青がはっきり低い。
+                        // 混ざらないよう、「他の2色がどちらも低い」ものだけ数えます。
                         if (pixel.green > 80
                             && pixel.red < 60
                             && pixel.blue < 60)
@@ -8359,10 +8262,8 @@ int main(const int argumentCount, char** arguments)
                     "A SpriteRenderer pointed at the compute"
                     " output must show both halves of it.");
 
-                // GraphicsDevice経由でもcompute manifestの任意entryを
-                // 実行し、失敗時にCSMain固定の誤診断を足さないことを
-                // 確かめます。fixtureのsourceはasset-root相対なので、
-                // この検証中だけfixture directoryをrootにします。
+                // GraphicsDevice経由でもcompute manifestの任意entryを実行し、失敗時にCSMain固定の誤診断を足さないことを確かめます。
+                // fixtureのsourceはasset-root相対なので、この検証中だけfixture directoryをrootにします。
                 const auto engineAssetRoot =
                     graphics.Assets().AssetRoot();
                 graphics.Assets().SetAssetRoot(
@@ -8417,11 +8318,9 @@ int main(const int argumentCount, char** arguments)
                     savedCameraRotation);
             }
 
-            // リフレクションプローブの確認。鏡面の球のそばに
-            // 緑の壁を置いてプローブを焼く。テストシーンには
-            // Skyboxが無いので、プローブ無しでは球へ緑が映る
-            // 経路が存在しない＝球に緑が出ればプローブが機能
-            // している証拠になる。
+            // リフレクションプローブの確認。
+            // 鏡面の球のそばに緑の壁を置いてプローブを焼く。
+            // テストシーンにはSkyboxが無いので、プローブ無しでは球へ緑が映る経路が存在しない＝球に緑が出ればプローブが機能している証拠になる。
             {
                 subject.GetTransform().position =
                     { 0.0f, 50.0f, 0.0f };
@@ -8448,8 +8347,8 @@ int main(const int argumentCount, char** arguments)
                         1.0f);
                 mirrorRenderer.SetMetallic(1.0f);
 
-                // 壁はカメラ（z=+6）の後ろ。カメラには映らず、
-                // 球の反射にだけ現れます。
+                // 壁はカメラ（z=+6）の後ろ。
+                // カメラには映らず、球の反射にだけ現れます。
                 auto& greenWall =
                     scene.CreateGameObject("ProbeWall");
                 greenWall.GetTransform().position =
@@ -8466,9 +8365,8 @@ int main(const int argumentCount, char** arguments)
                     1.0f,
                     1.0f);
 
-                // プローブは鏡面球の中心に置きます。球の面は内側
-                // から見ると全部裏面（カリングされる）なので、
-                // ベイクには球自身が映らず周囲だけが焼けます。
+                // プローブは鏡面球の中心に置きます。
+                // 球の面は内側から見ると全部裏面（カリングされる）なので、ベイクには球自身が映らず周囲だけが焼けます。
                 auto& probeObject =
                     scene.CreateGameObject(
                         "ReflectionProbe");
@@ -8483,8 +8381,7 @@ int main(const int argumentCount, char** arguments)
                 DumpFrame(
                     "reflection-probe-on",
                     renderComposedFrame());
-                // 診断: ベイクが走ったか、検索で見つかるかを出す
-                // （--dump時のみの出力。効いていないときの切り分け用）。
+                // 診断: ベイクが走ったか、検索で見つかるかを出す（--dump時のみの出力。効いていないときの切り分け用）。
                 {
                     auto& probeComponent =
                         *probeObject.GetComponent<
@@ -8525,10 +8422,9 @@ int main(const int argumentCount, char** arguments)
                         << std::endl;
                 }
 
-                // ボックス射影。箱の大きさを与えると、反射先が箱との
-                // 交点へ補正されて壁が正しい距離で映ります。指定なしの
-                // ときは無限遠として映るため、球の上に映る壁の
-                // 位置と大きさが変わります。
+                // ボックス射影。
+                // 箱の大きさを与えると、反射先が箱との交点へ補正されて壁が正しい距離で映ります。
+                // 指定なしのときは無限遠として映るため、球の上に映る壁の位置と大きさが変わります。
                 {
                     auto& probeComponent =
                         *probeObject.GetComponent<
@@ -8570,9 +8466,8 @@ int main(const int argumentCount, char** arguments)
                 cameraObject.GetTransform().SetEulerAngles(savedCameraRotation);
             }
 
-            // ベイク結果がディスクへ保存され、シーン再読み込み時に復元されることを
-            // 確認します。復元画像の一致と、壁を変更しても保存済みの反射を返すことを
-            // 別々に検証します。
+            // ベイク結果がディスクへ保存され、シーン再読み込み時に復元されることを確認します。
+            // 復元画像の一致と、壁を変更しても保存済みの反射を返すことを別々に検証します。
             {
                 subject.GetTransform().position =
                     { 0.0f, 50.0f, 0.0f };
@@ -8616,8 +8511,7 @@ int main(const int argumentCount, char** arguments)
                     1.0f,
                     1.0f);
 
-                // 決定性のため、空のキャッシュから始めます
-                // （置き場はmainでtest-output配下へ差し替え済み）。
+                // 決定性のため、空のキャッシュから始めます（置き場はmainでtest-output配下へ差し替え済み）。
                 const auto environmentCacheDirectory =
                     LamaPon::EnvironmentCache::
                         CacheDirectory();
@@ -8640,9 +8534,9 @@ int main(const int argumentCount, char** arguments)
                                 ReflectionProbeComponent>(
                             20.0f,
                             1.0f);
-                    // シーンファイル由来の印。実際のシーン読み込み
-                    // ではデシリアライザが立てます。これが無い
-                    // プローブは保存も復元もされません。
+                    // シーンファイル由来の印。
+                    // 実際のシーン読み込みではデシリアライザが立てます。
+                    // これが無いプローブは保存も復元もされません。
                     component.MarkLoadedFromScene();
                     return component;
                 };
@@ -8738,15 +8632,11 @@ int main(const int argumentCount, char** arguments)
                     savedCameraRotation);
             }
 
-            // ベイクした間接光（照度ボリューム）。赤い壁のそばの
-            // 床に、壁からのはね返り（バウンス光）が出ることを
-            // 確かめます。
-            //
-            // データ未生成時は画像が変化しないこと、ベイク後は壁付近だけへ
-            // 赤い間接光が加わること、JSON往復後も同じ結果になることを検証します。
+            // ベイクした間接光（照度ボリューム）。
+            // 赤い壁のそばの床に、壁からのはね返り（バウンス光）が出ることを確かめます。
+            // データ未生成時は画像が変化しないこと、ベイク後は壁付近だけへ赤い間接光が加わること、JSON往復後も同じ結果になることを検証します。
             {
-                // 測定領域へ検査用オブジェクトが映り込まないよう、
-                // subjectとcloneを画面外へ移動します。
+                // 測定領域へ検査用オブジェクトが映り込まないよう、subjectとcloneを画面外へ移動します。
                 const auto giSavedClonePosition =
                     clone.GetTransform().position;
                 subject.GetTransform().position =
@@ -8758,7 +8648,8 @@ int main(const int argumentCount, char** arguments)
                 cameraObject.GetTransform().SetEulerAngles(
                     { -0.35f, 0.0f, 0.0f });
 
-                // 赤い壁。カメラから見て左側に立てます。
+                // 赤い壁。
+                // カメラから見て左側に立てます。
                 auto& redWall =
                     scene.CreateGameObject("GiRedWall");
                 redWall.GetTransform().position =
@@ -8775,8 +8666,8 @@ int main(const int argumentCount, char** arguments)
                     1.0f,
                     1.0f);
 
-                // 床の帯の「赤寄り」。壁のそば（画面左）と、壁から
-                // 離れた場所（画面右）を同じ大きさで測ります。
+                // 床の帯の「赤寄り」。
+                // 壁のそば（画面左）と、壁から離れた場所（画面右）を同じ大きさで測ります。
                 const auto redSkew =
                     [&](const std::vector<std::uint8_t>& frame,
                         const std::uint32_t minimumX,
@@ -8796,8 +8687,7 @@ int main(const int argumentCount, char** arguments)
                     }
                     return skew;
                 };
-                // 帯はダンプ画像から決めています（壁の右が床になる
-                // のはx≈105から。遠い帯はボリュームの外の床です）。
+                // 帯はダンプ画像から決めています（壁の右が床になるのはx≈105から。遠い帯はボリュームの外の床です）。
                 constexpr std::uint32_t nearMinimumX = 110;
                 constexpr std::uint32_t nearMaximumX = 150;
                 constexpr std::uint32_t farMinimumX = 270;
@@ -8816,8 +8706,7 @@ int main(const int argumentCount, char** arguments)
                     scene.BakedGlobalIllumination();
                 giSettings.enabled = true;
                 // ボリュームは壁のある左半分だけを覆います。
-                // 「箱の外の床は1画素も変わらない」を遠い帯の検査に
-                // するためです（縁のフェードの検証も兼ねます）。
+                // 「箱の外の床は1画素も変わらない」を遠い帯の検査にするためです（縁のフェードの検証も兼ねます）。
                 giSettings.center = { -3.0f, 1.0f, 0.0f };
                 giSettings.size = { 10.0f, 6.0f, 16.0f };
                 giSettings.resolutionX = 4;
@@ -8873,8 +8762,7 @@ int main(const int argumentCount, char** arguments)
                     << ", far (outside volume): "
                     << farBefore << " -> " << farAfter
                     << std::endl;
-                // どこで効いているかの診断（8画素刻みの列プロファイル。
-                // 帯の位置がずれたときに、この数字から選び直します）。
+                // どこで効いているかの診断（8画素刻みの列プロファイル。帯の位置がずれたときに、この数字から選び直します）。
                 std::cout << "gi column profile:";
                 for (std::uint32_t column = 0;
                     column < 320;
@@ -8889,16 +8777,13 @@ int main(const int argumentCount, char** arguments)
                             / (8 * 35);
                 }
                 std::cout << std::endl;
-                // 壁のそばは1画素あたり2以上赤くなること
-                // （閾値は1画素あたりで決めます）。
+                // 壁のそばは1画素あたり2以上赤くなること（閾値は1画素あたりで決めます）。
                 Require(
                     nearAfter - nearBefore > bandPixels * 2,
                     "GI must bounce red light onto the floor"
                     " near the wall.");
-                // ボリュームの外の床は（1画素あたり1未満まで）
-                // 変わらないこと。縁のフェードの外では重みが
-                // ちょうど0になり、従来のAmbientがそのまま
-                // 使われるためです。
+                // ボリュームの外の床は（1画素あたり1未満まで）変わらないこと。
+                // 縁のフェードの外では重みがちょうど0になり、従来のAmbientがそのまま使われるためです。
                 Require(
                     std::abs(farAfter - farBefore)
                         < bandPixels,
@@ -8906,15 +8791,13 @@ int main(const int argumentCount, char** arguments)
                     " stay unchanged.");
 
                 // (3)保存→読み込みで同じ間接光が再現されること。
-                // この場でシーンを丸ごとJSONにし、テストの最後に
-                // 別のSceneへ読み込んで見比べます（今のSceneを
-                // 壊すと以降の節が使えなくなるため、検証は最後です）。
+                // この場でシーンを丸ごとJSONにし、テストの最後に別のSceneへ読み込んで見比べます（今のSceneを壊すと以降の節が使えなくなるため、検証は最後です）。
                 giRoundTripJson = scene.SerializeToJson();
                 giRoundTripExpectedNear =
                     nearAfter - nearBefore;
 
-                // 後片付け。表示は無効へ戻します（焼き込みデータは
-                // 残りますが、enabledが偽なら描画へ影響しません）。
+                // 後片付け。
+                // 表示は無効へ戻します（焼き込みデータは残りますが、enabledが偽なら描画へ影響しません）。
                 giSettings.enabled = false;
                 scene.SetBakedGlobalIlluminationSettings(
                     giSettings);
@@ -8933,12 +8816,9 @@ int main(const int argumentCount, char** arguments)
                 static_cast<void>(giRestoredFrame);
             }
 
-            // レトロ3D（PS1風）Shaderの確認。テクスチャの泳ぎは
-            // 「大きなポリゴンを浅い角度で見る」ときに一番出るので、
-            // 巨大なPlaneを1枚敷いて低い視点から見ます。UVを細かく
-            // 繰り返して市松模様にし、直線が折れる様子を見えるように
-            // します（アルベド画像が無くてもUVスケールで格子は作れ
-            // ないため、色の量子化と頂点スナップが主な判定材料）。
+            // レトロ3D（PS1風）Shaderの確認。
+            // テクスチャの泳ぎは「大きなポリゴンを浅い角度で見る」ときに一番出るので、巨大なPlaneを1枚敷いて低い視点から見ます。
+            // UVを細かく繰り返して市松模様にし、直線が折れる様子を見えるようにします（アルベド画像が無くてもUVスケールで格子は作れないため、色の量子化と頂点スナップが主な判定材料）。
             {
                 subject.GetTransform().position =
                     { 0.0f, 50.0f, 0.0f };
@@ -8952,14 +8832,13 @@ int main(const int argumentCount, char** arguments)
                     { 0.0f, -1.0f, -10.0f };
                 retroFloor.GetTransform().scale =
                     { 40.0f, 1.0f, 60.0f };
+                // テクスチャが無いと泳ぎは目に見えません（歪むのはUVなので、模様が必要です）。
                 auto& retroRenderer =
                     retroFloor.AddComponent<
                         LamaPon::MeshRendererComponent>(
                         LamaPon::PrimitiveShape::Plane,
                         DirectX::XMFLOAT4{
                             1.0f, 1.0f, 1.0f, 1.0f },
-                        // テクスチャが無いと泳ぎは目に見えません
-                        // （歪むのはUVなので、模様が必要です）。
                         std::filesystem::path{ "textures" }
                             / "directxtk.jpg");
                 retroRenderer.SetShaderPath(
@@ -9043,8 +8922,7 @@ int main(const int argumentCount, char** arguments)
                     "retro3d-off",
                     renderComposedFrame());
 
-                // 最後にONへ戻して、描画が復活するか確認します
-                // （復活すればパラメーター依存、しなければ状態依存）。
+                // 最後にONへ戻して、描画が復活するか確認します（復活すればパラメーター依存、しなければ状態依存）。
                 setRetroParameters(1.0f, 1.0f);
                 Stage("frame-retro3d-onagain");
                 DumpFrame(
@@ -9062,14 +8940,11 @@ int main(const int argumentCount, char** arguments)
                 cameraObject.GetTransform().SetEulerAngles(savedCameraRotation);
             }
 
-            // ノイズのCPU/GPU一致。C++（LamaPon::Noise）とHLSL
-            // （LamaPonNoise.hlsli）は同じ値を返す約束なので、
-            // 実際に突き合わせます。ここがずれると「C++で地形を
-            // 作り、シェーダーで同じノイズを使う」が成立しません。
-            //
-            // 画面全体へノイズの値を書き出す専用Shaderを1枚かけて、
-            // 中央のピクセルを読み取ります。8bitバッファなので
-            // R=上位、G=下位に分けて精度を確保しています。
+            // ノイズのCPU/GPU一致。
+            // C++（LamaPon::Noise）とHLSL（LamaPonNoise.hlsli）は同じ値を返す約束なので、実際に突き合わせます。
+            // ここがずれると「C++で地形を作り、シェーダーで同じノイズを使う」が成立しません。
+            // 画面全体へノイズの値を書き出す専用Shaderを1枚かけて、中央のピクセルを読み取ります。
+            // 8bitバッファなのでR=上位、G=下位に分けて精度を確保しています。
             {
                 struct NoiseCase final
                 {
@@ -9163,8 +9038,7 @@ int main(const int argumentCount, char** arguments)
                         << " gpu=" << measured
                         << " diff=" << difference
                         << std::endl;
-                    // ここのRequireはconst char*を取るため、
-                    // 失敗した種類は上のログ行から読み取ります。
+                    // ここのRequireはconst char*を取るため、失敗した種類は上のログ行から読み取ります。
                     Require(
                         difference < 0.01f,
                         "CPU and GPU noise implementations"
@@ -9174,10 +9048,8 @@ int main(const int argumentCount, char** arguments)
                 static_cast<void>(probeUsable);
             }
 
-            // Manifestの構文・検証エラーには、VSMain/PSMain固定だった
-            // 旧HLSL向けの診断を足しません。type値へ意図的に
-            // "entrypoint not found"を入れ、旧診断へ誤って流すと
-            // PSMainの案内が付くケースを回帰検証します。
+            // Manifestの構文・検証エラーには、VSMain/PSMain固定だった旧HLSL向けの診断を足しません。
+            // type値へ意図的に"entrypoint not found"を入れ、旧診断へ誤って流すとPSMainの案内が付くケースを回帰検証します。
             {
                 LamaPon::ScreenEffectRequest request;
                 request.shader =
@@ -9204,13 +9076,9 @@ int main(const int argumentCount, char** arguments)
             }
 
             // ScreenEffectがシーンの深度（t3）を読めることの確認。
-            // 手前に箱を置き、その画素と背景（何も無い＝遠平面）の
-            // 画素で距離が違うことを見ます。
-            //
-            // 深度が刺さっていないとShaderは0を読み、距離はニア
-            // クリップ面に張り付いて画面が一様になります。つまり
-            // 「手前と奥の差が出ない」が配線が外れたときの症状で、
-            // ここが0に近ければ落ちます。
+            // 手前に箱を置き、その画素と背景（何も無い＝遠平面）の画素で距離が違うことを見ます。
+            // 深度が刺さっていないとShaderは0を読み、距離はニアクリップ面に張り付いて画面が一様になります。
+            // つまり「手前と奥の差が出ない」が配線が外れたときの症状で、ここが0に近ければ落ちます。
             {
                 subject.GetTransform().position =
                     savedSubjectPosition;
@@ -9251,8 +9119,7 @@ int main(const int argumentCount, char** arguments)
                 {
                     const auto pixel = At(frame, x, y);
                     // 青一色は「深度が無効」の合図（fixture参照）。
-                    // 値はR・Gにしか書かないので、Bが立っていたら
-                    // それしかありません。
+                    // 値はR・Gにしか書かないので、Bが立っていたらそれしかありません。
                     Require(
                         pixel.blue < 128,
                         "The screen effect reported that no"
@@ -9272,8 +9139,7 @@ int main(const int argumentCount, char** arguments)
                 DumpFrame(
                     "screeneffect-depth",
                     depthFrame);
-                // 特定画素が背景だけを指す場合を避けるため、
-                // 画面全体の最小値と最大値を使います。
+                // 特定画素が背景だけを指す場合を避けるため、画面全体の最小値と最大値を使います。
                 float nearDistance = depthProbeRange;
                 float farDistance = 0.0f;
                 for (std::uint32_t y = 0; y < Height; ++y)
@@ -9358,8 +9224,8 @@ int main(const int argumentCount, char** arguments)
                     " reproduce what the shader computed.");
 
                 // (4)深度から組み立てた法線。単位ベクトルになって
-                // いること、かつ画面内で向きが変わっていることを
-                // 見ます。長さと方向の分布を併せて検証します。
+                // いること、かつ画面内で向きが変わっていることを見ます。
+                // 長さと方向の分布を併せて検証します。
                 const auto normalFrame = probeFrame(2.0f);
                 DumpFrame(
                     "screeneffect-normal",
@@ -9376,8 +9242,7 @@ int main(const int argumentCount, char** arguments)
                         x + 1 < Width;
                         ++x)
                     {
-                        // ジオメトリのある画素だけ見ます（空は
-                        // 遠平面どうしなので法線が定義できません）。
+                        // ジオメトリのある画素だけ見ます（空は遠平面どうしなので法線が定義できません）。
                         const auto rawPixel =
                             At(rawFrame, x, y);
                         const float rawValue =
@@ -9438,9 +9303,7 @@ int main(const int argumentCount, char** arguments)
                     " the scene, not be a constant vector.");
             }
 
-            // ノイズの見本Shaderを5種類ぶん焼いて目視できるように
-            // します（数値の一致は上の段で見たので、ここは
-            // 「意図した模様になっているか」の確認用）。
+            // ノイズの見本Shaderを5種類ぶん焼いて目視できるようにします（数値の一致は上の段で見たので、ここは「意図した模様になっているか」の確認用）。
             {
                 subject.GetTransform().position =
                     { 0.0f, 50.0f, 0.0f };
@@ -9509,9 +9372,8 @@ int main(const int argumentCount, char** arguments)
                 cameraObject.GetTransform().SetEulerAngles(savedCameraRotation);
             }
 
-            // 水面の見本Shader。ノイズで作った波の傾きで太陽と空を
-            // 反射するので、「面全体が一様でないこと」が最低条件です
-            // （一様なら波の法線が出ていない＝計算が死んでいる）。
+            // 水面の見本Shader。
+            // ノイズで作った波の傾きで太陽と空を反射するので、「面全体が一様でないこと」が最低条件です（一様なら波の法線が出ていない＝計算が死んでいる）。
             {
                 const auto savedSubject =
                     subject.GetTransform().position;
@@ -9521,27 +9383,23 @@ int main(const int argumentCount, char** arguments)
                     cameraObject.GetTransform().EulerAngles();
                 subject.GetTransform().position =
                     { 0.0f, 50.0f, 0.0f };
-                // SubjectCloneは最初の段で作った赤いキューブで、
-                // 誰も片付けないまま残っています。水面の絵に写り
-                // 込むと「これは何だ」となるので一緒に退かします。
+                // SubjectCloneは最初の段で作った赤いキューブで、誰も片付けないまま残っています。
+                // 水面の絵に写り込むと「これは何だ」となるので一緒に退かします。
                 const auto savedClonePosition =
                     clone.GetTransform().position;
                 clone.GetTransform().position =
                     { 0.0f, 50.0f, 0.0f };
-                // 太陽の反射（光の帯）が画面の真ん中に来る配置に
-                // します。太陽の高度とカメラの伏せ角を揃えるのが
-                // 条件で、どちらも約30度にしてあります。ずれると
-                // 帯は水平線の向こうへ行き、絵に写りません。
+                // 太陽の反射（光の帯）が画面の真ん中に来る配置にします。
+                // 太陽の高度とカメラの伏せ角を揃えるのが条件で、どちらも約30度にしてあります。
+                // ずれると帯は水平線の向こうへ行き、絵に写りません。
                 cameraObject.GetTransform().position =
                     { 0.0f, 3.0f, 7.0f };
                 cameraObject.GetTransform().SetEulerAngles(
                     { -0.38f, 0.0f, 0.0f });
                 sunObject.SetEnabled(true);
                 // 太陽をカメラの向こう側・低い位置へ置きます。
-                // 水面の反射は「太陽が自分の向こうにあるとき」しか
-                // 見えません（背中側にあると光の帯は水平線の裏へ
-                // 行きます）。WorldDirection()は光の進む向きで、
-                // yaw=πのとき (0, sin(pitch), cos(pitch)) です。
+                // 水面の反射は「太陽が自分の向こうにあるとき」しか見えません（背中側にあると光の帯は水平線の裏へ行きます）。
+                // WorldDirection()は光の進む向きで、yaw=πのとき (0, sin(pitch), cos(pitch)) です。
                 const auto savedSunAngles =
                     sunObject.GetTransform().EulerAngles();
                 sunObject.GetTransform().SetEulerAngles(
@@ -9595,9 +9453,8 @@ int main(const int argumentCount, char** arguments)
                 const auto waterFrame = renderComposedFrame();
                 DumpFrame("water", waterFrame);
 
-                // 水面が確実に写っている範囲だけを見ます。画面の
-                // 下半分ぜんぶを測ると、水と空の境目の段差だけで
-                // ばらつきが出てしまい、波が無くても閾値を超えるためです。
+                // 水面が確実に写っている範囲だけを見ます。
+                // 画面の下半分ぜんぶを測ると、水と空の境目の段差だけでばらつきが出てしまい、波が無くても閾値を超えるためです。
                 double sum{};
                 double sumSquared{};
                 double peak{};
@@ -9627,16 +9484,14 @@ int main(const int argumentCount, char** arguments)
                     << " stddev=" << deviation
                     << " peak=" << peak
                     << std::endl;
-                // 水面色だけで通らないよう、太陽反射による輝度205超の
-                // ハイライトを要求します。
+                // 水面色だけで通らないよう、太陽反射による輝度205超のハイライトを要求します。
                 Require(
                     peak > 205.0,
                     "The water sample shader must show the"
                     " sun's reflection as a bright highlight.");
-                // 2つ見ます。meanは「そもそも色が出ているか」
-                // （パラメーターが0のままだと真っ黒＝mean 2以下に
-                // なります）。deviationは「波が効いているか」
-                // （法線が全部真上なら映り込みが一様になります）。
+                // 2つ見ます。
+                // meanは「そもそも色が出ているか」（パラメーターが0のままだと真っ黒＝mean 2以下になります）。
+                // deviationは「波が効いているか」（法線が全部真上なら映り込みが一様になります）。
                 Require(
                     mean > 20.0,
                     "The water sample shader must render a"
@@ -9661,9 +9516,8 @@ int main(const int argumentCount, char** arguments)
                     savedCameraAngles);
             }
 
-            // 太陽の角度サイズ。つるつるの球で、見かけの大きさを
-            // 0度（点）／0.53度（太陽相当）／8度（曇り）と振り、
-            // ハイライトが広がることを画素数で測ります。
+            // 太陽の角度サイズ。
+            // つるつるの球で、見かけの大きさを0度（点）／0.53度（太陽相当）／8度（曇り）と振り、ハイライトが広がることを画素数で測ります。
             {
                 const auto savedSubject =
                     subject.GetTransform().position;
@@ -9677,20 +9531,17 @@ int main(const int argumentCount, char** arguments)
                     clone.GetTransform().position;
                 clone.GetTransform().position =
                     { 0.0f, 50.0f, 0.0f };
-                // 測る相手は球ではなく「寝かせた平面」です。球だと
-                // 法線が画素ごとに大きく回るため、0.53度ぶんの反射が
-                // 1画素未満に潰れます。平面なら反射の向きが
-                // ゆっくり変わるので、太陽の円盤が横に伸びた光の帯
-                // として広い面積に写ります。
+                // 測る相手は球ではなく「寝かせた平面」です。
+                // 球だと法線が画素ごとに大きく回るため、0.53度ぶんの反射が1画素未満に潰れます。
+                // 平面なら反射の向きがゆっくり変わるので、太陽の円盤が横に伸びた光の帯として広い面積に写ります。
                 cameraObject.GetTransform().position =
                     { 0.0f, 1.2f, 6.0f };
                 cameraObject.GetTransform().SetEulerAngles(
                     { -0.16f, 0.0f, 0.0f });
                 sunObject.SetEnabled(true);
                 scene.SetAmbientLightIntensity(0.02f);
-                // 水面と同じ理由で、太陽はカメラの向こう側・低い
-                // 位置に置きます。背中側にあると鏡の面には太陽が
-                // 一切写らず、角度を変えても同じ暗い画像になります。
+                // 水面と同じ理由で、太陽はカメラの向こう側・低い位置に置きます。
+                // 背中側にあると鏡の面には太陽が一切写らず、角度を変えても同じ暗い画像になります。
                 const auto savedSunAnglesForSize =
                     sunObject.GetTransform().EulerAngles();
                 sunObject.GetTransform().SetEulerAngles(
@@ -9700,34 +9551,27 @@ int main(const int argumentCount, char** arguments)
                     scene.CreateGameObject("SunSizeMirror");
                 mirror.GetTransform().scale =
                     { 12.0f, 1.0f, 12.0f };
+                // 磨いた金属です。
+                // 暗い金属にすると反射率（F0＝albedo）ごと下がってハイライトまで暗くなり、広がりが測れなくなります。
+                // 粗さ0.2です。
+                // 完全な鏡（0.04）にすると、点光源のハイライトが1画素より細くなってサンプリングから漏れ、比べる相手が「たまたま拾えた10」のような値になってしまいます。
+                // 少しざらつかせて、両方が確実に画素へ乗るようにしています。
                 auto& mirrorRenderer =
                     mirror.AddComponent<
                         LamaPon::MeshRendererComponent>(
                         LamaPon::PrimitiveShape::Plane,
-                        // 磨いた金属です。暗い金属にすると反射率
-                        // （F0＝albedo）ごと下がってハイライトまで
-                        // 暗くなり、広がりが測れなくなります。
                         DirectX::XMFLOAT4{
                             0.95f, 0.95f, 0.95f, 1.0f },
                         std::filesystem::path{},
                         std::filesystem::path{},
-                        // 粗さ0.2です。完全な鏡（0.04）にすると、
-                        // 点光源のハイライトが1画素より細くなって
-                        // サンプリングから漏れ、比べる相手が「たまたま
-                        // 拾えた10」のような値になってしまいます。
-                        // 少しざらつかせて、両方が確実に画素へ乗る
-                        // ようにしています。
                         0.2f,
                         1.0f);
                 // 6番目の引数はnormalStrengthでmetallicではありません。
-                // 金属度を上げないと拡散反射が残り、面全体がN･Lの
-                // 明るさで埋まってハイライトの広がりを測れません。
+                // 金属度を上げないと拡散反射が残り、面全体がN･Lの明るさで埋まってハイライトの広がりを測れません。
                 mirrorRenderer.SetMetallic(1.0f);
 
-                // ハイライトの「広がり」を画素数で測ります。合計
-                // 輝度ではないのは、代表点法がピークの高さではなく
-                // 広がりを変える手法だからです（エネルギーは保存
-                // するので、合計はあまり動きません）。
+                // ハイライトの「広がり」を画素数で測ります。
+                // 合計輝度ではないのは、代表点法がピークの高さではなく広がりを変える手法だからです（エネルギーは保存するので、合計はあまり動きません）。
                 const auto countHighlight =
                     [&](const char* name,
                         int& maximumLuminance) -> int
@@ -9756,8 +9600,7 @@ int main(const int argumentCount, char** arguments)
                             maximumLuminance = std::max(
                                 maximumLuminance,
                                 luminance);
-                            // 金属面は太陽の反射以外が暗いため、
-                            // 低い閾値で反射部分を数えます。
+                            // 金属面は太陽の反射以外が暗いため、低い閾値で反射部分を数えます。
                             if (luminance > 40)
                             {
                                 ++bright;
@@ -9794,8 +9637,7 @@ int main(const int argumentCount, char** arguments)
                     << " real=" << realPeak
                     << " wide=" << widePeak
                     << std::endl;
-                // 角度がシェーダーへ反映されることを検出するため、
-                // 広い光源でハイライトが200画素以上増えることを要求します。
+                // 角度がシェーダーへ反映されることを検出するため、広い光源でハイライトが200画素以上増えることを要求します。
                 Require(
                     wideHighlight > pointHighlight + 200,
                     "A larger angular diameter must widen the"
@@ -9817,8 +9659,8 @@ int main(const int argumentCount, char** arguments)
                     savedCameraAngles);
             }
 
-            // Screen Space Lens Flare。明るい点から出るゴーストと
-            // ハローなので、「切ったときとの差」で確かめます。
+            // Screen Space Lens Flare。
+            // 明るい点から出るゴーストとハローなので、「切ったときとの差」で確かめます。
             // 太陽を画面へ入れて光源を作ります。
             {
                 const auto savedSubject =
@@ -9863,8 +9705,8 @@ int main(const int argumentCount, char** arguments)
                 const auto onFrame = renderComposedFrame();
                 DumpFrame("lensflare-on", onFrame);
 
-                // 1画素あたりの増分で見ます。合計値へ定数を置くと、
-                // 効いていなくても画素数で越えてしまいます。
+                // 1画素あたりの増分で見ます。
+                // 合計値へ定数を置くと、効いていなくても画素数で越えてしまいます。
                 double added{};
                 int changed{};
                 for (std::uint32_t y = 0; y < Height; ++y)
@@ -9896,12 +9738,8 @@ int main(const int argumentCount, char** arguments)
                     << "lens flare: changed=" << changed
                     << " perPixel=" << perPixel
                     << std::endl;
-                // レンズフレアは画面の一部にだけ出るものなので、
-                // 「広い面積が薄く変わる」ではなく「狭い面積が
-                // はっきり明るくなる」ことを見ます。
-                //
-                // 小さい太陽でも局所的な効果を検出できるよう、20画素超かつ
-                // 1画素あたりの差20超を要求します。
+                // レンズフレアは画面の一部にだけ出るものなので、「広い面積が薄く変わる」ではなく「狭い面積がはっきり明るくなる」ことを見ます。
+                // 小さい太陽でも局所的な効果を検出できるよう、20画素超かつ1画素あたりの差20超を要求します。
                 Require(
                     changed > 20,
                     "Screen space lens flare must brighten a"
@@ -9912,8 +9750,7 @@ int main(const int argumentCount, char** arguments)
                     " per pixel, not a faint wash.");
 
                 // アナモルフィック風（十字に長く伸びる筋）。
-                // 多段パスが効いていないと筋が出ないので、ゴースト
-                // だけの上の状態と比べて差が出ることを見ます。
+                // 多段パスが効いていないと筋が出ないので、ゴーストだけの上の状態と比べて差が出ることを見ます。
                 auto anamorphic = flare;
                 anamorphic.enabled = true;
                 anamorphic.threshold = 1.0f;
@@ -9958,9 +9795,8 @@ int main(const int argumentCount, char** arguments)
                 std::cout
                     << "lens flare streaks: changed="
                     << streakChanged << std::endl;
-                // 筋は画面を横切るので、ゴーストだけの44画素とは
-                // 桁が違う面積になるはずです。多段パスが効かないと
-                // ここが伸びません。
+                // 筋は画面を横切るので、ゴーストだけの44画素とは桁が違う面積になるはずです。
+                // 多段パスが効かないとここが伸びません。
                 Require(
                     streakChanged > 500,
                     "Multi-pass streaks must cover far more"
@@ -9981,9 +9817,7 @@ int main(const int argumentCount, char** arguments)
             }
 
             // 被写界深度（DoF）。
-            //
-            // 手前と奥の同じ立方体で焦点位置を入れ替え、焦点側の輪郭だけが
-            // 鋭くなることを両方向で確認します。
+            // 手前と奥の同じ立方体で焦点位置を入れ替え、焦点側の輪郭だけが鋭くなることを両方向で確認します。
             {
                 const auto savedSubject =
                     subject.GetTransform().position;
@@ -10002,20 +9836,18 @@ int main(const int argumentCount, char** arguments)
                     scene.TemporalAntiAliasing();
                 const auto savedQuality = graphics.Settings();
 
-                // 背景を単色にします。空を描くとぼけても模様が
-                // 変わらない領域が増えて、測る値が薄まります。
+                // 背景を単色にします。
+                // 空を描くとぼけても模様が変わらない領域が増えて、測る値が薄まります。
                 auto flatSky = scene.Sky();
                 flatSky.enabled = false;
                 scene.SetSkySettings(flatSky);
-                // TAAは前フレームと混ぜるので、1枚ずつ撮るこの検証
-                // では2枚が互いに汚染します。ここだけ切ります。
+                // TAAは前フレームと混ぜるので、1枚ずつ撮るこの検証では2枚が互いに汚染します。
+                // ここだけ切ります。
                 auto noTemporal = scene.TemporalAntiAliasing();
                 noTemporal.enabled = false;
                 scene.SetTemporalAntiAliasingSettings(
                     noTemporal);
-                // 品質側のDoFを明示的に有効にします（プリセットの
-                // 既定に依存させると、既定を変えた日に無言で
-                // 対象を測定できません）。
+                // 品質側のDoFを明示的に有効にします（プリセットの既定に依存させると、既定を変えた日に無言で対象を測定できません）。
                 auto depthOfFieldQuality = graphics.Settings();
                 depthOfFieldQuality.depthOfFieldEnabled = true;
                 depthOfFieldQuality.depthOfFieldSampleCount = 24;
@@ -10023,8 +9855,7 @@ int main(const int argumentCount, char** arguments)
                     depthOfFieldQuality);
 
                 // カメラは原点から-Zを向きます（既定の回転）。
-                // 立方体は一辺2（scale 2の単位立方体）なので、
-                // 手前の1個は深度5〜7、奥の1個は29〜31を占めます。
+                // 立方体は一辺2（scale 2の単位立方体）なので、手前の1個は深度5〜7、奥の1個は29〜31を占めます。
                 cameraObject.GetTransform().position =
                     { 0.0f, 0.0f, 0.0f };
                 cameraObject.GetTransform().SetEulerAngles(
@@ -10038,8 +9869,7 @@ int main(const int argumentCount, char** arguments)
                 clone.GetTransform().scale =
                     { 2.0f, 2.0f, 2.0f };
 
-                // 320x180、縦画角45度で各立方体の輪郭を含み、
-                // 地面と空の境界を避ける帯を測定します。
+                // 320x180、縦画角45度で各立方体の輪郭を含み、地面と空の境界を避ける帯を測定します。
                 constexpr std::uint32_t NearMinimumX = 78;
                 constexpr std::uint32_t NearMaximumX = 124;
                 constexpr std::uint32_t NearMinimumY = 58;
@@ -10108,18 +9938,15 @@ int main(const int argumentCount, char** arguments)
                     << " -> " << farWhenFocusedNear
                     << std::endl;
 
-                // まず両方の帯に輪郭があること。帯の置き場所を間違えて
-                // 立方体の内側（真っ平ら）だけを測っていると比の判定が
-                // 無意味になるため、先に確認します。
-                //
+                // まず両方の帯に輪郭があること。
+                // 帯の置き場所を間違えて立方体の内側（真っ平ら）だけを測っていると比の判定が無意味になるため、先に確認します。
                 // 測定帯が輪郭を含むことを保証するため、鋭さ100超を要求します。
                 Require(
                     nearWhenFocusedNear > 100.0
                         && farWhenFocusedFar > 100.0,
                     "Both cubes must show an edge when they"
                     " are in focus.");
-                // 焦点位置を無視する一様なぼかしを除外するため、
-                // 焦点を外した側の鋭さが3分の1未満になることを要求します。
+                // 焦点位置を無視する一様なぼかしを除外するため、焦点を外した側の鋭さが3分の1未満になることを要求します。
                 Require(
                     nearWhenFocusedNear
                         > nearWhenFocusedFar * 3.0,
@@ -10149,12 +9976,9 @@ int main(const int argumentCount, char** arguments)
             }
 
             // モーションブラー（カメラの動きによるブレ）。
-            //
-            // カメラ移動による差を除くため、まったく同じカメラの動き
-            // に対して、ブラーのオン/オフだけを変えた2枚を撮って比べます。
-            // さらに「カメラを動かさなければオンでもオフと同じ」ことも
-            // 見ます。効果がゼロになる条件を用意するのがいちばん強い
-            // 確かめ方です。
+            // カメラ移動による差を除くため、まったく同じカメラの動きに対して、ブラーのオン/オフだけを変えた2枚を撮って比べます。
+            // さらに「カメラを動かさなければオンでもオフと同じ」ことも見ます。
+            // 効果がゼロになる条件を用意するのがいちばん強い確かめ方です。
             {
                 const auto savedSubject =
                     subject.GetTransform().position;
@@ -10174,8 +9998,8 @@ int main(const int argumentCount, char** arguments)
                 auto flatSky = scene.Sky();
                 flatSky.enabled = false;
                 scene.SetSkySettings(flatSky);
-                // TAAは前フレームと混ぜるので、フレームを跨いで比べる
-                // この検証では2枚が互いに汚染します。ここだけ切ります。
+                // TAAは前フレームと混ぜるので、フレームを跨いで比べるこの検証では2枚が互いに汚染します。
+                // ここだけ切ります。
                 auto noTemporal = scene.TemporalAntiAliasing();
                 noTemporal.enabled = false;
                 scene.SetTemporalAntiAliasingSettings(
@@ -10185,8 +10009,8 @@ int main(const int argumentCount, char** arguments)
                 motionQuality.motionBlurSampleCount = 12;
                 graphics.SetGraphicsSettings(motionQuality);
 
-                // 立方体を1つだけ正面に置きます。輪郭が縦なので、
-                // 横へ動かしたときのブレがそのまま横の甘さになります。
+                // 立方体を1つだけ正面に置きます。
+                // 輪郭が縦なので、横へ動かしたときのブレがそのまま横の甘さになります。
                 cameraObject.GetTransform().SetEulerAngles(
                     { 0.0f, 0.0f, 0.0f });
                 subject.GetTransform().position =
@@ -10201,17 +10025,15 @@ int main(const int argumentCount, char** arguments)
                 motionBlur.intensity = 1.0f;
                 motionBlur.maximumRadius = 24.0f;
 
-                // 立方体は画面中央に幅約73画素で写るので、左の輪郭
-                // （x≒124）をまたぐ帯を測ります。上限24画素ぶんの
-                // 余白を両側に取っています。
+                // 立方体は画面中央に幅約73画素で写るので、左の輪郭（x≒124）をまたぐ帯を測ります。
+                // 上限24画素ぶんの余白を両側に取っています。
                 constexpr std::uint32_t EdgeMinimumX = 96;
                 constexpr std::uint32_t EdgeMaximumX = 152;
                 constexpr std::uint32_t EdgeMinimumY = 78;
                 constexpr std::uint32_t EdgeMaximumY = 102;
 
-                // 「1枚目で前フレームの行列を控え、2枚目で動かす」を
-                // 毎回同じ手順で踏みます。オン/オフで動きが変わって
-                // しまうと比較になりません。
+                // 「1枚目で前フレームの行列を控え、2枚目で動かす」を毎回同じ手順で踏みます。
+                // オン/オフで動きが変わってしまうと比較になりません。
                 const auto renderAfterPan =
                     [&](const bool enabled, const float shiftX)
                 {
@@ -10234,8 +10056,8 @@ int main(const int argumentCount, char** arguments)
                 const auto panOnFrame =
                     renderAfterPan(true, 0.35f);
                 DumpFrame("motionblur-on", panOnFrame);
-                // カメラを動かさない場合。オンでも何も起きないはず
-                // （半画素も動いていないなら早期に抜ける作りです）。
+                // カメラを動かさない場合。
+                // オンでも何も起きないはず（半画素も動いていないなら早期に抜ける作りです）。
                 Stage("frame-motionblur-still");
                 const auto stillOnFrame =
                     renderAfterPan(true, 0.0f);
@@ -10274,8 +10096,8 @@ int main(const int argumentCount, char** arguments)
                     panOffSharpness > panOnSharpness * 2.0,
                     "Motion blur must soften the edge when the"
                     " camera pans.");
-                // 静止時はオフの絵と同じ鋭さに戻ること。ここが緩むと
-                // 「常に少しぼかしている」実装でも上の判定を通せます。
+                // 静止時はオフの絵と同じ鋭さに戻ること。
+                // ここが緩むと「常に少しぼかしている」実装でも上の判定を通せます。
                 Require(
                     stillSharpness > panOffSharpness * 0.9,
                     "Motion blur must do nothing when the camera"
@@ -10298,11 +10120,9 @@ int main(const int argumentCount, char** arguments)
             }
 
             // 自動露出（明順応・暗順応）。
-            //
-            // 「絵が明るくなった」だけでは、露出を上げるだけの実装でも
-            // 通ります。暗いシーンでは開き、明るいシーンでは絞るの
-            // 両方向を見ます。どちらもオフの絵との比で測るので、
-            // シーンの明るさそのものの差は約分されます。
+            // 「絵が明るくなった」だけでは、露出を上げるだけの実装でも通ります。
+            // 暗いシーンでは開き、明るいシーンでは絞るの両方向を見ます。
+            // どちらもオフの絵との比で測るので、シーンの明るさそのものの差は約分されます。
             {
                 const auto savedAmbient =
                     scene.AmbientLightIntensity();
@@ -10327,15 +10147,14 @@ int main(const int argumentCount, char** arguments)
                 autoExposure.minimumLuminance = 0.001f;
                 autoExposure.maximumLuminance = 20.0f;
 
-                // 明るさは画面上部の空で測ります。高輝度の地面は
-                // ACESの肩で圧縮され、露出差が画素値へ現れにくいためです。
+                // 明るさは画面上部の空で測ります。
+                // 高輝度の地面はACESの肩で圧縮され、露出差が画素値へ現れにくいためです。
                 // 輝度が低い空なら、露出の変化を直接測定できます。
                 constexpr std::uint32_t SkyMinimumY = 4;
                 constexpr std::uint32_t SkyMaximumY = 56;
 
-                // 露出の段数そのものも見ます。画素は色調整曲線を
-                // 通った後の値なので、「測れているか」「符号が
-                // 合っているか」はこちらのほうが直接確かめられます。
+                // 露出の段数そのものも見ます。
+                // 画素は色調整曲線を通った後の値なので、「測れているか」「符号が合っているか」はこちらのほうが直接確かめられます。
                 float measuredStops{};
                 float measuredLuminance{};
                 const auto measureBrightness =
@@ -10347,9 +10166,7 @@ int main(const int argumentCount, char** arguments)
                     scene.SetAutoExposureSettings(settings);
                     scene.SetAmbientLightIntensity(
                         ambientIntensity);
-                    // 測定は1フレーム遅れで効くので数枚回します
-                    // （読めなかったフレームがあっても落ちないよう
-                    // 余裕を持たせています）。
+                    // 測定は1フレーム遅れで効くので数枚回します（読めなかったフレームがあっても落ちないよう余裕を持たせています）。
                     std::vector<std::uint8_t> frame;
                     for (int index = 0; index < 4; ++index)
                     {
@@ -10436,14 +10253,14 @@ int main(const int argumentCount, char** arguments)
                     brightLuminance > darkLuminance * 2.0,
                     "The measured luminance must follow the"
                     " scene brightness.");
-                // 露出の段数が両方向へ振れること。暗いシーンでは
-                // 開き（正）、明るいシーンでは絞ります（負）。
+                // 露出の段数が両方向へ振れること。
+                // 暗いシーンでは開き（正）、明るいシーンでは絞ります（負）。
                 Require(
                     darkStops > 0.8f && brightStops < -0.15f,
                     "Auto exposure must open up on a dark scene"
                     " and close down on a bright one.");
-                // 振れ幅も見ます。片方だけ動く実装（明るい側で
-                // 飽和して止まるなど）を通さないためです。
+                // 振れ幅も見ます。
+                // 片方だけ動く実装（明るい側で飽和して止まるなど）を通さないためです。
                 Require(
                     darkStops - brightStops > 1.0f,
                     "The exposure must swing by more than a stop"
@@ -10465,14 +10282,13 @@ int main(const int argumentCount, char** arguments)
                     savedTemporal);
                 scene.SetSkySettings(savedSky);
                 scene.SetAmbientLightIntensity(savedAmbient);
-                // 露出を戻した状態で1枚回し、この後の段が前の露出を
-                // 引き継がないようにします。
+                // 露出を戻した状態で1枚回し、この後の段が前の露出を引き継がないようにします。
                 static_cast<void>(renderComposedFrame());
             }
 
-            // 非同期コンパイル。コンパイル中は標準Litで描いて処理を
-            // 止めず、焼き上がったら本来のシェーダーへ差し替わる
-            // ことを確かめます。ここだけ非同期へ戻します。
+            // 非同期コンパイル。
+            // コンパイル中は標準Litで描いて処理を止めず、焼き上がったら本来のシェーダーへ差し替わることを確かめます。
+            // ここだけ非同期へ戻します。
             {
                 const auto savedSubject =
                     subject.GetTransform().position;
@@ -10492,8 +10308,7 @@ int main(const int argumentCount, char** arguments)
                     { 0.0f, 0.0f, 0.0f });
 
                 graphics.SetAsyncShaderCompilationEnabled(true);
-                // 焼き上がり済みだと一発で出てしまい非同期の道を
-                // 通らないので、キャッシュを消してから始めます。
+                // 焼き上がり済みだと一発で出てしまい非同期の道を通らないので、キャッシュを消してから始めます。
                 LamaPon::ClearShaderCache();
 
                 auto& asyncPlane =
@@ -10521,8 +10336,8 @@ int main(const int argumentCount, char** arguments)
                     Width / 2,
                     Height / 2);
 
-                // 焼き上がるまで描き続けます。非同期なので何
-                // フレームかかるかは環境次第です。
+                // 焼き上がるまで描き続けます。
+                // 非同期なので何フレームかかるかは環境次第です。
                 Pixel settled{};
                 int frames = 0;
                 for (; frames < 600; ++frames)
@@ -10554,9 +10369,9 @@ int main(const int argumentCount, char** arguments)
                     frames < 600,
                     "An asynchronously compiled shader must"
                     " eventually replace the placeholder.");
-                // variant-probeはキーワード無しで暗い赤。標準Lit
-                // （コンパイル中の代役）は白い板なので緑成分が
-                // 残ります。ここが同じなら差し替わっていません。
+                // variant-probeはキーワード無しで暗い赤。
+                // 標準Lit（コンパイル中の代役）は白い板なので緑成分が残ります。
+                // ここが同じなら差し替わっていません。
                 Require(
                     settled.red > settled.green + 20,
                     "The settled frame must show the custom"
@@ -10574,10 +10389,9 @@ int main(const int argumentCount, char** arguments)
                     savedCameraAngles);
             }
 
-            // 壊れたShaderの知らせ方。コンパイルに失敗したものを
-            // 標準Litで代役すると、動いているように見えて実は
-            // 壊れている状態になります。マゼンタで描かれること、
-            // そして直したら本来の色へ戻ることを確かめます。
+            // 壊れたShaderの知らせ方。
+            // コンパイルに失敗したものを標準Litで代役すると、動いているように見えて実は壊れている状態になります。
+            // マゼンタで描かれること、そして直したら本来の色へ戻ることを確かめます。
             {
                 const auto savedSubject =
                     subject.GetTransform().position;
@@ -10613,9 +10427,8 @@ int main(const int argumentCount, char** arguments)
                     [&](const char* name) -> Pixel
                 {
                     Stage(name);
-                    // 1枚捨ててから撮ります。前の段が時間方向の
-                    // 蓄積（TAA・自動露出）を残していると、
-                    // 差し替えた直後の1枚に前の絵が混ざります。
+                    // 1枚捨ててから撮ります。
+                    // 前の段が時間方向の蓄積（TAA・自動露出）を残していると、差し替えた直後の1枚に前の絵が混ざります。
                     static_cast<void>(renderComposedFrame());
                     const auto frame = renderComposedFrame();
                     DumpFrame(name, frame);
@@ -10638,8 +10451,7 @@ int main(const int argumentCount, char** arguments)
                 const auto missing =
                     sampleShaderError("shader-error-missing");
 
-                // 2D用のシェーダーを3Dマテリアルへ設定した場合、HLSLは
-                // 「'VSMain': entrypoint not found」としか言いません。
+                // 2D用のシェーダーを3Dマテリアルへ設定した場合、HLSLは「'VSMain': entrypoint not found」としか言いません。
                 // 説明が足されて届くところまで（配線）を見ます。
                 errorRenderer.SetShaderPath(
                     std::filesystem::path{ "shaders" }
@@ -10653,9 +10465,9 @@ int main(const int argumentCount, char** arguments)
                     << wrongKindMessage
                     << std::endl;
 
-                // 動いていたShaderを書き間違えた場合。直前に成功
-                // したものを描き続けると「編集しても見た目が
-                // 変わらない」になります。ここが本命です。
+                // 動いていたShaderを書き間違えた場合。
+                // 直前に成功したものを描き続けると「編集しても見た目が変わらない」になります。
+                // ここが本命です。
                 const auto probePath =
                     std::filesystem::temp_directory_path()
                     / "lamapon-shader-error-probe.hlsl";
@@ -10672,8 +10484,7 @@ int main(const int argumentCount, char** arguments)
                 };
 
                 writeProbe("variant-probe.hlsl");
-                // 共有cacheをもう1つのMeshRendererにも持たせ、片方の
-                // reload直後にconst queryだけで追従できるか調べます。
+                // 共有cacheをもう1つのMeshRendererにも持たせ、片方のreload直後にconst queryだけで追従できるか調べます。
                 subjectRenderer.SetShaderPath(probePath);
                 errorRenderer.SetShaderPath(probePath);
                 const auto working =
@@ -10787,10 +10598,9 @@ int main(const int argumentCount, char** arguments)
                     savedCameraAngles);
             }
 
-            // Shaderバリアント。キーワードごとに別々のシェーダーと
-            // してコンパイルされ、マテリアルの指定で選ばれることを
-            // 色で確かめます。プリプロセッサで色を変える見本Shaderを
-            // 使うので、届いていなければ色が変わりません。
+            // Shaderバリアント。
+            // キーワードごとに別々のシェーダーとしてコンパイルされ、マテリアルの指定で選ばれることを色で確かめます。
+            // プリプロセッサで色を変える見本Shaderを使うので、届いていなければ色が変わりません。
             {
                 const auto savedSubject =
                     subject.GetTransform().position;
@@ -10895,9 +10705,9 @@ int main(const int argumentCount, char** arguments)
                     savedCameraAngles);
             }
 
-            // 朝昼夜。Directional Lightを回すだけで空と環境光が
-            // 変わることを見ます。太陽の高度を真上から真下まで
-            // 振って、明るさが単調に落ちることを確かめます。
+            // 朝昼夜。
+            // Directional Lightを回すだけで空と環境光が変わることを見ます。
+            // 太陽の高度を真上から真下まで振って、明るさが単調に落ちることを確かめます。
             {
                 const auto savedSunAnglesForSky =
                     sunObject.GetTransform().EulerAngles();
@@ -10912,7 +10722,8 @@ int main(const int argumentCount, char** arguments)
                 struct TimeOfDay final
                 {
                     const char* name;
-                    // 太陽の高度（度）。90=真上, 0=地平線, -20=夜。
+                    // 太陽の高度（度）。
+                    // 90=真上, 0=地平線, -20=夜。
                     float elevationDegrees;
                 };
                 const TimeOfDay times[]{
@@ -10925,10 +10736,8 @@ int main(const int argumentCount, char** arguments)
                 bool descending = true;
                 for (const auto& time : times)
                 {
-                    // yaw=piのとき、光の進む向きは
-                    // (0, sin(pitch), cos(pitch)) です。太陽を
-                    // 高度eへ置くには光が下向きに sin(e) 進めば
-                    // よいので pitch = -e になります。
+                    // yaw=piのとき、光の進む向きは(0, sin(pitch), cos(pitch)) です。
+                    // 太陽を高度eへ置くには光が下向きに sin(e) 進めばよいので pitch = -e になります。
                     const float pitch =
                         -DirectX::XMConvertToRadians(
                             time.elevationDegrees);
@@ -10963,9 +10772,8 @@ int main(const int argumentCount, char** arguments)
                     }
                     previousSkyLuminance = luminance;
                 }
-                // 太陽が下がるほど空は暗くなること。追従して
-                // いなければ4枚とも同じ明るさになり、ここで
-                // 落ちます。
+                // 太陽が下がるほど空は暗くなること。
+                // 追従していなければ4枚とも同じ明るさになり、ここで落ちます。
                 Require(
                     descending,
                     "The sun-driven sky must get darker as the"
@@ -10983,12 +10791,8 @@ int main(const int argumentCount, char** arguments)
             scene.SetAmbientOcclusionSettings(occlusion);
 
             // (8) 読み込みモデル（--dump のときだけ）。
-            // スキニングモデルはDirectXTKの頂点シェーダーで変形し、
-            // ピクセルシェーダーだけをLamaPon Litへ差し替える構造の
-            // ため、PSSkinnedMainの入力セマンティクスがずれていると
-            // UVと法線が入れ替わって明確に破綻します。Lit（既定）と
-            // 従来のDirectXTK描画の2枚を出して見比べられるように
-            // します。
+            // スキニングモデルはDirectXTKの頂点シェーダーで変形し、ピクセルシェーダーだけをLamaPon Litへ差し替える構造のため、PSSkinnedMainの入力セマンティクスがずれているとUVと法線が入れ替わって明確に破綻します。
+            // Lit（既定）と従来のDirectXTK描画の2枚を出して見比べられるようにします。
             auto& modelObject =
                 scene.CreateGameObject("DumpModel");
             modelObject.GetTransform().position =
@@ -11009,8 +10813,8 @@ int main(const int argumentCount, char** arguments)
             DumpFrame("model-legacy", renderComposedFrame());
             modelRenderer.SetUseLegacyShading(false);
 
-            // Litでは横縞（面ごとの段差）が見える。GGXの鏡面が面の
-            // 向きの差を強調しているだけなら、粗くすれば消えるはず。
+            // Litでは横縞（面ごとの段差）が見える。
+            // GGXの鏡面が面の向きの差を強調しているだけなら、粗くすれば消えるはず。
             // 粗さを両端に振って切り分けます。
             modelRenderer.SetMaterialOverrideEnabled(true);
             modelRenderer.SetRoughness(1.0f);
@@ -11039,10 +10843,8 @@ int main(const int argumentCount, char** arguments)
             modelRenderer.SetMaterialOverrideEnabled(false);
         }
 
-        // ベイクした間接光の保存→読み込み。GIの節で丸ごとJSONへ
-        // したシーンを別のSceneへ読み込み、同じ場所に同じ
-        // はね返りが出ることを確かめます（焼き込みデータはbase64の
-        // fp16なので、復元はビット単位で同じテクスチャになるはず）。
+        // ベイクした間接光の保存→読み込み。
+        // GIの節で丸ごとJSONへしたシーンを別のSceneへ読み込み、同じ場所に同じはね返りが出ることを確かめます（焼き込みデータはbase64のfp16なので、復元はビット単位で同じテクスチャになるはず）。
         // 主のsceneを壊さないよう、専用のSceneで行います。
         if (!giRoundTripJson.empty())
         {
@@ -11053,8 +10855,7 @@ int main(const int argumentCount, char** arguments)
                 reloadedScene.HasBakedGlobalIllumination(),
                 "The baked GI data must survive the JSON"
                 " round trip.");
-            // 保存時はenabled=trueのまま書いているので、復元後も
-            // 有効のはず。
+            // 保存時はenabled=trueのまま書いているので、復元後も有効のはず。
             Require(
                 reloadedScene.BakedGlobalIllumination()
                     .enabled,
@@ -11115,9 +10916,7 @@ int main(const int argumentCount, char** arguments)
                 << " (baked: "
                 << giRoundTripExpectedNear
                 << ")" << std::endl;
-            // 読み込んだGIの効きが、焼いた直後の効きとほぼ同じ
-            // こと（fp16の往復なので本来は完全一致。帯の外の
-            // 描画差に引きずられないよう、1割の揺れまで許します）。
+            // 読み込んだGIの効きが、焼いた直後の効きとほぼ同じこと（fp16の往復なので本来は完全一致。帯の外の描画差に引きずられないよう、1割の揺れまで許します）。
             Require(
                 reloadedDelta * 10
                         > giRoundTripExpectedNear * 9
@@ -11127,14 +10926,12 @@ int main(const int argumentCount, char** arguments)
                 " bounce light.");
         }
 
-        // 画面エフェクトの差し込み地点。Bloomの前へ置いた光は
-        // 滲み、後ろへ置いた光は滲みません。 同じShaderを同じ
-        // パラメーターで2回かけ、滲みの差だけを見ます。
-        // 「落ちない」「色が出る」だけでは、指定した位置に入ったのか
-        // 従来どおり末尾に入ったのかを区別できません。
-        //
-        // この段も絵を見る判定の最後へ置いています（後ろは時間しか
-        // 測らないベンチだけ）。途中へ差すと後ろの段の測定値が動きます。
+        // 画面エフェクトの差し込み地点。
+        // Bloomの前へ置いた光は滲み、後ろへ置いた光は滲みません。
+        // 同じShaderを同じパラメーターで2回かけ、滲みの差だけを見ます。
+        // 「落ちない」「色が出る」だけでは、指定した位置に入ったのか従来どおり末尾に入ったのかを区別できません。
+        // この段も絵を見る判定の最後へ置いています（後ろは時間しか測らないベンチだけ）。
+        // 途中へ差すと後ろの段の測定値が動きます。
         {
             const auto savedGraphicsSettings =
                 graphics.Settings();
@@ -11144,9 +10941,8 @@ int main(const int argumentCount, char** arguments)
             graphics.SetGraphicsSettings(bloomSettings);
             auto sceneBloom = scene.Bloom();
             sceneBloom.enabled = true;
-            // 既定（radius 2）の滲みは1〜2画素しかなく、四角の縁と
-            // 見分けが付きません。判定の余白より確実に外へ出るよう、
-            // ここでは広く強くします。
+            // 既定（radius 2）の滲みは1〜2画素しかなく、四角の縁と見分けが付きません。
+            // 判定の余白より確実に外へ出るよう、ここでは広く強くします。
             sceneBloom.threshold = 0.5f;
             sceneBloom.intensity = 2.0f;
             sceneBloom.radius = 8.0f;
@@ -11194,7 +10990,8 @@ int main(const int argumentCount, char** arguments)
                 "frame-inject-after-tonemap",
                 afterToneMapFrame);
 
-            // 四角の中は数えません。滲みは外側に出ます。
+            // 四角の中は数えません。
+            // 滲みは外側に出ます。
             const auto insideDot =
                 [](const std::uint32_t x,
                     const std::uint32_t y)
@@ -11242,7 +11039,8 @@ int main(const int argumentCount, char** arguments)
                 << dotPixels
                 << " halo=" << halo
                 << std::endl;
-            // 対照が先。どちらの位置でも四角そのものは出ること。
+            // 対照が先。
+            // どちらの位置でも四角そのものは出ること。
             Require(
                 dotPixels > 200,
                 "The bright square must be drawn at both"
@@ -11255,8 +11053,7 @@ int main(const int argumentCount, char** arguments)
                 " outside the square; if it does not, it was"
                 " applied at the old fixed position.");
 
-            // Queue APIは失敗をfalse/errorで返し、画像でない補助入力を
-            // 指定しても例外を呼び出し側へ漏らさないこと。
+            // Queue APIは失敗をfalse/errorで返し、画像でない補助入力を指定しても例外を呼び出し側へ漏らさないこと。
             LamaPon::ScreenEffectRequest invalidAuxiliary;
             invalidAuxiliary.shader = dotShader;
             invalidAuxiliary.auxiliaryTextures[0] = dotShader;
@@ -11269,8 +11066,7 @@ int main(const int argumentCount, char** arguments)
                     && !invalidAuxiliaryError.empty(),
                 "A screen effect with an unreadable auxiliary texture must return false and an error.");
 
-            // 同じframeでqueue済みのEffectをinvalidateして差し替えても、
-            // 先に積んだ描画が共有所有した旧Effectを安全に使い切ること。
+            // 同じframeでqueue済みのEffectをinvalidateして差し替えても、先に積んだ描画が共有所有した旧Effectを安全に使い切ること。
             LamaPon::ScreenEffectRequest lifetimeProbe;
             lifetimeProbe.shader = dotShader;
             lifetimeProbe.point =
@@ -11305,16 +11101,14 @@ int main(const int argumentCount, char** arguments)
         }
 
         // テセレーションした形で影を落とせること。
-        //
-        // 検証シーンを全段で共有するため、この段は描画判定の最後に置き、
-        // 後続の測定値へ影響しないようにします。
+        // 検証シーンを全段で共有するため、この段は描画判定の最後に置き、後続の測定値へ影響しないようにします。
         {
             const auto benchSavedCameraPosition =
                 cameraObject.GetTransform().position;
             const auto benchSavedCameraRotation =
                 cameraObject.GetTransform().EulerAngles();
-            // 板は水平（XZ）なので真上から。影の落ち先が見えるよう
-            // 引いて撮ります。
+            // 板は水平（XZ）なので真上から。
+            // 影の落ち先が見えるよう引いて撮ります。
             cameraObject.GetTransform().position =
                 { 0.0f, 14.0f, 0.0f };
             cameraObject.GetTransform().SetEulerAngles(
@@ -11333,11 +11127,8 @@ int main(const int argumentCount, char** arguments)
                 DirectX::XMFLOAT4{
                     1.0f, 1.0f, 1.0f, 1.0f });
 
-            // 対照が先です。同じ大きさ・同じ位置の普通の板
-            // が影を落とせているかを見ておかないと、下の判定が
-            // 0でも「テセレーションが原因」とは言えません
-            // （カメラの向きや太陽の角度で影が画面外へ出て
-            // いるだけかもしれない）。
+            // 対照が先です。
+            // 同じ大きさ・同じ位置の普通の板が影を落とせているかを見ておかないと、下の判定が0でも「テセレーションが原因」とは言えません（カメラの向きや太陽の角度で影が画面外へ出ているだけかもしれない）。
             auto& plainCaster =
                 scene.CreateGameObject("PlainCaster");
             plainCaster.GetTransform().position =
@@ -11393,7 +11184,8 @@ int main(const int argumentCount, char** arguments)
                 "tessellation-shadow",
                 shadowFrame);
 
-            // 対照。落とす側を消して同じ絵を撮ります。
+            // 対照。
+            // 落とす側を消して同じ絵を撮ります。
             static_cast<void>(
                 scene.DestroyGameObject(caster));
             const auto particleLitFrame = renderComposedFrame();
@@ -11401,12 +11193,10 @@ int main(const int argumentCount, char** arguments)
                 "tessellation-shadow-none",
                 particleLitFrame);
 
-            // 影＝「落とす側が無いときは明るく、あるときは
-            // 暗い」画素。板そのものが写っている場所は緑に
-            // なるので数えません（そこは影ではなく遮蔽）。
-            // 普通の板は受け面と同じ白＆同じ向きなので、
-            // 板の写る場所は明るさがほぼ変わりません。つまり
-            // 対照側で数えられるのは影だけです。
+            // 影＝「落とす側が無いときは明るく、あるときは暗い」画素。
+            // 板そのものが写っている場所は緑になるので数えません（そこは影ではなく遮蔽）。
+            // 普通の板は受け面と同じ白＆同じ向きなので、板の写る場所は明るさがほぼ変わりません。
+            // つまり対照側で数えられるのは影だけです。
             const auto countShadowed =
                 [&particleLitFrame](
                     const std::vector<std::uint8_t>&
@@ -11455,8 +11245,8 @@ int main(const int argumentCount, char** arguments)
                 << plainShadowed
                 << " tessellated=" << shadowed
                 << std::endl;
-            // 対照が先。普通の板でも影が見えないなら、
-            // カメラか太陽の置き方の問題です。
+            // 対照が先。
+            // 普通の板でも影が見えないなら、カメラか太陽の置き方の問題です。
             Require(
                 plainShadowed > 300,
                 "A plain plane of the same size must"
@@ -11476,14 +11266,10 @@ int main(const int argumentCount, char** arguments)
                 benchSavedCameraRotation);
         }
 
-        // エディターの「シーンビュー経路」と「ゲームビュー経路」の
-        // A/B計測（--benchmark/--dump時のみの診断）。WARPの絶対時間は
-        // 環境に依存するため判定せず、同じ環境で相対比較します。
-        //
-        // エディターでゲームビューのFPSがシーンビューより低い、という
-        // 報告の切り分け用です。両経路は同じターゲット・同じポスト
-        // 処理・同じ2Dを通るはずなので、ここで差が出るなら経路の中、
-        // 出ないなら解像度など経路の外に原因があります。
+        // エディターの「シーンビュー経路」と「ゲームビュー経路」のA/B計測（--benchmark/--dump時のみの診断）。
+        // WARPの絶対時間は環境に依存するため判定せず、同じ環境で相対比較します。
+        // エディターでゲームビューのFPSがシーンビューより低い、という報告の切り分け用です。
+        // 両経路は同じターゲット・同じポスト処理・同じ2Dを通るはずなので、ここで差が出るなら経路の中、出ないなら解像度など経路の外に原因があります。
         if (g_runBenchmarks)
         {
             Stage("frame-gameview-bench");
@@ -11492,9 +11278,8 @@ int main(const int argumentCount, char** arguments)
             {
                 LamaPon::RenderTarget benchTarget;
 
-                // GPUがコマンドを消化し終えるまで待ちます。待たずに
-                // 計ると「積んだ時間」だけになり、描画の重さが
-                // 見えません。
+                // GPUがコマンドを消化し終えるまで待ちます。
+                // 待たずに計ると「積んだ時間」だけになり、描画の重さが見えません。
                 Microsoft::WRL::ComPtr<ID3D11Query> fence;
                 D3D11_QUERY_DESC queryDescription{};
                 queryDescription.Query = D3D11_QUERY_EVENT;
@@ -11517,8 +11302,7 @@ int main(const int argumentCount, char** arguments)
                     }
                 };
 
-                // 提出ごとの固定費を抑えるため複数フレームをまとめて実行し、
-                // 1回だけ待機して1フレームあたりの時間へ換算します。
+                // 提出ごとの固定費を抑えるため複数フレームをまとめて実行し、1回だけ待機して1フレームあたりの時間へ換算します。
                 constexpr int benchBatch = 8;
                 constexpr int benchSamples = 5;
 
@@ -11615,8 +11399,7 @@ int main(const int argumentCount, char** arguments)
                             benchTarget);
                     };
 
-                    // 1周目はシェーダーのバリアント切り替え等で
-                    // 揺れるので捨てます。
+                    // 1周目はシェーダーのバリアント切り替え等で揺れるので捨てます。
                     drawOnce();
                     waitForGpu();
 
@@ -12121,12 +11904,10 @@ int main(const int argumentCount, char** arguments)
         }
 
         // BC5圧縮後も法線マップの描画結果が保たれることを検証します。
-        //
-        // 法線マップはBC5（RGの2チャンネル）で読み込まれるように
-        // なり、シェーダーはZをxyから復元します。ここでは同じ構図で
-        // 3枚撮って突き合わせます。背景の物体は3枚とも同じなので、
-        // 差はこの平面の陰影にだけ出ます。
-        //   (1)法線マップなし (2)非圧縮の法線マップ (3)BC5の法線マップ
+        // 法線マップはBC5（RGの2チャンネル）で読み込まれるようになり、シェーダーはZをxyから復元します。
+        // ここでは同じ構図で3枚撮って突き合わせます。
+        // 背景の物体は3枚とも同じなので、差はこの平面の陰影にだけ出ます。
+        // (1)法線マップなし (2)非圧縮の法線マップ (3)BC5の法線マップ
         // (1)と(2)が違えば法線マップが効いていて、(2)と(3)が近ければ
         // BC5にしても絵が変わっていない、と言えます。
         {
@@ -12137,16 +11918,15 @@ int main(const int argumentCount, char** arguments)
             std::filesystem::create_directories(
                 normalMapDirectory,
                 directoryError);
-            // 2枚に分けるのは、読み込み済みテクスチャがパスで
-            // キャッシュされるためです。同じパスだと圧縮設定を
-            // 切り替えても前の結果が返ってきます。
+            // 2枚に分けるのは、読み込み済みテクスチャがパスでキャッシュされるためです。
+            // 同じパスだと圧縮設定を切り替えても前の結果が返ってきます。
             const auto rawNormalPath =
                 normalMapDirectory / L"normal-raw.png";
             const auto compressedNormalPath =
                 normalMapDirectory / L"normal-bc5.png";
 
-            // xとyで別々に波打たせます。片方だけだとZの復元を
-            // 間違えても気付けません。
+            // xとyで別々に波打たせます。
+            // 片方だけだとZの復元を間違えても気付けません。
             constexpr std::uint32_t normalMapSize = 64;
             std::vector<std::uint8_t> normalPixels(
                 static_cast<std::size_t>(normalMapSize)
@@ -12240,8 +12020,7 @@ int main(const int argumentCount, char** arguments)
             DumpFrame("normalmap-bc5", normalBc5Frame);
 
             // 本当にBC5になっているかをフォーマットで確かめます。
-            // 絵が同じでも「圧縮されていないから同じ」では意味が
-            // ありません。
+            // 絵が同じでも「圧縮されていないから同じ」では意味がありません。
             const auto compressedAsset =
                 graphics.Assets().LoadTexture(
                     compressedNormalPath,
@@ -12359,8 +12138,7 @@ int main(const int argumentCount, char** arguments)
                 << " changed-by-bc5=" << compressionEffect
                 << " bc5-mse=" << compressionError
                 << std::endl;
-            // GPU差を許容しつつ法線マップ未適用を検出するため、
-            // 変化した画素数の下限を1000にします。
+            // GPU差を許容しつつ法線マップ未適用を検出するため、変化した画素数の下限を1000にします。
             Require(
                 mapEffect > 1000,
                 "the normal map must visibly change the shading");
@@ -12372,11 +12150,8 @@ int main(const int argumentCount, char** arguments)
                 "BC5 shading error must stay small per pixel");
         }
 
-        // 1つのglTFにskin付き／無しのprimitiveが混在するとき、
-        // Manifestのskinned roleだけへモデル全体を寄せず、primitive
-        // ごとにskinned/forwardを選ぶことを実描画で確かめます。
-        // RiggedSimple.glbのmesh nodeを複製し、複製側からskinだけを
-        // 外したGLBを、ほかの実行時生成物と同じtest-outputへ置きます。
+        // 1つのglTFにskin付き／無しのprimitiveが混在するとき、Manifestのskinned roleだけへモデル全体を寄せず、primitiveごとにskinned/forwardを選ぶことを実描画で確かめます。
+        // RiggedSimple.glbのmesh nodeを複製し、複製側からskinだけを外したGLBを、ほかの実行時生成物と同じtest-outputへ置きます。
         {
             const auto outputRoot =
                 std::filesystem::current_path()
@@ -12485,9 +12260,8 @@ int main(const int argumentCount, char** arguments)
                     && gltf["nodes"][2].contains("skin"),
                 "RiggedSimple.glb no longer has the expected rigged mesh node layout.");
 
-            // node 1のローカルYはZ-up変換後の画面X方向です。元の
-            // skin nodeと複製したstatic nodeを左右へ離し、片方が
-            // もう片方を隠して誤判定しない構図にします。
+            // node 1のローカルYはZ-up変換後の画面X方向です。
+            // 元のskin nodeと複製したstatic nodeを左右へ離し、片方がもう片方を隠して誤判定しない構図にします。
             gltf["nodes"][2]["translation"] =
                 nlohmann::json::array({ 0.0, -2.2, 0.0 });
             auto staticNode = gltf["nodes"][2];
@@ -12865,8 +12639,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
                 forwardRed > 150 && skinnedGreen > 150,
                 "A mixed glTF must draw visible coverage from both its forward and skinned Manifest roles.");
 
-            // 同じroot HLSLをScreen/Computeとしても一度compileし、3系統
-            // すべてがinclude-only保存を個別に検出できる状態にします。
+            // 同じroot HLSLをScreen/Computeとしても一度compileし、3系統すべてがinclude-only保存を個別に検出できる状態にします。
             LamaPon::ScreenEffectRequest includeScreen;
             includeScreen.shader = "mixed-role.hlsl";
             std::uint64_t initialScreenGeneration{};
@@ -12893,10 +12666,9 @@ void CSMain(uint3 id : SV_DispatchThreadID)
                     && includeComputeError.empty(),
                 "The include hot-reload ComputeEffect probe must compile.");
 
-            // Scene prefetchには古いbyte列が残ったままです。root HLSLや
-            // Manifestには触れずincludeだけを保存します。明示的な
-            // ReloadShaderなしで次の描画が変更を検出し、fresh readした
-            // 内容から両roleを再構築することを確かめます。
+            // Scene prefetchには古いbyte列が残ったままです。
+            // root HLSLやManifestには触れずincludeだけを保存します。
+            // 明示的なReloadShaderなしで次の描画が変更を検出し、fresh readした内容から両roleを再構築することを確かめます。
             writeRoleColors(
                 "0.02f, 0.02f, 0.95f",
                 "0.95f, 0.95f, 0.02f");
@@ -12948,8 +12720,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
                 "Hot reload must update both the forward and skinned role effects of a mixed glTF.");
 
             // Compileが依存一覧を読んだ直後にincludeをもう一度保存します。
-            // 終了後のrevisionをbaselineにすると、この二度目の保存を
-            // 消費してしまい、次のpollで再compileされません。
+            // 終了後のrevisionをbaselineにすると、この二度目の保存を消費してしまい、次のpollで再compileされません。
             writeRoleColors(
                 "0.71f, 0.11f, 0.021f",
                 "0.61f, 0.12f, 0.031f");
@@ -13006,9 +12777,9 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         return 1;
     }
 
-    // シェーダーのコンパイル状況。キャッシュが効いているかを
-    // 数字で確かめるために出します。1回目はcompiled、2回目は
-    // cacheHitが中心になります。
+    // シェーダーのコンパイル状況。
+    // キャッシュが効いているかを数字で確かめるために出します。
+    // 1回目はcompiled、2回目はcacheHitが中心になります。
     {
         const auto stats = LamaPon::ShaderCompileStatistics();
         std::cout

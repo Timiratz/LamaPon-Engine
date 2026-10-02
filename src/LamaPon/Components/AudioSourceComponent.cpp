@@ -53,6 +53,7 @@ namespace LamaPon
     void AudioSourceComponent::SetVolume(const float volume)
     {
         m_volume = std::clamp(volume, 0.0f, 1.0f);
+        // バス音量込みの音源音量
         const float effective = EffectiveVolume();
         if (m_stream)
         {
@@ -62,6 +63,7 @@ namespace LamaPon
         {
             m_instance->SetVolume(effective);
         }
+        // 管理中の3D単発ボイス
         for (const auto& oneShot : m_spatialOneShots)
         {
             oneShot->SetVolume(effective);
@@ -71,6 +73,7 @@ namespace LamaPon
     float AudioSourceComponent::EffectiveVolume()
         const noexcept
     {
+        // 現在のバス音量
         const float busVolume = m_audio != nullptr
             ? m_audio->EffectiveBusVolume(m_bus)
             : 1.0f;
@@ -84,6 +87,7 @@ namespace LamaPon
         {
             return;
         }
+        // 再生成前に再生中だったか
         const bool wasPlaying =
             State() == DirectX::PLAYING;
         m_streaming = streaming;
@@ -111,6 +115,7 @@ namespace LamaPon
         {
             m_instance->SetPitch(m_pitch);
         }
+        // 管理中の3D単発ボイス
         for (const auto& oneShot : m_spatialOneShots)
         {
             oneShot->SetPitch(m_pitch);
@@ -137,6 +142,7 @@ namespace LamaPon
             return;
         }
 
+        // 再生成前に再生中だったか
         const bool wasPlaying =
             State() == DirectX::PLAYING;
         m_spatial = spatial;
@@ -181,6 +187,7 @@ namespace LamaPon
             return;
         }
 
+        // 再生成前に再生中だったか
         const bool wasPlaying =
             State() == DirectX::PLAYING;
         Stop();
@@ -257,11 +264,12 @@ namespace LamaPon
         {
             return 0;
         }
-        // 音源をまだ持っていないときも、呼ぶ側が長さを気にせず
-        // 描けるように0で埋めて本数だけ返します。
+        // ストリームがない場合も帯域数まで0を詰めて表示側の配列を初期化する。
+        // 0を詰める帯域の要素数
         const std::size_t count = std::min(
             capacity,
             static_cast<std::size_t>(LevelBandCount));
+        // 初期化する帯域の番号
         for (std::size_t index = 0; index < count; ++index)
         {
             destination[index] = 0.0f;
@@ -324,7 +332,7 @@ namespace LamaPon
 
     void AudioSourceComponent::PlayOneShot()
     {
-        // ストリーミングは多重再生できないためPlayとして扱います。
+
         if (m_streaming)
         {
             Play();
@@ -346,6 +354,7 @@ namespace LamaPon
         }
         else
         {
+            // 追加する3D単発ボイス
             auto instance = m_sound->CreateInstance(
                 DirectX::SoundEffectInstance_Use3D);
             instance->SetVolume(EffectiveVolume());
@@ -393,6 +402,7 @@ namespace LamaPon
         {
             m_instance->Stop();
         }
+        // 管理中の3D単発ボイス
         for (const auto& oneShot : m_spatialOneShots)
         {
             oneShot->Stop();
@@ -425,10 +435,9 @@ namespace LamaPon
         if (m_audio != nullptr
             && m_audio->DeviceGeneration() != m_deviceGeneration)
         {
-            // 再生デバイスの切り替えなどでオーディオデバイスがリセット
-            // されると、作成済みのボイスは無効になります。古いボイスを
-            // 呼び出してクラッシュしないよう、ここで作り直します。
+            // 機器の世代変更で旧ボイスが無効になるため、再生成して再生中なら最初から再開する。
             m_deviceGeneration = m_audio->DeviceGeneration();
+            // 再生成前に再生中だったか
             const bool wasPlaying = State() == DirectX::PLAYING;
             ReloadSound();
             if (wasPlaying)
@@ -439,6 +448,7 @@ namespace LamaPon
 
         if (m_spatial)
         {
+            // 停止済みの単発ボイスを破棄する(instance: 判定する3D単発ボイス)。
             std::erase_if(
                 m_spatialOneShots,
                 [](const auto& instance)
@@ -450,15 +460,17 @@ namespace LamaPon
             {
                 ApplySpatial(*m_instance);
             }
+            // 管理中の3D単発ボイス
             for (const auto& oneShot : m_spatialOneShots)
             {
                 ApplySpatial(*oneShot);
             }
         }
 
-        // バス音量が変わっていたら再生中ボイスへ反映します。
+
         if (m_audio != nullptr)
         {
+            // 現在のバス音量
             const float busVolume =
                 m_audio->EffectiveBusVolume(m_bus);
             if (busVolume != m_lastBusVolume)
@@ -480,6 +492,7 @@ namespace LamaPon
 
     void AudioSourceComponent::ReloadSound()
     {
+        // 再生成後に残す通常再生予約
         const bool playRequested = m_playRequested;
         Stop();
         m_playRequested = playRequested;
@@ -571,6 +584,7 @@ namespace LamaPon
             return;
         }
 
+        // 借用した有効なリスナー
         const auto* listener = m_audio->ActiveListener();
         if (listener == nullptr)
         {
@@ -579,12 +593,14 @@ namespace LamaPon
         }
 
         using namespace DirectX;
+        // 所有者のワールド行列
         const XMMATRIX world = Owner().WorldMatrix();
         m_emitter.SetPosition(world.r[3]);
         m_emitter.SetOrientation(
             XMVector3Normalize(XMVectorNegate(world.r[2])),
             XMVector3Normalize(world.r[1]));
 
+        // 音声ボイスのチャンネル数
         const unsigned int channels =
             instance.GetChannelCount();
         if (channels > 1)
@@ -609,6 +625,7 @@ namespace LamaPon
 
     void AudioSourceComponent::UpdateDistanceCurve() noexcept
     {
+        // 減衰開始距離の最大距離比
         const float minimumRatio = std::clamp(
             m_minimumDistance / m_maximumDistance,
             0.0f,

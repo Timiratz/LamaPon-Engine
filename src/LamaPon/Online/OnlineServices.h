@@ -16,25 +16,22 @@ namespace LamaPon
 
     struct OnlineServiceConfiguration final
     {
-        // Discordのclient_secretをゲームへ設定してはいけません。
-        // ここにはLamaPon用バックエンドのベースURLだけを指定します。
+        // Discordのclient_secretを設定せず、LamaPon用バックエンドのURLだけを渡します。
+        // LamaPon用バックエンドの基点URL
         std::string serviceBaseUrl;
 
-        // 配布ビルドではfalseのまま使います。ローカル開発用の
-        // 127.0.0.1/localhostバックエンドだけをHTTPで試す設定です。
+        // 配布ビルドではfalseとし、ローカル開発でだけHTTPを許可します。
+        // 開発用のローカルHTTPを許可するか
         bool allowInsecureLoopback{};
 
-        // 名前を変えても同じゲームと識別できる安定IDです。
-        // 空の場合はログインできますが、次回起動用の
-        // refresh tokenは端末へ保存しません。
+        // 空でも認証できますが、端末のrefresh token保存とクラウド同期は有効になりません。
+        // 名前を変えても不変のゲームID
         std::string gameId;
 
-        // production/stagingなどの接続先を分離し、異なる環境で
-        // 同じrefresh tokenが使われないようにします。
+        // 資格情報を分離する環境ID
         std::string environmentId{ "production" };
 
-        // ログイン開始後、認証URLを既定ブラウザーで開きます。
-        // falseでもAuthorizationUrl()から手動で開けます。
+        // 認証URLをブラウザーで自動起動するか
         bool openAuthorizationBrowser{ true };
     };
 
@@ -54,14 +51,16 @@ namespace LamaPon
         RefreshingSession
     };
 
-    // ゲームへ公開してよいプロフィール情報だけを保持します。
-    // Discord IDではなく、バックエンドが発行したplayerIdを
-    // セーブデータの所有者として利用します。
+    // バックエンドのplayerIdを保存データの所有者とし、ゲームに公開できるプロフィールだけを保持します。
     struct OnlinePlayerProfile final
     {
+        // バックエンドが発行した所有者ID
         std::string playerId;
+        // ゲームへ公開する表示名
         std::string displayName;
+        // プロフィール画像のHTTPS URL
         std::string avatarUrl;
+        // 連携した認証提供元の識別名
         std::string linkedProvider;
     };
 
@@ -89,12 +88,15 @@ namespace LamaPon
 
     struct OnlineCloudSyncStatus final
     {
+        // 現在のクラウド同期状態
         OnlineCloudSyncState state{ OnlineCloudSyncState::Unavailable };
+        // 同期を停止した理由
         OnlineCloudSyncStopReason stopReason{
             OnlineCloudSyncStopReason::None
         };
-        // 絶対時刻を公開せず、照会時点からの残り秒だけを返します。
+        // 照会時点から再試行までの秒数
         float retryAfterSeconds{};
+        // 明示解決が必要な競合数
         std::size_t conflictCount{};
     };
 
@@ -106,16 +108,22 @@ namespace LamaPon
 
     struct OnlineCloudConflict final
     {
-        // process memory内だけで有効なCSPRNG IDです。ETag、mutation ID、
-        // player ID、保存先pathなどの内部識別子は公開しません。
+        // ETag・更新ID・所有者ID・内部保存先は公開しません。
+        // process内だけで有効な公開用乱数ID
         std::string id;
+        // 設定または保存スロットの種別
         OnlineCloudResourceKind kind{
             OnlineCloudResourceKind::Preferences
         };
+        // 保存スロット名・設定なら空
         std::string slot;
+        // ローカル更新が削除か
         bool localDeleted{};
+        // ローカル内容のバイト数
         std::size_t localByteLength{};
+        // リモートが削除済みか
         bool remoteDeleted{};
+        // リモート内容のバイト数
         std::size_t remoteByteLength{};
     };
 
@@ -135,11 +143,12 @@ namespace LamaPon
 
     struct OnlinePersistenceRecoveryStatus final
     {
+        // 未解決の保存復旧状態
         OnlinePersistenceRecoveryState state{
             OnlinePersistenceRecoveryState::None
         };
-        // Noneでは0です。復旧対象の状態または観測byteが変わるたびに
-        // 非0のrevisionへ進み、明示操作のstale UI入力を拒否します。
+        // 対象の状態や観測バイトが変わるたびに0以外へ進め、古いUIからの復旧・破棄を拒否します。
+        // 復旧対象の識別版・対象なしは0
         std::uint64_t revision{};
     };
 
@@ -158,103 +167,114 @@ namespace LamaPon
         class OnlineServicesTestAccess;
     }
 
-    // Discordログインの非同期進行とオンラインアカウント状態を
-    // ゲームループ上で管理します。すべての公開メソッドは、
-    // Applicationを動かす同じスレッドから呼んでください。
-    //
-    //   OnlineServices
-    //   ├─ DiscordAuth     アカウント連携
-    //   ├─ CloudSave       プレイヤー単位の同期
-    //   └─ DiscordPresence Rich Presence表示
-    //
-    // DiscordPresenceはアカウント連携から独立しています。Configure()
-    // を呼ばなくても、ログインしていなくてもPresenceだけを使えます。
+    // 全公開操作をApplicationと同じスレッドで呼び、非同期認証をゲームループ上で進めます。
+    // DiscordPresenceは認証と独立し、ConfigureやSignOutの有無にかかわらず利用できます。
     class OnlineServices final
     {
     public:
+        // 未設定のオンラインサービスを構築する。
         LAMAPON_API OnlineServices();
+        // 設定を検証して保存済みtokenの復元を始める(configuration: バックエンドと認証の設定)。
         explicit LAMAPON_API OnlineServices(
             OnlineServiceConfiguration configuration);
+        // 公開中のサービス参照を解除し非同期結果の後処理へ引き渡す。
         LAMAPON_API ~OnlineServices();
 
+        // サービス状態の複製を禁止する。
         OnlineServices(const OnlineServices&) = delete;
+        // サービス状態のコピー代入を禁止する。
         OnlineServices& operator=(const OnlineServices&) = delete;
+        // サービス状態の移動を禁止する。
         OnlineServices(OnlineServices&&) = delete;
+        // サービス状態の移動代入を禁止する。
         OnlineServices& operator=(OnlineServices&&) = delete;
 
-        // 実行中のログインやサインアウトがある場合はlogic_errorです。
-        // 保存済みrefresh tokenがあれば非同期復元を開始し、
-        // 空URLを指定するとUnconfiguredへ戻ります。
+        // 未進行時に設定を検証し保存済みtokenの非同期復元を始める(configuration: バックエンドと認証の設定)。
+        // 認証・サインアウト・有効アカウント・未解決の保存復旧があれば拒否し、空URLは未設定へ戻します。
         LAMAPON_API void Configure(
             OnlineServiceConfiguration configuration);
 
-        // Applicationが毎フレーム呼び、完了した通信を反映して次の
-        // ポーリングを開始します。通信自体はワーカースレッド上です。
+        // 毎フレーム通信結果を反映し認証・Presenceの進行を更新する(elapsedSeconds: 前フレームからの経過秒数)。
         LAMAPON_API void Update(float elapsedSeconds);
 
-        // 開始要求を受理したときだけtrueです。自動起動が
-        // 無効または失敗した場合もAuthorizationUrl()を利用できます。
+        // Discord認証の開始要求を受理した場合だけtrueを返す。
         [[nodiscard]] LAMAPON_API bool BeginDiscordSignIn();
+        // ログイン結果を失効させ、遅れて発行されたセッションも公開せず失効を試す。
         LAMAPON_API void CancelDiscordSignIn() noexcept;
+        // 通信を待たずguestへ切り替え端末tokenを削除しサーバーの失効を進める。
         LAMAPON_API void SignOut();
 
+        // 現在のオンラインアカウント状態を返す。
         [[nodiscard]] LAMAPON_API OnlineAccountState
             State() const noexcept;
+        // 認証済みまたは有効セッションの更新中かを返す。
         [[nodiscard]] LAMAPON_API bool IsSignedIn() const noexcept;
+        // 公開可能なプロフィールを次の状態更新まで借用する。
         [[nodiscard]] LAMAPON_API const OnlinePlayerProfile&
             Player() const noexcept;
+        // 自動起動が無効・失敗でも使える認証URLを次の状態更新まで借用する。
         [[nodiscard]] LAMAPON_API const std::string&
             AuthorizationUrl() const noexcept;
+        // 秘密値を含まない診断識別子を次の状態更新まで借用する。
         [[nodiscard]] LAMAPON_API const std::string&
             LastErrorCode() const noexcept;
+        // 秘密値を含まない表示用の診断を次の状態更新まで借用する。
         [[nodiscard]] LAMAPON_API const std::string&
             LastError() const noexcept;
 
+        // 内部の識別値を含まない同期状態と残り待機秒数を返す。
         [[nodiscard]] LAMAPON_API OnlineCloudSyncStatus
             CloudSyncStatus() const noexcept;
+        // 本文・ETag・更新IDを含まない競合一覧を公開用の乱数IDで返す。
         [[nodiscard]] LAMAPON_API std::vector<OnlineCloudConflict>
             CloudConflicts() const;
+        // 利用可否と実行中状態を確認し再照合の要求結果を返す。
         [[nodiscard]] LAMAPON_API OnlinePersistenceOperationResult
             RequestCloudSync() noexcept;
+        // 公開用IDを現在の競合と照合して解決する(conflictId: このprocessの競合ID, resolution: ローカル再送またはリモート採用)。
         [[nodiscard]] LAMAPON_API OnlinePersistenceOperationResult
             ResolveCloudConflict(
             std::string_view conflictId,
             OnlineCloudConflictResolution resolution) noexcept;
 
+        // 保存復旧の状態と対象の識別版を値として返す。
         [[nodiscard]] LAMAPON_API OnlinePersistenceRecoveryStatus
             PersistenceRecoveryStatus() const noexcept;
+        // 古いUIの識別版を拒否して隔離中の保存を復旧する(expectedRevision: 照会時の復旧対象の識別版)。
         [[nodiscard]] LAMAPON_API OnlinePersistenceOperationResult
             RestorePersistence(std::uint64_t expectedRevision) noexcept;
+        // 古いUIの識別版を拒否して隔離中の保存を破棄する(expectedRevision: 照会時の復旧対象の識別版)。
         [[nodiscard]] LAMAPON_API OnlinePersistenceOperationResult
             DiscardPersistence(std::uint64_t expectedRevision) noexcept;
 
-        // Rich Presenceはアカウント連携と独立した設定です。
-        // Configure()やSignOut()はPresenceへ影響しません。逆に、
-        // ここでPresenceを無効にしてもログインとクラウドセーブは
-        // そのまま使えます。
+        // アカウント認証と独立した表示設定を変更する(configuration: Discordの表示設定)。
         LAMAPON_API void ConfigureDiscordPresence(
             DiscordPresenceConfiguration configuration);
+        // 独立したDiscord表示機能をサービスの存続中借用する。
         [[nodiscard]] LAMAPON_API DiscordPresence&
             Presence() noexcept;
+        // 独立したDiscord表示機能を読取専用でサービスの存続中借用する。
         [[nodiscard]] LAMAPON_API const DiscordPresence&
             Presence() const noexcept;
 
     private:
         struct Implementation;
 
+        // 内部テスト用の状態を受け取る(implementation: 非同期認証の所有状態)。
         explicit OnlineServices(
             std::unique_ptr<Implementation> implementation);
 
         friend class Detail::OnlineServicesTestAccess;
         friend class Detail::OnlinePersistenceAccess;
 
+        // 非同期認証と保存連携の状態の所有先
         std::unique_ptr<Implementation> m_implementation;
     };
 
-    // Applicationが所有する現在のサービスです。CLIや単体テストでは
-    // nullptrを許容します。実体はRuntime DLL側に1つだけ置きます。
+    // Applicationが公開するサービスを借用し未設定ならnullを返す。
     [[nodiscard]] LAMAPON_API OnlineServices*
         ActiveOnlineServices() noexcept;
+    // Runtime内の現在のサービス参照を設定する(services: 借用・nullで解除)。
     LAMAPON_API void SetActiveOnlineServices(
         OnlineServices* services) noexcept;
 }

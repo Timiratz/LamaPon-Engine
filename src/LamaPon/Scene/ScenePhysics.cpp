@@ -15,6 +15,8 @@
 
 namespace
 {
+    // 自身と形状の有効状態・除外番号・対象層・トリガー指定で問い合わせ対象を選びます(object: 形状の物体, collider: 問い合わせる形状, filter: 対象条件)。
+    // 親の有効状態、形状のcollisionMaskとプロジェクトの衝突マトリクスは参照しません。
     template<typename Collider>
     bool AcceptCollider(
         const LamaPon::GameObject& object,
@@ -33,6 +35,7 @@ namespace
                 || !collider.IsTrigger());
     }
 
+    // 境界の各軸が正の幅で重なるか返し、面が接するだけの組は除外します(left: 一方のAABB, right: もう一方のAABB)。
     bool Overlaps(
         const LamaPon::Bounds3D& left,
         const LamaPon::Bounds3D& right) noexcept
@@ -51,6 +54,7 @@ namespace
                 > right.minimum.z;
     }
 
+    // スラブ法でAABBまでの距離と法線を求め、内部開始では距離0と零法線を返します(ray: 探索線, bounds: 対象境界, maximumDistance: 距離上限, distance: 接触距離の出力, normal: 接触法線の出力)。
     bool RaycastBounds(
         const LamaPon::Ray& ray,
         const LamaPon::Bounds3D& bounds,
@@ -58,34 +62,44 @@ namespace
         float& distance,
         DirectX::XMFLOAT3& normal) noexcept
     {
+        // 平行と判定する方向成分の閾値
         constexpr float epsilon =
             0.000001f;
+        // 全軸のスラブへ入る最短距離
         float nearest = 0.0f;
+        // スラブを出る距離の上限
         float farthest = maximumDistance;
+        // 最も遅い進入面の軸番号
         int nearestAxis = -1;
+        // 進入面の外向き法線の符号
         float nearestSign{};
 
+        // 探索線原点のXYZ成分
         const std::array origins{
             ray.origin.x,
             ray.origin.y,
             ray.origin.z
         };
+        // 探索方向のXYZ成分
         const std::array directions{
             ray.direction.x,
             ray.direction.y,
             ray.direction.z
         };
+        // 境界の最小XYZ成分
         const std::array minimums{
             bounds.minimum.x,
             bounds.minimum.y,
             bounds.minimum.z
         };
+        // 境界の最大XYZ成分
         const std::array maximums{
             bounds.maximum.x,
             bounds.maximum.y,
             bounds.maximum.z
         };
 
+        // スラブ判定する座標軸の添字
         for (std::size_t axis{};
             axis < origins.size();
             ++axis)
@@ -103,16 +117,20 @@ namespace
                 continue;
             }
 
+            // 探索方向成分の逆数
             const float inverse =
                 1.0f / directions[axis];
+            // 軸のスラブへ入る距離
             float entry =
                 (minimums[axis]
                     - origins[axis])
                 * inverse;
+            // 軸のスラブから出る距離
             float exit =
                 (maximums[axis]
                     - origins[axis])
                 * inverse;
+            // 軸の進入面の法線符号
             float sign =
                 directions[axis] > 0.0f
                     ? -1.0f
@@ -158,9 +176,11 @@ namespace
         return true;
     }
 
+    // 方向を正規化し、長さが1e-6以下なら零方向を返します(ray: 有限値の探索線)。
     LamaPon::Ray NormalizedRay(
         const LamaPon::Ray& ray) noexcept
     {
+        // 正規化前の探索方向の長さ
         const float length =
             std::sqrt(
                 ray.direction.x
@@ -189,12 +209,14 @@ namespace
 
 namespace LamaPon
 {
+    // 最も近い問い合わせ対象を返します(sourceRay: 原点と未正規化方向, maximumDistance: 探索距離上限, hit: 成功時の接触情報, filter: 対象条件)。
     bool Scene::Raycast(
         const Ray& sourceRay,
         const float maximumDistance,
         PhysicsHit& hit,
         const PhysicsQueryFilter& filter) const
     {
+        // 方向を正規化した探索線
         const Ray ray =
             NormalizedRay(sourceRay);
         if (maximumDistance < 0.0f
@@ -205,12 +227,16 @@ namespace LamaPon
             return false;
         }
 
+        // 問い合わせ対象へ接触したか
         bool found{};
+        // 見つかった最短接触距離
         float nearest =
             std::numeric_limits<float>::max();
+        // 問い合わせ対象の形状所有物体
         for (const auto& object :
             m_gameObjects)
         {
+            // AABBへのより近い接触だけを採用します(bounds: ワールド境界, box: 箱形状の参照, capsule: カプセルの参照, sphere: 球形状の参照, hull: 凸形状の参照)。
             const auto testBounds = [&](
                 const Bounds3D& bounds,
                 BoxCollider3DComponent* box,
@@ -218,7 +244,9 @@ namespace LamaPon
                 SphereCollider3DComponent* sphere,
                 ConvexHullCollider3DComponent* hull)
             {
+                // 境界へ接触する移動距離
                 float distance{};
+                // 接触面の外向き法線
                 DirectX::XMFLOAT3 normal{};
                 if (!RaycastBounds(
                     ray,
@@ -253,6 +281,7 @@ namespace LamaPon
                     hull
                 };
             };
+            // 問い合わせる箱形状
             if (auto* box = object->GetComponent<
                     BoxCollider3DComponent>();
                 box != nullptr
@@ -265,6 +294,7 @@ namespace LamaPon
                     nullptr,
                     nullptr);
             }
+            // 問い合わせるカプセル形状
             if (auto* capsule = object->GetComponent<
                     CapsuleCollider3DComponent>();
                 capsule != nullptr
@@ -277,6 +307,7 @@ namespace LamaPon
                     nullptr,
                     nullptr);
             }
+            // 問い合わせる球形状
             if (auto* sphere = object->GetComponent<
                     SphereCollider3DComponent>();
                 sphere != nullptr
@@ -289,6 +320,7 @@ namespace LamaPon
                     sphere,
                     nullptr);
             }
+            // 問い合わせる凸形状
             if (auto* hull = object->GetComponent<
                     ConvexHullCollider3DComponent>();
                 hull != nullptr
@@ -302,12 +334,14 @@ namespace LamaPon
                     hull);
             }
             // メッシュはAABBではなく三角形と正確に交差判定します。
+            // 問い合わせるメッシュ形状
             if (auto* mesh = object->GetComponent<
                     MeshCollider3DComponent>();
                 mesh != nullptr
                 && mesh->HasMesh()
                 && AcceptCollider(*object, *mesh, filter))
             {
+                // 三角形への探索線の接触情報
                 MeshColliderRaycastHit meshHit{};
                 if (mesh->Raycast(
                         ray,
@@ -334,6 +368,7 @@ namespace LamaPon
         return found;
     }
 
+    // 問い合わせ対象の接触を距離順に返します(sourceRay: 原点と未正規化方向, maximumDistance: 探索距離上限, filter: 対象条件)。
     std::vector<PhysicsHit>
         Scene::RaycastAll(
             const Ray& sourceRay,
@@ -341,7 +376,9 @@ namespace LamaPon
             const PhysicsQueryFilter&
                 filter) const
     {
+        // 問い合わせ条件に合う接触一覧
         std::vector<PhysicsHit> hits;
+        // 方向を正規化した探索線
         const Ray ray =
             NormalizedRay(sourceRay);
         if (maximumDistance < 0.0f
@@ -351,9 +388,11 @@ namespace LamaPon
         {
             return hits;
         }
+        // 問い合わせ対象の形状所有物体
         for (const auto& object :
             m_gameObjects)
         {
+            // AABBへの接触を結果へ追加します(bounds: ワールド境界, box: 箱形状の参照, capsule: カプセルの参照, sphere: 球形状の参照, hull: 凸形状の参照)。
             const auto testBounds = [&](
                 const Bounds3D& bounds,
                 BoxCollider3DComponent* box,
@@ -361,7 +400,9 @@ namespace LamaPon
                 SphereCollider3DComponent* sphere,
                 ConvexHullCollider3DComponent* hull)
             {
+                // 境界へ接触する移動距離
                 float distance{};
+                // 接触面の外向き法線
                 DirectX::XMFLOAT3 normal{};
                 if (!RaycastBounds(
                     ray,
@@ -393,6 +434,7 @@ namespace LamaPon
                     hull
                 });
             };
+            // 問い合わせる箱形状
             if (auto* box = object->GetComponent<
                     BoxCollider3DComponent>();
                 box != nullptr
@@ -405,6 +447,7 @@ namespace LamaPon
                     nullptr,
                     nullptr);
             }
+            // 問い合わせるカプセル形状
             if (auto* capsule = object->GetComponent<
                     CapsuleCollider3DComponent>();
                 capsule != nullptr
@@ -417,6 +460,7 @@ namespace LamaPon
                     nullptr,
                     nullptr);
             }
+            // 問い合わせる球形状
             if (auto* sphere = object->GetComponent<
                     SphereCollider3DComponent>();
                 sphere != nullptr
@@ -429,6 +473,7 @@ namespace LamaPon
                     sphere,
                     nullptr);
             }
+            // 問い合わせる凸形状
             if (auto* hull = object->GetComponent<
                     ConvexHullCollider3DComponent>();
                 hull != nullptr
@@ -441,12 +486,14 @@ namespace LamaPon
                     nullptr,
                     hull);
             }
+            // 問い合わせるメッシュ形状
             if (auto* mesh = object->GetComponent<
                     MeshCollider3DComponent>();
                 mesh != nullptr
                 && mesh->HasMesh()
                 && AcceptCollider(*object, *mesh, filter))
             {
+                // 三角形への探索線の接触情報
                 MeshColliderRaycastHit meshHit{};
                 if (mesh->Raycast(
                         ray,
@@ -474,6 +521,7 @@ namespace LamaPon
         return hits;
     }
 
+    // 球の半径で拡張した境界への最短接触を近似します(sourceRay: 原点と未正規化方向, radius: 球の半径, maximumDistance: 移動距離上限, hit: 成功時の接触情報, filter: 対象条件)。
     bool Scene::SphereCast(
         const Ray& sourceRay,
         const float radius,
@@ -481,16 +529,22 @@ namespace LamaPon
         PhysicsHit& hit,
         const PhysicsQueryFilter& filter) const
     {
+        // 方向を正規化した探索線
         const Ray ray =
             NormalizedRay(sourceRay);
+        // 非負に制限した半径
         const float clampedRadius =
             std::max(radius, 0.0f);
+        // 問い合わせ対象へ接触したか
         bool found{};
+        // 見つかった最短接触距離
         float nearest =
             std::numeric_limits<float>::max();
+        // 問い合わせ対象の形状所有物体
         for (const auto& object :
             m_gameObjects)
         {
+            // 半径で拡張したAABBへの最短接触を採用します(bounds: 拡張する境界の写し, box: 箱形状の参照, capsule: カプセルの参照, sphere: 球形状の参照, hull: 凸形状の参照)。
             const auto testBounds = [&](
                 Bounds3D bounds,
                 BoxCollider3DComponent* box,
@@ -504,7 +558,9 @@ namespace LamaPon
                 bounds.maximum.x += clampedRadius;
                 bounds.maximum.y += clampedRadius;
                 bounds.maximum.z += clampedRadius;
+                // 境界へ接触する移動距離
                 float distance{};
+                // 接触面の外向き法線
                 DirectX::XMFLOAT3 normal{};
                 if (!RaycastBounds(
                     ray,
@@ -517,6 +573,7 @@ namespace LamaPon
                     return;
                 }
                 nearest = distance;
+                // 境界へ接触した時点の球中心
                 const DirectX::XMFLOAT3
                     center{
                         ray.origin.x
@@ -551,6 +608,7 @@ namespace LamaPon
                 };
                 found = true;
             };
+            // 問い合わせる箱形状
             if (auto* box = object->GetComponent<
                     BoxCollider3DComponent>();
                 box != nullptr
@@ -563,6 +621,7 @@ namespace LamaPon
                     nullptr,
                     nullptr);
             }
+            // 問い合わせるカプセル形状
             if (auto* capsule = object->GetComponent<
                     CapsuleCollider3DComponent>();
                 capsule != nullptr
@@ -575,6 +634,7 @@ namespace LamaPon
                     nullptr,
                     nullptr);
             }
+            // 問い合わせる球形状
             if (auto* sphere = object->GetComponent<
                     SphereCollider3DComponent>();
                 sphere != nullptr
@@ -587,6 +647,7 @@ namespace LamaPon
                     sphere,
                     nullptr);
             }
+            // 問い合わせる凸形状
             if (auto* hull = object->GetComponent<
                     ConvexHullCollider3DComponent>();
                 hull != nullptr
@@ -599,14 +660,15 @@ namespace LamaPon
                     nullptr,
                     hull);
             }
-            // メッシュは中心レイの三角形ヒットへ半径分の余裕を
-            // 持たせた近似で判定します。
+            // メッシュは中心レイの三角形ヒットへ半径分の余裕を持たせた近似で判定します。
+            // 問い合わせるメッシュ形状
             if (auto* mesh = object->GetComponent<
                     MeshCollider3DComponent>();
                 mesh != nullptr
                 && mesh->HasMesh()
                 && AcceptCollider(*object, *mesh, filter))
             {
+                // 三角形への探索線の接触情報
                 MeshColliderRaycastHit meshHit{};
                 if (mesh->Raycast(
                         ray,
@@ -614,6 +676,7 @@ namespace LamaPon
                             + clampedRadius,
                         meshHit))
                 {
+                    // 半径を差し引いた接触距離
                     const float adjusted = std::max(
                         meshHit.distance
                             - clampedRadius,
@@ -641,6 +704,7 @@ namespace LamaPon
         return found;
     }
 
+    // 箱の半寸法で拡張した境界への最短接触を近似します(sourceRay: 原点と未正規化方向, halfExtents: 軸平行箱の半寸法, maximumDistance: 移動距離上限, hit: 成功時の接触情報, filter: 対象条件)。
     bool Scene::BoxCast(
         const Ray& sourceRay,
         const DirectX::XMFLOAT3& halfExtents,
@@ -648,17 +712,22 @@ namespace LamaPon
         PhysicsHit& hit,
         const PhysicsQueryFilter& filter) const
     {
+        // 方向を正規化した探索線
         const Ray ray = NormalizedRay(sourceRay);
+        // 非負に制限した軸平行箱の半寸法
         const DirectX::XMFLOAT3 extents{
             std::max(halfExtents.x, 0.0f),
             std::max(halfExtents.y, 0.0f),
             std::max(halfExtents.z, 0.0f) };
+        // 問い合わせ対象へ接触したか
         bool found{};
+        // 見つかった最短接触距離
         float nearest =
             std::numeric_limits<float>::max();
+        // 問い合わせ対象の形状所有物体
         for (const auto& object : m_gameObjects)
         {
-            // 対象AABBを半エクステント分膨らませてレイ判定する近似。
+            // 箱の半寸法で拡張したAABBへの最短接触を採用します(bounds: 拡張する境界の写し, box: 箱形状の参照, capsule: カプセルの参照, sphere: 球形状の参照, hull: 凸形状の参照, mesh: メッシュ形状の参照)。
             const auto testBounds = [&](
                 Bounds3D bounds,
                 BoxCollider3DComponent* box,
@@ -673,7 +742,9 @@ namespace LamaPon
                 bounds.maximum.x += extents.x;
                 bounds.maximum.y += extents.y;
                 bounds.maximum.z += extents.z;
+                // 境界へ接触する移動距離
                 float distance{};
+                // 接触面の外向き法線
                 DirectX::XMFLOAT3 normal{};
                 if (!RaycastBounds(
                         ray,
@@ -706,6 +777,7 @@ namespace LamaPon
                     mesh
                 };
             };
+            // 問い合わせる箱形状
             if (auto* box = object->GetComponent<
                     BoxCollider3DComponent>();
                 box != nullptr
@@ -719,6 +791,7 @@ namespace LamaPon
                     nullptr,
                     nullptr);
             }
+            // 問い合わせるカプセル形状
             if (auto* capsule = object->GetComponent<
                     CapsuleCollider3DComponent>();
                 capsule != nullptr
@@ -735,6 +808,7 @@ namespace LamaPon
                     nullptr,
                     nullptr);
             }
+            // 問い合わせる球形状
             if (auto* sphere = object->GetComponent<
                     SphereCollider3DComponent>();
                 sphere != nullptr
@@ -751,6 +825,7 @@ namespace LamaPon
                     nullptr,
                     nullptr);
             }
+            // 問い合わせる凸形状
             if (auto* hull = object->GetComponent<
                     ConvexHullCollider3DComponent>();
                 hull != nullptr
@@ -764,6 +839,7 @@ namespace LamaPon
                     hull,
                     nullptr);
             }
+            // 問い合わせるメッシュ形状
             if (auto* mesh = object->GetComponent<
                     MeshCollider3DComponent>();
                 mesh != nullptr
@@ -782,6 +858,7 @@ namespace LamaPon
         return found;
     }
 
+    // Y軸カプセルを包む箱によるスイープを返します(sourceRay: 原点と未正規化方向, radius: カプセル半径, height: 両端を含む全高, maximumDistance: 移動距離上限, hit: 成功時の接触情報, filter: 対象条件)。
     bool Scene::CapsuleCast(
         const Ray& sourceRay,
         const float radius,
@@ -790,8 +867,9 @@ namespace LamaPon
         PhysicsHit& hit,
         const PhysicsQueryFilter& filter) const
     {
-        // Y軸カプセルを、半径と半高さで膨らませたBoxCastで近似。
+        // 非負に制限した半径
         const float clampedRadius = std::max(radius, 0.0f);
+        // 半径以上に制限した全高の半分
         const float halfHeight = std::max(
             height * 0.5f,
             clampedRadius);
@@ -814,9 +892,10 @@ namespace LamaPon
             const float radius,
             const PhysicsQueryFilter& filter) const
     {
+        // 非負に制限した半径
         const float clampedRadius = std::max(radius, 0.0f);
-        // カプセル全体のAABBで一次判定し、線分上のサンプル点との
-        // 距離で二次判定します（近似）。
+        // カプセル全体のAABBで一次判定し、線分上のサンプル点との距離で二次判定します（近似）。
+        // カプセル全体を包む軸平行境界
         const Bounds3D capsuleBounds{
             {
                 std::min(start.x, end.x) - clampedRadius,
@@ -828,8 +907,10 @@ namespace LamaPon
                 std::max(start.y, end.y) + clampedRadius,
                 std::max(start.z, end.z) + clampedRadius
             } };
+        // 判定半径の二乗
         const float squaredRadius =
             clampedRadius * clampedRadius;
+        // 線分の端点を含む9サンプルから境界までの距離を調べます(bounds: 形状のワールド境界)。
         const auto segmentTouchesBounds =
             [&](const Bounds3D& bounds)
         {
@@ -837,18 +918,23 @@ namespace LamaPon
             {
                 return false;
             }
+            // 線分を分割する区間数
             constexpr int SampleCount = 8;
+            // 端点を含む線分サンプル番号
             for (int sample = 0;
                 sample <= SampleCount;
                 ++sample)
             {
+                // 線分上のサンプル位置の比率
                 const float t =
                     static_cast<float>(sample)
                     / static_cast<float>(SampleCount);
+                // 線分上のワールドサンプル位置
                 const DirectX::XMFLOAT3 point{
                     start.x + (end.x - start.x) * t,
                     start.y + (end.y - start.y) * t,
                     start.z + (end.z - start.z) * t };
+                // 問い合わせ点に最も近い境界点
                 const DirectX::XMFLOAT3 closest{
                     std::clamp(
                         point.x,
@@ -862,8 +948,11 @@ namespace LamaPon
                         point.z,
                         bounds.minimum.z,
                         bounds.maximum.z) };
+                // 境界の最近接点からのX差
                 const float deltaX = point.x - closest.x;
+                // 境界の最近接点からのY差
                 const float deltaY = point.y - closest.y;
+                // 境界の最近接点からのZ差
                 const float deltaZ = point.z - closest.z;
                 if (deltaX * deltaX
                     + deltaY * deltaY
@@ -876,9 +965,12 @@ namespace LamaPon
             return false;
         };
 
+        // 問い合わせ条件に合う接触一覧
         std::vector<PhysicsOverlapHit> hits;
+        // 問い合わせ対象の形状所有物体
         for (const auto& object : m_gameObjects)
         {
+            // 問い合わせる箱形状
             if (auto* box = object->GetComponent<
                     BoxCollider3DComponent>();
                 box != nullptr
@@ -891,6 +983,7 @@ namespace LamaPon
                     box
                 });
             }
+            // 問い合わせるカプセル形状
             if (auto* capsule = object->GetComponent<
                     CapsuleCollider3DComponent>();
                 capsule != nullptr
@@ -907,6 +1000,7 @@ namespace LamaPon
                     capsule
                 });
             }
+            // 問い合わせる球形状
             if (auto* sphere = object->GetComponent<
                     SphereCollider3DComponent>();
                 sphere != nullptr
@@ -924,6 +1018,7 @@ namespace LamaPon
                     sphere
                 });
             }
+            // 問い合わせる凸形状
             if (auto* hull = object->GetComponent<
                     ConvexHullCollider3DComponent>();
                 hull != nullptr
@@ -939,6 +1034,7 @@ namespace LamaPon
                     hull
                 });
             }
+            // 問い合わせるメッシュ形状
             if (auto* mesh = object->GetComponent<
                     MeshCollider3DComponent>();
                 mesh != nullptr
@@ -968,11 +1064,14 @@ namespace LamaPon
             const PhysicsQueryFilter&
                 filter) const
     {
+        // 問い合わせ条件に合う重なり一覧
         std::vector<PhysicsOverlapHit>
             hits;
+        // 問い合わせ対象の形状所有物体
         for (const auto& object :
             m_gameObjects)
         {
+            // 問い合わせる箱形状
             auto* collider =
                 object->GetComponent<
                     BoxCollider3DComponent>();
@@ -991,6 +1090,7 @@ namespace LamaPon
                     nullptr
                 });
             }
+            // 問い合わせるカプセル形状
             auto* capsule =
                 object->GetComponent<
                     CapsuleCollider3DComponent>();
@@ -1009,6 +1109,7 @@ namespace LamaPon
                     capsule
                 });
             }
+            // 問い合わせる球形状
             auto* sphere =
                 object->GetComponent<
                     SphereCollider3DComponent>();
@@ -1028,6 +1129,7 @@ namespace LamaPon
                     sphere
                 });
             }
+            // 問い合わせる凸形状
             auto* hull =
                 object->GetComponent<
                     ConvexHullCollider3DComponent>();
@@ -1048,9 +1150,11 @@ namespace LamaPon
                     hull
                 });
             }
+            // 問い合わせるメッシュ形状
             auto* mesh =
                 object->GetComponent<
                     MeshCollider3DComponent>();
+            // AABB通過後に三角形と正確に判定します。
             if (mesh != nullptr
                 && mesh->HasMesh()
                 && AcceptCollider(
@@ -1060,7 +1164,6 @@ namespace LamaPon
                 && Overlaps(
                     bounds,
                     mesh->WorldBounds())
-                // AABB通過後に三角形と正確に判定します。
                 && mesh->OverlapsBounds(bounds))
             {
                 hits.push_back({
@@ -1083,14 +1186,18 @@ namespace LamaPon
             const PhysicsQueryFilter&
                 filter) const
     {
+        // 問い合わせ条件に合う重なり一覧
         std::vector<PhysicsOverlapHit>
             hits;
+        // 判定半径の二乗
         const float squaredRadius =
             std::max(radius, 0.0f)
             * std::max(radius, 0.0f);
+        // 問い合わせ対象の形状所有物体
         for (const auto& object :
             m_gameObjects)
         {
+            // 球中心からAABBまでの距離が半径以内なら結果へ追加します(bounds: ワールド境界, box: 箱形状の参照, capsule: カプセルの参照, sphere: 球形状の参照, hull: 凸形状の参照)。
             const auto testBounds = [&](
                 const Bounds3D& bounds,
                 BoxCollider3DComponent* box,
@@ -1098,6 +1205,7 @@ namespace LamaPon
                 SphereCollider3DComponent* sphere,
                 ConvexHullCollider3DComponent* hull)
             {
+                // 問い合わせ点に最も近い境界点
                 const DirectX::XMFLOAT3 closest{
                     std::clamp(
                         center.x,
@@ -1112,10 +1220,13 @@ namespace LamaPon
                         bounds.minimum.z,
                         bounds.maximum.z)
                 };
+                // 境界の最近接点からのX差
                 const float deltaX =
                     center.x - closest.x;
+                // 境界の最近接点からのY差
                 const float deltaY =
                     center.y - closest.y;
+                // 境界の最近接点からのZ差
                 const float deltaZ =
                     center.z - closest.z;
                 if (deltaX * deltaX
@@ -1133,6 +1244,7 @@ namespace LamaPon
                     hull
                 });
             };
+            // 問い合わせる箱形状
             if (auto* box = object->GetComponent<
                     BoxCollider3DComponent>();
                 box != nullptr
@@ -1145,6 +1257,7 @@ namespace LamaPon
                     nullptr,
                     nullptr);
             }
+            // 問い合わせるカプセル形状
             if (auto* capsule = object->GetComponent<
                     CapsuleCollider3DComponent>();
                 capsule != nullptr
@@ -1157,6 +1270,7 @@ namespace LamaPon
                     nullptr,
                     nullptr);
             }
+            // 問い合わせる球形状
             if (auto* sphere = object->GetComponent<
                     SphereCollider3DComponent>();
                 sphere != nullptr
@@ -1169,6 +1283,7 @@ namespace LamaPon
                     sphere,
                     nullptr);
             }
+            // 問い合わせる凸形状
             if (auto* hull = object->GetComponent<
                     ConvexHullCollider3DComponent>();
                 hull != nullptr
@@ -1181,6 +1296,7 @@ namespace LamaPon
                     nullptr,
                     hull);
             }
+            // 問い合わせるメッシュ形状
             if (auto* mesh = object->GetComponent<
                     MeshCollider3DComponent>();
                 mesh != nullptr
@@ -1188,6 +1304,7 @@ namespace LamaPon
                 && AcceptCollider(*object, *mesh, filter))
             {
                 // 球のAABBで三角形の有無を判定します（近似）。
+                // 問い合わせ球を包む軸平行境界
                 const Bounds3D sphereBounds{
                     {
                         center.x - radius,

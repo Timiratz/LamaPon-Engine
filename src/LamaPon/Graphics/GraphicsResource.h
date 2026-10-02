@@ -10,9 +10,7 @@
 
 namespace LamaPon
 {
-    // Backendへ渡すtextureのpixel formatです。描画API固有のformat値を
-    // Asset/Rendererへ漏らさず、現在のruntime texture経路で必要な形式だけを
-    // 共通化します。DDS等で必要な形式は移行時に末尾へ追加します。
+    // バックエンド共通のテクスチャ形式で、列挙値の互換性を保つため追加は末尾へ置く。
     enum class GraphicsTextureFormat : std::uint8_t
     {
         Rgba8Unorm,
@@ -63,8 +61,7 @@ namespace LamaPon
         R9g9b9e5SharedExp
     };
 
-    // Immutableは全mipの初期dataを生成時に渡す静的texture、PerMipUpdateは
-    // 初期dataの有無にかかわらず後からmip単位で転送できるtextureです。
+    // Immutableは全ミップの初期値を必須とし、PerMipUpdateはミップ単位の後続転送を許可する。
     enum class GraphicsTextureUpdateMode : std::uint8_t
     {
         Immutable,
@@ -73,47 +70,57 @@ namespace LamaPon
 
     struct GraphicsTexture2DDescription final
     {
+        // テクスチャの幅
         std::uint32_t width{};
+        // テクスチャの高さ
         std::uint32_t height{};
+        // 作成するミップ数
         std::uint32_t mipLevels{ 1 };
+        // テクセルの格納形式
         GraphicsTextureFormat format{
             GraphicsTextureFormat::Rgba8Unorm };
+        // ミップ単位の更新許可
         GraphicsTextureUpdateMode updateMode{
             GraphicsTextureUpdateMode::Immutable };
     };
 
-    // 現段階の3D textureは全mipを生成時に渡すimmutable resourceです。
-    // 動的更新が必要になった時点で専用の更新契約を追加します。
+    // 全ミップの初期値を生成時に渡す不変の3Dテクスチャ設定。
     struct GraphicsTexture3DDescription final
     {
+        // テクスチャの幅
         std::uint32_t width{};
+        // テクスチャの高さ
         std::uint32_t height{};
+        // テクスチャの奥行
         std::uint32_t depth{};
+        // 作成するミップ数
         std::uint32_t mipLevels{ 1 };
+        // テクセルの格納形式
         GraphicsTextureFormat format{
             GraphicsTextureFormat::Rgba8Unorm };
     };
 
-    // 呼び出し中だけ有効なCPU側転送範囲です。rowPitchは1行のbyte数、
-    // slicePitchは隣接するdepth sliceまでのbyte数です。2Dでは0なら
-    // bytes.size()を使い、3Dでは明示値が必要です。
+    // 呼出中だけ借用する転送範囲で、2DのslicePitchは0なら内容サイズを使い、3Dは明示する。
     struct GraphicsTextureSubresourceData final
     {
+        // 借用する転送バイト列
         std::span<const std::byte> bytes;
+        // 一行のバイト数
         std::uint32_t rowPitch{};
+        // 隣接する奥行面までのバイト数
         std::uint32_t slicePitch{};
     };
 
-    // 2D / 3D textureのどのmip範囲をshaderから見せるかを表します。
+    // シェーダーへ公開するミップ範囲。
     struct GraphicsTextureViewDescription final
     {
+        // 公開する最初のミップ
         std::uint32_t mostDetailedMip{};
+        // 公開するミップ数
         std::uint32_t mipLevels{ 1 };
     };
 
-    // ViewがGPU資源をどの用途で参照するかを表します。値は描画APIの
-    // descriptor種別とは独立しており、具象Backendがnative viewへ
-    // 解決するときの型検証に使います。
+    // ネイティブビュー解決時の用途検証に使う、描画API共通のビュー種別。
     enum class GraphicsViewKind : std::uint8_t
     {
         None,
@@ -132,32 +139,40 @@ namespace LamaPon
         class GraphicsResourceHandleAccess;
     }
 
-    // API固有のtexture実体を強所有する不透明handleです。copyは同じ
-    // 実体を共有し、default構築・move後・Reset後はemptyになります。
+    // テクスチャを共有所有し、既定構築・移動後・Reset後は空となるハンドル。
     class GraphicsTextureHandle final
     {
     public:
+        // 空のテクスチャハンドルを作成する。
         GraphicsTextureHandle() noexcept = default;
+        // テクスチャの共有参照を複製する。
         GraphicsTextureHandle(
             const GraphicsTextureHandle&) noexcept = default;
+        // テクスチャの共有参照を移し、元を空にする。
         GraphicsTextureHandle(
             GraphicsTextureHandle&&) noexcept = default;
+        // テクスチャの共有参照をコピー代入する。
         GraphicsTextureHandle& operator=(
             const GraphicsTextureHandle&) noexcept = default;
+        // テクスチャの共有参照を移動代入する。
         GraphicsTextureHandle& operator=(
             GraphicsTextureHandle&&) noexcept = default;
+        // このハンドルの共有参照を解放する。
         ~GraphicsTextureHandle() noexcept = default;
 
+        // 実体を所有しているか判定する。
         [[nodiscard]] explicit operator bool() const noexcept
         {
             return m_payload != nullptr;
         }
 
+        // このハンドルの共有参照を解除する。
         void Reset() noexcept
         {
             m_payload.reset();
         }
 
+        // 共有実体のアドレスが同じか判定する(left: 左のハンドル, right: 右のハンドル)。
         friend bool operator==(
             const GraphicsTextureHandle& left,
             const GraphicsTextureHandle& right) noexcept
@@ -165,6 +180,7 @@ namespace LamaPon
             return left.m_payload == right.m_payload;
         }
 
+        // 共有実体が空か判定する(handle: 確認するハンドル)。
         friend bool operator==(
             const GraphicsTextureHandle& handle,
             std::nullptr_t) noexcept
@@ -173,6 +189,7 @@ namespace LamaPon
         }
 
     private:
+        // 共有実体をハンドルへ包み、ヌルなら空を作る(payload: 所有するテクスチャ実体)。
         explicit GraphicsTextureHandle(
             std::shared_ptr<Detail::GraphicsTexturePayload>
                 payload) noexcept
@@ -180,6 +197,7 @@ namespace LamaPon
         {
         }
 
+        // 共有所有するテクスチャ実体
         std::shared_ptr<Detail::GraphicsTexturePayload>
             m_payload;
 
@@ -187,31 +205,40 @@ namespace LamaPon
         friend class Detail::GraphicsResourceHandleAccess;
     };
 
-    // API固有のbuffer実体を強所有する不透明handleです。
+    // バッファーを共有所有し、既定構築・移動後・Reset後は空となるハンドル。
     class GraphicsBufferHandle final
     {
     public:
+        // 空のバッファーハンドルを作成する。
         GraphicsBufferHandle() noexcept = default;
+        // バッファーの共有参照を複製する。
         GraphicsBufferHandle(
             const GraphicsBufferHandle&) noexcept = default;
+        // バッファーの共有参照を移し、元を空にする。
         GraphicsBufferHandle(
             GraphicsBufferHandle&&) noexcept = default;
+        // バッファーの共有参照をコピー代入する。
         GraphicsBufferHandle& operator=(
             const GraphicsBufferHandle&) noexcept = default;
+        // バッファーの共有参照を移動代入する。
         GraphicsBufferHandle& operator=(
             GraphicsBufferHandle&&) noexcept = default;
+        // このハンドルの共有参照を解放する。
         ~GraphicsBufferHandle() noexcept = default;
 
+        // 実体を所有しているか判定する。
         [[nodiscard]] explicit operator bool() const noexcept
         {
             return m_payload != nullptr;
         }
 
+        // このハンドルの共有参照を解除する。
         void Reset() noexcept
         {
             m_payload.reset();
         }
 
+        // 共有実体のアドレスが同じか判定する(left: 左のハンドル, right: 右のハンドル)。
         friend bool operator==(
             const GraphicsBufferHandle& left,
             const GraphicsBufferHandle& right) noexcept
@@ -219,6 +246,7 @@ namespace LamaPon
             return left.m_payload == right.m_payload;
         }
 
+        // 共有実体が空か判定する(handle: 確認するハンドル)。
         friend bool operator==(
             const GraphicsBufferHandle& handle,
             std::nullptr_t) noexcept
@@ -227,6 +255,7 @@ namespace LamaPon
         }
 
     private:
+        // 共有実体をハンドルへ包み、ヌルなら空を作る(payload: 所有するバッファー実体)。
         explicit GraphicsBufferHandle(
             std::shared_ptr<Detail::GraphicsBufferPayload>
                 payload) noexcept
@@ -234,6 +263,7 @@ namespace LamaPon
         {
         }
 
+        // 共有所有するバッファー実体
         std::shared_ptr<Detail::GraphicsBufferPayload>
             m_payload;
 
@@ -243,40 +273,42 @@ namespace LamaPon
 
     namespace Detail
     {
-        // Backendの初期化世代を表すidentity兼lifetime anchorです。
-        // 具象BackendはAPI固有のdomainを派生させ、deviceやdescriptor
-        // allocatorなど、handleの遅延破棄に必要な状態をここへ保持できます。
-        // Initializeのたびに新しいdomainを作り、native解決時は同じdomain
-        // から作られたpayloadだけを受け付けてください。最後のhandleは任意の
-        // threadで破棄され得ます。D3D12実装ではGPU fence完了前のresourceや
-        // descriptorを直接解放せず、domain所有の遅延破棄queueへ退避します。
+        // 資源を解放する状態を保持するバックエンドの初期化世代。
+        // 初期化のたびに新規作成し、ネイティブ資源の解決では同じ世代の実体だけを受け付ける。
+        // 最後の参照は任意のスレッドで解放され得るため、D3D12の資源と記述子はフェンス完了まで遅延破棄する。
         class GraphicsResourceDomain
         {
         public:
+            // 派生側を含む初期化世代の所有状態を解放する。
             virtual ~GraphicsResourceDomain() noexcept = default;
 
+            // 初期化世代のコピーを禁止する。
             GraphicsResourceDomain(
                 const GraphicsResourceDomain&) = delete;
+            // 初期化世代のコピー代入を禁止する。
             GraphicsResourceDomain& operator=(
                 const GraphicsResourceDomain&) = delete;
 
         protected:
+            // 資源の所有世代を作成する。
             GraphicsResourceDomain() noexcept = default;
         };
 
-        // Backend固有payloadの共通基底です。domainを強所有するため、
-        // Backend facadeのShutdown後に外部のhandleが最後の参照になっても
-        // API固有の解放処理に必要なlifetime anchorは失われません。
+        // 初期化世代を共有所有し、バックエンド終了後も資源解放に必要な状態を保持する基底。
         class GraphicsResourcePayload
         {
         public:
+            // 共有する初期化世代への参照を解放する。
             virtual ~GraphicsResourcePayload() noexcept = default;
 
+            // 資源実体のコピーを禁止する。
             GraphicsResourcePayload(
                 const GraphicsResourcePayload&) = delete;
+            // 資源実体のコピー代入を禁止する。
             GraphicsResourcePayload& operator=(
                 const GraphicsResourcePayload&) = delete;
 
+            // 共有所有する初期化世代への参照を借用する。
             [[nodiscard]] const std::shared_ptr<
                 GraphicsResourceDomain>& Domain() const noexcept
             {
@@ -284,6 +316,7 @@ namespace LamaPon
             }
 
         protected:
+            // 初期化世代を共有所有し、ヌルなら例外を送出する(domain: 資源が属する共有世代)。
             explicit GraphicsResourcePayload(
                 std::shared_ptr<GraphicsResourceDomain> domain)
                 : m_domain(std::move(domain))
@@ -296,6 +329,7 @@ namespace LamaPon
             }
 
         private:
+            // 資源の解放状態を保持する共有世代
             std::shared_ptr<GraphicsResourceDomain> m_domain;
         };
 
@@ -303,6 +337,7 @@ namespace LamaPon
             : public GraphicsResourcePayload
         {
         public:
+            // 派生側を含むテクスチャ実体を解放する。
             ~GraphicsTexturePayload() noexcept override = default;
 
         protected:
@@ -313,28 +348,30 @@ namespace LamaPon
             : public GraphicsResourcePayload
         {
         public:
+            // 派生側を含むバッファー実体を解放する。
             ~GraphicsBufferPayload() noexcept override = default;
 
         protected:
             using GraphicsResourcePayload::GraphicsResourcePayload;
         };
 
-        // Viewはdescriptor/native viewに加えて、その参照先resourceを
-        // 強所有します。D3D11のCOM viewが暗黙にresourceを保持する挙動へ
-        // 依存せず、resourceを所有しないD3D12 descriptorでも同じ寿命契約に
-        // なります。
+        // ビュー実体と参照先資源を共有所有して、描画API間で同じ寿命を保証する。
+        // 種別None・空の資源・世代の不一致はinvalid_argumentで拒否する。
         class GraphicsViewPayload
             : public GraphicsResourcePayload
         {
         public:
+            // 派生側を含むビューと参照先資源を解放する。
             ~GraphicsViewPayload() noexcept override = default;
 
+            // ビューの参照用途を返す。
             [[nodiscard]] GraphicsViewKind Kind() const noexcept
             {
                 return m_kind;
             }
 
         protected:
+            // 同じ世代のテクスチャを参照するビューを作る(domain: 所有する世代, kind: ビューの用途, resource: 所有する参照先)。
             GraphicsViewPayload(
                 std::shared_ptr<GraphicsResourceDomain> domain,
                 const GraphicsViewKind kind,
@@ -346,6 +383,7 @@ namespace LamaPon
                 ValidateTextureResource();
             }
 
+            // 同じ世代のバッファーを参照するビューを作る(domain: 所有する世代, kind: ビューの用途, resource: 所有する参照先)。
             GraphicsViewPayload(
                 std::shared_ptr<GraphicsResourceDomain> domain,
                 const GraphicsViewKind kind,
@@ -358,6 +396,7 @@ namespace LamaPon
             }
 
         private:
+            // ビュー種別がNoneならinvalid_argumentを送出する。
             void ValidateKind() const
             {
                 if (m_kind == GraphicsViewKind::None)
@@ -367,9 +406,11 @@ namespace LamaPon
                 }
             }
 
+            // テクスチャの不在または世代の不一致ならinvalid_argumentを送出する。
             void ValidateTextureResource() const
             {
                 ValidateKind();
+                // 検証するビューの参照先資源
                 const auto& resource =
                     std::get<GraphicsTextureHandle>(m_resource);
                 if (resource.m_payload == nullptr)
@@ -385,9 +426,11 @@ namespace LamaPon
                 }
             }
 
+            // バッファーの不在または世代の不一致ならinvalid_argumentを送出する。
             void ValidateBufferResource() const
             {
                 ValidateKind();
+                // 検証するビューの参照先資源
                 const auto& resource =
                     std::get<GraphicsBufferHandle>(m_resource);
                 if (resource.m_payload == nullptr)
@@ -403,7 +446,9 @@ namespace LamaPon
                 }
             }
 
+            // ビューの参照用途
             GraphicsViewKind m_kind{ GraphicsViewKind::None };
+            // ビューから共有所有する参照先資源
             std::variant<
                 GraphicsTextureHandle,
                 GraphicsBufferHandle> m_resource;
@@ -412,27 +457,34 @@ namespace LamaPon
         };
     }
 
-    // API固有のview/descriptorと参照先resourceを強所有する不透明handle
-    // です。Kind()はempty handleに対してNoneを返します。
+    // ビューと参照先資源を共有所有し、既定構築・移動後・Reset後は空となるハンドル。
     class GraphicsViewHandle final
     {
     public:
+        // 空のビューハンドルを作成する。
         GraphicsViewHandle() noexcept = default;
+        // ビューと参照先の共有参照を複製する。
         GraphicsViewHandle(
             const GraphicsViewHandle&) noexcept = default;
+        // ビューの共有参照を移し、元を空にする。
         GraphicsViewHandle(
             GraphicsViewHandle&&) noexcept = default;
+        // ビューの共有参照をコピー代入する。
         GraphicsViewHandle& operator=(
             const GraphicsViewHandle&) noexcept = default;
+        // ビューの共有参照を移動代入する。
         GraphicsViewHandle& operator=(
             GraphicsViewHandle&&) noexcept = default;
+        // このハンドルの共有参照を解放する。
         ~GraphicsViewHandle() noexcept = default;
 
+        // 実体を所有しているか判定する。
         [[nodiscard]] explicit operator bool() const noexcept
         {
             return m_payload != nullptr;
         }
 
+        // ビューの参照用途を返し、空ならNoneを返す。
         [[nodiscard]] GraphicsViewKind Kind() const noexcept
         {
             return m_payload != nullptr
@@ -440,11 +492,13 @@ namespace LamaPon
                 : GraphicsViewKind::None;
         }
 
+        // このハンドルの共有参照を解除する。
         void Reset() noexcept
         {
             m_payload.reset();
         }
 
+        // 共有実体のアドレスが同じか判定する(left: 左のハンドル, right: 右のハンドル)。
         friend bool operator==(
             const GraphicsViewHandle& left,
             const GraphicsViewHandle& right) noexcept
@@ -452,6 +506,7 @@ namespace LamaPon
             return left.m_payload == right.m_payload;
         }
 
+        // 共有実体が空か判定する(handle: 確認するハンドル)。
         friend bool operator==(
             const GraphicsViewHandle& handle,
             std::nullptr_t) noexcept
@@ -460,6 +515,7 @@ namespace LamaPon
         }
 
     private:
+        // 共有実体をハンドルへ包み、ヌルなら空を作る(payload: 所有するビュー実体)。
         explicit GraphicsViewHandle(
             std::shared_ptr<Detail::GraphicsViewPayload>
                 payload) noexcept
@@ -467,6 +523,7 @@ namespace LamaPon
         {
         }
 
+        // 共有所有するビュー実体
         std::shared_ptr<Detail::GraphicsViewPayload> m_payload;
 
         friend class Detail::GraphicsResourceHandleAccess;
@@ -474,12 +531,12 @@ namespace LamaPon
 
     namespace Detail
     {
-        // Backend実装だけがpayloadと公開handleの境界を越えるための
-        // access pointです。共通の利用側はhandleのempty/identity/Kind
-        // 以外を観測できません。
+        // バックエンドだけがハンドルの共有実体へアクセスする窓口。
+        // 借用した実体・世代・資源への参照は、所有元ハンドルの保持中だけ使う。
         class GraphicsResourceHandleAccess final
         {
         public:
+            // 共有実体をテクスチャハンドルで包み、ヌルなら空を返す(payload: 所有するテクスチャ実体)。
             [[nodiscard]] static GraphicsTextureHandle MakeTexture(
                 std::shared_ptr<GraphicsTexturePayload>
                     payload) noexcept
@@ -487,6 +544,7 @@ namespace LamaPon
                 return GraphicsTextureHandle{ std::move(payload) };
             }
 
+            // 共有実体をバッファーハンドルで包み、ヌルなら空を返す(payload: 所有するバッファー実体)。
             [[nodiscard]] static GraphicsBufferHandle MakeBuffer(
                 std::shared_ptr<GraphicsBufferPayload>
                     payload) noexcept
@@ -494,6 +552,7 @@ namespace LamaPon
                 return GraphicsBufferHandle{ std::move(payload) };
             }
 
+            // 共有実体をビューハンドルで包み、ヌルなら空を返す(payload: 所有するビュー実体)。
             [[nodiscard]] static GraphicsViewHandle MakeView(
                 std::shared_ptr<GraphicsViewPayload>
                     payload) noexcept
@@ -501,24 +560,28 @@ namespace LamaPon
                 return GraphicsViewHandle{ std::move(payload) };
             }
 
+            // テクスチャ実体を借用し、空ならヌルを返す(handle: 参照するハンドル)。
             [[nodiscard]] static const GraphicsTexturePayload* Payload(
                 const GraphicsTextureHandle& handle) noexcept
             {
                 return handle.m_payload.get();
             }
 
+            // バッファー実体を借用し、空ならヌルを返す(handle: 参照するハンドル)。
             [[nodiscard]] static const GraphicsBufferPayload* Payload(
                 const GraphicsBufferHandle& handle) noexcept
             {
                 return handle.m_payload.get();
             }
 
+            // ビュー実体を借用し、空ならヌルを返す(handle: 参照するハンドル)。
             [[nodiscard]] static const GraphicsViewPayload* Payload(
                 const GraphicsViewHandle& handle) noexcept
             {
                 return handle.m_payload.get();
             }
 
+            // 所有する初期化世代を借用し、空ならヌルを返す(handle: テクスチャハンドル)。
             [[nodiscard]] static const GraphicsResourceDomain* Domain(
                 const GraphicsTextureHandle& handle) noexcept
             {
@@ -527,6 +590,7 @@ namespace LamaPon
                     : nullptr;
             }
 
+            // 所有する初期化世代を借用し、空ならヌルを返す(handle: バッファーハンドル)。
             [[nodiscard]] static const GraphicsResourceDomain* Domain(
                 const GraphicsBufferHandle& handle) noexcept
             {
@@ -535,6 +599,7 @@ namespace LamaPon
                     : nullptr;
             }
 
+            // 所有する初期化世代を借用し、空ならヌルを返す(handle: ビューハンドル)。
             [[nodiscard]] static const GraphicsResourceDomain* Domain(
                 const GraphicsViewHandle& handle) noexcept
             {
@@ -543,6 +608,7 @@ namespace LamaPon
                     : nullptr;
             }
 
+            // ビューのテクスチャ参照を借用し、空または別種ならヌルを返す(handle: 参照するビュー)。
             [[nodiscard]] static const GraphicsTextureHandle*
                 TextureResource(
                     const GraphicsViewHandle& handle) noexcept
@@ -555,6 +621,7 @@ namespace LamaPon
                     &handle.m_payload->m_resource);
             }
 
+            // ビューのバッファー参照を借用し、空または別種ならヌルを返す(handle: 参照するビュー)。
             [[nodiscard]] static const GraphicsBufferHandle*
                 BufferResource(
                     const GraphicsViewHandle& handle) noexcept

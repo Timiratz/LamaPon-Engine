@@ -18,6 +18,7 @@
 
 namespace
 {
+    // 三成分の和を返します(left: 一方のベクトル, right: もう一方のベクトル)。
     DirectX::XMFLOAT3 Add(
         const DirectX::XMFLOAT3& left,
         const DirectX::XMFLOAT3& right) noexcept
@@ -29,6 +30,7 @@ namespace
         };
     }
 
+    // 三成分を同じ倍率で拡縮します(value: ベクトル, scale: 倍率)。
     DirectX::XMFLOAT3 Multiply(
         const DirectX::XMFLOAT3& value,
         const float scale) noexcept
@@ -40,6 +42,7 @@ namespace
         };
     }
 
+    // 三成分の外積を返します(left: 左ベクトル, right: 右ベクトル)。
     DirectX::XMFLOAT3 Cross(
         const DirectX::XMFLOAT3& left,
         const DirectX::XMFLOAT3& right) noexcept
@@ -51,6 +54,7 @@ namespace
         };
     }
 
+    // 三成分の内積を返します(left: 一方のベクトル, right: もう一方のベクトル)。
     float Dot(
         const DirectX::XMFLOAT3& left,
         const DirectX::XMFLOAT3& right) noexcept
@@ -153,6 +157,7 @@ namespace LamaPon
     DirectX::XMFLOAT3
         RigidbodyComponent::WorldCenterOfMass() const noexcept
     {
+        // 変換したワールド重心
         DirectX::XMFLOAT3 result{};
         DirectX::XMStoreFloat3(
             &result,
@@ -168,8 +173,10 @@ namespace LamaPon
             const DirectX::XMFLOAT3&
                 worldPosition) const noexcept
     {
+        // 剛体のワールド重心
         const auto center =
             WorldCenterOfMass();
+        // 重心から作用点への変位
         const DirectX::XMFLOAT3 radius{
             worldPosition.x - center.x,
             worldPosition.y - center.y,
@@ -190,15 +197,18 @@ namespace LamaPon
             return {};
         }
 
+        // 慣性近似箱のXYZ全幅
         DirectX::XMFLOAT3 dimensions{
             1.0f,
             1.0f,
             1.0f
         };
+        // 自身の3D箱コライダー
         if (const auto* box =
                 Owner().GetComponent<
                     BoxCollider3DComponent>())
         {
+            // ワールド向き付き箱の形状
             const auto worldBox =
                 box->WorldBox();
             dimensions = {
@@ -213,12 +223,15 @@ namespace LamaPon
                     0.01f)
             };
         }
+        // 自身のカプセルコライダー
         else if (const auto* capsule =
                 Owner().GetComponent<
                     CapsuleCollider3DComponent>())
         {
+            // ワールドカプセルの形状
             const auto worldCapsule =
                 capsule->WorldCapsule();
+            // カプセルの中心線の変位
             const DirectX::XMFLOAT3 segment{
                 worldCapsule.end.x
                     - worldCapsule.start.x,
@@ -227,8 +240,10 @@ namespace LamaPon
                 worldCapsule.end.z
                     - worldCapsule.start.z
             };
+            // 形状のワールド直径
             const float diameter =
                 worldCapsule.radius * 2.0f;
+            // カプセルのワールド全高
             const float totalHeight =
                 std::sqrt(Dot(segment, segment))
                     + diameter;
@@ -238,10 +253,12 @@ namespace LamaPon
                 std::max(diameter, 0.01f)
             };
         }
+        // 自身の球コライダー
         else if (const auto* sphere =
                 Owner().GetComponent<
                     SphereCollider3DComponent>())
         {
+            // 形状のワールド直径
             const float diameter =
                 sphere->WorldSphere().radius
                 * 2.0f;
@@ -251,10 +268,12 @@ namespace LamaPon
                 std::max(diameter, 0.01f)
             };
         }
+        // 自身の凸包コライダー
         else if (const auto* hull =
                 Owner().GetComponent<
                     ConvexHullCollider3DComponent>())
         {
+            // 形状のワールド境界
             const auto bounds = hull->WorldBounds();
             dimensions = {
                 std::max(
@@ -268,10 +287,12 @@ namespace LamaPon
                     0.01f)
             };
         }
+        // 自身の2D箱コライダー
         else if (const auto* box2D =
                 Owner().GetComponent<
                     BoxCollider2DComponent>())
         {
+            // 形状のワールド境界
             const auto bounds =
                 box2D->WorldBounds();
             dimensions = {
@@ -286,10 +307,12 @@ namespace LamaPon
                 0.1f
             };
         }
+        // 自身の2D凸多角形コライダー
         else if (const auto* polygon2D =
                 Owner().GetComponent<
                     PolygonCollider2DComponent>())
         {
+            // 形状のワールド境界
             const auto bounds =
                 polygon2D->WorldBounds();
             dimensions = {
@@ -306,9 +329,13 @@ namespace LamaPon
         }
         else
         {
+            // 子孫の形状境界を取得済み
             bool foundBounds{};
+            // 子孫形状を囲む合成境界
             Bounds3D compoundBounds{};
+            // 形状を調べる子孫の探索スタック
             std::vector<const GameObject*> pending;
+            // 形状を探索する子物体
             for (const auto* child :
                 Owner().Children())
             {
@@ -316,27 +343,33 @@ namespace LamaPon
             }
             while (!pending.empty())
             {
+                // 形状を探索する子孫物体
                 const auto* object = pending.back();
                 pending.pop_back();
+                // 形状のワールド境界
                 std::optional<Bounds3D> bounds;
+                // 子孫の3D箱コライダー
                 if (const auto* childBox =
                     object->GetComponent<
                         BoxCollider3DComponent>())
                 {
                     bounds = childBox->WorldBounds();
                 }
+                // 子孫のカプセルコライダー
                 else if (const auto* childCapsule =
                     object->GetComponent<
                         CapsuleCollider3DComponent>())
                 {
                     bounds = childCapsule->WorldBounds();
                 }
+                // 子孫の球コライダー
                 else if (const auto* childSphere =
                     object->GetComponent<
                         SphereCollider3DComponent>())
                 {
                     bounds = childSphere->WorldBounds();
                 }
+                // 子孫の凸包コライダー
                 else if (const auto* childHull =
                     object->GetComponent<
                         ConvexHullCollider3DComponent>())
@@ -378,6 +411,7 @@ namespace LamaPon
                                 bounds->maximum.z);
                     }
                 }
+                // 形状を探索する子物体
                 for (const auto* child :
                     object->Children())
                 {
@@ -403,6 +437,7 @@ namespace LamaPon
             }
         }
 
+        // 近似箱のXYZ慣性モーメント
         const DirectX::XMFLOAT3 inertia{
             m_mass / 12.0f
                 * (dimensions.y * dimensions.y
@@ -415,19 +450,23 @@ namespace LamaPon
                     + dimensions.y * dimensions.y)
         };
 
+        // 軸方向を取得する変換行列
         DirectX::XMFLOAT4X4 world{};
         DirectX::XMStoreFloat4x4(
             &world,
             Owner().WorldMatrix());
+        // ベクトルを正規化し短すぎればゼロを返します(value: 正規化する軸)。
         auto normalize = [](
             DirectX::XMFLOAT3 value) noexcept
         {
+            // 正規化する軸の長さ
             const float length = std::sqrt(
                 Dot(value, value));
             return length > 0.000001f
                 ? Multiply(value, 1.0f / length)
                 : DirectX::XMFLOAT3{};
         };
+        // 正規化したワールドXYZ軸
         const std::array axes{
             normalize({
                 world._11,
@@ -442,11 +481,13 @@ namespace LamaPon
                 world._32,
                 world._33 })
         };
+        // 作用量の各軸方向成分
         const DirectX::XMFLOAT3 local{
             Dot(worldTorque, axes[0]),
             Dot(worldTorque, axes[1]),
             Dot(worldTorque, axes[2])
         };
+        // 拘束済みの逆慣性適用結果
         DirectX::XMFLOAT3 localResult{
             local.x / std::max(inertia.x, 0.0001f),
             local.y / std::max(inertia.y, 0.0001f),
@@ -485,6 +526,7 @@ namespace LamaPon
         }
         else
         {
+            // 力積を速度に換算する倍率
             const float scale =
                 mode == ForceMode::Impulse
                 ? InverseMass()
@@ -516,6 +558,7 @@ namespace LamaPon
         }
         else
         {
+            // 角速度へ加算する作用量
             const auto change =
                 mode == ForceMode::Impulse
                 ? ApplyInverseInertia(torque)
@@ -530,8 +573,10 @@ namespace LamaPon
         const DirectX::XMFLOAT3& worldPosition,
         const ForceMode mode) noexcept
     {
+        // 剛体のワールド重心
         const auto center =
             WorldCenterOfMass();
+        // 重心から作用点への変位
         const DirectX::XMFLOAT3 radius{
             worldPosition.x - center.x,
             worldPosition.y - center.y,
@@ -555,8 +600,10 @@ namespace LamaPon
         m_velocity = Add(
             m_velocity,
             Multiply(impulse, InverseMass()));
+        // 剛体のワールド重心
         const auto center =
             WorldCenterOfMass();
+        // 重心から作用点への変位
         const DirectX::XMFLOAT3 radius{
             worldPosition.x - center.x,
             worldPosition.y - center.y,
@@ -580,6 +627,7 @@ namespace LamaPon
         }
         if (!m_isKinematic)
         {
+            // 外力と重力の合計加速度
             DirectX::XMFLOAT3 acceleration =
                 m_accumulatedAcceleration;
             acceleration = Add(
@@ -589,7 +637,8 @@ namespace LamaPon
                     InverseMass()));
             if (m_useGravity)
             {
-                // プロジェクト設定の重力を適用します。
+
+                // プロジェクトの重力加速度
                 const auto& gravity =
                     ActivePhysicsSettings().gravity;
                 acceleration.x += gravity.x;
@@ -599,6 +648,7 @@ namespace LamaPon
             m_velocity = Add(
                 m_velocity,
                 Multiply(acceleration, deltaTime));
+            // 線形速度に掛ける減衰倍率
             const float linearDamping =
                 1.0f / (1.0f
                     + m_linearDrag
@@ -608,6 +658,7 @@ namespace LamaPon
                     m_velocity,
                     linearDamping);
 
+            // 合計ワールド角加速度
             auto angularAcceleration =
                 Add(
                     ApplyInverseInertia(
@@ -620,6 +671,7 @@ namespace LamaPon
                         angularAcceleration,
                         deltaTime)),
                 false);
+            // 角速度に掛ける減衰倍率
             const float angularDamping =
                 1.0f / (1.0f
                     + m_angularDrag
@@ -630,12 +682,12 @@ namespace LamaPon
                     angularDamping),
                 false);
 
-            // 離散判定で安定して扱える速度を超えた物体を検出します。
-            // 連続判定を使う物体は対象外です。挙動は変えず、連続判定を
-            // 検討すべきGameObjectを診断へ記録します。
+            // 離散判定の高速移動を初回通知し、指定があれば安全速度まで制限します。
             if (!UsesContinuousCollisionDetection())
             {
+                // 適用するプロジェクト物理設定
                 const auto& physics = ActivePhysicsSettings();
+                // ワールド速度の長さ毎秒
                 const float speed = std::sqrt(
                     Dot(m_velocity, m_velocity));
                 if (speed > physics.discreteSafeSpeed)
@@ -709,8 +761,7 @@ namespace LamaPon
             return;
         }
         m_isSleeping = true;
-        // 眠った状態を保つため、タイマーはしきい値に合わせておきます
-        // （固定の0.5だと、設定を伸ばしたときに次の判定で起きます）。
+        // 休止待ち時間を現在の設定値に合わせ、手動休止が次の判定で解除されるのを防ぎます。
         m_sleepTimer =
             ActivePhysicsSettings().sleepDelay;
         m_velocity = {};
@@ -732,18 +783,24 @@ namespace LamaPon
         {
             return;
         }
-        // しきい値と眠るまでの時間はプロジェクト設定から。
+
+        // 適用するプロジェクト物理設定
         const auto& physics = ActivePhysicsSettings();
+        // 休止判定の線形速度しきい値
         const float linearThreshold =
             physics.sleepLinearVelocity;
+        // 休止判定の角速度しきい値
         const float angularThreshold =
             physics.sleepAngularVelocity;
+        // 線形速度の長さの二乗
         const float linearSpeedSquared =
             Dot(m_velocity, m_velocity);
+        // 角速度の長さの二乗
         const float angularSpeedSquared =
             Dot(
                 m_angularVelocity,
                 m_angularVelocity);
+        // 両速度が休止しきい値以内
         const bool slow =
             linearSpeedSquared
                 <= linearThreshold * linearThreshold
@@ -754,6 +811,7 @@ namespace LamaPon
             m_sleepTimer = 0.0f;
             return;
         }
+        // 絶対値を取った経過秒数
         const float time = std::abs(deltaTime);
         if (supported)
         {
@@ -774,6 +832,7 @@ namespace LamaPon
     void RigidbodyComponent::RemoveInwardVelocity(
         const DirectX::XMFLOAT3& surfaceNormal) noexcept
     {
+        // 面の外向き法線方向の速度
         const float inwardSpeed =
             m_velocity.x * surfaceNormal.x
             + m_velocity.y * surfaceNormal.y

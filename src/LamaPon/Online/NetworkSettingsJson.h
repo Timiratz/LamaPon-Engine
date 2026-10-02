@@ -7,9 +7,12 @@
 
 namespace LamaPon::Detail
 {
+    // 環境変数名を含む通信設定をJSONにする(settings: 通信設定)。
     inline nlohmann::json NetworkSettingsToJson(const NetworkConfiguration& settings)
     {
+        // 同期Prefabの登録一覧
         nlohmann::json prefabs = nlohmann::json::array();
+        // 各Prefabの識別子とパス
         for (const auto& prefab : settings.prefabs)
             prefabs.push_back({ { "key", prefab.key }, { "assetPath", prefab.assetPath } });
         return { { "backend", settings.backend == NetworkBackend::Lan ? "Lan" : (settings.backend == NetworkBackend::Direct ? "Direct" : "EOS") },
@@ -25,13 +28,17 @@ namespace LamaPon::Detail
                 { "clientSecretEnvironment", settings.eosClientSecretEnvironment } } } };
     }
 
+    // 省略値を既定で補い、通信設定を検証して返す(value: 設定JSON)。
     inline NetworkConfiguration NetworkSettingsFromJson(const nlohmann::json& value)
     {
         if (!value.is_object()) throw std::invalid_argument("Network settings must be an object.");
+        // 検証する通信設定
         NetworkConfiguration result;
+        // バックエンドの設定文字列
         const auto backend = value.value("backend", std::string("Lan"));
         if (backend != "Lan" && backend != "EOS" && backend != "Direct") throw std::invalid_argument("Unknown network backend.");
         result.backend = backend == "Lan" ? NetworkBackend::Lan : (backend == "Direct" ? NetworkBackend::Direct : NetworkBackend::EpicOnlineServices);
+        // 同期方式の設定文字列
         const auto mode = value.value("syncMode", std::string("Continuous"));
         if (mode != "Continuous" && mode != "OnChange") throw std::invalid_argument("Unknown network synchronization mode.");
         result.syncMode = mode == "OnChange" ? NetworkSyncMode::OnChange : NetworkSyncMode::Continuous;
@@ -41,9 +48,11 @@ namespace LamaPon::Detail
         result.gameId = value.value("gameId", result.gameId);
         result.gameVersion = value.value("gameVersion", result.gameVersion);
         result.sceneId = value.value("sceneId", result.sceneId);
+        // 0〜65535の整数設定を読む(key: 設定名, fallback: 省略時の値)。
         const auto integer = [&value](const char* key, const std::uint32_t fallback)
         {
             if (!value.contains(key)) return fallback;
+            // 整数設定のJSON値
             const auto& field = value.at(key);
             if (!field.is_number_integer() || field.get<std::int64_t>() < 0
                 || field.get<std::uint64_t>() > 65535) throw std::invalid_argument("Invalid network integer.");
@@ -56,6 +65,7 @@ namespace LamaPon::Detail
         result.timeoutSeconds = value.value("timeoutSeconds", result.timeoutSeconds);
         if (value.contains("eos"))
         {
+            // EOS接続設定のJSON値
             const auto& eos = value.at("eos");
             if (!eos.is_object()) throw std::invalid_argument("EOS settings must be an object.");
             result.eosProductId = eos.value("productId", result.eosProductId);
@@ -66,8 +76,10 @@ namespace LamaPon::Detail
         }
         if (value.contains("prefabs"))
         {
+            // 同期Prefabの登録一覧
             const auto& prefabs = value.at("prefabs");
             if (!prefabs.is_array() || prefabs.size() > 64) throw std::invalid_argument("Network prefab registry limit.");
+            // 各Prefabの識別子とパス
             for (const auto& prefab : prefabs)
                 result.prefabs.push_back({ prefab.at("key").get<std::string>(), prefab.at("assetPath").get<std::string>() });
         }

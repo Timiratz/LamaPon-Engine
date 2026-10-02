@@ -152,12 +152,15 @@ namespace LamaPon
     void SpriteParticles2DComponent::OnUpdate(
         const float deltaTime)
     {
+        // 負の時間を除いた経過秒数
         const float safeDeltaTime = std::max(deltaTime, 0.0f);
+        // 更新または描画する生存粒子
         for (auto& particle : m_particles)
         {
             particle.age += safeDeltaTime;
             particle.velocity.x += m_gravity.x * safeDeltaTime;
             particle.velocity.y += m_gravity.y * safeDeltaTime;
+            // 今回の更新での速度残存率
             const float dragFactor = std::clamp(
                 1.0f - m_drag * safeDeltaTime,
                 0.0f,
@@ -171,6 +174,7 @@ namespace LamaPon
             particle.rotation +=
                 particle.angularVelocity * safeDeltaTime;
         }
+        // 寿命を終えた粒子を除去する(particle: 寿命を判定する粒子)。
         std::erase_if(
             m_particles,
             [](const Particle& particle)
@@ -184,14 +188,19 @@ namespace LamaPon
     {
         using namespace DirectX;
 
+        // 生成元のワールド行列
         XMFLOAT4X4 world{};
         XMStoreFloat4x4(&world, Owner().WorldMatrix());
+        // 粒子を生成するワールドXY
         const XMFLOAT2 origin{ world._41, world._42 };
+        // 今回追加する粒子の番号
         for (std::uint32_t index{};
             index < count && m_particles.size() < m_maxParticles;
             ++index)
         {
+            // 初速方向のラジアン角
             const float angle = RandomRange(0.0f, XM_2PI);
+            // 生成時に選ぶ毎秒の初速距離
             const float speed = RandomRange(
                 m_startSpeed.x,
                 m_startSpeed.y);
@@ -236,31 +245,40 @@ namespace LamaPon
             return;
         }
 
+        // 2D表示のオフセット
         const auto& offset = m_graphics->Sprite2DOffset();
+        // 粒子画像の幅のピクセル数
         const float textureWidth = m_texture
             ? static_cast<float>(m_texture->width)
             : 1.0f;
+        // 粒子画像の高さのピクセル数
         const float textureHeight = m_texture
             ? static_cast<float>(m_texture->height)
             : 1.0f;
+        // 粒子画像の描画ビュー
         GraphicsViewHandle textureView;
         if (m_texture)
         {
+            // 画像のGPU資源の借用
             const auto resources =
                 m_texture->resources.Acquire();
             textureView = resources
                 ? resources->shaderResourceView
                 : GraphicsViewHandle{};
         }
+        // 更新または描画する生存粒子
         for (const auto& particle : m_particles)
         {
+            // 寿命全体に対する経過割合
             const float normalizedAge = std::clamp(
                 particle.age / particle.lifetime,
                 0.0f,
                 1.0f);
+            // 経過時間による一辺の長さ
             const float size = std::max(
                 particle.size + m_sizeGrowth * particle.age,
                 0.001f);
+            // 寿命割合で補間したRGBA
             const XMFLOAT4 color{
                 m_startColor.x
                     + (m_endColor.x - m_startColor.x)
@@ -275,12 +293,14 @@ namespace LamaPon
                     + (m_endColor.w - m_startColor.w)
                         * normalizedAge
             };
+            // アルファ乗算済みの描画色
             const XMFLOAT4 premultipliedColor{
                 color.x * color.w,
                 color.y * color.w,
                 color.z * color.w,
                 color.w
             };
+            // 粒子のスプライト描画指定
             SpriteDrawRequest request;
             request.texture = textureView;
             request.position = {

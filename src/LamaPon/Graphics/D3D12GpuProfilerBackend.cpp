@@ -9,8 +9,10 @@
 
 namespace
 {
+    // CPU読取用ヒープの仕様を返す。
     [[nodiscard]] D3D12_HEAP_PROPERTIES ReadbackHeap() noexcept
     {
+        // 読取用ヒープの仕様
         D3D12_HEAP_PROPERTIES properties{};
         properties.Type = D3D12_HEAP_TYPE_READBACK;
         properties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
@@ -20,9 +22,11 @@ namespace
         return properties;
     }
 
+    // 読取バッファーの仕様を返す(bytes: バッファーのバイト数)。
     [[nodiscard]] D3D12_RESOURCE_DESC Buffer(
         const std::uint64_t bytes) noexcept
     {
+        // バッファー資源の仕様
         D3D12_RESOURCE_DESC description{};
         description.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
         description.Width = bytes;
@@ -35,6 +39,7 @@ namespace
         return description;
     }
 
+    // 失敗したHRESULTを例外に変える(result: 実行結果, operation: 操作名)。
     void ThrowIfFailed(const HRESULT result, const char* operation)
     {
         if (FAILED(result))
@@ -101,16 +106,17 @@ namespace LamaPon
         {
             return;
         }
+        // 操作するコマンド一覧
         auto* const commands = m_backend->BeginFrameCommands();
         m_activeFrame = m_backend->CurrentBackBufferIndex();
+        // 操作するフレームの状態
         auto& frame = m_frames[m_activeFrame];
         if (frame.open)
         {
             return;
         }
 
-        // BeginFrameCommandsはこのback bufferを以前使ったGPU workの
-        // fence完了を待つため、同じslotのreadbackとqueryを安全に再利用できます。
+        // BeginFrameCommandsが同じスロットのフェンス完了を待った後に、結果を読んで再利用する。
         ReadCompletedFrame(m_activeFrame);
         frame.usedSections = 0;
         frame.sectionStack.clear();
@@ -138,6 +144,7 @@ namespace LamaPon
         {
             return false;
         }
+        // 操作するフレームの状態
         auto& frame = m_frames[m_activeFrame];
         if (!frame.open || frame.usedSections >= MaximumSections)
         {
@@ -147,11 +154,13 @@ namespace LamaPon
         {
             frame.sections.emplace_back();
         }
+        // 区間の情報または番号
         auto& section = frame.sections[frame.usedSections];
         section.name = name;
         section.depth = depth;
         frame.sectionStack.push_back(frame.usedSections);
 
+        // 送信する時刻クエリ番号
         const auto query = TimestampBase(m_activeFrame)
             + 2u + frame.usedSections * 2u;
         m_backend->CurrentFrameCommands()->EndQuery(
@@ -168,15 +177,18 @@ namespace LamaPon
         {
             return;
         }
+        // 操作するフレームの状態
         auto& frame = m_frames[m_activeFrame];
         if (!frame.open || frame.sectionStack.empty())
         {
             return;
         }
+        // 区間の情報または番号
         const auto section = frame.sectionStack.back();
         frame.sectionStack.pop_back();
         try
         {
+            // 送信する時刻クエリ番号
             const auto query = TimestampBase(m_activeFrame)
                 + 3u + section * 2u;
             m_backend->BeginFrameCommands()->EndQuery(
@@ -197,6 +209,7 @@ namespace LamaPon
         {
             return;
         }
+        // 操作するフレームの状態
         auto& frame = m_frames[m_activeFrame];
         if (!frame.open)
         {
@@ -212,12 +225,15 @@ namespace LamaPon
             return;
         }
 
+        // 操作するコマンド一覧
         auto* const commands = m_backend->BeginFrameCommands();
+        // フレーム先頭のクエリ番号
         const auto base = TimestampBase(m_activeFrame);
         commands->EndQuery(
             m_timestampHeap.Get(),
             D3D12_QUERY_TYPE_TIMESTAMP,
             static_cast<UINT>(base + 1u));
+        // 描画統計を読み出せる
         const bool resolvePipelineStatistics =
             frame.pipelineStatisticsOpen
             && frame.pipelineStatisticsValid;
@@ -229,6 +245,7 @@ namespace LamaPon
                 static_cast<UINT>(m_activeFrame));
             frame.pipelineStatisticsOpen = false;
         }
+        // 使用した時刻クエリ数
         const auto usedTimestampCount = 2u + frame.usedSections * 2u;
         commands->ResolveQueryData(
             m_timestampHeap.Get(),
@@ -276,6 +293,7 @@ namespace LamaPon
         {
             return false;
         }
+        // 操作するコマンド一覧
         auto* const commands = m_backend->RecordingFrameCommands();
         if (commands == nullptr)
         {
@@ -283,8 +301,8 @@ namespace LamaPon
         }
         try
         {
-            // PIXの旧形式（metadata 0 = UTF-16文字列）です。PIXとRenderDocの
-            // どちらも、追加のruntime無しでこの形式を読めます。
+            // PIX互換のmetadata 0としてUTF-16のマーカー名を渡す。
+            // UTF-16のマーカー名
             const auto wideName = Utf8ToWide(name);
             m_markerStack.reserve(m_markerStack.size() + 1);
             commands->BeginEvent(
@@ -307,12 +325,14 @@ namespace LamaPon
         {
             return;
         }
+        // この一覧でマーカー開始済み
         const bool open = m_markerStack.back();
         m_markerStack.pop_back();
         if (!open || m_backend == nullptr)
         {
             return;
         }
+        // 操作するコマンド一覧
         if (auto* const commands = m_backend->RecordingFrameCommands())
         {
             commands->EndEvent();
@@ -322,9 +342,10 @@ namespace LamaPon
     void D3D12GpuProfilerBackend::BeforeCommandListClose(
         ID3D12GraphicsCommandList* const commands) noexcept
     {
-        // 閉じるcommand listの中でmarkerの入れ子を完結させます。
+        // 閉じるコマンド一覧の中でマーカーの入れ子を完結させる。
         if (commands != nullptr)
         {
+            // 逆順に閉じるマーカー位置
             for (auto marker = m_markerStack.rbegin();
                 marker != m_markerStack.rend();
                 ++marker)
@@ -340,6 +361,7 @@ namespace LamaPon
         {
             return;
         }
+        // 操作するフレームの状態
         auto& frame = m_frames[m_activeFrame];
         if (!frame.open || !frame.pipelineStatisticsOpen)
         {
@@ -371,6 +393,7 @@ namespace LamaPon
                 "The D3D12 timestamp frequency is zero.");
         }
 
+        // 時刻クエリヒープの仕様
         D3D12_QUERY_HEAP_DESC timestampDescription{};
         timestampDescription.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
         timestampDescription.Count = static_cast<UINT>(
@@ -381,7 +404,9 @@ namespace LamaPon
                 IID_PPV_ARGS(m_timestampHeap.ReleaseAndGetAddressOf())),
             "ID3D12Device::CreateQueryHeap(timestamp)");
 
+        // CPU読取用ヒープの仕様
         const auto heap = ReadbackHeap();
+        // 時刻読取バッファーの仕様
         const auto timestampBuffer = Buffer(
             FrameCount * TimestampCountPerFrame
             * sizeof(std::uint64_t));
@@ -400,9 +425,10 @@ namespace LamaPon
                 reinterpret_cast<void**>(&m_mappedTimestamps)),
             "ID3D12Resource::Map(timestamp readback)");
 
-        // Pipeline statisticsは一部adapterで利用できないため任意機能です。
+        // 描画統計は任意機能とし、生成失敗で時間計測を無効にしない。
         try
         {
+            // 描画統計ヒープの仕様
             D3D12_QUERY_HEAP_DESC pipelineDescription{};
             pipelineDescription.Type =
                 D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS;
@@ -413,6 +439,7 @@ namespace LamaPon
                     IID_PPV_ARGS(m_pipelineStatisticsHeap
                         .ReleaseAndGetAddressOf())),
                 "ID3D12Device::CreateQueryHeap(pipeline statistics)");
+            // 描画統計読取バッファーの仕様
             const auto pipelineBuffer = Buffer(
                 FrameCount
                 * sizeof(D3D12_QUERY_DATA_PIPELINE_STATISTICS));
@@ -451,15 +478,20 @@ namespace LamaPon
     void D3D12GpuProfilerBackend::ReadCompletedFrame(
         const std::size_t frameIndex) noexcept
     {
+        // 操作するフレームの状態
         auto& frame = m_frames[frameIndex];
         if (!frame.pending || m_mappedTimestamps == nullptr)
         {
             return;
         }
         frame.pending = false;
+        // フレーム先頭のクエリ番号
         const auto base = TimestampBase(frameIndex);
+        // フレーム開始の時刻値
         const auto begin = m_mappedTimestamps[base];
+        // フレーム終了の時刻値
         const auto end = m_mappedTimestamps[base + 1u];
+        // 一刻みの時間、ミリ秒
         const double millisecondsPerTick = 1000.0
             / static_cast<double>(m_frequency);
         m_latestFrameMilliseconds = end >= begin
@@ -469,10 +501,13 @@ namespace LamaPon
 
         m_latestSections.clear();
         m_latestSections.reserve(frame.usedSections);
+        // 読み出す区間番号
         for (std::size_t index{}; index < frame.usedSections; ++index)
         {
+            // 区間開始の時刻値
             const auto sectionBegin = m_mappedTimestamps[
                 base + 2u + index * 2u];
+            // 区間終了の時刻値
             const auto sectionEnd = m_mappedTimestamps[
                 base + 3u + index * 2u];
             if (sectionEnd < sectionBegin)
@@ -491,6 +526,7 @@ namespace LamaPon
         if (frame.pipelineStatisticsValid
             && m_mappedPipelineStatistics != nullptr)
         {
+            // 読み出した描画統計
             const auto& statistics =
                 m_mappedPipelineStatistics[frameIndex];
             m_latestPipelineStatistics = {

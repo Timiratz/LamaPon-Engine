@@ -7,11 +7,13 @@
 
 namespace
 {
-    // 深度専用パスのRAII。例外が出ても必ず元へ戻します。
+    // 深度パスを設定し、終了時に通常描画へ戻すスコープ。
     struct DepthPassScope final
     {
+        // スコープ中に借用する描画デバイス
         LamaPon::GraphicsDevice& graphics;
 
+        // 深度パスを切り替える(device: 借用する描画デバイス, kind: 設定する深度パス種別)。
         DepthPassScope(
             LamaPon::GraphicsDevice& device,
             const LamaPon::DepthPassKind kind) noexcept
@@ -20,13 +22,16 @@ namespace
             graphics.SetDepthPass(kind);
         }
 
+        // 元の種別によらず深度パスをNoneへ戻す。
         ~DepthPassScope() noexcept
         {
             graphics.SetDepthPass(
                 LamaPon::DepthPassKind::None);
         }
 
+        // 深度パススコープのコピーを禁止する。
         DepthPassScope(const DepthPassScope&) = delete;
+        // 深度パススコープのコピー代入を禁止する。
         DepthPassScope& operator=(
             const DepthPassScope&) = delete;
     };
@@ -64,6 +69,7 @@ namespace LamaPon
         const TemporalAntiAliasingFrame& temporal,
         const PostProcessHook& afterToneMapping)
     {
+        // 省略項目を既定にしたフレーム入力
         PostProcessFrame frame{};
         frame.bloom = bloom;
         frame.lensFlare = lensFlare;
@@ -86,13 +92,16 @@ namespace LamaPon
             screenSpaceReflection,
         const DepthPrepassHook& drawDepthOnly)
     {
+        // 深度と遮蔽の利用可能性
         DepthPrepassResult result{};
+        // 現在の描画品質設定
         const auto& settings = graphics.Settings();
-        // SSAOとSSRのどちらかが要求していれば実行します。どちらも
-        // 同じ深度を使うため、プリパスは1回だけ実行します。
+        // SSAOとSSRで深度を共有し、必要なら一回だけ描画する。
+        // 品質とSceneが要求する遮蔽
         const bool occlusionWanted =
             ambientOcclusion.enabled
             && settings.ambientOcclusionEnabled;
+        // Sceneが要求する画面空間反射
         const bool reflectionWanted =
             screenSpaceReflection.enabled;
         if (!target.IsValid()
@@ -102,15 +111,15 @@ namespace LamaPon
             return result;
         }
 
-        // 深度だけを描画先にして、不透明ジオメトリをもう1回描きます。
-        // ピクセルシェーダーが外れるので、自作Shaderのオブジェクトも
-        // そのまま安全に深度へ載ります。
+        // 不透明ジオメトリを深度専用の描画先へ描く。
         {
+            // 描画区間の計測スコープ
             GpuProfiler::SectionScope section{
                 graphics.Gpu(),
                 "深度プリパス"
             };
             graphics.BindOffscreenTargetDepthOnly(target);
+            // 深度パスをNoneへ戻すスコープ
             const DepthPassScope depthScope{
                 graphics,
                 DepthPassKind::Prepass };
@@ -120,13 +129,13 @@ namespace LamaPon
 
         if (!occlusionWanted)
         {
-            // SSRのためだけに走った場合はここで終わりです。
+            // SSRだけの要求なら遮蔽の解決は省く。
             return result;
         }
 
-        // 深度から遮蔽を求めます（半解像度＋深度を見るブラー）。
-        // 結果はtargetの中に残り、カラーには触りません。
+        // 色を変更せず、半解像度と深度対応ブラーで遮蔽を求める。
         {
+            // 描画区間の計測スコープ
             GpuProfiler::SectionScope section{
                 graphics.Gpu(),
                 "SSAO"
@@ -151,19 +160,17 @@ namespace LamaPon
         {
             return;
         }
-        // DirectX 11とDirectX 12は、同じ順序のpassと同じ差し込み地点を
-        // 通ります（SSAOとSSRはLit描画の前に済んでいます）。
-        // 5つの描画経路が通る位置で計測し、エディタービューポートの
-        // Bloom、トーンマップ、FXAAもGPU時間の内訳へ含めます。
+        // 全API・全描画経路で同じ順序を使い、SSAOとSSRは照明描画前に済ませる。
+        // ポスト処理全体の計測スコープ
         const GpuProfiler::SectionScope postScope{
             graphics.Gpu(),
             "ポスト処理" };
 
+        // 現在の描画品質設定
         const auto& settings = graphics.Settings();
 
-        // 差し込み地点は4つです。位置の意味はここにしかありません
-        // ので、増やすときはこの関数の中だけを直してください
-        // （5経路すべてがここを通ります）。
+
+        // 指定地点で任意の追加効果を実行する(point: 適用する地点)。
         const auto inject =
             [&afterToneMapping, &target](
                 const ScreenEffectPoint point)
@@ -174,21 +181,15 @@ namespace LamaPon
             }
         };
 
-        // 3Dを描き終えた素のHDR。
+        // 3D描画直後のHDRへ追加効果を適用する。
         inject(ScreenEffectPoint::BeforePostProcess);
 
-        // TAA（時間的アンチエイリアス）は一番先です。以降のパスは
-        // 完成した色を前提にしているので、混ぜるのは素の絵のうちに
-        // 済ませます。Bloomの後で混ぜると、前フレームのBloomが
-        // さらに滲んで輪郭が二重になります。
+        // 履歴に後続の効果を重ねないよう、TAAは最初のHDRへ適用する。
         graphics.ApplyOffscreenTargetTemporalAntiAliasing(
             target,
             frame.temporal.settings,
             frame.temporal.inputs);
-        // 最初のフレームは混ぜる履歴が無くても、次のフレーム用の
-        // 履歴は作る必要があります。そのため適用結果ではなく設定の
-        // enabledだけで判定します。また、後続のHDR処理が乗る前の
-        // この位置で控え、TAAが解決した色だけを履歴に残します。
+        // 初回も次回用の履歴が必要なため、適用成功ではなく有効設定で履歴を保存する。
         if (frame.temporal.settings.enabled)
         {
             graphics.CaptureOffscreenTargetTemporalHistory(
@@ -196,20 +197,14 @@ namespace LamaPon
                 frame.temporal.inputs.viewProjection);
         }
 
-        // ボリュメトリックライト（光の筋）は、深度と影を読むうえに
-        // 光を足す処理なので、Bloomより前・HDRのうちにかけます。
-        // これで明るい筋がBloomで滲み、トーンマップも通ります。
+        // 散乱光はブルームとトーンマップの対象となるHDRへ加算する。
         graphics.ApplyOffscreenTargetVolumetricLight(
             target,
             frame.volumetric.settings,
             frame.volumetric.inputs);
 
-        // 被写界深度はレンズの中で起きるので、Bloomより前・HDRのうちに
-        // かけます。ぼかした後の絵に対してBloomが滲むのが正しい順序で、
-        // 逆にすると「ぼけているのに輪郭だけ光っている」絵になります。
-        // TAAより後なのも意図的です。TAAの近傍クランプはぼける前の
-        // 鋭い絵で判定させないと、履歴を捨てる基準が緩くなって
-        // 動きの残像が残ります。
+        // 履歴判定をぼける前に済ませ、被写界深度はTAA後・ブルーム前に適用する。
+        // 品質の許可を反映した被写界深度
         auto effectiveDepthOfField = frame.depthOfField.settings;
         effectiveDepthOfField.enabled =
             effectiveDepthOfField.enabled
@@ -220,10 +215,8 @@ namespace LamaPon
             frame.depthOfField.projection,
             settings.depthOfFieldSampleCount);
 
-        // モーションブラーは被写界深度の後です。光はレンズ（ぼけ）を
-        // 通ってからセンサーへ届き、ブレはそのセンサーが開いている
-        // 時間で起きるので、この順が実際の並びです。Bloomより前・
-        // HDRのうちにかけるのも同じ理由です。
+        // カメラブラーは被写界深度の後、ブルーム前のHDRへ適用する。
+        // 品質の許可を反映したブラー
         auto effectiveMotionBlur = frame.motionBlur.settings;
         effectiveMotionBlur.enabled =
             effectiveMotionBlur.enabled
@@ -235,9 +228,10 @@ namespace LamaPon
             frame.motionBlur.viewProjection,
             settings.motionBlurSampleCount);
 
-        // Bloomの手前。ここで足した明るさは滲みます。
+        // ブルーム抽出前のHDRへ追加効果を適用する。
         inject(ScreenEffectPoint::BeforeBloom);
 
+        // 品質の許可を反映したブルーム
         auto effectiveBloom = frame.bloom;
         effectiveBloom.enabled =
             effectiveBloom.enabled
@@ -246,9 +240,8 @@ namespace LamaPon
             target,
             effectiveBloom);
 
-        // Screen Space Lens FlareはBloom後のHDRへかけます。Bloomの
-        // 柔らかな光も光学系へ入るため、光源の周囲に自然なゴーストが
-        // 付きます。その後トーンマップへ通すので、明るさも馴染みます。
+        // フレアはブルーム後のHDRへ加え、トーンマップで明るさを調整する。
+        // 品質の許可を反映したフレア
         auto effectiveLensFlare = frame.lensFlare;
         effectiveLensFlare.enabled =
             effectiveLensFlare.enabled
@@ -257,21 +250,16 @@ namespace LamaPon
             target,
             effectiveLensFlare);
 
-        // トーンマップの手前。まだHDRなので、ここで足した明るさも
-        // 自動露出の測定に入ります。
+        // 露出測定の対象となる最終HDRへ追加効果を適用する。
         inject(ScreenEffectPoint::BeforeToneMapping);
 
-        // 自動露出はトーンマップの直前です。測るのは「これから
-        // トーンマップに通す絵」でなければならず、Bloomや光の筋で
-        // 足された明るさも含めた最終のHDRがここにあります。
-        //
-        // 返るのは露出への補正（段数）で、手動の露出へ足します。
-        // つまり手動側は自動の上に乗る「補正値」として働くので、
-        // 両方同時に使えます。
+        // ブルームなどを含む最終HDRから自動露出を求め、手動露出へ加算する。
+        // 品質の許可を反映した自動露出
         auto effectiveAutoExposure = frame.autoExposure.settings;
         effectiveAutoExposure.enabled =
             effectiveAutoExposure.enabled
             && settings.autoExposureEnabled;
+        // 自動露出を合成する色調整設定
         auto effectiveColorGrading = frame.colorGrading;
         effectiveColorGrading.autoExposureStops =
             graphics.UpdateOffscreenTargetAutoExposure(
@@ -283,18 +271,16 @@ namespace LamaPon
             target,
             effectiveColorGrading);
 
-        // トーンマップ後の画面へ輪郭を重ねます。深度だけを読むので、
-        // UIが合成される前に置けば3Dだけへ適用できます。FXAAは最後に
-        // かかるため、輪郭線の階段も一緒に平滑化されます。
+        // 輪郭はトーンマップ後に重ね、最後のFXAAで線も平滑化する。
         graphics.ApplyOffscreenTargetScreenOutline(
             target,
             frame.screenOutline.settings,
             frame.screenOutline.projection);
 
-        // 既定の位置。トーンマップ後のLDRです。
+        // トーンマップ後のLDRへ追加効果を適用する。
         inject(ScreenEffectPoint::AfterToneMapping);
 
-        // FXAAは輪郭を見て平すので、色が確定した最後にかけます。
+        // 色が確定した最後にFXAAを適用する。
         if (settings.antiAliasingEnabled)
         {
             graphics.ApplyOffscreenTargetFXAA(target);

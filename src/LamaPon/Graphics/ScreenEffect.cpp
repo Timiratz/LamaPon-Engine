@@ -12,6 +12,7 @@
 
 namespace
 {
+    // 失敗したHRESULTを例外として伝える(result: 操作結果, operation: 診断に表示する操作名)。
     void ThrowIfFailed(
         const HRESULT result,
         const char* operation)
@@ -42,11 +43,15 @@ namespace LamaPon
                 "ScreenEffect requires a Direct3D device and context.");
         }
 
+        // コンパイルするHLSLのパス
         std::filesystem::path hlslPath = shaderPath;
+        // 適用する先頭の描画パス
         ShaderPassDesc pass;
         if (IsShaderManifestPath(shaderPath))
         {
+            // 画面効果のマニフェスト
             ShaderAssetDesc asset;
+            // マニフェスト読込の診断
             std::string manifestError;
             if (!LoadShaderAssetDesc(
                     assets,
@@ -63,20 +68,21 @@ namespace LamaPon
                     " whose type is 'screenEffect': "
                     + PathToUtf8(shaderPath));
             }
-            // LoadShaderAssetDescがscreenEffectの先頭passにvertexと
-            // pixelがあることを検証済みです。
+
             hlslPath = asset.source;
             pass = asset.passes.front();
         }
         else
         {
-            // 従来のHLSL直接指定は固定入口を使うfallbackとして維持します。
+
+            // 直接指定の頂点ステージ宣言
             ShaderStageDesc vertex;
             vertex.stage = ShaderStage::Vertex;
             vertex.entryPoint = "VSMain";
             vertex.target = "vs_5_0";
             pass.stages.emplace_back(std::move(vertex));
 
+            // 直接指定の画素ステージ宣言
             ShaderStageDesc pixel;
             pixel.stage = ShaderStage::Pixel;
             pixel.entryPoint = "PSMain";
@@ -84,6 +90,7 @@ namespace LamaPon
             pass.stages.emplace_back(std::move(pixel));
         }
 
+        // シェーダーコンパイルの診断
         std::string programError;
         if (!m_program.Compile(
                 device,
@@ -101,6 +108,7 @@ namespace LamaPon
                 "ScreenEffect requires vertex and pixel shader stages.");
         }
 
+        // 定数バッファーの作成設定
         D3D11_BUFFER_DESC buffer{};
         buffer.ByteWidth =
             static_cast<UINT>(sizeof(Constants));
@@ -113,10 +121,10 @@ namespace LamaPon
                 m_constantBuffer.ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateBuffer(screen effect)");
 
+        // 線形リピートのサンプラー設定
         D3D11_SAMPLER_DESC sampler{};
         sampler.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-        // 原作の PolygonEffectScreen は LinearWrap を使用しています。
-        // シーン側UVは各HLSLでsaturateし、ノイズマスクだけを繰り返します。
+        // ノイズを繰り返し、シーン画像のUV制限はHLSL側で行う。
         sampler.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
         sampler.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
         sampler.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
@@ -127,6 +135,7 @@ namespace LamaPon
                 m_sampler.ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateSamplerState(screen effect)");
 
+        // 深度を無効化する状態設定
         D3D11_DEPTH_STENCIL_DESC depth{};
         depth.DepthEnable = FALSE;
         depth.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
@@ -137,6 +146,7 @@ namespace LamaPon
                 m_depthDisabled.ReleaseAndGetAddressOf()),
             "ID3D11Device::CreateDepthStencilState(screen effect)");
 
+        // カリングしない状態の設定
         D3D11_RASTERIZER_DESC rasterizer{};
         rasterizer.FillMode = D3D11_FILL_SOLID;
         rasterizer.CullMode = D3D11_CULL_NONE;
@@ -165,6 +175,7 @@ namespace LamaPon
             return;
         }
 
+        // GPUへ送る画面効果の定数
         Constants constants{};
         constants.parameters = parameters;
         constants.screenSize = {
@@ -173,9 +184,7 @@ namespace LamaPon
             1.0f / static_cast<float>(std::max(width, 1u)),
             1.0f / static_cast<float>(std::max(height, 1u))
         };
-        // 深度が取れていないときはzを0にして渡します。Shader側が
-        // それを見て「深度を使わない絵」へ倒せるようにするためで、
-        // 黙って0の深度を読ませると全面が最近接扱いになります。
+        // 深度不在時は有効印をゼロにして深度読込を抑制する。
         constants.depthParameters = depth != nullptr
             ? depthParameters
             : DirectX::XMFLOAT4{ 0.0f, 0.0f, 0.0f, 0.0f };
@@ -188,8 +197,10 @@ namespace LamaPon
             0,
             0);
 
+        // 出力先の描画ターゲット
         ID3D11RenderTargetView* targets[]{ destination };
         m_context->OMSetRenderTargets(1, targets, nullptr);
+        // 出力サイズのビューポート
         const D3D11_VIEWPORT viewport{
             0.0f,
             0.0f,
@@ -206,11 +217,13 @@ namespace LamaPon
             m_program.VertexShader(), nullptr, 0);
         m_context->PSSetShader(
             m_program.PixelShader(), nullptr, 0);
+        // VS・PSのb0に結合する定数
         ID3D11Buffer* buffers[]{
             m_constantBuffer.Get()
         };
         m_context->VSSetConstantBuffers(0, 1, buffers);
         m_context->PSSetConstantBuffers(0, 1, buffers);
+        // 元画像・補助画像・深度の入力
         ID3D11ShaderResourceView* resources[]{
             source,
             auxiliaryTextures[0],
@@ -218,10 +231,12 @@ namespace LamaPon
             depth
         };
         m_context->PSSetShaderResources(0, 4, resources);
+        // PSのs0に結合するサンプラー
         ID3D11SamplerState* samplers[]{
             m_sampler.Get()
         };
         m_context->PSSetSamplers(0, 1, samplers);
+        // 合成状態に渡すゼロ係数
         constexpr float blendFactor[4]{};
         m_context->OMSetBlendState(
             nullptr,
@@ -233,9 +248,8 @@ namespace LamaPon
         m_context->RSSetState(m_rasterizer.Get());
         m_context->Draw(3, 0);
 
-        // 深度はこの後DSVとして刺し直される可能性があるので、
-        // 必ず外します（着けたままだと次のバインドが黙って
-        // 無効化されます）。
+        // 深度をDSVへ再結合できるよう、入力SRVの結合を解除する。
+        // SRVの結合を解除するヌル配列
         ID3D11ShaderResourceView* nullResources[]{
             nullptr,
             nullptr,

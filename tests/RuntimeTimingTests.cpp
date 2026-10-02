@@ -7,10 +7,13 @@
 
 namespace
 {
+    // 条件違反の累積件数
     int g_failures{};
 
+    // 条件違反を表示して累積件数を増やす(condition: 成立すべき条件, message: 違反時の説明)。
     void Require(const bool condition, const std::string& message)
     {
+        // 成立しない条件を失敗件数へ反映します。
         if (!condition)
         {
             std::cerr << "FAILED: " << message << '\n';
@@ -18,6 +21,7 @@ namespace
         }
     }
 
+    // 絶対差1e-6以下の時刻値を同値として扱う(left: 比較する左値, right: 比較する右値)。
     [[nodiscard]] bool NearlyEqual(
         const float left,
         const float right) noexcept
@@ -26,11 +30,13 @@ namespace
     }
 }
 
+// 実時間と固定刻みの区別・遅延上限・描画間引きと強制描画を検査する。
 int main()
 {
     using LamaPon::Cli::MakeRuntimeFrameTiming;
     using LamaPon::Cli::ShouldRenderRuntimeFrame;
 
+    // 実時間を残して固定刻みで進む時刻
     const auto deterministic = MakeRuntimeFrameTiming(
         0.041f,
         true,
@@ -44,6 +50,7 @@ int main()
             1.0f / 60.0f),
         "Deterministic simulation must use the fixed timestep.");
 
+    // 実時間の刻みで進む時刻
     const auto realtime = MakeRuntimeFrameTiming(0.02f, false, 0.01f);
     Require(
         NearlyEqual(realtime.wallDeltaSeconds, 0.02f)
@@ -68,6 +75,7 @@ int main()
         ShouldRenderRuntimeFrame(9, 0, false),
         "A zero cadence must safely behave as every frame.");
 
+    // 失敗条件があれば失敗コードを返します。
     if (g_failures != 0)
     {
         return EXIT_FAILURE;

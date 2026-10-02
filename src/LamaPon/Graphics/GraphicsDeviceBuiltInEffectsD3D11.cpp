@@ -21,10 +21,10 @@ namespace LamaPon
 {
     namespace
     {
-        // 失敗した組み込みシェーダーの再試行間隔です。連続コンパイルを避けつつ、
-        // 修正後に復帰できる時間として設定します。
+        // 失敗した組込生成の再試行秒数
         constexpr double BuiltInRetrySeconds = 2.0;
 
+        // 単調時計の経過秒数を返します。
         [[nodiscard]] double SteadySeconds() noexcept
         {
             return std::chrono::duration<double>(
@@ -33,9 +33,8 @@ namespace LamaPon
         }
     }
 
-    // 組み込みシェーダーの失敗を記録して毎フレームの再コンパイルを防ぎ、
-    // 再試行間隔後に復帰を試みます。代替描画経路が無いため失敗は送出し、
-    // Application側が描画失敗を処理してエディターUIを継続します。
+    // 組込資源を遅延生成します(slot: 資源の所有先, failure: 前回失敗と試行時刻, factory: 資源を返す生成関数)。
+    // 失敗は記録して再送出し、2秒間は再コンパイルせず同じ例外を返します。
     template <typename T, typename Factory>
     T& GraphicsDevice::BuildBuiltIn(
         std::unique_ptr<T>& slot,
@@ -46,11 +45,12 @@ namespace LamaPon
         {
             return *slot;
         }
+        // 現在の単調時計の秒数
         const double now = SteadySeconds();
         if (!failure.message.empty()
             && now - failure.lastAttempt < BuiltInRetrySeconds)
         {
-            // 再試行時刻までは記録済みの失敗を返し、コンパイルを省略します。
+
             throw std::runtime_error(failure.message);
         }
         failure.lastAttempt = now;
@@ -58,11 +58,10 @@ namespace LamaPon
         {
             slot = factory();
         }
+        // 記録して再送出する生成例外
         catch (const std::exception& exception)
         {
-            // ログはApplicationの描画ループが1箇所で出します
-            // （組み込みシェーダー以外の描画失敗も同じ扱いに
-            // したいので、種類ごとに書き分けません）。
+            // 失敗のログ出力はApplicationの描画ループが担当します。
             failure.message = exception.what();
             throw;
         }
@@ -70,15 +69,18 @@ namespace LamaPon
         return *slot;
     }
 
+    // D3D11環境描画器を遅延生成して返します。
     EnvironmentRenderer&
         GraphicsDevice::Environment() const
     {
+        // 現在のD3D11所有資源
         auto& resources = RequireD3D11ApiResources();
         return BuildBuiltIn(
             resources.environmentRenderer,
             resources.environmentFailure,
             [this]
             {
+                // 生成する環境描画器
                 auto renderer = std::unique_ptr<EnvironmentRenderer>{
                     new EnvironmentRenderer(
                         Device(),
@@ -93,14 +95,16 @@ namespace LamaPon
             });
     }
 
+    // Forward+資源を遅延生成して返します。
     ClusteredLights& GraphicsDevice::Clusters() const
     {
         if (!m_state->m_clusteredLights)
         {
-            // カリングCSがプロジェクトに無い場合は、互換性維持のため
-            // エンジン同梱のアセットから読み込みます。
+            // プロジェクトにカリングシェーダーがなければエンジン同梱版を使います。
+            // 同梱シェーダーの相対パス
             constexpr const char* relativePath =
                 "shaders/LamaPonLightCulling.hlsl";
+            // 使用するシェーダーのパス
             auto shaderPath =
                 Assets().ResolvePath(relativePath);
             if (!Assets().FileExists(shaderPath))
@@ -114,6 +118,7 @@ namespace LamaPon
                 m_state->m_clustersFailure,
                 [this, shaderPath]
                 {
+                    // 生成するForward+資源
                     auto clusteredLights =
                         std::make_unique<ClusteredLights>();
                     m_state->m_backend->InitializeClusteredLights(
@@ -126,8 +131,10 @@ namespace LamaPon
         return *m_state->m_clusteredLights;
     }
 
+    // D3D11標準照明効果を遅延生成して返します。
     LitEffect& GraphicsDevice::Lit() const
     {
+        // 現在のD3D11所有資源
         auto& resources = RequireD3D11ApiResources();
         return BuildBuiltIn(
             resources.litEffect,
@@ -143,8 +150,10 @@ namespace LamaPon
             });
     }
 
+    // D3D11骨変形の標準照明効果を遅延生成して返します。
     LitEffect& GraphicsDevice::SkinnedLit() const
     {
+        // 現在のD3D11所有資源
         auto& resources = RequireD3D11ApiResources();
         return BuildBuiltIn(
             resources.skinnedLitEffect,
@@ -161,16 +170,20 @@ namespace LamaPon
             });
     }
 
+    // 代替表示効果を返し、生成失敗ならnullptrです(skinned: 骨変形の指定)。
     LitEffect* GraphicsDevice::ShaderErrorPlaceholder(
         const bool skinned) const
     {
+        // 現在のD3D11所有資源
         auto& resources = RequireD3D11ApiResources();
+        // 通常・骨変形の代替資源
         auto& effect =
             skinned ? resources.skinnedErrorEffect : resources.errorEffect;
+        // 代替生成の再試行停止状態
         auto& unavailable = skinned
             ? resources.skinnedErrorEffectUnavailable
             : resources.errorEffectUnavailable;
-        // 代替シェーダーを設定した回数をFrameStatisticsへ記録します。
+        // 代替シェーダーを渡すたびにshaderFallbackDrawsを加算します。
         if (effect)
         {
             ++m_state->m_frameStatistics.shaderFallbackDraws;
@@ -181,10 +194,11 @@ namespace LamaPon
             return nullptr;
         }
 
-        // プロジェクトに代替シェーダーが無い場合はエンジン同梱版を使い、
-        // プロジェクトの版に関係なく同じ失敗表示を提供します。
+        // プロジェクトに代替シェーダーがなければエンジン同梱版を使います。
+        // 同梱シェーダーの相対パス
         constexpr const char* relativePath =
             "shaders/LamaPonShaderError.hlsl";
+        // 使用するシェーダーのパス
         auto shaderPath = Assets().ResolvePath(relativePath);
         if (!Assets().FileExists(shaderPath))
         {
@@ -203,8 +217,7 @@ namespace LamaPon
         }
         catch (const std::exception&)
         {
-            // 代役すら用意できないときは標準Litのままにします。
-            // 知らせ方が無いだけで、描画は続けられます。
+            // 代替シェーダーの生成に失敗したら再初期化まで再試行しません。
             unavailable = true;
             return nullptr;
         }
@@ -212,11 +225,12 @@ namespace LamaPon
         return effect.get();
     }
 
+    // スプライトの代替効果を返し、生成失敗ならnullptrです。
     SpriteEffect* GraphicsDevice::SpriteErrorPlaceholder() const
     {
+        // 現在のD3D11所有資源
         auto& resources = RequireD3D11ApiResources();
-        // 3D側と同じく、渡した回数を数えます
-        // （FrameStatistics::shaderFallbackDrawsを参照）。
+        // 代替シェーダーを渡すたびにshaderFallbackDrawsを加算します。
         if (resources.spriteErrorEffect)
         {
             ++m_state->m_frameStatistics.shaderFallbackDraws;
@@ -227,8 +241,10 @@ namespace LamaPon
             return nullptr;
         }
 
+        // 同梱シェーダーの相対パス
         constexpr const char* relativePath =
             "shaders/LamaPonSpriteError.hlsl";
+        // 使用するシェーダーのパス
         auto shaderPath = Assets().ResolvePath(relativePath);
         if (!Assets().FileExists(shaderPath))
         {

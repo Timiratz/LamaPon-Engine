@@ -15,12 +15,15 @@
 
 namespace LamaPon
 {
+    // 標準パネルとパッケージ管理を登録して解析拡張を追加します。
     void EditorLayer::RegisterBuiltInEditorExtensions()
     {
+        // 標準パネルの拡張登録情報
         EditorExtensionDefinition workspace;
         workspace.id = "lamapon.workspace";
         workspace.displayName = "標準エディター";
         workspace.panels = {
+            // 登録したコンソールパネルを描画します(open: パネルの表示状態)。
             EditorPanelDefinition{
                 std::string{ ConsolePanelId },
                 "コンソール",
@@ -28,6 +31,7 @@ namespace LamaPon
                 true,
                 [this](bool& open) { DrawConsole(open); }
             },
+            // 登録した性能表示パネルを描画します(open: パネルの表示状態)。
             EditorPanelDefinition{
                 std::string{ PerformancePanelId },
                 "パフォーマンス",
@@ -35,6 +39,7 @@ namespace LamaPon
                 true,
                 [this](bool& open) { DrawPerformancePanel(open); }
             },
+            // 登録した保存データパネルを描画します(open: パネルの表示状態)。
             EditorPanelDefinition{
                 std::string{ PersistencePanelId },
                 "セーブデータ",
@@ -42,6 +47,7 @@ namespace LamaPon
                 true,
                 [this](bool& open) { DrawPersistencePanel(open); }
             },
+            // 登録したオンライン診断パネルを描画します(open: パネルの表示状態)。
             EditorPanelDefinition{
                 std::string{ OnlineDiagnosticsPanelId },
                 "オンライン診断",
@@ -49,6 +55,7 @@ namespace LamaPon
                 true,
                 [this](bool& open) { DrawOnlineDiagnosticsPanel(open); }
             },
+            // 登録したサービス診断パネルを描画します(open: パネルの表示状態)。
             EditorPanelDefinition{
                 std::string{ ServiceDiagnosticsPanelId },
                 "サービス連携の診断",
@@ -56,6 +63,7 @@ namespace LamaPon
                 true,
                 [this](bool& open) { DrawServiceDiagnosticsPanel(open); }
             },
+            // 登録した資産一覧パネルを描画します(open: パネルの表示状態)。
             EditorPanelDefinition{
                 std::string{ AssetBrowserPanelId },
                 "アセット",
@@ -63,6 +71,7 @@ namespace LamaPon
                 true,
                 [this](bool& open) { DrawAssetBrowser(open); }
             },
+            // 登録したタイル一覧パネルを描画します(open: パネルの表示状態)。
             EditorPanelDefinition{
                 std::string{ TilePalettePanelId },
                 "タイルパレット",
@@ -72,14 +81,17 @@ namespace LamaPon
             }
         };
 
-        // メニューから閉じた場合も検索ソケットを残しません。
+
+        // パネルを閉じた時や再生停止時にオンライン検索を終了します。
         workspace.onUpdate = [this]
         {
+            // 登録済みパネルへの借用参照
             const auto* panel = m_editorExtensions.FindPanel(OnlineDiagnosticsPanelId);
             if (!m_playing || panel == nullptr || !panel->open)
                 m_onlineDiagnosticsPanel.StopSearch();
         };
 
+        // 拡張登録の失敗理由
         std::string error;
         if (!m_editorExtensions.Register(std::move(workspace), &error))
         {
@@ -87,10 +99,12 @@ namespace LamaPon
                 "Failed to register built-in editor panels: " + error);
         }
 
+        // パッケージ管理の拡張登録情報
         EditorExtensionDefinition packages;
         packages.id = "lamapon.packages";
         packages.displayName = "パッケージ管理";
         packages.panels = {
+            // 登録したパッケージパネルを描画します(open: パネルの表示状態)。
             EditorPanelDefinition{
                 std::string{ PackagesPanelId },
                 "パッケージ",
@@ -99,17 +113,18 @@ namespace LamaPon
                 [this](bool& open) { DrawPackagesPanel(open); }
             }
         };
-        // パネルを閉じていても、完了した取得・インストール処理は
-        // UIスレッドで回収します。
+
+        // パネルを閉じていてもUIスレッドでパッケージ処理の完了を回収します。
         packages.onUpdate = [this]
         {
             ConsumePackageWorkerResult();
         };
-        // 既存の「拡張機能」メニュー配置を保ちつつ、機能本体は
-        // レジストリ経由で追加します。
+        // 既存の「拡張機能」メニュー配置を保ちつつ、機能本体はレジストリ経由で追加します。
         packages.menuInline = true;
+        // 登録パネルの開閉とパッケージ操作のメニューを描画します。
         packages.drawMenu = [this]
         {
+            // パッケージパネルの借用参照
             auto* const packagePanel =
                 m_editorExtensions.FindPanel(PackagesPanelId);
             if (packagePanel == nullptr)
@@ -147,9 +162,11 @@ namespace LamaPon
             ImGui::Separator();
             if (ImGui::MenuItem("インストール先を開く"))
             {
+                // パッケージのインストール先
                 const auto packagesRoot =
                     m_graphics.Assets().AssetRoot()
                     / L"packages";
+                // インストール先作成の失敗状態
                 std::error_code createError;
                 std::filesystem::create_directories(
                     packagesRoot,
@@ -172,11 +189,13 @@ namespace LamaPon
         RegisterAnalysisExtension();
     }
 
+    // グループ無しのパネルを先に、グループ付きは登録順のサブメニューに並べます。
     void EditorLayer::DrawRegisteredPanelMenuItems()
     {
-        // グループの無いパネルを先に並べ、グループはサブメニューとして
-        // 登録順に続けます（UnityのWindow > Analysisと同じ配置）。
+
+        // 登録順のメニューグループ名
         std::vector<std::string_view> groups;
+        // 登録済みパネルへの借用参照
         for (auto& panel : m_editorExtensions.Panels())
         {
             if (!panel.showInWindowMenu)
@@ -197,13 +216,16 @@ namespace LamaPon
                 nullptr,
                 &panel.open);
         }
+        // 描画中のメニューグループ
         for (const auto group : groups)
         {
+            // サブメニューの表示名
             const std::string label{ group };
             if (!ImGui::BeginMenu(label.c_str()))
             {
                 continue;
             }
+            // 登録済みパネルへの借用参照
             for (auto& panel : m_editorExtensions.Panels())
             {
                 if (panel.showInWindowMenu
@@ -219,9 +241,12 @@ namespace LamaPon
         }
     }
 
+    // 拡張ごとのインラインまたはサブメニューを登録順に描画します。
     void EditorLayer::DrawRegisteredExtensionMenuItems()
     {
+        // 前の拡張メニューを描画済みか
         bool drewMenu{};
+        // 登録済み拡張のメニュー情報
         for (const auto& extension :
             m_editorExtensions.Extensions())
         {
@@ -247,6 +272,7 @@ namespace LamaPon
         }
     }
 
+    // 拡張レジストリに登録した表示中のパネルを描画します。
     void EditorLayer::DrawRegisteredPanels()
     {
         m_editorExtensions.DrawPanels();

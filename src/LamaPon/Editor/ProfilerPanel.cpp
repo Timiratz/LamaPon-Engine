@@ -20,14 +20,15 @@ namespace LamaPon
 {
     namespace
     {
+        // 履歴に保持するフレーム数の選択肢
         constexpr std::array<std::size_t, 5> HistoryCapacities{
             240, 600, 1200, 3000, 6000
         };
 
-        // 最上位区間の色です。名前から決めるので、フレームや実行を
-        // またいでも同じ区間は同じ色になります。
+        // 区間名のhashから実行やフレームをまたいで同じ色を返す(name: 色を決める最上位区間名)。
         [[nodiscard]] ImU32 CategoryColor(const std::string_view name)
         {
+            // 区間名のhashで選ぶ8色
             static constexpr std::array<ImU32, 8> palette{
                 IM_COL32(86, 156, 214, 255),
                 IM_COL32(106, 190, 120, 255),
@@ -38,7 +39,9 @@ namespace LamaPon
                 IM_COL32(230, 100, 100, 255),
                 IM_COL32(150, 130, 230, 255)
             };
+            // 区間名から色を決める32bit hash
             std::uint32_t hash = 2166136261u;
+            // 色を決める区間名の文字
             for (const char character : name)
             {
                 hash ^= static_cast<unsigned char>(character);
@@ -47,31 +50,35 @@ namespace LamaPon
             return palette[hash % palette.size()];
         }
 
+        // 未計測時間を表示する灰色を返す。
         [[nodiscard]] ImU32 UnmeasuredColor()
         {
             return IM_COL32(110, 110, 110, 255);
         }
 
+        // 区間名のhashからImGui階層ノードのIDを作る(name: 階層内で識別する区間名)。
         [[nodiscard]] const void* NodeId(const std::string& name)
         {
-            // 表示名に"##"が含まれてもIDの区切りとして解釈されないよう、
-            // 名前のハッシュを識別子に使います。TreeNodeのIDスタックで
-            // 親の経路と組み合わさるため、同名の別経路とも衝突しません。
+            // 表示名の##をImGuiのID区切りとして扱わず、hashを親階層のID stackと組み合わせる。
             return reinterpret_cast<const void*>(
                 std::hash<std::string>{}(name) | 1u);
         }
 
+        // 計測区間とその子を再帰的に表示する(frame: 表示するフレーム, tree: 当該フレームの親子解析結果, index: 表示するsampleの番号, frameMilliseconds: 割合の基準となる時間・ms)。
         void DrawTreeNode(
             const ProfileFrame& frame,
             const ProfileFrameTree& tree,
             const std::uint32_t index,
             const double frameMilliseconds)
         {
+            // 表示する計測区間
             const auto& sample = frame.samples[index];
+            // 階層表示する子区間の番号一覧
             const auto& children = tree.children[index];
 
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
+            // 階層・葉に応じたTreeNode表示設定
             ImGuiTreeNodeFlags flags =
                 ImGuiTreeNodeFlags_SpanAllColumns
                 | ImGuiTreeNodeFlags_OpenOnArrow
@@ -85,6 +92,7 @@ namespace LamaPon
             {
                 flags |= ImGuiTreeNodeFlags_DefaultOpen;
             }
+            // 当該階層ノードを展開したか
             const bool open = ImGui::TreeNodeEx(
                 NodeId(sample.name),
                 flags,
@@ -106,6 +114,7 @@ namespace LamaPon
 
             if (open && !children.empty())
             {
+                // 再帰表示する子区間の番号
                 for (const auto child : children)
                 {
                     DrawTreeNode(frame, tree, child, frameMilliseconds);
@@ -132,14 +141,17 @@ namespace LamaPon
 
     void ProfilerPanel::PullFrames()
     {
+        // 計測データを取り込むProfiler
         auto& profiler = Profiler::Instance();
         if (profiler.LatestFrameIndex() < m_lastPulledIndex)
         {
-            // Profiler::Clearでindexが1から振り直されました。
+            // Profilerの番号リセットを検出したら古い履歴を捨てて取り込み直す。
             m_history.clear();
             m_lastPulledIndex = 0;
         }
+        // 新規取込または保存するフレーム
         auto frames = profiler.SnapshotSince(m_lastPulledIndex);
+        // 取り込むまたは表示するフレーム
         for (auto& frame : frames)
         {
             m_lastPulledIndex = frame.index;
@@ -150,6 +162,7 @@ namespace LamaPon
 
     void ProfilerPanel::TrimHistory() noexcept
     {
+        // 表示履歴に保持する最大フレーム数
         const auto capacity =
             std::max<std::size_t>(
                 Profiler::Instance().FrameCapacity(),
@@ -168,6 +181,7 @@ namespace LamaPon
         }
         if (!m_followLatest)
         {
+            // 選択した計測フレームの位置
             const auto selected = std::ranges::find(
                 m_history,
                 m_selectedFrameIndex,
@@ -189,17 +203,20 @@ namespace LamaPon
 
     void ProfilerPanel::StepSelection(const int offset) noexcept
     {
+        // 現在選択しているフレームの借用
         const auto* current = SelectedFrame();
         if (current == nullptr)
         {
             return;
         }
+        // 履歴配列の位置
         const auto position = std::distance(
             m_history.begin(),
             std::ranges::find(
                 m_history,
                 current->index,
                 &ProfileFrame::index));
+        // 履歴範囲に制限した移動先位置
         const auto target = std::clamp<std::ptrdiff_t>(
             position + offset,
             0,
@@ -233,9 +250,11 @@ namespace LamaPon
             SetStatus("プロファイルの保存先を作成できませんでした", true);
             return false;
         }
+        // 保存する表示履歴のコピー
         const std::vector<ProfileFrame> frames(
             m_history.begin(),
             m_history.end());
+        // 今回保存する計測JSONのパス
         const auto path = DebugCaptureFiles::UniqueCapturePath(
             captureDirectory,
             "profile",
@@ -272,6 +291,7 @@ namespace LamaPon
         PullFrames();
         DrawToolbar(captureDirectory);
         DrawTimeline(frameBudgetMilliseconds);
+        // 取り込むまたは表示するフレーム
         if (const auto* frame = SelectedFrame())
         {
             DrawSelectedFrame(*frame);
@@ -288,7 +308,9 @@ namespace LamaPon
     void ProfilerPanel::DrawToolbar(
         const std::filesystem::path& captureDirectory)
     {
+        // 計測データを取り込むProfiler
         auto& profiler = Profiler::Instance();
+        // 計測の有効・無効の編集値
         bool recording = profiler.IsEnabled();
         if (ImGui::Checkbox("記録", &recording))
         {
@@ -325,7 +347,9 @@ namespace LamaPon
 
         ImGui::SameLine();
         ImGui::SetNextItemWidth(110.0f);
+        // 表示履歴に保持する最大フレーム数
         const auto capacity = profiler.FrameCapacity();
+        // 現在の履歴容量を表示する文字列
         char capacityLabel[32]{};
         std::snprintf(
             capacityLabel,
@@ -334,8 +358,10 @@ namespace LamaPon
             capacity);
         if (ImGui::BeginCombo("履歴", capacityLabel))
         {
+            // 選べる履歴フレーム数
             for (const auto option : HistoryCapacities)
             {
+                // 履歴容量の選択肢の表示文字列
                 char optionLabel[32]{};
                 std::snprintf(
                     optionLabel,
@@ -367,41 +393,53 @@ namespace LamaPon
     void ProfilerPanel::DrawTimeline(
         const float frameBudgetMilliseconds)
     {
+        // タイムラインの幅・ピクセル
         const float width = std::max(
             ImGui::GetContentRegionAvail().x,
             100.0f);
+        // タイムラインの高さ・ピクセル
         constexpr float height = 110.0f;
+        // タイムライン左上のscreen座標
         const ImVec2 origin = ImGui::GetCursorScreenPos();
         ImGui::InvisibleButton(
             "##ProfilerTimeline",
             ImVec2{ width, height });
+        // タイムラインへマウスを置いたか
         const bool hovered = ImGui::IsItemHovered();
+        // タイムラインを操作中か
         const bool active = ImGui::IsItemActive();
 
+        // タイムラインを描くImGui命令の借用
         auto* const drawList = ImGui::GetWindowDrawList();
         drawList->AddRectFilled(
             origin,
             ImVec2{ origin.x + width, origin.y + height },
             ImGui::GetColorU32(ImGuiCol_FrameBg));
 
+        // 描画するフレーム枠数・最少120
         const auto slotCount = std::max<std::size_t>(
             m_history.size(),
             120);
+        // 1フレーム枠の幅・ピクセル
         const float slotWidth =
             width / static_cast<float>(slotCount);
-        // 最新フレームを右端に揃え、履歴が少ないときは左側を空けます。
+        // 最新フレームを右端へ揃え、履歴が少ない分は左側を空ける。
+        // 最新を右へ揃えた先頭枠のx座標
         const float firstX =
             origin.x
             + slotWidth
                 * static_cast<float>(slotCount - m_history.size());
 
+        // 縦軸上限にするフレーム時間・ms
         double maximum = std::max(
             static_cast<double>(frameBudgetMilliseconds) * 2.0,
             1.0);
+        // 取り込むまたは表示するフレーム
         for (const auto& frame : m_history)
         {
             maximum = std::max(maximum, frame.milliseconds * 1.1);
         }
+        // 時間をscreen y座標へ変換する(milliseconds: 描画する累積時間・ms)。
         const auto toY = [&](const double milliseconds)
         {
             return origin.y + height
@@ -410,26 +448,35 @@ namespace LamaPon
                     * height;
         };
 
+        // 選択した計測フレームの位置
         const auto* selected = SelectedFrame();
+        // 履歴配列の位置
         for (std::size_t position{};
             position < m_history.size();
             ++position)
         {
+            // 取り込むまたは表示するフレーム
             const auto& frame = m_history[position];
+            // 当該フレーム枠の左端screen座標
             const float left =
                 firstX + slotWidth * static_cast<float>(position);
+            // 当該フレーム枠の右端screen座標
             const float right =
                 left + std::max(slotWidth - 1.0f, 1.0f);
 
-            // 最上位区間を積み上げ、残りを未計測として灰色で描きます。
+            // 最上位の計測時間だけを積み上げ、frame時間との差分を未計測として灰色にする。
+            // 最上位区間の累積時間・ms
             double stacked{};
+            // 表示する計測区間
             for (const auto& sample : frame.samples)
             {
                 if (sample.parent != ProfileSample::NoParent)
                 {
                     continue;
                 }
+                // 計測区間の上端screen座標
                 const float top = toY(stacked + sample.milliseconds);
+                // 計測区間の下端screen座標
                 const float bottom = toY(stacked);
                 if (bottom - top >= 0.5f)
                 {
@@ -461,12 +508,14 @@ namespace LamaPon
 
         if (frameBudgetMilliseconds > 0.0f)
         {
+            // 予算線のscreen y座標
             const float budgetY =
                 toY(static_cast<double>(frameBudgetMilliseconds));
             drawList->AddLine(
                 ImVec2{ origin.x, budgetY },
                 ImVec2{ origin.x + width, budgetY },
                 IM_COL32(255, 220, 90, 180));
+            // 予算時間を表示する文字列
             char budgetLabel[32]{};
             std::snprintf(
                 budgetLabel,
@@ -481,12 +530,15 @@ namespace LamaPon
 
         if ((hovered || active) && !m_history.empty())
         {
+            // マウスのscreen x座標
             const float mouseX = ImGui::GetIO().MousePos.x;
+            // マウス位置に対応するフレーム枠
             const auto slot = static_cast<std::ptrdiff_t>(
                 std::floor((mouseX - firstX) / slotWidth));
             if (slot >= 0
                 && slot < static_cast<std::ptrdiff_t>(m_history.size()))
             {
+                // 取り込むまたは表示するフレーム
                 const auto& frame =
                     m_history[static_cast<std::size_t>(slot)];
                 if (hovered)
@@ -507,7 +559,9 @@ namespace LamaPon
         // 最新フレームの最上位区間を凡例として並べます。
         if (!m_history.empty())
         {
+            // 最初の凡例を表示する位置か
             bool first = true;
+            // 表示する計測区間
             for (const auto& sample : m_history.back().samples)
             {
                 if (sample.parent != ProfileSample::NoParent)
@@ -543,6 +597,7 @@ namespace LamaPon
 
     void ProfilerPanel::DrawSelectedFrame(const ProfileFrame& frame)
     {
+        // 自己時間と親子関係の解析結果
         const auto tree = BuildProfileFrameTree(frame);
         ImGui::Separator();
         ImGui::Text(
@@ -560,6 +615,7 @@ namespace LamaPon
             ImGui::TextDisabled("最新を表示中");
         }
 
+        // 階層または自己時間の編集選択
         int mode = static_cast<int>(m_viewMode);
         ImGui::RadioButton("階層", &mode, 0);
         ImGui::SameLine();
@@ -612,6 +668,7 @@ namespace LamaPon
             ImGuiTableColumnFlags_WidthFixed,
             50.0f);
         ImGui::TableHeadersRow();
+        // 階層表の最上位区間の番号
         for (const auto root : tree.roots)
         {
             DrawTreeNode(frame, tree, root, frame.milliseconds);
@@ -622,6 +679,7 @@ namespace LamaPon
     void ProfilerPanel::DrawSelfTimeTable(const ProfileFrame& frame)
     {
         ImGui::SetNextItemWidth(220.0f);
+        // 区間名検索の入力バッファ
         char filter[128]{};
         m_filter.copy(filter, sizeof(filter) - 1);
         if (ImGui::InputTextWithHint(
@@ -633,6 +691,7 @@ namespace LamaPon
             m_filter = filter;
         }
 
+        // 自己時間順の集計済み区間
         const auto entries = FlattenProfileFrame(frame);
         if (!ImGui::BeginTable(
                 "ProfilerSelfTime",
@@ -662,6 +721,7 @@ namespace LamaPon
             ImGuiTableColumnFlags_WidthFixed,
             60.0f);
         ImGui::TableHeadersRow();
+        // 自己時間表へ表示する集計区間
         for (const auto& entry : entries)
         {
             if (!m_filter.empty()
