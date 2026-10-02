@@ -598,6 +598,7 @@ namespace
         }
 
     private:
+        // Native hidden test window class name.
         inline static constexpr wchar_t ClassName[] =
             L"LamaPonEditorGuiRendererTests";
         // m_instance: test processのmodule instance。
@@ -647,6 +648,7 @@ namespace
         static_assert(
             !std::is_move_constructible_v<LamaPon::GraphicsDevice>);
 
+        // D3D11 lifecycle検査用のhidden window。
         HiddenWindow window;
         LamaPon::GraphicsDevice::SetPreferWarpAdapter(true);
 
@@ -659,18 +661,25 @@ namespace
         {
             // initiallyGuardedGraphics: 初回Initializeの所有者判定に使うdevice。
             LamaPon::GraphicsDevice initiallyGuardedGraphics;
+            // 同一deviceのsettings storage参照。
             const auto* const settingsStorage =
                 &initiallyGuardedGraphics.Settings();
+            // 同一deviceのframe statistics参照。
             const auto* const frameStatisticsStorage =
                 &initiallyGuardedGraphics.FrameStats();
+            // 同一deviceのmemory statistics参照。
             const auto* const memoryStatisticsStorage =
                 &initiallyGuardedGraphics.MemoryStats();
+            // 同一deviceのGPU profiler参照。
             const auto* const gpuProfilerStorage =
                 &initiallyGuardedGraphics.Gpu();
+            // 同一deviceのlighting state参照。
             const auto* const lightingStorage =
                 &initiallyGuardedGraphics.Lighting();
+            // 同一deviceのscene projection参照。
             const auto* const sceneProjectionStorage =
                 &initiallyGuardedGraphics.SceneProjection();
+            // 同一deviceのsprite offset参照。
             const auto* const spriteOffsetStorage =
                 &initiallyGuardedGraphics.Sprite2DOffset();
             // hasStableOpaqueStorage: 同一device中のopaque storage安定性判定。
@@ -715,6 +724,7 @@ namespace
                         == 0u
                     && hasStableOpaqueStorage(),
                 "A default opaque GraphicsDevice changed its public state");
+            // 未初期化deviceから取得したfile-only AssetManager。
             auto* const fileOnlyAssets =
                 &initiallyGuardedGraphics.Assets();
             // uninitializedShaderPath: 未初期化rendererへ渡すshader path。
@@ -905,6 +915,7 @@ namespace
                 "The sprite pass destructor did not close its batch");
             spritePassAfterAbort.End();
 
+            // 初回rendererが所有するImGui context。
             ImGuiContextScope initialRendererContext;
             // initialRenderer: 再初期化前のrenderer状態。
             auto initialRenderer =
@@ -957,6 +968,7 @@ namespace
                         }
                     }
                 });
+            // 再初期化をまたいで保持するaudio system。
             auto* const preservedAudio =
                 &initiallyGuardedGraphics.Audio();
             preservedAudio->SetMasterVolume(0.65f);
@@ -1002,8 +1014,10 @@ namespace
                 Width,
                 Height,
                 LamaPon::RenderingApi::DirectX11);
+            // 再初期化後のopaque blend state。
             auto* const recoveredOpaque =
                 D3D11Access::States(initiallyGuardedGraphics).Opaque();
+            // 再初期化後のadditive blend state。
             auto* const recoveredAdditive =
                 D3D11Access::AdditiveBlendPreservingAlpha(
                     initiallyGuardedGraphics);
@@ -1180,6 +1194,7 @@ namespace
                     && fallbackGraphics.RenderingApiFallback()
                         == LamaPon::RenderingApiFallbackReason::None,
                 "Sprite smoke test requires the DirectX 11 renderer");
+            // fallback rendererのframe clear color。
             constexpr float fallbackClearColor[]{
                 0.0f, 0.0f, 0.0f, 1.0f };
             fallbackGraphics.BeginFrame(fallbackClearColor);
@@ -1222,6 +1237,7 @@ namespace
         // previousWhiteView: 再初期化前のwhite view。
         const auto previousWhiteView =
             graphics.WhiteTextureViewHandle();
+        // 再初期化前のnative white texture view。
         auto* const previousWhiteD3D11View =
             D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                 previousWhiteView);
@@ -1262,6 +1278,7 @@ namespace
         // previousSkinnedMaterialShaderGeneration: 再初期化前のskinned material世代番号。
         std::uint64_t previousSkinnedMaterialShaderGeneration{};
         shaderError.clear();
+        // 再初期化前のskinned material shader。
         auto* const previousSkinnedMaterialShader =
             graphics.SkinnedMaterialShader(
                 materialShaderPath,
@@ -1371,6 +1388,7 @@ namespace
                 &computeError),
             ("The pre-reinitialization compute shader did not run: "
                 + computeError).c_str());
+        // 再初期化前のnative compute target。
         const auto* const previousComputeTarget =
             graphics.FindRenderTexture(computeEffect.outputTexture);
         // previousComputeView: 再初期化前のcompute view。
@@ -1453,6 +1471,7 @@ namespace
                 }),
             "Clustered-light views were not created on the old device");
 
+        // resource lifecycle testのframe clear color。
         constexpr float resourceClearColor[]{
             0.0f, 0.0f, 0.0f, 1.0f };
         // enabledSkySettings: sky shader reload用の有効設定。
@@ -1635,6 +1654,7 @@ namespace
         // rebuiltWhiteView: 再初期化後のwhite view。
         const auto rebuiltWhiteView =
             graphics.WhiteTextureViewHandle();
+        // 再初期化後に再生成されたnative white texture view。
         auto* const rebuiltWhiteD3D11View =
             D3D11Access::TryResolveD3D11ShaderResourceView(graphics,
                 rebuiltWhiteView);
@@ -1806,6 +1826,7 @@ namespace
         // rebuiltSkinnedMaterialShaderGeneration: 再初期化後のskinned material世代番号。
         std::uint64_t rebuiltSkinnedMaterialShaderGeneration{};
         shaderError.clear();
+        // 再初期化後に再生成されたskinned shader。
         auto* const rebuiltSkinnedMaterialShader =
             graphics.SkinnedMaterialShader(
                 materialShaderPath,
@@ -1848,6 +1869,7 @@ namespace
                 &computeError),
             ("The rebuilt compute shader did not run: "
                 + computeError).c_str());
+        // 再初期化後に再生成されたnative compute target。
         const auto* const rebuiltComputeTarget =
             graphics.FindRenderTexture(computeEffect.outputTexture);
         // rebuiltComputeView: 再初期化後のcompute view。
@@ -2134,6 +2156,7 @@ namespace
         const auto smallestMipView = graphics.CreateShaderResourceView(
             neutralTexture,
             LamaPon::GraphicsTextureViewDescription{ 1, 1 });
+        // 最小mip専用に作成したnative texture view。
         auto* const nativeSmallestMipView =
             D3D11Access::TryResolveD3D11ShaderResourceView(graphics, smallestMipView);
         Require(
@@ -2267,6 +2290,7 @@ namespace
         const auto texture3DView = graphics.CreateShaderResourceView(
             neutralTexture3D,
             LamaPon::GraphicsTextureViewDescription{ 0, 1 });
+        // 3D textureから作成したnative shader view。
         auto* const nativeTexture3DView =
             D3D11Access::TryResolveD3D11ShaderResourceView(graphics, texture3DView);
         Require(
@@ -2280,9 +2304,11 @@ namespace
         // 3D texture viewの公開範囲を検査するdescriptorです。
         D3D11_SHADER_RESOURCE_VIEW_DESC texture3DViewDescription{};
         nativeTexture3DView->GetDesc(&texture3DViewDescription);
+        // native 3D viewの基底resource。
         Microsoft::WRL::ComPtr<ID3D11Resource> texture3DResource;
         nativeTexture3DView->GetResource(
             texture3DResource.ReleaseAndGetAddressOf());
+        // shader viewから解決したnative 3D texture。
         Microsoft::WRL::ComPtr<ID3D11Texture3D> nativeTexture3D;
         Require(
             SUCCEEDED(texture3DResource.As(&nativeTexture3D)),
@@ -2313,6 +2339,7 @@ namespace
         stagingTexture3DDescription.BindFlags = 0;
         stagingTexture3DDescription.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
         stagingTexture3DDescription.MiscFlags = 0;
+        // readback用staging 3D texture。
         Microsoft::WRL::ComPtr<ID3D11Texture3D> stagingTexture3D;
         Require(
             SUCCEEDED(D3D11Access::Device(graphics)->CreateTexture3D(
@@ -2341,7 +2368,8 @@ namespace
             // 各slice内のrowを順に検証します。
             for (std::uint32_t y{}; y < 2; ++y)
             {
-                const auto* const source = reinterpret_cast<
+        // CPU readback用にmapした3D texture data。
+        const auto* const source = reinterpret_cast<
                     const std::uint16_t*>(
                         static_cast<const std::byte*>(
                             mappedTexture3D.pData)
@@ -2402,6 +2430,7 @@ namespace
         const auto depthMipView = graphics.CreateShaderResourceView(
             depthMipTexture3D,
             LamaPon::GraphicsTextureViewDescription{ 1, 1 });
+        // depth pyramidの対象mip native view。
         auto* const nativeDepthMipView =
             D3D11Access::TryResolveD3D11ShaderResourceView(graphics, depthMipView);
         // depth mip viewが公開する範囲のdescriptorです。
@@ -2560,6 +2589,7 @@ namespace
         // 各baked GI viewのnative descriptorを検査します。
         for (const auto& view : neutralBakedGiViews)
         {
+            // 検査対象baked GI viewのnative handle。
             auto* const nativeView =
                 D3D11Access::TryResolveD3D11ShaderResourceView(graphics, view);
             // 各baked GI viewのdimensionを検査するdescriptorです。
@@ -2850,8 +2880,11 @@ namespace
                     != dataVariant,
             "Texture invalidation retained a usage-specific cache variant");
 
+        // white texture viewが所有するdevice。
         Microsoft::WRL::ComPtr<ID3D11Device> whiteDevice;
+        // additive blend stateが所有するdevice。
         Microsoft::WRL::ComPtr<ID3D11Device> blendDevice;
+        // instance bufferが所有するdevice。
         Microsoft::WRL::ComPtr<ID3D11Device> instanceDevice;
         rebuiltWhiteD3D11View->GetDevice(
             whiteDevice.ReleaseAndGetAddressOf());
@@ -2864,6 +2897,7 @@ namespace
                 && blendDevice.Get() == D3D11Access::Device(graphics)
                 && instanceDevice.Get() == D3D11Access::Device(graphics),
             "Reinitialized compatibility resources belong to the old device");
+        // 別backend由来として拒否するoutput state。
         TestGraphicsOutputState foreignOutputState;
         RequireThrowsExactly<std::invalid_argument>(
             [&]
@@ -2899,6 +2933,7 @@ namespace
                 && !emptyClusteredLighting.clustered.clusterCounts,
             "Empty clustered lighting must clear the previous result");
 
+        // display targetへ描画するclear color。
         constexpr float displayColor[]{
             0.1f, 0.85f, 0.2f, 1.0f };
         // sprite pass前のcamera matrixを復元確認に使います。
@@ -2975,6 +3010,7 @@ namespace
             },
             "Publishing an empty offscreen target must be rejected");
 
+        // rendererとの結び付きを検査するImGui context。
         ImGuiContextScope imguiContext;
         // renderer: 現在のgraphics API用GUI renderer。
         auto renderer = LamaPon::CreateEditorGuiRenderer(
@@ -3122,6 +3158,7 @@ namespace
         // diversionTarget: GUI描画を一時退避するtarget。
         LamaPon::RenderTarget diversionTarget;
         graphics.ResizeOffscreenTarget(diversionTarget, 8, 4);
+        // diversion targetのframe clear color。
         constexpr float diversionColor[]{
             0.02f, 0.03f, 0.04f, 1.0f };
         graphics.BeginOffscreenTarget(
@@ -3264,6 +3301,7 @@ namespace
         // displayTextureReference: display target textureのreference。
         const auto displayTextureReference =
             renderer->DisplayTextureReference(displayTarget);
+        // asset snapshotが保持していた元native view。
         ID3D11ShaderResourceView* originalAssetView{};
         {
             // assetResources: asset resource。
@@ -3320,6 +3358,7 @@ namespace
                     *replacementResources) != originalAssetView,
             "Replacing an asset snapshot must publish a distinct SRV");
 
+        // replacement testのframe clear color。
         constexpr float clearColor[]{
             0.05f, 0.1f, 0.15f, 1.0f };
         graphics.BeginFrame(clearColor);
@@ -3464,6 +3503,7 @@ namespace
             neutralSpriteResources->shaderResourceView;
         neutralRequest.position = { 16.0f, 0.0f };
         neutralRequest.scale = { 16.0f, 16.0f };
+        // neutral lighting testのframe clear color。
         constexpr float neutralClearColor[]{
             0.0f, 0.0f, 0.0f, 1.0f };
         graphics.BeginFrame(neutralClearColor);
@@ -4088,6 +4128,7 @@ namespace
             { 0u, 0u, 0u },
             "The neutral startup logo exceeded its scaled bounds");
 
+        // debug overlay captureのframe clear color。
         constexpr float debugOverlayClearColor[]{
             1.0f, 0.0f, 0.0f, 1.0f };
         // debugOverlayPixels: debug overlay pixel列。
@@ -4339,6 +4380,7 @@ namespace
         // modelTarget: model previewを描画するoffscreen target。
         LamaPon::RenderTarget modelTarget;
         graphics.ResizeOffscreenTarget(modelTarget, 64, 64);
+        // model previewのframe clear color。
         constexpr float modelClear[]{
             0.035f, 0.045f, 0.06f, 1.0f };
         graphics.BeginOffscreenTarget(modelTarget, modelClear);
@@ -4407,7 +4449,9 @@ namespace
             modelPixelCount >= 8u,
             "The DirectX 11 model preview renderer must draw the static model");
 
+        // rendererが保持する元ImGui context。
         auto* const ownerContext = ImGui::GetCurrentContext();
+        // context不一致検査用に作る別ImGui context。
         auto* const alternateContext = ImGui::CreateContext();
         ImGui::SetCurrentContext(alternateContext);
         RequireThrows<std::logic_error>(
@@ -4451,6 +4495,7 @@ namespace
     // CheckD3D12GuiLifecycle(): D3D12 GUI rendererのresource・thread・resize契約を検証します。
     void CheckD3D12GuiLifecycle()
     {
+        // D3D12 renderer検査用のhidden window。
         HiddenWindow window;
         // graphics: lifecycleと描画状態を検証するGraphicsDevice。
         LamaPon::GraphicsDevice graphics;
@@ -4482,6 +4527,7 @@ namespace
                 == LamaPon::RenderingApi::DirectX12Experimental,
             "DirectX 12 editor GUI test did not activate DirectX 12");
 
+        // D3D12 rendererが所有するImGui context。
         ImGuiContextScope imguiContext;
         // renderer: 現在のgraphics API用GUI renderer。
         auto renderer = LamaPon::CreateEditorGuiRenderer(
@@ -4511,6 +4557,7 @@ namespace
             },
             "DirectX 12 editor GUI renderer did not hold a graphics lease");
 
+        // D3D12 GUI captureのframe clear color。
         constexpr float clearColor[]{ 0.0f, 0.0f, 0.0f, 1.0f };
         graphics.BeginFrame(clearColor);
         // debugLinePoints: profiler plotに描くline sample列。
@@ -4674,6 +4721,7 @@ namespace
         // modelTarget: model previewを描画するoffscreen target。
         LamaPon::RenderTarget modelTarget;
         graphics.ResizeOffscreenTarget(modelTarget, 64u, 64u);
+        // D3D12 model previewのframe clear color。
         constexpr float modelClear[]{ 0.035f, 0.045f, 0.06f, 1.0f };
         graphics.BeginOffscreenTarget(modelTarget, modelClear);
         modelRenderer->DrawModel(
@@ -4833,10 +4881,12 @@ int main()
         LamaPon::RenderTarget offscreenTarget;
         // clusteredLighting: clustered lighting初期化状態の検証参照。
         LamaPon::LightingState clusteredLighting;
+        // 別backend由来として拒否するoutput state。
         TestGraphicsOutputState foreignOutputState;
         // clusteredIdentity: clustered lighting用identity matrix。
         const auto clusteredIdentity =
             DirectX::XMMatrixIdentity();
+        // offscreen targetのframe clear color。
         constexpr float offscreenClear[]{
             0.0f, 0.0f, 0.0f, 1.0f };
         // sprite pass前のcamera matrixを復元確認に使います。
@@ -5024,6 +5074,7 @@ int main()
             "A newly created editor GUI renderer must not be initialized");
 
         {
+            // renderer初期化拒否を試すImGui context。
             ImGuiContextScope imguiContext;
             // 未初期化deviceでrenderer初期化が拒否されるか試します。
             try
@@ -5056,6 +5107,7 @@ int main()
                 && !uninitializedD3D12Renderer->IsInitialized(),
             "Editor GUI factory must create a DirectX 12 renderer");
         {
+            // 未初期化D3D12 renderer検査用のImGui context。
             ImGuiContextScope imguiContext;
             RequireThrowsExactly<std::invalid_argument>(
                 [&]

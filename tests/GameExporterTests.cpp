@@ -47,7 +47,9 @@ namespace
     // SelfExecutablePath(): 現在のtest実行ファイルのpathを返します。
     std::filesystem::path SelfExecutablePath()
     {
+        // 現在の実行file pathを受け取るbuffer。
         wchar_t buffer[MAX_PATH]{};
+        // Windows APIが返すpath文字数。
         const DWORD length = GetModuleFileNameW(
             nullptr,
             buffer,
@@ -71,6 +73,7 @@ namespace
         {
             // modulePath: module file path。
             std::wstring modulePath(32768, L'\0');
+            // Windows APIが返すpath文字数。
             const DWORD length = GetModuleFileNameW(
                 module,
                 modulePath.data(),
@@ -83,6 +86,7 @@ namespace
             return std::filesystem::path(modulePath);
         }
 
+        // Windows system directoryのpath。
         wchar_t systemDirectory[MAX_PATH]{};
         Require(
             GetSystemDirectoryW(systemDirectory, MAX_PATH) != 0,
@@ -103,6 +107,7 @@ namespace
         const std::filesystem::path& executablePath,
         const std::uint16_t expectedImageCount)
     {
+        // resource検査用に開いたexecutable module。
         const HMODULE module = LoadLibraryExW(
             executablePath.c_str(),
             nullptr,
@@ -111,6 +116,7 @@ namespace
         Require(
             module != nullptr,
             "Exported executable could not be inspected.");
+        // 実行file内のicon group resource。
         const HRSRC group = FindResourceW(
             module,
             MAKEINTRESOURCEW(IDI_LAMAPON_ENGINE),
@@ -120,6 +126,7 @@ namespace
         // icon group resourceが見つかった場合に内容を読みます。
         if (group != nullptr)
         {
+            // 読み込んだicon group resource。
             const HGLOBAL loaded =
                 LoadResource(module, group);
             // data: 読み込んだResourceの先頭byte。
@@ -264,6 +271,7 @@ namespace
             // byte値を並べたJSON number列を返します。
             return result;
         };
+        // 暗号化archiveへ格納する最初のentry。
         const Json first{
             { "path", "data/test.bin" },
             { "offset", 0 },
@@ -345,6 +353,7 @@ namespace
             Require(rejected, failure);
         };
 
+        // archive index用のentry配列。
         const Json entries = Json::array({ first });
         // valid: 有効なarchive headerとentry。
         auto valid = makeArchive(entries, payload);
@@ -639,6 +648,7 @@ namespace
     // RunExportedShaderCacheProbe(): export先DLLの鍵でsealed index/CSOとmetadataを検証します。
     void RunExportedShaderCacheProbe()
     {
+        // shader cache検査用COM初期化の結果。
         const HRESULT comResult = CoInitializeEx(
             nullptr,
             COINIT_MULTITHREADED);
@@ -709,7 +719,9 @@ namespace
             Require(
                 reflect != nullptr,
                 "D3DReflect was not available to the cache probe.");
+            // bytecodeを検査するshader reflection interface。
             Microsoft::WRL::ComPtr<ID3D11ShaderReflection> reflection;
+            // D3DReflectによるbytecode解析結果。
             const HRESULT reflectResult = reflect(
                 blob->GetBufferPointer(),
                 blob->GetBufferSize(),
@@ -770,8 +782,10 @@ namespace
         // commandLine: CreateProcessへ渡す完全なcommand line。
         std::wstring commandLine = L"\"" + executable.wstring()
             + L"\" " + std::wstring(arguments);
+        // 起動する子processの作成設定。
         STARTUPINFOW startup{};
         startup.cb = sizeof(startup);
+        // 起動した子processのhandle群。
         PROCESS_INFORMATION process{};
         Require(
             CreateProcessW(
@@ -787,9 +801,11 @@ namespace
                 &process) != FALSE,
             "Could not launch the exported shader-cache probe.");
         CloseHandle(process.hThread);
+        // 子process終了待ちの結果。
         const DWORD wait = WaitForSingleObject(
             process.hProcess,
             30000);
+        // 失敗時も明示的に非0とする子process終了code。
         DWORD exitCode = 1;
         // child processがsignal状態ならexit codeを読みます。
         if (wait == WAIT_OBJECT_0)
@@ -1386,6 +1402,7 @@ int main(const int argumentCount, char** const arguments)
         // 短い文字列（"{}"など）は暗号化後のバイト列に偶然出現する確率が無視できず、テストがまれに失敗します。
         constexpr const char* sceneMarker =
             R"({"marker":"LAMAPON_PLAINTEXT_SCENE_MARKER"})";
+        // 平文残存を検査するtexture payloadの目印。
         constexpr const char* textureMarker =
             "LAMAPON_PLAINTEXT_TEXTURE_MARKER";
         WriteFile(
@@ -1849,6 +1866,7 @@ int main(const int argumentCount, char** const arguments)
                 "An asset named .env must block game export.");
         }
 
+        // export済みgame設定のJSON。
         nlohmann::json settings;
         {
             // input: file読込stream。
@@ -2221,14 +2239,19 @@ int main(const int argumentCount, char** const arguments)
 
             // ModelRendererの必須entry／roleは、model未指定・静的model・skin付きmodelで実行時経路が異なります。
             // scene -> Material Asset -> shaderをGUIDで辿り、fallback pathが古くても実際の描画経路どおりに検証することを確認します。
+            // 不正shaderを参照させるfixture GUID。
             constexpr const char* brokenShaderGuid =
                 "11111111111111111111111111111111";
+            // 不正materialを参照させるfixture GUID。
             constexpr const char* brokenMaterialGuid =
                 "22222222222222222222222222222222";
+            // 小文字形式のGUID照合用fixture値。
             constexpr const char* lowerCaseGuid =
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+            // 大文字形式のGUID照合用fixture値。
             constexpr const char* upperCaseGuid =
                 "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+            // backup拡張子で無視されるGUID fixture値。
             constexpr const char* ignoredBackupGuid =
                 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
             WriteFile(
@@ -2540,6 +2563,7 @@ int main(const int argumentCount, char** const arguments)
                 riggedModel);
             AddUnskinnedInstanceToGlb(riggedModel);
             {
+                // rigged model検査用COM初期化の結果。
                 const HRESULT comResult = CoInitializeEx(
                     nullptr,
                     COINIT_MULTITHREADED);
@@ -3039,6 +3063,7 @@ int main(const int argumentCount, char** const arguments)
                 WriteBytes(cacheFile.path(), *plain);
             }
 
+            // source-stripped runtime検査用COM初期化の結果。
             const HRESULT comResult = CoInitializeEx(
                 nullptr,
                 COINIT_MULTITHREADED);

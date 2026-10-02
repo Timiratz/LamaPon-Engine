@@ -158,12 +158,14 @@ public:
     // 経過時間から相対移動・回転・拡縮を進めます(deltaTime: 経過秒数)。
     void Update(const float deltaTime) override
     {
+        // 停止中または完了済みなら更新しません。
         if (!m_playing || m_finished)
         {
             return;
         }
 
         m_elapsed += deltaTime;
+        // 待機時間内はTransformを変更しません。
         if (m_elapsed < m_delay)
         {
             return;
@@ -177,18 +179,22 @@ public:
             : 0.01f;
         // 今回の移動区間の進捗
         float progress = active / duration;
+        // 1区間を終えた状態を繰り返し設定へ反映します。
         if (progress >= 1.0f)
         {
+            // 繰り返し設定なら次の区間へ進みます。
             if (m_loop)
             {
                 // 超過時間は次周へ持ち越さず、待機終了時点へ戻します。
                 progress = 1.0f;
                 m_elapsed = m_delay;
+                // 往復設定なら次区間の進行方向を反転します。
                 if (m_pingPong)
                 {
                     m_forward = !m_forward;
                 }
             }
+            // 繰り返さない場合は完了状態にします。
             else
             {
                 progress = 1.0f;
@@ -215,6 +221,7 @@ public:
                 : std::string{ propertiesJson },
             nullptr,
             false);
+        // Object形式以外またはparse失敗時は設定を維持します。
         if (properties.is_discarded()
             || !properties.is_object())
         {
@@ -287,6 +294,7 @@ private:
     {
         // 相対変化を反映するTransform
         auto& transform = GetTransform();
+        // 位置変更が有効な場合だけ開始位置へ相対量を加えます。
         if (m_movePosition)
         {
             transform.position = {
@@ -295,6 +303,7 @@ private:
                 m_startPosition.z + m_offset.z * amount
             };
         }
+        // 回転変更が有効な場合だけ相対角度を適用します。
         if (m_rotate)
         {
             // 度からラジアンへの換算係数
@@ -309,6 +318,7 @@ private:
                     + m_rotation.z * toRadians * amount
             });
         }
+        // 拡縮変更が有効な場合だけ倍率を適用します。
         if (m_scale)
         {
             // 開始スケールに掛ける拡縮倍率

@@ -188,11 +188,13 @@ class PackageIndexTests(unittest.TestCase):
                 # Sidecar files.
                 metas = {name for name in names if name.endswith(".meta")}
                 self.assertEqual(
+                    # asset: sidecarが必要なpackage内file名。
                     {asset + ".meta" for asset in assets} - metas,
                     set(),
                     ".metaが無いファイルがあります。",
                 )
                 self.assertEqual(
+                    # meta: 対応する本体fileが必要なsidecar名。
                     {meta[: -len(".meta")] for meta in metas} - assets,
                     set(),
                     "元ファイルが無い.metaがあります。",
@@ -272,6 +274,7 @@ class PackageIndexTests(unittest.TestCase):
             archive_path = PACKAGES_ROOT / f"{name}-{entry['version']}.zip"
             # expected: package source bytes keyed by ZIP member path.
             expected = {
+                # path: archiveへ含めるpackage source file。
                 path.relative_to(source_directory).as_posix(): path.read_bytes()
                 for path in package_source_files(source_directory)
             }
@@ -279,6 +282,7 @@ class PackageIndexTests(unittest.TestCase):
             with zipfile.ZipFile(archive_path) as archive:
                 # shipped: ZIP member bytes excluding sidecar metadata.
                 shipped = {
+                    # shipped_name: archive内の本体member名。
                     shipped_name: archive.read(shipped_name)
                     for shipped_name in archive.namelist()
                     if not shipped_name.endswith(".meta")
@@ -289,7 +293,7 @@ class PackageIndexTests(unittest.TestCase):
                 "Zipの中身とpackages/srcのファイル一覧が違います。"
                 " build_package.py で作り直してください。",
             )
-            # Compare files.
+            # shipped_name: ZIP member path; content: extracted file bytes.
             for shipped_name, content in sorted(shipped.items()):
                 # Test one member.
                 with self.subTest(entry=shipped_name):
@@ -344,6 +348,7 @@ class DiscordPresencePackageTests(unittest.TestCase):
             (self.source / "package.json").read_text(encoding="utf-8")
         )
         # entry: package index row selected by item name.
+        # item: 対象packageかを判定するindex row。
         entry = next(
             item for item in load_index()["packages"] if item["name"] == self.NAME
         )
@@ -432,6 +437,7 @@ class DiscordPresencePackageTests(unittest.TestCase):
         # DISCORDPP_IMPLEMENTATION must appear in exactly one source file.
         # definers: source paths containing the SDK implementation macro.
         definers = sorted(
+            # path: macroの有無を調べるSDK source file。
             path.name
             for path in self.source.rglob("*.cpp")
             if "#define DISCORDPP_IMPLEMENTATION"
@@ -480,6 +486,7 @@ class OllamaPackageTests(unittest.TestCase):
         self.source = SOURCE_ROOT / self.NAME
         # code: C++ source text keyed by file name.
         self.code = {
+            # path: package内のC++ source file。
             path.name: path.read_text(encoding="utf-8")
             for path in package_source_files(self.source)
             if path.suffix in {".h", ".cpp"}
@@ -489,6 +496,7 @@ class OllamaPackageTests(unittest.TestCase):
     def test_code_never_reaches_ollama_cloud(self):
         self.assertTrue(self.code, "C++ソースが見つかりません。")
         # Package source files.
+        # name: source filename; text: its C++ contents.
         for name, text in self.code.items():
             # Forbidden cloud APIs.
             for forbidden in (
@@ -511,6 +519,7 @@ class OllamaPackageTests(unittest.TestCase):
     def test_every_request_goes_through_the_endpoint_check(self):
         # callers: source file names mapped to their HTTP call counts.
         callers = {
+            # name: source file name; text: code inspected for HTTP calls.
             name: text.count("HttpSend(")
             for name, text in self.code.items()
             if "HttpSend(" in text

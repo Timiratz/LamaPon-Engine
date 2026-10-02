@@ -8032,6 +8032,7 @@ int wmain(const int argumentCount, wchar_t** arguments)
                             first,
                             item.find_last_not_of(" \t")
                                 - first + 1);
+                        // action設定から復元するinput event。
                         RenderOptions::InputEvent event;
                         // at: Action名と開始時刻のseparator位置。
                         const auto at = item.find('@');

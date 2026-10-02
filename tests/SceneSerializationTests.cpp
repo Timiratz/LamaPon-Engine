@@ -339,6 +339,7 @@ int RunTest(const std::string_view suite)
             // invalidBakedGiDocument: 不正baked GI JSON。
             auto invalidBakedGiDocument = nlohmann::json::parse(
                 emptyScene.SerializeToJson());
+            // bakedGi: serialize対象のbaked GI data。
             auto& bakedGi =
                 invalidBakedGiDocument["environment"]
                     ["bakedGlobalIllumination"];
@@ -396,8 +397,10 @@ int RunTest(const std::string_view suite)
             LamaPon::Scene patternedRoundTripScene(graphics);
             patternedRoundTripScene.LoadFromJson(
                 patternedBakedGiScene.SerializeToJson());
+            // restoredCurrent: 復元後のcurrent GI state。
             const auto& restoredCurrent =
                 patternedRoundTripScene.BakedGlobalIllumination();
+            // restoredShape: 復元後のGI volume shape。
             const auto& restoredShape =
                 patternedRoundTripScene
                     .BakedGlobalIlluminationBakedShape();
@@ -501,6 +504,7 @@ int RunTest(const std::string_view suite)
             0.2f
         });
 
+        // root: 保存元sceneのroot GameObject。
         auto& root = source.CreateGameObject("ルート");
         root.GetTransform().position = { 10.0f, 2.0f, 0.0f };
         // RenderCullingComponentの値を、GameObjectの互換アクセサーIsAlwaysVisible/CullingMarginからも読み取れることを検証します。
@@ -526,6 +530,7 @@ int RunTest(const std::string_view suite)
             14.0f,
             DirectX::XMConvertToRadians(18.0f),
             DirectX::XMConvertToRadians(32.0f));
+        // sourceProbe: 保存元sceneのtest probe component。
         auto& sourceProbe =
             root.AddComponent<
                 LamaPon::ReflectionProbeComponent>(
@@ -534,6 +539,7 @@ int RunTest(const std::string_view suite)
         sourceProbe.SetBoxExtents(
             { 4.0f, 2.5f, 3.5f });
         sourceProbe.SetBlendDistance(2.75f);
+        // sourceNavMesh: 保存元sceneのNavMesh component。
         auto& sourceNavMesh =
             root.AddComponent<
                 LamaPon::NavMeshComponent>(
@@ -560,9 +566,11 @@ int RunTest(const std::string_view suite)
                     1080.0f },
                 0.75f);
 
+        // child: 保存元sceneのchild GameObject。
         auto& child = source.CreateGameObject("子オブジェクト");
         child.SetParent(&root);
         child.GetTransform().position = { 2.0f, 3.0f, 0.0f };
+        // sourceSprite: 保存元sceneのsprite renderer component。
         auto& sourceSprite =
             child.AddComponent<LamaPon::SpriteRendererComponent>(
             DirectX::XMFLOAT2{ 64.0f, 32.0f },
@@ -575,6 +583,7 @@ int RunTest(const std::string_view suite)
         sourceSprite.SetCustomParameter(
             0,
             { 1.25f, 2.5f, 3.75f, 5.0f });
+        // tilemap: test fixtureのtilemap component。
         auto& tilemap =
             child.AddComponent<
                 LamaPon::TilemapComponent>(
@@ -592,6 +601,7 @@ int RunTest(const std::string_view suite)
                         L"textures/日本語タイル.png"));
         tilemap.SetCell(-1, 2, 5);
         tilemap.SetCell(3, 4, 7);
+        // sourceParticles: 保存元sceneのparticle system component。
         auto& sourceParticles =
             child.AddComponent<
                 LamaPon::ParticleSystemComponent>(
@@ -663,6 +673,7 @@ int RunTest(const std::string_view suite)
                 DirectX::XMFLOAT2{
                     280.0f,
                     72.0f });
+        // sourceButton: 保存元sceneのUI button component。
         auto& sourceButton =
             child.AddComponent<
                 LamaPon::UIButtonComponent>(
@@ -688,6 +699,7 @@ int RunTest(const std::string_view suite)
         sourceButton.SetTargetScene(
             std::filesystem::path(
                 L"scenes/次のシーン.scene.json"));
+        // sourceNavAgent: 保存元sceneのNavMesh agent component。
         auto& sourceNavAgent =
             child.AddComponent<
                 LamaPon::
@@ -856,8 +868,10 @@ int RunTest(const std::string_view suite)
             LamaPon::TextHorizontalAlignment::Center,
             LamaPon::TextVerticalAlignment::Bottom);
 
+        // cameraObject: 保存元sceneのcamera GameObject。
         auto& cameraObject = source.CreateGameObject("カメラ");
         cameraObject.SetParent(&root);
+        // camera: camera component。
         auto& camera = cameraObject.AddComponent<LamaPon::CameraComponent>();
         cameraObject.AddComponent<
             LamaPon::AudioListenerComponent>();
@@ -879,8 +893,10 @@ int RunTest(const std::string_view suite)
 
         // prefabTarget: Prefab instanceの編集scene。
         LamaPon::Scene prefabTarget(graphics);
+        // prefabParent: test sceneのprefab GameObject。
         auto& prefabParent =
             prefabTarget.CreateGameObject("PrefabParent");
+        // prefabInstance: test fixtureのprefab instance。
         auto& prefabInstance =
             prefabTarget.InstantiatePrefab(
                 prefabPath,
@@ -1052,6 +1068,7 @@ int RunTest(const std::string_view suite)
         Require(
             !positionOverridePath.empty(),
             "The position override was not reported as an editable property.");
+        // propertyRevertedPrefab: property revert後のprefab instance。
         auto& propertyRevertedPrefab =
             prefabTarget.RevertPrefabOverride(
                 prefabInstance,
@@ -1080,6 +1097,7 @@ int RunTest(const std::string_view suite)
         // replacedPrefabId: 置換後Prefab asset ID。
         const auto replacedPrefabId =
             propertyRevertedPrefab.Id();
+        // revertedPrefab: revert後のprefab instance。
         auto& revertedPrefab =
             prefabTarget.RevertPrefabInstance(
                 propertyRevertedPrefab);
@@ -1164,6 +1182,7 @@ int RunTest(const std::string_view suite)
                 L"ネスト.prefab.json");
         // nestedSource: nested Prefab source scene。
         LamaPon::Scene nestedSource(graphics);
+        // nestedSourceRoot: nested prefabのroot GameObject。
         auto& nestedSourceRoot =
             nestedSource.CreateGameObject(
                 "ネストされたPrefab");
@@ -1175,6 +1194,7 @@ int RunTest(const std::string_view suite)
         nestedSource.SavePrefab(
             nestedSourceRoot,
             nestedPrefabPath);
+        // nestedInstance: prefabTargetに生成したnested prefab root。
         auto& nestedInstance =
             prefabTarget.InstantiatePrefab(
                 nestedPrefabPath,
@@ -1214,6 +1234,7 @@ int RunTest(const std::string_view suite)
 
         // nestedPrefabTarget: nested instanceのload先scene。
         LamaPon::Scene nestedPrefabTarget(graphics);
+        // restoredOuterPrefab: 読み込み後のprefab instance。
         auto& restoredOuterPrefab =
             nestedPrefabTarget.InstantiatePrefab(
                 prefabPath);
@@ -1434,8 +1455,11 @@ int RunTest(const std::string_view suite)
                 && loaded.OcclusionCullingEnabled(),
             "Scene culling settings were not restored.");
 
+        // loadedRoot: 読み込み後のroot GameObject。
         auto* loadedRoot = loaded.FindGameObject(root.Id());
+        // loadedChild: 読み込み後のchild GameObject。
         auto* loadedChild = loaded.FindGameObject(child.Id());
+        // loadedCameraObject: 読み込み後のcamera GameObject。
         auto* loadedCameraObject =
             loaded.FindGameObject(cameraObject.Id());
         Require(loadedRoot != nullptr, "Root was not restored.");
@@ -1451,6 +1475,7 @@ int RunTest(const std::string_view suite)
                 != nullptr,
             "Culling settings must round-trip as a"
             " component.");
+        // loadedProbe: 読み込み後のtest probe component。
         const auto* loadedProbe =
             loadedRoot->GetComponent<
                 LamaPon::ReflectionProbeComponent>();
@@ -1500,6 +1525,7 @@ int RunTest(const std::string_view suite)
             LamaPon::Scene volumetricLoaded(graphics);
             volumetricLoaded.LoadFromJson(
                 volumetricScene.SerializeToJson());
+            // restored: 読み込み後のscene state。
             const auto& restored =
                 volumetricLoaded.VolumetricLight();
             Require(
@@ -1554,12 +1580,14 @@ int RunTest(const std::string_view suite)
                     }
                 ]
             })");
+            // legacyObject: 旧schemaのGameObject。
             const auto* legacyObject =
                 legacyScene.FindGameObjectByName(
                     "LegacyCulling");
             Require(
                 legacyObject != nullptr,
                 "Legacy object was not loaded.");
+            // legacyCulling: 旧schemaのculling settings。
             const auto* legacyCulling =
                 legacyObject->GetComponent<
                     LamaPon::RenderCullingComponent>();
@@ -1593,6 +1621,7 @@ int RunTest(const std::string_view suite)
                     " rotation through the quaternion.");
             }
 
+            // legacyDefault: 旧schemaのGameObject。
             const auto* legacyDefault =
                 legacyScene.FindGameObjectByName(
                     "LegacyDefault");
@@ -1609,6 +1638,7 @@ int RunTest(const std::string_view suite)
         Require(
             loadedCameraObject != nullptr,
             "Camera GameObject was not restored.");
+        // loadedLOD: 読み込み後のLOD settings。
         const auto* loadedLOD =
             loadedRoot->GetComponent<
                 LamaPon::LODGroupComponent>();
@@ -1621,6 +1651,7 @@ int RunTest(const std::string_view suite)
                     loadedLOD->CullDistance(),
                     80.0f),
             "LOD Group was not restored.");
+        // loadedLight: 読み込み後のlight component。
         const auto* loadedLight =
             loadedRoot->GetComponent<
                 LamaPon::DirectionalLightComponent>();
@@ -1654,6 +1685,7 @@ int RunTest(const std::string_view suite)
                     loadedLight->ShadowSplitLambda(),
                     0.72f),
             "DirectionalLight shadow settings were not restored.");
+        // loadedPointLight: 読み込み後のlight component。
         const auto* loadedPointLight =
             loadedRoot->GetComponent<
                 LamaPon::PointLightComponent>();
@@ -1664,6 +1696,7 @@ int RunTest(const std::string_view suite)
             NearlyEqual(loadedPointLight->Intensity(), 4.5f)
                 && NearlyEqual(loadedPointLight->Range(), 9.0f),
             "PointLight settings were not restored.");
+        // loadedSpotLight: 読み込み後のlight component。
         const auto* loadedSpotLight =
             loadedRoot->GetComponent<
                 LamaPon::SpotLightComponent>();
@@ -1680,6 +1713,7 @@ int RunTest(const std::string_view suite)
                     loadedSpotLight->OuterConeAngle(),
                     DirectX::XMConvertToRadians(32.0f)),
             "SpotLight settings were not restored.");
+        // loadedNavMesh: 読み込み後のNavMesh component。
         const auto* loadedNavMesh =
             loadedRoot->GetComponent<
                 LamaPon::NavMeshComponent>();
@@ -1695,6 +1729,7 @@ int RunTest(const std::string_view suite)
                 && loadedNavMesh->
                     BlockedCellCount() == 3,
             "NavMesh bake data was not restored.");
+        // loadedCanvas: 読み込み後のUI canvas component。
         const auto* loadedCanvas =
             loadedRoot->GetComponent<
                 LamaPon::UICanvasComponent>();
@@ -1712,11 +1747,13 @@ int RunTest(const std::string_view suite)
         Require(loadedChild->Parent() == loadedRoot, "Parent relationship was not restored.");
         Require(loadedRoot->Children().size() == 2, "Child list was not restored.");
 
+        // childWorld: child world transform matrix。
         DirectX::XMFLOAT4X4 childWorld{};
         DirectX::XMStoreFloat4x4(&childWorld, loadedChild->WorldMatrix());
         Require(NearlyEqual(childWorld._41, 12.0f), "World X position is incorrect.");
         Require(NearlyEqual(childWorld._42, 5.0f), "World Y position is incorrect.");
 
+        // sprite: sprite renderer component。
         const auto* sprite = loadedChild->GetComponent<LamaPon::SpriteRendererComponent>();
         Require(sprite != nullptr, "SpriteRenderer was not restored.");
         Require(
@@ -1747,6 +1784,7 @@ int RunTest(const std::string_view suite)
                     sprite->CustomParameter(0).w,
                     5.0f),
             "Sprite shader settings were not restored.");
+        // loadedTilemap: 読み込み後のtilemap component。
         const auto* loadedTilemap =
             loadedChild->GetComponent<
                 LamaPon::TilemapComponent>();
@@ -1776,6 +1814,7 @@ int RunTest(const std::string_view suite)
                 && loadedTilemap->
                     Cells().size() == 2,
             "Tilemap cells were not restored.");
+        // loadedParticles: 読み込み後のparticle system component。
         const auto* loadedParticles =
             loadedChild->GetComponent<
                 LamaPon::ParticleSystemComponent>();
@@ -1821,6 +1860,7 @@ int RunTest(const std::string_view suite)
                         CustomParameter(0).w,
                     4.0f),
             "ParticleSystem shader settings were not restored.");
+        // loadedUITransform: 読み込み後のTransform state。
         const auto* loadedUITransform =
             loadedChild->GetComponent<
                 LamaPon::
@@ -1843,6 +1883,7 @@ int RunTest(const std::string_view suite)
                 && resolvedUIRect.minimum.y
                     < resolvedUIRect.maximum.y,
             "UIRectTransform did not resolve inside the viewport.");
+        // loadedButton: 読み込み後のUI button component。
         const auto* loadedButton =
             loadedChild->GetComponent<
                 LamaPon::UIButtonComponent>();
@@ -1866,6 +1907,7 @@ int RunTest(const std::string_view suite)
                 && !loadedButton->
                     ReloadCurrentScene(),
             "UIButton settings were not restored.");
+        // loadedNavAgent: 読み込み後のNavMesh agent component。
         const auto* loadedNavAgent =
             loadedChild->GetComponent<
                 LamaPon::
@@ -1886,6 +1928,7 @@ int RunTest(const std::string_view suite)
                         Destination().z,
                     2.0f),
             "NavMeshAgent path was not restored.");
+        // audio: audio source component。
         const auto* audio =
             loadedChild->GetComponent<LamaPon::AudioSourceComponent>();
         Require(audio != nullptr, "AudioSource was not restored.");
@@ -1910,6 +1953,7 @@ int RunTest(const std::string_view suite)
             loadedCameraObject->GetComponent<
                 LamaPon::AudioListenerComponent>() != nullptr,
             "AudioListener was not restored.");
+        // inputMover: 復元したInputMover component。
         const auto* inputMover =
             loadedChild->GetComponent<
                 LamaPon::InputMoverComponent>();
@@ -1921,6 +1965,7 @@ int RunTest(const std::string_view suite)
                     == "MoveVertical"
                 && NearlyEqual(inputMover->Speed(), 4.5f),
             "InputMover was not restored.");
+        // animator: test fixtureのanimator component。
         const auto* animator =
             loadedChild->GetComponent<
                 LamaPon::TransformAnimatorComponent>();
@@ -1938,6 +1983,7 @@ int RunTest(const std::string_view suite)
                     == std::filesystem::path(
                         L"animations/移動.animator.json"),
             "TransformAnimator was not restored.");
+        // model: model renderer component。
         const auto* model = loadedChild->GetComponent<LamaPon::ModelRendererComponent>();
         Require(model != nullptr, "ModelRenderer was not restored.");
         Require(
@@ -1987,6 +2033,7 @@ int RunTest(const std::string_view suite)
                 && !model->AnimationLoop()
                 && !model->AnimationPlayOnStart(),
             "Model skeletal animation settings were not restored.");
+        // mesh: mesh renderer component。
         const auto* mesh =
             loadedChild->GetComponent<
                 LamaPon::MeshRendererComponent>();
@@ -2075,6 +2122,7 @@ int RunTest(const std::string_view suite)
                     loadedMaterial.CustomParameter(3).x,
                     4.0f),
             "LitMaterial shader settings were not restored.");
+        // collider: test fixtureのcollider component。
         const auto* collider =
             loadedChild->GetComponent<LamaPon::BoxCollider3DComponent>();
         Require(collider != nullptr, "BoxCollider3D was not restored.");
@@ -2087,6 +2135,7 @@ int RunTest(const std::string_view suite)
                     collider->Material().restitution,
                     0.65f),
             "BoxCollider3D physics material was not restored.");
+        // capsule: test fixtureのcapsule collider。
         const auto* capsule =
             loadedChild->GetComponent<
                 LamaPon::CapsuleCollider3DComponent>();
@@ -2103,6 +2152,7 @@ int RunTest(const std::string_view suite)
                     capsule->Material().restitution,
                     0.35f),
             "CapsuleCollider3D was not restored.");
+        // sphere: test fixtureのsphere collider。
         const auto* sphere =
             loadedChild->GetComponent<
                 LamaPon::SphereCollider3DComponent>();
@@ -2122,6 +2172,7 @@ int RunTest(const std::string_view suite)
                     sphere->Material().restitution,
                     0.2f),
             "SphereCollider3D was not restored.");
+        // hull: test fixtureのconvex mesh collider。
         const auto* hull =
             loadedChild->GetComponent<
                 LamaPon::ConvexHullCollider3DComponent>();
@@ -2143,6 +2194,7 @@ int RunTest(const std::string_view suite)
                     hull->Material().restitution,
                     0.15f),
             "ConvexHullCollider3D was not restored.");
+        // rigidbody: Rigidbody component。
         const auto* rigidbody =
             loadedChild->GetComponent<LamaPon::RigidbodyComponent>();
         Require(rigidbody != nullptr, "Rigidbody was not restored.");
@@ -2179,6 +2231,7 @@ int RunTest(const std::string_view suite)
                     .freezeRotationZ
                 && !rigidbody->Interpolates(),
             "Rigidbody angular settings were not restored.");
+        // joint: test fixtureのphysics joint component。
         const auto* joint =
             loadedChild->GetComponent<LamaPon::JointComponent>();
         Require(
@@ -2208,6 +2261,7 @@ int RunTest(const std::string_view suite)
                     35.0f)
                 && joint->CollideConnected(),
             "Joint was not restored.");
+        // text: text renderer component。
         const auto* text =
             loadedChild->GetComponent<LamaPon::TextRendererComponent>();
         Require(text != nullptr, "TextRenderer was not restored.");
@@ -2257,8 +2311,10 @@ int RunTest(const std::string_view suite)
         fileLoaded.LoadFromFile(outputPath);
         Require(fileLoaded.GameObjects().size() == 3, "File scene loading failed.");
 
+        // fileRoot: 読み込み後のroot GameObject。
         auto* fileRoot = fileLoaded.FindGameObject(root.Id());
         Require(fileRoot != nullptr, "File-loaded root was not found.");
+        // duplicatedRoot: 複製後のroot GameObject。
         auto& duplicatedRoot = fileLoaded.DuplicateGameObject(*fileRoot);
         Require(duplicatedRoot.Name() == "ルート Copy", "Duplicate name is incorrect.");
         Require(duplicatedRoot.Parent() == nullptr, "Duplicate parent is incorrect.");
@@ -2329,8 +2385,11 @@ int RunTest(const std::string_view suite)
             "Duplicated LOD target id was not remapped.");
         Require(fileLoaded.GameObjects().size() == 6, "Duplicate object count is incorrect.");
 
+        // 複製後のsprite renderer。
         LamaPon::SpriteRendererComponent* duplicatedSprite{};
+        // 複製後のaudio source。
         LamaPon::AudioSourceComponent* duplicatedAudio{};
+        // 複製後のaudio listener。
         LamaPon::AudioListenerComponent* duplicatedListener{};
         LamaPon::TransformAnimatorComponent*
             duplicatedAnimator{};
@@ -2451,6 +2510,7 @@ int RunTest(const std::string_view suite)
 
         // clipboardTarget: clipboard paste先scene。
         LamaPon::Scene clipboardTarget(graphics);
+        // pastedRoot: test sceneのroot GameObject。
         auto& pastedRoot = clipboardTarget.DuplicateGameObject(duplicatedRoot);
         Require(pastedRoot.Children().size() == 2, "Cross-scene paste hierarchy failed.");
         Require(
@@ -2461,13 +2521,16 @@ int RunTest(const std::string_view suite)
         {
             // tagScene: tag serialization scene。
             LamaPon::Scene tagScene(graphics);
+            // taggedParent: test sceneのparent GameObject。
             auto& taggedParent =
                 tagScene.CreateGameObject("親オブジェクト");
             taggedParent.SetTag("Player");
+            // taggedChild: test sceneのchild GameObject。
             auto& taggedChild =
                 tagScene.CreateGameObject("子オブジェクト");
             taggedChild.SetTag("Enemy");
             taggedChild.SetParent(&taggedParent);
+            // probe: test fixtureのtest probe component。
             auto& probe = taggedChild.AddComponent<
                 ActiveStateProbeComponent>();
 
@@ -2529,6 +2592,7 @@ int RunTest(const std::string_view suite)
             // tagLoaded: JSONから復元したtag scene。
             LamaPon::Scene tagLoaded(graphics);
             tagLoaded.LoadFromJson(tagJson);
+            // loadedPlayer: 読み込み後のGameObject。
             const auto* loadedPlayer =
                 tagLoaded.FindGameObjectByTag("Player");
             Require(
@@ -2603,16 +2667,21 @@ int RunTest(const std::string_view suite)
             {
                 // searchScene: scene search検証scene。
                 LamaPon::Scene searchScene(graphics);
+                // nestedRoot: nested prefabのroot GameObject。
                 auto& nestedRoot =
                     searchScene.CreateGameObject("ルート");
+                // arm: test sceneのarm GameObject。
                 auto& arm =
                     searchScene.CreateGameObject("腕");
                 arm.SetParent(&nestedRoot);
+                // weapon: test sceneのweapon GameObject。
                 auto& weapon =
                     searchScene.CreateGameObject("武器");
                 weapon.SetParent(&arm);
+                // rootProbe: test fixtureのtest probe component。
                 auto& rootProbe = nestedRoot.AddComponent<
                     ActiveStateProbeComponent>();
+                // weaponProbe: test fixtureのtest probe component。
                 auto& weaponProbe = weapon.AddComponent<
                     ActiveStateProbeComponent>();
 
@@ -2683,6 +2752,7 @@ int RunTest(const std::string_view suite)
 
             // JobSystem：全要素を1回ずつ処理・逐次フォールバック・ネスト・例外伝播
             {
+                // jobs: persistence job queue。
                 auto& jobs =
                     LamaPon::JobSystem::Instance();
                 Require(
@@ -2691,6 +2761,7 @@ int RunTest(const std::string_view suite)
 
                 // Count: atomic callback数の期待値。
                 constexpr std::size_t Count = 10000;
+                // 並列callbackごとの実行回数。
                 std::vector<std::atomic<int>> touched(
                     Count);
                 jobs.ParallelFor(
@@ -2883,9 +2954,11 @@ int RunTest(const std::string_view suite)
 
                 // UIButtonのクリックイベント名の保存往復
                 LamaPon::Scene buttonScene(graphics);
+                // buttonObject: test sceneのbutton GameObject。
                 auto& buttonObject =
                     buttonScene.CreateGameObject(
                         "開始ボタン");
+                // button: UI button component。
                 auto& button =
                     buttonObject.AddComponent<
                         LamaPon::UIButtonComponent>();
@@ -2896,6 +2969,7 @@ int RunTest(const std::string_view suite)
                 // buttonLoaded: JSONから復元したbutton scene。
                 LamaPon::Scene buttonLoaded(graphics);
                 buttonLoaded.LoadFromJson(buttonJson);
+                // eventButton: 読み込み後のbutton GameObject。
                 const auto* eventButton =
                     buttonLoaded
                         .FindGameObjectByName(
@@ -2944,6 +3018,7 @@ int RunTest(const std::string_view suite)
                 LamaPon::Scene legacyButtonLoaded(graphics);
                 legacyButtonLoaded.LoadFromJson(
                     legacyButtonJson.dump());
+                // legacyButton: 旧schemaのbutton GameObject。
                 const auto* legacyButton =
                     legacyButtonLoaded
                         .FindGameObjectByName(
@@ -2966,11 +3041,14 @@ int RunTest(const std::string_view suite)
             {
                 // spriteScene: sprite serialization scene。
                 LamaPon::Scene spriteScene(graphics);
+                // player: test sceneのGameObject。
                 auto& player =
                     spriteScene.CreateGameObject(
                         "Player");
+                // renderer: sprite renderer component。
                 auto& renderer = player.AddComponent<
                     LamaPon::SpriteRendererComponent>();
+                // overrideAnimator: test fixtureのanimator component。
                 auto& overrideAnimator = player.AddComponent<
                     LamaPon::SpriteAnimatorComponent>(
                     4,
@@ -3023,12 +3101,14 @@ int RunTest(const std::string_view suite)
                 // spriteLoaded: JSONから復元したsprite scene。
                 LamaPon::Scene spriteLoaded(graphics);
                 spriteLoaded.LoadFromJson(spriteJson);
+                // overridePlayer: 読み込み後のGameObject。
                 const auto* overridePlayer =
                     spriteLoaded.FindGameObjectByName(
                         "Player");
                 Require(
                     overridePlayer != nullptr,
                     "Sprite scene did not round-trip.");
+                // loadedAnimator: 読み込み後のanimator component。
                 const auto* loadedAnimator =
                     overridePlayer->GetComponent<
                         LamaPon::
@@ -3044,6 +3124,7 @@ int RunTest(const std::string_view suite)
                         && !loadedAnimator->Clips()[1]
                             .loop,
                     "SpriteAnimator did not round-trip.");
+                // loadedRenderer: 読み込み後のrenderer component。
                 const auto* loadedRenderer =
                     overridePlayer->GetComponent<
                         LamaPon::
@@ -3060,6 +3141,7 @@ int RunTest(const std::string_view suite)
                 auto& duplicated =
                     spriteScene.DuplicateGameObject(
                         player);
+                // duplicatedOverrideAnimator: 複製後のanimator component。
                 const auto* duplicatedOverrideAnimator =
                     duplicated.GetComponent<
                         LamaPon::
@@ -3075,6 +3157,7 @@ int RunTest(const std::string_view suite)
 
             // トリガーイベントの振り分け：isTriggerはOnTrigger*へ
             LamaPon::Scene triggerScene(graphics);
+            // triggerObject: test sceneのtrigger GameObject。
             auto& triggerObject =
                 triggerScene.CreateGameObject("トリガー");
             triggerObject.AddComponent<
@@ -3082,8 +3165,10 @@ int RunTest(const std::string_view suite)
                 DirectX::XMFLOAT3{ 1.0f, 1.0f, 1.0f },
                 DirectX::XMFLOAT3{ 0.0f, 0.0f, 0.0f },
                 true);
+            // triggerProbe: test fixtureのtest probe component。
             auto& triggerProbe = triggerObject.AddComponent<
                 TriggerProbeComponent>();
+            // visitorObject: test sceneのvisitor GameObject。
             auto& visitorObject =
                 triggerScene.CreateGameObject("侵入者");
             visitorObject.AddComponent<
@@ -3131,9 +3216,11 @@ int RunTest(const std::string_view suite)
 
             // UIウィジェットのシリアライズ往復
             LamaPon::Scene widgetScene(graphics);
+            // widgetObject: test sceneのGameObject。
             auto& widgetObject =
                 widgetScene.CreateGameObject(
                     "ウィジェット");
+            // sourceImage: 保存元sceneのUI image component。
             auto& sourceImage =
                 widgetObject.AddComponent<
                     LamaPon::UIImageComponent>(
@@ -3144,21 +3231,25 @@ int RunTest(const std::string_view suite)
             sourceImage.SetBorder(
                 { 8.0f, 12.0f, 16.0f, 20.0f });
             sourceImage.SetSortOrder(3);
+            // sourceToggle: 保存元sceneのUI toggle component。
             auto& sourceToggle =
                 widgetObject.AddComponent<
                     LamaPon::UIToggleComponent>(
                     "サウンド", true);
             sourceToggle.SetFontSize(30.0f);
+            // sourceSlider: 保存元sceneのUI slider component。
             auto& sourceSlider =
                 widgetObject.AddComponent<
                     LamaPon::UISliderComponent>(
                     -10.0f, 10.0f, 2.5f);
             sourceSlider.SetWholeNumbers(true);
+            // sourceField: 保存元sceneのUI input field component。
             auto& sourceField =
                 widgetObject.AddComponent<
                     LamaPon::UIInputFieldComponent>(
                     "こんにちは", "名前を入力");
             sourceField.SetMaxLength(32);
+            // sourceLayout: 保存元sceneのUI layout component。
             auto& sourceLayout =
                 widgetObject.AddComponent<
                     LamaPon::UILayoutGroupComponent>(
@@ -3191,12 +3282,14 @@ int RunTest(const std::string_view suite)
             // widgetLoaded: JSONから復元したwidget scene。
             LamaPon::Scene widgetLoaded(graphics);
             widgetLoaded.LoadFromJson(widgetJson);
+            // loadedWidgetObject: 読み込み後のGameObject。
             const auto* loadedWidgetObject =
                 widgetLoaded.FindGameObjectByName(
                     "ウィジェット");
             Require(
                 loadedWidgetObject != nullptr,
                 "Widget object did not round-trip.");
+            // loadedImage: 読み込み後のUI image component。
             const auto* loadedImage =
                 loadedWidgetObject->GetComponent<
                     LamaPon::UIImageComponent>();
@@ -3210,6 +3303,7 @@ int RunTest(const std::string_view suite)
                         12.0f)
                     && loadedImage->SortOrder() == 3,
                 "UIImage did not round-trip.");
+            // loadedToggle: 読み込み後のUI toggle component。
             const auto* loadedToggle =
                 loadedWidgetObject->GetComponent<
                     LamaPon::UIToggleComponent>();
@@ -3222,6 +3316,7 @@ int RunTest(const std::string_view suite)
                         loadedToggle->FontSize(),
                         30.0f),
                 "UIToggle did not round-trip.");
+            // loadedSlider: 読み込み後のUI slider component。
             const auto* loadedSlider =
                 loadedWidgetObject->GetComponent<
                     LamaPon::UISliderComponent>();
@@ -3235,6 +3330,7 @@ int RunTest(const std::string_view suite)
                         10.0f)
                     && loadedSlider->WholeNumbers(),
                 "UISlider did not round-trip.");
+            // loadedField: 読み込み後のUI input field component。
             const auto* loadedField =
                 loadedWidgetObject->GetComponent<
                     LamaPon::UIInputFieldComponent>();
@@ -3246,6 +3342,7 @@ int RunTest(const std::string_view suite)
                         == "名前を入力"
                     && loadedField->MaxLength() == 32,
                 "UIInputField did not round-trip.");
+            // loadedLayout: 読み込み後のUI layout component。
             const auto* loadedLayout =
                 loadedWidgetObject->GetComponent<
                     LamaPon::UILayoutGroupComponent>();
@@ -3267,6 +3364,7 @@ int RunTest(const std::string_view suite)
 
             // LayoutGroupの子整列
             LamaPon::Scene layoutScene(graphics);
+            // layoutRoot: test sceneのroot GameObject。
             auto& layoutRoot =
                 layoutScene.CreateGameObject("整列親");
             layoutRoot.AddComponent<
@@ -3276,6 +3374,7 @@ int RunTest(const std::string_view suite)
                 DirectX::XMFLOAT2{ 0.0f, 0.0f },
                 DirectX::XMFLOAT2{ 0.0f, 0.0f },
                 DirectX::XMFLOAT2{ 300.0f, 300.0f });
+            // verticalLayout: UI layout component。
             auto& verticalLayout =
                 layoutRoot.AddComponent<
                     LamaPon::UILayoutGroupComponent>(
@@ -3283,9 +3382,11 @@ int RunTest(const std::string_view suite)
                     10.0f);
             verticalLayout.SetPadding(
                 { 5.0f, 6.0f, 5.0f, 6.0f });
+            // firstChild: test sceneのchild GameObject。
             auto& firstChild =
                 layoutScene.CreateGameObject("子1");
             firstChild.SetParent(&layoutRoot);
+            // firstChildTransform: test fixtureのTransform state。
             auto& firstChildTransform =
                 firstChild.AddComponent<
                     LamaPon::UIRectTransformComponent>(
@@ -3294,9 +3395,11 @@ int RunTest(const std::string_view suite)
                     DirectX::XMFLOAT2{ 0.5f, 0.5f },
                     DirectX::XMFLOAT2{ 0.0f, 0.0f },
                     DirectX::XMFLOAT2{ 100.0f, 40.0f });
+            // secondChild: test sceneのchild GameObject。
             auto& secondChild =
                 layoutScene.CreateGameObject("子2");
             secondChild.SetParent(&layoutRoot);
+            // secondChildTransform: test fixtureのTransform state。
             auto& secondChildTransform =
                 secondChild.AddComponent<
                     LamaPon::UIRectTransformComponent>(
@@ -3325,8 +3428,10 @@ int RunTest(const std::string_view suite)
 
             // Mesh Collider：10x10の床（2三角形）でクエリと衝突を検証
             LamaPon::Scene meshScene(graphics);
+            // floorObject: test sceneのGameObject。
             auto& floorObject =
                 meshScene.CreateGameObject("メッシュ床");
+            // floorCollider: test fixtureのcollider component。
             auto& floorCollider =
                 floorObject.AddComponent<
                     LamaPon::MeshCollider3DComponent>();
@@ -3403,6 +3508,7 @@ int RunTest(const std::string_view suite)
             meshBall.AddComponent<
                 LamaPon::SphereCollider3DComponent>(
                 0.5f);
+            // meshBallBody: Rigidbody component。
             auto& meshBallBody =
                 meshBall.AddComponent<
                     LamaPon::RigidbodyComponent>();
@@ -3423,9 +3529,11 @@ int RunTest(const std::string_view suite)
 
             // シリアライズ往復（モデルパス・物理設定）
             LamaPon::Scene meshSaveScene(graphics);
+            // meshSaveObject: test sceneのGameObject。
             auto& meshSaveObject =
                 meshSaveScene.CreateGameObject(
                     "ステージ");
+            // meshSaveCollider: test fixtureのcollider component。
             auto& meshSaveCollider =
                 meshSaveObject.AddComponent<
                     LamaPon::MeshCollider3DComponent>(
@@ -3446,9 +3554,11 @@ int RunTest(const std::string_view suite)
             // meshLoadScene: mesh JSONのload先scene。
             LamaPon::Scene meshLoadScene(graphics);
             meshLoadScene.LoadFromJson(meshJson);
+            // loadedStage: 読み込み後のGameObject。
             const auto* loadedStage =
                 meshLoadScene.FindGameObjectByName(
                     "ステージ");
+            // loadedMeshCollider: 読み込み後のcollider component。
             const auto* loadedMeshCollider =
                 loadedStage != nullptr
                     ? loadedStage->GetComponent<
@@ -3541,19 +3651,23 @@ int RunTest(const std::string_view suite)
 
             // CircleCollider2D：床ボックスの上で円が静止する
             LamaPon::Scene circleScene(graphics);
+            // circleGround: test sceneのground GameObject。
             auto& circleGround =
                 circleScene.CreateGameObject("2D床");
             circleGround.AddComponent<
                 LamaPon::BoxCollider2DComponent>(
                 DirectX::XMFLOAT2{ 10.0f, 1.0f });
+            // circleBall: test sceneのGameObject。
             auto& circleBall =
                 circleScene.CreateGameObject("2D円");
             circleBall.GetTransform().position =
                 { 0.0f, 2.0f, 0.0f };
+            // circleCollider: test fixtureのcollider component。
             auto& circleCollider =
                 circleBall.AddComponent<
                     LamaPon::CircleCollider2DComponent>(
                     0.5f);
+            // circleBody: Rigidbody component。
             auto& circleBody =
                 circleBall.AddComponent<
                     LamaPon::RigidbodyComponent>();
@@ -3598,9 +3712,11 @@ int RunTest(const std::string_view suite)
             // circleLoaded: JSONから復元したcircle scene。
             LamaPon::Scene circleLoaded(graphics);
             circleLoaded.LoadFromJson(circleJson);
+            // loadedBall: 読み込み後のGameObject。
             const auto* loadedBall =
                 circleLoaded.FindGameObjectByName(
                     "2D円");
+            // loadedCircle: 読み込み後のCircleCollider2D。
             const auto* loadedCircle =
                 loadedBall != nullptr
                     ? loadedBall->GetComponent<
@@ -3625,6 +3741,7 @@ int RunTest(const std::string_view suite)
                             PhysicsMaterialCombine::
                                 Minimum,
                 "Circle collider did not round-trip.");
+            // loadedCircleBody: 読み込み後のRigidbody component。
             const auto* loadedCircleBody =
                 loadedBall->GetComponent<
                     LamaPon::RigidbodyComponent>();
@@ -3640,15 +3757,18 @@ int RunTest(const std::string_view suite)
 
             // PolygonCollider2D：床ボックスの上で三角形が平らな辺で静止する
             LamaPon::Scene polygonScene(graphics);
+            // polygonGround: test sceneのground GameObject。
             auto& polygonGround =
                 polygonScene.CreateGameObject("2D床");
             polygonGround.AddComponent<
                 LamaPon::BoxCollider2DComponent>(
                 DirectX::XMFLOAT2{ 10.0f, 1.0f });
+            // polygonFalling: test sceneのGameObject。
             auto& polygonFalling =
                 polygonScene.CreateGameObject("2D三角形");
             polygonFalling.GetTransform().position =
                 { 0.0f, 3.0f, 0.0f };
+            // polygonCollider: test fixtureのcollider component。
             auto& polygonCollider =
                 polygonFalling.AddComponent<
                     LamaPon::PolygonCollider2DComponent>(
@@ -3656,6 +3776,7 @@ int RunTest(const std::string_view suite)
                         { 0.0f, 0.5f },
                         { -0.5f, -0.5f },
                         { 0.5f, -0.5f } });
+            // polygonBody: Rigidbody component。
             auto& polygonBody =
                 polygonFalling.AddComponent<
                     LamaPon::RigidbodyComponent>();
@@ -3701,9 +3822,11 @@ int RunTest(const std::string_view suite)
             // polygonLoaded: JSONから復元したpolygon scene。
             LamaPon::Scene polygonLoaded(graphics);
             polygonLoaded.LoadFromJson(polygonJson);
+            // loadedTriangle: 読み込み後のGameObject。
             const auto* loadedTriangle =
                 polygonLoaded.FindGameObjectByName(
                     "2D三角形");
+            // loadedPolygon: 読み込み後のPolygonCollider2D。
             const auto* loadedPolygon =
                 loadedTriangle != nullptr
                     ? loadedTriangle->GetComponent<
@@ -3732,8 +3855,10 @@ int RunTest(const std::string_view suite)
             {
                 // tilemapScene: tilemap serialization scene。
                 LamaPon::Scene tilemapScene(graphics);
+                // tilemapObject: test sceneのtilemap GameObject。
                 auto& tilemapObject =
                     tilemapScene.CreateGameObject("床タイル");
+                // collisionTilemap: test fixtureのtilemap component。
                 auto& collisionTilemap =
                     tilemapObject.AddComponent<
                         LamaPon::TilemapComponent>(
@@ -3809,9 +3934,11 @@ int RunTest(const std::string_view suite)
                 // tilemapLoaded: JSONから復元したtilemap scene。
                 LamaPon::Scene tilemapLoaded(graphics);
                 tilemapLoaded.LoadFromJson(tilemapJson);
+                // loadedTilemapObject: 読み込み後のtilemap GameObject。
                 const auto* loadedTilemapObject =
                     tilemapLoaded.FindGameObjectByName(
                         "床タイル");
+                // loadedCollisionTilemap: 読み込み後のtilemap component。
                 const auto* loadedCollisionTilemap =
                     loadedTilemapObject != nullptr
                         ? loadedTilemapObject
@@ -3831,15 +3958,18 @@ int RunTest(const std::string_view suite)
             {
                 // parallaxScene: parallax serialization scene。
                 LamaPon::Scene parallaxScene(graphics);
+                // referenceObject: test sceneのGameObject。
                 auto& referenceObject =
                     parallaxScene.CreateGameObject(
                         "参照");
+                // backgroundObject: test sceneのground GameObject。
                 auto& backgroundObject =
                     parallaxScene.CreateGameObject(
                         "背景");
                 backgroundObject.GetTransform()
                     .position =
                         { 100.0f, 50.0f, 0.0f };
+                // parallax: backgroundObjectのParallaxLayer component。
                 auto& parallax =
                     backgroundObject.AddComponent<
                         LamaPon::
@@ -3890,9 +4020,11 @@ int RunTest(const std::string_view suite)
                 LamaPon::Scene parallaxLoaded(graphics);
                 parallaxLoaded.LoadFromJson(
                     parallaxJson);
+                // loadedBackground: 読み込み後のground GameObject。
                 const auto* loadedBackground =
                     parallaxLoaded.FindGameObjectByName(
                         "背景");
+                // loadedParallax: 読み込み後のParallaxLayer component。
                 const auto* loadedParallax =
                     loadedBackground != nullptr
                         ? loadedBackground
@@ -3900,6 +4032,7 @@ int RunTest(const std::string_view suite)
                                 LamaPon::
                                     ParallaxLayerComponent>()
                         : nullptr;
+                // loadedReference: 読み込み後のGameObject。
                 const auto* loadedReference =
                     parallaxLoaded.FindGameObjectByName(
                         "参照");
@@ -3923,10 +4056,12 @@ int RunTest(const std::string_view suite)
             {
                 // light2DScene: 2D light serialization scene。
                 LamaPon::Scene light2DScene(graphics);
+                // torch: test sceneのtorch GameObject。
                 auto& torch =
                     light2DScene.CreateGameObject("たいまつ");
                 torch.GetTransform().position =
                     { 42.0f, -7.0f, 0.0f };
+                // light2D: test fixtureのlight component。
                 auto& light2D =
                     torch.AddComponent<
                         LamaPon::Light2DComponent>();
@@ -3951,9 +4086,11 @@ int RunTest(const std::string_view suite)
                 // light2DLoaded: JSONから復元した2D light scene。
                 LamaPon::Scene light2DLoaded(graphics);
                 light2DLoaded.LoadFromJson(light2DJson);
+                // loadedTorch: 読み込み後のtorch GameObject。
                 const auto* loadedTorch =
                     light2DLoaded.FindGameObjectByName(
                         "たいまつ");
+                // loadedLight2D: 読み込み後のlight component。
                 const auto* loadedLight2D =
                     loadedTorch != nullptr
                         ? loadedTorch->GetComponent<
@@ -3984,11 +4121,13 @@ int RunTest(const std::string_view suite)
             {
                 // spriteMaskScene: sprite mask serialization scene。
                 LamaPon::Scene spriteMaskScene(graphics);
+                // maskObject: test sceneのGameObject。
                 auto& maskObject =
                     spriteMaskScene.CreateGameObject(
                         "マスク");
                 maskObject.GetTransform().position =
                     { 10.0f, 20.0f, 0.0f };
+                // spriteMask: test fixtureのsprite renderer component。
                 auto& spriteMask =
                     maskObject.AddComponent<
                         LamaPon::SpriteMaskComponent>();
@@ -4008,9 +4147,11 @@ int RunTest(const std::string_view suite)
                     "SpriteMask world position did not"
                         " follow the Transform.");
 
+                // fogObject: test sceneのGameObject。
                 auto& fogObject =
                     spriteMaskScene.CreateGameObject(
                         "霧");
+                // fogSprite: sprite renderer component。
                 auto& fogSprite =
                     fogObject.AddComponent<
                         LamaPon::SpriteRendererComponent>();
@@ -4025,9 +4166,11 @@ int RunTest(const std::string_view suite)
                 LamaPon::Scene spriteMaskLoaded(graphics);
                 spriteMaskLoaded.LoadFromJson(
                     spriteMaskJson);
+                // loadedMaskObject: 読み込み後のGameObject。
                 const auto* loadedMaskObject =
                     spriteMaskLoaded.FindGameObjectByName(
                         "マスク");
+                // loadedMask: 読み込み後のSpriteMask component。
                 const auto* loadedMask =
                     loadedMaskObject != nullptr
                         ? loadedMaskObject
@@ -4045,9 +4188,11 @@ int RunTest(const std::string_view suite)
                             250.0f),
                     "SpriteMask did not round-trip.");
 
+                // loadedFogObject: 読み込み後のGameObject。
                 const auto* loadedFogObject =
                     spriteMaskLoaded.FindGameObjectByName(
                         "霧");
+                // loadedFogSprite: 読み込み後のsprite renderer component。
                 const auto* loadedFogSprite =
                     loadedFogObject != nullptr
                         ? loadedFogObject
@@ -4068,6 +4213,7 @@ int RunTest(const std::string_view suite)
 
             // UIScrollView：コンテンツ高さ・クランプ・Resolveシフト
             LamaPon::Scene scrollScene(graphics);
+            // scrollRoot: test sceneのroot GameObject。
             auto& scrollRoot =
                 scrollScene.CreateGameObject(
                     "スクロール");
@@ -4078,13 +4224,16 @@ int RunTest(const std::string_view suite)
                 DirectX::XMFLOAT2{ 0.0f, 0.0f },
                 DirectX::XMFLOAT2{ 0.0f, 0.0f },
                 DirectX::XMFLOAT2{ 200.0f, 300.0f });
+            // scrollView: UI scroll view component。
             auto& scrollView =
                 scrollRoot.AddComponent<
                     LamaPon::UIScrollViewComponent>();
+            // scrollItem: test sceneのGameObject。
             auto& scrollItem =
                 scrollScene.CreateGameObject(
                     "スクロール項目");
             scrollItem.SetParent(&scrollRoot);
+            // scrollItemTransform: test fixtureのscroll view component。
             auto& scrollItemTransform =
                 scrollItem.AddComponent<
                     LamaPon::UIRectTransformComponent>(
@@ -4141,9 +4290,11 @@ int RunTest(const std::string_view suite)
             // scrollLoaded: JSONから復元したscroll scene。
             LamaPon::Scene scrollLoaded(graphics);
             scrollLoaded.LoadFromJson(scrollJson);
+            // loadedScrollRoot: 読み込み後のroot GameObject。
             const auto* loadedScrollRoot =
                 scrollLoaded.FindGameObjectByName(
                     "スクロール");
+            // loadedScrollView: 読み込み後のUI scroll view component。
             const auto* loadedScrollView =
                 loadedScrollRoot != nullptr
                     ? loadedScrollRoot->GetComponent<
@@ -4160,21 +4311,27 @@ int RunTest(const std::string_view suite)
 
             // PBR（metallic）・スカイキューブマップ・ライト影の往復
             LamaPon::Scene pbrScene(graphics);
+            // pbrObject: test sceneのGameObject。
             auto& pbrObject =
                 pbrScene.CreateGameObject("金属キューブ");
+            // pbrMesh: mesh renderer component。
             auto& pbrMesh = pbrObject.AddComponent<
                 LamaPon::MeshRendererComponent>();
             pbrMesh.SetMetallic(0.75f);
+            // shadowSpotObject: test sceneのGameObject。
             auto& shadowSpotObject =
                 pbrScene.CreateGameObject("影スポット");
+            // shadowSpot: 影用SpotLight component。
             auto& shadowSpot =
                 shadowSpotObject.AddComponent<
                     LamaPon::SpotLightComponent>();
             shadowSpot.SetCastsShadows(true);
             shadowSpot.SetShadowStrength(0.6f);
             shadowSpot.SetShadowBias(0.004f);
+            // shadowPointObject: test sceneのGameObject。
             auto& shadowPointObject =
                 pbrScene.CreateGameObject("影ポイント");
+            // shadowPoint: 影用PointLight component。
             auto& shadowPoint =
                 shadowPointObject.AddComponent<
                     LamaPon::PointLightComponent>();
@@ -4193,6 +4350,7 @@ int RunTest(const std::string_view suite)
             // pbrDocument: PBR material文書。
             const auto pbrDocument =
                 nlohmann::json::parse(pbrJson);
+            // serializedSky: serialize済みsky settings。
             const auto& serializedSky =
                 pbrDocument.at("environment").at("sky");
             Require(
@@ -4204,9 +4362,11 @@ int RunTest(const std::string_view suite)
             // pbrLoaded: JSONから復元したPBR scene。
             LamaPon::Scene pbrLoaded(graphics);
             pbrLoaded.LoadFromJson(pbrJson);
+            // loadedPbrObject: 読み込み後のGameObject。
             const auto* loadedPbrObject =
                 pbrLoaded.FindGameObjectByName(
                     "金属キューブ");
+            // loadedPbrMesh: 読み込み後のmesh renderer component。
             const auto* loadedPbrMesh =
                 loadedPbrObject != nullptr
                     ? loadedPbrObject->GetComponent<
@@ -4218,6 +4378,7 @@ int RunTest(const std::string_view suite)
                         loadedPbrMesh->Metallic(),
                         0.75f),
                 "Metallic did not round-trip.");
+            // loadedShadowSpot: 読み込み後のGameObject。
             const auto* loadedShadowSpot =
                 pbrLoaded.FindGameObjectByName(
                     "影スポット")
@@ -4234,6 +4395,7 @@ int RunTest(const std::string_view suite)
                         loadedShadowSpot->ShadowBias(),
                         0.004f),
                 "Spot shadow settings did not round-trip.");
+            // loadedShadowPoint: 読み込み後のGameObject。
             const auto* loadedShadowPoint =
                 pbrLoaded.FindGameObjectByName(
                     "影ポイント")
@@ -4259,6 +4421,7 @@ int RunTest(const std::string_view suite)
             // AudioSourceのストリーミング/バス設定の往復
             auto& bgmObject =
                 pbrScene.CreateGameObject("BGM");
+            // bgmSource: audio source component。
             auto& bgmSource = bgmObject.AddComponent<
                 LamaPon::AudioSourceComponent>(
                 std::filesystem::path{
@@ -4272,6 +4435,7 @@ int RunTest(const std::string_view suite)
             // audioLoaded: JSONから復元したaudio scene。
             LamaPon::Scene audioLoaded(graphics);
             audioLoaded.LoadFromJson(audioJson);
+            // loadedBgm: 読み込み後のGameObject。
             const auto* loadedBgm =
                 audioLoaded.FindGameObjectByName("BGM")
                     ->GetComponent<
@@ -4295,12 +4459,16 @@ int RunTest(const std::string_view suite)
         {
             // reorderScene: object順序検証scene。
             LamaPon::Scene reorderScene(graphics);
+            // first: test sceneのGameObject。
             auto& first =
                 reorderScene.CreateGameObject("First");
+            // second: test sceneのGameObject。
             auto& second =
                 reorderScene.CreateGameObject("Second");
+            // third: test sceneのGameObject。
             auto& third =
                 reorderScene.CreateGameObject("Third");
+            // persistentChild: 永続化対象のchild GameObject。
             auto& persistentChild =
                 reorderScene.CreateGameObject("Child");
             persistentChild.SetParent(&third);
@@ -4381,10 +4549,13 @@ int RunTest(const std::string_view suite)
             // 両方の並びを検査します。
             auto& parent =
                 reorderScene.CreateGameObject("Parent");
+            // childA: test sceneのchild GameObject。
             auto& childA =
                 reorderScene.CreateGameObject("ChildA");
+            // childB: test sceneのchild GameObject。
             auto& childB =
                 reorderScene.CreateGameObject("ChildB");
+            // childC: test sceneのchild GameObject。
             auto& childC =
                 reorderScene.CreateGameObject("ChildC");
             childA.SetParent(&parent);
@@ -4479,13 +4650,16 @@ int RunTest(const std::string_view suite)
 
         // thirtyFpsScene: 30 FPS simulation scene。
         LamaPon::Scene thirtyFpsScene(graphics);
+        // thirtyFpsObject: test sceneのGameObject。
         auto& thirtyFpsObject =
             thirtyFpsScene.CreateGameObject(
                 "30 FPS fixed body");
+        // thirtyFpsBody: Rigidbody component。
         auto& thirtyFpsBody =
             thirtyFpsObject.AddComponent<
                 LamaPon::RigidbodyComponent>();
         thirtyFpsBody.SetUseGravity(false);
+        // thirtyFpsProbe: test fixtureのtest probe component。
         auto& thirtyFpsProbe =
             thirtyFpsObject.AddComponent<
                 FixedUpdateProbeComponent>();
@@ -4497,13 +4671,16 @@ int RunTest(const std::string_view suite)
 
         // highFpsScene: high-FPS simulation scene。
         LamaPon::Scene highFpsScene(graphics);
+        // highFpsObject: test sceneのGameObject。
         auto& highFpsObject =
             highFpsScene.CreateGameObject(
                 "144 FPS fixed body");
+        // highFpsBody: Rigidbody component。
         auto& highFpsBody =
             highFpsObject.AddComponent<
                 LamaPon::RigidbodyComponent>();
         highFpsBody.SetUseGravity(false);
+        // highFpsProbe: test fixtureのtest probe component。
         auto& highFpsProbe =
             highFpsObject.AddComponent<
                 FixedUpdateProbeComponent>();
@@ -4563,9 +4740,11 @@ int RunTest(const std::string_view suite)
 
         // renderInterpolationScene: 描画補間検証scene。
         LamaPon::Scene renderInterpolationScene(graphics);
+        // interpolationParent: test sceneのparent GameObject。
         auto& interpolationParent =
             renderInterpolationScene.CreateGameObject(
                 "Interpolated parent");
+        // interpolationBody: Rigidbody component。
         auto& interpolationBody =
             interpolationParent.AddComponent<
                 LamaPon::RigidbodyComponent>(
@@ -4574,6 +4753,7 @@ int RunTest(const std::string_view suite)
                         0.0f,
                         0.0f },
                     false);
+        // interpolationChild: test sceneのchild GameObject。
         auto& interpolationChild =
             renderInterpolationScene.CreateGameObject(
                 "Interpolated child");
@@ -4585,6 +4765,7 @@ int RunTest(const std::string_view suite)
             1.0f / 60.0f);
         renderInterpolationScene.Update(
             1.0f / 120.0f);
+        // interpolatedParentMatrix: 補間後のparent matrix。
         DirectX::XMFLOAT4X4 interpolatedParentMatrix{};
         DirectX::XMStoreFloat4x4(
             &interpolatedParentMatrix,
@@ -4592,6 +4773,7 @@ int RunTest(const std::string_view suite)
                 .InterpolatedWorldMatrix(
                     renderInterpolationScene
                         .PhysicsInterpolationAlpha()));
+        // interpolatedChildMatrix: 補間後のchild matrix。
         DirectX::XMFLOAT4X4 interpolatedChildMatrix{};
         DirectX::XMStoreFloat4x4(
             &interpolatedChildMatrix,
@@ -4627,14 +4809,18 @@ int RunTest(const std::string_view suite)
 
         // physicsScene: physics simulation検証scene。
         LamaPon::Scene physicsScene(graphics);
+        // ground: test sceneのground GameObject。
         auto& ground = physicsScene.CreateGameObject("床");
         ground.AddComponent<LamaPon::BoxCollider3DComponent>(
             DirectX::XMFLOAT3{ 10.0f, 1.0f, 10.0f });
 
+        // fallingBox: test sceneのbox GameObject。
         auto& fallingBox = physicsScene.CreateGameObject("落下物");
         fallingBox.GetTransform().position = { 0.0f, 5.0f, 0.0f };
         fallingBox.AddComponent<LamaPon::BoxCollider3DComponent>();
+        // fallingBody: Rigidbody component。
         auto& fallingBody = fallingBox.AddComponent<LamaPon::RigidbodyComponent>();
+        // collisionProbe: collision probe component。
         auto& collisionProbe = fallingBox.AddComponent<CollisionProbeComponent>();
 
         // 指定step数だけsimulationを進めます。
@@ -4682,12 +4868,14 @@ int RunTest(const std::string_view suite)
 
             // matrixScene: matrix transform検証scene。
             LamaPon::Scene matrixScene(graphics);
+            // matrixGround: test sceneのground GameObject。
             auto& matrixGround =
                 matrixScene.CreateGameObject("床");
             matrixGround.AddComponent<
                 LamaPon::BoxCollider3DComponent>(
                 DirectX::XMFLOAT3{ 10.0f, 1.0f, 10.0f });
 
+            // solidBox: test sceneのbox GameObject。
             auto& solidBox =
                 matrixScene.CreateGameObject("載る箱");
             solidBox.GetTransform().position =
@@ -4697,11 +4885,13 @@ int RunTest(const std::string_view suite)
             solidBox.AddComponent<
                 LamaPon::RigidbodyComponent>();
 
+            // ghostBox: test sceneのbox GameObject。
             auto& ghostBox =
                 matrixScene.CreateGameObject(
                     "すり抜ける箱");
             ghostBox.GetTransform().position =
                 { 2.0f, 5.0f, 0.0f };
+            // ghostCollider: test fixtureのcollider component。
             auto& ghostCollider =
                 ghostBox.AddComponent<
                     LamaPon::BoxCollider3DComponent>();
@@ -4897,6 +5087,7 @@ int RunTest(const std::string_view suite)
 
         // sphereScene: sphere collider検証scene。
         LamaPon::Scene sphereScene(graphics);
+        // sphereGround: test sceneのground GameObject。
         auto& sphereGround =
             sphereScene.CreateGameObject("Sphere ground");
         sphereGround.GetTransform().position =
@@ -4907,12 +5098,14 @@ int RunTest(const std::string_view suite)
                     10.0f,
                     1.0f,
                     10.0f });
+        // fallingSphere: test sceneのsphere GameObject。
         auto& fallingSphere =
             sphereScene.CreateGameObject("Falling sphere");
         fallingSphere.GetTransform().position =
             { 0.0f, 3.0f, 0.0f };
         fallingSphere.AddComponent<
             LamaPon::SphereCollider3DComponent>(0.5f);
+        // sphereBody: Rigidbody component。
         auto& sphereBody =
             fallingSphere.AddComponent<
                 LamaPon::RigidbodyComponent>();
@@ -4931,6 +5124,7 @@ int RunTest(const std::string_view suite)
 
         // hullScene: convex hull検証scene。
         LamaPon::Scene hullScene(graphics);
+        // hullGround: test sceneのground GameObject。
         auto& hullGround =
             hullScene.CreateGameObject("Hull ground");
         hullGround.GetTransform().position =
@@ -4941,12 +5135,14 @@ int RunTest(const std::string_view suite)
                     10.0f,
                     1.0f,
                     10.0f });
+        // fallingHull: test sceneのGameObject。
         auto& fallingHull =
             hullScene.CreateGameObject("Falling hull");
         fallingHull.GetTransform().position =
             { 0.0f, 3.0f, 0.0f };
         fallingHull.AddComponent<
             LamaPon::ConvexHullCollider3DComponent>();
+        // hullBody: Rigidbody component。
         auto& hullBody =
             fallingHull.AddComponent<
                 LamaPon::RigidbodyComponent>();
@@ -4965,10 +5161,12 @@ int RunTest(const std::string_view suite)
 
         // compoundScene: compound collider検証scene。
         LamaPon::Scene compoundScene(graphics);
+        // compoundRoot: test sceneのroot GameObject。
         auto& compoundRoot =
             compoundScene.CreateGameObject("Compound root");
         compoundRoot.GetTransform().position =
             { 0.0f, 3.0f, 0.0f };
+        // compoundBody: Rigidbody component。
         auto& compoundBody =
             compoundRoot.AddComponent<
                 LamaPon::RigidbodyComponent>();
@@ -4977,6 +5175,7 @@ int RunTest(const std::string_view suite)
             true,
             true
         });
+        // compoundBox: test sceneのbox GameObject。
         auto& compoundBox =
             compoundScene.CreateGameObject("Compound box");
         compoundBox.SetParent(&compoundRoot);
@@ -4984,9 +5183,11 @@ int RunTest(const std::string_view suite)
             { -0.45f, 0.0f, 0.0f };
         compoundBox.AddComponent<
             LamaPon::BoxCollider3DComponent>();
+        // compoundBoxProbe: collision probe component。
         auto& compoundBoxProbe =
             compoundBox.AddComponent<
                 CollisionProbeComponent>();
+        // compoundSphere: test sceneのsphere GameObject。
         auto& compoundSphere =
             compoundScene.CreateGameObject("Compound sphere");
         compoundSphere.SetParent(&compoundRoot);
@@ -4994,6 +5195,7 @@ int RunTest(const std::string_view suite)
             { 0.45f, 0.0f, 0.0f };
         compoundSphere.AddComponent<
             LamaPon::SphereCollider3DComponent>(0.5f);
+        // compoundSphereProbe: collision probe component。
         auto& compoundSphereProbe =
             compoundSphere.AddComponent<
                 CollisionProbeComponent>();
@@ -5002,6 +5204,7 @@ int RunTest(const std::string_view suite)
             compoundBoxProbe.enterCount == 0
                 && compoundSphereProbe.enterCount == 0,
             "Child colliders on one Rigidbody collided with each other.");
+        // compoundGround: test sceneのground GameObject。
         auto& compoundGround =
             compoundScene.CreateGameObject("Compound ground");
         compoundGround.GetTransform().position =
@@ -5033,6 +5236,7 @@ int RunTest(const std::string_view suite)
 
         // materialScene: material serialization scene。
         LamaPon::Scene materialScene(graphics);
+        // materialGround: test sceneのground GameObject。
         auto& materialGround =
             materialScene.CreateGameObject("Material ground");
         materialGround.GetTransform().position =
@@ -5045,6 +5249,7 @@ int RunTest(const std::string_view suite)
                 0,
                 0xffffffffu,
                 LamaPon::PhysicsMaterial{ 1.0f, 0.0f });
+        // bouncingCapsule: test sceneのGameObject。
         auto& bouncingCapsule =
             materialScene.CreateGameObject("Bouncing capsule");
         bouncingCapsule.GetTransform().position =
@@ -5058,6 +5263,7 @@ int RunTest(const std::string_view suite)
                 0,
                 0xffffffffu,
                 LamaPon::PhysicsMaterial{ 0.25f, 0.8f });
+        // bouncingBody: Rigidbody component。
         auto& bouncingBody =
             bouncingCapsule.AddComponent<
                 LamaPon::RigidbodyComponent>();
@@ -5079,6 +5285,7 @@ int RunTest(const std::string_view suite)
             bounced,
             "Physics material restitution did not bounce a capsule.");
 
+        // slidingBox: test sceneのbox GameObject。
         auto& slidingBox =
             materialScene.CreateGameObject("Sliding box");
         slidingBox.GetTransform().position =
@@ -5091,6 +5298,7 @@ int RunTest(const std::string_view suite)
                 0,
                 0xffffffffu,
                 LamaPon::PhysicsMaterial{ 1.0f, 0.0f });
+        // slidingBody: Rigidbody component。
         auto& slidingBody =
             slidingBox.AddComponent<
                 LamaPon::RigidbodyComponent>(
@@ -5114,11 +5322,13 @@ int RunTest(const std::string_view suite)
 
         // angularScene: 回転物理の検証scene。
         LamaPon::Scene angularScene(graphics);
+        // torqueBox: test sceneのbox GameObject。
         auto& torqueBox =
             angularScene.CreateGameObject("Torque box");
         torqueBox.AddComponent<
             LamaPon::BoxCollider3DComponent>(
                 DirectX::XMFLOAT3{ 2.0f, 2.0f, 2.0f });
+        // torqueBody: Rigidbody component。
         auto& torqueBody =
             torqueBox.AddComponent<
                 LamaPon::RigidbodyComponent>(
@@ -5157,6 +5367,7 @@ int RunTest(const std::string_view suite)
 
         // ledgeScene: ledge collision検証scene。
         LamaPon::Scene ledgeScene(graphics);
+        // ledge: test sceneのGameObject。
         auto& ledge =
             ledgeScene.CreateGameObject("Ledge");
         ledge.GetTransform().position =
@@ -5164,6 +5375,7 @@ int RunTest(const std::string_view suite)
         ledge.AddComponent<
             LamaPon::BoxCollider3DComponent>(
                 DirectX::XMFLOAT3{ 4.0f, 1.0f, 4.0f });
+        // ledgeBox: test sceneのbox GameObject。
         auto& ledgeBox =
             ledgeScene.CreateGameObject("Ledge box");
         ledgeBox.GetTransform().position =
@@ -5190,6 +5402,7 @@ int RunTest(const std::string_view suite)
 
         // stackScene: 積層physics検証scene。
         LamaPon::Scene stackScene(graphics);
+        // stackGround: test sceneのground GameObject。
         auto& stackGround =
             stackScene.CreateGameObject("Stack ground");
         stackGround.GetTransform().position =
@@ -5210,6 +5423,7 @@ int RunTest(const std::string_view suite)
             index < stackedBoxes.size();
             ++index)
         {
+            // box: test sceneのbox GameObject。
             auto& box = stackScene.CreateGameObject(
                 "Stack box "
                 + std::to_string(index));
@@ -5262,18 +5476,21 @@ int RunTest(const std::string_view suite)
 
         // jointScene: joint serialization scene。
         LamaPon::Scene jointScene(graphics);
+        // fixedAnchor: test sceneのanchor GameObject。
         auto& fixedAnchor =
             jointScene.CreateGameObject("Fixed anchor");
         fixedAnchor.GetTransform().position =
             { 0.0f, 0.0f, 0.0f };
         fixedAnchor.AddComponent<
             LamaPon::BoxCollider3DComponent>();
+        // fixedBody: test sceneのGameObject。
         auto& fixedBody =
             jointScene.CreateGameObject("Fixed body");
         fixedBody.GetTransform().position =
             { 2.0f, 0.0f, 0.0f };
         fixedBody.AddComponent<
             LamaPon::BoxCollider3DComponent>();
+        // fixedRigidbody: Rigidbody component。
         auto& fixedRigidbody =
             fixedBody.AddComponent<
                 LamaPon::RigidbodyComponent>(
@@ -5282,6 +5499,7 @@ int RunTest(const std::string_view suite)
                         0.0f,
                         0.0f },
                     false);
+        // fixedJoint: test fixtureのphysics joint component。
         auto& fixedJoint = fixedBody.AddComponent<
             LamaPon::JointComponent>(
                 LamaPon::JointType::Fixed,
@@ -5315,17 +5533,21 @@ int RunTest(const std::string_view suite)
 
         // hingeScene: hinge joint検証scene。
         LamaPon::Scene hingeScene(graphics);
+        // hingeAnchor: test sceneのanchor GameObject。
         auto& hingeAnchor =
             hingeScene.CreateGameObject("Hinge anchor");
+        // motorBody: test sceneのGameObject。
         auto& motorBody =
             hingeScene.CreateGameObject("Motor body");
         motorBody.AddComponent<
             LamaPon::BoxCollider3DComponent>();
+        // motorRigidbody: Rigidbody component。
         auto& motorRigidbody =
             motorBody.AddComponent<
                 LamaPon::RigidbodyComponent>(
                     DirectX::XMFLOAT3{},
                     false);
+        // motorJoint: test fixtureのphysics joint component。
         auto& motorJoint =
             motorBody.AddComponent<
                 LamaPon::JointComponent>(
@@ -5403,6 +5625,7 @@ int RunTest(const std::string_view suite)
                 < 0.001f,
             "Hinge did not lock rotation outside its axis.");
 
+        // springBody: test sceneのGameObject。
         auto& springBody =
             jointScene.CreateGameObject("Spring body");
         springBody.GetTransform().position =
@@ -5452,6 +5675,7 @@ int RunTest(const std::string_view suite)
 
         // ccdScene: CCD検証scene。
         LamaPon::Scene ccdScene(graphics);
+        // thinWall: test sceneのwall GameObject。
         auto& thinWall =
             ccdScene.CreateGameObject("Thin wall");
         thinWall.AddComponent<
@@ -5460,6 +5684,7 @@ int RunTest(const std::string_view suite)
                     0.1f,
                     4.0f,
                     4.0f });
+        // bullet: test sceneのGameObject。
         auto& bullet =
             ccdScene.CreateGameObject("CCD bullet");
         bullet.GetTransform().position =
@@ -5470,6 +5695,7 @@ int RunTest(const std::string_view suite)
                     0.2f,
                     0.2f,
                     0.2f });
+        // bulletBody: Rigidbody component。
         auto& bulletBody =
             bullet.AddComponent<
                 LamaPon::RigidbodyComponent>(
@@ -5501,6 +5727,7 @@ int RunTest(const std::string_view suite)
 
         struct LodTestVertex final
         {
+            // position: fixtureのworld position。
             DirectX::XMFLOAT3 position{};
         };
         // lodVertices: LOD mesh vertex列。
@@ -5573,15 +5800,18 @@ int RunTest(const std::string_view suite)
             false);
         lodScene.SetOcclusionCullingEnabled(
             false);
+        // lodRoot: test sceneのroot GameObject。
         auto& lodRoot =
             lodScene.CreateGameObject("LOD root");
         lodRoot.GetTransform().position =
             { 0.0f, 0.0f, -10.0f };
+        // lodHigh: test sceneのGameObject。
         auto& lodHigh =
             lodScene.CreateGameObject("LOD high");
         lodHigh.SetParent(&lodRoot);
         lodHigh.AddComponent<
             LamaPon::MeshRendererComponent>();
+        // lodLow: test sceneのGameObject。
         auto& lodLow =
             lodScene.CreateGameObject("LOD low");
         lodLow.SetParent(&lodRoot);
@@ -5622,6 +5852,7 @@ int RunTest(const std::string_view suite)
         LamaPon::Scene frustumScene(graphics);
         frustumScene.SetOcclusionCullingEnabled(
             false);
+        // visibleMesh: test sceneのGameObject。
         auto& visibleMesh =
             frustumScene.CreateGameObject(
                 "Visible mesh");
@@ -5629,6 +5860,7 @@ int RunTest(const std::string_view suite)
             { 0.0f, 0.0f, -5.0f };
         visibleMesh.AddComponent<
             LamaPon::MeshRendererComponent>();
+        // outsideMesh: test sceneのGameObject。
         auto& outsideMesh =
             frustumScene.CreateGameObject(
                 "Outside mesh");
@@ -5636,6 +5868,7 @@ int RunTest(const std::string_view suite)
             { 100.0f, 0.0f, -5.0f };
         outsideMesh.AddComponent<
             LamaPon::MeshRendererComponent>();
+        // alwaysVisibleMesh: test sceneのGameObject。
         auto& alwaysVisibleMesh =
             frustumScene.CreateGameObject(
                 "Always visible mesh");
@@ -5645,6 +5878,7 @@ int RunTest(const std::string_view suite)
             LamaPon::RenderCullingComponent>(true);
         alwaysVisibleMesh.AddComponent<
             LamaPon::MeshRendererComponent>();
+        // marginMesh: test sceneのGameObject。
         auto& marginMesh =
             frustumScene.CreateGameObject(
                 "Margin mesh");
@@ -5670,6 +5904,7 @@ int RunTest(const std::string_view suite)
         // spatialScene: spatial hash検証scene。
         LamaPon::Scene spatialScene(graphics);
         spatialScene.SetOcclusionCullingEnabled(false);
+        // spatialVisible: test sceneのGameObject。
         auto& spatialVisible =
             spatialScene.CreateGameObject("Spatial visible");
         spatialVisible.GetTransform().position =
@@ -5679,6 +5914,7 @@ int RunTest(const std::string_view suite)
         // 対象bufferの各indexを順に処理します。
         for (int index = 0; index < 128; ++index)
         {
+            // spatialOutside: test sceneのGameObject。
             auto& spatialOutside =
                 spatialScene.CreateGameObject(
                     "Spatial outside "
@@ -5754,6 +5990,7 @@ int RunTest(const std::string_view suite)
 
         // occlusionScene: occlusion検証scene。
         LamaPon::Scene occlusionScene(graphics);
+        // occluder: test sceneのGameObject。
         auto& occluder =
             occlusionScene.CreateGameObject(
                 "Occluder");
@@ -5763,6 +6000,7 @@ int RunTest(const std::string_view suite)
             { 8.0f, 8.0f, 1.0f };
         occluder.AddComponent<
             LamaPon::MeshRendererComponent>();
+        // hiddenMesh: test sceneのGameObject。
         auto& hiddenMesh =
             occlusionScene.CreateGameObject(
                 "Hidden mesh");
@@ -5770,6 +6008,7 @@ int RunTest(const std::string_view suite)
             { 0.0f, 0.0f, -10.0f };
         hiddenMesh.AddComponent<
             LamaPon::MeshRendererComponent>();
+        // alwaysVisibleHiddenMesh: test sceneのGameObject。
         auto& alwaysVisibleHiddenMesh =
             occlusionScene.CreateGameObject(
                 "Always visible hidden mesh");
@@ -5795,6 +6034,7 @@ int RunTest(const std::string_view suite)
 
         // triggerScene: trigger collision検証scene。
         LamaPon::Scene triggerScene(graphics);
+        // triggerArea: test sceneのtrigger GameObject。
         auto& triggerArea = triggerScene.CreateGameObject("2Dトリガー");
         triggerArea.AddComponent<LamaPon::BoxCollider2DComponent>(
             DirectX::XMFLOAT2{ 10.0f, 10.0f },
@@ -5803,6 +6043,7 @@ int RunTest(const std::string_view suite)
             5,
             1u << 6);
 
+        // triggerVisitor: test sceneのtrigger GameObject。
         auto& triggerVisitor = triggerScene.CreateGameObject("訪問者");
         triggerVisitor.AddComponent<LamaPon::BoxCollider2DComponent>(
             DirectX::XMFLOAT2{ 1.0f, 1.0f },
@@ -5810,6 +6051,7 @@ int RunTest(const std::string_view suite)
             false,
             6,
             1u << 5);
+        // triggerProbe: collision probe component。
         auto& triggerProbe = triggerVisitor.AddComponent<CollisionProbeComponent>();
         triggerScene.Update(0.0f);
         // isTriggerの接触はOnTrigger*へ届く（OnCollision*には届かない）
@@ -5827,6 +6069,7 @@ int RunTest(const std::string_view suite)
             triggerProbe.triggerExitCount == 1,
             "2D trigger exit was not reported.");
 
+        // filteredVisitor: test sceneのvisitor GameObject。
         auto& filteredVisitor = triggerScene.CreateGameObject("除外対象");
         filteredVisitor.AddComponent<LamaPon::BoxCollider2DComponent>(
             DirectX::XMFLOAT2{ 1.0f, 1.0f },
@@ -5834,6 +6077,7 @@ int RunTest(const std::string_view suite)
             false,
             7,
             0u);
+        // filteredProbe: collision probe component。
         auto& filteredProbe = filteredVisitor.AddComponent<CollisionProbeComponent>();
         triggerScene.Update(0.0f);
         Require(
@@ -5906,6 +6150,7 @@ int RunTest(const std::string_view suite)
         // 64個のfixture要素を順に生成します。
         for (int index = 0; index < 64; ++index)
         {
+            // object: test sceneのGameObject。
             auto& object =
                 broadPhaseScene.CreateGameObject(
                     "分離Collider");
@@ -5915,6 +6160,7 @@ int RunTest(const std::string_view suite)
                 LamaPon::BoxCollider3DComponent>();
         }
         broadPhaseScene.Update(0.0f);
+        // broadPhaseStats: broad-phase statistics。
         const auto& broadPhaseStats =
             broadPhaseScene.PhysicsStats();
         Require(
@@ -5966,6 +6212,7 @@ int RunTest(const std::string_view suite)
 
         // queryScene: spatial query検証scene。
         LamaPon::Scene queryScene(graphics);
+        // queryNear: test sceneのGameObject。
         auto& queryNear =
             queryScene.CreateGameObject("Query near");
         queryNear.GetTransform().position =
@@ -5976,6 +6223,7 @@ int RunTest(const std::string_view suite)
                 DirectX::XMFLOAT3{},
                 false,
                 3);
+        // queryFar: test sceneのGameObject。
         auto& queryFar =
             queryScene.CreateGameObject("Query far");
         queryFar.GetTransform().position =
@@ -5986,6 +6234,7 @@ int RunTest(const std::string_view suite)
                 DirectX::XMFLOAT3{},
                 false,
                 3);
+        // queryTrigger: test sceneのtrigger GameObject。
         auto& queryTrigger =
             queryScene.CreateGameObject("Query trigger");
         queryTrigger.GetTransform().position =
@@ -5996,6 +6245,7 @@ int RunTest(const std::string_view suite)
                 DirectX::XMFLOAT3{},
                 true,
                 3);
+        // queryCapsule: test sceneのGameObject。
         auto& queryCapsule =
             queryScene.CreateGameObject("Query capsule");
         queryCapsule.GetTransform().position =
@@ -6007,6 +6257,7 @@ int RunTest(const std::string_view suite)
                 DirectX::XMFLOAT3{},
                 false,
                 3);
+        // querySphere: test sceneのsphere GameObject。
         auto& querySphere =
             queryScene.CreateGameObject("Query sphere");
         querySphere.GetTransform().position =
@@ -6128,6 +6379,7 @@ int RunTest(const std::string_view suite)
 
         // controllerScene: controller検証scene。
         LamaPon::Scene controllerScene(graphics);
+        // controllerGround: test sceneのground GameObject。
         auto& controllerGround =
             controllerScene.CreateGameObject("Controller ground");
         controllerGround.GetTransform().position =
@@ -6139,6 +6391,7 @@ int RunTest(const std::string_view suite)
                 false,
                 1,
                 1u << 2);
+        // controllerWall: test sceneのwall GameObject。
         auto& controllerWall =
             controllerScene.CreateGameObject("Controller wall");
         controllerWall.GetTransform().position =
@@ -6150,10 +6403,12 @@ int RunTest(const std::string_view suite)
                 false,
                 1,
                 1u << 2);
+        // player: test sceneのGameObject。
         auto& player =
             controllerScene.CreateGameObject("Player");
         player.GetTransform().position =
             { 0.0f, 2.0f, 0.0f };
+        // controller: playerのCharacterController component。
         auto& controller = player.AddComponent<
             LamaPon::CharacterControllerComponent>();
         controller.SetUseInput(false);
@@ -6191,6 +6446,7 @@ int RunTest(const std::string_view suite)
         LamaPon::Scene controllerRoundTrip(graphics);
         controllerRoundTrip.LoadFromJson(
             controllerScene.SerializeToJson());
+        // restoredController: 読み込み後のGameObject。
         const auto* restoredController =
             controllerRoundTrip.FindGameObject(
                 player.Id())->GetComponent<
@@ -6206,9 +6462,11 @@ int RunTest(const std::string_view suite)
 
         // navigationScene: NavMesh検証scene。
         LamaPon::Scene navigationScene(graphics);
+        // navigationObject: test sceneのGameObject。
         auto& navigationObject =
             navigationScene.CreateGameObject(
                 "NavMesh");
+        // navigation: NavMesh component。
         auto& navigation =
             navigationObject.AddComponent<
                 LamaPon::NavMeshComponent>(
@@ -6269,12 +6527,14 @@ int RunTest(const std::string_view suite)
             navigationPath.size() >= 2,
             "A* did not find the open NavMesh corridor.");
 
+        // navigationAgentObject: test sceneのGameObject。
         auto& navigationAgentObject =
             navigationScene.CreateGameObject(
                 "Agent");
         navigationAgentObject.
             GetTransform().position =
                 navigationStart;
+        // navigationAgent: destinationを進むNavMeshAgent。
         auto& navigationAgent =
             navigationAgentObject.AddComponent<
                 LamaPon::
@@ -6340,17 +6600,20 @@ int RunTest(const std::string_view suite)
                 "上階サーフェス");
         upperFloorObject.GetTransform().position =
             { 0.0f, 6.0f, 0.0f };
+        // upperNavigation: NavMesh component。
         auto& upperNavigation =
             upperFloorObject.AddComponent<
                 LamaPon::NavMeshComponent>(
                 DirectX::XMFLOAT2{ 7.0f, 7.0f },
                 1.0f);
         upperNavigation.RestoreBake({});
+        // upperAgentObject: test sceneのGameObject。
         auto& upperAgentObject =
             navigationScene.CreateGameObject(
                 "上階エージェント");
         upperAgentObject.GetTransform().position =
             { 0.0f, 6.0f, 0.0f };
+        // upperAgent: NavMesh agent。
         auto& upperAgent =
             upperAgentObject.AddComponent<
                 LamaPon::NavMeshAgentComponent>();
@@ -6367,9 +6630,11 @@ int RunTest(const std::string_view suite)
 
         // particleScene: particle system検証scene。
         LamaPon::Scene particleScene(graphics);
+        // particleObject: test sceneのGameObject。
         auto& particleObject =
             particleScene.CreateGameObject(
                 "Particle probe");
+        // particleProbe: particle system component。
         auto& particleProbe =
             particleObject.AddComponent<
                 LamaPon::ParticleSystemComponent>(
@@ -6398,6 +6663,7 @@ int RunTest(const std::string_view suite)
         {
             // spawnScene: spawn callback検証scene。
             LamaPon::Scene spawnScene(graphics);
+            // spawner: test sceneのspawner GameObject。
             auto& spawner =
                 spawnScene.CreateGameObject("Spawner");
             // 追加後も後続要素を走査する条件にするため、生成役を先頭に置きます。
@@ -6407,6 +6673,7 @@ int RunTest(const std::string_view suite)
                     "Bystander " + std::to_string(index));
             }
 
+            // probe: test fixtureのtest probe component。
             auto& probe =
                 spawner.AddComponent<SpawnOnUpdateProbe>();
             probe.scene = &spawnScene;
@@ -6437,9 +6704,11 @@ int RunTest(const std::string_view suite)
         // persistentRoundTrip: persistent stateの再読込scene。
         LamaPon::Scene persistentRoundTrip(
             graphics);
+        // persistentRoundTripRoot: 永続化対象のroot GameObject。
         auto& persistentRoundTripRoot =
             persistentRoundTrip.CreateGameObject(
                 "Persistent round-trip");
+        // persistentRoundTripChild: 永続化対象のchild GameObject。
         auto& persistentRoundTripChild =
             persistentRoundTrip.CreateGameObject(
                 "Persistent child");
@@ -6453,6 +6722,7 @@ int RunTest(const std::string_view suite)
             graphics);
         restoredPersistence.LoadFromJson(
             persistentRoundTrip.SerializeToJson());
+        // restoredPersistentRoot: 読み込み後のroot GameObject。
         auto* restoredPersistentRoot =
             restoredPersistence.FindGameObject(
                 persistentRoundTripRoot.Id());
@@ -6491,6 +6761,7 @@ int RunTest(const std::string_view suite)
             graphics);
         transitionTarget.CreateGameObject(
             "Transition target");
+        // bootstrapSession: persistent runtime session。
         auto& bootstrapSession =
             transitionTarget.CreateGameObject(
                 "Bootstrap game session");
@@ -6500,11 +6771,13 @@ int RunTest(const std::string_view suite)
         transitionTarget.SaveToFile(
             transitionPath);
 
+        // persistentSession: persistent runtime session。
         auto& persistentSession =
             fileLoaded.CreateGameObject(
                 "Runtime game session");
         persistentSession.GetTransform().position.x =
             42.0f;
+        // persistentSessionChild: 永続化対象のchild GameObject。
         auto& persistentSessionChild =
             fileLoaded.CreateGameObject(
                 "Runtime session child");
@@ -6513,10 +6786,13 @@ int RunTest(const std::string_view suite)
         fileLoaded.DontDestroyOnLoad(
             persistentSession,
             "GameSession");
+        // persistentSessionPointer: persistent session stateへのpointer。
         auto* persistentSessionPointer =
             &persistentSession;
+        // persistentChildPointer: persistent session stateへのpointer。
         auto* persistentChildPointer =
             &persistentSessionChild;
+        // runtimeState: runtime game state。
         auto& runtimeState =
             fileLoaded.Scenes().State();
         runtimeState.SetInteger(
@@ -6704,6 +6980,7 @@ int RunTest(const std::string_view suite)
                    << '\n';
         }
 
+        // asyncScenes: 非同期load後のscene list。
         auto& asyncScenes = fileLoaded.Scenes();
         asyncScenes.SetMinimumLoadingScreenDuration(
             0.0f);
@@ -6839,6 +7116,7 @@ int RunTest(const std::string_view suite)
             // transitionHost: transitionを受けるhost scene。
             LamaPon::Scene transitionHost(graphics);
             transitionHost.CreateGameObject("Before transition");
+            // transitionScenes: scene transition後のscene list。
             auto& transitionScenes = transitionHost.Scenes();
             transitionScenes.SetMinimumLoadingScreenDuration(0.0f);
             // transitionEvents: scene transition event列。
@@ -7075,9 +7353,11 @@ int RunTest(const std::string_view suite)
         {
             // additiveSource: 追加読込するsource scene。
             LamaPon::Scene additiveSource(graphics);
+            // hudRoot: test sceneのHUD GameObject。
             auto& hudRoot =
                 additiveSource.CreateGameObject(
                     "HUD root");
+            // hudChild: test sceneのHUD GameObject。
             auto& hudChild =
                 additiveSource.CreateGameObject(
                     "HUD child");
@@ -7087,6 +7367,7 @@ int RunTest(const std::string_view suite)
 
         // additiveHost: additive sceneを受けるhost。
         LamaPon::Scene additiveHost(graphics);
+        // hostRoot: test sceneのroot GameObject。
         auto& hostRoot =
             additiveHost.CreateGameObject(
                 "Host root");
@@ -7116,9 +7397,11 @@ int RunTest(const std::string_view suite)
                     additivePath) == additiveHandle,
             "Additive scene registry was not updated.");
 
+        // mergedRoot: 読み込み後のroot GameObject。
         auto* mergedRoot =
             additiveHost.FindGameObjectByName(
                 "HUD root");
+        // mergedChild: 読み込み後のchild GameObject。
         auto* mergedChild =
             additiveHost.FindGameObjectByName(
                 "HUD child");
@@ -7216,8 +7499,10 @@ int RunTest(const std::string_view suite)
         {
             // gravityScene: gravity設定検証scene。
             LamaPon::Scene gravityScene(graphics);
+            // faller: test sceneのfaller GameObject。
             auto& faller =
                 gravityScene.CreateGameObject("Faller");
+            // body: Rigidbody component。
             auto& body =
                 faller.AddComponent<
                     LamaPon::RigidbodyComponent>();
@@ -7281,13 +7566,16 @@ int RunTest(const std::string_view suite)
         {
             // clampScene: 物理値clamp検証scene。
             LamaPon::Scene clampScene(graphics);
+            // fast: test sceneのGameObject。
             auto& fast = clampScene.CreateGameObject("Fast");
+            // body: Rigidbody component。
             auto& body =
                 fast.AddComponent<
                     LamaPon::RigidbodyComponent>();
             body.SetUseGravity(false);
             // step: simulation更新step。
             constexpr float step = 1.0f / 60.0f;
+            // quick: test用player velocity vector。
             const DirectX::XMFLOAT3 quick{ 100.0f, 0.0f, 0.0f };
 
             // 既定（頭打ちオフ）。
@@ -7382,6 +7670,7 @@ int main(const int argumentCount, char** arguments)
         return 2;
     }
 
+    // comResult: COM initialization result。
     const HRESULT comResult =
         CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     // uninitializeCom: COM初期化解除が必要な状態。

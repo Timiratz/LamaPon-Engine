@@ -4398,6 +4398,7 @@ def main() -> int:
     return 0
 
 
+# Scriptとして直接実行された場合だけCLIを起動します。
 if __name__ == "__main__":
     # CLI実行時のExportErrorを終了コード2へ変換します。
     try:

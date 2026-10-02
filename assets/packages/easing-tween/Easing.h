@@ -77,10 +77,12 @@ namespace LamaPonEasing
         // 入力を0〜1へ制限します(value: 入力値)。
         [[nodiscard]] inline float Clamp01(const float value) noexcept
         {
+            // 0未満は下限へ補正します。
             if (value < 0.0f)
             {
                 return 0.0f;
             }
+            // 1超過は上限へ補正します。
             if (value > 1.0f)
             {
                 return 1.0f;
@@ -132,6 +134,7 @@ namespace LamaPonEasing
     // 三次曲線で両端を緩めた値を求めます(t: 0〜1の進捗)。
     [[nodiscard]] inline float InOutCubic(const float t) noexcept
     {
+        // 前半は始端側の三次式で補間します。
         if (t < 0.5f)
         {
             return 4.0f * t * t * t;
@@ -160,6 +163,7 @@ namespace LamaPonEasing
     // 四次曲線で両端を緩めた値を求めます(t: 0〜1の進捗)。
     [[nodiscard]] inline float InOutQuart(const float t) noexcept
     {
+        // 前半は始端側の四次式で補間します。
         if (t < 0.5f)
         {
             return 8.0f * t * t * t * t;
@@ -209,10 +213,12 @@ namespace LamaPonEasing
     // 指数曲線で両端を緩めた値を求めます(t: 0〜1の進捗)。
     [[nodiscard]] inline float InOutExpo(const float t) noexcept
     {
+        // 指数式の誤差を避けて始端を固定します。
         if (t <= 0.0f)
         {
             return 0.0f;
         }
+        // 指数式の誤差を避けて終端を固定します。
         if (t >= 1.0f)
         {
             return 1.0f;
@@ -242,6 +248,7 @@ namespace LamaPonEasing
     // 円弧で両端を緩めた値を求めます(t: 0〜1の進捗)。
     [[nodiscard]] inline float InOutCirc(const float t) noexcept
     {
+        // 前半は始端側の円弧で補間します。
         if (t < 0.5f)
         {
             // 前半区間を0〜1にする進捗
@@ -290,6 +297,7 @@ namespace LamaPonEasing
         // 往復用の行き過ぎ強度係数
         constexpr float c2 =
             Detail::BackOvershoot * 1.525f;
+        // 前半は始端側の行き過ぎ式で補間します。
         if (t < 0.5f)
         {
             // 前半区間を0〜1にする進捗
@@ -309,10 +317,12 @@ namespace LamaPonEasing
     // 弾性振動で始端を緩めた値を求めます(t: 0〜1の進捗)。
     [[nodiscard]] inline float InElastic(const float t) noexcept
     {
+        // 指数式の誤差を避けて始端を固定します。
         if (t <= 0.0f)
         {
             return 0.0f;
         }
+        // 指数式の誤差を避けて終端を固定します。
         if (t >= 1.0f)
         {
             return 1.0f;
@@ -327,10 +337,12 @@ namespace LamaPonEasing
     // 弾性振動で終端を緩めた値を求めます(t: 0〜1の進捗)。
     [[nodiscard]] inline float OutElastic(const float t) noexcept
     {
+        // 指数式の誤差を避けて始端を固定します。
         if (t <= 0.0f)
         {
             return 0.0f;
         }
+        // 指数式の誤差を避けて終端を固定します。
         if (t >= 1.0f)
         {
             return 1.0f;
@@ -346,10 +358,12 @@ namespace LamaPonEasing
     // 弾性振動で両端を緩めた値を求めます(t: 0〜1の進捗)。
     [[nodiscard]] inline float InOutElastic(const float t) noexcept
     {
+        // 指数式の誤差を避けて始端を固定します。
         if (t <= 0.0f)
         {
             return 0.0f;
         }
+        // 指数式の誤差を避けて終端を固定します。
         if (t >= 1.0f)
         {
             return 1.0f;
@@ -357,6 +371,7 @@ namespace LamaPonEasing
         // 弾性振動の位相換算係数
         constexpr float period =
             2.0f * Detail::Pi / 4.5f;
+        // 前半は始端側の振動式で補間します。
         if (t < 0.5f)
         {
             return -(std::pow(2.0f, 20.0f * t - 10.0f)
@@ -376,15 +391,18 @@ namespace LamaPonEasing
         constexpr float n1 = 7.5625f;
         // 反跳区間を分ける倍率
         constexpr float d1 = 2.75f;
+        // 第1反跳区間は基準放物線で評価します。
         if (t < 1.0f / d1)
         {
             return n1 * t * t;
         }
+        // 第2反跳区間は1.5/d1だけ進捗をずらします。
         if (t < 2.0f / d1)
         {
             t -= 1.5f / d1;
             return n1 * t * t + 0.75f;
         }
+        // 第3反跳区間は2.25/d1だけ進捗をずらします。
         if (t < 2.5f / d1)
         {
             t -= 2.25f / d1;
@@ -416,6 +434,7 @@ namespace LamaPonEasing
     {
         // 入力制限済みの進捗
         const float t = Detail::Clamp01(progress);
+        // 種別に対応するイージング関数を選びます。
         switch (type)
         {
         case Type::InQuad: return InQuad(t);
@@ -448,6 +467,7 @@ namespace LamaPonEasing
         case Type::Linear:
         case Type::Count:
         default:
+            // Linearと未知の種別は等速補間へ委ねます。
             return Linear(t);
         }
     }
@@ -457,6 +477,7 @@ namespace LamaPonEasing
     [[nodiscard]] inline std::string_view TypeName(
         const Type type) noexcept
     {
+        // 種別を保存形式で表す名前へ変換します。
         switch (type)
         {
         case Type::InQuad: return "InQuad";
@@ -489,6 +510,7 @@ namespace LamaPonEasing
         case Type::Linear:
         case Type::Count:
         default:
+            // 未知の種別も互換性のあるLinear名へ戻します。
             return "Linear";
         }
     }
@@ -505,11 +527,13 @@ namespace LamaPonEasing
         {
             // 照合中の曲線種別
             const auto type = static_cast<Type>(index);
+            // 保存名が一致した曲線を返します。
             if (TypeName(type) == name)
             {
                 return type;
             }
         }
+        // 未知の保存名はLinearへフォールバックします。
         return Type::Linear;
     }
 }
