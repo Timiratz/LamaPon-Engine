@@ -13444,6 +13444,166 @@ int main(const int argumentCount, char** arguments)
             Require(
                 compressionError < 12.0,
                 "BC5 shading error must stay small per pixel");
+
+            // 材質上書きなしの骨なしglTF/FBXでも、Rendererの追加値が自作シェーダーへ届くことを見ます。
+            // 1体だけの描画と、同じモデル・シェーダーで追加値の違う2体を、左右半分の検査色の画素数で確かめます。
+            normalObject.SetEnabled(false);
+            {
+                // MagentaProbe: 左の検査モデルへ渡す追加値。
+                constexpr DirectX::XMFLOAT4 MagentaProbe{
+                    1.0f, 0.0f, 1.0f, 1.0f };
+                // CyanProbe: 右の検査モデルへ渡す追加値。
+                constexpr DirectX::XMFLOAT4 CyanProbe{
+                    0.0f, 1.0f, 1.0f, 1.0f };
+                // createProbeModel: 骨なしの箱を検査シェーダーで置く処理(name: 物体名, x: 横位置)。
+                const auto createProbeModel =
+                    [&scene](
+                        const char* const name,
+                        const float x) -> LamaPon::GameObject&
+                    {
+                        // probeObject: 検査モデルの物体。
+                        auto& probeObject = scene.CreateGameObject(name);
+                        probeObject.GetTransform().position =
+                            { x, 0.0f, 0.0f };
+                        probeObject.GetTransform().scale =
+                            { 1.5f, 1.5f, 1.5f };
+                        // probeRenderer: 検査モデルの描画コンポーネント。
+                        auto& probeRenderer = probeObject.AddComponent<
+                            LamaPon::ModelRendererComponent>(
+                            std::filesystem::path{ LAMAPON_TEST_FIXTURE_DIR }
+                                / "static-box.gltf");
+                        probeRenderer.SetUseLegacyShading(false);
+                        probeRenderer.SetShaderPath(
+                            std::filesystem::path{ LAMAPON_TEST_FIXTURE_DIR }
+                            / "model-custom-parameter-probe.hlsl");
+                        return probeObject;
+                    };
+                // countProbePixels: 左右半分で検査色の画素を数える処理(frame: 描画結果, rightHalf: 右半分を数えるか, probe: 検査色)。
+                const auto countProbePixels =
+                    [](const std::vector<std::uint8_t>& frame,
+                        const bool rightHalf,
+                        const DirectX::XMFLOAT4& probe)
+                    {
+                        // expected: 検査色で明るいはずのRGB成分。
+                        const std::array<bool, 3> expected{
+                            probe.x > 0.5f,
+                            probe.y > 0.5f,
+                            probe.z > 0.5f };
+                        // matched: 検査色と一致した画素数。
+                        std::size_t matched = 0;
+                        // 縦方向の走査座標
+                        for (std::uint32_t y = 0; y < Height; ++y)
+                        {
+                            // 横方向の走査座標
+                            for (std::uint32_t x = rightHalf ? Width / 2 : 0;
+                                x < (rightHalf ? Width : Width / 2);
+                                ++x)
+                            {
+                                // pixel: 検査位置の画素値。
+                                const auto pixel = At(frame, x, y);
+                                // channels: 検査位置のRGB値。
+                                const std::array<int, 3> channels{
+                                    pixel.red,
+                                    pixel.green,
+                                    pixel.blue };
+                                // isProbeColor: 全成分が検査色どおりか。
+                                bool isProbeColor = true;
+                                // RGB色成分の添字
+                                for (std::size_t channel = 0;
+                                    channel < channels.size();
+                                    ++channel)
+                                {
+                                    isProbeColor = isProbeColor
+                                        && (expected[channel]
+                                            ? channels[channel] > 150
+                                            : channels[channel] < 70);
+                                }
+                                if (isProbeColor)
+                                {
+                                    ++matched;
+                                }
+                            }
+                        }
+                        return matched;
+                    };
+                // renderProbeFrame: 準備の1フレーム後に検査フレームを撮る処理。
+                const auto renderProbeFrame = [&renderFrame]
+                {
+                    // 最初のフレームでモデルとシェーダーを用意する。
+                    static_cast<void>(renderFrame());
+                    return renderFrame();
+                };
+                // leftObject: 左の検査モデルの物体。
+                auto& leftObject =
+                    createProbeModel("CustomParameterLeft", -1.2f);
+                // rightObject: 右の検査モデルの物体。
+                auto& rightObject =
+                    createProbeModel("CustomParameterRight", 1.2f);
+                // leftRenderer: 左の検査モデルの描画コンポーネント。
+                auto& leftRenderer = *leftObject.GetComponent<
+                    LamaPon::ModelRendererComponent>();
+                // rightRenderer: 右の検査モデルの描画コンポーネント。
+                auto& rightRenderer = *rightObject.GetComponent<
+                    LamaPon::ModelRendererComponent>();
+
+                // 部品ごとの描画材質へRendererの追加値が写ることを1体で見ます。
+                rightObject.SetEnabled(false);
+                leftRenderer.SetCustomParameter(0, MagentaProbe);
+                Stage("frame-model-custom-parameter-single");
+                // singleFrame: 1体だけ描いた結果。
+                const auto singleFrame = renderProbeFrame();
+                DumpFrame("model-custom-parameter-single", singleFrame);
+                // singlePixels: 左半分の検査色の画素数。
+                const auto singlePixels = countProbePixels(
+                    singleFrame,
+                    false,
+                    MagentaProbe);
+
+                // 描画効果とモデルを共有する2体も、それぞれの追加値で描きます。
+                rightObject.SetEnabled(true);
+                rightRenderer.SetCustomParameter(0, CyanProbe);
+                Stage("frame-model-custom-parameter-distinct");
+                // distinctFrame: 追加値の違う2体を描いた結果。
+                const auto distinctFrame = renderProbeFrame();
+                DumpFrame(
+                    "model-custom-parameter-distinct",
+                    distinctFrame);
+                // distinctLeft: 左半分のマゼンタの画素数。
+                const auto distinctLeft = countProbePixels(
+                    distinctFrame,
+                    false,
+                    MagentaProbe);
+                // distinctRight: 右半分のシアンの画素数。
+                const auto distinctRight = countProbePixels(
+                    distinctFrame,
+                    true,
+                    CyanProbe);
+
+                std::cout
+                    << "model custom parameter: single="
+                    << singlePixels
+                    << " distinct=" << distinctLeft
+                    << "/" << distinctRight
+                    << std::endl;
+                Require(
+                    leftRenderer.ShaderError().empty(),
+                    "The custom-parameter probe shader must compile"
+                    " for imported models.");
+                Require(
+                    singlePixels > 300,
+                    "Imported static glTF/FBX parts without a material"
+                    " override must receive the renderer's"
+                    " CustomParameters.");
+                Require(
+                    distinctLeft > 300 && distinctRight > 300,
+                    "Models sharing a shader must each receive their"
+                    " own CustomParameters.");
+                static_cast<void>(
+                    scene.DestroyGameObject(leftObject));
+                static_cast<void>(
+                    scene.DestroyGameObject(rightObject));
+            }
+            normalObject.SetEnabled(true);
         }
 
         // 1つのglTFにskin付き／無しのprimitiveが混在するとき、Manifestのskinned roleだけへモデル全体を寄せず、primitiveごとにskinned/forwardを選ぶことを実描画で確かめます。

@@ -807,7 +807,8 @@ namespace LamaPon
             ID3D11InputLayout>>* staticManifestColorInputLayouts,
         const std::vector<Microsoft::WRL::ComPtr<
             ID3D11InputLayout>>* staticManifestOutlineInputLayouts,
-        const bool depthPrepass) const
+        const bool depthPrepass,
+        const LitMaterial* customParameterSource) const
     {
         // 描画先のD3D11コンテキスト
         auto* const context =
@@ -848,7 +849,8 @@ namespace LamaPon
             staticManifestEffect,
             staticManifestColorInputLayouts,
             staticManifestOutlineInputLayouts,
-            depthPrepass);
+            depthPrepass,
+            customParameterSource);
     }
 
     void SkeletalModel::Draw(
@@ -911,7 +913,8 @@ namespace LamaPon
             nullptr,
             nullptr,
             nullptr,
-            false);
+            false,
+            nullptr);
     }
 
     void SkeletalModel::DrawD3D11(
@@ -948,7 +951,8 @@ namespace LamaPon
             ID3D11InputLayout>>* staticManifestColorInputLayouts,
         const std::vector<Microsoft::WRL::ComPtr<
             ID3D11InputLayout>>* staticManifestOutlineInputLayouts,
-        const bool depthPrepass) const
+        const bool depthPrepass,
+        const LitMaterial* customParameterSource) const
     {
         using namespace DirectX;
         // customInputLayoutはABI互換の未使用引数で、直書きHLSLにはモデル内蔵の入力レイアウトを使う。
@@ -1025,6 +1029,27 @@ namespace LamaPon
         // 大きなカスタム定数配列の再初期化を避け、描画単位ごとに同じ材質へ値を設定する。
         // 使い回す内蔵材質の設定
         LitMaterial primitiveMaterial;
+        if (customParameterSource != nullptr)
+        {
+            // 写す追加値の番号
+            for (std::size_t index{};
+                 index < LitMaterial::CustomParameterCount;
+                 ++index)
+            {
+                primitiveMaterial.SetCustomParameter(
+                    index,
+                    customParameterSource->CustomParameter(index));
+            }
+            // 写す追加ベクトルの番号
+            for (std::size_t index{};
+                 index < LitMaterial::CustomVectorCount;
+                 ++index)
+            {
+                primitiveMaterial.SetCustomVector(
+                    index,
+                    customParameterSource->CustomVector(index));
+            }
+        }
         // 投影サイズから選んだLOD
         const std::size_t automaticLod = SelectAutomaticLod(
             ownerWorld,

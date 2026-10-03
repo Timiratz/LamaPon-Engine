@@ -17,67 +17,91 @@ endforeach()
 
 file(REMOVE_RECURSE "${TEST_BUILD_DIR}" "${TEST_OUTPUT_DIR}")
 
-# configureResult/Output/Error: configure exit codeとdiagnostics。
-execute_process(
-    COMMAND "${CMAKE_COMMAND}"
-        -S "${ENGINE_ROOT}/tools/ProjectGameModule"
-        -B "${TEST_BUILD_DIR}"
-        -G "${TEST_GENERATOR}"
-        "-DCMAKE_BUILD_TYPE=${TEST_BUILD_TYPE}"
-        "-DLAMAPON_ENGINE_ROOT:PATH=${ENGINE_ROOT}"
-        "-DLAMAPON_PROJECT_ROOT:PATH=${PROJECT_ROOT}"
-        "-DLAMAPON_RUNTIME_DIR:PATH=${RUNTIME_DIR}"
-        "-DLAMAPON_MODULE_OUTPUT_DIR:PATH=${TEST_OUTPUT_DIR}"
-        "-DLAMAPON_GENERATED_INCLUDE_DIR:PATH=${GENERATED_INCLUDE_DIR}"
-    RESULT_VARIABLE configureResult
-    OUTPUT_VARIABLE configureOutput
-    ERROR_VARIABLE configureError
-)
-# configure失敗時は詳細を返します。
-if(NOT configureResult EQUAL 0)
-    message(FATAL_ERROR
-        "Project Game Module configure failed:\n${configureOutput}\n${configureError}"
+# fastBuild: 同じキャッシュで通常・高速・通常へ切り替える設定。
+foreach(fastBuild OFF ON OFF)
+    # configureResult/Output/Error: configure exit codeとdiagnostics。
+    execute_process(
+        COMMAND "${CMAKE_COMMAND}"
+            -S "${ENGINE_ROOT}/tools/ProjectGameModule"
+            -B "${TEST_BUILD_DIR}"
+            -G "${TEST_GENERATOR}"
+            "-DCMAKE_BUILD_TYPE=${TEST_BUILD_TYPE}"
+            "-DLAMAPON_MODULE_FAST_BUILD:BOOL=${fastBuild}"
+            "-DLAMAPON_ENGINE_ROOT:PATH=${ENGINE_ROOT}"
+            "-DLAMAPON_PROJECT_ROOT:PATH=${PROJECT_ROOT}"
+            "-DLAMAPON_RUNTIME_DIR:PATH=${RUNTIME_DIR}"
+            "-DLAMAPON_MODULE_OUTPUT_DIR:PATH=${TEST_OUTPUT_DIR}"
+            "-DLAMAPON_GENERATED_INCLUDE_DIR:PATH=${GENERATED_INCLUDE_DIR}"
+        RESULT_VARIABLE configureResult
+        OUTPUT_VARIABLE configureOutput
+        ERROR_VARIABLE configureError
     )
-endif()
+    # configure失敗時は詳細を返します。
+    if(NOT configureResult EQUAL 0)
+        message(FATAL_ERROR
+            "Project Game Module configure failed:\n${configureOutput}\n${configureError}"
+        )
+    endif()
 
-# buildResult/Output/Error: module build exit codeとdiagnostics。
-execute_process(
-    COMMAND "${CMAKE_COMMAND}"
-        --build "${TEST_BUILD_DIR}"
-        --target LamaPonGameModule
-    RESULT_VARIABLE buildResult
-    OUTPUT_VARIABLE buildOutput
-    ERROR_VARIABLE buildError
-)
-# build失敗時は詳細を返します。
-if(NOT buildResult EQUAL 0)
-    message(FATAL_ERROR
-        "Project Game Module build failed:\n${buildOutput}\n${buildError}"
+    # buildResult/Output/Error: module build exit codeとdiagnostics。
+    execute_process(
+        COMMAND "${CMAKE_COMMAND}"
+            --build "${TEST_BUILD_DIR}"
+            --target LamaPonGameModule
+        RESULT_VARIABLE buildResult
+        OUTPUT_VARIABLE buildOutput
+        ERROR_VARIABLE buildError
     )
-endif()
+    # build失敗時は詳細を返します。
+    if(NOT buildResult EQUAL 0)
+        message(FATAL_ERROR
+            "Project Game Module build failed:\n${buildOutput}\n${buildError}"
+        )
+    endif()
 
-# modulePath: build artifactのexpected DLL path。
-set(modulePath "${TEST_OUTPUT_DIR}/LamaPonGameModule.dll")
-# module artifactの有無を確認します。
-if(NOT EXISTS "${modulePath}")
-    message(FATAL_ERROR "Project Game Module DLL was not generated.")
-endif()
+    # modulePath: build artifactのexpected DLL path。
+    set(modulePath "${TEST_OUTPUT_DIR}/LamaPonGameModule.dll")
+    # module artifactの有無を確認します。
+    if(NOT EXISTS "${modulePath}")
+        message(FATAL_ERROR "Project Game Module DLL was not generated.")
+    endif()
 
-# loadResult/Output/Error: module load probeの終了codeとdiagnostics。
-execute_process(
-    COMMAND "${TEST_LOADER}" "${modulePath}"
-        "${ENGINE_ROOT}/packages/src/scene-transition-showcase"
-        "${ENGINE_ROOT}/packages/src/network-session-workflow"
-        "${ENGINE_ROOT}/packages/src/ollama-ai"
-    RESULT_VARIABLE loadResult
-    OUTPUT_VARIABLE loadOutput
-    ERROR_VARIABLE loadError
-)
-# moduleのload失敗を報告します。
-if(NOT loadResult EQUAL 0)
-    message(FATAL_ERROR
-        "Project Game Module load failed:\n${loadOutput}\n${loadError}"
+    # loadResult/Output/Error: module load probeの終了codeとdiagnostics。
+    execute_process(
+        COMMAND "${TEST_LOADER}" "${modulePath}"
+            "${ENGINE_ROOT}/packages/src/scene-transition-showcase"
+            "${ENGINE_ROOT}/packages/src/network-session-workflow"
+            "${ENGINE_ROOT}/packages/src/ollama-ai"
+        RESULT_VARIABLE loadResult
+        OUTPUT_VARIABLE loadOutput
+        ERROR_VARIABLE loadError
     )
-endif()
+    # moduleのload失敗を報告します。
+    if(NOT loadResult EQUAL 0)
+        message(FATAL_ERROR
+            "Project Game Module load failed:\n${loadOutput}\n${loadError}"
+        )
+    endif()
 
-message(STATUS "${loadOutput}")
+    message(STATUS "${loadOutput}")
+
+    # 変更のない二回目のビルドはDLLを更新しないことを確認します。
+    # moduleTimeBefore: 再ビルド前のDLL時刻。
+    file(TIMESTAMP "${modulePath}" moduleTimeBefore "%s.%f")
+    execute_process(
+        COMMAND "${CMAKE_COMMAND}" --build "${TEST_BUILD_DIR}"
+            --target LamaPonGameModule
+        RESULT_VARIABLE buildResult
+        OUTPUT_VARIABLE buildOutput
+        ERROR_VARIABLE buildError)
+    if(NOT buildResult EQUAL 0)
+        message(FATAL_ERROR "Repeated build failed:
+    ${buildOutput}
+    ${buildError}")
+    endif()
+    # moduleTimeAfter: 再ビルド後のDLL時刻。
+    file(TIMESTAMP "${modulePath}" moduleTimeAfter "%s.%f")
+    if(NOT moduleTimeBefore STREQUAL moduleTimeAfter)
+        message(FATAL_ERROR "An unchanged Game Module was relinked.")
+    endif()
+endforeach()

@@ -292,8 +292,9 @@ namespace LamaPon
             std::size_t removeRootMotionNode =
                 std::numeric_limits<std::size_t>::max());
 
-        // D3D11でモデルを描きます(graphics: 描画デバイス, lighting: 照明入力, ownerWorld: 所有者の世界行列, view: ビュー行列, projection: 射影行列, clip: 再生クリップ, time: 再生秒数, wireframe: 辺だけの描画, materialOverride: 上書き材質, textureOverride: 上書き画像入力, blendClip: 合成先クリップ, blendTime: 合成先の再生秒数, blendAmount: 合成率, weightedSamples: 優先する重み付き姿勢群, removeRootMotionNode: 初期姿勢へ戻すノード, customEffect: 自作シェーダー, customInputLayout: 互換用の未使用レイアウト, depthOnly: 深度専用描画, globalPoseOverride: 計算済みの全体行列群, automaticLodQuality: 自動LODの品質, customColorInputLayouts: 自作の色パス別頂点形式, customOutlineInputLayouts: 自作の輪郭パス別頂点形式, customTextureViews: 追加画像の借用SRV列, staticManifestEffect: 骨なし素材のシェーダー, staticManifestColorInputLayouts: 骨なしの色パス別頂点形式, staticManifestOutlineInputLayouts: 骨なしの輪郭パス別頂点形式, depthPrepass: 主描画と一致する深度描画)。
+        // D3D11でモデルを描きます(graphics: 描画デバイス, lighting: 照明入力, ownerWorld: 所有者の世界行列, view: ビュー行列, projection: 射影行列, clip: 再生クリップ, time: 再生秒数, wireframe: 辺だけの描画, materialOverride: 上書き材質, textureOverride: 上書き画像入力, blendClip: 合成先クリップ, blendTime: 合成先の再生秒数, blendAmount: 合成率, weightedSamples: 優先する重み付き姿勢群, removeRootMotionNode: 初期姿勢へ戻すノード, customEffect: 自作シェーダー, customInputLayout: 互換用の未使用レイアウト, depthOnly: 深度専用描画, globalPoseOverride: 計算済みの全体行列群, automaticLodQuality: 自動LODの品質, customColorInputLayouts: 自作の色パス別頂点形式, customOutlineInputLayouts: 自作の輪郭パス別頂点形式, customTextureViews: 追加画像の借用SRV列, staticManifestEffect: 骨なし素材のシェーダー, staticManifestColorInputLayouts: 骨なしの色パス別頂点形式, staticManifestOutlineInputLayouts: 骨なしの輪郭パス別頂点形式, depthPrepass: 主描画と一致する深度描画, customParameterSource: 上書きなしで追加値を写す材質)。
         // textureOverrideは空の基本色・法線を内蔵画像から継承し、空のPBRは明示的なマップなしとして扱います。
+        // customParameterSourceは上書きなしの部品へ追加値だけを渡し、色・粗さ・金属度は部品の値を使います。
         // 深度描画は輪郭・遮蔽表示を省き、PSも切り抜きに必要な場合だけ使用します。
         // globalPoseOverrideが空なら姿勢を採取し、指定時は影・深度・通常描画で共有します。
         // Manifestの頂点形式はVS別のJSON順で渡し、直接HLSLでは空を指定してDirectXTKの頂点形式を使います。
@@ -337,12 +338,13 @@ namespace LamaPon
             const std::vector<Microsoft::WRL::ComPtr<
                 ID3D11InputLayout>>*
                 staticManifestOutlineInputLayouts = nullptr,
-            bool depthPrepass = false)
+            bool depthPrepass = false,
+            const LitMaterial* customParameterSource = nullptr)
             const;
 
     private:
         struct TextureInputs;
-        // 素材・姿勢・LODを選んで描きます(context: 即時命令のコンテキスト, states: 共通の描画状態, lighting: 照明入力, ownerWorld: 所有者の世界行列, view: ビュー行列, projection: 射影行列, clip: 再生クリップ, time: 再生秒数, wireframe: 辺だけの描画, materialOverride: 上書き材質, textures: 共通または互換用の画像入力, blendClip: 合成先クリップ, blendTime: 合成先の再生秒数, blendAmount: 合成率, weightedSamples: 優先する重み付き姿勢群, removeRootMotionNode: 初期姿勢へ戻すノード, customEffect: 自作シェーダー, customInputLayout: 互換用の未使用レイアウト, depthOnly: 深度専用描画, globalPoseOverride: 計算済みの全体行列群, automaticLodQuality: 自動LODの品質, customColorInputLayouts: 自作の色パス別頂点形式, customOutlineInputLayouts: 自作の輪郭パス別頂点形式, customTextureViews: 追加画像の借用SRV列, staticManifestEffect: 骨なし素材のシェーダー, staticManifestColorInputLayouts: 骨なしの色パス別頂点形式, staticManifestOutlineInputLayouts: 骨なしの輪郭パス別頂点形式, depthPrepass: 主描画と一致する深度描画)。
+        // 素材・姿勢・LODを選んで描きます(context: 即時命令のコンテキスト, states: 共通の描画状態, lighting: 照明入力, ownerWorld: 所有者の世界行列, view: ビュー行列, projection: 射影行列, clip: 再生クリップ, time: 再生秒数, wireframe: 辺だけの描画, materialOverride: 上書き材質, textures: 共通または互換用の画像入力, blendClip: 合成先クリップ, blendTime: 合成先の再生秒数, blendAmount: 合成率, weightedSamples: 優先する重み付き姿勢群, removeRootMotionNode: 初期姿勢へ戻すノード, customEffect: 自作シェーダー, customInputLayout: 互換用の未使用レイアウト, depthOnly: 深度専用描画, globalPoseOverride: 計算済みの全体行列群, automaticLodQuality: 自動LODの品質, customColorInputLayouts: 自作の色パス別頂点形式, customOutlineInputLayouts: 自作の輪郭パス別頂点形式, customTextureViews: 追加画像の借用SRV列, staticManifestEffect: 骨なし素材のシェーダー, staticManifestColorInputLayouts: 骨なしの色パス別頂点形式, staticManifestOutlineInputLayouts: 骨なしの輪郭パス別頂点形式, depthPrepass: 主描画と一致する深度描画, customParameterSource: 上書きなしで追加値を写す材質)。
         void DrawD3D11(
             ID3D11DeviceContext* context,
             DirectX::CommonStates& states,
@@ -378,7 +380,8 @@ namespace LamaPon
                 ID3D11InputLayout>>* staticManifestColorInputLayouts,
             const std::vector<Microsoft::WRL::ComPtr<
                 ID3D11InputLayout>>* staticManifestOutlineInputLayouts,
-            bool depthPrepass) const;
+            bool depthPrepass,
+            const LitMaterial* customParameterSource) const;
 
         // 互換用のD3D11描画入口です(context: 即時命令のコンテキスト, states: 共通の描画状態, lighting: 照明入力, ownerWorld: 所有者の世界行列, view: ビュー行列, projection: 射影行列, clip: 再生クリップ, time: 再生秒数, wireframe: 辺だけの描画, materialOverride: 上書き材質, albedoOverride: 上書き基本色の借用SRV, normalOverride: 上書き法線の借用SRV, pbrOverride: 上書きPBRの借用入力, blendClip: 合成先クリップ, blendTime: 合成先の再生秒数, blendAmount: 合成率, weightedSamples: 優先する重み付き姿勢群, removeRootMotionNode: 初期姿勢へ戻すノード, customEffect: 自作シェーダー, customInputLayout: 互換用の未使用レイアウト, depthOnly: 深度専用描画, globalPoseOverride: 計算済みの全体行列群, automaticLodQuality: 自動LODの品質)。
         // 旧Game ModuleへのAPI不一致案内のため、公開していた署名のシンボルを維持します。

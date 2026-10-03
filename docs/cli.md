@@ -33,7 +33,7 @@ LamaPonCli.exe export --project "C:\path\to\MyProject" --zip
 - `new` は3D学習を既定で作ります（`--template 3d`／`2d`／`learning-3d`／`learning-2d`）
 - `learn` は学習進捗、役職、教材診断をJSONで扱います
 - `render` は `shot.png` にスクリーンショットを書き出します
-- `build` はエディターの「保存→自動ビルド」と同じ方法でC++ Game Moduleを建てます
+- `build` はC++ Game Moduleをビルドします。Release版CLIでは配布向けの全体最適化を使い、エディターの保存時ビルドでは共通ヘッダーの再利用と増分リンクを使います
 - `export` はエディターの「エクスポート」と同じ配布用パッケージを作ります
 - どのコマンドも標準出力にJSONのレポートが1つ出ます（下記）
 - 終了コードは 0=成功 / 1=失敗 です

@@ -91,6 +91,27 @@ int main()
             !LamaPon::Cli::IsBuildErrorLine("0 Error(s)"),
             "A successful build summary must not be a diagnostic.");
 
+        // メモリ計算用の1GiB
+        constexpr std::uint64_t gib = 1024ull * 1024 * 1024;
+        Require(
+            LamaPon::SelectGameModuleBuildParallelJobs(16, 32 * gib, 64 * gib) == 2,
+            "Many CPUs and abundant memory must not exceed two jobs.");
+        Require(
+            LamaPon::SelectGameModuleBuildParallelJobs(16, 6 * gib - 1, 64 * gib) == 1,
+            "Insufficient physical memory for two jobs must select one job.");
+        Require(
+            LamaPon::SelectGameModuleBuildParallelJobs(16, 6 * gib, 64 * gib) == 2,
+            "Two jobs require their memory budget plus the system reserve.");
+        Require(
+            LamaPon::SelectGameModuleBuildParallelJobs(16, 32 * gib, 4 * gib) == 1,
+            "A low commit budget must limit parallelism even with free RAM.");
+        Require(
+            LamaPon::SelectGameModuleBuildParallelJobs(2, 32 * gib, 64 * gib) == 1,
+            "Small CPUs must leave execution capacity for other applications.");
+        Require(
+            LamaPon::SelectGameModuleBuildParallelJobs(0, 0, 0) == 1,
+            "Unknown resources must conservatively select one job.");
+
         // 各テスト用ファイルを配置する一時root
         TemporaryDirectory temporary;
         // テストproject配置先
@@ -172,6 +193,33 @@ int main()
                 == project / L".lamapon"
                     / L"game-module-build.log",
             "The final build log path must remain project-compatible.");
+
+        // 編集向けコマンドの設定
+        const auto fastCommand = LamaPon::MakeGameModuleBuildCommand(
+            project, engine, runtime, "Release", true);
+        Require(
+            fastCommand.parameters.find(L"LAMAPON_MODULE_FAST_BUILD:BOOL=ON")
+                != std::wstring::npos,
+            "Editor builds must enable fast compilation and linking.");
+        Require(
+            command.parameters.find(L"LAMAPON_MODULE_FAST_BUILD:BOOL=OFF")
+                != std::wstring::npos,
+            "CLI and export builds must explicitly reset cached fast settings.");
+        Require(
+            fastCommand.outputModule == command.outputModule,
+            "Fast builds must preserve the deployed module path.");
+        Require(
+            fastCommand.parallelJobs >= 1 && fastCommand.parallelJobs <= 2
+                && fastCommand.parameters.find(
+                    L"--parallel " + std::to_wstring(fastCommand.parallelJobs) + L" >> ")
+                    != std::wstring::npos,
+            "Editor commands must explicitly enforce their resource limit.");
+        Require(
+            command.parallelJobs >= 1 && command.parallelJobs <= 2
+                && command.parameters.find(
+                    L"--parallel " + std::to_wstring(command.parallelJobs) + L" >> ")
+                    != std::wstring::npos,
+            "Cached CLI commands must enforce the same resource limit.");
 
         // staleness判定に使うGame Module source
         const auto source = project / L"assets" / L"scripts"

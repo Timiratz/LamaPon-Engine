@@ -555,6 +555,29 @@ namespace
 
 namespace LamaPon
 {
+    std::uint32_t SelectGameModuleBuildParallelJobs(
+        const std::uint32_t logicalProcessors,
+        const std::uint64_t availablePhysicalMemory,
+        const std::uint64_t availableCommitMemory) noexcept
+    {
+        // OSと他アプリに残す容量
+        constexpr std::uint64_t reserveBytes = 2ull * 1024 * 1024 * 1024;
+        // コンパイラー1個の想定容量
+        constexpr std::uint64_t bytesPerJob = 2ull * 1024 * 1024 * 1024;
+        // 使用可能容量の小さい方
+        const auto availableBytes = std::min(
+            availablePhysicalMemory, availableCommitMemory);
+        // OS向けの余裕を除いた容量
+        const auto budgetBytes = availableBytes > reserveBytes
+            ? availableBytes - reserveBytes : 0;
+        // 論理CPUの半分・最大2並列
+        const auto cpuJobs = std::clamp(logicalProcessors / 2u, 1u, 2u);
+        // メモリ予算で実行できる個数
+        const auto memoryJobs = std::clamp(
+            budgetBytes / bytesPerJob, std::uint64_t{ 1 }, std::uint64_t{ 2 });
+        return std::min(cpuJobs, static_cast<std::uint32_t>(memoryJobs));
+    }
+
     // ソースとDLL・Runtimeの更新時刻から再ビルドの要否を調べます(projectRoot: プロジェクトの基準パス, requestedOutputModule: 判定対象DLL・空なら既定)。
     GameModuleBuildState InspectGameModuleBuildState(
         const std::filesystem::path& projectRoot,
@@ -679,7 +702,8 @@ namespace LamaPon
         const std::filesystem::path& projectRoot,
         const std::filesystem::path& engineRoot,
         const std::filesystem::path& runtimeDirectory,
-        const std::string& configuration)
+        const std::string& configuration,
+        const bool fastBuild)
     {
         if (configuration != "Debug"
             && configuration != "Release"
@@ -745,6 +769,16 @@ namespace LamaPon
 
         // 構築するビルドコマンドとパス
         GameModuleBuildCommand command;
+        // ビルド開始時のメモリ余裕
+        MEMORYSTATUSEX memory{};
+        memory.dwLength = sizeof(memory);
+        if (GlobalMemoryStatusEx(&memory))
+        {
+            command.parallelJobs = SelectGameModuleBuildParallelJobs(
+                GetActiveProcessorCount(ALL_PROCESSOR_GROUPS),
+                memory.ullAvailPhys,
+                memory.ullAvailPageFile);
+        }
         command.logPath =
             lamaponDirectory
             / L"game-module-build.log";
@@ -821,6 +855,8 @@ namespace LamaPon
             + L"\" -G \"" + generator + L"\""
             + L" -DCMAKE_BUILD_TYPE="
             + Utf8ToWide(configuration)
+            + L" -DLAMAPON_MODULE_FAST_BUILD:BOOL="
+            + (fastBuild ? L"ON" : L"OFF")
             + L" -DLAMAPON_ENGINE_ROOT:PATH=\""
             + engineRoot.wstring()
             + L"\" -DLAMAPON_PROJECT_ROOT:PATH=\""
@@ -859,7 +895,9 @@ namespace LamaPon
             + quotedLogPath
             + L" 2>&1 && cmake --build \""
             + command.buildDirectory.wstring()
-            + L"\" --target LamaPonGameModule >> "
+            + L"\" --target LamaPonGameModule --parallel "
+            + std::to_wstring(command.parallelJobs)
+            + L" >> "
             + quotedLogPath
             + L" 2>&1";
         if (command.usesLocalBuildCache)
